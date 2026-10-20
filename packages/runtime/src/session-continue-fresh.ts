@@ -285,7 +285,7 @@ export async function continueAgentSessionFresh(
   if (prevUpdated) prevUpdated.checkpointId = checkpoint.checkpointId
 
   // Lineage handover: the fresh session TAKES OVER the retired row's
-  // position. Its live children are re-parented onto it — so the new brain
+  // position. Its live children are re-parented onto it - so the new brain
   // can drive them (the drive-tool gate keys on `parentSessionId`) and they
   // report to it (`message_parent` routes to the recorded parent). Without
   // this, a continued "brain" leaves its supervisors attached to a dead

@@ -1088,7 +1088,7 @@ export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
 
 /**
  * Emitted when a session's LIVE CHILDREN are re-attached to a SUCCESSOR
- * session — the "lineage handover" (a persistent orchestrator replaced by a
+ * session - the "lineage handover" (a persistent orchestrator replaced by a
  * new session: restart, wallet change, continue-fresh).
  *
  * `from` is the replaced session, `to` its successor; `adopted` lists the
@@ -1101,16 +1101,16 @@ export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
  */
 export interface SessionLineageHandoverEvent {
   type: "session:lineage-handover"
-  /** The replaced session — the one that lost its children. */
+  /** The replaced session - the one that lost its children. */
   sessionId: string
-  /** The successor session — the one that inherited them. */
+  /** The successor session - the one that inherited them. */
   successorSessionId: string
   /** Ids of the children re-parented to the successor. */
   adopted: string[]
   /** Ids of the children left where they were (dead rows). */
   skipped: string[]
   reason: string
-  /** Who triggered the handover — `"operator"` or a session id. */
+  /** Who triggered the handover - `"operator"` or a session id. */
   actor: string
   label?: string
   ts: string

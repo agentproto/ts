@@ -2469,17 +2469,17 @@ export interface SessionDescriptor {
   /** The row that continued this one (the inverse of `continuedFrom`); the
    *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
-  /** Lineage handover (see {@link SessionDescriptor.succeededBy}) — the
+  /** Lineage handover (see {@link SessionDescriptor.succeededBy}) - the
    *  session this one was DECLARED to succeed: the row whose live children
    *  were re-attached to this session when it was created (an
    *  `agent_start.succeeds` declaration, or a continue-fresh continuation).
    *  Absent on a row that never took over another row's position. */
   succeeds?: string
-  /** Lineage handover — the session that TOOK OVER this row's position: its
+  /** Lineage handover - the session that TOOK OVER this row's position: its
    *  live children were re-parented to it, so it can drive them and they
    *  report to it (`message_parent`). Set by the handover itself, in both
    *  directions (`from.succeededBy = to` / `to.succeeds = from`), and
-   *  persisted so the declaration survives a daemon restart — it is what
+   *  persisted so the declaration survives a daemon restart - it is what
    *  authorizes `session_adopt`. */
   succeededBy?: string
   /** Set alongside `continuedFrom` on the NEW session — the harness the
@@ -4658,26 +4658,26 @@ export interface SessionsRegistry {
    *  gate (`agent_set_prompt_policy` checks it). Persists via
    *  `schedulePersist` — the descriptor row is written whole. */
   setPromptPolicy(id: string, allowPromptFrom: string[] | undefined): SessionDescriptor
-  /** Lineage handover — record that `toId` TOOK OVER `fromId`'s position in
+  /** Lineage handover - record that `toId` TOOK OVER `fromId`'s position in
    *  the spawn tree: `from.succeededBy = toId` and `to.succeeds = fromId`
    *  (both persisted, both already written by the handover itself when it
-   *  ran — this method exists so a DECLARATION can be recorded without a
+   *  ran - this method exists so a DECLARATION can be recorded without a
    *  re-parenting, e.g. `agent_start.succeeds` on a spawn whose predecessor
    *  had no live children). Throws when either id is unknown. */
   setLineageSuccessor(fromId: string, toId: string): SessionDescriptor
-  /** Lineage handover — re-parent a session: `id`'s `parentSessionId`
+  /** Lineage handover - re-parent a session: `id`'s `parentSessionId`
    *  becomes `newParentId` (the child keeps its own id, transcript and
    *  state; only the lineage pointer moves). This is what makes the
    *  successor the child's OWNER (the drive-tool gate keys on
    *  `parentSessionId`) and what routes the child's `message_parent` to
    *  the successor instead of the retired predecessor. `newParentId`
-   *  `undefined` makes the session a ROOT (no parent) — the shape a
+   *  `undefined` makes the session a ROOT (no parent) - the shape a
    *  successor of a root session takes. The child's `depth` is re-derived
    *  from the new parent. Persists via `schedulePersist`; throws when
    *  the session id is unknown. */
   reassignParent(id: string, newParentId: string | undefined): SessionDescriptor
   /** Emit a `session:lineage-handover` journal entry on the session event
-   *  bus — the lineage handover's own audit trail. Daemon-internal. */
+   *  bus - the lineage handover's own audit trail. Daemon-internal. */
   emitLineageHandover(event: import("./session-event-bus.js").SessionLineageHandoverEvent): void
   /** Stamp (or clear) the immutable `operatorLabel` (see
    *  `SessionDescriptor.operatorLabel`). Daemon-internal: called only by the

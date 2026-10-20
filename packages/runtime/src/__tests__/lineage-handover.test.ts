@@ -1,5 +1,5 @@
 /**
- * Lineage handover — a successor session takes over a replaced session's
+ * Lineage handover - a successor session takes over a replaced session's
  * children.
  *
  * The bug it fixes: a persistent orchestrator (the "brain") is sometimes
@@ -10,7 +10,7 @@
  *
  * The mechanism is generic: the successor takes over the replaced session's
  * POSITION in the spawn tree, and the moved `parentSessionId` pointer moves
- * the whole contract with it — drive rights (the session-owner gate keys on
+ * the whole contract with it - drive rights (the session-owner gate keys on
  * `parentSessionId`) and `message_parent` routing (it resolves the caller's
  * recorded parent).
  *
@@ -126,7 +126,7 @@ function isError(result: unknown): boolean {
   return (result as { isError?: boolean }).isError === true
 }
 
-describe("lineage handover — the successor drives the inherited children", () => {
+describe("lineage handover - the successor drives the inherited children", () => {
   it("re-parents the live children and hands the successor their drive rights", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const brain = spawnNode(registry, undefined, "brain")
@@ -146,7 +146,7 @@ describe("lineage handover — the successor drives the inherited children", () 
     expect(outcome.adopted.sort()).toEqual([supervisor.id, executor.id].sort())
     expect(registry.get(supervisor.id)?.parentSessionId).toBe(successor.id)
     expect(registry.get(executor.id)?.parentSessionId).toBe(successor.id)
-    // The declaration is persisted on both rows — it is what authorizes
+    // The declaration is persisted on both rows - it is what authorizes
     // `session_adopt` later.
     expect(registry.get(brain.id)?.succeededBy).toBe(successor.id)
     expect(registry.get(successor.id)?.succeeds).toBe(brain.id)
@@ -211,7 +211,7 @@ describe("lineage handover — the successor drives the inherited children", () 
       await stranger.close()
     }
 
-    // `session_adopt` — the stranger is neither the operator nor the
+    // `session_adopt` - the stranger is neither the operator nor the
     // declared successor.
     const adopter = await lineageHarness({ registry, callerSessionId: "sess_stranger" })
     try {
@@ -250,7 +250,7 @@ describe("lineage handover — the successor drives the inherited children", () 
   })
 })
 
-describe("lineage handover — the `session:lineage-handover` journal entry", () => {
+describe("lineage handover - the `session:lineage-handover` journal entry", () => {
   it("records who handed over to whom, and which children moved", async () => {
     const sessionEvents = createSessionEventBus()
     const registry = createSessionsRegistry({ persist: false, sessionEvents })
@@ -284,7 +284,7 @@ describe("lineage handover — the `session:lineage-handover` journal entry", ()
   })
 })
 
-describe("lineage handover — `agent_start.succeeds`", () => {
+describe("lineage handover - `agent_start.succeeds`", () => {
   it("declares the succession and hands the children over to the new session", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const brain = spawnNode(registry, undefined, "brain")
@@ -371,7 +371,7 @@ describe("lineage handover — `agent_start.succeeds`", () => {
   })
 })
 
-describe("lineage handover — `session_adopt`", () => {
+describe("lineage handover - `session_adopt`", () => {
   it("the declared successor adopts the named children", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const brain = spawnNode(registry, undefined, "brain")
@@ -379,7 +379,7 @@ describe("lineage handover — `session_adopt`", () => {
     const executor = spawnNode(registry, brain.id, "executor")
     const successor = spawnNode(registry, undefined, "brain-2")
     // The succession was declared (by a continue-fresh or an
-    // `agent_start.succeeds`) — but the children have not moved yet.
+    // `agent_start.succeeds`) - but the children have not moved yet.
     registry.setLineageSuccessor(brain.id, successor.id)
 
     const h = await lineageHarness({ registry, callerSessionId: successor.id })
@@ -442,7 +442,7 @@ describe("lineage handover — `session_adopt`", () => {
   })
 })
 
-describe("lineage handover — continue-fresh hands the children over", () => {
+describe("lineage handover - continue-fresh hands the children over", () => {
   it("the fresh continuation takes over the retired row's children", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const brain = spawnNode(registry, undefined, "brain")
@@ -478,7 +478,7 @@ describe("lineage handover — continue-fresh hands the children over", () => {
       )
       const fresh = result.descriptor
       expect(fresh.continuedFrom).toBe(brain.id)
-      // The children moved to the continuation — the new brain can drive them
+      // The children moved to the continuation - the new brain can drive them
       // and they report to it.
       expect(registry.get(supervisor.id)?.parentSessionId).toBe(fresh.id)
       expect(registry.get(executor.id)?.parentSessionId).toBe(fresh.id)
@@ -492,7 +492,7 @@ describe("lineage handover — continue-fresh hands the children over", () => {
   })
 })
 
-describe("lineage handover — the pure authority checks", () => {  const from = { id: "sess_brain", parentSessionId: "sess_owner" } as SessionDescriptor
+describe("lineage handover - the pure authority checks", () => {  const from = { id: "sess_brain", parentSessionId: "sess_owner" } as SessionDescriptor
 
   it("the operator, the replaced session and its owner may declare a successor", () => {
     expect(checkSuccessorDeclaration({ callerSessionId: undefined, from }).ok).toBe(true)

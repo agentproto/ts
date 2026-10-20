@@ -1413,7 +1413,7 @@ export function registerSessionTools(
   // Delegate the agent-family tools to the dedicated module.
   registerAgentTools(server, opts)
 
-  // The lineage-handover verbs (`session_adopt`) — the explicit succession
+  // The lineage-handover verbs (`session_adopt`) - the explicit succession
   // surface. Root-only in practice: a scoped orchestrator's tool subset
   // (`toolSubset`) does not name `session_adopt`, so a child session can
   // never adopt its siblings.

@@ -1,5 +1,5 @@
 /**
- * Lineage handover — the generic mechanism that lets a SUCCESSOR session
+ * Lineage handover - the generic mechanism that lets a SUCCESSOR session
  * take over a replaced session's children.
  *
  * The problem it solves: a persistent orchestrator (the "brain") is
@@ -21,20 +21,20 @@
  *   - the replaced session loses those rights (it is gone anyway).
  *
  * Two ways a handover happens:
- *   1. AUTOMATIC — a session is created as the successor of another
+ *   1. AUTOMATIC - a session is created as the successor of another
  *      (continue-fresh, or an explicit `agent_start.succeeds` declaration).
- *   2. EXPLICIT — the `session_adopt` MCP verb
+ *   2. EXPLICIT - the `session_adopt` MCP verb
  *      (`{ childIds, from }`), reserved to the human operator and to the
  *      DECLARED successor of `from`.
  *
  * The declaration (`from.succeededBy = to` / `to.succeeds = from`) is
  * persisted on the descriptors, so "who is the successor of this row"
- * survives a daemon restart — which is what authorizes `session_adopt`.
+ * survives a daemon restart - which is what authorizes `session_adopt`.
  */
 
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 
-/** Why a handover ran — recorded on the `session:lineage-handover` event. */
+/** Why a handover ran - recorded on the `session:lineage-handover` event. */
 export type LineageHandoverReason = "continue-fresh" | "succeeds" | "session_adopt"
 
 /** The outcome of one handover. */
@@ -56,7 +56,7 @@ export function isLiveSession(desc: Pick<SessionDescriptor, "status">): boolean 
 }
 
 /**
- * The live children of `parentId` — the sessions whose `parentSessionId` is
+ * The live children of `parentId` - the sessions whose `parentSessionId` is
  * `parentId` and that are still alive. Archived rows are included in the
  * scan (a dead-but-resumable child is still a child), but only live ones
  * are ever re-parented.
@@ -100,10 +100,10 @@ export function handoverLineage(input: {
   from: string
   /** The successor session. */
   to: string
-  /** Optional explicit child set — defaults to every live child of `from`. */
+  /** Optional explicit child set - defaults to every live child of `from`. */
   childIds?: string[]
   reason: LineageHandoverReason
-  /** Who asked for it — `"operator"` or a session id. */
+  /** Who asked for it - `"operator"` or a session id. */
   actor: string
 }): LineageHandoverOutcome {
   const { registry, from, to, reason, actor } = input
@@ -130,14 +130,14 @@ export function handoverLineage(input: {
     }
   }
   // An explicitly named child that does not exist (or is not a child of
-  // `from`) is reported as skipped too — the caller asked for it by id.
+  // `from`) is reported as skipped too - the caller asked for it by id.
   if (wanted) {
     for (const id of wanted) {
       if (outcome.adopted.includes(id) || outcome.skipped.includes(id)) continue
       outcome.skipped.push(id)
     }
   }
-  // The declared succession — persisted, and the authorization key for
+  // The declared succession - persisted, and the authorization key for
   // `session_adopt`.
   try {
     registry.setLineageSuccessor(from, to)
@@ -149,7 +149,7 @@ export function handoverLineage(input: {
   // it was spawned as its child (the `agent_start.succeeds` shape) or as a
   // root (an operator-spawned successor of a row that had a parent): the
   // replaced row is gone, so the successor takes its slot under the same
-  // grandparent — the tree does not grow a dangling edge to a dead row.
+  // grandparent - the tree does not grow a dangling edge to a dead row.
   // An explicit parent the successor already carries (neither the replaced
   // row nor absent) is left alone: that is a deliberate placement.
   try {
@@ -160,7 +160,7 @@ export function handoverLineage(input: {
       registry.reassignParent(to, replaced.parentSessionId)
     }
   } catch {
-    // No grandparent (a root replacement) — nothing to inherit.
+    // No grandparent (a root replacement) - nothing to inherit.
   }
   emitHandoverEvent(registry, outcome, reason, actor)
   return outcome
@@ -194,8 +194,8 @@ function emitHandoverEvent(
  *
  * The human operator always may. The replaced session itself may (a brain
  * handing over its own position), and so may the replaced session's OWNER
- * (the session that spawned it — the human operator's proxy in the tree).
- * A third party — notably one of the children being handed over — may NOT:
+ * (the session that spawned it - the human operator's proxy in the tree).
+ * A third party - notably one of the children being handed over - may NOT:
  * that would let any subtree seize a sibling's position.
  */
 export function checkSuccessorDeclaration(input: {
@@ -212,15 +212,15 @@ export function checkSuccessorDeclaration(input: {
     ok: false,
     message:
       `only the human operator, the replaced session itself ("${from.id}"), or the ` +
-      `session that owns it (${from.parentSessionId ?? "none — it is a root session"}) ` +
-      `may declare a successor for it — this call came from session "${callerSessionId}".`,
+      `session that owns it (${from.parentSessionId ?? "none - it is a root session"}) ` +
+      `may declare a successor for it - this call came from session "${callerSessionId}".`,
   }
 }
 
 /**
  * Who may run `session_adopt` for `from`?
  *
- * The human operator always may. The DECLARED successor of `from` may —
+ * The human operator always may. The DECLARED successor of `from` may -
  * i.e. the session recorded as `from.succeededBy` (the row that took over
  * `from`'s position). Nobody else: a child of `from` cannot adopt its
  * siblings, and an unrelated session cannot either.
@@ -240,7 +240,7 @@ export function checkAdoptAuthority(input: {
     ok: false,
     message:
       `only the human operator or the DECLARED successor of "${from.id}" ` +
-      `(${successorId ? `"${successorId}"` : "none declared"}) may adopt its children — ` +
+      `(${successorId ? `"${successorId}"` : "none declared"}) may adopt its children - ` +
       `this call came from session "${callerSessionId}".`,
   }
 }

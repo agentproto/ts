@@ -469,7 +469,7 @@ export function registerAgentTools(
       // Lineage handover (`agent_start.succeeds`): the caller declares that
       // THIS new session takes over another session's position in the spawn
       // tree. Authorized to the human operator, the replaced session itself
-      // and the session that owns it — checked BEFORE the spawn so an
+      // and the session that owns it - checked BEFORE the spawn so an
       // unauthorized declaration never creates a session.
       let succeedsFrom: SessionDescriptor | undefined
       if (rawSucceeds) {
@@ -494,7 +494,7 @@ export function registerAgentTools(
             content: [
               {
                 type: "text",
-                text: `agent_start: \`succeeds\` refused — ${gate.message}`,
+                text: `agent_start: \`succeeds\` refused - ${gate.message}`,
               },
             ],
             isError: true,
@@ -593,7 +593,7 @@ export function registerAgentTools(
         const warnings = [...(result.warnings ?? []), ...attachWarnings]
         // Lineage handover: the new session takes over the replaced row's
         // children (drive rights + `message_parent` routing follow the moved
-        // `parentSessionId` pointer). Best-effort — a failed handover rides
+        // `parentSessionId` pointer). Best-effort - a failed handover rides
         // back as a warning, it never fails the spawn.
         let lineageHandover: LineageHandoverOutcome | undefined
         if (succeedsFrom) {

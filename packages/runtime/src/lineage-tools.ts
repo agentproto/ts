@@ -1,10 +1,10 @@
 /**
- * The lineage-handover MCP verbs — the explicit half of the generic
+ * The lineage-handover MCP verbs - the explicit half of the generic
  * succession mechanism (see `lineage-handover.ts`).
  *
  * `session_adopt { childIds, from }` re-parents the named children of
  * `from` onto `from`'s DECLARED successor (the row that took over `from`'s
- * position — recorded as `from.succeededBy`). Authorized to the human
+ * position - recorded as `from.succeededBy`). Authorized to the human
  * operator and to that declared successor; nobody else.
  */
 
@@ -24,7 +24,7 @@ export interface RegisterLineageToolsOptions {
   callerSessionId?: string
 }
 
-/** Resolve a session by id (exact match only — no fuzzy lookup: an adopt
+/** Resolve a session by id (exact match only - no fuzzy lookup: an adopt
  *  must name the row explicitly). */
 function findById(registry: SessionsRegistry, id: string): SessionDescriptor | undefined {
   return registry.get(id)
@@ -38,7 +38,7 @@ export function registerLineageTools(server: McpServer, opts: RegisterLineageToo
   server.tool(
     "session_adopt",
     "Lineage handover: adopt the named CHILDREN of a replaced session onto its " +
-      "DECLARED successor — the session recorded as that row's successor (the one " +
+      "DECLARED successor - the session recorded as that row's successor (the one " +
       "that took over its place in the spawn tree, e.g. after a continue-fresh or an " +
       "`agent_start.succeeds` declaration). The adopted children's `parentSessionId` " +
       "moves, so the successor can DRIVE them (agent_prompt / agent_interrupt / " +
@@ -67,7 +67,7 @@ export function registerLineageTools(server: McpServer, opts: RegisterLineageToo
       const successorId = from.succeededBy
       if (!successorId) {
         return fail(
-          `session_adopt: session "${from.id}" has no DECLARED successor — nothing to adopt ` +
+          `session_adopt: session "${from.id}" has no DECLARED successor - nothing to adopt ` +
             "onto. Declare the succession first (agent_start { succeeds: \"" +
             from.id +
             "\" } by the operator or by the replaced session itself, or a " +
