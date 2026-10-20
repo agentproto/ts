@@ -10,7 +10,6 @@ import type { SessionDescriptor } from "../client/types.js"
 import {
   AWAITING_WITHOUT_QUESTION_TEXT,
   awaitingStatusFor,
-  hasAnswerableQuestion,
   questionOptionItems,
   questionQuickPickTitle,
   questionTooltipFor,
@@ -51,19 +50,6 @@ describe("awaitingStatusFor", () => {
     // Permission-parked sessions have their own tree and vocabulary.
     expect(awaitingStatusFor(session({ awaitingPermission: true }))).toBeUndefined()
     expect(awaitingStatusFor(session())).toBeUndefined()
-  })
-})
-
-describe("hasAnswerableQuestion", () => {
-  it("is false without options (nothing to one-click)", () => {
-    expect(hasAnswerableQuestion(session({ awaitingInput: true, awaitingQuestion: { text: "?", source: "heuristic" } }))).toBe(false)
-  })
-  it("is true with an enumerated option set", () => {
-    expect(
-      hasAnswerableQuestion(
-        session({ awaitingInput: true, awaitingQuestion: { text: "?", options: ["a", "b"], source: "structured" } }),
-      ),
-    ).toBe(true)
   })
 })
 

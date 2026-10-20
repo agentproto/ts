@@ -500,6 +500,9 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     // The no-question parked phrase, replacing an alarming read on the row.
     const parked = rowOf({ awaitingInput: true }) as WebviewRow
     expect(parked.message).toBe("idle, waiting for next prompt")
+    // A blank question text is no question: same parked phrase, never "".
+    const blank = rowOf({ awaitingInput: true, awaitingQuestion: { text: "  ", source: "heuristic" } }) as WebviewRow
+    expect(blank.message).toBe("idle, waiting for next prompt")
   })
 
   it("an ended session with an outcome shows its outcome hint instead of its last activity line", () => {

@@ -58,6 +58,10 @@ describe("sessions view menu gating", () => {
   it("a question-paused session gets the one-click answer button AND inherits every awaiting action", () => {
     const offered = sessionMenus.filter(m => admits(m.when, "session-awaiting-question")).map(m => m.command)
     expect(offered).toContain("agentproto.answerSessionQuestion")
+    const awaiting = sessionMenus
+      .filter(m => admits(m.when, "session-awaiting") && m.command !== "agentproto.answerSessionQuestion")
+      .map(m => m.command)
+    for (const command of awaiting) expect(offered).toContain(command)
     for (const contextValue of ["session-live", "session-awaiting", "session-pending"] as const) {
       expect(
         sessionMenus.filter(m => admits(m.when, contextValue)).map(m => m.command),

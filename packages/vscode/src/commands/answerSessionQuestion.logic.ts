@@ -34,14 +34,6 @@ export function awaitingStatusFor(
   return AWAITING_WITHOUT_QUESTION_TEXT
 }
 
-/** True when the row should keep the LOUD glyph (a real question or a parked
- *  permission) vs the calm parked read (`awaitingInput` with no question). */
-export function hasAnswerableQuestion(
-  session: Pick<SessionDescriptor, "awaitingInput" | "awaitingQuestion">,
-): boolean {
-  return session.awaitingInput === true && Boolean(session.awaitingQuestion?.options?.length)
-}
-
 /**
  * One clickable answer for a question — the exact string the daemon listed in
  * `options` (it is also the exact string posted through the normal prompt

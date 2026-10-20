@@ -419,12 +419,6 @@
         "icon": "$(check)"
       },
       {
-        "command": "agentproto.answerSessionQuestion",
-        "title": "agentproto: Answer Session Question",
-        "category": "agentproto",
-        "icon": "$(comment-draft)"
-      },
-      {
         "command": "agentproto.denyPermission",
         "title": "agentproto: Deny Permission",
         "category": "agentproto",

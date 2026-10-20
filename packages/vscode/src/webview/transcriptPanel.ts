@@ -4381,7 +4381,10 @@ export function buildHtml(
           if (question.source === 'heuristic') {
             qEl.appendChild(el('p', 'pmuted', '(best-effort read of the transcript — not an authoritative prompt)'));
           }
-          const answers = pause.querySelector('.panswers');
+          // The answers row can be absent: a card first rendered WITHOUT a
+          // question had its row removed below, then the daemon attached one.
+          var answers = pause.querySelector('.panswers');
+          if (!answers) { answers = el('div', 'panswers'); pause.appendChild(answers); }
           answers.innerHTML = '';
           var options = question.options || [];
           var recommended = question.recommended;
@@ -4396,7 +4399,8 @@ export function buildHtml(
                 // enumerated — send it verbatim (no prefix), like the
                 // answerSessionQuestion quick-pick and the CLI do.
                 vscode.postMessage({ type: 'send', text: option });
-                answers.disabled = true;
+                var all = answers.querySelectorAll('button');
+                for (var k = 0; k < all.length; k++) all[k].disabled = true;
               });
               answers.appendChild(btn);
             })(options[i]);
@@ -4404,8 +4408,8 @@ export function buildHtml(
           if (options.length === 0) answers.remove();
         } else {
           qEl.innerHTML = pauseQuestionHtml(chapters);
-          var answers = pause.querySelector('.panswers');
-          if (answers) answers.remove();
+          var staleAnswers = pause.querySelector('.panswers');
+          if (staleAnswers) staleAnswers.remove();
           enhanceBookBlocks(qEl);
         }
       }

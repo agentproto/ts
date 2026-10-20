@@ -821,7 +821,7 @@ function toRow(
   // an alarming read.
   const questionOverride =
     session.awaitingInput === true
-      ? session.awaitingQuestion?.text?.trim() ??
+      ? session.awaitingQuestion?.text?.trim() ||
         (session.awaitingPermission ? undefined : AWAITING_WITHOUT_QUESTION_TEXT)
       : undefined
   const message = questionOverride ?? hint?.text ?? previewTextFor(session) ?? (rowStatus === "starting" ? "booting…" : undefined)
