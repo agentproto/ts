@@ -23,6 +23,7 @@
  */
 
 import { hostname } from "node:os"
+import { CHECKPOINT_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
@@ -195,15 +196,45 @@ export async function stampFooterOnPr(input: {
       // `Agentproto-Session:` trailers on the PR's own commits keep a box
       // branch attributable after the registry forgot its session. Only box
       // sessions (or a `pr_open` on their behalf) carry them, so a plain
-      // local stamp skips the extra `gh` call. Best-effort: a failed read
-      // only loses the trailer source.
+      // local stamp has none to find. The read is unconditional: the legacy
+      // opener path (`gh pr create` run by an orchestrator on a box branch)
+      // must also see them to avoid crediting the opener. Best-effort: a
+      // failed read only loses the trailer source.
       let trailerIds: string[] = []
-      if (input.session.sandboxDeliveryTarget || input.openedBy) {
+      try {
         const commits = await run(
           ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
           input.cwd,
         )
         if (commits.exitCode === 0) trailerIds = sessionIdsFromTrailers(commits.stdout)
+      } catch {
+        // swallow — trailers are an optional attribution source
+      }
+      // Second source: the snapshot commit `sandbox-delivery.ts` stamps with
+      // the trailer is force-pushed to `agentproto-checkpoint/<branch>`, NOT
+      // onto the work branch the PR opens from — so read the checkpoint
+      // branch's head message too. Absent for a clean checkout / local
+      // session; best-effort like the read above.
+      const workBranch = input.session.sandboxDeliveryTarget?.branch
+      if (workBranch) {
+        try {
+          const checkpoint = await run(
+            [
+              "api",
+              `repos/{owner}/{repo}/commits/${CHECKPOINT_BRANCH_PREFIX}${workBranch}`,
+              "--jq",
+              ".commit.message",
+            ],
+            input.cwd,
+          )
+          if (checkpoint.exitCode === 0) {
+            for (const id of sessionIdsFromTrailers(checkpoint.stdout)) {
+              if (!trailerIds.includes(id)) trailerIds.push(id)
+            }
+          }
+        } catch {
+          // swallow — optional attribution source
+        }
       }
       authors = collectBranchAuthors(
         input.registry.list(),

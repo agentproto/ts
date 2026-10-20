@@ -531,7 +531,7 @@ export function registerCommandTools(
     {
       ...sessionRefSchema(z),
       title: z.string().min(1).describe("PR title."),
-      body: z.string().describe("PR description body."),
+      body: z.string().min(1).describe("PR description body."),
     },
     async input => {
       const ref = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
