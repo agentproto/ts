@@ -3,6 +3,128 @@
 Status: **design — docs only, no code landed yet.**
 Scope: agentproto daemon (`packages/runtime`), English docs.
 
+---
+
+## Existing (field survey)
+
+Three hook mechanisms already run today, in three different places. This
+design is deliberately made of their reusable parts, and of no new
+vocabulary.
+
+### 1. Simone's tool hooks (Mastra) — the in-the-loop pattern
+
+> **Note on sources:** the `agentik-studio` repo (which hosts Simone) is
+> private — `git clone --depth 1` fails with `Repository not found` for the
+> token this session runs with, so **we could not read our own code here**.
+> The description below is reconstructed from Mastra's public docs
+> (mastra.ai, `Agent.hooks`, "@mastra/core ≥ 1.49", tool hooks shipped
+> 2026-07, PR #17637); anything Simone does locally and invisibly in those
+> docs must be re-verified by someone with read access.
+
+Mastra gives an agent-level two-point hook around **every** tool call the
+agent makes (assigned tools, memory tools, toolsets, client tools, workspace
+tools alike):
+
+- `beforeToolCall({ toolName, input, context, metadata })` runs just before
+  the tool executes; it can return `{ proceed: false, output }` to **skip
+  the call entirely** and hand the agent a synthetic result — that is a
+  *gate*.
+- `afterToolCall({ toolName, input, output, error })` runs after the call,
+  success or failure, and cannot alter the outcome (errors are re-thrown
+  after it runs).
+- Tool-level hooks (`onInputStart` / `onInputDelta` / `onInputAvailable` /
+  `onOutput`) observe streaming stages; per-execution hooks passed to
+  `generate()` / `stream()` override agent-level hooks per key.
+
+**What we reuse:** the *two points* (before / after a tool call) and the
+never-fail-the-loop posture. The event shapes map cleanly onto our
+`ToolHookEvent` (`toolName`/`input` → `on`/`args`, `output` → `$result`).
+
+**What we do NOT reuse:** the placement. Mastra's hooks live *inside the
+agent loop* of one adapter (one `Agent` instance — the shape Simone would
+plug into). Our hooks must live **below any adapter, at the daemon's MCP
+server surface**: one implementation covers opencode, Mastra, Claude Code
+and any other client, and enrichment output routes through the *daemon's*
+session objects (prompt queue, inbox slices, task meta), which an in-loop
+hook cannot reach. So: pattern yes, seam no — the same before/after shape is
+threaded through the registration-time server proxy (`withToolHooks`, §1
+and §9.1) instead.
+
+### 2. Claude Code native hooks — PreToolUse / PostToolUse
+
+Claude Code fires `PreToolUse` **before** the agent invokes a tool (it can
+block the operation, require approval, or modify the tool input) and
+`PostToolUse` **after** the tool completes successfully (formatters,
+logging, follow-up actions). Hooks are declared declaratively in settings
+(`hooks: { PreToolUse: [{ type: "command", command: "…" }] }`), and each
+hook process receives a JSON payload on stdin (`timestamp`, `cwd`,
+`tool_name`, tool input…) — shell commands run by the client, synchronously,
+per matching tool. Other hook points (`PreCompact`, …) cover session
+lifecycle rather than tool calls.
+
+**What we reuse:**
+
+- the **declarative config posture**: our `hooks` block in
+  `~/.agentproto/config.json` (§2.7) is the same "declare matchers, the host
+  runs the logic" arrangement, with per-hook `enabled` and a hot kill
+  switch matching Claude Code's toggleable hooks;
+- the **matcher shape**: "this tool name / this input area" is the degenerate
+  form of our `match` spec (AIP-60 clause shape, §2.2) — strictly more
+  expressive;
+- the **out-of-band delivery stance**: Claude Code's `PostToolUse` output
+  reaches the model without being asked for — the same route our three
+  `deliver` arms (§2.5) formalize as queue / context-slice / meta.
+
+**What we do NOT reuse:** the execution model. Claude Code hooks are user
+scripts run per-tool, synchronously, able to block or rewrite input — exactly
+the AIP-40 sandbox problem (§8: user-authored code waits for a sibling AIP).
+v1 hooks are config entries whose `run` names a daemon-bundled enricher; no
+third-party script runs, and the only blocking is the bounded `sync` mode
+(§2.4).
+
+### 3. This daemon's own policies and gates — policy_attach
+
+`policy_attach` / `policy_status` / `policy_list` / `policy_cancel`
+(`packages/runtime/src/orchestration-tools.ts`, documented in
+`docs/cli/verbs/policy.md`) are the daemon's existing gate system: a
+completion policy attached to one or several sessions, with a gate that is
+either a **shell check** (exit 0 = pass) or a **judge agent**, `onFail`
+nudge+retry, subtree-scoped targets, and `policy:passed` / `policy:failed`
+events on the session event bus.
+
+Reading it against this design:
+
+- the gate fires at **turn end** and blocks there — deliberately *not* the
+  seam for enrichment (§0's row three; §1's verdict row reaches the same
+  conclusion from the other side);
+- it targets a session or subtree, never a tool call, and has no
+  run-then-deliver-elsewhere concept.
+
+**What we reuse:**
+
+- the **judge-gate form** as the precedent for "one model pass producing a
+  bounded verdict" — our optional summary step (§3.2 step 7) is the same
+  animal without the verdict semantics;
+- the **event pair** (`policy:passed`/`policy:failed`) as the model for
+  `hook:ran` / `hook:skipped` (§4-R8) — same bus, same best-effort contract;
+- the **opt-in, config-block, off-by-default** posture that `policy_attach`
+  shares with `titler` (§1).
+
+**What we do NOT reuse:** the blocking contract and turn-end timing. A hook
+never holds a turn (R1) and never ends it (R2-R3): a failing hook is skipped
+and logged, never retried and never escalated.
+
+### What we reuse — one sentence
+
+From the field: the before/after two-point shape (Mastra/Simone), the
+declarative-config + matcher shape (Claude Code, hardened into AIP-60
+clauses), and the event-pair observability + judge-pass + opt-in-config
+shape (this daemon's policies). None of the in-context execution models, and
+no blocking contract. The internal primitives these shapes thread into are
+listed in §1.
+
+---
+
 ## 0. The problem this solves
 
 An orchestrator (the Pygmalion brain) delegates work to agents without first
