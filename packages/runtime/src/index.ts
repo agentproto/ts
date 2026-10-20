@@ -388,6 +388,34 @@ export {
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
+// AIP-68 clerk hook — the turn-end subscriber + its configuration
+// resolution (three levels: agent > workspace > daemon default).
+export {
+  createClerkTurnEndController,
+  type ClerkTurnEndController,
+  type ClerkTurnEndControllerOptions,
+  type ClerkPassInput,
+  type ClerkSessionLike,
+} from "./clerk-turn-end.js"
+export { createClerkPassRunner, spawnClerkCommand } from "./clerk-pass-runner.js"
+export {
+  CLERK_HOOK_DEFAULTS,
+  CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
+  CLERK_HOOK_EVENTS,
+  clerkHookInputSchema,
+  clerkHooksInputSchema,
+  loadDaemonClerkHook,
+  loadWorkspaceClerkHook,
+  mergeClerkHookLevels,
+  parseAgentClerkHook,
+  parseClerkHookLevel,
+  resolveClerkHookConfig,
+  type ClerkHookConfig,
+  type ClerkHookEvent,
+  type ClerkHookRun,
+  type ClerkHookSource,
+  type ResolvedClerkHookConfig,
+} from "./clerk-hook-config.js"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,

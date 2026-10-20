@@ -256,6 +256,14 @@ export function resolveClerkHookConfig(input: {
 
 const HOOKS_CONFIG_REL = ".agentproto/hooks.json"
 
+interface WorkspaceHookCacheEntry {
+  path: string
+  mtimeMs: number
+  level: Partial<ClerkHookConfig>
+}
+
+let workspaceHookCache: WorkspaceHookCacheEntry | null = null
+
 /**
  * Read the WORKSPACE level out of `<workspace>/.agentproto/hooks.json`.
  *
@@ -270,13 +278,21 @@ export function loadWorkspaceClerkHook(workspace: string): Partial<ClerkHookConf
   const path = resolve(workspace, HOOKS_CONFIG_REL)
   if (!existsSync(path)) return {}
   try {
+    // mtime-keyed cache, the same cheap pattern `hooks-config.ts` uses for
+    // the rules: one `stat` per call, a re-read only when the file changed.
+    const stat = statSync(path)
+    if (workspaceHookCache && workspaceHookCache.path === path && workspaceHookCache.mtimeMs === stat.mtimeMs) {
+      return workspaceHookCache.level
+    }
     const raw = JSON.parse(readFileSync(path, "utf8")) as unknown
     if (!isRecord(raw)) return {}
     const hooks = raw.hooks
     if (!isRecord(hooks)) return {}
     const generic = parseClerkHookLevel(hooks)
     const named = isRecord(hooks.clerk) ? parseClerkHookLevel(hooks.clerk) : {}
-    return mergePartialLevels(generic, named)
+    const level = mergePartialLevels(generic, named)
+    workspaceHookCache = { path, mtimeMs: stat.mtimeMs, level }
+    return level
   } catch (err) {
     console.error(`[runtime] failed to read ${HOOKS_CONFIG_REL} (clerk hook ignored):`, err)
     return {}
