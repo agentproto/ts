@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION, DISK_GUARD_PROBE_TIMEOUT_MS, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION, DISK_GUARD_PROBE_TIMEOUT_MS, RESCUE_BRANCH_PREFIX, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, rescueWarranted, runRescuePush, type SandboxCheckpointerRunOpts, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
@@ -157,6 +157,14 @@ async function* harvestHostErrorNotice(
     .filter(l => l.length > 0 && HOST_ERROR_LINE_RE.test(l))
   if (lines.length === 0) return
   yield { kind: "notice", text: lines.join("\n") }
+}
+
+/** `runRescuePush`'s shape — the rescue branch a host-side rescue pushed to,
+ *  when the outcome object carries one. */
+function rescueBranchOfOutcome(outcome: unknown): string | undefined {
+  if (outcome === null || typeof outcome !== "object") return undefined
+  const branch = (outcome as { rescueBranch?: unknown }).rescueBranch
+  return typeof branch === "string" && branch.length > 0 ? branch : undefined
 }
 
 /** Whether a checkpoint outcome proves the box's work is safe outside the box:
@@ -315,10 +323,18 @@ export interface SandboxAgentSessionProxyOpts {
    *  ["turn-end"]`. Both can be off: the watchdog/deadline/idle-reap
    *  safety nets still checkpoint. */
   checkpoint?: {
-    run: (turn?: number, opts?: { force?: boolean }) => Promise<unknown>
+    run: (turn?: number, opts?: SandboxCheckpointerRunOpts) => Promise<unknown>
     intervalMs?: number
     periodic?: boolean
     onTurnEnd?: boolean
+    /** HOST-SIDE RESCUE push for a wedged session — see
+     *  `runRescuePush`. Called by the disk guard when a forced checkpoint
+     *  FAILED to secure the box's work (a full disk / a session wedged
+     *  beyond interrupt): one `sandbox exec` that `git add -A` + `commit
+     *  --no-verify` + force-pushes the whole checkout state to a
+     *  `rescue/<session>` branch. `sessionId` is the session id the rescue
+     *  branch is named after. */
+    rescue?: (sessionId: string) => Promise<unknown>
   }
   /** DISK GUARD — told when the box's free disk drops under
    *  `DISK_GUARD_MIN_FREE_FRACTION` (10%) on a periodic tick, right before
@@ -771,10 +787,30 @@ export function createSandboxAgentSessionProxy(
     deadlineTimer.unref?.()
   }
 
+  /** Safety margin a deadline-near checkpoint must finish BEFORE: the
+   *  checkpoint's budget is capped at (deadline - now - margin) so the run
+   *  never outlives the box ("sandbox not found" at the end-of-turn
+   *  checkpoint — observed 2026-10-20 on e2b, where a session whose box
+   *  hit the provider's reaper mid-turn lost the periodic checkpoint's
+   *  pushes). The guard itself fires `BOX_DEADLINE_GUARD_LEAD_MS` early;
+   *  this margin simply guarantees the incompletable case.
+   *  ({@link runCheckpoint}'s `deadlineMs`.) */
+  const BOX_DEADLINE_CHECKPOINT_MARGIN_MS = 90_000
+
   async function onDeadlineNear(): Promise<void> {
     deadlineTimer = undefined
     if (closed || detached) return
-    if (activeTurns > 0 && host.extendTimeout) {
+    // While a turn is in flight the box MUST outlive the deadline: retry
+    // the renewal (spaced, bounded) until it lands or the deadline truly
+    // passes — a single failed renewal used to fall straight through to
+    // the final-checkpoint branch, which then raced the provider's reaper
+    // and lost every push. Retries stay inside the remaining lifetime.
+    let renewals = 0
+    while (activeTurns > 0 && host.extendTimeout && !closed && !detached) {
+      const remaining = (nextDeadlineAt ?? 0) - Date.now()
+      if (remaining <= 0) break
+      renewals++
+      if (renewals > 5) break
       const now = Date.now()
       try {
         await host.extendTimeout(boxLifetimeMs)
@@ -783,14 +819,32 @@ export function createSandboxAgentSessionProxy(
         return
       } catch (err) {
         console.warn("[sandbox-proxy] failed to renew box lifetime before its deadline:", err)
+        await new Promise(resolve => setTimeout(resolve, Math.min(30_000, Math.max(0, remaining / 4))))
       }
     }
     if (closed || detached || !opts.checkpoint) return
+    // BOUND the final checkpoint to the time actually left before the
+    // deadline (minus a safety margin): a run budgeted past the deadline
+    // finishes after the provider has reaped the box, and its pushes
+    // fail with "sandbox not found" — possibly AFTER the periodic tick
+    // that would have pushed earlier never got a chance to run.
+    const deadlineAt = nextDeadlineAt
+    const cap =
+      deadlineAt !== undefined
+        ? deadlineAt - Date.now() - BOX_DEADLINE_CHECKPOINT_MARGIN_MS
+        : DEFAULT_CHECKPOINT_DEADLINE_MS
+    const bounded = Math.min(DEFAULT_CHECKPOINT_DEADLINE_MS, cap)
     console.warn(
       `[sandbox-proxy] box for remote session "${remoteSessionId}" reaches its lifetime deadline ` +
-        "without a renewal — running a final checkpoint while it is still reachable",
+        (activeTurns > 0 && renewals > 5 && host.extendTimeout
+          ? "without a further renewal — "
+          : "without a renewal — ") +
+        (bounded > 0
+          ? "running a final checkpoint, bounded to the remaining lifetime"
+          : "— past its checkpointable window (deadline sooner than the margin): SKIPPING the final checkpoint"),
     )
-    await runCheckpoint(turnsSent)
+    if (bounded <= 0) return
+    await runCheckpoint(turnsSent, { deadlineMs: bounded })
   }
 
   /** BOX-LOGIN BRIDGE — re-upload the box's login copy because this session
@@ -948,7 +1002,7 @@ export function createSandboxAgentSessionProxy(
   // `force` bypasses the unchanged-since-last checkpoint skip — the disk
   // guard's escape hatch (see `checkDiskSpace`); it runs alongside any
   // in-flight coalesced run rather than joining it.
-  const runCheckpoint = (turn?: number, forceOpts?: { force?: boolean }): Promise<unknown> => {
+  const runCheckpoint = (turn?: number, forceOpts?: SandboxCheckpointerRunOpts): Promise<unknown> => {
     if (!opts.checkpoint) return Promise.resolve()
     if (checkpointInFlight && !forceOpts?.force) return checkpointInFlight
     checkpointInFlight = opts.checkpoint
@@ -992,7 +1046,39 @@ export function createSandboxAgentSessionProxy(
   const periodicTick = async (): Promise<void> => {
     const force = await checkDiskSpace()
     if (closed || detached) return
-    await runCheckpoint(turnsSent, force ? { force: true } : undefined).catch(() => undefined)
+    const record = await runCheckpoint(turnsSent, force ? { force: true } : undefined).catch(
+      () => undefined,
+    )
+    if (closed || detached) return
+    // LOW-DISK RESCUE: the forced checkpoint did NOT secure the box's work
+    // (a full disk wedges the session ENOSPC-side, and the tar/push probes
+    // themselves failed). A wedged session never settles after interrupt —
+    // no turn-end, no teardown hook — so the last copy is taken HOST-side:
+    // one `sandbox exec` that `git add -A` + `commit --no-verify`s and
+    // force-pushes the checkout to a `rescue/<session>` branch. Never
+    // throws and never blocks the tick.
+    if (!force || !rescueWarranted(record)) return
+    const rescue = opts.checkpoint?.rescue
+    if (!rescue) return
+    console.warn(
+      `[sandbox-proxy] remote session "${remoteSessionId}": the low-disk checkpoint did not secure the ` +
+        "box's work — running a host-side rescue push",
+    )
+    try {
+      const outcome = await rescue(remoteSessionId)
+      const rescued = rescueBranchOfOutcome(outcome)
+      try {
+        opts.onWarning?.(
+          `[sandbox] the low-disk checkpoint could not secure the box's work${
+            rescued ? ` — rescued on branch ${rescued}` : " — the rescue push also failed"
+          }`,
+        )
+      } catch {
+        // a listener's failure is its own
+      }
+    } catch (err) {
+      console.warn("[sandbox-proxy] host-side rescue push failed:", err)
+    }
   }
   // DISK GUARD — read the box's free disk; under DISK_GUARD_MIN_FREE_FRACTION
   // warn (through `onWarning`) and tell the caller to FORCE the checkpoint.
@@ -1099,6 +1185,19 @@ export function createSandboxAgentSessionProxy(
               // a listener's failure is its own
             }
           }
+          // SESSION-DEATH RELEASE — the work was just checkpointed (and is
+          // therefore pushed/bundled); the box must REALLY go away: leaving
+          // it (e2b bills it; the computer provider's suspend holds its
+          // RAM snapshot) exhausts the host's capacity until `sandbox gc`
+          // can no longer even answer (`capacity exhausted (available
+          // 511)`, 2026-10-20). The registry has already been told (the
+          // listeners above); a restart of this session boots a FRESH box
+          // from the checkpoints, so nothing is lost by freeing this one.
+          try {
+            await deathReleaser?.close({ deathRelease: true })
+          } catch (err) {
+            console.warn("[sandbox-proxy] failed to release the box after its session died:", err)
+          }
         } finally {
           probing = false
         }
@@ -1147,6 +1246,11 @@ export function createSandboxAgentSessionProxy(
     await parkIfDetached()
     yield* consumeTurn(isFirstTurn, since)
   }
+
+  /** Holder for the death-release path above: the watchdog callback runs
+   *  asynchronously, well after `proxy` below is created, but TS still
+   *  needs a definitely-assigned reference — assigned right after. */
+  let deathReleaser: { close(closeOpts?: { daemonShutdown?: boolean; idleReap?: { idleMs: number; sessionId?: string }; deathRelease?: boolean }): Promise<void> } | undefined
 
   const proxy: AgentSessionLike = {
     sessionId: remoteSessionId,
@@ -1197,6 +1301,16 @@ export function createSandboxAgentSessionProxy(
     async close(closeOpts?: {
       daemonShutdown?: boolean
       idleReap?: { idleMs: number; sessionId?: string }
+      /**
+       * SESSION-DEATH release: the session itself died (crashed, killed,
+       * errored) and the watchdog declared the box dead. The work was just
+       * delivered/rescued; the box must be REALLY released — a paused
+       * (RAM-held) box for a dead session is exactly the leak that later
+       * answers every boot with "capacity exhausted (available 511)"
+       * (computer provider, 2026-10-20), and even a dead e2b box keeps
+       * billing. Forces teardown to KILL/STOP, never pause.
+       */
+      deathRelease?: boolean
     }): Promise<void> {
       if (closed) return
       closed = true
@@ -1239,7 +1353,10 @@ export function createSandboxAgentSessionProxy(
       // revival re-attaches the paused box.
       const keepBoxForRecovery = closeOpts?.idleReap !== undefined && !workSecured
       const pauseFn =
-        lifecyclePolicy?.teardown === "pause" || keepBoxForRecovery ? host.pause : undefined
+        (lifecyclePolicy?.teardown === "pause" && closeOpts?.deathRelease !== true) ||
+        keepBoxForRecovery
+          ? host.pause
+          : undefined
       const pauseTeardown = pauseFn !== undefined
       // AIP-36 shared-box amendment — teardown = DETACH first, destroy last:
       // only the LAST live session to close() tears the box down (stop/pause
@@ -1328,6 +1445,7 @@ export function createSandboxAgentSessionProxy(
     },
   }
 
+  deathReleaser = proxy
   if (!opts.detachable) return proxy
 
   const record = (): SandboxDetachRecord => ({ remoteSessionId, transcriptSeq: transcriptCursor })

@@ -114,6 +114,95 @@ export type DeliveryPushStatus = "pushed" | "skipped" | "failed"
 export type DeliveryBundleStatus = "saved" | "skipped" | "failed"
 export type DeliveryMode = "delivery" | "checkpoint"
 
+/** DISK-FULL / WEDGED-SESSION RESCUE — remote branch namespace the rescue
+ *  push carries everything to: `rescue/<session>` (or
+ *  `rescue/<sandboxId>-<session>` when a caller disambiguates). Distinct
+ *  from the checkpoint namespace: a rescue is a LAST-resort copy of the
+ *  whole checkout state, never the branch a restart would fast-forward. */
+export const RESCUE_BRANCH_PREFIX = "rescue/"
+
+/**
+ * The host-side rescue push for a wedged session (`run$ not needed): one
+ * exec into the box that stages EVERYTHING, commits it with hooks disabled
+ * (a full-disk box cannot run hook scripts; the commit may be empty — the
+ * push then carries the branch's commits alone) and force-pushes it to the
+ * rescue branch. Every step tolerates failure except the final push, whose
+ * exit code is the result — a rescue that cannot push reports `failed`
+ * and the caller still reports the delivery record's own outcome.
+ */
+export function buildRescuePushCommand(target: SandboxDeliveryTarget, rescueBranch: string): string {
+  const message = shellQuote(`agentproto rescue: state of ${target.branch} before the box went away`)
+  return (
+    `cd ${shellQuote(target.checkoutDir)} && ` +
+    `git add -A && ` +
+    `{ git commit --no-verify -m ${message} || ` +
+    `echo ${RESCUE_NOTHING_TO_COMMIT_MARKER}: $?; } && ` +
+    `git push --no-verify origin ${shellQuote(`HEAD:refs/heads/${rescueBranch}`)}`
+  )
+}
+
+/** Marker {@link buildRescuePushCommand} prints when `git commit` found
+ *  nothing to commit — expected during a rescue, never a failure. */
+export const RESCUE_NOTHING_TO_COMMIT_MARKER = "rescue-nothing-to-commit"
+
+export interface SandboxRescueRecord {
+  at: string
+  branch: string
+  /** `rescue/<session>` */
+  rescueBranch: string
+  status: "pushed" | "failed"
+  detail?: string
+}
+
+/**
+ * Run {@link buildRescuePushCommand} through `exec` and classify the result.
+ * Never throws: the outcome is the record, and a failed rescue must not
+ * hide whatever the delivery/checkpoint record before it said.
+ */
+export async function runRescuePush(input: {
+  exec: SandboxExec
+  target: SandboxDeliveryTarget
+  rescueBranch?: string
+  now?: () => Date
+}): Promise<SandboxRescueRecord> {
+  const rescueBranch = input.rescueBranch ?? `${RESCUE_BRANCH_PREFIX}${input.target.branch}`
+  const record: SandboxRescueRecord = {
+    at: (input.now?.() ?? new Date()).toISOString(),
+    branch: input.target.branch,
+    rescueBranch,
+    status: "pushed",
+  }
+  let result
+  try {
+    result = await input.exec({
+      command: buildRescuePushCommand(input.target, rescueBranch),
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      timeoutMs: PUSH_TIMEOUT_MS,
+    })
+  } catch (err) {
+    return { ...record, status: "failed", detail: errorText(err) }
+  }
+  if (result.exitCode !== 0) {
+    return { ...record, status: "failed", detail: describeExecFailure(result) }
+  }
+  return record
+}
+
+/**
+ * Whether a delivery record left work stranded — the low-disk disk guard's
+ * trigger for the host-side rescue push. `undefined` (the checkpoint never
+ * ran / fully failed) counts as stranded; `unchanged` never does (the work
+ * was already fully delivered earlier); anything else is judged by
+ * {@link isFullyDelivered}.
+ */
+export function rescueWarranted(record: unknown): boolean {
+  if (record === undefined || record === null) return true
+  if (typeof record !== "object") return true
+  const rec = record as SandboxDeliveryRecord
+  if (rec.unchanged === true) return false
+  return !isFullyDelivered(rec)
+}
+
 export interface SandboxDeliveryRecord {
   at: string
   branch: string
@@ -620,15 +709,29 @@ export function isFullyDelivered(record: SandboxDeliveryRecord): boolean {
   return (commitsSafe && snapshotSafe) || record.bundle.status === "saved"
 }
 
+export interface SandboxCheckpointerRunOpts {
+  /** Bypass the unchanged-since-last-checkpoint skip (the disk guard's
+   *  escape hatch: a full disk is exactly the moment a "nothing new" answer
+   *  must not be trusted). */
+  force?: boolean
+  /** Per-run wall-clock budget (ms) for this checkpoint, overriding the
+   *  checkpointer's configured `timeoutMs`. A checkpoint run as the box's
+   *  lifetime deadline approaches MUST be bounded by the time actually
+   *  left: a run budgeted past the deadline finishes AFTER the provider
+   *  has reaped the box ("sandbox not found" — sess 20/10/2026, E2B), so
+   *  the caller caps it to the remaining lifetime minus a safety margin. */
+  deadlineMs?: number
+}
+
 export interface SandboxCheckpointer {
   /** Take one checkpoint now. Concurrent calls share the in-flight run.
    *  `turn`, when given, is stamped onto the record and the snapshot commit
    *  message (see {@link SandboxDeliveryRecord.turn}) — a coalesced call
    *  (one already in flight) keeps whichever turn number started IT, not
-   *  the caller's. `opts.force` bypasses the unchanged-since-last-checkpoint
-   *  skip (the disk guard's escape hatch: a full disk is exactly the moment
-   *  a "nothing new" answer must not be trusted). */
-  run(turn?: number, opts?: { force?: boolean }): Promise<SandboxDeliveryRecord>
+   *  the caller's.
+   *  `opts.force` bypasses the unchanged-since-last-checkpoint skip.
+   *  `opts.deadlineMs` caps THIS run (`SandboxCheckpointerRunOpts.deadlineMs`). */
+  run(turn?: number, opts?: SandboxCheckpointerRunOpts): Promise<SandboxDeliveryRecord>
 }
 
 /**
@@ -663,6 +766,7 @@ export function createSandboxCheckpointer(
           ...run,
           mode: "checkpoint",
           checkpointPushed,
+          ...(opts?.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}),
           ...(opts?.force ? {} : lastKey !== undefined ? { previousKey: lastKey } : {}),
           ...(turn !== undefined ? { turn } : {}),
         })
@@ -870,7 +974,7 @@ export function sandboxCheckpointOpts(
   config: ResolvedSandboxCheckpointConfig,
 ): {
   checkpoint?: {
-    run: (turn?: number, opts?: { force?: boolean }) => Promise<SandboxDeliveryRecord>
+    run: (turn?: number, opts?: SandboxCheckpointerRunOpts) => Promise<SandboxDeliveryRecord>
     intervalMs: number
     /** Whether the proxy runs the periodic timer (`config.onInterval`) —
      *  false leaves the per-turn hook as the only trigger. */
@@ -922,10 +1026,15 @@ export function trackedSandboxDeliveryOpts(input: {
 }): {
   onBeforeTeardown: () => Promise<void>
   checkpoint?: {
-    run: (turn?: number, opts?: { force?: boolean }) => Promise<unknown>
+    run: (turn?: number, opts?: SandboxCheckpointerRunOpts) => Promise<unknown>
     intervalMs: number
     periodic: boolean
     onTurnEnd: boolean
+    /** Host-side rescue push (`runRescuePush`) into the CURRENT learned
+     *  target's checkout, force-pushed to `rescue/<sessionId>` — the disk
+     *  guard's wedged-session escape hatch; see
+     *  {@link SandboxAgentSessionProxyOpts.checkpoint.rescue}. */
+    rescue: (sessionId: string) => Promise<unknown>
   }
 } {
   let target = input.target
@@ -976,6 +1085,18 @@ export function trackedSandboxDeliveryOpts(input: {
       run: async (turn, opts) => {
         await learn()
         return checkpoint!.run(turn, opts)
+      },
+      // The rescue runs against the CURRENT target (the branch the agent
+      // actually switched to) — executed through `exec` into the box, so it
+      // works exactly while the box's filesystem is still reachable, even
+      // when the agent session (and thus every in-agent checkpoint probe)
+      // is wedged.
+      rescue: (sessionId: string) => {
+        return runRescuePush({
+          exec: input.exec,
+          target: { ...target },
+          rescueBranch: `${RESCUE_BRANCH_PREFIX}${sessionId}`,
+        })
       },
     },
   }
