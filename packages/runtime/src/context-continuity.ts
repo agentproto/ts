@@ -27,6 +27,60 @@
  */
 export type ContextContinuityMode = "manual" | "ask" | "auto"
 
+/**
+ * `idleCompact` mode (AIP-46 amendment §Context continuity and idle
+ * compaction). `off` (default) arms nothing and changes no payload;
+ * `auto` performs the configured action when the timer fires; `ask`
+ * only surfaces a structured question and mutates nothing until the
+ * operator answers.
+ */
+export type ContextContinuityIdleCompactMode = "off" | "ask" | "auto"
+
+/** What an idle-compact timer performs when it fires under `mode:"auto"`. */
+export type ContextContinuityIdleCompactAction = "compact" | "continue-fresh"
+
+/** `coldWakeGuard` mode. Same vocabulary and defaults as `idleCompact`. */
+export type ContextContinuityColdWakeMode = "off" | "ask" | "auto"
+
+/**
+ * User-supplied `idleCompact` block. Whole-object precedence: the most
+ * specific config level providing this object wins as a whole — its
+ * absent fields fall back to {@link IDLE_COMPACT_DEFAULTS}, never to
+ * another level's block.
+ */
+export interface ContextContinuityIdleCompact {
+  /** Default `"off"`. */
+  mode?: ContextContinuityIdleCompactMode
+  /** Arm only above this context percentage. Integer [0, 100]. Default 50. */
+  atPct?: number
+  /** Arm this long before `cacheWarmUntil`. Default 60_000 ms. */
+  beforeCacheExpiryMs?: number
+  /** What the timer performs. Default `"compact"`. */
+  action?: ContextContinuityIdleCompactAction
+}
+
+/** User-supplied `coldWakeGuard` block — same whole-object precedence. */
+export interface ContextContinuityColdWakeGuard {
+  /** Default `"off"`. */
+  mode?: ContextContinuityColdWakeMode
+  /** Guard only above this context percentage. Integer [0, 100]. Default 75. */
+  atPct?: number
+}
+
+/** Fully-resolved `idleCompact` (only present on the policy when configured). */
+export interface ResolvedContextContinuityIdleCompact {
+  mode: ContextContinuityIdleCompactMode
+  atPct: number
+  beforeCacheExpiryMs: number
+  action: ContextContinuityIdleCompactAction
+}
+
+/** Fully-resolved `coldWakeGuard` (only present when configured). */
+export interface ResolvedContextContinuityColdWakeGuard {
+  mode: ContextContinuityColdWakeMode
+  atPct: number
+}
+
 export interface ContextContinuityThresholds {
   /** Percentage at which the UI first warns that context is filling. */
   warnAtPct: number
@@ -84,6 +138,12 @@ export interface ContextContinuityPolicy
    *  (`runtime:context-rescue`) never asks. Unchanged explicit handoffs
    *  (`session_checkpoint`, `session_continue_fresh`) still ask. */
   compactHandoffTurn?: boolean
+  /** Idle-cache care block — see {@link ContextContinuityIdleCompact}.
+   *  Unset = `mode:"off"`. */
+  idleCompact?: ContextContinuityIdleCompact
+  /** Cold-wake guard block — see {@link ContextContinuityColdWakeGuard}.
+   *  Unset = `mode:"off"`. */
+  coldWakeGuard?: ContextContinuityColdWakeGuard
 }
 
 /**
@@ -102,6 +162,33 @@ export interface ResolvedContextContinuityPolicy
   compactRequiresOperator?: boolean
   /** See {@link ContextContinuityPolicy.compactHandoffTurn}. */
   compactHandoffTurn?: boolean
+  /** Resolved `idleCompact`, present only when a config level supplied the
+   *  block — an unconfigured host keeps byte-identical payloads (the block
+   *  defaults to `mode:"off"`; use {@link effectiveIdleCompact} to read it). */
+  idleCompact?: ResolvedContextContinuityIdleCompact
+  /** Resolved `coldWakeGuard`, present only when configured — same rule. */
+  coldWakeGuard?: ResolvedContextContinuityColdWakeGuard
+}
+
+/**
+ * Prompt-cache TTL used when the adapter's AIP-45 manifest does not declare
+ * `metadata.promptCacheTtlMs` — 5 minutes, "the conservative floor every
+ * adapter at least matches" (AIP-46 amendment §Descriptor fields).
+ */
+export const IDLE_COMPACT_DEFAULT_CACHE_TTL_MS = 300_000
+
+/** Defaults for an `idleCompact` block that was supplied but omits fields. */
+export const IDLE_COMPACT_DEFAULTS: ResolvedContextContinuityIdleCompact = {
+  mode: "off",
+  atPct: 50,
+  beforeCacheExpiryMs: 60_000,
+  action: "compact",
+}
+
+/** Defaults for a `coldWakeGuard` block that was supplied but omits fields. */
+export const COLD_WAKE_GUARD_DEFAULTS: ResolvedContextContinuityColdWakeGuard = {
+  mode: "off",
+  atPct: 75,
 }
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
@@ -138,6 +225,12 @@ export interface ContextContinuityStatus {
   nextAction: ContextContinuityNextAction
   /** Distance to the next threshold in percentage points (null if unknown). */
   nextThresholdDelta: number | null
+  /** ISO timestamp of the moment the last turn ended (observability —
+   *  AIP-46 §Observability). Absent until a turn has ended. */
+  lastTurnEndAt?: string
+  /** ISO timestamp when the prompt cache lapses. Absent until a turn has
+   *  ended. */
+  cacheWarmUntil?: string
 }
 
 export type ContextContinuityState =
@@ -161,6 +254,94 @@ export type ContextContinuityValidationResult =
 
 function isIntInRange(n: number, min: number, max: number): boolean {
   return Number.isInteger(n) && n >= min && n <= max
+}
+
+/** Validate an `idleCompact` block fragment (integers, enums, non-negative ms). */
+export function validateContextContinuityIdleCompact(
+  b: ContextContinuityIdleCompact,
+): ContextContinuityValidationResult {
+  if (b.mode !== undefined && b.mode !== "off" && b.mode !== "ask" && b.mode !== "auto") {
+    return { ok: false, reason: `idleCompact.mode must be "off" | "ask" | "auto", got ${b.mode}` }
+  }
+  if (b.atPct !== undefined && !isIntInRange(b.atPct, 0, 100)) {
+    return { ok: false, reason: `idleCompact.atPct must be an integer between 0 and 100, got ${b.atPct}` }
+  }
+  if (
+    b.beforeCacheExpiryMs !== undefined &&
+    !(Number.isFinite(b.beforeCacheExpiryMs) && b.beforeCacheExpiryMs >= 0)
+  ) {
+    return {
+      ok: false,
+      reason: `idleCompact.beforeCacheExpiryMs must be a number >= 0, got ${b.beforeCacheExpiryMs}`,
+    }
+  }
+  if (b.action !== undefined && b.action !== "compact" && b.action !== "continue-fresh") {
+    return {
+      ok: false,
+      reason: `idleCompact.action must be "compact" | "continue-fresh", got ${b.action}`,
+    }
+  }
+  return { ok: true }
+}
+
+/** Validate a `coldWakeGuard` block fragment. */
+export function validateContextContinuityColdWakeGuard(
+  b: ContextContinuityColdWakeGuard,
+): ContextContinuityValidationResult {
+  if (b.mode !== undefined && b.mode !== "off" && b.mode !== "ask" && b.mode !== "auto") {
+    return { ok: false, reason: `coldWakeGuard.mode must be "off" | "ask" | "auto", got ${b.mode}` }
+  }
+  if (b.atPct !== undefined && !isIntInRange(b.atPct, 0, 100)) {
+    return { ok: false, reason: `coldWakeGuard.atPct must be an integer between 0 and 100, got ${b.atPct}` }
+  }
+  return { ok: true }
+}
+
+/**
+ * Resolve a supplied `idleCompact` block to its full shape. The block is
+ * picked WHOLE: absent fields fill from {@link IDLE_COMPACT_DEFAULTS}, never
+ * from another config level's block (AIP-46 amendment §Policy carrier —
+ * "the most specific level providing a policy object wins as a whole").
+ * Returns `undefined` when no level supplied the block (default `off`).
+ */
+export function resolveIdleCompact(
+  block: ContextContinuityIdleCompact | undefined,
+): ResolvedContextContinuityIdleCompact | undefined {
+  if (!block) return undefined
+  return {
+    mode: block.mode ?? IDLE_COMPACT_DEFAULTS.mode,
+    atPct: block.atPct ?? IDLE_COMPACT_DEFAULTS.atPct,
+    beforeCacheExpiryMs: block.beforeCacheExpiryMs ?? IDLE_COMPACT_DEFAULTS.beforeCacheExpiryMs,
+    action: block.action ?? IDLE_COMPACT_DEFAULTS.action,
+  }
+}
+
+/** Whole-object resolve of a `coldWakeGuard` block — same rule as
+ *  {@link resolveIdleCompact}. */
+export function resolveColdWakeGuard(
+  block: ContextContinuityColdWakeGuard | undefined,
+): ResolvedContextContinuityColdWakeGuard | undefined {
+  if (!block) return undefined
+  return {
+    mode: block.mode ?? COLD_WAKE_GUARD_DEFAULTS.mode,
+    atPct: block.atPct ?? COLD_WAKE_GUARD_DEFAULTS.atPct,
+  }
+}
+
+/** Effective `idleCompact` for a policy — `mode:"off"` defaults when the
+ *  block was never configured. */
+export function effectiveIdleCompact(
+  policy: Pick<ContextContinuityPolicy, "idleCompact">,
+): ResolvedContextContinuityIdleCompact {
+  return resolveIdleCompact(policy.idleCompact) ?? IDLE_COMPACT_DEFAULTS
+}
+
+/** Effective `coldWakeGuard` for a policy — `mode:"off"` defaults when
+ *  never configured. */
+export function effectiveColdWakeGuard(
+  policy: Pick<ContextContinuityPolicy, "coldWakeGuard">,
+): ResolvedContextContinuityColdWakeGuard {
+  return resolveColdWakeGuard(policy.coldWakeGuard) ?? COLD_WAKE_GUARD_DEFAULTS
 }
 
 /**
@@ -209,6 +390,15 @@ export function validateContextContinuityPolicy(
     return { ok: false, reason: `continueFreshAtPct (${continueFresh}) must be < hardStopAtPct (${hardStop})` }
   }
 
+  if (p.idleCompact !== undefined) {
+    const block = validateContextContinuityIdleCompact(p.idleCompact)
+    if (!block.ok) return block
+  }
+  if (p.coldWakeGuard !== undefined) {
+    const block = validateContextContinuityColdWakeGuard(p.coldWakeGuard)
+    if (!block.ok) return block
+  }
+
   return { ok: true }
 }
 
@@ -243,7 +433,29 @@ function mergePolicyLayer(
     ...((override.compactHandoffTurn ?? base.compactHandoffTurn) !== undefined
       ? { compactHandoffTurn: (override.compactHandoffTurn ?? base.compactHandoffTurn)! }
       : {}),
+    // Whole-object pick at the block level: an override that supplies the
+    // block REPLACES the base block outright (its absent fields fill from
+    // the block defaults, not from another level's values). Only an absent
+    // block inherits — never a field-by-field merge across levels.
+    ...resolveIdleCompactOverride(override.idleCompact, base.idleCompact),
+    ...resolveColdWakeGuardOverride(override.coldWakeGuard, base.coldWakeGuard),
   }
+}
+
+function resolveIdleCompactOverride(
+  override: ContextContinuityIdleCompact | undefined,
+  base: ResolvedContextContinuityIdleCompact | undefined,
+): { idleCompact: ResolvedContextContinuityIdleCompact } | Record<string, never> {
+  const picked = resolveIdleCompact(override) ?? base
+  return picked ? { idleCompact: picked } : {}
+}
+
+function resolveColdWakeGuardOverride(
+  override: ContextContinuityColdWakeGuard | undefined,
+  base: ResolvedContextContinuityColdWakeGuard | undefined,
+): { coldWakeGuard: ResolvedContextContinuityColdWakeGuard } | Record<string, never> {
+  const picked = resolveColdWakeGuard(override) ?? base
+  return picked ? { coldWakeGuard: picked } : {}
 }
 
 /**
@@ -360,6 +572,7 @@ export function computeContextContinuityStatus(
   policy: ResolvedContextContinuityPolicy,
   contextSize: number | undefined,
   contextUsed: number | undefined,
+  warmth?: CacheWarmth,
 ): ContextContinuityStatus {
   const pct = computeContextPct(contextSize, contextUsed)
   const state = pct === null ? "ok" : contextContinuityStateForPct(pct, policy)
@@ -384,6 +597,8 @@ export function computeContextContinuityStatus(
     summary: stateSummary(pct, state, policy),
     nextAction,
     nextThresholdDelta,
+    ...(warmth?.lastTurnEndAt !== undefined ? { lastTurnEndAt: warmth.lastTurnEndAt } : {}),
+    ...(warmth?.cacheWarmUntil !== undefined ? { cacheWarmUntil: warmth.cacheWarmUntil } : {}),
   }
 }
 
@@ -393,4 +608,126 @@ export function isContextContinuityHardStopped(
   policy: ResolvedContextContinuityPolicy,
 ): boolean {
   return pct !== null && pct >= policy.hardStopAtPct
+}
+
+// ── Context continuity + idle compaction (AIP-46 amendment) ────────────────
+
+/** `cacheWarmUntil` ISO stamp — the moment the prompt cache lapses. */
+export interface CacheWarmth {
+  /** ISO timestamp of the moment the last turn ended. Absent until a turn
+   *  has ended. */
+  lastTurnEndAt?: string
+  /** ISO timestamp when the session's prompt cache lapses. Absent until a
+   *  turn has ended (or when the host stamps neither). */
+  cacheWarmUntil?: string
+}
+
+/** The instant an idle-compact timer should fire (epoch ms). */
+export interface IdleCompactArmPlan {
+  /** Epoch ms to fire at: `cacheWarmUntil − beforeCacheExpiryMs`, clamped to
+   *  "as soon as the session is idle" when that instant already passed. */
+  firesAtMs: number
+  /** The cache expiry the plan is anchored to (epoch ms). */
+  cacheWarmUntilMs: number
+}
+
+export interface IdleCompactArmInput {
+  idleCompact: ResolvedContextContinuityIdleCompact
+  /** Current context percentage; `null` (unknown) never arms. */
+  contextPct: number | null
+  nowMs: number
+  /** Epoch ms of cache expiry; absent = cold = never arms. */
+  cacheWarmUntilMs?: number | null
+  /** Epoch ms of a known next wake (cron / sentinel); `null` when unknown. */
+  nextWakeAtMs?: number | null
+}
+
+/**
+ * Plan when to arm the idle timer at a turn end (AIP-46 §Arming, steps 1–3).
+ * Pure. Returns `null` when nothing should be armed:
+ *   - `mode` is `off`,
+ *   - context is unknown or `<= atPct`,
+ *   - the cache is not in the future (absent or already expired), or
+ *   - a known next wake falls BEFORE the cache expires — that wake lands on a
+ *     warm cache and needs no help (step 2).
+ * Otherwise `firesAtMs = max(cacheWarmUntilMs − beforeCacheExpiryMs, nowMs)` —
+ * step 3: a fire instant that already passed but with a still-warm cache
+ * fires as soon as the session is idle (`nowMs`).
+ */
+export function planIdleCompactArm(input: IdleCompactArmInput): IdleCompactArmPlan | null {
+  const { idleCompact, contextPct, nowMs } = input
+  if (idleCompact.mode === "off") return null
+  if (contextPct === null || contextPct <= idleCompact.atPct) return null
+  const cacheWarmUntilMs = input.cacheWarmUntilMs ?? null
+  if (cacheWarmUntilMs === null || !Number.isFinite(cacheWarmUntilMs)) return null
+  if (cacheWarmUntilMs <= nowMs) return null
+  const nextWakeAtMs = input.nextWakeAtMs ?? null
+  if (nextWakeAtMs !== null && Number.isFinite(nextWakeAtMs) && nextWakeAtMs < cacheWarmUntilMs) {
+    return null
+  }
+  const firesAtMs = Math.max(cacheWarmUntilMs - idleCompact.beforeCacheExpiryMs, nowMs)
+  return { firesAtMs, cacheWarmUntilMs }
+}
+
+/**
+ * Detect a cold cache (AIP-46 §Cold-wake guard step 2): `cacheWarmUntil`
+ * absent OR at/past `nowMs`. Pure.
+ */
+export function isColdCache(
+  cacheWarmUntilMs: number | null | undefined,
+  nowMs: number,
+): boolean {
+  if (cacheWarmUntilMs === null || cacheWarmUntilMs === undefined) return true
+  if (!Number.isFinite(cacheWarmUntilMs)) return true
+  return cacheWarmUntilMs <= nowMs
+}
+
+export interface ColdWakeGuardInput {
+  coldWakeGuard: ResolvedContextContinuityColdWakeGuard
+  /** Current context percentage; `null` (unknown) never guards. */
+  contextPct: number | null
+  nowMs: number
+  /** Epoch ms of cache expiry; absent = cold. */
+  cacheWarmUntilMs?: number | null
+}
+
+/**
+ * Whether a prompt admission should trigger the cold-wake guard (AIP-46
+ * §Cold-wake guard steps 1–2): `mode` on, context known and `> atPct`, and
+ * the cache cold. Pure — mode-specific handling (`ask` vs `auto`) is the
+ * caller's.
+ */
+export function shouldColdWakeGuard(input: ColdWakeGuardInput): boolean {
+  const { coldWakeGuard, contextPct, nowMs } = input
+  if (coldWakeGuard.mode === "off") return false
+  if (contextPct === null || contextPct <= coldWakeGuard.atPct) return false
+  return isColdCache(input.cacheWarmUntilMs, nowMs)
+}
+
+/**
+ * `cacheWarmUntil = lastTurnEndAt + adapter cache TTL` (epoch ms). The TTL
+ * comes from the AIP-45 manifest's free-form `metadata.promptCacheTtlMs`;
+ * {@link promptCacheTtlMsFromMetadata} supplies the default when absent.
+ */
+export function computeCacheWarmUntil(
+  lastTurnEndAtMs: number,
+  ttlMs: number = IDLE_COMPACT_DEFAULT_CACHE_TTL_MS,
+): number {
+  return lastTurnEndAtMs + ttlMs
+}
+
+/**
+ * Read the per-adapter prompt-cache TTL out of an AIP-45 manifest's
+ * free-form `metadata` object (`metadata.promptCacheTtlMs`, integer ms).
+ * Absent / non-numeric / non-positive → {@link IDLE_COMPACT_DEFAULT_CACHE_TTL_MS}.
+ * Consumers ignore unknown keys (AIP-45), so a host without the key simply
+ * uses the 5-minute floor.
+ */
+export function promptCacheTtlMsFromMetadata(metadata: unknown): number {
+  if (metadata === null || typeof metadata !== "object") return IDLE_COMPACT_DEFAULT_CACHE_TTL_MS
+  const raw = (metadata as Record<string, unknown>).promptCacheTtlMs
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) {
+    return IDLE_COMPACT_DEFAULT_CACHE_TTL_MS
+  }
+  return raw
 }
