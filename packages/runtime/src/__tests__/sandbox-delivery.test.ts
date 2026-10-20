@@ -41,6 +41,10 @@ import {
   DEFAULT_CHECKPOINT_DEADLINE_MS,
   DISK_GUARD_MIN_FREE_FRACTION,
   CHECKPOINT_BRANCH_PREFIX,
+  RESCUE_BRANCH_PREFIX,
+  RESCUE_NOTHING_TO_COMMIT_MARKER,
+  buildRescuePushCommand,
+  runRescuePush,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
 } from "../sandbox-delivery.js"
@@ -860,5 +864,82 @@ describe("formatUncommittedRescueNotice", () => {
         checkpoint: { status: "failed", ref: "agentproto-checkpoint/wt/x", detail: "denied" },
       }),
     ).toBeUndefined()
+  })
+})
+
+describe("buildRescuePushCommand — the host-side rescue push command", () => {
+  it("stages everything, commits (hooks off, empty allowed) and force-pushes HEAD to the rescue branch", () => {
+    const cmd = buildRescuePushCommand({ checkoutDir: "/home/user/agentproto", branch: "wt/x", baseSha: "a".repeat(40) }, "rescue/sess-1")
+    expect(cmd).toContain("cd '/home/user/agentproto' && git add -A")
+    expect(cmd).toContain("git commit --no-verify -m ")
+    // empty commit is NOT a failure: the marker swallows its exit code
+    expect(cmd).toContain(`|| echo ${RESCUE_NOTHING_TO_COMMIT_MARKER}: $?; }`)
+    expect(cmd).toContain("git push --no-verify origin 'HEAD:refs/heads/rescue/sess-1'")
+  })
+
+  it("shell-quotes a path with spaces and a branch refspec verbatim", () => {
+    const cmd = buildRescuePushCommand({ checkoutDir: "/home/odd dir co", branch: "wt/odd branch", baseSha: "a".repeat(40) }, "rescue/sess 2")
+    expect(cmd).toContain("cd '/home/odd dir co'")
+    expect(cmd).toContain("'HEAD:refs/heads/rescue/sess 2'")
+  })
+
+  it("never leaks token-like content — everything is a static string", () => {
+    const cmd = buildRescuePushCommand({ checkoutDir: "/home/u", branch: "wt/x", baseSha: "a".repeat(40) }, "rescue/s")
+    expect(cmd).not.toContain(FAKE_TOKEN)
+  })
+})
+
+describe("runRescuePush — outcome recording, never throwing", () => {
+  const rescueTarget = { checkoutDir: "/home/user/agentproto", branch: "wt/x", baseSha: "a".repeat(40) }
+  it("exit 0 is a `pushed` record with the default `rescue/<branch>` naming", async () => {
+    const calls: SandboxExecOpts[] = []
+    const record = await runRescuePush({
+      exec: async (opts) => {
+        calls.push(opts)
+        return { exitCode: 0, stdout: "", stderr: "", durationMs: 5 }
+      },
+      target: rescueTarget,
+      now: () => new Date("2026-10-20T00:00:00Z"),
+    })
+    expect(record).toEqual({
+      at: "2026-10-20T00:00:00.000Z",
+      branch: "wt/x",
+      rescueBranch: "rescue/wt/x",
+      status: "pushed",
+    })
+    // one exec, with the pushed-command string and non-interactive git env
+    expect(calls).toHaveLength(1)
+    expect(calls[0].command).toContain("git push --no-verify origin 'HEAD:refs/heads/rescue/wt/x'")
+    expect(calls[0].env).toEqual({ GIT_TERMINAL_PROMPT: "0" })
+  })
+
+  it("an explicit rescueBranch overrides the default (`rescue/<session>` from the proxy)", async () => {
+    const record = await runRescuePush({
+      exec: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 5 }),
+      target: rescueTarget,
+      rescueBranch: `${RESCUE_BRANCH_PREFIX}sess-9`,
+    })
+    expect(record.rescueBranch).toBe("rescue/sess-9")
+  })
+
+  it("a non-zero push exit is a `failed` record carrying the exit code", async () => {
+    const record = await runRescuePush({
+      exec: async () => ({ exitCode: 128, stdout: "", stderr: "fatal: could not read from remote", durationMs: 5 }),
+      target: rescueTarget,
+    })
+    expect(record.status).toBe("failed")
+    expect(record.detail).toContain("exit 128")
+    expect(record.detail).toContain("could not read from remote")
+  })
+
+  it("an exec THROW (wedged box) is still a non-throwing `failed` record", async () => {
+    const record = await runRescuePush({
+      exec: async () => {
+        throw new Error("box unreachable")
+      },
+      target: rescueTarget,
+    })
+    expect(record.status).toBe("failed")
+    expect(record.detail).toContain("box unreachable")
   })
 })

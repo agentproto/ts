@@ -4485,7 +4485,7 @@ export async function createGateway(
   // `remove` (control-plane destroy, no resume). Unref'd + never overlapped,
   // same shapes as the reaper above. Always armed (unlike the idle-reaper's
   // opt-in): it only ever GRAVES boxes whose session is already dead.
-  const sandboxGcIntervalMs = parseSandboxGcInterval(rawGcInterval)
+  const sandboxGcIntervalMs = parseSandboxGcInterval(process.env.AGENTPROTO_SANDBOX_GC_INTERVAL_MS)
   let sandboxGcTimer: { stop(): void } | null = null
   if (sandboxGcIntervalMs > 0) {
     sandboxGcTimer = startSandboxGcTimer({
