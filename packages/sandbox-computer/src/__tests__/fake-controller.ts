@@ -67,6 +67,11 @@ export class FakeController {
    *  undefined for a body-less legacy call. */
   readonly attachBodies: Array<{ id: string; holder?: string }> = []
   readonly detachBodies: Array<{ id: string; holder?: string }> = []
+  /** Successful slot-taking attaches per `id` + holder (a same-holder
+   *  idempotent re-attach does not count twice), and the matching detaches
+   *  that actually released a held slot. */
+  readonly attachCounts = new Map<string, number>()
+  readonly detachCounts = new Map<string, number>()
   readonly daemonProxyRequests: Array<{
     id: string
     path: string
@@ -223,6 +228,8 @@ export class FakeController {
         return reply(res, 409, { error: "session limit reached", sessions: held, maxSessions: max })
       }
       this.sessions.set(id, held + 1)
+      const countKey = `${id}:${parsed.body.holder ?? ""}`
+      this.attachCounts.set(countKey, (this.attachCounts.get(countKey) ?? 0) + 1)
       const attachBody = { sessions: held + 1, maxSessions: max }
       assertContract(sessionsResponseSchema, attachBody)
       return reply(res, 200, attachBody)
@@ -242,6 +249,8 @@ export class FakeController {
       if (parsed.body.holder !== undefined) holders.delete(parsed.body.holder)
       const remaining = Math.max(held - 1, 0)
       this.sessions.set(id, remaining)
+      const countKey = `${id}:${parsed.body.holder ?? ""}`
+      this.detachCounts.set(countKey, (this.detachCounts.get(countKey) ?? 0) + 1)
       const detachBody = { sessions: remaining, maxSessions: this.maxSessions.get(id) ?? 1 }
       assertContract(sessionsResponseSchema, detachBody)
       return reply(res, 200, detachBody)

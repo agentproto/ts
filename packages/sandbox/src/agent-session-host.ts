@@ -147,6 +147,16 @@ export interface BootedSandbox {
    *  that want to pause fall back to `stop()` when it's absent. */
   pause?(): Promise<void>
   /**
+   * Release THIS session's provider-side claim on the box WITHOUT stopping
+   * or pausing it — the shared-box survivor path. A session that leaves a box
+   * other sessions still drive must still give back the slot it took at
+   * attach (e.g. the computer controller's holder refcount); `stop()` would
+   * kill the box under the survivors and `pause()` would suspend it.
+   * Optional: providers with no per-session attach bookkeeping omit it.
+   * Idempotent: releasing an already-released slot is a no-op.
+   */
+  detach?(): Promise<void>
+  /**
    * Re-arm the box's remaining lifetime to `ms` from now — the same
    * mechanism a provider's own `connect()` already uses to re-arm a resumed
    * box's deadline (e.g. e2b's `sandbox.setTimeout`), exposed here so a host
@@ -364,6 +374,10 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Close the daemon connection and PAUSE the sandbox instead of killing
    *  it — only present when the booted sandbox supports `pause()`. */
   pause?(): Promise<void>
+  /** Close the daemon connection and release THIS session's provider-side
+   *  claim on the box, leaving the box itself running for other sessions —
+   *  only present when the booted sandbox supports `detach()`. */
+  detach?(): Promise<void>
 }
 
 /**
@@ -444,6 +458,14 @@ export async function createSandboxAgentSessionHost(
           async pause(): Promise<void> {
             await host.close()
             await booted.pause!()
+          },
+        }
+      : {}),
+    ...(booted.detach
+      ? {
+          async detach(): Promise<void> {
+            await host.close()
+            await booted.detach!()
           },
         }
       : {}),

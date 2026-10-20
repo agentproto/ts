@@ -479,6 +479,39 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.removed).toEqual([first.sandboxId])
   })
 
+  it("detach releases exactly this session's holder slot and leaves the computer running", async () => {
+    const first = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 3, sessionHolder: "sess_a" }),
+      bootOpts,
+    )
+    const second = await computerSandboxProvider.connect!(
+      first.sandboxId,
+      spec(controller.url, { maxSessions: 3, sessionHolder: "sess_b" }),
+      bootOpts,
+    )
+    expect(controller.sessionHolders.get(first.sandboxId)).toEqual(new Set(["sess_a", "sess_b"]))
+
+    await first.detach!()
+
+    // Only sess_a's slot was released, with the holder it attached with,
+    // and the box was neither suspended nor removed under sess_b.
+    expect(controller.detachBodies.at(-1)).toEqual({ id: first.sandboxId, holder: "sess_a" })
+    expect(controller.sessionHolders.get(first.sandboxId)).toEqual(new Set(["sess_b"]))
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+    expect(controller.states.get(first.sandboxId)).toBe("running")
+    expect(controller.suspended).toEqual([])
+    expect(controller.removed).toEqual([])
+
+    // Idempotent: a second detach must not release sess_b's slot.
+    await first.detach!()
+    expect(controller.detachCounts.get(`${first.sandboxId}:sess_a`)).toBe(1)
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+
+    await second.stop()
+    expect(controller.sessions.get(first.sandboxId)).toBe(0)
+    expect(controller.removed).toEqual([first.sandboxId])
+  })
+
   it("runs an exec on a box whose only session slot is held, without probing or re-tokening the daemon", async () => {
     const booted = await computerSandboxProvider.boot(spec(controller.url, { maxSessions: 1 }), bootOpts)
     const token = booted.token

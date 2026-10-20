@@ -12650,6 +12650,26 @@ export function createSessionsRegistry(opts?: {
         rt.desc.status === "killed" ||
         rt.desc.status === "error"
       ) {
+        // A sandboxed row can end ERROR before its box was torn down (the
+        // adapter died inside the box: `runAgentTurn` flips the row to
+        // `error` and leaves the binding in place). An operator kill on that
+        // row must still release the box instead of only refusing as a
+        // label-only no-op. `close()` is idempotent, so a row whose teardown
+        // already ran is unaffected.
+        let toreDownSandbox = false
+        if (isProviderBoxSession(rt.desc) && rt.agentSession) {
+          const session = rt.agentSession
+          delete rt.agentSession
+          toreDownSandbox = true
+          void session.close().catch(err => {
+            const detail = err instanceof Error ? err.message : String(err)
+            console.warn(
+              `[sessions] ${id}: sandbox teardown on kill of an ended row failed: ${detail} — ` +
+                `sandbox ${rt.desc.sandboxId} may still be running`,
+            )
+            appendLine(rt, `[warn] box teardown after kill failed: ${detail}`, "stderr")
+          })
+        }
         // Label-only: an outcome on an ended row with no end reason just
         // (re)labels the recorded outcome — nothing is retired or relabeled.
         if (outcome && reason === undefined) {
@@ -12678,7 +12698,9 @@ export function createSessionsRegistry(opts?: {
           retireRow(rt, "killed")
           return true
         }
-        return false
+        // A kill whose only effect was retrying an ended sandbox row's box
+        // teardown is a real success, not a no-op refusal.
+        return toreDownSandbox
       }
       // Read BEFORE the flip below — see killedMidTurn's docblock: this is
       // the one moment `busy` is still guaranteed live, not whatever it was
