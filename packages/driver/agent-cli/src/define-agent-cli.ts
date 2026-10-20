@@ -193,12 +193,26 @@ export function spawnErrorWithStderr(
   keep = 20,
 ): Error {
   const message = err instanceof Error ? err.message : String(err)
-  const tail = stderrLines.slice(-keep).join("\n").trim()
+  const tail = stderrLines.slice(-keep).map(redactStderrLine).join("\n").trim()
   if (!tail) return err instanceof Error ? err : new Error(message)
   return new Error(
     `${message}\n--- ${label} stderr (last ${Math.min(stderrLines.length, keep)} lines) ---\n${tail}`,
     { cause: err },
   )
+}
+
+/** Strip terminal escapes and the common credential shapes a CLI can print
+ *  at startup. The tail is meant to explain a spawn failure, not to leak the
+ *  operator's keys into a step error / transcript. */
+export function redactStderrLine(line: string): string {
+  return line
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "[REDACTED]")
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1[REDACTED]")
+    .replace(
+      /\b(api[_-]?key|authorization|x-api-key|access[_-]?token|refresh[_-]?token|token|secret|password)(\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
+      "$1$2$3[REDACTED]",
+    )
 }
 
 export function createAgentCliRuntime(
@@ -724,7 +738,7 @@ export function createAgentCliRuntime(
       // OPENCODE_CONFIG_CONTENT set). Those are adapter-declared, READ-only
       // grants, never writes; mutable state belongs in `stateHome`.
       const extraReadPaths = [
-        ...resolveConfinedReadPaths(definition.confinedReadPaths),
+        ...resolveConfinedReadPaths(definition.confinedReadPaths, undefined, env),
         ...(opts?.additionalReadPaths ?? []),
       ]
       if (

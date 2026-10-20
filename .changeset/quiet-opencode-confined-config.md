@@ -1,5 +1,5 @@
 ---
-"@agentproto/driver-agent-cli": patch
+"@agentproto/driver-agent-cli": minor
 "@agentproto/adapter-opencode": patch
 ---
 

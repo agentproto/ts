@@ -107,15 +107,32 @@ export function defaultToolchainReadPaths(): string[] {
 /**
  * Expand an adapter's declared {@link AgentCliDefinition.confinedReadPaths}
  * into absolute sandbox grants. `~/…` anchors at the operator's home (the
- * manifest is authored once, not per machine); anything else passes through
- * as-is. Purely lexical: a path that does not exist is harmless (Seatbelt
- * ignores a nonexistent subpath allow, bwrap uses `--ro-bind-try`).
+ * manifest is authored once, not per machine); a leading `$VAR` or `${VAR}`
+ * is read from the SPAWN env, so a caller that overrides XDG_CONFIG_HOME
+ * grants the directory the CLI will actually read. A token whose variable is
+ * unset drops the path (there is nothing to grant). Anything else passes
+ * through as-is. Purely lexical: a path that does not exist is harmless
+ * (Seatbelt ignores a nonexistent subpath allow, bwrap uses `--ro-bind-try`).
  */
 export function resolveConfinedReadPaths(
   paths: readonly string[] | undefined,
   home: string = homedir(),
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): string[] {
-  return (paths ?? []).map(p => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p))
+  const out: string[] = []
+  for (const p of paths ?? []) {
+    const token = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))(.*)$/.exec(p)
+    let expanded: string
+    if (token) {
+      const value = env[token[1] ?? token[2] ?? ""]
+      if (value === undefined || value === "") continue
+      expanded = value + (token[3] ?? "")
+    } else {
+      expanded = p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p
+    }
+    out.push(expanded)
+  }
+  return out
 }
 
 export interface WrapAgentCliSpawnOptions {

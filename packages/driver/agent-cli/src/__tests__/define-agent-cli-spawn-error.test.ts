@@ -168,7 +168,9 @@ describe("createAgentCliRuntime(...).start() — spawn failure never crashes the
   it("carries the child stderr tail into a handshake failure (ACP connection closed)", async () => {
     nextSpawnError = undefined
     nextSpawnStderr =
-      "Error: EACCES: permission denied, open '/Users/op/.config/opencode/opencode.json'\n"
+      "Error: EACCES: permission denied, open '/Users/op/.config/opencode/opencode.json'\n" +
+      "Authorization: Bearer sk-ant-oat-super-secret-token\n" +
+      "\x1b[31mapi_key=sk-live-super-secret\x1b[0m\n"
     nextConnectError = new Error("ACP connection closed")
 
     let err: Error | undefined
@@ -178,8 +180,11 @@ describe("createAgentCliRuntime(...).start() — spawn failure never crashes the
       err = e as Error
     }
     expect(err?.message).toContain("ACP connection closed")
-    expect(err?.message).toContain("mastra-agent stderr (last 1 lines)")
+    expect(err?.message).toContain("mastra-agent stderr (last 3 lines)")
     expect(err?.message).toContain("EACCES: permission denied")
+    expect(err?.message).not.toContain("sk-ant-oat-super-secret-token")
+    expect(err?.message).not.toContain("sk-live-super-secret")
+    expect(err?.message).not.toContain("\x1b[")
     expect((err as (Error & { cause?: unknown }) | undefined)?.cause).toBe(nextConnectError)
 
     nextConnectError = undefined

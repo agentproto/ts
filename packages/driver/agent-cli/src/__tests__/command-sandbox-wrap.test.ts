@@ -64,6 +64,16 @@ describe("resolveConfinedReadPaths", () => {
   it("returns an empty list when the adapter declares none", () => {
     expect(resolveConfinedReadPaths(undefined)).toEqual([])
   })
+
+  it("reads $VAR from the SPAWN env and drops it when unset", () => {
+    expect(
+      resolveConfinedReadPaths(
+        ["$XDG_CONFIG_HOME/opencode/opencode.json", "$OPENCODE_CONFIG"],
+        "/home/op",
+        { XDG_CONFIG_HOME: "/custom/cfg" },
+      ),
+    ).toEqual(["/custom/cfg/opencode/opencode.json"])
+  })
 })
 
 describe("wrapAgentCliSpawn mode resolution", () => {
