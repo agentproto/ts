@@ -161,6 +161,17 @@ export const agentStartInputShape = {
     .describe(
       `Parent-lineage hint: nest this spawn under that session; ignored through the scoped gateway.`
     ),
+  succeeds: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Lineage handover: declare this NEW session the SUCCESSOR of that session id. " +
+        "Its LIVE children are re-parented onto this session (drive rights + message_parent " +
+        "routing follow), and this session takes the replaced row's place in the spawn tree. " +
+        "Only the human operator, the replaced session itself, or the session that owns it " +
+        "may declare it. ${help(\"succeeds\")}"
+    ),
   attach: jsonTolerant(opaque(attachFieldSchema))
     .optional()
     .describe(

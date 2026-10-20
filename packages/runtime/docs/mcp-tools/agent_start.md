@@ -89,6 +89,33 @@ parent (parent depth + 1); you don't set it. Ignored when this call arrives
 through the scoped orchestrator gateway — that path derives the parent from
 its own token, which always wins over this hint.
 
+## succeeds
+
+Lineage handover: declare THIS new session the SUCCESSOR of another session
+(id). The replaced row's LIVE children are re-parented onto the new session
+and the new session takes the replaced row's place in the spawn tree — so the
+successor can DRIVE those children (`agent_prompt` / `agent_interrupt` /
+`agent_kill` / `session_restart`: the session-owner gate keys on
+`parentSessionId`) and the children report UP to the successor
+(`message_parent` resolves the caller's recorded parent) instead of a row
+that is gone.
+
+Use it when a persistent orchestrator ("the brain") is replaced by a NEW
+session — a restart, a wallet change, a `continue-fresh` — while its
+supervisors and executors stay alive. `session_continue_fresh` performs the
+same handover automatically; `succeeds` is the explicit form, for a
+successor that is not a continuation of the same conversation.
+
+Who may declare it: the human operator, the replaced session itself (a brain
+handing over its own position), or the session that owns the replaced row. A
+third party — including one of the children being handed over — is refused
+before anything is spawned.
+
+The call's result carries a `lineageHandover` block (`from`, `to`,
+`adopted`, `skipped`) and the succession is recorded on both descriptors
+(`succeededBy` / `succeeds`) — that record is what authorizes
+`session_adopt`.
+
 ## attach
 
 Parent-attach control, mirroring `worktree`. By DEFAULT (omitted) a spawn
