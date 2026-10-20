@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION, DISK_GUARD_PROBE_TIMEOUT_MS, RESCUE_BRANCH_PREFIX, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, rescueWarranted, runRescuePush, type SandboxCheckpointerRunOpts, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION,   DISK_GUARD_PROBE_TIMEOUT_MS, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, rescueWarranted, type SandboxCheckpointerRunOpts, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
