@@ -32,6 +32,16 @@ for (const name of ['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CLOUD_OAUTH_TOKEN']) {
   if (!process.env[name]) throw new Error(`${name} is required`)
 }
 
+// `claude --cloud` resolves the org UUID from CLAUDE_CODE_ORGANIZATION_UUID,
+// then ~/.claude.json oauthAccount.organizationUuid, then the profile API. A
+// `setup-token` credential has no profile scope, so on a clean runner all
+// three come up empty ("Unable to get organization UUID"). Pin it explicitly.
+const orgUuid = process.env.CLAUDE_CLOUD_ORG_UUID?.trim()
+if (!orgUuid) {
+  throw new Error('CLAUDE_CLOUD_ORG_UUID is required: `claude --cloud` cannot resolve the organization from a setup-token login')
+}
+process.env.CLAUDE_CODE_ORGANIZATION_UUID = orgUuid
+
 const delay = (ms) => new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
 
 function unwrapFence(text) {
@@ -66,6 +76,7 @@ function seedClaudeConfig() {
   } catch {}
   config.hasCompletedOnboarding = true
   config.theme ||= 'dark'
+  config.oauthAccount = { ...config.oauthAccount, organizationUuid: orgUuid }
   config.projects ||= {}
   for (const dir of new Set([ROOT, realpathSync(ROOT)])) {
     config.projects[dir] = { ...config.projects[dir], hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true }
