@@ -56,6 +56,7 @@ import {
   sanitizeExtraHeaders,
   type ComputerClientConfig,
 } from "./client.js"
+import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js"
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
 import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
@@ -102,6 +103,12 @@ interface ComputerSandboxConfig {
    *  are `"host"`, `"host:port"` (port defaults to 443) or `{ host, port? }`.
    *  The controller denies all egress (DNS included) when this is absent. */
   egress?: Array<{ host: string; port: number }>
+  /** Egress IP selection forwarded as the create body's `egressIp` when not
+   *  `"shared"`: `"auto"`, `"dedicated"`, or a 1-8 char lowercase alphanumeric
+   *  pool slot id. Defaults to `"shared"`. Also read from spec-level
+   *  `network.egressIp`; this config wins, and two different values are an
+   *  error. */
+  egressIp?: string
   /** How many sessions this process may map onto one computer. Default 1. */
   maxSessions?: number
   /**
@@ -192,6 +199,25 @@ function parseEgress(value: unknown): Array<{ host: string; port: number }> | un
 }
 
 const TRUTHY = new Set(["1", "true", "on", "yes"])
+const EGRESS_IP_KEYWORDS = new Set(["shared", "auto", "dedicated"])
+const EGRESS_IP_SLOT_RE = /^[a-z0-9]{1,8}$/
+
+function isEgressIp(value: string): boolean {
+  return EGRESS_IP_KEYWORDS.has(value) || EGRESS_IP_SLOT_RE.test(value)
+}
+
+/** Validate an `egressIp` value from config or the spec's network block. An
+ *  invalid value is rejected before any controller call. */
+function readEgressIpOption(value: unknown, source: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || !isEgressIp(value)) {
+    throw new Error(
+      `computer sandbox: invalid ${source} ${JSON.stringify(value)}; expected "shared", "auto", ` +
+        `"dedicated", or a 1-8 character lowercase alphanumeric pool slot id`,
+    )
+  }
+  return value
+}
 
 function envExtraHeaders(): Record<string, string> {
   const out: Record<string, string> = {}
@@ -238,6 +264,14 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const int = (v: unknown): number | undefined =>
     typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : undefined
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined)
+  const configEgressIp = readEgressIpOption(config.egressIp, "config.egressIp")
+  const specEgressIp = readEgressIpOption(spec.network?.egressIp, "network.egressIp")
+  if (configEgressIp !== undefined && specEgressIp !== undefined && configEgressIp !== specEgressIp) {
+    throw new Error(
+      `computer sandbox: conflicting egressIp values; config.egressIp is "${configEgressIp}" but ` +
+        `network.egressIp is "${specEgressIp}". Set only one, or make them identical.`,
+    )
+  }
   return {
     controllerUrl: str(config.controllerUrl),
     token: str(config.token),
@@ -248,6 +282,7 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     rootDiskMiB: int(config.rootDiskMiB),
     ttlSeconds: int(config.ttlSeconds),
     egress: parseEgress(config.egress),
+    egressIp: configEgressIp ?? specEgressIp,
     maxSessions: int(config.maxSessions),
     sessionHolder: resolveSessionHolder(config),
     port: int(config.port),
@@ -274,6 +309,54 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     waitReadyTimeoutMs: int(config.waitReadyTimeoutMs),
     daemonReadyTimeoutMs: int(config.daemonReadyTimeoutMs),
   }
+}
+
+const CONTROLLER_ERROR_CODES: Record<string, ComputerSandboxErrorCode> = {
+  "egress-pool-disabled": "sandbox_egress_pool_unavailable",
+  "egress-pool-exhausted": "sandbox_egress_pool_exhausted",
+  "egress-slot-dedicated": "sandbox_egress_slot_dedicated",
+  "egress-pool-unknown": "sandbox_egress_slot_unknown",
+  "host-capacity": "sandbox_capacity",
+}
+
+/** Map a controller's machine error code to the provider's typed error.
+ *  Unknown errors are returned unchanged so existing handling/messages stay
+ *  intact. Messages are built here from controller status/code and capacity
+ *  numbers only — never from the service token (the client already redacts
+ *  it from its own message). */
+function mapControllerError(err: unknown): unknown {
+  if (!(err instanceof ComputerApiError) || err.code === undefined) return err
+  const code = CONTROLLER_ERROR_CODES[err.code]
+  if (code === undefined) return err
+
+  if (code === "sandbox_capacity") {
+    const resource = err.resource !== undefined ? ` for resource "${err.resource}"` : ""
+    const amounts =
+      err.requested !== undefined || err.available !== undefined
+        ? ` (requested ${err.requested ?? "unknown"}, available ${err.available ?? "unknown"})`
+        : ""
+    const retry =
+      err.retryAfterMs !== undefined
+        ? `; retry after ${Math.ceil(err.retryAfterMs / 1000)}s`
+        : ""
+    return new ComputerSandboxError(
+      code,
+      `computer sandbox: host capacity exhausted${resource}${amounts}${retry}`,
+      {
+        status: err.status,
+        resource: err.resource,
+        requested: err.requested,
+        available: err.available,
+        retryAfterMs: err.retryAfterMs,
+      },
+    )
+  }
+
+  return new ComputerSandboxError(
+    code,
+    `computer sandbox: controller rejected egress selection (HTTP ${err.status}, "${err.code}")`,
+    { status: err.status },
+  )
 }
 
 /** Build a client from config + environment. The token comes from spec
@@ -536,7 +619,12 @@ export const computerSandboxProvider: SandboxProvider = {
     const clientConfig = resolveClientConfig(spec, base)
     const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
-    const booted = await bootOnClient(client, spec, config, opts)
+    let booted: BootedSandbox
+    try {
+      booted = await bootOnClient(client, spec, config, opts)
+    } catch (err) {
+      throw mapControllerError(err)
+    }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
   },
@@ -546,7 +634,12 @@ export const computerSandboxProvider: SandboxProvider = {
     const clientConfig = resolveClientConfig(spec, base)
     const config = applyDaemonRoute(base, clientConfig)
     const client = new ComputerControllerClient(clientConfig)
-    const booted = await connectOnClient(client, sandboxId, spec, config, opts)
+    let booted: BootedSandbox
+    try {
+      booted = await connectOnClient(client, sandboxId, spec, config, opts)
+    } catch (err) {
+      throw mapControllerError(err)
+    }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
   },
@@ -614,10 +707,13 @@ async function bootOnClient(
       ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
       ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
       ...(config.egress ? { egress: { allow: config.egress } } : {}),
+      ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
       env: createEnv,
     })
   } catch (err) {
     if (err instanceof ComputerApiError) {
+      const mapped = mapControllerError(err)
+      if (mapped !== err) throw mapped
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
           (err.code === "unknown template" || err.code === "invalid body"
@@ -630,9 +726,10 @@ async function bootOnClient(
   const sandboxId = created.id
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
+  let status: ComputerStatus
 
   try {
-    const status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     daemonToken = await daemonHealthyOrThrow(client, sandboxId, config, randomUUID(), port, workspace, mcpOrigin)
@@ -646,17 +743,34 @@ async function bootOnClient(
     throw err
   }
 
+  const createdEgressIp = readEgressIp((created as Record<string, unknown>).egressIp)
+  const statusEgressIp = readEgressIp((status as Record<string, unknown>).egressIp)
+  const egressIp = createdEgressIp !== undefined ? createdEgressIp : statusEgressIp
+
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port, published, daemonToken)
+  return wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
+}
+
+/** Read the controller's `egressIp` field: `undefined` when the controller
+ *  is older and omits it, `null` when it explicitly reports no dedicated
+ *  address, otherwise the `{ id, publicIp }` object. Malformed values are
+ *  treated as absent rather than trusted. */
+function readEgressIp(value: unknown): { id: string; publicIp: string } | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) return null
+  if (typeof value !== "object") return undefined
+  const record = value as Record<string, unknown>
+  if (typeof record.id !== "string" || typeof record.publicIp !== "string") return undefined
+  return { id: record.id, publicIp: record.publicIp }
 }
 
 /** Resolve an existing computer to a running id (resuming when suspended and
- *  following a resume-rename alias) plus its published ports. */
+ *  following a resume-rename alias) plus its published ports and egress IP. */
 async function resolveRunningComputer(
   client: ComputerControllerClient,
   sandboxId: string,
   config: ComputerSandboxConfig,
-): Promise<{ currentId: string; published: readonly PortPublish[] }> {
+): Promise<{ currentId: string; published: readonly PortPublish[]; egressIp: { id: string; publicIp: string } | null | undefined }> {
   const port = config.port ?? DEFAULT_PORT
   const status = await client.getComputer(sandboxId)
   if (status === null) throw new SandboxBoxGoneError(sandboxId)
@@ -665,6 +779,7 @@ async function resolveRunningComputer(
   // rebuild it under a NEW id — adopt it, remember the alias.
   let currentId = sandboxId
   let published: readonly PortPublish[] = status.ports ?? []
+  let egressIp = readEgressIp((status as Record<string, unknown>).egressIp)
   if (status.state !== "running") {
     const resumeResult = await client.resume(sandboxId)
     const targetId = resumeResult.id ?? sandboxId
@@ -672,11 +787,13 @@ async function resolveRunningComputer(
     currentId = targetId
     const running = await waitRunning(client, currentId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
     published = running.ports ?? []
+    const runningEgressIp = readEgressIp((running as Record<string, unknown>).egressIp)
+    if (runningEgressIp !== undefined) egressIp = runningEgressIp
   }
   if (config.gatewayUrl?.includes("{hostPort}") && !published.some((p) => p.guest === port)) {
     published = await recoverPublishedPort(client, currentId, port, published)
   }
-  return { currentId, published }
+  return { currentId, published, egressIp }
 }
 
 async function connectOnClient(
@@ -689,7 +806,7 @@ async function connectOnClient(
   const port = config.port ?? DEFAULT_PORT
   const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
-  const { currentId, published } = await resolveRunningComputer(client, sandboxId, config)
+  const { currentId, published, egressIp } = await resolveRunningComputer(client, sandboxId, config)
 
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
@@ -715,7 +832,7 @@ async function connectOnClient(
     }
     throw err
   }
-  return wrapBox(client, currentId, spec, config, port, published, daemonToken)
+  return wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
 }
 
 /** Exec-only attach: same running-box resolution as `connect()`, then a
@@ -727,11 +844,12 @@ async function connectForExecOnClient(
   config: ComputerSandboxConfig,
 ): Promise<BootedSandbox> {
   const port = config.port ?? DEFAULT_PORT
-  const { currentId, published } = await resolveRunningComputer(client, sandboxId, config)
+  const { currentId, published, egressIp } = await resolveRunningComputer(client, sandboxId, config)
   const mcpUrl = `${boxUrl(currentId, port, config.gatewayUrl, published).replace(/\/+$/, "")}/mcp`
   return {
     mcpUrl,
     sandboxId: currentId,
+    ...(egressIp !== undefined ? { egressIp } : {}),
     ...boxIo(client, currentId),
     async stop(): Promise<void> {
       throw new Error(
@@ -922,6 +1040,7 @@ async function wrapBox(
   port: number,
   published: readonly PortPublish[],
   daemonToken?: string,
+  egressIp?: { id: string; publicIp: string } | null,
 ): Promise<BootedSandbox> {
   // `routeHeaders` is only set in daemonRoute mode — see
   // `applyDaemonRoute`. The controller's daemon-proxy route reaches exactly
@@ -963,6 +1082,7 @@ async function wrapBox(
   return {
     mcpUrl,
     sandboxId: id,
+    ...(egressIp !== undefined ? { egressIp } : {}),
     // The daemon is gated by its per-box `--auth-token` regardless of
     // `opts.expose` (the controller's port publish, or the daemon-proxy
     // route, is never a loopback hop inside the guest, so an open daemon

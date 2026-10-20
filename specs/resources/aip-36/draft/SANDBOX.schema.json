@@ -74,6 +74,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Hostnames the sandbox MAY reach. Empty / missing = no egress."
+        },
+        "egressIp": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(shared|auto|dedicated|[a-z0-9]{1,8})$",
+          "description": "Egress IP selection for providers that broker shared or dedicated public addresses: \"shared\" (default), \"auto\", \"dedicated\", or a 1-8 character lowercase alphanumeric pool slot id. Provider config wins over this spec-level value; setting both to different values is an error."
         }
       }
     },

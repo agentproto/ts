@@ -92,6 +92,13 @@ export interface SandboxDefinition {
      * Hostnames the sandbox MAY reach. Empty / missing = no egress.
      */
     egress?: string[]
+    /**
+     * Egress IP selection for providers that broker shared or dedicated public addresses:
+     * `"shared"` (default), `"auto"`, `"dedicated"`, or a 1-8 character lowercase
+     * alphanumeric pool slot id. Provider config wins over this spec-level value;
+     * setting both to different values is an error.
+     */
+    egressIp?: string
   }
   /**
    * Auto-join wiring: forwards a host env var (holding a join-token URL) into the sandbox by the same name, so the box can register itself with the daemon that minted the token.

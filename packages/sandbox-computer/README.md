@@ -31,6 +31,7 @@ provider's `setup` (stored creds), plus env fallbacks:
 | `token` (secret) | `COMPUTER_CONTROLLER_TOKEN` | — | Controller bearer service token. Resolved from a credential ref by the runtime (`setup_sandbox_provider` → stored creds → env), **never** logged or written anywhere else. |
 | `tenantId` | `COMPUTER_TENANT_ID` | `agentproto` | Sent as `X-Tenant-Id` on every request; computers are created under it. A stored `setup_sandbox_provider` value fills the env var when unset. |
 | `egress` | — | none | Allowlist forwarded as the create body's `egress.allow`: entries `"host"`, `"host:port"` (port defaults to 443) or `{host, port?}`. The reference controller denies ALL egress, DNS included, when this is absent, so the on-boot `npm i -g @agentproto/cli` needs at least `registry.npmjs.org`. |
+| `egressIp` | — | `"shared"` | Egress IP selection forwarded as create `egressIp` (AIP-36 v1.3): `"shared"` (default, omitted from the create body so older controllers keep working), `"auto"`, `"dedicated"`, or a 1-8 character lowercase alphanumeric pool slot id. Also accepted from the spec-level `network.egressIp`; `config.egressIp` wins when they match, and two different values are rejected before any controller call. The booted handle reports the controller's `egressIp: {id, publicIp} | null` on boot and connect. |
 | `template` | — | `agentproto-workstation` | Controller template id. The reference controller's stock registry currently only ships `base`/`node`/`browser` — point this at whatever template id your controller advertises (or ask the controller admin to register a workstation template). |
 | `cpus`, `memoryMiB`, `rootDiskMiB` | — | — | Resource limits forwarded to create. |
 | `ttlSeconds` | — | — | Computer TTL sent as create `ttl`. |
@@ -68,6 +69,25 @@ and connect attach a session, pause and stop detach it, and a connect past the
 cap is refused — except a re-connect by the same `sessionHolder`, which is
 idempotent and keeps its slot. The last session to stop removes the computer.
 A controller without the attach routes falls back to a per-process count.
+
+## Capacity and egress errors
+
+The controller's machine error codes are mapped to typed errors with a stable
+`code` (the `ComputerSandboxError` exported by this package):
+
+| controller response | provider error `code` |
+| --- | --- |
+| `400 {error:"egress-pool-disabled"}` (no pool configured) | `sandbox_egress_pool_unavailable` |
+| `400 {error:"egress-pool-unknown"}` (unknown pool/slot) | `sandbox_egress_slot_unknown` |
+| `409 {error:"egress-pool-exhausted"}` (pool full) | `sandbox_egress_pool_exhausted` |
+| `409 {error:"egress-slot-dedicated"}` (slot already dedicated) | `sandbox_egress_slot_dedicated` |
+| `503 {error:"host-capacity", resource, requested, available}` | `sandbox_capacity` |
+
+A `503 host-capacity` response also carries the controller's `Retry-After`
+as `retryAfterMs`, alongside `resource`, `requested` and `available` on the
+error, so a caller can wait and retry (or fall back to another host) without
+parsing strings. Error messages only quote the status/code and capacity
+numbers; secrets never appear in them.
 
 ## Secrets
 

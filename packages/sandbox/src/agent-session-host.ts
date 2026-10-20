@@ -61,6 +61,12 @@ export interface BootedSandbox {
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
+  /** The egress address the provider brokered for this box, when it supports
+   *  selecting one (AIP-36 `network.egressIp` / provider config `egressIp`).
+   *  `null` means the controller explicitly reports no dedicated address
+   *  (for example `"shared"`); absent means the provider/controller has no
+   *  egress-IP concept. Optional so existing providers are unaffected. */
+  egressIp?: { id: string; publicIp: string } | null
   /** Opaque secret gating `mcpUrl`. Present either when `opts.expose ===
    *  "private"` was honoured (see `SandboxBootOpts.expose`), OR when the
    *  provider's own daemon is gated unconditionally regardless of `expose`

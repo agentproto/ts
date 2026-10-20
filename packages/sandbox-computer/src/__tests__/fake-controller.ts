@@ -52,6 +52,12 @@ export interface FakeControllerOptions {
   detachStatus?: number
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
+  /** `egressIp` reported on create and GET. Omitted from responses when undefined. */
+  egressIp?: { id: string; publicIp: string } | null
+  /** Extra top-level fields on a create error body (e.g. host-capacity details). */
+  createErrorExtra?: Record<string, unknown>
+  /** `Retry-After` header sent with a create error. */
+  createRetryAfter?: string
 }
 
 /** Everything recorded, for assertions (no secrets captured in plain logs). */
@@ -177,8 +183,9 @@ export class FakeController {
 
     if (url.pathname === "/v1/computers" && req.method === "POST") {
       if (this.options.createStatus) {
-        const body = { error: this.options.createError ?? "failed" }
+        const body = { error: this.options.createError ?? "failed", ...this.options.createErrorExtra }
         assertContract(errorResponseSchema, body)
+        if (this.options.createRetryAfter !== undefined) res.setHeader("Retry-After", this.options.createRetryAfter)
         return reply(res, this.options.createStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
@@ -189,7 +196,13 @@ export class FakeController {
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
       this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
-      const responseBody = { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] }
+      const responseBody = {
+        id,
+        template: parsed.template,
+        state,
+        ports: this.options.publishedPorts ?? [],
+        ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
+      }
       assertContract(createComputerResponseSchema, responseBody)
       return reply(res, 201, responseBody)
     }
@@ -200,7 +213,15 @@ export class FakeController {
 
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
-      const responseBody = { name: id, state: this.states.get(id), ...(this.options.getOmitsPorts ? {} : { ports: this.options.publishedPorts ?? [] }), egress: [], pinsStale: false, pinsTtlSec: 21600 }
+      const responseBody = {
+        name: id,
+        state: this.states.get(id),
+        ...(this.options.getOmitsPorts ? {} : { ports: this.options.publishedPorts ?? [] }),
+        ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
+        egress: [],
+        pinsStale: false,
+        pinsTtlSec: 21600,
+      }
       assertContract(computerStatusSchema, responseBody)
       return reply(res, 200, responseBody)
     }
