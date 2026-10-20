@@ -158,9 +158,17 @@ case and is documented as the bounded exception.
 
 | Value | Primitive reused | When |
 |---|---|---|
-| `append-to-session-queue` | `registry.enqueuePrompt(target, text, { queue: true, origin: "hook:<hookId>", coalesceKey, steer: true, deliverVia: "auto" })` — never `interrupt` | Default for spawn/prompt hooks: lands after (or steered into) the target's first turn. |
+| `append-to-session-queue` | `registry.enqueuePrompt(target, text, { queue: true, origin: "hook:<hookId>", coalesceKey, steer: true })` — **no `interrupt`, and deliberately no `deliverWithinMs`** (see the sweep note below) | Default for spawn/prompt hooks: lands after (or steered into) the target's first turn. |
 | `prepend-to-prompt` | The `runAgentTurn` context-slice slot (same as the `fyi` digest) — a descriptor field flushed as a `system-prompt` slice on the next string turn, once | When the block must be *context*, not a user-visible message, and must not start a turn. |
 | `attach-to-task-meta` | `taskLedger` `setMeta(taskId, key, value)` with `key = "hook:<enricherId>"` | `task_create` / `task_update` hooks: provenance rides the task record and `task:changed`. |
+
+**The sweep trap.** `enqueuePrompt`'s `deliverWithinMs` lets the
+pending-prompt sweep force a queued item out, and that force follows
+`deliverVia`, whose default is `auto` = *steer, else **interrupt***. A hook
+that set a deadline would therefore reintroduce exactly the interruption
+this design forbids. v1 hooks never set `deliverWithinMs`; if a deadline is
+ever added, it must be paired with `deliverVia: "steer"` so a non-steerable
+recipient simply keeps the item queued until the turn ends naturally.
 
 Target selection is a tiny binding expression over the event, so one hook
 shape works for every tool:
@@ -308,13 +316,17 @@ so silence is never ambiguous.
    seconds after start", long enough for the child to enter its first turn
    and short enough to beat a fast first tool call).
 3. Enricher runs (steps 1–7) inside `budget.timeoutMs`.
-4. Delivery: `enqueuePrompt(targetSessionId, block, { queue: true, steer: true,
-   deliverVia: "auto", origin: "hook:prior-art", coalesceKey: "hook:prior-art:<taskId ?? sessionId>" })`.
+4. Delivery: `enqueuePrompt(targetSessionId, block, { queue: true,
+   steer: true, origin: "hook:prior-art",
+   coalesceKey: "hook:prior-art:<taskId ?? sessionId>" })` — no
+   `deliverWithinMs`, no `interrupt` (see §2.5's sweep note).
 
-   - Child idle (spawn still starting) ⇒ the block becomes its first turn.
-   - Child busy in turn 1 ⇒ queued (or steered into turn 1 when the adapter
-     advertises steering), dispatched after a *natural* turn end. **Never**
-     `interrupt`, never `session_queue_deliver`.
+   - Child busy in turn 1 (the usual case 4 s in) ⇒ queued, or steered into
+     turn 1 when the adapter advertises steering, dispatched after a
+     *natural* turn end. **Never** `interrupt`, never `session_queue_deliver`.
+   - Child not yet in a turn ⇒ the block dispatches as its own turn — the
+     same cost posture as AIP-46's `next-turn` tier on an idle recipient
+     (start a turn). This is the *only* way enrichment costs a turn (R6).
    - Child gone / killed during the window ⇒ delivery dropped, logged.
 5. The agent's next visible instruction is the block's `First step:` line:
    answer **modify existing** (naming the file/PR) or **new**, then work.
@@ -330,7 +342,7 @@ so silence is never ambiguous.
 | **R3 — timeout ⇒ no block** | Every subprocess has `timeout` and every LLM call `AbortSignal.timeout`; on expiry the partial result is discarded and the hook ends with `hook:skipped {reason:"timeout"}`. There is no retry by default (a retry would re-spend the budget on a delegation that already happened). |
 | **R4 — dedup** | Default scope `"task"`: key = `"<hookId>:<taskId ?? targetSessionId ?? argsHash>"`. Implementation mirrors the titler's *set-before-await* guard (so concurrent triggers can't double-fire), plus `coalesceKey` on the queue arm so a burst collapses to one queued item with `coalescedCount++`. Scope `"session"` keys on the target session; `"none"` disables. `attach-to-task-meta` dedups for free (same meta key, last write wins). Persisted keys are optional in v1 (in-memory set, module scope, so it survives the per-request server rebuild and resets on daemon restart — acceptable: a restart also loses the window that mattered). |
 | **R5 — containment** | No unhandled rejections: every dispatched promise gets its own `.catch`. Enricher authors get the guarantee for free by returning `null` instead of throwing. |
-| **R6 — delivery safety** | Arms are only `queue` / `context-slice` / `meta`. A hook cannot prompt, steer-into-an-autonomous-turn, interrupt, kill, or start a new paid turn. The dispatcher refuses a config that names an unknown `deliver.to`. |
+| **R6 — delivery safety** | Arms are only `queue` / `context-slice` / `meta`. A hook never interrupts, never force-delivers (`deliverWithinMs` unset), never steers into a turn the session started autonomously, never kills, and never spawns or re-prompts anything itself. The one cost it can incur is a queued item dispatching as a turn on an *idle* recipient — identical to AIP-46 `next-turn` on an idle recipient, and never forced. The dispatcher refuses a config that names an unknown `deliver.to` or pairs a deadline with `deliverVia: "interrupt" \| "auto"`. |
 | **R7 — statelessness-safe** | Dispatcher, dedup sets and the enricher registry are module-scope (`background-jobs.ts` rule); nothing hook-shaped lives inside `registerSessionTools`'s closure. |
 | **R8 — observable** | Bus events `hook:ran {hookId, enricher, deliverTo, ms, lines, llmCalls}` and `hook:skipped {hookId, reason}` on `session-event-bus.ts`; inspectable via `session_events_poll`, and (optional tool) `hook_list` returning the resolved config. `session_queue_list` shows the delivered item. |
 | **R9 — injection hygiene** | The block is wrapped in an `agentproto-enrichment` envelope with `untrusted="true"`, sentinels escaped exactly like `escapeMessageBody`, capped at 15 lines / ~1500 chars, and carries only quoted evidence + a directive to *check*, never an instruction to *skip* checks. A prompt-injection attempt inside a PR title or memory body arrives as quoted data inside the envelope. |
@@ -473,8 +485,10 @@ interface ToolHook {
 3. **Never interrupt.** Enrichment is delivered by queueing, by a
    turn-start context slice, or by record metadata. A host MUST NOT
    deliver enrichment via interrupt, MUST NOT drain a queue on an
-   interrupted turn to place it, and MUST NOT steer into a turn the
-   session started autonomously.
+   interrupted turn to place it, MUST NOT steer into a turn the
+   session started autonomously, and MUST NOT arm a force-delivery
+   deadline whose fallback mode is an interrupt (queue it and wait for
+   the natural turn end instead).
 4. **Dedup.** Hosts MUST dedup per task by default: one block per
    (hook, task/session) in a window; a burst collapses to one queued item.
 5. **Budget & free-tier.** Deterministic steps MUST be token-free. Any model
