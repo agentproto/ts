@@ -1782,6 +1782,14 @@ export function registerAgentTools(
     runnable: e.runnable,
     curated: e.curated,
     multiModel: e.multiModel,
+    // The route-presence ids UI pickers need WITHOUT full rows (the #2143
+    // follow-up): a client that pages COMPACT rows can only resolve "which
+    // wallet can bill this route" and "which harnesses serve it" when the
+    // projection carries these ids. Ids only — profile ids, adapter slugs,
+    // mode ids — still budget-safe next to the dropped pricing/baseUrl.
+    eligibleProfiles: e.eligibleProfiles,
+    adapters: e.adapters,
+    adapterModes: e.adapterModes,
   })
   const catalogModelsSchema = z.object({
     adapter: z.string().optional().describe("Keep only routes reachable via this adapter slug."),
@@ -1801,7 +1809,9 @@ export function registerAgentTools(
       "actually spawnable given the auth profiles configured on this host. " +
       "Returns one FLATTENED row per route (vendor/product carried on each), " +
       "COMPACT BY DEFAULT: vendor/product/route/ref/runnable/curated/" +
-      "multiModel only — pass `full: true` (or `compact: false`) for the " +
+      "multiModel + the eligibleProfiles/adapterModes/adapters ids so a " +
+      "compact-row client can still resolve the billing wallet and serving " +
+      "harnesses — pass `full: true` (or `compact: false`) for the " +
       "complete per-route record (pricing, contextWindow, maxOutput, " +
       "eligibleProfiles, adapterModes, adapters, baseUrl).",
     inputSchema: catalogModelsSchema,
