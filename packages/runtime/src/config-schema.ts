@@ -1111,8 +1111,8 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Sandbox checkpoint triggers",
-    help: "Which events take a checkpoint: \"turn-end\" (timer + after every turn) and/or \"teardown\" (snapshot uncommitted work before delivery). Applies to the next sandbox spawn.",
-    default: ["turn-end", "teardown"],
+    help: 'Which events take a checkpoint: "turn-end" (after every turn, AND the periodic timer, kept for compatibility), "interval" (the periodic timer alone, no per-turn hook; see intervalMs) and/or "teardown" (snapshot uncommitted work before delivery). Applies to the next sandbox spawn.',
+    default: ["turn-end", "teardown", "interval"],
   },
   {
     path: "defaults.sandbox.checkpoint.refPrefix",
@@ -1133,6 +1133,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "defaults",
     label: "Sandbox checkpoint interval (ms)",
     help: "Spacing of periodic checkpoints while a sandbox session runs; 0 turns the timer and the per-turn checkpoint off.",
+    default: DEFAULT_CHECKPOINT_INTERVAL_MS,
+  },
+  {
+    path: "defaults.sandbox.checkpoint.intervalMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Sandbox checkpoint interval (ms)",
+    help: "Spacing of the periodic in-turn checkpoint timer (the on: [\"interval\"] trigger); wins over minIntervalMs. 0 turns the timer off.",
     default: DEFAULT_CHECKPOINT_INTERVAL_MS,
   },
   {

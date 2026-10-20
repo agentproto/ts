@@ -33,7 +33,7 @@ import type {
   SandboxDetachRecord,
   SandboxReattachProbe,
 } from "./sessions.js"
-import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, isFullyDelivered, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
+import { DEFAULT_CHECKPOINT_DEADLINE_MS, DEFAULT_CHECKPOINT_INTERVAL_MS, DISK_GUARD_MIN_FREE_FRACTION, DISK_GUARD_PROBE_TIMEOUT_MS, buildDiskFreeCommand, diskFreeFraction, isFullyDelivered, parseDiskFree, type SandboxDeliveryRecord } from "./sandbox-delivery.js"
 import { buildWorktreeRemoveCommand } from "./sandbox-workspace-remote.js"
 import { recordSandboxReap, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 import type { BoxLoginRefreshOutcome } from "./box-login-bridge.js"
@@ -303,14 +303,28 @@ export interface SandboxAgentSessionProxyOpts {
   /** Re-attach only: the box-transcript `seq` already consumed on the host
    *  before the restart — the event stream resumes after it. */
   initialTranscriptCursor?: number
-  /** Periodic checkpoint of the box's work (`createSandboxCheckpointer`): run
+  /** Periodic checkpoint of the box's work (`createSandboxCheckpointer`):
    *  every `intervalMs`, after each turn, and once more when the watchdog
    *  declares the box daemon dead (the VM often outlives its daemon, and its
    *  filesystem is still reachable through the provider). Stops at `close()`,
    *  which awaits an in-flight run before its own teardown delivery. A
    *  rejection is swallowed. `run`'s `turn` is the number of turns the proxy
-   *  has completed so far, stamped onto the checkpoint record. */
-  checkpoint?: { run: (turn?: number) => Promise<unknown>; intervalMs?: number }
+   *  has completed so far, stamped onto the checkpoint record. `periodic`
+   *  (default true) wires the interval timer — the `on: ["interval"]`
+   *  trigger; `onTurnEnd` (default true) the per-turn hook — `on:
+   *  ["turn-end"]`. Both can be off: the watchdog/deadline/idle-reap
+   *  safety nets still checkpoint. */
+  checkpoint?: {
+    run: (turn?: number, opts?: { force?: boolean }) => Promise<unknown>
+    intervalMs?: number
+    periodic?: boolean
+    onTurnEnd?: boolean
+  }
+  /** DISK GUARD — told when the box's free disk drops under
+   *  `DISK_GUARD_MIN_FREE_FRACTION` (10%) on a periodic tick, right before
+   *  the guard forces a checkpoint. Wired to the spawn's `onNotice` so the
+   *  warning lands in the session's transcript as a notice event. */
+  onWarning?: (text: string) => void
   /** Box-daemon liveness watchdog. Without it a daemon that dies BETWEEN
    *  turns (OOM-killed in a small box) leaves the host row `running` forever:
    *  nothing reads the box until the next prompt. When `failureThreshold`
@@ -931,11 +945,14 @@ export function createSandboxAgentSessionProxy(
   // `turnsSent` at call time — the number of turns completed so far — is
   // stamped onto the checkpoint record/commit message as a breadcrumb; a
   // coalesced call (one already in flight) keeps whichever turn started it.
-  const runCheckpoint = (turn?: number): Promise<unknown> => {
+  // `force` bypasses the unchanged-since-last checkpoint skip — the disk
+  // guard's escape hatch (see `checkDiskSpace`); it runs alongside any
+  // in-flight coalesced run rather than joining it.
+  const runCheckpoint = (turn?: number, forceOpts?: { force?: boolean }): Promise<unknown> => {
     if (!opts.checkpoint) return Promise.resolve()
-    if (checkpointInFlight) return checkpointInFlight
+    if (checkpointInFlight && !forceOpts?.force) return checkpointInFlight
     checkpointInFlight = opts.checkpoint
-      .run(turn)
+      .run(turn, forceOpts)
       .catch(() => undefined)
       .finally(() => {
         checkpointInFlight = undefined
@@ -959,12 +976,64 @@ export function createSandboxAgentSessionProxy(
     timers.push(timer)
     armDeadlineGuard(Date.now() + boxLifetimeMs)
   }
-  if (opts.checkpoint) {
+  if (opts.checkpoint && (opts.checkpoint.periodic ?? true)) {
     const timer = setInterval(() => {
-      if (!closed && !detached) void runCheckpoint(turnsSent)
+      if (closed || detached) return
+      void periodicTick()
     }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
     timer.unref?.()
     timers.push(timer)
+  }
+  // One periodic tick: read the box's free disk FIRST, then take exactly ONE
+  // checkpoint — forced when the disk guard tripped (bypassing the unchanged
+  // skip), so the guard can never start a second run on top of the tick's
+  // own. Forced or not, the checkpointer serializes runs behind the
+  // in-flight one.
+  const periodicTick = async (): Promise<void> => {
+    const force = await checkDiskSpace()
+    if (closed || detached) return
+    await runCheckpoint(turnsSent, force ? { force: true } : undefined).catch(() => undefined)
+  }
+  // DISK GUARD — read the box's free disk; under DISK_GUARD_MIN_FREE_FRACTION
+  // warn (through `onWarning`) and tell the caller to FORCE the checkpoint.
+  // A full disk kills a box WITHOUT a checkpoint: the agent's writes fail,
+  // the crash skips the teardown hook, so the rescue must happen while there
+  // is still room to pack/push. Best-effort: a failed probe is silent (and
+  // reads as "not low" — the plain checkpoint still runs), and the whole
+  // guard is skipped for a provider without exec. One warning per low-disk
+  // episode — the forced checkpoint itself repeats every tick while the
+  // disk stays low.
+  let diskLow = false
+  const checkDiskSpace = async (): Promise<boolean> => {
+    const exec = host.exec
+    if (!exec || !opts.checkpoint || closed || detached) return false
+    let disk: { totalBytes: number; freeBytes: number } | undefined
+    try {
+      const result = await exec({ command: buildDiskFreeCommand(), timeoutMs: DISK_GUARD_PROBE_TIMEOUT_MS })
+      disk = result.exitCode === 0 ? parseDiskFree(result.stdout) : undefined
+    } catch {
+      return false
+    }
+    if (!disk) return false
+    const fraction = diskFreeFraction(disk)
+    if (fraction >= DISK_GUARD_MIN_FREE_FRACTION) {
+      diskLow = false
+      return false
+    }
+    const freePct = Math.floor(fraction * 100)
+    if (!diskLow) {
+      const warning =
+        `[sandbox] the box's free disk is at ${freePct}% (below the ${DISK_GUARD_MIN_FREE_FRACTION * 100}% guard) — ` +
+        "forcing a checkpoint now so the work survives a disk-full crash"
+      console.warn(`[sandbox-proxy] remote session "${remoteSessionId}": ${warning}`)
+      try {
+        opts.onWarning?.(warning)
+      } catch {
+        // a listener's failure is its own
+      }
+    }
+    diskLow = true
+    return true
   }
   let deadError: Error | undefined
   const disconnectListeners: Array<(err: Error) => void> = []
@@ -1103,7 +1172,8 @@ export function createSandboxAgentSessionProxy(
         activeTurns--
         // Each turn's end — clean or not — is a natural checkpoint: the
         // agent just stopped writing. Never awaited: the turn is over.
-        if (!closed && !detached) void runCheckpoint(turnsSent)
+        // Gated by the `on: ["turn-end"]` trigger (default on).
+        if (!closed && !detached && (opts.checkpoint?.onTurnEnd ?? true)) void runCheckpoint(turnsSent)
       }
     },
 

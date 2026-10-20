@@ -4,7 +4,7 @@
  * temp host directory. No box, no git, no network.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -34,8 +34,12 @@ import {
   runSandboxDelivery,
   shouldPush,
   withinBundleLimit,
+  buildDiskFreeCommand,
+  diskFreeFraction,
+  parseDiskFree,
   DEFAULT_CHECKPOINT_INTERVAL_MS,
   DEFAULT_CHECKPOINT_DEADLINE_MS,
+  DISK_GUARD_MIN_FREE_FRACTION,
   CHECKPOINT_BRANCH_PREFIX,
   type SandboxDeliveryRecord,
   type SandboxDeliveryTarget,
@@ -620,16 +624,47 @@ describe("checkpoint cleanup", () => {
 })
 
 describe("resolveSandboxCheckpointConfig", () => {
-  it("defaults to enabled, both triggers, the legacy ref prefix, and the env-derived interval", () => {
+  it("defaults to enabled, all three triggers, the legacy ref prefix, and the env-derived interval", () => {
     const resolved = resolveSandboxCheckpointConfig(undefined, undefined, {})
     expect(resolved).toEqual({
       enabled: true,
       onTurnEnd: true,
       onTeardown: true,
+      onInterval: true,
       refPrefix: CHECKPOINT_BRANCH_PREFIX,
       minIntervalMs: DEFAULT_CHECKPOINT_INTERVAL_MS,
+      intervalMs: DEFAULT_CHECKPOINT_INTERVAL_MS,
       timeoutMs: DEFAULT_CHECKPOINT_DEADLINE_MS,
     })
+  })
+
+  it("the periodic timer rides on both \"interval\" and legacy \"turn-end\" configs", () => {
+    // Back-compat: before the "interval" trigger existed, an explicit
+    // ["turn-end", "teardown"] wired the timer — it must keep doing so.
+    expect(resolveSandboxCheckpointConfig({ on: ["turn-end", "teardown"] }, undefined, {}).onInterval).toBe(true)
+    expect(resolveSandboxCheckpointConfig({ on: ["interval"] }, undefined, {}).onInterval).toBe(true)
+    expect(resolveSandboxCheckpointConfig({ on: ["interval"] }, undefined, {}).onTurnEnd).toBe(false)
+  })
+
+  it("intervalMs wins over minIntervalMs, per-spawn over global", () => {
+    const resolved = resolveSandboxCheckpointConfig(
+      { intervalMs: 30_000, minIntervalMs: 40_000 },
+      { intervalMs: 50_000 },
+      {},
+    )
+    expect(resolved.intervalMs).toBe(50_000)
+    expect(
+      resolveSandboxCheckpointConfig({ intervalMs: 30_000, minIntervalMs: 40_000 }, undefined, {}).intervalMs,
+    ).toBe(30_000)
+    expect(
+      resolveSandboxCheckpointConfig({ minIntervalMs: 40_000 }, undefined, {}).intervalMs,
+    ).toBe(40_000)
+  })
+
+  it("intervalMs <= 0 disables the periodic timer and turn-end hook", () => {
+    const resolved = resolveSandboxCheckpointConfig({ intervalMs: 0 }, undefined, {})
+    expect(resolved.onInterval).toBe(false)
+    expect(resolved.onTurnEnd).toBe(false)
   })
 
   it("falls back to the legacy env var only when neither config layer sets minIntervalMs", () => {
@@ -699,6 +734,96 @@ describe("sandboxCheckpointOpts", () => {
     const config = resolveSandboxCheckpointConfig({ on: ["teardown"] }, undefined, {})
     const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
     expect(opts.checkpoint).toBeUndefined()
+  })
+
+  it("on: [\"interval\"] alone wires the checkpoint object with periodic on and the turn-end hook off", () => {
+    const config = resolveSandboxCheckpointConfig({ on: ["interval"], intervalMs: 60_000 }, undefined, {})
+    const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
+    expect(opts.checkpoint).toMatchObject({ intervalMs: 60_000, periodic: true, onTurnEnd: false })
+  })
+
+  it("on: [\"turn-end\"] wires the checkpoint object with the periodic timer ON (legacy compat)", () => {
+    const config = resolveSandboxCheckpointConfig({ on: ["turn-end"] }, undefined, {})
+    const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
+    expect(opts.checkpoint).toMatchObject({ periodic: true, onTurnEnd: true })
+  })
+})
+
+describe("createSandboxCheckpointer force", () => {
+  it("opts.force bypasses the unchanged-since-last-checkpoint skip", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-force-"))
+    const probe = `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`
+    const exec = vi.fn(async (): Promise<SandboxExecResult> => result(0, probe))
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    await checkpointer.run()
+    expect(exec.mock.calls.length).toBeGreaterThan(1)
+    // Same tree again: a normal run skips the pushes…
+    const probeCalls = exec.mock.calls.length
+    const unchanged = await checkpointer.run()
+    expect(unchanged.unchanged).toBe(true)
+    const afterUnchanged = exec.mock.calls.length
+    // …a forced one runs the probe + pushes anyway.
+    const forced = await checkpointer.run(undefined, { force: true })
+    expect(forced.unchanged).toBeUndefined()
+    expect(exec.mock.calls.length).toBeGreaterThan(afterUnchanged)
+    expect(probeCalls).toBeGreaterThan(0)
+    await rm(outDir, { recursive: true, force: true })
+  })
+
+  it("a forced run SERIALIZES behind the in-flight one instead of overlapping it", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-force-"))
+    const probe = `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`
+    let concurrent = 0
+    let maxConcurrent = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const exec = vi.fn(async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      concurrent++
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      try {
+        // The PROBE (rev-list) of run 1 hangs on the gate: run 2 (forced)
+        // must wait for it, never start on top of it.
+        if (o.command.includes("rev-list") && concurrent === 1) await gate
+        return result(0, probe)
+      } finally {
+        concurrent--
+      }
+    })
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    const first = checkpointer.run()
+    const forced = checkpointer.run(undefined, { force: true })
+    let settled = false
+    void forced.then(() => {
+      settled = true
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(settled).toBe(false) // the forced run is chained behind the hung first one
+    release()
+    await Promise.all([first, forced])
+    expect(maxConcurrent).toBe(1) // never overlapped
+    await rm(outDir, { recursive: true, force: true })
+  })
+})
+
+describe("disk guard", () => {
+  it("builds a POSIX df probe of the box root", () => {
+    expect(buildDiskFreeCommand()).toBe("df -Pk '/'")
+  })
+
+  it("parses the / row of df -Pk output into total and free bytes", () => {
+    const out =
+      "Filesystem 1024-blocks Used Available Capacity Mounted on\n" +
+      "/dev/sda1 8412340 1412340 7000000 17% /\n" +
+      "tmpfs 64000 0 64000 0% /run\n"
+    expect(parseDiskFree(out)).toEqual({ totalBytes: 8_412_340 * 1024, freeBytes: 7_000_000 * 1024 })
+    expect(parseDiskFree("Filesystem 1024-blocks Used Available Capacity Mounted on\n")).toBeUndefined()
+  })
+
+  it("diskFreeFraction reads an unknown total as never-low", () => {
+    expect(diskFreeFraction({ totalBytes: 1000, freeBytes: 100 })).toBe(0.1)
+    expect(diskFreeFraction({ totalBytes: 0, freeBytes: 0 })).toBe(1)
   })
 })
 

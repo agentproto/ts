@@ -625,8 +625,10 @@ export interface SandboxCheckpointer {
    *  `turn`, when given, is stamped onto the record and the snapshot commit
    *  message (see {@link SandboxDeliveryRecord.turn}) — a coalesced call
    *  (one already in flight) keeps whichever turn number started IT, not
-   *  the caller's. */
-  run(turn?: number): Promise<SandboxDeliveryRecord>
+   *  the caller's. `opts.force` bypasses the unchanged-since-last-checkpoint
+   *  skip (the disk guard's escape hatch: a full disk is exactly the moment
+   *  a "nothing new" answer must not be trusted). */
+  run(turn?: number, opts?: { force?: boolean }): Promise<SandboxDeliveryRecord>
 }
 
 /**
@@ -646,14 +648,22 @@ export function createSandboxCheckpointer(
   let checkpointPushed = input.checkpointPushed === true
   let inFlight: Promise<SandboxDeliveryRecord> | undefined
   return {
-    run(turn) {
-      if (inFlight) return inFlight
-      inFlight = (async () => {
+    run(turn, opts) {
+      if (inFlight && !opts?.force) return inFlight
+      // A forced run still SERIALIZES — it chains on the in-flight run
+      // instead of overlapping it (two overlapping runs would race the
+      // snapshot ref, and in tar mode the same archive path), it only
+      // bypasses the unchanged-since-last-checkpoint skip.
+      const prior = inFlight
+      const chained = (fn: () => Promise<SandboxDeliveryRecord>): Promise<SandboxDeliveryRecord> =>
+        prior ? prior.catch(() => undefined).then(fn) : fn()
+      let wrapped: Promise<SandboxDeliveryRecord>
+      wrapped = chained(async () => {
         const record = await runSandboxDelivery({
           ...run,
           mode: "checkpoint",
           checkpointPushed,
-          ...(lastKey !== undefined ? { previousKey: lastKey } : {}),
+          ...(opts?.force ? {} : lastKey !== undefined ? { previousKey: lastKey } : {}),
           ...(turn !== undefined ? { turn } : {}),
         })
         if (isFullyDelivered(record)) lastKey = record.key
@@ -664,10 +674,13 @@ export function createSandboxCheckpointer(
           // reporting is best-effort
         }
         return record
-      })().finally(() => {
-        inFlight = undefined
+      }).finally(() => {
+        // Only OUR run may clear the slot — a chained forced run may have
+        // already replaced it.
+        if (inFlight === wrapped) inFlight = undefined
       })
-      return inFlight
+      inFlight = wrapped
+      return wrapped
     },
   }
 }
@@ -698,24 +711,36 @@ export function resolveCheckpointIntervalMs(env: NodeJS.ProcessEnv = process.env
 export interface SandboxCheckpointConfig {
   /** Master switch. Default true. */
   enabled?: boolean
-  /** Which triggers take a checkpoint. `"turn-end"` wires the periodic
-   *  timer AND the per-turn hook (today's single on/off knob — there is no
-   *  separate dial for the timer vs. the hook); absent, both stay off.
-   *  `"teardown"` makes the teardown delivery SNAPSHOT uncommitted work
-   *  (not just count it, {@link buildProbeCommand}'s `snapshotUncommitted`);
-   *  absent, teardown still pushes the branch but leaves uncommitted work
-   *  in the box uncounted-for-rescue, matching the pre-checkpoint behaviour.
-   *  Default both. */
-  on?: Array<"turn-end" | "teardown">
+  /** Which triggers take a checkpoint. `"turn-end"` wires the per-turn hook
+   *  (a snapshot after each turn the proxy completes); absent, turns end
+   *  uncheckpointed. `"interval"` wires the PERIODIC timer — every
+   *  {@link SandboxCheckpointConfig.intervalMs} of the session's life a
+   *  snapshot is taken DURING a turn too, so a turn longer than the box
+   *  lifetime is not lost with it (a time-based trigger, as opposed to
+   *  `turn-end`'s event-based one). `"turn-end"` ALSO wires the timer (the
+   *  pre-`"interval"` behaviour — an explicit `["turn-end", "teardown"]`
+   *  keeps mid-turn checkpointing across an upgrade); `"interval"` is for a
+   *  timer WITHOUT the per-turn hook. `"teardown"` makes the teardown
+   *  delivery SNAPSHOT uncommitted work (not just count it, {@link
+   *  buildProbeCommand}'s `snapshotUncommitted`); absent, teardown still
+   *  pushes the branch but leaves uncommitted work in the box
+   *  uncounted-for-rescue, matching the pre-checkpoint behaviour.
+   *  Default all three. */
+  on?: Array<"turn-end" | "teardown" | "interval">
   /** Remote branch namespace the snapshot is force-pushed to
-   *  (`<refPrefix><branch>`). Default {@link CHECKPOINT_BRANCH_PREFIX} —
-   *  changing this only affects a FUTURE checkpoint; see
-   *  {@link checkpointBranchOf}. */
+   * (`<refPrefix><branch>`). Default {@link CHECKPOINT_BRANCH_PREFIX} —
+   * changing this only affects a FUTURE checkpoint; see
+   * {@link checkpointBranchOf}. */
   refPrefix?: string
   /** Periodic-checkpoint timer interval (replaces
    *  `AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS`). Default
    *  {@link DEFAULT_CHECKPOINT_INTERVAL_MS}. */
   minIntervalMs?: number
+  /** Preferred spelling of {@link SandboxCheckpointConfig.minIntervalMs} —
+   *  the periodic-checkpoint timer interval; wins over it when both are
+   *  set (they exist because the periodic dial predates the `on: ["interval"]`
+   *  trigger that names it properly). Same default. */
+  intervalMs?: number
   /** Per-checkpoint wall-clock budget (`runSandboxDelivery`'s `deadlineMs`).
    *  Default {@link DEFAULT_CHECKPOINT_DEADLINE_MS}. */
   timeoutMs?: number
@@ -724,17 +749,27 @@ export interface SandboxCheckpointConfig {
 export interface ResolvedSandboxCheckpointConfig {
   enabled: boolean
   /** Resolved `enabled && on.includes("turn-end")` — the proxy wires the
-   *  timer + per-turn hook iff this is true. */
+   *  per-turn hook iff this is true. */
   onTurnEnd: boolean
   /** Resolved `enabled && on.includes("teardown")` — whether the teardown
    *  delivery snapshots uncommitted work. */
   onTeardown: boolean
+  /** Resolved `enabled && on.includes("interval")` — whether the proxy
+   *  runs the periodic-checkpoint timer (every {@link .intervalMs}). */
+  onInterval: boolean
   refPrefix: string
   minIntervalMs: number
+  /** Effective periodic-checkpoint interval — `intervalMs ?? minIntervalMs`
+   *  (config layers) then the legacy env seed. */
+  intervalMs: number
   timeoutMs: number
 }
 
-const DEFAULT_CHECKPOINT_ON: ReadonlyArray<"turn-end" | "teardown"> = ["turn-end", "teardown"]
+const DEFAULT_CHECKPOINT_ON: ReadonlyArray<"turn-end" | "teardown" | "interval"> = [
+  "turn-end",
+  "teardown",
+  "interval",
+]
 
 /**
  * `global → per-spawn` resolution, same precedence shape as
@@ -750,19 +785,23 @@ export function resolveSandboxCheckpointConfig(
   perSpawn: SandboxCheckpointConfig | false | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): ResolvedSandboxCheckpointConfig {
-  const refPrefix = perSpawn === false ? global?.refPrefix : perSpawn?.refPrefix ?? global?.refPrefix
-  const minIntervalMs =
-    (perSpawn === false ? global?.minIntervalMs : perSpawn?.minIntervalMs ?? global?.minIntervalMs) ??
-    resolveCheckpointIntervalMs(env)
-  const timeoutMs = (perSpawn === false ? global?.timeoutMs : perSpawn?.timeoutMs ?? global?.timeoutMs) ??
-    DEFAULT_CHECKPOINT_DEADLINE_MS
+  const pick = <T>(key: keyof SandboxCheckpointConfig): T | undefined =>
+    perSpawn === false
+      ? (global?.[key] as T | undefined)
+      : ((perSpawn?.[key] as T | undefined) ?? (global?.[key] as T | undefined))
+  const refPrefix = pick<string>("refPrefix")
+  const minIntervalMs = pick<number>("minIntervalMs")
+  const intervalMs = pick<number>("intervalMs") ?? minIntervalMs ?? resolveCheckpointIntervalMs(env)
+  const timeoutMs = pick<number>("timeoutMs") ?? DEFAULT_CHECKPOINT_DEADLINE_MS
   if (perSpawn === false) {
     return {
       enabled: false,
       onTurnEnd: false,
       onTeardown: false,
+      onInterval: false,
       refPrefix: refPrefix ?? CHECKPOINT_BRANCH_PREFIX,
-      minIntervalMs,
+      minIntervalMs: minIntervalMs ?? intervalMs,
+      intervalMs,
       timeoutMs,
     }
   }
@@ -770,31 +809,90 @@ export function resolveSandboxCheckpointConfig(
   const on = perSpawn?.on ?? global?.on ?? DEFAULT_CHECKPOINT_ON
   return {
     enabled,
-    // `minIntervalMs <= 0` keeps disabling the timer + per-turn hook on its
+    // `intervalMs <= 0` keeps disabling the timer + per-turn hook on its
     // own — the pre-config-object off-switch (`AGENTPROTO_SANDBOX_
     // CHECKPOINT_INTERVAL_MS=0`), preserved so an existing deployment that
     // only ever set the env var keeps behaving identically.
-    onTurnEnd: enabled && on.includes("turn-end") && minIntervalMs > 0,
+    onTurnEnd: enabled && on.includes("turn-end") && intervalMs > 0,
     onTeardown: enabled && on.includes("teardown"),
+    // `on: ["turn-end"]` KEEPS wiring the timer (the pre-"interval" behaviour
+    // — a deployment that explicitly configured `["turn-end", "teardown"]`
+    // must not silently lose mid-turn checkpointing on upgrade); `"interval"`
+    // is for a timer WITHOUT the per-turn hook.
+    onInterval: enabled && intervalMs > 0 && (on.includes("interval") || on.includes("turn-end")),
     refPrefix: refPrefix ?? CHECKPOINT_BRANCH_PREFIX,
-    minIntervalMs,
+    minIntervalMs: minIntervalMs ?? intervalMs,
+    intervalMs,
     timeoutMs,
   }
 }
 
+/** DISK GUARD — free-space fraction of the box's root disk below which the
+ *  proxy's periodic tick forces a checkpoint and emits a warning. A box
+ *  running out of disk dies badly (the agent's writes fail mid-turn, and a
+ *  crash skips the teardown hook — no checkpoint at all), so the guard runs
+ *  BEFORE the disk is full, while the tar/push path can still get the tree
+ *  out. */
+export const DISK_GUARD_MIN_FREE_FRACTION = 0.1
+export const DISK_GUARD_PROBE_TIMEOUT_MS = 10_000
+
+/** `df -Pk`'s POSIX layout (1K blocks) for `dir` — the box's root by default:
+ *  it is the disk the agent's checkout, builds and adapter store grow on. */
+export function buildDiskFreeCommand(dir = "/"): string {
+  return `df -Pk ${shellQuote(dir)}`
+}
+
+/** Parse `df -Pk` output: `{ totalBytes, freeBytes }` from the row whose
+ *  mount point is `/`. `undefined` for a header-only or unparseable output —
+ *  the guard stays silent rather than guessing. */
+export function parseDiskFree(stdout: string): { totalBytes: number; freeBytes: number } | undefined {
+  for (const line of stdout.split("\n")) {
+    // `Filesystem 1024-blocks Used Available Capacity Mounted-on`
+    const m = /^\S+\s+(\d+)\s+\d+\s+(\d+)\s+\d+%\s+\/$/.exec(line.trim())
+    if (m) return { totalBytes: Number(m[1]) * 1024, freeBytes: Number(m[2]) * 1024 }
+  }
+  return undefined
+}
+
+/** Free fraction of a disk — the number the {@link DISK_GUARD_MIN_FREE_FRACTION}
+ *  threshold compares against. Unknown totals (a zero-column row) read as 1
+ *  (never low): a broken probe must not force-checkpoint forever. */
+export function diskFreeFraction(disk: { totalBytes: number; freeBytes: number }): number {
+  if (!Number.isFinite(disk.totalBytes) || disk.totalBytes <= 0) return 1
+  return disk.freeBytes / disk.totalBytes
+}
+
 /** The proxy's `checkpoint` option for a box with a work branch — empty when
- *  `config.onTurnEnd` is false. Shared by the spawn and restart paths. */
+ *  neither the per-turn hook (`config.onTurnEnd`) nor the periodic timer
+ *  (`config.onInterval`) is on. Shared by the spawn and restart paths. */
 export function sandboxCheckpointOpts(
   input: Omit<Parameters<typeof createSandboxCheckpointer>[0], "deadlineMs" | "refPrefix">,
   config: ResolvedSandboxCheckpointConfig,
-): { checkpoint?: { run: (turn?: number) => Promise<SandboxDeliveryRecord>; intervalMs: number } } {
-  if (!config.onTurnEnd) return {}
+): {
+  checkpoint?: {
+    run: (turn?: number, opts?: { force?: boolean }) => Promise<SandboxDeliveryRecord>
+    intervalMs: number
+    /** Whether the proxy runs the periodic timer (`config.onInterval`) —
+     *  false leaves the per-turn hook as the only trigger. */
+    periodic: boolean
+    /** Whether the proxy checkpoints after each turn (`config.onTurnEnd`). */
+    onTurnEnd: boolean
+  }
+} {
+  if (!config.onTurnEnd && !config.onInterval) return {}
   const checkpointer = createSandboxCheckpointer({
     ...input,
     deadlineMs: config.timeoutMs,
     refPrefix: config.refPrefix,
   })
-  return { checkpoint: { run: (turn) => checkpointer.run(turn), intervalMs: config.minIntervalMs } }
+  return {
+    checkpoint: {
+      run: (turn, opts) => checkpointer.run(turn, opts),
+      intervalMs: config.intervalMs,
+      periodic: config.onInterval,
+      onTurnEnd: config.onTurnEnd,
+    },
+  }
 }
 
 /**
@@ -823,7 +921,12 @@ export function trackedSandboxDeliveryOpts(input: {
   onTargetChanged?: (target: SandboxDeliveryTarget) => void
 }): {
   onBeforeTeardown: () => Promise<void>
-  checkpoint?: { run: (turn?: number) => Promise<unknown>; intervalMs: number }
+  checkpoint?: {
+    run: (turn?: number, opts?: { force?: boolean }) => Promise<unknown>
+    intervalMs: number
+    periodic: boolean
+    onTurnEnd: boolean
+  }
 } {
   let target = input.target
   const base = {
@@ -867,10 +970,12 @@ export function trackedSandboxDeliveryOpts(input: {
   return {
     onBeforeTeardown,
     checkpoint: {
-      intervalMs: input.config.minIntervalMs,
-      run: async (turn) => {
+      intervalMs: input.config.intervalMs,
+      periodic: input.config.onInterval,
+      onTurnEnd: input.config.onTurnEnd,
+      run: async (turn, opts) => {
         await learn()
-        return checkpoint!.run(turn)
+        return checkpoint!.run(turn, opts)
       },
     },
   }

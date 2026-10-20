@@ -362,6 +362,7 @@ export async function runSandboxReattachPass(opts: {
       ledger: { sandboxId, provider: providerSlug, sessionId: desc.id },
       detachable: true,
       initialTranscriptCursor: record.transcriptSeq,
+      onWarning: text => registry.recordNotice?.(desc.id, text),
       ...(tarOpts ?? {}),
       ...(deliveryOpts ?? {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),

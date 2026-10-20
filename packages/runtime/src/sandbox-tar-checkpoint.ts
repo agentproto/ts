@@ -234,10 +234,12 @@ export async function runTarCheckpoint(input: RunTarCheckpointInput): Promise<Ta
 }
 
 export interface SandboxTarCheckpointer {
-  run(turn?: number): Promise<TarCheckpointRecord>
+  run(turn?: number, opts?: { force?: boolean }): Promise<TarCheckpointRecord>
 }
 
-/** Serialized tar checkpoints for one box; remembers the last saved key. */
+/** Serialized tar checkpoints for one box; remembers the last saved key.
+ *  `opts.force` bypasses the unchanged-since-last-checkpoint skip — the
+ *  disk guard's escape hatch, same as the git checkpointer's. */
 export function createTarCheckpointer(
   input: Omit<RunTarCheckpointInput, "mode" | "previousKey" | "turn"> & {
     onRecord?: (record: TarCheckpointRecord) => void
@@ -247,13 +249,21 @@ export function createTarCheckpointer(
   let lastKey: string | undefined
   let inFlight: Promise<TarCheckpointRecord> | undefined
   return {
-    run(turn) {
-      if (inFlight) return inFlight
-      inFlight = (async () => {
+    run(turn, opts) {
+      if (inFlight && !opts?.force) return inFlight
+      // A forced run still SERIALIZES — it chains on the in-flight run
+      // instead of overlapping it (two overlapping runs would rm -f each
+      // other's box-side tar and race the host-side tmp+rename), it only
+      // bypasses the unchanged-since-last-checkpoint skip.
+      const prior = inFlight
+      const chained = (fn: () => Promise<TarCheckpointRecord>): Promise<TarCheckpointRecord> =>
+        prior ? prior.catch(() => undefined).then(fn) : fn()
+      let wrapped: Promise<TarCheckpointRecord>
+      wrapped = chained(async () => {
         const record = await runTarCheckpoint({
           ...run,
           mode: "checkpoint",
-          ...(lastKey !== undefined ? { previousKey: lastKey } : {}),
+          ...(opts?.force ? {} : lastKey !== undefined ? { previousKey: lastKey } : {}),
           ...(turn !== undefined ? { turn } : {}),
         })
         if (record.status === "saved" && record.key !== undefined) lastKey = record.key
@@ -263,10 +273,13 @@ export function createTarCheckpointer(
           // reporting is best-effort
         }
         return record
-      })().finally(() => {
-        inFlight = undefined
+      }).finally(() => {
+        // Only OUR run may clear the slot — a chained forced run may have
+        // already replaced it.
+        if (inFlight === wrapped) inFlight = undefined
       })
-      return inFlight
+      inFlight = wrapped
+      return wrapped
     },
   }
 }
@@ -301,7 +314,14 @@ export function tarCheckpointProxyOpts(input: {
   notify?: (text: string) => void
 }): {
   onBeforeTeardown?: () => Promise<void>
-  checkpoint?: { run: (turn?: number) => Promise<TarCheckpointRecord>; intervalMs: number }
+  checkpoint?: {
+    run: (turn?: number, opts?: { force?: boolean }) => Promise<TarCheckpointRecord>
+    intervalMs: number
+    /** Whether the proxy runs the periodic timer (`config.onInterval`). */
+    periodic: boolean
+    /** Whether the proxy checkpoints after each turn (`config.onTurnEnd`). */
+    onTurnEnd: boolean
+  }
 } {
   const { exec, target, config } = input
   if (!exec || !target) return {}
@@ -313,7 +333,7 @@ export function tarCheckpointProxyOpts(input: {
       if (record.status !== "saved") console.warn(formatTarNotice(record))
     }
   }
-  if (config.onTurnEnd) {
+  if (config.onTurnEnd || config.onInterval) {
     const checkpointer = createTarCheckpointer({
       ...base,
       deadlineMs: config.timeoutMs,
@@ -321,7 +341,12 @@ export function tarCheckpointProxyOpts(input: {
         if (!record.unchanged) input.notify?.(formatTarNotice(record))
       },
     })
-    out.checkpoint = { run: turn => checkpointer.run(turn), intervalMs: config.minIntervalMs }
+    out.checkpoint = {
+      run: (turn, opts) => checkpointer.run(turn, opts),
+      intervalMs: config.intervalMs,
+      periodic: config.onInterval,
+      onTurnEnd: config.onTurnEnd,
+    }
   }
   return out
 }
