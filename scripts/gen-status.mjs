@@ -3,13 +3,18 @@
  * gen-status.mjs — generates STATUS.md, a tier classification table of every
  * pnpm workspace package.
  *
- * Tiers (exactly one per package):
+ * Tiers (exactly one per package, applied in this order):
+ *   archived       — dead packages with zero workspace dependents, from the
+ *                    explicit override list below (PARACHUTED: verified by
+ *                    scanning every workspace package.json's dependencies,
+ *                    devDependencies and peerDependencies). The override wins
+ *                    over the adapters/** path rule.
+ *   adapters       — packages under adapters/** (AIP-45 agent-CLI adapters and
+ *                    tool projections) that are not on the override list.
  *   core           — runtime packages the product actually loads/configures:
  *                    runtime, cli, driver core, sandbox family, auth,
  *                    model-catalog, and everything else that is not one of
  *                    the more specific tiers below.
- *   adapters       — packages under adapters/** (AIP-45 agent-CLI adapters and
- *                    tool projections).
  *   spec-reference — spec-only / doctype-only packages: reference
  *                    implementations of AIP file formats whose workspace
  *                    dependencies are limited to the doctype meta-factory
@@ -18,10 +23,6 @@
  *                    (@agentproto/tooling). This is computed as a transitive
  *                    closure, so doctype packages layered on top of other
  *                    doctype packages (e.g. workspace -> work) qualify too.
- *   archived       — dead packages with zero workspace dependents, from the
- *                    explicit override list below (PARACHUTED: verified by
- *                    scanning every workspace package.json's dependencies,
- *                    devDependencies and peerDependencies).
  *
  * Flags:
  *   --check   verify STATUS.md is up to date (exit 1 on drift)
@@ -84,30 +85,21 @@ const TOOLING_DEPS = new Set(["@agentproto/tooling"]);
 // Seed of the spec-reference closure: the AIP doctype meta-factory.
 const DOCTYPE_SEED = "@agentproto/define-doctype";
 
-function workspaceDirs() {
+function workspaceDirs(root = process.cwd()) {
   const dirs = [];
   for (const glob of GLOBS) {
     const parts = glob.split("/");
-    const parent = parts.slice(0, -1).join("/");
+    const parentRel = parts.slice(0, -1).join("/");
+    const parent = path.join(root, parentRel);
     if (!existsSync(parent)) continue;
     // Parent chain (e.g. packages/driver) must itself exist for the glob
-    // to have ever been a workspace match candidate.
+    // to have ever been a workspace match candidate. GLOBS are all
+    // `<parent>/*`, so one readdir of the parent is the full match.
     for (const entry of readdirSync(parent, { withFileTypes: true })) {
-      const dir = path.join(parent, entry.name);
       if (!entry.isDirectory()) continue;
-      if (existsSync(path.join(dir, "package.json"))) dirs.push(dir);
-      else if (GLOBS.includes(`${glob}/*`)) {
-        // Two-segment glob (packages/driver/*): one level of directory
-        // nesting is allowed and the leaf must contain package.json.
-        for (const sub of readdirSync(dir, { withFileTypes: true })) {
-          const subDir = path.join(dir, sub.name);
-          if (
-            sub.isDirectory() &&
-            existsSync(path.join(subDir, "package.json"))
-          ) {
-            dirs.push(subDir);
-          }
-        }
+      const dirRel = path.posix.join(parentRel, entry.name);
+      if (existsSync(path.join(root, dirRel, "package.json"))) {
+        dirs.push(dirRel);
       }
     }
   }
@@ -128,13 +120,11 @@ function workspaceDeps(pj) {
 }
 
 export function computeStatus(root = process.cwd()) {
-  const dirs = workspaceDirs().map((d) => d);
+  const dirs = workspaceDirs(root);
   const entries = dirs.map((dir) => {
     const pj = packageJson(path.join(root, dir));
     return { dir, name: pj.name, version: pj.version, deps: workspaceDeps(pj) };
   });
-
-  const byName = new Map(entries.map((e) => [e.name, e]));
 
   // Verify the archived list holds: archived means zero workspace dependents.
   for (const entry of entries) {
@@ -185,6 +175,8 @@ export function computeStatus(root = process.cwd()) {
   const classified = entries.map((e) => {
     let tier;
     let reason;
+    // Precedence matches the documented rule order: the explicit
+    // dead-package override list wins over the adapters/** path rule.
     if (ARCHIVED.has(e.name)) {
       tier = "archived";
       reason = "dead: zero workspace dependents (override list)";
@@ -235,8 +227,8 @@ A snapshot of every pnpm workspace package (\`${entries.length}\` \`package.json
 
 ## Classification rule
 
-1. \`adapters/**\` → \`adapters\`.
-2. Packages on the explicit dead-package override list in \`scripts/gen-status.mjs\` (verified zero-dependent in the workspace) → \`archived\`.
+1. Packages on the explicit dead-package override list in \`scripts/gen-status.mjs\` (verified zero-dependent in the workspace) → \`archived\`. The override wins over the \`adapters/**\` path rule.
+2. \`adapters/**\` (not on the override list) → \`adapters\`.
 3. The core runtime family — \`runtime\`, \`cli\`, \`driver\` (core), the \`sandbox\` family, \`auth\`, \`model-catalog\` and their runtime neighbours — → \`core\`.
 4. Spec-only / doctype-only packages — reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory \`@agentproto/define-doctype\`, the generic doctype verbs \`@agentproto/manifest\` and build tooling \`@agentproto/tooling\` — → \`spec-reference\`.
 5. Everything else → \`core\`.

@@ -6,8 +6,8 @@ A snapshot of every pnpm workspace package (`156` `package.json` files under the
 
 ## Classification rule
 
-1. `adapters/**` → `adapters`.
-2. Packages on the explicit dead-package override list in `scripts/gen-status.mjs` (verified zero-dependent in the workspace) → `archived`.
+1. Packages on the explicit dead-package override list in `scripts/gen-status.mjs` (verified zero-dependent in the workspace) → `archived`. The override wins over the `adapters/**` path rule.
+2. `adapters/**` (not on the override list) → `adapters`.
 3. The core runtime family — `runtime`, `cli`, `driver` (core), the `sandbox` family, `auth`, `model-catalog` and their runtime neighbours — → `core`.
 4. Spec-only / doctype-only packages — reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory `@agentproto/define-doctype`, the generic doctype verbs `@agentproto/manifest` and build tooling `@agentproto/tooling` — → `spec-reference`.
 5. Everything else → `core`.
