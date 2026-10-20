@@ -723,3 +723,43 @@ describe("computerSandboxProvider.connect + probe", () => {
     }
   })
 })
+
+describe("computerSandboxProvider.remove — shared-box semantics", () => {
+  let controller: FakeController
+
+  beforeEach(async () => {
+    controller = new FakeController({ token: SERVICE_TOKEN })
+    await controller.start()
+  })
+  afterEach(async () => {
+    await controller.stop()
+    vi.restoreAllMocks()
+  })
+
+  it("WITHOUT force a 409 (attached sessions) is a NON-fatal soft 'still in use' — resolves and the box survives", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const id = booted.sandboxId
+    const client = new ComputerControllerClient({ baseUrl: controller.url, token: SERVICE_TOKEN, tenantId: "tenant-a" })
+    controller.maxSessions.set(id, 2)
+    await client.attach(id, { holder: "sess-peer" })
+    await expect(computerSandboxProvider.remove!(id)).resolves.toBeUndefined()
+    expect(controller.removed).not.toContain(id)
+  })
+
+  it("with force (the gc path) the box is destroyed even with attached sessions", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)
+    const id = booted.sandboxId
+    const client = new ComputerControllerClient({ baseUrl: controller.url, token: SERVICE_TOKEN, tenantId: "tenant-a" })
+    controller.maxSessions.set(id, 2)
+    await client.attach(id, { holder: "sess-peer" })
+    await expect(computerSandboxProvider.remove!(id, { force: true })).resolves.toBeUndefined()
+    expect(controller.removed).toContain(id)
+  })
+
+  it("an already-gone id (404) is idempotent success", async () => {
+    vi.stubEnv("COMPUTER_CONTROLLER_URL", controller.url)
+    vi.stubEnv("COMPUTER_CONTROLLER_TOKEN", SERVICE_TOKEN)
+    vi.stubEnv("COMPUTER_TENANT_ID", "tenant-a")
+    await expect(computerSandboxProvider.remove!("cmp-does-not-exist")).resolves.toBeUndefined()
+  })
+})

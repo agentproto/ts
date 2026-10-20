@@ -123,10 +123,16 @@ describe("sandbox proxy — heartbeat renewal and deadline guard", () => {
 
     await vi.advanceTimersByTimeAsync(1)
     // One last renewal attempt from the guard, then the final checkpoint —
-    // still BEFORE the deadline.
+    // still BEFORE the deadline. The guard RETRIES the renewal (up to 5
+    // spaced sleeps of ≤30s settle into fake time) before falling through
+    // to the checkpoint; advance through those sleeps without reaching the
+    // 45-min deadline itself.
+    await vi.advanceTimersByTimeAsync(5 * 30_000)
     expect(extendTimeout.mock.calls.length).toBeGreaterThan(1)
     expect(checkpoint.run).toHaveBeenCalledTimes(1)
-    expect(checkpoint.run).toHaveBeenCalledWith(1, undefined)
+    // The final checkpoint is BOUNDED to the remaining lifetime (the guard
+    // runs early, so a positive budget is always passed).
+    expect(checkpoint.run).toHaveBeenCalledWith(1, expect.objectContaining({ deadlineMs: expect.any(Number) }))
 
     stream.end()
     await proxy.close()

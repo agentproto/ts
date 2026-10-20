@@ -498,6 +498,21 @@ export const boxSandboxProvider: SandboxProvider = {
     const token = await ensureDaemonHealthy(api, boxId, host, port, workspace, config, opts.env, opts.expose)
     return toBootedSandbox(api, boxId, host, token)
   },
+
+  /** The `stop()` pair (best-effort stop, then remove) WITHOUT connecting —
+   *  a stopped/archived/idle box is reaped straight from the control plane,
+   *  no resume. A box that's already gone is success. */
+  async remove(boxId: string): Promise<void> {
+    const api = makeBoxApi()
+    await withBoxRetry(() => api.stop({ boxId })).catch(() => {})
+    try {
+      await withBoxRetry(() => api.remove({ boxId }))
+    } catch (err) {
+      if (!/not.*found|404|doesn't exist|does not exist/i.test(err instanceof Error ? err.message : String(err))) {
+        throw err
+      }
+    }
+  },
 }
 
 /** Poll `url` until it responds OK, or return false once `timeoutMs` elapses. */

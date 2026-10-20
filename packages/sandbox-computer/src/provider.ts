@@ -718,6 +718,50 @@ export const computerSandboxProvider: SandboxProvider = {
     if (aliased === sandboxId) return first
     return probeComputer(aliased, probeClientConfigs.get(aliased) ?? fallbackConfig())
   },
+
+  /**
+   * Destroy the computer through the controller WITHOUT resuming it: a
+   * suspended box holds a RAM snapshot, and `connect()` (the old gc/rm
+   * path) would first need capacity to RESUME it before `remove()` could
+   * free that same capacity — on an exhausted host that was a deadlock
+   * (`capacity exhausted (available 511)`). The controller's DELETE frees
+   * the box as-is. An unknown id (404) is success; the box is gone either
+   * way.
+   * SHARED-BOX SAFETY (AIP-36): WITHOUT `opts.force` the controller's
+   * attached-session guard stands — a `409` ("computer has attached
+   * sessions") is a NON-FATAL soft "still in use": the box survives, the
+   * caller simply cannot destroy it now. ONLY the gc path passes
+   * `force: true`, and only after its candidate check proved every
+   * attaché's session is already terminal ("we are deleting it, nothing
+   * can outlive that").
+   */
+  async remove(sandboxId: string, opts: { force?: boolean } = {}): Promise<void> {
+    const fallbackConfig = () =>
+      resolveClientConfig(
+        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+        readComputerConfig({ provider: "computer", config: {} }),
+      )
+    for (const id of [sandboxId, resolveAlias(sandboxId)]) {
+      const client = new ComputerControllerClient(probeClientConfigs.get(id) ?? fallbackConfig())
+      try {
+        await client.remove(id, { force: opts.force === true })
+        // Also prune this process's bookkeeping — the box is gone.
+        for (const [from, to] of idAliases) {
+          if (to === id) idAliases.delete(from)
+        }
+        idAliases.delete(id)
+        probeClientConfigs.delete(id)
+        return
+      } catch (err) {
+        if (err instanceof ComputerApiError && err.status === 404) continue
+        // 409 without force is the shared-box "still in use" answer, not a
+        // teardown failure — surface nothing. WITH force the guard was
+        // asked to step aside; a 409 there is a REAL conflict, keep throwing.
+        if (err instanceof ComputerApiError && err.status === 409 && opts.force !== true) return
+        throw err
+      }
+    }
+  },
 }
 
 async function bootOnClient(
