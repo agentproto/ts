@@ -78,10 +78,27 @@ describe("continuationBadgeFor", () => {
 })
 
 describe("previousSessionTitle", () => {
-  it("prefers the previous session's label", () => {
+  it("prefers the previous session's label, followed by its id tail", () => {
+    // Continue-fresh copies the label VERBATIM, so the bare label would be
+    // identical to this row's own — the id tail is what tells them apart.
     expect(
       previousSessionTitle(session({ id: "p", label: "pm-agentproto", title: "T" }), "p"),
-    ).toBe("pm-agentproto")
+    ).toBe("pm-agentproto (p)")
+  })
+  it("falls back to the title, also suffixed with the id tail", () => {
+    expect(previousSessionTitle(session({ id: "p2", title: "The Title" }), "p2")).toBe(
+      "The Title (p2)",
+    )
+  })
+  it("trims a long id to its tail", () => {
+    expect(
+      previousSessionTitle(session({ id: "sess_0123456789ab", label: "same name" }), "sess_x"),
+    ).toBe("same name (6789ab)")
+  })
+  it("returns the bare id when the predecessor has neither label nor title", () => {
+    expect(previousSessionTitle(session({ id: "sess_abcdef" }), "sess_abcdef")).toBe(
+      "sess_abcdef",
+    )
   })
   it("falls back to the raw id when the predecessor is unknown", () => {
     expect(previousSessionTitle(undefined, "ses_gone")).toBe("ses_gone")
@@ -92,13 +109,13 @@ describe("continuationTooltipFor", () => {
   const prev = session({ id: "p1", label: "pm-agentproto" })
   const lookup: ContinuationLookupLike = id => (id === "p1" ? prev : undefined)
 
-  it("reads 'Continued 3 times — previous: <prev label>'", () => {
+  it("reads 'Continued 3 times — previous: <prev label> (<id tail>)'", () => {
     expect(
       continuationTooltipFor(
         session({ id: "c", continuedFrom: "p1", continuationGeneration: 3 }),
         lookup,
       ),
-    ).toBe("Continued 3 times — previous: pm-agentproto")
+    ).toBe("Continued 3 times — previous: pm-agentproto (p1)")
   })
   it("uses the singular form for the first hop", () => {
     expect(
@@ -106,7 +123,7 @@ describe("continuationTooltipFor", () => {
         session({ id: "c", continuedFrom: "p1", continuationGeneration: 1 }),
         lookup,
       ),
-    ).toBe("Continued 1 time — previous: pm-agentproto")
+    ).toBe("Continued 1 time — previous: pm-agentproto (p1)")
   })
   it("falls back to the raw id for an unknown predecessor", () => {
     expect(

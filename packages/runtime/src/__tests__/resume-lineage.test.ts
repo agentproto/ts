@@ -93,6 +93,52 @@ describe("revival lineage (continuedFrom)", () => {
     }
   })
 
+  it("chained revival: reviving a revived row carries the count to generation 2", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "resume-lineage-chain-"))
+    const sessionEvents = createSessionEventBus()
+    const registry = createSessionsRegistry({ persist: false, sessionEvents })
+    const { resolveAgentAdapter } = makeResolver()
+    const base = endedSession(registry)
+
+    // Same cron revive as above, pointed at whichever row this hop starts from
+    // (each hop needs its own `processAlive: false` projection).
+    const reviveOnce = async (targetId: string) => {
+      const view = { ...registry, get: (id: string) => {
+        const d = registry.get(id)
+        return d && id === targetId ? { ...d, processAlive: false } : d
+      } } as SessionsRegistry
+      const scheduler = createCronScheduler({ sessionEvents, registry: view, resolveAgentAdapter, workspace })
+      try {
+        const job = await scheduler.create({
+          schedule: "0 0 1 1 *",
+          recurring: true,
+          action: { kind: "prompt-session", sessionId: targetId, prompt: "wake up" },
+        })
+        const result = await scheduler.run(job.id)
+        expect(result?.ok).toBe(true)
+        return registry.list().find(s => s.continuedFrom === targetId)!
+      } finally {
+        scheduler.shutdown()
+      }
+    }
+
+    try {
+      const first = await reviveOnce(base.id)
+      expect(first.continuationGeneration).toBe(1)
+
+      registry.kill(first.id)
+      const second = await reviveOnce(first.id)
+      expect(second.continuedFrom).toBe(first.id)
+      // The second hop reads the FIRST hop's generation off the resident row —
+      // reviving a revived row continues the chain instead of restarting at 1.
+      expect(second.continuationGeneration).toBe(2)
+      expect(registry.get(first.id)?.continuedTo).toBe(second.id)
+    } finally {
+      registry.shutdown()
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
   it("sentinel dead-session path: the resumed row records continuedFrom", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const { resolveAgentAdapter } = makeResolver()

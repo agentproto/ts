@@ -6700,6 +6700,10 @@ export function createSessionsRegistry(opts?: {
     // generation + 1 (prev without a stamp counts as a base row, gen 0 → 1).
     // Keeping the count here means a later `session_continue_fresh` of the
     // revived row continues the chain instead of resetting to 1.
+    // The prior generation is read from the in-memory `sessions` map ONLY:
+    // persisted rows are rehydrated into it at startup, so a predecessor is
+    // normally resident. A predecessor that is NOT in the map (forgotten, or
+    // never loaded) reads as gen 0, so that one revival restarts at 1.
     const prevGen = sessions.get(resumedFrom)?.desc.continuationGeneration
     return {
       resumedFrom,

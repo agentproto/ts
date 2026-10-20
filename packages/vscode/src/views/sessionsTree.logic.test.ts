@@ -731,6 +731,19 @@ describe("treeContextValueFor", () => {
     // Unwatched (or unspecified) rows are byte-identical to before.
     expect(treeContextValueFor(session({ status: "running" }), false)).toBe("session-live")
   })
+  it("inserts -continued between the status and -archived/-watched on a continuation row", () => {
+    expect(treeContextValueFor(session({ status: "running", continuedFrom: "prev" }))).toBe(
+      "session-live-continued",
+    )
+    expect(
+      treeContextValueFor(
+        session({ status: "exited", continuedFrom: "prev", archived: true }),
+        true,
+      ),
+    ).toBe("session-done-continued-archived-watched")
+    // A base row (no continuedFrom) stays byte-identical to before.
+    expect(treeContextValueFor(session({ status: "running" }))).toBe("session-live")
+  })
 })
 
 describe("withArchivedTag", () => {
