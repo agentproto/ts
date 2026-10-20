@@ -1074,6 +1074,56 @@ export class DaemonClient {
     }
   }
 
+  /** Page-walk catalog_models, THROWING on the daemon's truncation stub.
+   *  Returns a payload downstream code can renest: the aggregated flat rows
+   *  under `{ routes: [...] }`, or the RAW legacy payload (its flat
+   *  `{ routes: [...] }` wrapper or nested `{ vendors: [...] }` tree).
+   *  Paged full rows keep the wallet/harness fields the pickers read even on
+   *  a daemon whose compact projection predates them. */
+  private async pageCatalogPayload(args: Record<string, unknown>): Promise<unknown> {
+    const rows: unknown[] = []
+    let cursor: string | undefined
+    do {
+      const result = await this.mcpCall<
+        unknown[] | { routes?: unknown[]; vendors?: unknown } | {
+          items?: unknown[]
+          nextCursor?: string
+          truncated?: true
+          totalBytes?: number
+        }
+      >("catalog_models", { ...args, ...(cursor ? { cursor } : {}) })
+      if (
+        !Array.isArray(result) && (result as { truncated?: unknown }).truncated === true
+      ) {
+        const bytes = (result as { totalBytes?: number }).totalBytes
+        throw new McpResultTruncatedError(
+          "catalog_models response was truncated by the daemon's MCP result cap" +
+            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
+            " — page the request with limit/cursor",
+        )
+      }
+      if (Array.isArray(result)) {
+        rows.push(...result)
+        break
+      }
+      const items = (result as { items?: unknown[] }).items
+      if (items) {
+        rows.push(...items)
+        cursor = (result as { nextCursor?: string }).nextCursor
+        continue
+      }
+      // Legacy unpaged envelope despite the paging args — a daemon echoing
+      // either the flat { routes: [...] } or the nested { vendors: [...] }.
+      const routes = (result as { routes?: unknown[] }).routes
+      if (routes && routes.length > 0) {
+        rows.push(...routes)
+        break
+      }
+      return result
+    } while (cursor)
+    return rows
+  }
+
   /** Legacy path: page the full listing and pick one slug. A daemon that
    *  predates the pagination params gets one unpaged full call. */
   private async getAdapterFromFullListing(slug: string): Promise<AdapterInfo | undefined> {
@@ -1204,12 +1254,26 @@ export class DaemonClient {
    * vendor/product/route model catalog.
    */
   async catalogModels(): Promise<CatalogModelsResponse> {
-    // `full: true` — the compact projection returns a flat `{ routes: [...] }`
-    // array the legacy consumers can't walk; renestCatalog regroups it into
-    // the nested { vendors: [...] } tree (and default-fills the fields the
-    // compact rows lack).
-    const result = await this.mcpCall<unknown>("catalog_models", { full: true })
-    return renestCatalog(result) ?? { vendors: [] }
+    // Page the FULL rows with limit/cursor instead of one unpaged `full: true`
+    // call: the complete catalog comfortably exceeds the daemon's MCP result
+    // cap, and the resulting `{ truncated: true }` stub silently renested to
+    // an EMPTY catalog — the spawn wizard then fell back to the manifest
+    // picker (no route → no wallet picker, only the daemon's default wallet
+    // ever attached) and the change-wallet access chip offered only "+ add
+    // profile". Compact rows degrade the same way, so full is requested on
+    // every page. A daemon without the `limit`/`cursor` params is detected
+    // via the typed McpInvalidParamsError and answered with the legacy
+    // single unpaged full call.
+    try {
+      const rows = await this.pageCatalogPayload({ full: true, limit: 50 })
+      return renestCatalog(rows) ?? { vendors: [] }
+    } catch (err) {
+      if (err instanceof McpInvalidParamsError) {
+        const result = await this.mcpCall<unknown>("catalog_models", { full: true })
+        return renestCatalog(result) ?? { vendors: [] }
+      }
+      throw err
+    }
   }
 
   /**
