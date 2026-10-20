@@ -112,7 +112,7 @@ class ConfigurationLabWebviewProvider implements vscode.WebviewViewProvider {
           },
           getAdapter: (slug) => this.client.getAdapter(slug),
           harnessCapabilities: (adapter) => this.client.harnessCapabilities(adapter),
-          catalogModels: () => this.client.catalogModels(),
+          catalogModels: () => this.client.catalogModels(this.selection.adapter),
           listAuthProfiles: () => this.client.listAuthProfiles(),
           listProviderPresets: () => this.client.listProviderPresets(),
         },

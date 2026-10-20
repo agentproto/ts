@@ -61,7 +61,9 @@ async function setSessionAccessProfileCommand(
   }
 
   const [catalog, profiles] = await Promise.all([
-    client.catalogModels().catch(() => undefined),
+    // Adapter-scoped: the unscoped route union would list wallets this
+    // session's own adapter cannot bill — never pre-select one of those.
+    client.catalogModels(session.adapterSlug).catch(() => undefined),
     client.listAuthProfiles().catch(() => []),
   ])
 

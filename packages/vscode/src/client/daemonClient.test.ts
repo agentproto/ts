@@ -410,8 +410,9 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
             full?: boolean
             limit?: number
             cursor?: string
+            adapter?: string
           }
-          const allRoutes = catalogRoutes()
+          const allRoutes = catalogRoutes(args.adapter)
           const envelope = (payload: unknown) => ({ status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } } })
           if (catalogNoPaging && (args.limit !== undefined || args.cursor !== undefined)) {
             return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32602, message: 'Invalid arguments: Unrecognized key "limit"' } } }
@@ -531,9 +532,12 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   let adapterDetailTruncated = false
   let adapterModelsTruncated = false
 
-  /** One fake catalog row per route (full CatalogRoute fields). */
-  const catalogRoutesDefault = (): Array<Record<string, unknown>> => [
-    {
+  /** One fake catalog row per route (full CatalogRoute fields).
+   *  `adapterArg` mirrors the daemon's adapter grounding: the unscoped
+   *  catalog unions EVERY adapter's auth surface, so claude-sdk's route
+   *  carries moonshot-api there; the per-adapter slice drops it. */
+  const catalogRoutesDefault = (adapterArg?: string): Array<Record<string, unknown>> => {
+    const unionRow = {
       vendor: "anthropic",
       product: "claude-opus-4-8",
       route: "anthropic",
@@ -541,13 +545,17 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
       baseUrl: null,
       pricing: { inPer1M: 15, outPer1M: 75 },
       runnable: true,
-      eligibleProfiles: ["personal"],
+      eligibleProfiles: ["claude-subs", "moonshot-api"],
       adapterModes: [],
-      adapters: ["claude-code"],
+      adapters: ["claude-code", "claude-sdk", "mastracode"],
       curated: true,
       multiModel: false,
-    },
-  ]
+    }
+    if (adapterArg === "claude-sdk") {
+      return [{ ...unionRow, eligibleProfiles: ["claude-subs", "anthropic-api-local-dev-agentik"] }]
+    }
+    return [unionRow]
+  }
   let catalogRoutes = catalogRoutesDefault
   let catalogRoutesTruncated = false
   let catalogNoPaging = false
@@ -1206,7 +1214,33 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
       ? (catalogCalls[1].body as { params: { arguments: Record<string, unknown> } }).params.arguments
       : undefined
     expect(args).toEqual({ full: true })
-    expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["personal"])
+    expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["claude-subs", "moonshot-api"])
+  })
+
+  // The reported repro: launching claude-sdk 400'd with
+  // "profile moonshot-api (moonshot/api-key) is not eligible for adapter
+  // claude-sdk on route anthropic". The unscoped catalog row unions every
+  // curating adapter's wallets — the client MUST ask scoped to ONE adapter
+  // so eligibleProfiles carry the daemon's per-adapter grounding and the
+  // pickers never offer (or silently attach) an ineligible wallet.
+  it("catalogModels(adapter) grounds eligibleProfiles per adapter — moonshot-api is never offered for claude-sdk (repro)", async () => {
+    const catalog = await client().catalogModels("claude-sdk")
+    const catalogCalls = daemon.requests.filter(r => (r.body as { params?: { name?: string } })?.params?.name === "catalog_models")
+    const args = (catalogCalls[0]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toMatchObject({ adapter: "claude-sdk", full: true, limit: 50 })
+
+    const route = catalog.vendors
+      .find(v => v.vendor === "anthropic")
+      ?.products.flatMap(p => p.routes)
+      .find(r => r.route === "anthropic")
+    const eligible = route?.eligibleProfiles ?? []
+    expect(eligible).not.toContain("moonshot-api")
+    expect(eligible).toEqual(["claude-subs", "anthropic-api-local-dev-agentik"])
+    // The attached-wallet decision the launch wizard drives: one-sole-profile
+    // attach can only ever bind an ELIGIBLE wallet now (classify attach/pick),
+    // and several eligible wallets still open the wallet picker.
+    const choice = classifyProfileChoice(eligible, route?.runnable)
+    expect(choice).toEqual({ kind: "pick", options: ["claude-subs", "anthropic-api-local-dev-agentik"] })
   })
 
   it("catalogModels() carries route/adapters/eligibleProfiles so the spawn + change-wallet pickers classify wallets (bugs a+b)", async () => {

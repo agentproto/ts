@@ -1253,7 +1253,7 @@ export class DaemonClient {
    * `catalog_models` is an MCP-only tool — fetch the daemon's read-only
    * vendor/product/route model catalog.
    */
-  async catalogModels(): Promise<CatalogModelsResponse> {
+  async catalogModels(adapter?: string): Promise<CatalogModelsResponse> {
     // Page the FULL rows with limit/cursor instead of one unpaged `full: true`
     // call: the complete catalog comfortably exceeds the daemon's MCP result
     // cap, and the resulting `{ truncated: true }` stub silently renested to
@@ -1261,15 +1261,21 @@ export class DaemonClient {
     // picker (no route → no wallet picker, only the daemon's default wallet
     // ever attached) and the change-wallet access chip offered only "+ add
     // profile". Compact rows degrade the same way, so full is requested on
-    // every page. A daemon without the `limit`/`cursor` params is detected
-    // via the typed McpInvalidParamsError and answered with the legacy
-    // single unpaged full call.
+    // every page. OPTIONALLY scope to one adapter: the unfiltered routes
+    // union the auth methods of EVERY adapter curating them, so eligibleProfiles
+    // can name wallets a specific adapter's spawn then refuses
+    // (`access_profile_ineligible` — the daemon grounds the same list per
+    // adapter); adapter-scoped consumers (the spawn wizard, the session
+    // pickers) must ask with their adapter slug. A daemon without the
+    // `limit`/`cursor` params is detected via the typed McpInvalidParamsError
+    // and answered with the legacy single unpaged full call.
+    const scope = adapter ? { adapter } : {}
     try {
-      const rows = await this.pageCatalogPayload({ full: true, limit: 50 })
+      const rows = await this.pageCatalogPayload({ full: true, limit: 50, ...scope })
       return renestCatalog(rows) ?? { vendors: [] }
     } catch (err) {
       if (err instanceof McpInvalidParamsError) {
-        const result = await this.mcpCall<unknown>("catalog_models", { full: true })
+        const result = await this.mcpCall<unknown>("catalog_models", { full: true, ...scope })
         return renestCatalog(result) ?? { vendors: [] }
       }
       throw err
