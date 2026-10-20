@@ -165,10 +165,12 @@ export function stripContinuedSuffix(label: string): string {
  *
  * The original session descriptor is updated with `continuedTo` and
  * `checkpointId`; the new descriptor gets `continuedFrom` and
- * `checkpointId`.
+ * `checkpointId` plus `continuationGeneration` (prev's own generation
+ * + 1, starting at 1) — the lineage depth shown separately instead of
+ * being encoded in the label. The label and title are NOT renamed: they
+ * pass through unchanged (minus a legacy " (continued)" tail, see
+ * {@link stripContinuedSuffix}), to match a session that compacts in place.
  */
-
-
 export async function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
   prev: SessionDescriptor,

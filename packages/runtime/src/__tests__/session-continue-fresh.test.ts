@@ -183,6 +183,50 @@ describe("continueAgentSessionFresh", () => {
     ])
   })
 
+  it("keeps the previous label and title verbatim (only a legacy (continued) tail is stripped)", async () => {
+    const prev = makePrev()
+    prev.label = "pm-agentproto (continued)"
+    prev.title = "Fixing the billing module"
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.label).toBe("pm-agentproto")
+    expect(input.title).toBe("Fixing the billing module")
+  })
+
+  it("stamps continuationGeneration: prev's generation + 1, or 1 from a base row", async () => {
+    const base = makePrev()
+    const baseNew = { id: "sess_new" } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: baseNew })
+    const first = await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      base,
+      { baseDir: "/tmp/checkpoints" },
+    )
+    expect(first.descriptor.continuationGeneration).toBe(1)
+
+    // A second generation continues the count instead of resetting to 1.
+    const secondPrev = first.descriptor
+    secondPrev.contextContinuity = base.contextContinuity
+    vi.mocked(spawnAgentSession).mockReset()
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: { id: "sess_new2" } as SessionDescriptor })
+    const second = await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      secondPrev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+    expect(second.descriptor.continuationGeneration).toBe(2)
+  })
+
   it("links provenance both ways", async () => {
     const prev = makePrev()
     const newDesc = { id: "sess_new" } as SessionDescriptor

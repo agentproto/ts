@@ -6694,8 +6694,19 @@ export function createSessionsRegistry(opts?: {
    *  row (see {@link linkContinuedTo}). */
   const resumeLineage = (
     resumedFrom: string | undefined,
-  ): { resumedFrom?: string; continuedFrom?: string } =>
-    resumedFrom ? { resumedFrom, continuedFrom: resumedFrom } : {}
+  ): { resumedFrom?: string; continuedFrom?: string; continuationGeneration?: number } => {
+    if (!resumedFrom) return {}
+    // The revived row is ONE more hop of the same lineage: prev's own
+    // generation + 1 (prev without a stamp counts as a base row, gen 0 → 1).
+    // Keeping the count here means a later `session_continue_fresh` of the
+    // revived row continues the chain instead of resetting to 1.
+    const prevGen = sessions.get(resumedFrom)?.desc.continuationGeneration
+    return {
+      resumedFrom,
+      continuedFrom: resumedFrom,
+      continuationGeneration: (prevGen ?? 0) + 1,
+    }
+  }
 
   const retiredListeners = new Set<(ev: SessionRetiredEvent) => void>()
 

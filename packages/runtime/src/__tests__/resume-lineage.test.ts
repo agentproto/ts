@@ -83,6 +83,8 @@ describe("revival lineage (continuedFrom)", () => {
       expect(revived.continuedFrom).toBe(prev.id)
       expect(revived.resumedFrom).toBe(prev.id)
       expect(revived.label).toBe("the conversation")
+      // First revival of a base session starts the lineage count at 1.
+      expect(revived.continuationGeneration).toBe(1)
       expect(registry.get(prev.id)?.continuedTo).toBe(revived.id)
     } finally {
       scheduler.shutdown()
