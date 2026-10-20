@@ -230,7 +230,12 @@ describe("webviewRowStatus", () => {
     expect(ROW_STATUS_RANK.starting).toBeLessThan(ROW_STATUS_RANK.working)
   })
   it("maps each tree activity to its own row status", () => {
-    expect(webviewRowStatus(session({ awaitingInput: true }))).toBe("awaiting")
+    // `awaitingInput` with a question → the alarm row.
+    expect(
+      webviewRowStatus(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } })),
+    ).toBe("awaiting")
+    // `awaitingInput` with NO question is parked, not blocked — its own calm status.
+    expect(webviewRowStatus(session({ awaitingInput: true }))).toBe("idle-awaiting")
     expect(webviewRowStatus(session({ status: "starting" }))).toBe("starting")
     expect(webviewRowStatus(session({ busy: true }))).toBe("working")
     expect(webviewRowStatus(session({ busy: false }))).toBe("idle")
@@ -266,9 +271,14 @@ describe("webviewRowStatus", () => {
 
   it("refines an idle session with a busy subtree into 'delegating' (#session-visibility)", () => {
     expect(webviewRowStatus(session({ busy: false, childrenBusy: 2 }))).toBe("delegating")
-    // Only refines idle — a working session stays working, awaiting stays awaiting.
+    // Only refines idle — a working session stays working, and a
+    // question-awaiting session stays awaiting.
     expect(webviewRowStatus(session({ busy: true, childrenBusy: 2 }))).toBe("working")
-    expect(webviewRowStatus(session({ awaitingInput: true, childrenBusy: 2 }))).toBe("awaiting")
+    expect(
+      webviewRowStatus(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" }, childrenBusy: 2 })),
+    ).toBe("awaiting")
+    // Parked-without-question outranks the childrenBusy refine too.
+    expect(webviewRowStatus(session({ awaitingInput: true, childrenBusy: 2 }))).toBe("idle-awaiting")
   })
 
   it("refines an idle, supervised session into 'parked'; delegating outranks parked", () => {
@@ -416,7 +426,11 @@ describe("laneOf / autoGroupOf", () => {
 // ─── Design B: attention sections ───────────────────────────────────────────
 describe("sectionFor", () => {
   it("folds each activity into its fixed-priority section", () => {
-    expect(sectionFor(session({ awaitingInput: true }))).toBe("needs-you")
+    expect(
+      sectionFor(session({ awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } })),
+    ).toBe("needs-you")
+    // No question — parked with nothing to answer → the quiet section.
+    expect(sectionFor(session({ awaitingInput: true }))).toBe("quiet")
     expect(sectionFor(session({ busy: true }))).toBe("running")
     expect(sectionFor(session({ busy: true, lastActivityAt: "2026-01-01T23:00:00Z" }), NOW)).toBe("attention")
     expect(sectionFor(session({ status: "error" }))).toBe("failed")
@@ -433,7 +447,7 @@ describe("sectionFor", () => {
 describe("buildSessionsWebviewModel — attention sections", () => {
   it("organizes the agents lane into the six sections in fixed order", () => {
     const sessions = [
-      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "await", cwd: "/Code/studio", awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }),
       session({ id: "bg", cwd: "/Code/studio", busy: false, pendingBgTasks: 1 }),
       session({ id: "run", cwd: "/Code/studio", busy: true }),
       session({ id: "fail", cwd: "/Code/studio", status: "error" }),
@@ -454,7 +468,11 @@ describe("buildSessionsWebviewModel — attention sections", () => {
   })
 
   it("omits empty sections", () => {
-    const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", awaitingInput: true })], studioConfig, opts())
+    const model = buildSessionsWebviewModel(
+      [session({ cwd: "/Code/studio", awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } })],
+      studioConfig,
+      opts(),
+    )
     expect(model.groups.map(g => g.key)).toEqual(["needs-you"])
   })
 
@@ -463,6 +481,28 @@ describe("buildSessionsWebviewModel — attention sections", () => {
     const row = model.groups[0]!.rows[0]! as WebviewRow
     expect(row.status).toBe("starting")
     expect(row.message).toBe("booting…")
+  })
+
+    it("an awaiting question becomes the row's message — the why-it-waits answer", () => {
+    const rowOf = (over: Partial<SessionSummary>): WebviewRow => {
+      const model = buildSessionsWebviewModel([session({ cwd: "/Code/studio", ...over })], studioConfig, opts())
+      return model.groups.filter(g => g.key === "quiet" || g.key === "needs-you").flatMap(g => g.rows)[0]!
+    }
+    const q = rowOf({
+      awaitingInput: true,
+      awaitingQuestion: {
+        text: "Context is at 69%. Continue fresh to avoid losing continuity?",
+        options: ["continue-fresh", "keep-going"],
+        source: "structured",
+      },
+    })
+    expect(q.message).toBe("Context is at 69%. Continue fresh to avoid losing continuity?")
+    // The no-question parked phrase, replacing an alarming read on the row.
+    const parked = rowOf({ awaitingInput: true }) as WebviewRow
+    expect(parked.message).toBe("idle, waiting for next prompt")
+    // A blank question text is no question: same parked phrase, never "".
+    const blank = rowOf({ awaitingInput: true, awaitingQuestion: { text: "  ", source: "heuristic" } }) as WebviewRow
+    expect(blank.message).toBe("idle, waiting for next prompt")
   })
 
   it("an ended session with an outcome shows its outcome hint instead of its last activity line", () => {
@@ -591,7 +631,7 @@ describe("buildSessionsWebviewModel — attention sections", () => {
 describe("buildSessionsWebviewModel — pinned group", () => {
   it("lifts a pinned session into its own group at the very top, ahead of Needs you", () => {
     const sessions = [
-      session({ id: "await", cwd: "/Code/studio", awaitingInput: true }),
+      session({ id: "await", cwd: "/Code/studio", awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }),
       session({ id: "pinned-idle", cwd: "/Code/studio", busy: false, pinned: true }),
     ]
     const model = buildSessionsWebviewModel(sessions, studioConfig, opts())
@@ -1034,6 +1074,7 @@ describe("missionSummaryFor / missionCountsText", () => {
         starting: 0,
         delegating: 0,
         awaiting: 0,
+        "idle-awaiting": 0,
         "awaiting-bg": 0,
         parked: 0,
         idle: 1,
@@ -1048,7 +1089,7 @@ describe("missionSummaryFor / missionCountsText", () => {
 
   it("is undefined for an empty tree and handles the singular", () => {
     expect(missionSummaryFor([])).toBeUndefined()
-    expect(missionCountsText({ rootId: "r", rootLabel: "x", total: 1, byStatus: { working: 1, starting: 0, delegating: 0, awaiting: 0, "awaiting-bg": 0, parked: 0, idle: 0, stalled: 0, failed: 0, stopped: 0, done: 0 } })).toBe(
+    expect(missionCountsText({ rootId: "r", rootLabel: "x", total: 1, byStatus: { working: 1, starting: 0, delegating: 0, awaiting: 0, "idle-awaiting": 0, "awaiting-bg": 0, parked: 0, idle: 0, stalled: 0, failed: 0, stopped: 0, done: 0 } })).toBe(
       "1 session · 1 running",
     )
   })

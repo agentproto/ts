@@ -3040,6 +3040,48 @@ describe("transcriptPanel webview — book view", () => {
     expect(panel.document.activeElement).toBe(el(panel, "input"))
   })
 
+  it("adds the answer buttons when a question arrives on an already-rendered no-question pause card", () => {
+    const panel = renderPanel()
+    panel.send({
+      type: "init",
+      session: session({ awaitingInput: true }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    expect(panel.book.querySelector(".pause")).not.toBeNull()
+    expect(panel.book.querySelector(".pause .panswers")).toBeNull()
+    panel.send({
+      type: "sessionUpdate",
+      session: session({
+        awaitingInput: true,
+        awaitingQuestion: { text: "Continue fresh?", options: ["continue-fresh", "keep-going"], recommended: "continue-fresh", source: "structured" },
+      }),
+    })
+    expect(panel.book.querySelector(".pause .pquestion")?.textContent).toContain("Continue fresh?")
+    const buttons = [...panel.book.querySelectorAll(".pause .panswers button")]
+    expect(buttons.map(b => b.textContent)).toEqual(["✓ continue-fresh", "keep-going"])
+  })
+
+  it("disables the answer buttons after one is clicked and posts the exact option", () => {
+    const posted: unknown[] = []
+    const panel = renderPanel({ onPost: m => posted.push(m) })
+    panel.send({
+      type: "init",
+      session: session({
+        awaitingInput: true,
+        awaitingQuestion: { text: "Continue fresh?", options: ["continue-fresh", "keep-going"], source: "structured" },
+      }),
+      nonce: "n",
+      mode: "structured",
+      conversation: askConv(),
+    })
+    const buttons = [...panel.book.querySelectorAll(".pause .panswers button")]
+    buttons[1]!.dispatchEvent(new panel.window.Event("click", { bubbles: true, cancelable: true }))
+    expect(posted).toContainEqual({ type: "send", text: "keep-going" })
+    expect(buttons.every(b => b.disabled)).toBe(true)
+  })
+
   it("preserves rendered Markdown in the pause card", () => {
     const panel = renderPanel()
     const questionHtml =

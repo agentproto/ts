@@ -84,6 +84,7 @@ import {
   type SessionIcon,
   type SessionNode,
 } from "./sessionsTree.logic.js"
+import { questionTooltipFor } from "../commands/answerSessionQuestion.logic.js"
 import {
   DEFAULT_ATTENTION_DELAY_SEC,
   resolveAttentionDelaySec,
@@ -433,7 +434,28 @@ function buildTooltip(
   if (continuation) {
     md.appendMarkdown(`- **lineage:** ${continuation}\n`)
   }
+  // WHY the session waits, BEFORE the metadata fields: the daemon's
+  // `awaitingQuestion` (context-continuity fork, agent question, structured
+  // prompt) is the thing the operator acts on — lead the tooltip with it,
+  // options bulleted so each is answerable at a glance (the same set the
+  // agentproto.answerSessionQuestion quick-pick offers), the recommended one
+  // check-marked. The "waiting on" metadata field is skipped — it would
+  // repeat this verbatim.
+  const awaiting = questionTooltipFor(session)
+  if (awaiting) {
+    if (session.awaitingQuestion) {
+      const lines = awaiting.split("\n")
+      md.appendMarkdown(`**Waiting on:** ${lines[0] ?? ""}\n\n`)
+      for (const line of lines.slice(1).filter(l => l.trim().length > 0)) {
+        md.appendMarkdown(`- ${line}\n`)
+      }
+      md.appendMarkdown(`\n`)
+    } else {
+      md.appendMarkdown(`**Waiting on:** ${awaiting}\n\n`)
+    }
+  }
   for (const field of tooltipFieldsFor(session)) {
+    if (field.label === "waiting on") continue
     md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
   }
   // The duration is the fact the user judges on — "no output for 20h" settles

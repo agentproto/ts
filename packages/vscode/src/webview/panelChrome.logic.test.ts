@@ -173,11 +173,15 @@ describe("titleStatusState", () => {
     id: "s", kind: "agent-cli", workspaceSlug: "w", command: "c", pid: 1, status: "running", startedAt: "t", ...over,
   })
   it("applies the precedence awaiting > stalled > busy > delegating > parked > quiet", () => {
-    // Awaiting your input outranks everything — including a busy flag and a
-    // busy subtree — because it's the one state that genuinely needs YOU.
-    expect(titleStatusState(s({ busy: true, childrenBusy: 2, awaitingInput: true }))).toBe("awaiting")
-    expect(titleStatusState(s({ busy: false, childrenBusy: 1, awaitingInput: true }))).toBe("awaiting")
-    expect(titleStatusState(s({ busy: false, awaitingInput: true, watchers: 3 }))).toBe("awaiting")
+    // Awaiting WITH a question outranks everything — including a busy flag and
+    // a busy subtree — because it's the one state that genuinely needs YOU.
+    // Flagged-awaiting WITHOUT a question has nothing to answer: it refines to
+    // the calm `idle-awaiting` instead of the loud yellow `awaiting`.
+    expect(titleStatusState(s({ busy: true, childrenBusy: 2, awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }))).toBe("awaiting")
+    expect(titleStatusState(s({ busy: false, awaitingInput: true, awaitingQuestion: { text: "q?", source: "heuristic" } }))).toBe("awaiting")
+    expect(titleStatusState(s({ busy: true, childrenBusy: 2, awaitingInput: true }))).toBe("idle-awaiting")
+    expect(titleStatusState(s({ busy: false, childrenBusy: 1, awaitingInput: true }))).toBe("idle-awaiting")
+    expect(titleStatusState(s({ busy: false, awaitingInput: true, watchers: 3 }))).toBe("idle-awaiting")
     // A busy session flagged by the turn-liveness watchdog (#601-adjacent) is
     // "stalled", not "busy" — it stopped masquerading as working.
     expect(titleStatusState(s({ busy: true, stalledSinceMs: 1_000 }))).toBe("stalled")

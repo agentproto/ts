@@ -173,10 +173,15 @@ export function contextRingLevel(
 export function titleStatusState(
   session: Pick<
     SessionDescriptor,
-    "busy" | "status" | "childrenBusy" | "awaitingInput" | "watchers" | "stalledSinceMs"
+    "busy" | "status" | "childrenBusy" | "awaitingInput" | "awaitingQuestion" | "watchers" | "stalledSinceMs"
   >,
-): "busy" | "stalled" | "delegating" | "awaiting" | "parked" | "quiet" {
-  if (session.awaitingInput) return "awaiting"
+): "busy" | "stalled" | "delegating" | "awaiting" | "idle-awaiting" | "parked" | "quiet" {
+  if (session.awaitingInput) {
+    // Flagged awaiting but no question came with it: nothing to answer, so
+    // the plan is "parked until the next prompt" — a separate, calm state
+    // rather than the loud `awaiting` yellow (mirrors the tree/webview).
+    return session.awaitingQuestion ? "awaiting" : "idle-awaiting"
+  }
   if (session.busy) return session.stalledSinceMs !== undefined ? "stalled" : "busy"
   if (session.status === "starting") return "busy"
   if ((session.childrenBusy ?? 0) > 0) return "delegating"
