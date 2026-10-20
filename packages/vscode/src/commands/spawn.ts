@@ -102,20 +102,13 @@ async function runSpawnWizard(
   opts: SpawnCommandOptions = {},
 ): Promise<void> {
   const initialHarnessSlug = opts.adapter
-  // ── Fetch both adapters (for fallback) and catalog (preferred) ────────────
+  // ── Fetch adapters (for fallback + the entry picker) ──────────────────────
   let adapters: SpawnAdapterInfo[]
-  let catalog: Awaited<ReturnType<DaemonClient["catalogModels"]>> | undefined
   try {
     adapters = (await client.listAdapters()) as SpawnAdapterInfo[]
   } catch (err) {
     vscode.window.showErrorMessage(`agentproto: could not list adapters — ${describeError(err)}`)
     return
-  }
-  try {
-    catalog = await client.catalogModels()
-  } catch {
-    // Old daemon without /catalog/models — degrade to adapter manifest list
-    catalog = undefined
   }
 
   if (adapters.length === 0) {
@@ -211,6 +204,12 @@ async function runSpawnWizard(
     // the per-adapter detail, fetched only now that this harness was picked.
     const detail = await client.getAdapter(harnessSlug).catch(() => undefined)
     const harness = detail ?? picked.adapter
+    // Ask the daemon for THIS harness's slice of the catalog: an unscoped
+    // route unions the auth methods of every adapter curating it, so its
+    // eligibleProfiles can name wallets THIS harness's spawn then refuses
+    // (the daemon 400s `access_profile_ineligible`). Adapter-scoped eligibleProfiles
+    // are the pickers' wallet truth — and never auto-pick an ineligible one.
+    const catalog = await client.catalogModels(harnessSlug).catch(() => undefined)
     const modelItems =
       catalog && catalog.vendors.length > 0
         ? mapHarnessCatalogModelItems(catalog, harnessSlug, harness.routeSelection)

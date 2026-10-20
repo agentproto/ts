@@ -149,7 +149,9 @@ async function runSessionConfigFlow(
   })
   if (adapter === undefined) return
   const [catalog, profiles] = await Promise.all([
-    client.catalogModels().catch(() => undefined),
+    // Adapter-scoped: the unscoped route union can list wallets this
+    // adapter's spawn refuses — the access chip must offer only eligible ones.
+    client.catalogModels(session.adapterSlug).catch(() => undefined),
     client.listAuthProfiles().catch(() => []),
   ])
   if (!adapter) {
@@ -288,7 +290,7 @@ async function applyRestart(
   )
   if (go !== "Restart & switch") return
   try {
-    const catalog = await client.catalogModels().catch(() => undefined)
+    const catalog = await client.catalogModels(session.adapterSlug).catch(() => undefined)
     const atomic = withEligibleAccess(override as RestartOverridePayload, session, catalog)
     if (atomic.error) {
       vscode.window.showErrorMessage(`agentproto: ${atomic.error}.`)

@@ -387,7 +387,7 @@ export class TranscriptPanelController {
       // synchronous throw, just leaves routeSwitchable unknown.
       try {
         void this.client
-          .catalogModels()
+          .catalogModels(this.currentSession?.adapterSlug)
           .then(catalog => {
             this.catalog = catalog
             if (this.initSent && !this.disposed) {

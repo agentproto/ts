@@ -77,7 +77,9 @@ export async function runChangeModelFlow(
     if (go !== "Restart & switch") return
     try {
       // Model + wallet in ONE restart: a route change needs an eligible profile.
-      const catalog = await client.catalogModels().catch(() => undefined)
+      // Adapter-scoped, so auto-picking never names a wallet this adapter's
+      // spawn would refuse (daemon 400 access_profile_ineligible).
+      const catalog = await client.catalogModels(session.adapterSlug).catch(() => undefined)
       const atomic = withEligibleAccess({ model: picked.model }, session, catalog)
       if (atomic.error) {
         void vscode.window.showErrorMessage(`agentproto: ${atomic.error}.`)

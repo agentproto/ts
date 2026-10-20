@@ -211,7 +211,8 @@ describe("catalog_models — MCP tool", () => {
       })
       const content = (result as { content: Array<{ text: string }> }).content
       // COMPACT BY DEFAULT: one flattened row per route, routing fields +
-      // small booleans only; bulky route fields stay behind full:true.
+      // small booleans + the presence ids; bulky route fields stay behind
+      // full:true.
       expect(JSON.parse(content[0]!.text)).toEqual({
         routes: [
           {
@@ -222,6 +223,9 @@ describe("catalog_models — MCP tool", () => {
             runnable: true,
             curated: true,
             multiModel: false,
+            eligibleProfiles: ["jeremy-max"],
+            adapterModes: [],
+            adapters: ["claude-code"],
           },
         ],
       })
@@ -320,9 +324,11 @@ describe("catalog_models — pagination (PR-3, additive)", () => {
       const text = textOf(result)
       const parsed = JSON.parse(text) as { routes: Array<Record<string, unknown>> }
       expect(parsed.routes).toHaveLength(7)
-      // COMPACT: routing fields + small booleans only.
+      // COMPACT: routing fields + small booleans + the presence ids
+      // (eligibleProfiles/adapters/adapterModes — the pickers' wallet/gateway
+      // answer) but none of the heavyweight full fields.
       expect(Object.keys(parsed.routes[0]!).sort()).toEqual(
-        ["curated", "multiModel", "product", "ref", "route", "runnable", "vendor"],
+        ["adapterModes", "adapters", "curated", "eligibleProfiles", "multiModel", "product", "ref", "route", "runnable", "vendor"],
       )
       expect(text).not.toContain("\n")
       expect(text).not.toContain('"nextCursor"')
@@ -334,8 +340,39 @@ describe("catalog_models — pagination (PR-3, additive)", () => {
     }
   })
 
-  it("full:true returns the old verbose per-route rows (every CatalogRoute field intact)", async () => {
-    const h = await harness(async () => CATALOG)
+  // The vscode wallet pickers read eligibleProfiles/adapters/adapterModes
+  // off COMPACT paged rows (the #2143 regression): a projection that dropped
+  // them left "which wallet" unanswerable without a full-row round trip that
+  // truncates. This pins the ids on the compact rows.
+  it("compact rows carry eligibleProfiles/adapters/adapterModes ids (the wallet-picker fix)", async () => {
+    const catalog = fakeMultiCatalog(3)
+    // Give the rows real eligibility content to prove it rides the
+    // projection, not empty-string defaults.
+    for (const v of catalog.vendors) {
+      for (const p of v.products) {
+        p.routes[0]!.eligibleProfiles = ["anthropic-api", "claude-sub"]
+        p.routes[0]!.adapterModes = ["anthropic"]
+        p.routes[0]!.adapters = ["claude-code", "opencode"]
+      }
+    }
+    const h = await harness(async () => catalog)
+    try {
+      const result = await h.client.callTool({ name: "catalog_models", arguments: { limit: 10 } })
+      const page = JSON.parse(textOf(result)) as CatalogPage
+      expect(page.items).toHaveLength(3)
+      for (const row of page.items) {
+        expect(row).toMatchObject({
+          eligibleProfiles: ["anthropic-api", "claude-sub"],
+          adapters: ["claude-code", "opencode"],
+          adapterModes: ["anthropic"],
+        })
+      }
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("full:true returns the old verbose per-route rows (every CatalogRoute field intact)", async () => {    const h = await harness(async () => CATALOG)
     try {
       const result = await h.client.callTool({
         name: "catalog_models",
@@ -372,6 +409,9 @@ describe("catalog_models — pagination (PR-3, additive)", () => {
         runnable: e.route.runnable,
         curated: e.route.curated,
         multiModel: e.route.multiModel,
+        eligibleProfiles: e.route.eligibleProfiles,
+        adapters: e.route.adapters,
+        adapterModes: e.route.adapterModes,
       }))
       expect(union).toEqual(expected)
     } finally {

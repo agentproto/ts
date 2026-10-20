@@ -13,6 +13,8 @@ import {
 } from "./daemonClient.js"
 import { probeLoopbackBind, TEST_OVERRIDE as BIND_TEST_OVERRIDE } from "./loopbackBindCapability.js"
 import type { AdapterInfo } from "./types.js"
+import { classifyProfileChoice } from "../commands/spawn.logic.js"
+import { resolveAccessRows } from "../commands/sessionConfig.logic.js"
 import { harnessContextValue, harnessDescription, harnessTooltip, sortAdapters } from "../views/harnessesTree.logic.js"
 
 /**
@@ -399,10 +401,43 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ capabilities: filtered }) }] } } }
         }
         if (rpc.method === "tools/call" && rpc.params.name === "catalog_models") {
-          // Daemon 0.20+ always answers with flat per-route rows under
-          // `routes`; with { full: true } the rows carry the complete
-          // CatalogRoute fields.
-          return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ routes: [{ vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["personal"], adapterModes: [], adapters: ["claude-code"], curated: true }] }) }] } } }
+          // Daemon 0.20+ answers with flat per-route rows under `routes`;
+          // full rows carry the complete CatalogRoute fields, compact rows
+          // the vendor/product/route/ref/booleans ids only. limit/cursor
+          // page the same rows under the { items, total, nextCursor }
+          // envelope — the shape DaemonClient.catalogModels() walks.
+          const args = rpc.params.arguments as {
+            full?: boolean
+            limit?: number
+            cursor?: string
+            adapter?: string
+          }
+          const allRoutes = catalogRoutes(args.adapter)
+          const envelope = (payload: unknown) => ({ status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify(payload) }] } } })
+          if (catalogNoPaging && (args.limit !== undefined || args.cursor !== undefined)) {
+            return { status: 200, body: { jsonrpc: "2.0", id: 1, error: { code: -32602, message: 'Invalid arguments: Unrecognized key "limit"' } } }
+          }
+          if (catalogRoutesTruncated && (args.limit !== undefined || args.cursor !== undefined)) {
+            return envelope({ truncated: true, totalBytes: 325_984, hint: "use limit/cursor/fields" })
+          }
+          if (args.limit !== undefined || args.cursor !== undefined) {
+            const limit = Math.min(args.limit ?? 50, 200)
+            let start = 0
+            if (args.cursor) {
+              const decoded = JSON.parse(Buffer.from(args.cursor, "base64url").toString("utf8")) as { i: number }
+              start = decoded.i
+            }
+            const end = start + limit
+            const next = end < allRoutes.length ? Buffer.from(JSON.stringify({ i: end })).toString("base64url") : undefined
+            return envelope({ items: allRoutes.slice(start, end), total: allRoutes.length, ...(next ? { nextCursor: next } : {}) })
+          }
+          if (!args.full) {
+            const compactKeys = ["vendor", "product", "route", "ref", "runnable", "curated", "multiModel"] as const
+            return envelope({
+              routes: allRoutes.map(row => Object.fromEntries(compactKeys.map(k => [k, (row as Record<string, unknown>)[k]]))),
+            })
+          }
+          return envelope({ routes: allRoutes })
         }
         if (rpc.method === "tools/call" && rpc.params.name === "list_provider_presets") {
           return { status: 200, body: { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: JSON.stringify({ presets: [{ slug: "moonshot", name: "Moonshot", status: "available", info: { schemaFlavor: "anthropic", baseUrl: "https://api.moonshot.ai/anthropic", keyEnv: "MOONSHOT_API_KEY" } }] }) }] } } }
@@ -459,6 +494,9 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     adapterListNoPaging = false
     adapterDetailTruncated = false
     adapterModelsTruncated = false
+    catalogRoutes = catalogRoutesDefault
+    catalogRoutesTruncated = false
+    catalogNoPaging = false
     adapterListRows = (): Array<Record<string, unknown>> => [
       {
         slug: "claude-code",
@@ -493,6 +531,34 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
   let adapterListNoPaging = false
   let adapterDetailTruncated = false
   let adapterModelsTruncated = false
+
+  /** One fake catalog row per route (full CatalogRoute fields).
+   *  `adapterArg` mirrors the daemon's adapter grounding: the unscoped
+   *  catalog unions EVERY adapter's auth surface, so claude-sdk's route
+   *  carries moonshot-api there; the per-adapter slice drops it. */
+  const catalogRoutesDefault = (adapterArg?: string): Array<Record<string, unknown>> => {
+    const unionRow = {
+      vendor: "anthropic",
+      product: "claude-opus-4-8",
+      route: "anthropic",
+      ref: "anthropic/claude-opus-4-8",
+      baseUrl: null,
+      pricing: { inPer1M: 15, outPer1M: 75 },
+      runnable: true,
+      eligibleProfiles: ["claude-subs", "moonshot-api"],
+      adapterModes: [],
+      adapters: ["claude-code", "claude-sdk", "mastracode"],
+      curated: true,
+      multiModel: false,
+    }
+    if (adapterArg === "claude-sdk") {
+      return [{ ...unionRow, eligibleProfiles: ["claude-subs", "anthropic-api-local-dev-agentik"] }]
+    }
+    return [unionRow]
+  }
+  let catalogRoutes = catalogRoutesDefault
+  let catalogRoutesTruncated = false
+  let catalogNoPaging = false
 
   function client(tokenPath = ""): DaemonClient {
     return new DaemonClient({ daemonUrl: daemon.url, tokenPath, pollIntervalMs: 5000 })
@@ -1093,28 +1159,120 @@ describe.skipIf(!canBindLoopback)("DaemonClient — URL + auth header mapping", 
     expect((last.body as { params: { arguments: unknown } }).params.arguments).toEqual({})
   })
 
-  it("catalogModels() routes through mcpCall catalog_models", async () => {
+  it("catalogModels() pages FULL rows (full:true + limit/cursor) and renests the flat {items:[...]} pages", async () => {
+    // Three DISTINCT profile-carrying rows plus a filler of identical
+    // trivial rows so the 3+ profiles sit on DIFFERENT pages of the
+    // limit=50 walk: eligibleProfiles must survive across EVERY page.
+    catalogRoutes = () => {
+      const filler = [];
+      for (let i = 0; i < 118; i++) {
+        filler.push({ vendor: `v${i}`, product: `p${i}`, route: `r${i}`, ref: `v${i}/p${i}`, baseUrl: null, pricing: null, runnable: true, eligibleProfiles: [], adapterModes: [], adapters: ["claude-code"], curated: false, multiModel: false })
+      }
+      return [
+        ...filler,
+        { vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["claude-subs"], adapterModes: [], adapters: ["claude-code"], curated: true, multiModel: false },
+        { vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic-api", ref: "anthropic/claude-opus-4-8", baseUrl: "https://api.anthropic.com", pricing: { inPer1M: 15, outPer1M: 75 }, runnable: true, eligibleProfiles: ["anthropic-api-local-dev-agentik", "claude-subs"], adapterModes: [], adapters: ["claude-code", "opencode"], curated: true, multiModel: false },
+        { vendor: "opencode", product: "grok-4.5", route: "opencode-zen", ref: "xai/grok-4.5@opencode-zen", baseUrl: "https://api.zen", pricing: null, runnable: true, eligibleProfiles: ["opencode-zen-ws00", "opencode-zen-ws02"], adapterModes: ["opencode-zen"], adapters: ["opencode"], curated: true, multiModel: false },
+      ]
+    }
     const catalog = await client().catalogModels()
-    expect(catalog.vendors[0]?.vendor).toBe("anthropic")
-    expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["personal"])
+
+    // 120 rows page-walk in 3 requests at limit 50 — a paging walk, not one
+    // giant result and not a second unpaged fallback. EligibleProfiles must
+    // survive across EVERY page (the multi-profile wallet pickers read it on
+    // each row; the last page is where the user will usually look).
+    const catalogCalls = daemon.requests.filter(r => (r.body as { params?: { name?: string } })?.params?.name === "catalog_models")
+    expect(catalogCalls).toHaveLength(3)
+    for (const call of catalogCalls) {
+      expect((call.body as { params: { arguments: Record<string, unknown> } }).params.arguments)
+        .toMatchObject({ full: true, limit: 50 })
+    }
+
+    // Both anthropic wallets renested on their routes — the launch picker
+    // can now offer either (bug a).
+    const opus = catalog.vendors.find(v => v.vendor === "anthropic")?.products.flatMap(p => p.routes)
+    expect(opus?.find(r => r.route === "anthropic-api")?.eligibleProfiles)
+      .toEqual(["anthropic-api-local-dev-agentik", "claude-subs"])
+    // And the zen profiles on the paged opencode row (bug a, second wallet).
+    const zen = catalog.vendors.find(v => v.vendor === "opencode")?.products.flatMap(p => p.routes)
+    expect(zen?.find(r => r.route === "opencode-zen")?.eligibleProfiles)
+      .toEqual(["opencode-zen-ws00", "opencode-zen-ws02"])
   })
 
-  it("catalogModels() requests { full: true } and renests the flat {routes:[...]} payload daemon 0.20 sends", async () => {
+  it("catalogModels() THROWS on a truncated paged response (never silently renests to an empty catalog)", async () => {
+    catalogRoutesTruncated = true
+    await expect(client().catalogModels()).rejects.toThrow(/catalog_models.*truncated/)
+  })
+
+  it("catalogModels() falls back to one unpaged { full: true } call on a daemon without the paging params", async () => {
+    catalogNoPaging = true
     const catalog = await client().catalogModels()
-    const last = daemon.requests[daemon.requests.length - 1]!
-    const args = (last.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    const catalogCalls = daemon.requests.filter(r => (r.body as { params?: { name?: string } })?.params?.name === "catalog_models")
+    // The paged walk is refused once, the legacy unpaged full call follows.
+    expect(catalogCalls).toHaveLength(2)
+    const args = catalogCalls[1] !== undefined
+      ? (catalogCalls[1].body as { params: { arguments: Record<string, unknown> } }).params.arguments
+      : undefined
     expect(args).toEqual({ full: true })
-    expect(catalog.vendors).toHaveLength(1)
-    expect(catalog.vendors[0]?.vendor).toBe("anthropic")
-    expect(catalog.vendors[0]?.products[0]?.product).toBe("claude-opus-4-8")
-    expect(catalog.vendors[0]?.products[0]?.routes[0]).toMatchObject({
-      route: "anthropic",
-      ref: "anthropic/claude-opus-4-8",
-      pricing: { inPer1M: 15, outPer1M: 75 },
-      runnable: true,
-      curated: true,
-      adapters: ["claude-code"],
+    expect(catalog.vendors[0]?.products[0]?.routes[0]?.eligibleProfiles).toEqual(["claude-subs", "moonshot-api"])
+  })
+
+  // The reported repro: launching claude-sdk 400'd with
+  // "profile moonshot-api (moonshot/api-key) is not eligible for adapter
+  // claude-sdk on route anthropic". The unscoped catalog row unions every
+  // curating adapter's wallets — the client MUST ask scoped to ONE adapter
+  // so eligibleProfiles carry the daemon's per-adapter grounding and the
+  // pickers never offer (or silently attach) an ineligible wallet.
+  it("catalogModels(adapter) grounds eligibleProfiles per adapter — moonshot-api is never offered for claude-sdk (repro)", async () => {
+    const catalog = await client().catalogModels("claude-sdk")
+    const catalogCalls = daemon.requests.filter(r => (r.body as { params?: { name?: string } })?.params?.name === "catalog_models")
+    const args = (catalogCalls[0]!.body as { params: { arguments: Record<string, unknown> } }).params.arguments
+    expect(args).toMatchObject({ adapter: "claude-sdk", full: true, limit: 50 })
+
+    const route = catalog.vendors
+      .find(v => v.vendor === "anthropic")
+      ?.products.flatMap(p => p.routes)
+      .find(r => r.route === "anthropic")
+    const eligible = route?.eligibleProfiles ?? []
+    expect(eligible).not.toContain("moonshot-api")
+    expect(eligible).toEqual(["claude-subs", "anthropic-api-local-dev-agentik"])
+    // The attached-wallet decision the launch wizard drives: one-sole-profile
+    // attach can only ever bind an ELIGIBLE wallet now (classify attach/pick),
+    // and several eligible wallets still open the wallet picker.
+    const choice = classifyProfileChoice(eligible, route?.runnable)
+    expect(choice).toEqual({ kind: "pick", options: ["claude-subs", "anthropic-api-local-dev-agentik"] })
+  })
+
+  it("catalogModels() carries route/adapters/eligibleProfiles so the spawn + change-wallet pickers classify wallets (bugs a+b)", async () => {
+    // The regression scenario: daemon-side COMPACT rows that lack the ids
+    // renest to routes whose eligibleProfiles are empty → the launch wallet
+    // prompt fell through to "daemon default" and the access chip offered
+    // only "+ add profile". The FULL paged rows must renest with the ids so
+    // the pickers' resolvers see every wallet.
+    catalogRoutes = () => [
+      { vendor: "anthropic", product: "claude-opus-4-8", route: "anthropic", ref: "anthropic/claude-opus-4-8", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["anthropic-api-local-dev-agentik", "claude-subs"], adapterModes: [], adapters: ["claude-code"], curated: true, multiModel: false },
+    ]
+    const catalog = await client().catalogModels()
+    const route = catalog.vendors[0]?.products[0]?.routes[0]
+    // (a) launch flow — mapHarnessCatalogModelItems rows carry the route and
+    // the built-in pick logic sees several eligible wallets (not "default").
+    const choice = classifyProfileChoice(route?.eligibleProfiles, route?.runnable)
+    expect(choice).toEqual({ kind: "pick", options: ["anthropic-api-local-dev-agentik", "claude-subs"] })
+    // (b) change-wallet flow — resolveAccessRows over the CURRENT route (the
+    // sessionConfig resolver reads the renested catalog the same way) offers
+    // every eligible profile alongside "+ add profile" (value undefined).
+    const access = resolveAccessRows({
+      currentRoute: {
+        value: "anthropic",
+        label: "anthropic",
+        baseUrl: null,
+        runnable: true,
+        curated: true,
+        eligibleProfiles: ["anthropic-api-local-dev-agentik", "claude-subs"],
+      },
+      profiles: [],
     })
+    expect(access.rows.map(row => row.value)).toEqual(["anthropic-api-local-dev-agentik", "claude-subs", undefined])
   })
 
   it("listProviderPresets() routes through mcpCall list_provider_presets", async () => {
