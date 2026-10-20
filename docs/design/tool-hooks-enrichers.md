@@ -778,7 +778,79 @@ item; the block never exceeds 15 lines.
 
 ---
 
-## 10. Summary
+## 10. One event/hook mechanism, shared with AIP-68 (clerk)
+
+AIP-68's clerk is *the same problem with a different trigger*: an
+out-of-band, never-wake, single-flight + debounced, budgeted, free-tier-first
+background pass whose output is delivered into a session/task without being
+asked for. Today the doc treats the two as siblings by citation only (§1
+rows for AIP-68, §5's budget posture, §8.1 rule 5 "same rule as AIP-68 §5").
+If they stay code-siblings only, we will end up with **two trigger
+plumbings, two dedup regimes and two budget accounting systems** for one
+concept. They should share **one** event/hook mechanism.
+
+### 10.1 The shared record and shared dispatcher
+
+Both populations reduce to the same record — "when **X** happens, run **Y**
+in the background and deliver the result **Z**-wards" — so both are declared
+and dispatched through the §2 machinery, extended in two small places:
+
+1. **One event record, generalised.** `ToolHookEvent` (§2.2) becomes
+   `HookEvent`: `{ on, subject?, meta?, args?, result?, caller?, ts }`. A
+   clerk trigger publishes into the **same field names**: a v1 clerk
+   trigger event is `{ on: "clerk:pr-merged", args: { repo, pr, taskIds
+   from inbox } }`-shaped — `subject` (a URI: repo path, task id, session
+   id) is the AIP-68 watch target, and the tool-call fields stay optional.
+   Nothing already specced changes: AIP-37 already allows host-namespaced
+   (`<host>:<event>`) event names, so `clerk:pr-merged` and
+   `agentproto:tool-call` are legal names in one namespace.
+2. **One dispatcher, two feeds.** The module-scope dispatcher (§9.1,
+   `tool-hook-dispatcher.ts`) gains a second public entry point
+   `fireExternal(event: HookEvent)` that the clerk's existing integrations
+   (task lifecycle `task:changed`, PR webhooks, branch events, cron passes —
+   the AIP-41 `schedule.kind: event` surface) call. Every hook — enricher
+   or clerk play — is matched with the same pure `matches(event, match)`,
+   deduped by the same set-based regime, and run through the same
+   `try/catch` + budget envelope. The clerk's *single-flight + debounce*
+   (AIP-68 §5) is this doc's dedup (R4) with a longer debounce window and a
+   `dedup: "subject"` scope — one implementation, tunable per hook.
+
+### 10.2 What stays clerk-owned
+
+The *pass* stays AIP-68's: a clerk play is still the bounded, prioritised,
+watch-driven workflow from its spec (§5), with its own richer frontmatter
+(`watch:` goals, pass ordering, escalation). What changes is the **entry
+and the envelope**: a clerk pass is invoked as an enricher would be —
+`run: "<play-id>"`, `budget` uses the shared `Budget` type, and its output
+uses the shared delivery contract — via AIP-46's queue/`fyi` slice, or,
+when the play produces a task change, `task:changed` — never an interrupt,
+never a wake (AIP-68's never-wake ≙ this doc's R6 never-interrupt).
+
+### 10.3 Concrete shared components (checklist)
+
+| Component | Shared by | Already exists? |
+|---|---|---|
+| Event names incl. `clerk:*` | AIP-37 host-namespaced events (canonical), `on` in both configs | yes (§2.1) |
+| One dispatcher with `fire` / `fireExternal` | §9.1 dispatcher | new but one file; `fire` today, `fireExternal` is the same code path minus `$result` binding |
+| One match grammar | AIP-60 clause shape (§2.2) | yes |
+| One dedup regime (single-flight/debounce) | R4 + AIP-68 §5 single-flight/debounce | same mechanism, per-hook window |
+| One budget type | §2.6 `Budget` + AIP-68 `budget.max_llm_calls_per_pass` / `max_cost_usd_per_day` — v3 note: `maxCostUsd` should move to a *day-window* that BOTH clerk passes and enricher runs spend against, so the operator has one hard stop (§5 already leans this way) | half — `maxCostUsd` per-hook exists, day-window aggregation is one counter |
+| One delivery contract | AIP-46 queue / `fyi`-slice / task-meta (§2.5) | yes |
+| One observability pair | `hook:ran` / `hook:skipped` ≙ clerk pass outcomes on the same bus (R8, policy-event posture) | yes, by construction |
+
+### 10.4 Phasing of the unification
+
+v1 (this doc): dispatcher + enricher hooks; the clerk keeps its today-stance
+(independently built to AIP-68 §5) and nothing breaks. v2: clerk triggers
+publish into `fireExternal` and their play passes are *registered enrichers*;
+config stays separate (clerk frontmatter declares `on:`/`match:` in shared
+shape). v3: shared day-window cost accounting and one `hook_list`/observability
+surface for both. No new event names, no new queue, no new event system — the
+"gap" sentence at the end of §1 is satisfied exactly once.
+
+---
+
+## 11. Summary
 
 1. The daemon has no tool-call hook today; the reusable pieces are the
    registration-time server proxies (`tool-subset`/`deferred-tools`), the
