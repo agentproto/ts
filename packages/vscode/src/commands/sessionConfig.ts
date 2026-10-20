@@ -137,8 +137,17 @@ async function runSessionConfigFlow(
     return
   }
 
-  const [adapters, catalog, profiles] = await Promise.all([
-    client.listAdapters().catch(() => []),
+  // A FAILED listing (e.g. a truncated adapter_list response) is shown as an
+  // error — never as "adapter no longer installed", which a `.catch(() => [])`
+  // used to produce.
+  const adapters = await client.listAdapters().catch((err: unknown) => {
+    vscode.window.showErrorMessage(
+      `agentproto: couldn't load adapters — ${err instanceof Error ? err.message : String(err)}`,
+    )
+    return undefined
+  })
+  if (adapters === undefined) return
+  const [catalog, profiles] = await Promise.all([
     client.catalogModels().catch(() => undefined),
     client.listAuthProfiles().catch(() => []),
   ])

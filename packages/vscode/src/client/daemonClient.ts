@@ -871,17 +871,68 @@ export class DaemonClient {
 
   /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
-   * adapter registry via mcpCall("adapter_list").
+   * adapter registry via mcpCall("adapter_list"). Full detail is paged
+   * with limit/cursor until done, because the FULL manifest echo can run
+   * past the daemon's MCP result budget — an unpaged call then comes back
+   * as a `{ truncated: true }` stub with NO adapters, which every caller
+   * used to misread as "nothing installed" (the « 0 installed » /
+   * « adapter no longer installed » bug). A truncated stub THROWS here,
+   * never resolves to an empty list. Older daemons that predate limit/
+   * cursor pagination fall back to the single unpaged call.
    */
   async listAdapters(): Promise<AdapterInfo[]> {
-    const result = await this.mcpCall<{ adapters?: AdapterInfo[] } | AdapterInfo[]>(
-      "adapter_list",
-      // Compact-by-default daemon (0.20+) drops modes/modelDetails/status
-      // without this — the Configuration Lab + mind map read them.
-      { full: true },
-    )
-    if (Array.isArray(result)) return result
-    return result.adapters ?? []
+    const page = async (args: Record<string, unknown>) => {
+      const result = await this.mcpCall<
+        | AdapterInfo[]
+        | { adapters?: AdapterInfo[] }
+        | { items?: AdapterInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+      >("adapter_list", args)
+      // The daemon's over-budget marker replaces the whole payload — it is
+      // neither an array nor an { adapters } wrapper. Never mistake it for
+      // an empty list.
+      if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
+        const bytes = (result as { totalBytes?: number }).totalBytes
+        throw new Error(
+          "adapter_list response was truncated by the daemon's MCP result cap" +
+            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
+            " — page the request with limit/cursor",
+        )
+      }
+      return result
+    }
+
+    // Page-walk with limit/cursor (daemon 0.20+ additive pagination).
+    try {
+      const adapters: AdapterInfo[] = []
+      let cursor: string | undefined
+      do {
+        const result = await page({ full: true, limit: 25, ...(cursor ? { cursor } : {}) })
+        if (Array.isArray(result)) {
+          adapters.push(...result)
+          break
+        }
+        const items = (result as { items?: AdapterInfo[] }).items
+        if (!items) {
+          // An unpaged envelope despite the limit — a daemon older than the
+          // pagination params echoing the legacy { adapters } shape.
+          adapters.push(...((result as { adapters?: AdapterInfo[] }).adapters ?? []))
+          break
+        }
+        adapters.push(...items)
+        cursor = (result as { nextCursor?: string }).nextCursor
+      } while (cursor)
+      return adapters
+    } catch (err) {
+      // The limit/cursor params are additive (0.20+) — a daemon older than
+      // them rejects the unknown argument at the schema. Retry once with the
+      // legacy single unpaged call; its truncated-marker guard still holds.
+      if (/limit|cursor|argument/i.test(err instanceof Error ? err.message : String(err))) {
+        const result = await page({ full: true })
+        if (Array.isArray(result)) return result
+        return (result as { adapters?: AdapterInfo[] }).adapters ?? []
+      }
+      throw err
+    }
   }
 
   /**

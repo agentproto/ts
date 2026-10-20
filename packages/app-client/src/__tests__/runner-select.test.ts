@@ -110,11 +110,13 @@ describe("mountRunnerSelect (DOM, happy-dom)", () => {
           }
         }
         if (tool === "adapter_list") {
+          // Daemon 0.20+ paginated page envelope — the picker page-walks it.
           return {
-            adapters: [
-              { slug: "hermes", name: "Hermes", version: "1.0.0", protocol: "acp", models: ["z-ai/glm-5.2", "gpt-5"] },
-              { slug: "claude-code", name: "Claude Code", version: "2.0.0", protocol: "acp", models: [] },
+            items: [
+              { slug: "hermes", name: "Hermes", models: ["z-ai/glm-5.2", "gpt-5"] },
+              { slug: "claude-code", name: "Claude Code", models: [] },
             ],
+            total: 2,
           }
         }
         throw new Error(`unexpected tool ${tool}`)
@@ -122,7 +124,8 @@ describe("mountRunnerSelect (DOM, happy-dom)", () => {
     })
     await handle.refresh()
 
-    expect(calls).toContainEqual({ tool: "adapter_list", args: { summary: true } })
+    // Budget-safe request: one bounded page, only the fields the picker renders.
+    expect(calls).toContainEqual({ tool: "adapter_list", args: { limit: 10, fields: ["slug", "name", "models"] } })
 
     const select = container.querySelector("select")
     if (!select) throw new Error("no select rendered")
@@ -180,6 +183,50 @@ describe("mountRunnerSelect (DOM, happy-dom)", () => {
   it("omits model from getRunner() when blank", () => {
     const { handle } = mount({ callTool: () => new Promise(() => {}), defaults: { harness: "hermes" } })
     expect(handle.getRunner()).toEqual({ harness: "hermes" })
+  })
+
+  it("page-walks adapter_list until done and reassembles every adapter", async () => {
+    const calls: Array<{ tool: string; args?: object }> = []
+    const rows = Array.from({ length: 12 }, (_, i) => ({ slug: `adapter-${i}`, name: `Adapter ${i}`, models: [] }))
+    const { container, handle } = mount({
+      callTool: async (tool, args) => {
+        calls.push({ tool, args })
+        if (tool === "harness_preset_list") return { presets: [] }
+        const a = (args ?? {}) as { limit?: number; cursor?: string }
+        const start = a.cursor ? Number(Buffer.from(a.cursor, "base64url").toString("utf8") && JSON.parse(Buffer.from(a.cursor, "base64url").toString("utf8")).i) : 0
+        const end = start + (a.limit ?? 50)
+        return { items: rows.slice(start, end), total: rows.length, ...(end < rows.length ? { nextCursor: Buffer.from(JSON.stringify({ k: rows[end]!.slug, i: end })).toString("base64url") } : {}) }
+      },
+    })
+    await handle.refresh()
+
+    const select = container.querySelector("select")
+    if (!select) throw new Error("no select rendered")
+    expect(select.options.length).toBe(12)
+    expect(select.options[select.options.length - 1]?.value).toBe("adapter-11")
+    const listCalls = calls.filter(c => c.tool === "adapter_list")
+    // mount() kicks off one refresh and the test drives a second — each
+    // walk covers the 12 rows in 2 pages (limit 10 + 2). The two walks'
+    // pages interleave in the call log, so assert per-walk shape loosely:
+    // the first call of each walk has no cursor and a later one does.
+    expect(listCalls).toHaveLength(4)
+    expect((listCalls[0]?.args as { cursor?: string }).cursor).toBeUndefined()
+    expect(listCalls.some(c => Boolean((c.args as { cursor?: string })?.cursor))).toBe(true)
+  })
+
+  it("treats a truncated adapter_list stub as an error note — never as an empty list", async () => {
+    const { container, handle } = mount({
+      callTool: async tool => {
+        if (tool === "harness_preset_list") return { presets: [] }
+        // The daemon's over-budget marker replaces the whole payload.
+        return { truncated: true, totalBytes: 109_340, hint: "use limit/cursor/fields" }
+      },
+    })
+    await expect(handle.refresh()).resolves.toBeUndefined()
+    expect(container.textContent).toContain("adapter list unavailable:")
+    expect(container.textContent).toContain("truncated")
+    // The picker is empty ONLY because discovery failed (the note says so),
+    // not because no harness is installed.
   })
 
   it("degrades gracefully when a discovery call rejects: empty source + muted note, no throw", async () => {

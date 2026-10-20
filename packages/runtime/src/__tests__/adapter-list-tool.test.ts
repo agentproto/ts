@@ -2,9 +2,10 @@
  * Unit coverage for the `adapter_list` MCP tool (agent-tools.ts). The tool
  * is migrated onto the AIP contract layer (defineTool + implementTool +
  * toMcpTool) with the shared `paginated()` transformer: COMPACT BY DEFAULT
- * (the former `summary: true` projection — slug/name/version/protocol/
- * models, all a picker needs), with the full manifest echo behind
- * `full: true` / `compact: false`. Mirrors harness-capabilities-tool.test.ts's
+ * and budget-safe (slug/name/version/protocol + installed + modelCount —
+ * the model-id array is what blew past the MCP result cap and got callers
+ * a truncated stub they misread as an empty list), with the full manifest
+ * echo behind `full: true` / `compact: false`. Mirrors harness-capabilities-tool.test.ts's
  * createMcpServer + InMemoryTransport pattern.
  */
 
@@ -59,28 +60,67 @@ describe("adapter_list", () => {
     await h.close()
   })
 
-  it("default output is the COMPACT projection ({ slug, name, version, protocol, models })", async () => {
+  it("default output is the COMPACT projection ({ slug, name, version, protocol, installed, modelCount })", async () => {
     const h = await harness(async () => [FULL_ADAPTER])
     const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
     const adapters = parseAdapters(result)
     expect(adapters).toEqual([
-      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", models: ["z-ai/glm-5.2", "gpt-5"] },
+      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modelCount: 2 },
     ])
     // And it's small: only the projection keys survive.
     expect(Object.keys(adapters[0] as object).sort()).toEqual(
-      ["models", "name", "protocol", "slug", "version"],
+      ["installed", "modelCount", "name", "protocol", "slug", "version"],
     )
     await h.close()
   })
 
-  it("compact projection defaults models to [] when the lister didn't populate it", async () => {
+  it("compact `installed` mirrors the lister's status: supported = not installed, ready/absent = installed", async () => {
+    const h = await harness(async () => [
+      { ...FULL_ADAPTER, slug: "installed-ad", status: "ready" as const },
+      { ...FULL_ADAPTER, slug: "catalog-ad", status: "supported" as const },
+      { ...FULL_ADAPTER, slug: "legacy-ad" },
+    ])
+    const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
+    const adapters = parseAdapters(result) as Array<{ slug: string; installed: boolean }>
+    expect(adapters.map(a => [a.slug, a.installed])).toEqual([
+      ["installed-ad", true],
+      ["catalog-ad", false],
+      ["legacy-ad", true],
+    ])
+    await h.close()
+  })
+
+  it("the COMPACT default fits the MCP result budget even with a runaway model list (the truncated-stub regression)", async () => {
+    // A real daemon's merged listing exceeded 100 KB (the cap in
+    // mcp-server/to-mcp-tool.ts) purely through the models arrays, and the
+    // whole tool call was replaced by a `{ truncated: true }` stub.
+    const big: AdapterListEntry = { ...FULL_ADAPTER, models: Array.from({ length: 20_000 }, (_, i) => `vendor/model-${i}`) }
+    expect(JSON.stringify(big).length).toBeGreaterThan(100_000)
+    const h = await harness(async () => [big, { ...big, slug: "claude-code" }])
+    const raw = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_list", arguments: {} })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { adapters: unknown[]; truncated?: boolean }
+    expect(raw.truncated).toBeUndefined()
+    expect(raw.adapters).toHaveLength(2)
+    expect((raw.adapters[0] as { modelCount: number }).modelCount).toBe(20_000)
+    // full: true is the escape hatch — and it's exactly the call that
+    // trips the cap, which is why clients must paginate it.
+    const full = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_list", arguments: { full: true } })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { truncated?: boolean; totalBytes?: number }
+    expect(full.truncated).toBe(true)
+    expect(full.totalBytes).toBeGreaterThan(100_000)
+    await h.close()
+  })
+
+  it("compact projection defaults modelCount to 0 when the lister didn't populate models", async () => {
     const { models, ...withoutModels } = FULL_ADAPTER
     void models
     const h = await harness(async () => [withoutModels as AdapterListEntry])
     const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
     const adapters = parseAdapters(result)
     expect(adapters).toEqual([
-      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", models: [] },
+      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modelCount: 0 },
     ])
     await h.close()
   })
@@ -134,7 +174,8 @@ describe("adapter_list", () => {
         name: a.name,
         version: a.version,
         protocol: a.protocol,
-        models: a.models ?? [],
+        installed: true,
+        modelCount: a.models?.length ?? 0,
       })),
     )
 

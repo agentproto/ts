@@ -270,6 +270,31 @@ export const RUNNER_SELECT_SCRIPT = `<script>
       return (err && err.message) || String(err);
     }
 
+    // adapter_list with NO arguments can exceed the daemon's MCP result
+    // budget (the model-id arrays alone ran to >100 KB) - the daemon then
+    // answers with a truncated:true stub that callers used to misread
+    // as an empty list. So: ask only for the fields the picker needs, walk
+    // the limit/cursor pages until done, and treat a truncated stub as an
+    // error, never as "nothing installed".
+    function fetchAdapters() {
+      var collected = [];
+      function page(args) {
+        return safeCallTool("adapter_list", args).then(function (r) {
+          if (r && r.truncated) {
+            throw new Error("adapter_list response was truncated by the daemon's result cap");
+          }
+          if (Array.isArray(r)) return r;
+          if (r && r.items) {
+            collected = collected.concat(r.items);
+            if (r.nextCursor) return page({ limit: 10, cursor: r.nextCursor, fields: ["slug", "name", "models"] });
+            return collected;
+          }
+          return (r && r.adapters) || [];
+        });
+      }
+      return page({ limit: 10, fields: ["slug", "name", "models"] });
+    }
+
     function refresh() {
       var harnessPromise = safeCallTool("harness_preset_list").then(
         function (r) {
@@ -281,12 +306,14 @@ export const RUNNER_SELECT_SCRIPT = `<script>
           harnessNote = "harness list unavailable: " + errMessage(err);
         }
       );
-      var adapterPromise = safeCallTool("adapter_list", { summary: true }).then(
-        function (r) {
-          adapters = (r && r.adapters) || [];
+      var adapterPromise = fetchAdapters().then(
+        function (rows) {
+          adapters = rows;
           adapterNote = "";
         },
         function (err) {
+          // A failed listing stays an ERROR — never an empty list, which
+          // would silently drop every installed harness from the picker.
           adapters = [];
           adapterNote = "adapter list unavailable: " + errMessage(err);
         }

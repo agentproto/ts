@@ -24,6 +24,10 @@ const EMPTY_SLUG = "__no_adapters__"
 export class HarnessesTreeProvider implements vscode.TreeDataProvider<HarnessNode>, vscode.Disposable {
   private readonly client: DaemonClient
   private adapters: AdapterInfo[] = []
+  /** Set when the last refresh FAILED (e.g. adapter_list came back as a
+   *  truncated stub). Rendered as an error row — a failed listing must
+   *  never read as "No adapters found". */
+  private lastError: string | undefined
   private readonly _onDidChange = new vscode.EventEmitter<HarnessNode | undefined>()
   readonly onDidChangeTreeData = this._onDidChange.event
 
@@ -39,7 +43,9 @@ export class HarnessesTreeProvider implements vscode.TreeDataProvider<HarnessNod
   async refresh(): Promise<void> {
     try {
       this.adapters = sortAdapters(await this.client.listAdapters())
-    } catch {
+      this.lastError = undefined
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
       this.adapters = []
     }
     this._onDidChange.fire(undefined)
@@ -47,7 +53,11 @@ export class HarnessesTreeProvider implements vscode.TreeDataProvider<HarnessNod
 
   getTreeItem(element: HarnessNode): vscode.TreeItem {
     if (element.adapter.slug === EMPTY_SLUG) {
-      return new vscode.TreeItem("No adapters found")
+      return new vscode.TreeItem(
+        this.lastError
+          ? `Couldn't load harnesses — ${this.lastError}`
+          : "No adapters found",
+      )
     }
 
     const icon = harnessIcon(element.adapter)
