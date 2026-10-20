@@ -302,14 +302,23 @@ export interface SandboxAgentSessionProxyOpts {
   /** Re-attach only: the box-transcript `seq` already consumed on the host
    *  before the restart — the event stream resumes after it. */
   initialTranscriptCursor?: number
-  /** Periodic checkpoint of the box's work (`createSandboxCheckpointer`): run
+  /** Periodic checkpoint of the box's work (`createSandboxCheckpointer`):
    *  every `intervalMs`, after each turn, and once more when the watchdog
    *  declares the box daemon dead (the VM often outlives its daemon, and its
    *  filesystem is still reachable through the provider). Stops at `close()`,
    *  which awaits an in-flight run before its own teardown delivery. A
    *  rejection is swallowed. `run`'s `turn` is the number of turns the proxy
-   *  has completed so far, stamped onto the checkpoint record. */
-  checkpoint?: { run: (turn?: number) => Promise<unknown>; intervalMs?: number }
+   *  has completed so far, stamped onto the checkpoint record. `periodic`
+   *  (default true) wires the interval timer — the `on: ["interval"]`
+   *  trigger; `onTurnEnd` (default true) the per-turn hook — `on:
+   *  ["turn-end"]`. Both can be off: the watchdog/deadline/idle-reap
+   *  safety nets still checkpoint. */
+  checkpoint?: {
+    run: (turn?: number, opts?: { force?: boolean }) => Promise<unknown>
+    intervalMs?: number
+    periodic?: boolean
+    onTurnEnd?: boolean
+  }
   /** Box-daemon liveness watchdog. Without it a daemon that dies BETWEEN
    *  turns (OOM-killed in a small box) leaves the host row `running` forever:
    *  nothing reads the box until the next prompt. When `failureThreshold`
@@ -930,11 +939,14 @@ export function createSandboxAgentSessionProxy(
   // `turnsSent` at call time — the number of turns completed so far — is
   // stamped onto the checkpoint record/commit message as a breadcrumb; a
   // coalesced call (one already in flight) keeps whichever turn started it.
-  const runCheckpoint = (turn?: number): Promise<unknown> => {
+  // `force` bypasses the unchanged-since-last checkpoint skip — the disk
+  // guard's escape hatch (see `checkDiskSpace`); it runs alongside any
+  // in-flight coalesced run rather than joining it.
+  const runCheckpoint = (turn?: number, forceOpts?: { force?: boolean }): Promise<unknown> => {
     if (!opts.checkpoint) return Promise.resolve()
-    if (checkpointInFlight) return checkpointInFlight
+    if (checkpointInFlight && !forceOpts?.force) return checkpointInFlight
     checkpointInFlight = opts.checkpoint
-      .run(turn)
+      .run(turn, forceOpts)
       .catch(() => undefined)
       .finally(() => {
         checkpointInFlight = undefined
@@ -958,9 +970,10 @@ export function createSandboxAgentSessionProxy(
     timers.push(timer)
     armDeadlineGuard(Date.now() + boxLifetimeMs)
   }
-  if (opts.checkpoint) {
+  if (opts.checkpoint && (opts.checkpoint.periodic ?? true)) {
     const timer = setInterval(() => {
-      if (!closed && !detached) void runCheckpoint(turnsSent)
+      if (closed || detached) return
+      void runCheckpoint(turnsSent)
     }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
     timer.unref?.()
     timers.push(timer)
@@ -1102,7 +1115,8 @@ export function createSandboxAgentSessionProxy(
         activeTurns--
         // Each turn's end — clean or not — is a natural checkpoint: the
         // agent just stopped writing. Never awaited: the turn is over.
-        if (!closed && !detached) void runCheckpoint(turnsSent)
+        // Gated by the `on: ["turn-end"]` trigger (default on).
+        if (!closed && !detached && (opts.checkpoint?.onTurnEnd ?? true)) void runCheckpoint(turnsSent)
       }
     },
 
