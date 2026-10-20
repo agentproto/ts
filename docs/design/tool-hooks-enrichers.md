@@ -24,8 +24,10 @@ automatically, **asynchronously**, delivering their output somewhere useful
 
 The first enricher is `prior-art`: deterministic searches (zero tokens) that
 produce a short « Existing work detected » block and land it in the spawned
-session's queue a few seconds after start, so the agent's first step is to
-confirm **modify existing** or **new**.
+session's queue a few seconds after start — steered into turn 1 when the
+adapter supports steering, at the next natural turn boundary otherwise (§2.5)
+— so the agent answers **modify existing** or **new** before it commits to a
+design, ideally as its first step.
 
 ---
 
@@ -420,7 +422,7 @@ Shipped or planned:
 |---|---|---|---|---|
 | **`prior-art`** (§3) | `agent_start` from a supervisor | grep + PRs + memory + PROJECT/RAPPORT | append-to-session-queue | optional, free |
 | **`spec-echo`** — for user-facing features | `task_create` whose title/description matches `user-facing\|feature\|UX\|api` | read the workspace's spec/docs index (`specs/`, `docs/`, `WORK.md`), list ≤10 existing spec sections that already constrain the ask, so the agent implements *the* spec instead of inventing one | attach-to-task-meta (or prepend-to-prompt on a spawn) | optional one-line free summary |
-| **`security-check`** | `agent_start` when args/files touch `auth\|token\|secret\|migrations\|.env\|workflows` | deterministic: `git grep` for the touched paths' auth/secret neighbours + AIP-7/AGENTS.md escalation globs already used by the merge gate (`scripts/agentflow/merge-gate.mjs`), producing a "these paths always escalate" note | prepend-to-prompt | none (0 tokens by construction) |
+| **`security-check`** | `agent_start` when args/files touch `auth\|token\|secret\|migrations\|.env\|workflows` | deterministic: `git grep` over the touched paths' auth/secret neighbours, cross-referenced with the escalation globs the merge flow already enforces — `merge.alwaysEscalateGlobs` (migrations, SQL, auth, security, workflows, `.env*`; `scripts/maintainer.mjs`, documented in `AGENTS.md`) and `SELF_MODIFICATION_RE` (`scripts/agentflow/merge-gate.mjs`) — producing a "these paths always escalate" note | prepend-to-prompt | none (0 tokens by construction) |
 
 Rules for new enrichers: deterministic-first; LLM only for a summarising
 sentence; must return `null` (not throw) on partial data; must fit
@@ -647,8 +649,9 @@ item; the block never exceeds 15 lines.
 3. `prior-art` extracts keywords with zero tokens, then `git grep`, two
    `gh pr list --search` calls (merged + open, 30 days), a BM25 memory query
    and a `PROJECT.md`/`RAPPORT.md` read — composing a ≤15-line « Existing
-   work detected » block delivered ~4 s after spawn, so the agent's first
-   step is answering "modify existing" or "new".
+   work detected » block delivered ~4 s after spawn (steered into turn 1 when
+   the adapter steers, else the next turn), so the agent answers "modify
+   existing" or "new" before it designs.
 4. Async is normative: never await, never fail, timeout ⇒ no block, dedup
    per task (set-before-await + `coalesceKey`), delivery only via
    queue/context-slice/meta — never `interrupt`.
