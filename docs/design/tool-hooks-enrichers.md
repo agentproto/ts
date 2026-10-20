@@ -177,12 +177,12 @@ design was written; the "verdict" column is the reuse decision.
 | **`session_follow`** (`packages/runtime/src/session-follow-tools.ts`, `FOLLOW_EVENTS` in `packages/runtime/src/session-follow-store.ts`) | Declarative `selector` / `exclude` / `events` / `batchMs` coalescing — "wake me when X matches, digest bursts into one notice, never interrupt a busy follower". | **Reuse the vocabulary for `match`** (selector-style clauses + burst coalescing). Not a delivery path: it wakes the *follower*, we push into the *target*. |
 | **`session_queue_deliver` / `session_queue_promote`** (`packages/runtime/src/session-tools.ts`) | Deliver-now (interrupt) and promote-to-front of a queued prompt. | **Explicit non-goal.** A hook never interrupts. These names exist in this doc only to say we do not use them; `session_queue_list` is reused for observability. |
 | **`policy_attach` / completion policies** (`packages/runtime/src/supervisor.ts`, `orchestration-tools.ts`, `docs/cli/verbs/policy.md`) | Turn-**end** gates: shell/judge verdict, `next` chaining, fan-in, `onFail` nudge+retry, `policy:passed`/`policy:failed` bus events. | **Wrong seam for enrichment** (it fires after a turn, not at delegation time) and deliberately blocking. **Reuse**: the judge-gate form as the precedent for "a model pass with a verdict", and the policy event pair as the model for hook observability events. |
-| **AIP-46 events & messages** (canonical prose `specs/aip-46.mdx`; impl `packages/runtime/src/sessions.ts`, `session-message.ts`, `http-server.ts`) | Prompt queue semantics, typed `SessionMessage` envelope, delivery tiers `fyi \| next-turn \| steer \| interrupt`, bounded durable inbox, attestation + delimiter escaping. | **Reuse for delivery**: append-to-session-queue rides the queue; prepend-to-prompt rides the `fyi` slice; the envelope/attestation rules tell us how to render enrichment text safely. |
+| **AIP-46 events & messages** (canonical repo `agentproto/agentproto` — `specs/aip-46.mdx`; impl `packages/runtime/src/sessions.ts`, `session-message.ts`, `http-server.ts`) | Prompt queue semantics, typed `SessionMessage` envelope, delivery tiers `fyi \| next-turn \| steer \| interrupt`, bounded durable inbox, attestation + delimiter escaping. | **Reuse for delivery**: append-to-session-queue rides the queue; prepend-to-prompt rides the `fyi` slice; the envelope/attestation rules tell us how to render enrichment text safely. |
 | **AIP-41 routines** (`packages/routine/src`, `packages/runtime/src/routine-registrar.ts`) | `ROUTINE.md` frontmatter: `schedule: {kind: "cron"\|"interval"\|"calendar"\|"manual"\|"event", on, filter}` + `target: action\|agent\|workflow\|tool`. | **Reuse the shape, not the dispatcher.** `schedule.kind:"event"` validates but only `cron` fires today (`routine-registrar.ts:232`), and a routine `target` has no `deliver` concept. v1 hooks are config-declared and dispatched in-process; the routine/event path is the future declarative home (§8). |
-| **AIP-37 LIFECYCLE vocabulary** (canonical `specs/aip-37.mdx`) | Standard event names incl. `tool-call` (before), `tool-result` (after), `tool-error`; hosts MAY fire extra namespaced (`<host>:<event>`) names; events are best-effort, configs MUST tolerate never firing. | **Reuse for `on`.** No new event names required. |
-| **AIP-42 AGENT.md `on:` hooks** (canonical `specs/aip-42.mdx`) | `on: {<AIP-37 event>: [action-ref…]}`; "Errors in hooks are logged but do NOT abort the conversation." | **Reuse the semantics**: best-effort, error-contained. This is the normative backing for our "never fail the tool call" rule. |
-| **AIP-60 SENTINEL `match`** (canonical `specs/aip-60.mdx`) | `SentinelSpec.match`: array of `{subject, types?}` clauses, OR across clauses, prefix + glob semantics. | **Reuse the clause shape** for `match`, extended with tool-arg predicates (sentinel subjects are external objects; ours are tool args). |
-| **AIP-68 clerk watch core** (canonical `specs/aip-68.mdx` §5) | Out-of-band, never-wake, single-flight + debounce, bounded passes, **free-tier-first** model budget (`budget.max_llm_calls_per_pass`, `budget.max_cost_usd_per_day`), refusal when no free route exists. | **Reuse the async + budget contract wholesale** — it is the same problem with a different trigger. |
+| **AIP-37 LIFECYCLE vocabulary** (canonical repo `agentproto/agentproto` — `specs/aip-37.mdx`) | Standard event names incl. `tool-call` (before), `tool-result` (after), `tool-error`; hosts MAY fire extra namespaced (`<host>:<event>`) names; events are best-effort, configs MUST tolerate never firing. | **Reuse for `on`.** No new event names required. |
+| **AIP-42 AGENT.md `on:` hooks** (canonical repo `agentproto/agentproto` — `specs/aip-42.mdx`) | `on: {<AIP-37 event>: [action-ref…]}`; "Errors in hooks are logged but do NOT abort the conversation." | **Reuse the semantics**: best-effort, error-contained. This is the normative backing for our "never fail the tool call" rule. |
+| **AIP-60 SENTINEL `match`** (canonical repo `agentproto/agentproto` — `specs/aip-60.mdx`) | `SentinelSpec.match`: array of `{subject, types?}` clauses, OR across clauses, prefix + glob semantics. | **Reuse the clause shape** for `match`, extended with tool-arg predicates (sentinel subjects are external objects; ours are tool args). |
+| **AIP-68 clerk watch core** (canonical repo `agentproto/agentproto` — `specs/aip-68.mdx` §5) | Out-of-band, never-wake, single-flight + debounce, bounded passes, **free-tier-first** model budget (`budget.max_llm_calls_per_pass`, `budget.max_cost_usd_per_day`), refusal when no free route exists. | **Reuse the async + budget contract wholesale** — it is the same problem with a different trigger. |
 | **`workspace_brain_query`** (`packages/runtime/src/brain-tools.ts`, `packages/workspace-brain/src`) | BM25 keyword search over ingested transcripts, per workspace bucket, zero tokens. | **This is the memory search** for `prior-art`. |
 | **`gh` / `git` runners** — `execGh` (`packages/runtime/src/review-pr.ts`), `git(...)` in `review-worktree.ts`, allowlist for the *tool* path (`packages/runtime/src/command-tools.ts`) | Daemon-side `execFile` runners with timeouts; the MCP `command_execute` allowlist governs agent-invoked commands, not daemon-internal ones. | **Reuse `GhRunner` (injectable) and the `execFile`+cwd-anchored pattern.** |
 | **`agentproto hook`** (`docs/cli/verbs/hook.md`) | A **Claude Code client-side** hook command that pulls the AIP-46 inbox. | **Name collision only** — unrelated mechanism. Config namespace is `hooks`, CLI (if any) is `agentproto hooks`. |
@@ -289,7 +289,7 @@ written at spawn (`session-spawn.ts`). The dispatcher therefore derives
    …)`), hook-time role ≡ spawn-time role for every depth-derived session.
    Explicitly-passed spawn roles that were never persisted cannot be
    re-derived — for those, match `label` / `sessionId` / `agentId` instead
-   (phase-1 config does exactly this; §7).
+   (the v1.1 config does exactly this; §7).
 
 Matching is pure and synchronous (no I/O) — a `match` that throws is a config
 error, reported once at load, not at call time.
@@ -307,7 +307,7 @@ see §8 for where user-authored hooks belong).
 | Mode | Behaviour | Used by |
 |---|---|---|
 | `async` (default) | Dispatcher fires and returns; the tool call's own result is never awaited on it. Enrichment lands `delayMs` later. | `prior-art`, `spec-echo`, `security-check`. |
-| `sync` | Dispatcher awaits the enricher, bounded by `budget.timeoutMs` (clamped ≤ 2000 ms), and folds the block into the tool's own response. Failure/timeout ⇒ the block is simply absent. | Only `attach-to-task-meta` shapes where the caller must see the meta in the same response. |
+| `sync` | Dispatcher awaits the enricher, bounded by `budget.timeoutMs` (clamped ≤ 2000 ms), and folds the block into the tool's own response. Failure/timeout ⇒ the block is simply absent. | Only `attach-to-task-meta` shapes where the caller must see the meta in the same response — and only post-v1 (§7); no v1 consumer needs it. |
 
 `sync` never *fails* the tool call either — it can only make it ≤2s slower in
 the worst case. The brief's "without blocking the tool call" is therefore
@@ -490,7 +490,7 @@ First step: reply "modify existing" (name the file/PR) or "new" — then proceed
 ```
 
 (The `- summary:` bullet exists only when §3.2 step 7 ran; with
-`maxLlmCalls: 0` — phase 1 of the rollout — the example above is 8 lines
+`maxLlmCalls: 0` — the v1.1 rollout default — the example above is 8 lines
 instead of 9. Either way, well inside the 15.)
 
 Rules: one bullet kind per line; evidence is quoted/verbatim (file path, PR
@@ -596,25 +596,52 @@ sentence; must return `null` (not throw) on partial data; must fit
 
 ## 7. Rollout
 
-| Phase | Config | Gate |
-|---|---|---|
-| **0 — land, off** | Code + `hooks.enabled: false` (absent ⇒ off, `titler` precedent) | `pnpm test`, `pnpm check-types` |
-| **1 — Pygmalion first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor", label: "pygmalion*" } }` (role is the coarse gate resolved per §2.2; the label — or `caller.agentId` for the AIP-42 manifest session — is what actually narrows to the Pygmalion brain), `run: prior-art`, `delayMs: 4000`, `deliver: append-to-session-queue`, `budget.maxLlmCalls: 0` (deterministic only) | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors |
-| **2 — cost opt-in** | Same hook with `maxLlmCalls: 1, model: "free"` | Free route present ⇒ summary line; absent ⇒ refusal logged, block unchanged |
-| **3 — breadth** | `task_create` → `attach-to-task-meta`; `agent_prompt` (re-prompts of an existing child) → queue append with dedup `"task"` | — |
-| **4 — other brains / other enrichers** | Per-workspace `HOOK.md`, `spec-echo`, `security-check` | — |
+**v1 is one shipping unit, not the first rung of an open-ended phase
+ladder:** the deterministic hook dispatcher — the permanent foundation
+every later feature installs into — together with the `prior-art` async
+enricher, landed and enabled as a single increment. The dispatcher is not
+a proof of concept to be discarded: §10's clerk unification, the further
+delivery-arm consumers and every future enricher ride *it*. Everything
+not in v1 is listed below with an explicit reason and a named trigger —
+there is no undefined "later".
 
-Kill switch: `hooks.enabled: false` (hot) — next call dispatches nothing.
-Observability: `hook:ran` / `hook:skipped` on the bus, `session_queue_list`
-for delivery, `config_get` over the `hooks.*` registry keys for the resolved
-config. Rollout is
-config-only from phase 1 on: no code change to widen or narrow.
+### v1 — what ships
+
+| Stage | Config | Gate / exit criterion |
+|---|---|---|
+| **v1.0 — land, off** | Dispatcher + `withToolHooks` (async path only, §2.4) + the `prior-art` enricher + the `hooks` config block; `hooks.enabled: false` (absent ⇒ off, `titler` precedent). The optional §3.2 step-7 summary path is *code-complete in v1* (it rides the titler's existing OpenRouter fetch) but config-off: the shipped default budget is `maxLlmCalls: 0`. | `pnpm test` + `pnpm check-types` green (repo gate per `AGENTS.md`). |
+| **v1.1 — Pygmalion first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor", label: "pygmalion*" } }` (role is the coarse gate resolved per §2.2; the label — or `caller.agentId` for the AIP-42 manifest session — is what actually narrows to the Pygmalion brain), `run: "prior-art"`, `mode: "async"`, `delayMs: 4000`, `deliver: { to: "append-to-session-queue", sessionId: "$result.id" }`, `budget.maxLlmCalls: 0` (deterministic pipeline only). | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors. |
+| **v1.2 — breadth, config-only** | Same shipped unit, more config: `task_create` → `attach-to-task-meta`; `agent_prompt` (re-prompts of an existing child) → queue append with dedup `"task"`; a second brain opts in the same way. | Each added hook gets the same dozen-delegation watch as v1.1. |
+
+From v1.1 on, the rollout is config-only — no code change to widen or
+narrow a hook. Kill switch: `hooks.enabled: false` (hot) — next call
+dispatches nothing. Observability: `hook:ran` / `hook:skipped` on the
+bus, `session_queue_list` for delivery, `config_get` over the `hooks.*`
+registry keys for the resolved config.
+
+### Post-v1 — out of v1, each with a reason and a named trigger
+
+| Item | Why it is out of v1 | Named trigger / milestone |
+|---|---|---|
+| **`mode: "sync"` installed** — the `fireSync` branch (§9.1, §9.2) | No v1 delivery arm's consumer reads enrichment from the tool's own response; all three arms are out-of-band by R6, so the blocking-shaped path would ship unused. v1 refuses a `mode: "sync"` config at load rather than honouring it silently (§2.4). | The first `attach-to-task-meta` hook whose caller is a non-polling consumer that reads meta only from the create response — until then the ledger write plus `task:changed` suffices (task meta is durable; a late write loses nothing). Demand-gated on a real consumer asking. |
+| **Step-7 summary enabled** (`maxLlmCalls: 1, model: "free"`) | v1 must prove the deterministic block's value before spending any model budget; free-route resolution also depends on `OPENROUTER_API_KEY` being configured. The code ships in v1 — enabling it is a config flip, not a build. | The v1.1 watch shows the deterministic block missing decisions a one-line free summary would catch, or an operator opts in per workspace. Free route present ⇒ summary line; absent ⇒ refusal logged, block unchanged (AIP-68 §5 posture). |
+| **`hook_list` tool** | `config_get` over the `hooks.*` keys already exposes the resolved config in v1; a dedicated tool would add a daemon tool name plus generated-registry churn for no new information. | The workspace `HOOK.md` merge (below) lands, and `config_get` can no longer show the *merged* view across sources — the tool ships with that milestone. |
+| **`spec-echo` enricher** (§6) | v1 proves the seam with one enricher; each further enricher is one file plus one registry entry (§6), additive the moment the dispatcher is proven in production. | The first workspace with a real spec index (`specs/`, `docs/`, `WORK.md`) whose agents are asked to implement *the* spec — a concrete demand for the "existing spec sections" block. |
+| **`security-check` enricher** (§6) | Same posture: additive, zero dispatcher change, ships when someone will read it. | The first pre-delegation incident of the class the maintainer judge only catches at merge — an `agent_start` already touching `auth\|token\|migrations\|.env\|workflows` that would have escalated anyway. The note pays for itself exactly then. |
+| **Workspace `HOOK.md` loading** (§2.7b) | Two-source precedence (workspace doc > daemon config) is a config-surface change with drift risk; the daemon config alone covers Pygmalion (v1.1) and the second brain (v1.2). | The first real per-workspace divergence: a brain/team that needs a *different* hook set than the daemon-wide config. |
+| **User/agent-authored enrichment scripts** | AIP-40's parked sandbox problem: a config-declared script body is remote code execution by JSON. Config plus bundled enrichers do not cross that line; a `HOOK.md` that can run third-party scripts would (candidate AIP-69). | A sibling AIP with a sandbox-mediated execution model — AIP-40's explicit parking condition. |
+| **Clerk triggers on `fireExternal`** (§10.4 v2) | The clerk keeps its independently built AIP-68 §5 path in v1 so nothing breaks; the §10 shapes (record, dispatcher, dedup, budget, delivery) are already the ones it will join. | §10.4's v2 milestone: clerk integrations publish into `fireExternal` and their play passes register as enrichers. |
+| **Shared day-window cost accounting** (§10.4 v3) | Per-hook `maxCostUsd` exists in v1; one operator-wide day window spanning both populations is only worth building once both spend against it. | §10.4's v3 milestone: clerk passes and enricher runs share one hard stop. |
 
 ---
 
 ## 8. Does this need an AIP amendment?
 
-**Verdict: one short amendment to AIP-46 — not a new AIP.**
+**Verdict (owner-decided): one short amendment to AIP-46 — not a new AIP.**
+The amendment is kept in this doc as a ready-to-port section — §8.1,
+**"Proposed AIP-46 amendment"** — written as normative spec prose with no
+repo-specific references, so porting it into the canonical
+`agentproto/agentproto` AIP-46 is a copy, not a rewrite.
 
 Why not new: every *vocabulary* piece already exists and is canonical —
 AIP-37 registers `tool-call` / `tool-result` / `tool-error`; AIP-42 already
@@ -640,10 +667,10 @@ bundled enrichers do not cross that line; a `HOOK.md` doctype that can run
 third-party scripts would (candidate: AIP-69). Until then the doc form in
 §2.7(b) stays pending (`specs/resources/pending/hook/`), like `memory`.
 
-### 8.1 Draft amendment text (paste-ready, AIP-46)
+### 8.1 Proposed AIP-46 amendment (ready to port)
 
 ````markdown
-### Tool hooks and enrichers (draft, 2026-10-20)
+### Tool hooks and enrichers (proposed AIP-46 amendment, 2026-10-20)
 
 A host MAY run **enrichers** — read-only background passes over the
 workspace, PR history, memory or project docs — triggered by a tool
@@ -879,13 +906,17 @@ never a wake (AIP-68's never-wake ≙ this doc's R6 never-interrupt).
 
 ### 10.4 Phasing of the unification
 
-v1 (this doc): dispatcher + enricher hooks; the clerk keeps its today-stance
-(independently built to AIP-68 §5) and nothing breaks. v2: clerk triggers
-publish into `fireExternal` and their play passes are *registered enrichers*;
-config stays separate (clerk frontmatter declares `on:`/`match:` in shared
-shape). v3: shared day-window cost accounting and one `hook_list`/observability
-surface for both. No new event names, no new queue, no new event system — the
-"gap" sentence at the end of §1 is satisfied exactly once.
+**v1 (this doc):** the dispatcher + enricher hooks ship; the clerk keeps
+its today-stance (independently built to AIP-68 §5) and nothing breaks.
+The v2 and v3 milestones below are the named triggers in §7's post-v1
+table — not an undefined later. **v2:** clerk triggers publish into
+`fireExternal` and their play passes are *registered enrichers*; config
+stays separate (clerk frontmatter declares `on:`/`match:` in the shared
+shape). **v3:** shared day-window cost accounting and one observability
+surface for both populations (the `hook_list` tool itself ships with the
+§7 `HOOK.md` milestone; v3 extends that surface to clerk passes). No new
+event names, no new queue, no new event system — the "gap" sentence at
+the end of §1 is satisfied exactly once.
 
 ---
 
@@ -914,44 +945,56 @@ surface for both. No new event names, no new queue, no new event system — the
    `≤400` output tokens on a **free OpenRouter route** through the titler's
    own fetch (the runtime has no inference client), `maxLlmCalls: 1`, with an
    explicit refusal when no free route or `OPENROUTER_API_KEY` exists.
-6. **No new AIP**: one paste-ready AIP-46 amendment covers the delivery and
-   non-blocking guarantees (§8.1); a standalone AIP waits until hooks can be
-   user-authored code (AIP-40's parked sibling) — rollout starts config-only
-   for the Pygmalion brain's delegations.
+6. **No new AIP (owner-decided):** a ready-to-port, normative *Proposed
+   AIP-46 amendment* (§8.1) covers the delivery and non-blocking
+   guarantees; a standalone AIP waits until hooks can be user-authored
+   code (AIP-40's parked sibling, candidate AIP-69). v1 = the
+   deterministic dispatcher **plus** the `prior-art` async enricher,
+   shipped together (§7) — and everything out of v1 carries an explicit
+   reason and a named trigger, never an undefined "later".
 
 ---
 
-## 12. Decision needed (Jeremy)
+## 12. Decisions recorded (v1 scope freeze & AIP-46 amendment)
 
-Two decisions block nothing except the amendment text and phase 1 — the
-design doc can keep landing as is.
+Both owner decisions are in. This section is the record; it no longer
+blocks anything, and nothing elsewhere in the doc contradicts it.
 
-**1) New AIP vs amendment.** The doc's verdict (§8): **one short amendment
-to AIP-46** (the §8.1 draft is paste-ready), not a new AIP — every vocabulary
-piece (AIP-37 events, AIP-42 `on:`, AIP-41 `schedule.kind: event`, AIP-60
-`match`, AIP-68 budget) is already canonical; the two genuinely new
-normative statements — the never-interrupt/never-block delivery-and-run
-guarantees for daemon-authored enrichment — are statements about the
-AIP-46 session surface. The one thing to confirm: that this stays a
-**pending** `HOOK.md` doctype (like `memory`) and consumes no AIP number
-until user-authored hook *code* (AIP-40's parked sibling) forces a real
-spec — if you want that numbered later, it is a candidate AIP-69.
+**1) AIP-46 amendment — decided; kept ready-to-port in §8.1.** The §8
+verdict is final: **one short amendment to AIP-46, not a new AIP**.
+Every vocabulary piece is already canonical (AIP-37 events, AIP-42 `on:`,
+AIP-41 `schedule.kind: event`, AIP-60 `match`, AIP-68 budget); the two
+genuinely new normative statements — the never-interrupt / never-block
+delivery-and-run guarantees for daemon-authored enrichment — are
+statements about the AIP-46 session surface. The amendment lives in this
+doc as §8.1, **"Proposed AIP-46 amendment"** — normative spec prose with
+no repo-specific references, ready to be copied into the canonical
+`agentproto/agentproto` AIP-46. The `HOOK.md` doctype stays **pending**
+(`specs/resources/pending/hook/`, like `memory`) and consumes no AIP
+number until user-authored hook *code* (AIP-40's parked sibling) forces
+a real spec — then it is a candidate AIP-69. *One operational ask left:*
+name the reviewer for the §8.1 text before the port.
 
-**2) v1 scope — to freeze now:**
-- **In:** the daemon dispatcher + `withToolHooks` proxy (§9.1) with the three
-  delivery arms from existing primitives (queue append, `fyi`
-  prepend-to-prompt, `attach-to-task-meta`); config-only hooks in
-  `~/.agentproto/config.json` (hot, killable); one bundled enricher
-  — `prior-art` — shipped **deterministic-only** (\`maxLlmCalls: 0\`), on
-  Pygmalion/delegations first (phase 1) and opt-in free-model summary later
-  (phase 2); in-memory module-scope dedup (survives per-request server
-  rebuild, resets on daemon restart).
-- **Out of v1:** `sync` mode shipped (the bounded exception is specced, not
-  built), `hook_list` tool, `spec-echo` / `security-check` enrichers,
-  workspace `HOOK.md` loading, user/agent-authored enrichment scripts, and
-  the clerk unification beyond keeping the shared shapes from §10 (clerk
-  triggers join `fireExternal` in v2/v3).
+**2) v1 scope — frozen: deterministic dispatcher + `prior-art`, together.**
 
-**Asks:** (a) confirm "amendment, not new AIP"; (b) confirm the v1 scope
-above and that phase 1 stays deterministic-only; (c) name the reviewer for
-the §8.1 amendment text.
+- **In:** the module-scope hook dispatcher + `withToolHooks` proxy, async
+  path only (§2.4) — the permanent foundation every later feature
+  installs into, not a proof of concept; the three delivery arms from
+  existing primitives (queue append, `fyi` prepend-to-prompt,
+  `attach-to-task-meta`); config-only hooks in `~/.agentproto/config.json`
+  (hot, killable); the `prior-art` enricher with its deterministic
+  pipeline — shipped default `maxLlmCalls: 0`, with the optional
+  free-model summary code-complete but config-off (§7 v1.0) — on
+  Pygmalion/delegations first (§7 v1.1); in-memory module-scope dedup
+  (survives the per-request server rebuild, resets on daemon restart).
+- **Out of v1 — each item carries an explicit reason and a named trigger,
+  spelled out in §7's post-v1 table:** `mode: "sync"` installed (the
+  `fireSync` branch stays reserved behind the same seam; v1 refuses the
+  config at load), the `hook_list` tool, the `spec-echo` /
+  `security-check` enrichers, workspace `HOOK.md` loading,
+  user/agent-authored enrichment scripts, and the clerk unification
+  beyond the shared §10 shapes (clerk triggers join `fireExternal` at
+  §10.4's v2; day-window cost accounting at v3). Enabling the step-7
+  summary is likewise a named-trigger config flip (§7), not a phase —
+  and, like everything in v1, the rollout stays deterministic-first and
+  free-route-only.
