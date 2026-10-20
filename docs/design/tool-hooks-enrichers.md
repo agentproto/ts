@@ -203,10 +203,11 @@ interface ToolHook {
   on: OnRef                        // what fires it
   match?: MatchSpec                // optional narrowing filter
   run: string                      // enricher id from the registry
-  mode?: "async" | "sync"          // default "async"
+  mode?: "async" | "sync"          // default "async"; v1 installs the async path only (§2.4)
   deliver: DeliverSpec             // where the block goes
   delayMs?: number                 // default 0; prior-art uses ~4000
-  dedup?: DedupScope               // default "task" (see §4-R4)
+  dedup?: DedupScope               // "task" | "session" | "none", default "task" (§4-R4);
+                                   // §10.1 extends the set with "subject" for external triggers
   budget?: Budget                  // default: { timeoutMs: 20000, maxLlmCalls: 0 }
   enabled?: boolean                // default true when the block is present
 }
@@ -312,6 +313,16 @@ see §8 for where user-authored hooks belong).
 the worst case. The brief's "without blocking the tool call" is therefore
 `async` for everything on the spawn/prompt path; `sync` exists for the meta
 case and is documented as the bounded exception.
+
+**v1 installs the `async` path only.** The `sync` arm is fully specified
+here and in the §9.2 interface, but the v1 `withToolHooks` wrapper (§9.1)
+never awaits hook work: no v1 delivery arm's consumer reads enrichment from
+the tool's own response — all three arms are out-of-band by R6 — so a
+blocking-shaped code path would ship unused and invite configs that slow
+delegations for nothing. A v1 config that sets `mode: "sync"` is therefore
+**refused at load** (same posture as an unknown `deliver.to`, §4-R6), not
+silently downgraded. The named trigger for installing the sync branch is in
+§7's post-v1 table.
 
 ### 2.5 `deliver` — the three arms
 
@@ -519,7 +530,7 @@ so silence is never ambiguous.
 
 | # | Rule |
 |---|---|
-| **R1 — never block** | The tool handler is never awaited on hook work. `mode: "async"` dispatch is a `void` promise started after the handler resolves; `mode: "sync"` is clamped to `min(budget.timeoutMs, 2000)` and still cannot fail the call. |
+| **R1 — never block** | The tool handler is never awaited on hook work. `mode: "async"` dispatch is a `void` promise started after the handler resolves; `mode: "sync"` is clamped to `min(budget.timeoutMs, 2000)` and still cannot fail the call. v1 installs the async arm only — the sync arm is specified but not shipped (§2.4, §7). |
 | **R2 — never fail** | The whole dispatch path (`match` → enricher → deliver) is wrapped in one `try/catch`. Any throw, rejection, bad binding, missing session, or timeout resolves to a bus event + `console.warn` — identical posture to `maybeTitleSession`. A hook bug can never turn a valid `agent_start` into an error. |
 | **R3 — timeout ⇒ no block** | Every subprocess has `timeout` and every LLM call `AbortSignal.timeout`; on expiry the partial result is discarded and the hook ends with `hook:skipped {reason:"timeout"}`. There is no retry by default (a retry would re-spend the budget on a delegation that already happened). |
 | **R4 — dedup** | Default scope `"task"`: key = `"<hookId>:<taskId ?? targetSessionId ?? argsHash>"`. Implementation mirrors the titler's *set-before-await* guard (so concurrent triggers can't double-fire), plus `coalesceKey` on the queue arm so a burst collapses to one queued item with `coalescedCount++`. Scope `"session"` keys on the target session; `"none"` disables. `attach-to-task-meta` dedups for free (same meta key, last write wins). Persisted keys are optional in v1 (in-memory set, module scope, so it survives the per-request server rebuild and resets on daemon restart — acceptable: a restart also loses the window that mattered). |
@@ -651,7 +662,7 @@ interface ToolHook {
   mode?: "async" | "sync"   // default "async"
   deliver: { to: "append-to-session-queue" | "prepend-to-prompt" | "attach-to-task-meta", … }
   delayMs?: number
-  dedup?: "task" | "session" | "hook" | "none"   // default "task"
+  dedup?: "task" | "session" | "none"   // default "task"
   budget?: { timeoutMs?: number, maxLlmCalls?: number, maxTokens?: number, model?: string }
 }
 ```
@@ -708,15 +719,15 @@ replays; a routine target does not carry `deliver` and is not required to.
 | File | Contents |
 |---|---|
 | `packages/runtime/src/tool-hooks.ts` | `ToolHook`, `MatchSpec`, `ToolHookEvent`, `Budget`, `DeliverSpec`; config loader/validator; `matches(event, spec)`; `resolveBindings`. Pure — no I/O, unit-testable. |
-| `packages/runtime/src/tool-hook-dispatcher.ts` | Module-scope dispatcher: dedup sets (titler-style set-before-await), timer for `delayMs`, one `try/catch` around match→run→deliver, `hook:ran`/`hook:skipped` emission, sync clamp, `AbortSignal` budget wiring. |
-| `packages/runtime/src/with-tool-hooks.ts` | `withToolHooks(server, dispatcher, deps)` — the `tool-subset.ts`/`deferred-tools.ts` proxy: same `Proxy`, same `tool` / `registerTool` interception, same `...rest` forwarding, but it pops the trailing argument **only when it is a function** (both SDK overloads take the handler last — `registerTool(name, config, cb)` as used by `agent-tools.ts` / `mcp-apps-adapter.ts`) and wraps it: `await original(...)`, then `dispatcher.fire(...)` (async) or `await dispatcher.fireSync(...)` (sync, ≤2 s clamp, block folded into the response when it produced one), then return the untouched result. The wrapper's own promise is the only thing a sync hook can extend. |
+| `packages/runtime/src/tool-hook-dispatcher.ts` | Module-scope dispatcher: dedup sets (titler-style set-before-await), timer for `delayMs`, one `try/catch` around match→run→deliver, `hook:ran`/`hook:skipped` emission, `AbortSignal` budget wiring. (The `sync` clamp lives with the post-v1 `fireSync` branch, §7 — v1 ships `fire` only.) |
+| `packages/runtime/src/with-tool-hooks.ts` | `withToolHooks(server, dispatcher, deps)` — the `tool-subset.ts`/`deferred-tools.ts` proxy: same `Proxy`, same `tool` / `registerTool` interception, same `...rest` forwarding, but it pops the trailing argument **only when it is a function** (both SDK overloads take the handler last — `registerTool(name, config, cb)` as used by `agent-tools.ts` / `mcp-apps-adapter.ts`) and wraps it: `await original(...)`, then `dispatcher.fire(...)` fire-and-forget, then return the untouched result. **v1 wraps the async path only** (§2.4): the wrapper never awaits hook work, so the tool's own promise is never extended by a hook. The `fireSync` branch (≤2 s clamp, block folded into the response) is one later addition behind the same seam — installed only when its §7 trigger fires. |
 | `packages/runtime/src/tool-hook-enrichers/types.ts` | `Enricher`, `EnricherContext`, `EnrichmentBlock`. |
 | `packages/runtime/src/tool-hook-enrichers/prior-art.ts` | §3 pipeline; ports injected (`gitGrep`, `gh`, `brainSearch`, `readWorkspaceFile`, `llm`). |
 | `packages/runtime/src/tool-hook-enrichers/index.ts` | Registry `Map<string, Enricher>` + `registerEnricher`. |
 | `packages/runtime/src/__tests__/tool-hooks.test.ts` | match/bind/dedup/timeout/never-fail/never-block (asserts the tool result is identical with hooks on/off). |
 | `packages/runtime/src/__tests__/prior-art.test.ts` | keyword extraction, block ≤15 lines, partial-failure composition, free-route refusal. |
 | `docs/design/tool-hooks-enrichers.md` | This document. |
-| *(optional)* `packages/runtime/docs/mcp-tools/hook_list.md` + `hook_list` tool | Resolved-config inspection; regenerate `daemon-tool-names.generated.ts` via `pnpm --filter @agentproto/runtime gen:daemon-tool-names`. |
+| *(post-v1 — §7, named trigger)* `packages/runtime/docs/mcp-tools/hook_list.md` + `hook_list` tool | Resolved-config inspection; regenerate `daemon-tool-names.generated.ts` via `pnpm --filter @agentproto/runtime gen:daemon-tool-names`. Not needed in v1: `config_get` over the `hooks.*` keys already exposes the resolved config. |
 | *(§2.7b, second step)* `specs/resources/pending/hook/draft/HOOK.schema.json` | The `hook/v1` frontmatter draft, pending like `memory`. |
 
 **Modified**
@@ -752,7 +763,7 @@ export interface ToolHook {
   deliver: { to: "append-to-session-queue" | "prepend-to-prompt" | "attach-to-task-meta"
              sessionId?: string; taskId?: string }
   delayMs?: number
-  dedup?: "task" | "session" | "hook" | "none"
+  dedup?: "task" | "session" | "none"
   budget?: Partial<Budget>
   enabled?: boolean
 }
@@ -765,9 +776,12 @@ export interface ToolHookEvent { on: string; args: Record<string, unknown>
 export interface ToolHookDispatcher {
   /** Fire-and-forget. Never throws, never awaits on the caller's behalf. */
   fire(event: ToolHookEvent): void
-  /** mode:"sync" path: bounded by min(budget.timeoutMs, 2000); resolves null on timeout/failure. */
+  /** Reserved — post-v1 (§7), not shipped or installed in v1: the
+   *  mode:"sync" path, bounded by min(budget.timeoutMs, 2000), resolving
+   *  null on timeout/failure. v1 refuses mode:"sync" configs at load (§2.4). */
   fireSync(event: ToolHookEvent): Promise<EnrichmentBlock | null>
-  list(): readonly ToolHook[]       // hook_list / config_get shape
+  list(): readonly ToolHook[]       // config_get shape in v1; the hook_list
+                                    // tool that would surface it is post-v1 (§7)
 }
 
 // with-tool-hooks.ts
@@ -829,9 +843,16 @@ and dispatched through the §2 machinery, extended in two small places:
    the AIP-41 `schedule.kind: event` surface) call. Every hook — enricher
    or clerk play — is matched with the same pure `matches(event, match)`,
    deduped by the same set-based regime, and run through the same
-   `try/catch` + budget envelope. The clerk's *single-flight + debounce*
-   (AIP-68 §5) is this doc's dedup (R4) with a longer debounce window and a
-   `dedup: "subject"` scope — one implementation, tunable per hook.
+    `try/catch` + budget envelope. The clerk's *single-flight + debounce*
+    (AIP-68 §5) is this doc's dedup (R4) with a longer debounce window and
+    one extra scope, **`subject`** — the unification's single, defined
+    extension to the v1 enum (`task | session | none`): it keys on
+    `event.subject` (the watch-target URI from §10.1's `HookEvent`) instead
+    of a task or session, and is legal **only** for hooks on
+    external/host events — a `subject`-scoped hook bound to a named tool
+    trigger (which carries no `subject`) is a config error at load, the
+    same refusal posture as §2.1's unknown-tool rule. One implementation,
+    tunable per hook.
 
 ### 10.2 What stays clerk-owned
 
