@@ -13656,6 +13656,21 @@ export function createSessionsRegistry(opts?: {
       if (newParentId !== undefined && !sessions.has(newParentId)) {
         throw new Error(`reassignParent: no session "${newParentId}"`)
       }
+      // Cycle guard: the new parent must not sit inside the moved row's own
+      // subtree (walk its ancestor chain up; reaching `id` means a loop).
+      if (newParentId !== undefined) {
+        const seen = new Set<string>()
+        let cursor: string | undefined = newParentId
+        while (cursor !== undefined && !seen.has(cursor)) {
+          if (cursor === id) {
+            throw new Error(
+              `reassignParent: "${newParentId}" is inside the subtree of "${id}", moving it there would create a cycle`,
+            )
+          }
+          seen.add(cursor)
+          cursor = sessions.get(cursor)?.desc.parentSessionId
+        }
+      }
       if (newParentId === undefined) {
         delete rt.desc.parentSessionId
         rt.desc.depth = 0
@@ -13663,6 +13678,29 @@ export function createSessionsRegistry(opts?: {
         rt.desc.parentSessionId = newParentId
         const parent = sessions.get(newParentId)
         rt.desc.depth = parent?.desc.depth !== undefined ? parent.desc.depth + 1 : parent ? 1 : 0
+      }
+      // The whole subtree moved with the row: re-derive its depths.
+      const childrenByParent = new Map<string, string[]>()
+      for (const [childId, child] of sessions) {
+        const pid = child.desc.parentSessionId
+        if (pid === undefined) continue
+        const list = childrenByParent.get(pid)
+        if (list) list.push(childId)
+        else childrenByParent.set(pid, [childId])
+      }
+      const visited = new Set<string>([id])
+      const queue: string[] = [id]
+      while (queue.length > 0) {
+        const parentId = queue.shift()!
+        const parentDepth = sessions.get(parentId)?.desc.depth ?? 0
+        for (const childId of childrenByParent.get(parentId) ?? []) {
+          if (visited.has(childId)) continue
+          visited.add(childId)
+          const child = sessions.get(childId)
+          if (!child) continue
+          child.desc.depth = parentDepth + 1
+          queue.push(childId)
+        }
       }
       schedulePersist()
       stampReadLiveness(rt.desc)

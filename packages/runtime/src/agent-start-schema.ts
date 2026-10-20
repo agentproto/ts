@@ -170,7 +170,7 @@ export const agentStartInputShape = {
         "Its LIVE children are re-parented onto this session (drive rights + message_parent " +
         "routing follow), and this session takes the replaced row's place in the spawn tree. " +
         "Only the human operator, the replaced session itself, or the session that owns it " +
-        "may declare it. ${help(\"succeeds\")}"
+        `may declare it. ${help("succeeds")}`
     ),
   attach: jsonTolerant(opaque(attachFieldSchema))
     .optional()

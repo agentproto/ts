@@ -18,7 +18,9 @@ that session).
 
 The ids of the children to move. Only sessions that ARE currently children
 of `from` are moved - a call cannot adopt an unrelated session into someone
-else's tree; anything else is reported back in `skipped`.
+else's tree; anything else is reported back in `skipped`. So is a child
+that cannot move without creating a cycle (the successor sits inside that
+child's own subtree). A dead child is moved when named explicitly.
 
 ## What a move does
 

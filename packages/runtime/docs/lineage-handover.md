@@ -46,6 +46,10 @@ Every handover records the succession on both descriptors
 (`from.succeededBy = to`, `to.succeeds = from` - persisted, so it survives a
 daemon restart) and emits `session:lineage-handover` on the session event
 bus (`from`, `successorSessionId`, `adopted`, `skipped`, `reason`, `actor`).
+`skipped` holds the children left in place: not children of `from`, or not
+re-parentable (a move that would create a cycle is refused). The automatic
+paths only consider LIVE children; a dead child is moved only when named
+explicitly through `session_adopt`.
 
 ## Files
 

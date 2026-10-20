@@ -442,6 +442,106 @@ describe("lineage handover - `session_adopt`", () => {
   })
 })
 
+describe("lineage handover - tree integrity", () => {
+  it("never creates a cycle when the successor sits inside the moved child's subtree", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const successor = spawnNode(registry, supervisor.id, "brain-2")
+    registry.setLineageSuccessor(brain.id, successor.id)
+
+    const h = await lineageHarness({ registry, callerSessionId: successor.id })
+    try {
+      const res = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, childIds: [supervisor.id] },
+      })
+      expect(isError(res)).toBe(false)
+      const body = JSON.parse(textOf(res))
+      expect(body.adopted).toEqual([])
+      expect(body.skipped).toEqual([supervisor.id])
+      expect(registry.get(supervisor.id)?.parentSessionId).toBe(brain.id)
+      expect(registry.get(successor.id)?.parentSessionId).toBe(supervisor.id)
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+
+  it("re-derives the depth of the whole moved subtree", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnNode(registry, undefined, "root")
+    const mid = spawnNode(registry, root.id, "mid")
+    const successor = spawnNode(registry, mid.id, "brain-2")
+    const brain = spawnNode(registry, undefined, "brain")
+    const supervisor = spawnNode(registry, brain.id, "supervisor")
+    const leaf = spawnNode(registry, supervisor.id, "leaf")
+    // `spawnAgent` does not derive depth from the parent: normalize it.
+    registry.reassignParent(mid.id, root.id)
+    registry.reassignParent(successor.id, mid.id)
+    registry.reassignParent(supervisor.id, brain.id)
+    registry.reassignParent(leaf.id, supervisor.id)
+    expect(registry.get(successor.id)?.depth).toBe(2)
+    expect(registry.get(supervisor.id)?.depth).toBe(1)
+    expect(registry.get(leaf.id)?.depth).toBe(2)
+    registry.setLineageSuccessor(brain.id, successor.id)
+
+    const h = await lineageHarness({ registry, callerSessionId: successor.id })
+    try {
+      const res = await h.client.callTool({
+        name: "session_adopt",
+        arguments: { from: brain.id, childIds: [supervisor.id] },
+      })
+      expect(JSON.parse(textOf(res)).adopted).toEqual([supervisor.id])
+    } finally {
+      await h.close()
+    }
+    expect(registry.get(supervisor.id)?.depth).toBe(3)
+    expect(registry.get(leaf.id)?.depth).toBe(4)
+    registry.shutdown()
+  })
+
+  it("surfaces a failed `succeeds` handover as a warning on the agent_start response", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const brain = spawnNode(registry, undefined, "brain")
+    spawnNode(registry, brain.id, "supervisor")
+    vi.spyOn(registry, "emitLineageHandover").mockImplementation(() => {
+      throw new Error("boom")
+    })
+    const { resolveAgentAdapter } = makeResolver()
+
+    const h = await agentHarness({ registry, resolveAgentAdapter })
+    try {
+      const res = await h.client.callTool({
+        name: "agent_start",
+        arguments: { adapter: "mock-adapter", cwd: "/tmp", succeeds: brain.id },
+      })
+      expect(isError(res)).toBe(false)
+      const body = JSON.parse(textOf(res))
+      expect(body.lineageHandover).toBeUndefined()
+      expect(body.warnings).toEqual([expect.stringContaining("lineage handover failed: boom")])
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+
+  it("renders the `succeeds` help pointer instead of a literal template", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const h = await agentHarness({ registry })
+    try {
+      const { tools } = await h.client.listTools()
+      const agentStart = tools.find(t => t.name === "agent_start")!
+      const desc = (agentStart.inputSchema.properties as Record<string, { description?: string }>)
+        .succeeds!.description!
+      expect(desc).not.toContain("${")
+    } finally {
+      await h.close()
+    }
+    registry.shutdown()
+  })
+})
+
 describe("lineage handover - continue-fresh hands the children over", () => {
   it("the fresh continuation takes over the retired row's children", async () => {
     const registry = createSessionsRegistry({ persist: false })

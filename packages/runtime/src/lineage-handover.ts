@@ -45,8 +45,10 @@ export interface LineageHandoverOutcome {
   to: string
   /** Ids of the children re-parented to the successor. */
   adopted: string[]
-  /** Ids of the children left where they were (dead rows, or not children
-   *  of `from` in the first place). */
+  /** Ids of the children left where they were: not children of `from`, or
+   *  not re-parentable (e.g. the move would create a cycle). The automatic
+   *  handover only considers LIVE children, so a dead child shows up here
+   *  only when it was named explicitly (`session_adopt`). */
   skipped: string[]
 }
 

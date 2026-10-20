@@ -590,7 +590,6 @@ export function registerAgentTools(
             )
           }
         }
-        const warnings = [...(result.warnings ?? []), ...attachWarnings]
         // Lineage handover: the new session takes over the replaced row's
         // children (drive rights + `message_parent` routing follow the moved
         // `parentSessionId` pointer). Best-effort - a failed handover rides
@@ -611,6 +610,8 @@ export function registerAgentTools(
             )
           }
         }
+        // Built AFTER the handover so its failure warning rides back too.
+        const warnings = [...(result.warnings ?? []), ...attachWarnings]
         const body = {
           ...result.descriptor,
           ...(result.output ? { output: result.output } : {}),
