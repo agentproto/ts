@@ -236,6 +236,9 @@ export async function continueAgentSessionFresh(
     label: prev.label ? stripContinuedSuffix(prev.label) : undefined,
     title: prev.title ? stripContinuedSuffix(prev.title) : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
+    // The clerk hook's AGENT level lives on the descriptor; `spawnAgentSession`
+    // re-reads it from `hooks.clerk`.
+    ...(prev.clerkHook ? { hooks: { clerk: prev.clerkHook } } : {}),
     prompt: renderCheckpointPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
     // rather than becoming a detached root.

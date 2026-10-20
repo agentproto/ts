@@ -323,6 +323,7 @@ import {
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app-kit"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
+import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
@@ -1549,6 +1550,12 @@ export interface SpawnAgentSessionInput {
    *  here (`resolveTurnRetryPolicy`) before it lands on the descriptor.
    *  Omitted ⇒ no automatic retry. */
   turnRetry?: TurnRetryInput
+  /** AIP-68 clerk hook configuration - the AGENT level of the three-level
+   *  resolution (agent > workspace > daemon default). Either the
+   *  `agent_start.hooks.clerk` option or the agent manifest's
+   *  `metadata.hooks.clerk`; the explicit option wins over the manifest.
+   *  Resolved here and recorded on the descriptor (`clerkHook`). */
+  hooks?: { clerk?: Partial<ClerkHookConfig> }
   /** Context-continuity policy for this session — controls warning,
    *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
    *  Resolved from global → per-adapter → per-model → explicit override. */
@@ -2614,9 +2621,17 @@ export async function spawnAgentSession(
       ...(input.options === undefined && d.options !== undefined ? { options: d.options } : {}),
       ...(input.skills === undefined && d.skills !== undefined ? { skills: d.skills } : {}),
       ...(input.allowTools === undefined && d.tools !== undefined ? { allowTools: d.tools } : {}),
+      // The manifest's AGENT-level clerk hook (`metadata.hooks.clerk`),
+      // unless the caller stated one explicitly - the explicit
+      // `agent_start.hooks.clerk` option wins.
+      ...(input.hooks === undefined && d.hooks !== undefined ? { hooks: d.hooks } : {}),
     }
     if (d.warnings.length > 0) spawnWarnings.push(...d.warnings)
   }
+  // The AGENT level of the clerk hook, resolved once and recorded on the
+  // descriptor (`clerkHook`) - the daemon's clerk-turn-end controller
+  // resolves it against the workspace and daemon levels per session.
+  const clerkHook = parseAgentClerkHook({ hooks: input.hooks })
   if (input.sandbox === undefined && !appBoundary) {
     const mode = resolveWorktreeIsolation
       ? await resolveWorktreeIsolation()
@@ -4276,6 +4291,7 @@ export async function spawnAgentSession(
         contextContinuity: resolvedContextContinuity,
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
+        ...(Object.keys(clerkHook).length > 0 ? { clerkHook } : {}),
         ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(authEcho?.fingerprint
           ? {
@@ -4979,6 +4995,7 @@ export async function spawnAgentSession(
       contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
+      ...(Object.keys(clerkHook).length > 0 ? { clerkHook } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),
       // Verifiability: record the OBSERVABLE echo — resolved provider, mode,

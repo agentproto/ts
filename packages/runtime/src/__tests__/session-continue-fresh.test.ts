@@ -101,6 +101,23 @@ describe("continueAgentSessionFresh", () => {
     expect(input.prompt).toContain("[continued session")
   })
 
+  it("carries the agent-level clerk hook config onto the fresh session", async () => {
+    const prev = { ...makePrev(), clerkHook: { enabled: true, debounceMs: 60_000 } } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.hooks).toEqual({ clerk: { enabled: true, debounceMs: 60_000 } })
+  })
+
   it("threads notes and the handoff turn into the checkpoint prompt of the fresh session", async () => {
     const prev = makePrev()
     vi.mocked(spawnAgentSession).mockResolvedValue({
