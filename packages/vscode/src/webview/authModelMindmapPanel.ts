@@ -83,7 +83,16 @@ export function registerAuthModelMindmap(
     // A FAILED listing (truncated stub, unreachable daemon) is announced —
     // never silently rendered as an empty harness set.
     warnAdaptersError(adapterStatus.error)
-    return buildAuthModel({ adapters: adapterStatus.adapters, capabilities, profiles, router })
+    // The listing is compact (no model/provider detail). The map draws an
+    // edge per harness→provider, which needs each adapter's own detail; fetch
+    // it per adapter rather than shipping every model array in one response.
+    const adapters = await Promise.all(
+      adapterStatus.adapters.map(async adapter => {
+        const detail = await client.getAdapter(adapter.slug).catch(() => undefined)
+        return detail ?? adapter
+      }),
+    )
+    return buildAuthModel({ adapters, capabilities, profiles, router })
   }
 
   async function post(): Promise<void> {

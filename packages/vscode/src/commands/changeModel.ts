@@ -34,15 +34,13 @@ export async function runChangeModelFlow(
     return
   }
 
-  const adapters = await client.listAdapters().catch(err => {
+  // ONLY this session's adapter detail (its model list), not the full listing.
+  const adapter = await client.getAdapter(session.adapterSlug).catch(err => {
     void vscode.window.showErrorMessage(
-      `agentproto: couldn't load adapters — ${describeError(err)}`,
+      `agentproto: couldn't load adapter "${session.adapterSlug}" — ${describeError(err)}`,
     )
     return undefined
   })
-  if (!adapters) return
-
-  const adapter = adapters.find(a => a.slug === session.adapterSlug)
   if (!adapter) {
     void vscode.window.showWarningMessage(
       `agentproto: adapter "${session.adapterSlug}" is no longer installed.`,

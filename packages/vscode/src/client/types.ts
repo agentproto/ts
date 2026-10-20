@@ -701,6 +701,12 @@ export interface AdapterInfo {
    *  provider/mode a structured `models.allowed` entry states. Absent on
    *  an older daemon that predates this projection. */
   modelDetails?: AdapterModelInfo[]
+  /** Compact `adapter_list` row: package present on this host. Only a
+   *  `supported` adapter reports false. Absent on a `full` row. */
+  installed?: boolean
+  /** Compact `adapter_list` row: number of models the adapter declares,
+   *  without shipping the model array. Absent on a `full` row. */
+  modelCount?: number
   /** Install/readiness state: ready = installed, available = installable
    *  (installed, but setup/auth pending — still installed, NOT "not
    *  installed"). `unresolvable` = package present but the last import
