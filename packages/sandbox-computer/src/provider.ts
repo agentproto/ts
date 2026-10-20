@@ -266,10 +266,19 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
   const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined)
   const configEgressIp = readEgressIpOption(config.egressIp, "config.egressIp")
   const specEgressIp = readEgressIpOption(spec.network?.egressIp, "network.egressIp")
-  if (configEgressIp !== undefined && specEgressIp !== undefined && configEgressIp !== specEgressIp) {
+  // The schema defaults `network.egressIp` to "shared", so a parsed manifest
+  // carries it even when the author never set it: "shared" is absent for
+  // conflict resolution. Any explicit config value (including "shared") wins.
+  const specSelection = specEgressIp === "shared" ? undefined : specEgressIp
+  if (
+    configEgressIp !== undefined &&
+    configEgressIp !== "shared" &&
+    specSelection !== undefined &&
+    configEgressIp !== specSelection
+  ) {
     throw new Error(
       `computer sandbox: conflicting egressIp values; config.egressIp is "${configEgressIp}" but ` +
-        `network.egressIp is "${specEgressIp}". Set only one, or make them identical.`,
+        `network.egressIp is "${specSelection}". Set only one, or make them identical.`,
     )
   }
   return {

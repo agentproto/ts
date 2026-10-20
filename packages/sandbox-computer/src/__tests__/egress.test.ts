@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
+import { parseSandboxManifest } from "@agentproto/sandbox/manifest"
 import { computerSandboxProvider } from "../provider.js"
 import { ComputerSandboxError, isComputerSandboxError } from "../errors.js"
 import { FakeController } from "./fake-controller.js"
@@ -64,12 +65,59 @@ describe("computerSandboxProvider egressIp", () => {
     await booted.stop()
   })
 
+  it("treats the schema's default network.egressIp as absent so config.egressIp wins", async () => {
+    controller.options.egressIp = EGRESS_IP
+    const manifest = parseSandboxManifest(`---
+provider: computer
+config:
+  controllerUrl: ${controller.url}
+  token: ${SERVICE_TOKEN}
+  tenantId: tenant-a
+  egressIp: auto
+network:
+  egress:
+    - x.com
+---
+`)
+    expect(manifest.frontmatter.network?.egressIp).toBe("shared")
+
+    const booted = await computerSandboxProvider.boot(manifest.frontmatter as unknown as SandboxSpec, bootOpts)
+
+    expect(controller.createBodies[0]).toMatchObject({ egressIp: "auto" })
+    await booted.stop()
+  })
+
   it("lets config.egressIp win when it matches network.egressIp", async () => {
     controller.options.egressIp = EGRESS_IP
     const both = { ...spec(controller.url, { egressIp: "slot1" }), network: { egressIp: "slot1" } } as SandboxSpec
     const booted = await computerSandboxProvider.boot(both, bootOpts)
 
     expect(controller.createBodies[0]).toMatchObject({ egressIp: "slot1" })
+    await booted.stop()
+  })
+
+  it('lets an explicit config.egressIp of "shared" win over network.egressIp', async () => {
+    controller.options.egressIp = null
+    const both = { ...spec(controller.url, { egressIp: "shared" }), network: { egressIp: "auto" } } as SandboxSpec
+    const booted = await computerSandboxProvider.boot(both, bootOpts)
+
+    expect(controller.createBodies[0]).not.toHaveProperty("egressIp")
+    await booted.stop()
+  })
+
+  it("rejects conflicting non-shared config and network values before any controller call", async () => {
+    const conflict = { ...spec(controller.url, { egressIp: "dedicated" }), network: { egressIp: "auto" } } as SandboxSpec
+    await expect(computerSandboxProvider.boot(conflict, bootOpts)).rejects.toThrow(/conflicting egressIp values/)
+    expect(controller.createBodies).toEqual([])
+    expect(controller.requestHeaders).toEqual([])
+  })
+
+  it("forwards a spec-level network.egressIp of auto when config does not set one", async () => {
+    controller.options.egressIp = EGRESS_IP
+    const withNetwork = { ...spec(controller.url), network: { egressIp: "auto" } } as SandboxSpec
+    const booted = await computerSandboxProvider.boot(withNetwork, bootOpts)
+
+    expect(controller.createBodies[0]).toMatchObject({ egressIp: "auto" })
     await booted.stop()
   })
 
