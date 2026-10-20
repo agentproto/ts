@@ -125,6 +125,26 @@ describe("continueAgentSessionFresh", () => {
     expect(result.checkpoint.handoffTurn).toEqual({ status: "answered" })
   })
 
+  // AIP-46 amendment §Cold-wake guard step 3: the incoming prompt rides the
+  // fresh session's FIRST turn (appended to the checkpoint prompt), so it is
+  // neither dropped nor run twice.
+  it("appends firstPrompt to the checkpoint prompt so the cold-wake handover rides the first turn", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints", askSource: false, firstPrompt: "Refactor the auth module." },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.prompt).toContain("[continued session")
+    expect(input.prompt).toContain("Refactor the auth module.")
+  })
+
   it("does not ask the source session when askSource is false", async () => {
     const handoffAsker = vi.fn(async () => "{}")
     vi.mocked(spawnAgentSession).mockResolvedValue({

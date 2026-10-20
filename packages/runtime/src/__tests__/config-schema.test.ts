@@ -61,10 +61,25 @@ describe("agentprotoConfigSchema", () => {
             skills: ["planning"],
             options: { model: "sonnet" },
             auth: { mode: "subscription", source: "claude-code-oauth" },
-            contextContinuity: { mode: "ask", warnAtPct: 55 },
+            contextContinuity: {
+              mode: "ask",
+              warnAtPct: 55,
+              idleCompact: { mode: "ask", atPct: 50, beforeCacheExpiryMs: 60_000, action: "compact" },
+            },
           },
         },
-        contextContinuity: { mode: "auto", warnAtPct: 50, compactAtPct: 60, continueFreshAtPct: 70, hardStopAtPct: 90 },
+        contextContinuity: {
+          mode: "auto",
+          warnAtPct: 50,
+          compactAtPct: 60,
+          continueFreshAtPct: 70,
+          hardStopAtPct: 90,
+          // AIP-46 amendment: both blocks are whole-object overrides — the
+          // adapter-level block above wins entirely when present, never a
+          // field-by-field merge with this one.
+          idleCompact: { mode: "auto", atPct: 45, beforeCacheExpiryMs: 45_000, action: "continue-fresh" },
+          coldWakeGuard: { mode: "ask", atPct: 75 },
+        },
         defaultRoleDepthCutoff: 1,
         maxGrantableDelegation: 2,
         langfuseTracing: false,
@@ -113,6 +128,61 @@ describe("agentprotoConfigSchema", () => {
       expect(result.data.daemon).toMatchObject({ somethingNew: true })
       expect(result.data.aFutureTopLevelBlock).toEqual({ nested: 1 })
     }
+  })
+})
+
+describe("contextContinuity.idleCompact / coldWakeGuard (AIP-46 amendment)", () => {
+  const cc = (idleCompact?: unknown, coldWakeGuard?: unknown) => ({
+    defaults: {
+      contextContinuity: {
+        ...(idleCompact !== undefined ? { idleCompact } : {}),
+        ...(coldWakeGuard !== undefined ? { coldWakeGuard } : {}),
+      },
+    },
+  })
+
+  it("accepts a fully-specified idleCompact + coldWakeGuard block", () => {
+    const result = agentprotoConfigSchema.safeParse(
+      cc(
+        { mode: "auto", atPct: 50, beforeCacheExpiryMs: 60_000, action: "continue-fresh" },
+        { mode: "ask", atPct: 75 },
+      ),
+    )
+    expect(result.success).toBe(true)
+  })
+
+  it("accepts adapter-level blocks too (same schema at every path)", () => {
+    const result = agentprotoConfigSchema.safeParse({
+      defaults: {
+        adapters: {
+          "claude-code": {
+            contextContinuity: { idleCompact: { mode: "ask" }, coldWakeGuard: { atPct: 80 } },
+          },
+        },
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects an unknown idleCompact.mode / action", () => {
+    expect(agentprotoConfigSchema.safeParse(cc({ mode: "yes" })).success).toBe(false)
+    expect(agentprotoConfigSchema.safeParse(cc({ action: "compact-now" })).success).toBe(false)
+  })
+
+  it("rejects an unknown coldWakeGuard.mode", () => {
+    expect(agentprotoConfigSchema.safeParse(cc(undefined, { mode: "on" })).success).toBe(false)
+  })
+
+  it("rejects out-of-range / fractional atPct and negative beforeCacheExpiryMs", () => {
+    expect(agentprotoConfigSchema.safeParse(cc({ atPct: 101 })).success).toBe(false)
+    expect(agentprotoConfigSchema.safeParse(cc({ atPct: 50.5 })).success).toBe(false)
+    expect(agentprotoConfigSchema.safeParse(cc({ beforeCacheExpiryMs: -1 })).success).toBe(false)
+    expect(agentprotoConfigSchema.safeParse(cc(undefined, { atPct: -1 })).success).toBe(false)
+  })
+
+  it("keeps unknown block keys via passthrough (AIP-45-style forward compat)", () => {
+    const result = agentprotoConfigSchema.safeParse(cc({ mode: "ask", futureKnob: 1 }))
+    expect(result.success).toBe(true)
   })
 })
 
