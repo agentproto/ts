@@ -65,6 +65,11 @@ WORKFLOW.md's own doc for how agreed verdicts are applied under
    `maintain/WORKFLOW.md` actually lives in that environment, and either
    replace `target.inputs.notify` with your own target or delete
    the `notify` key entirely to run silently (report only, no page).
+   A relative `target.workflow.file` resolves against this routine's
+   workspace root. When `target.inputs.repoRoot` is omitted, the registrar
+   defaults it to that same workspace root (an explicit `repoRoot` always
+   wins), so the run stays scoped to this workspace instead of falling back
+   to the daemon's active workspace.
 3. If `notify` is kept, make sure its provider is configured on the daemon.
    The notify step goes through `transmit_message` (`bind: false`): the
    default `provider: telegram` needs a bot token from
