@@ -119,17 +119,24 @@ export class McpResultTruncatedError extends Error {
 }
 
 /** An older daemon that predates an additive tool/argument rejects the call
- *  either as invalid params (-32602) or as an unknown tool/method. */
+ *  either as invalid params (-32602) or as an unknown tool/method. The
+ *  wording is deliberately NARROW: tool handlers legitimately fail with
+ *  their own "…/"adapter "x" was not found" messages (e.g. an unknown slug
+ *  through `adapter_models`), and matching a bare /not found/ would misread
+ *  that as "the daemon lacks the tool" and trigger the legacy fallback —
+ *  which walks the full listing and comes back empty. */
 function isMissingToolOrParam(err: unknown): boolean {
   if (err instanceof McpInvalidParamsError) return true
   const message = err instanceof Error ? err.message : String(err)
-  return /unknown tool|method not found|not found/i.test(message)
+  return /unknown tool|method not found/i.test(message)
 }
 
 /** Older listers omit the compact-only `installed` flag; derive the coarse
  *  readiness status so callers that sort/install by `status` keep working
- *  with compact rows. A full row already carries the exact status. */
-function normalizeCompactAdapter(adapter: AdapterInfo): AdapterInfo {
+ *  with compact rows. A full row — or a modern compact row, which surfaces
+ *  the daemon's exact `status` — already carries the truthful status and is
+ *  returned untouched. */
+export function normalizeCompactAdapter(adapter: AdapterInfo): AdapterInfo {
   if (adapter.installed === undefined || adapter.status !== undefined) return adapter
   return { ...adapter, status: adapter.installed ? "ready" : "supported" }
 }
