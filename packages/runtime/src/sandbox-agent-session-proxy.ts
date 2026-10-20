@@ -801,10 +801,13 @@ export function createSandboxAgentSessionProxy(
     deadlineTimer = undefined
     if (closed || detached) return
     // While a turn is in flight the box MUST outlive the deadline: retry
-    // the renewal (spaced, bounded) until it lands or the deadline truly
-    // passes — a single failed renewal used to fall straight through to
-    // the final-checkpoint branch, which then raced the provider's reaper
-    // and lost every push. Retries stay inside the remaining lifetime.
+    // the renewal (spaced, bounded) until it lands, the deadline truly
+    // passes, or 5 attempts are spent — a single failed renewal used to
+    // fall straight through to the final-checkpoint branch, which then
+    // raced the provider's reaper and lost every push. The sleeps are
+    // capped at remaining/4 (≤30s), so they COULD overdraw the window
+    // slightly across 5 attempts; that is safe — after the loop the final
+    // checkpoint is re-bounded to the time actually left (≤0 ⇒ skipped).
     let renewals = 0
     while (activeTurns > 0 && host.extendTimeout && !closed && !detached) {
       const remaining = (nextDeadlineAt ?? 0) - Date.now()

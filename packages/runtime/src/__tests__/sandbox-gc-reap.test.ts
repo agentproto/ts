@@ -132,6 +132,22 @@ describe("reapGcEntry — capacity-free reaping", () => {
     expect(readFileSync(ledger, "utf8")).toContain('"state":"paused"')
   })
 
+  it("an UNRELATED 'not found' error (provider lookup wording) is a failure, not a gone-box success", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [entryOf()])
+    const res = await reapGcEntry(entryOf(), {
+      resolveProvider: async () =>
+        handleFor({
+          remove: async () => {
+            throw new Error(`provider "sandbox-computer" not found: ${entryOf().sandboxId}`)
+          },
+        }),
+      ledgerPath: ledger,
+    })
+    expect(res.ok).toBe(false)
+    expect(readFileSync(ledger, "utf8")).toContain('"state":"paused"')
+  })
+
   it("an explicit pause bypasses remove and uses the connect path", async () => {
     const remove = vi.fn(async (_id: string) => {})
     const stop = vi.fn(async () => {})

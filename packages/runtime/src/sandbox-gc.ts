@@ -96,9 +96,13 @@ export interface SandboxGcProviderHandle {
 }
 
 /** Error-message shapes meaning "the box is already gone" — an idempotent
- *  successful gc, never a failure. */
+ *  successful gc, never a failure. The bare `not found` spelling is NOT
+ *  matched on its own: an unrelated error like `provider "x" not found`
+ *  must never be stamped as a successful reap. Prefer the typed sentinel
+ *  (`SandboxBoxGoneError`, via {@link isGoneError}); the message regex is
+ *  the fallback for providers without one. */
 const GONE_RE =
-  /\b404\b|doesn't exist|does not exist|not found|no such|box gone|sandbox not found/i
+  /\b404\b|doesn't exist|does not exist|no such|box gone|(box|sandbox|computer)\s+not found/i
 
 /** Structural check — true when `err` means "the box is gone" (the typed
  *  sentinel or any Error carrying its name). */

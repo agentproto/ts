@@ -165,7 +165,7 @@ export async function runRescuePush(input: {
   rescueBranch?: string
   now?: () => Date
 }): Promise<SandboxRescueRecord> {
-  const rescueBranch = input.rescueBranch ?? `${RESCUE_BRANCH_PREFIX}${input.target.branch}`
+  const rescueBranch = input.rescueBranch ?? `${RESCUE_BRANCH_PREFIX}${input.target.branch}` // NOTE: bookkeeping default; the session-bound namespace (`rescue/<session>`, per the prefix's doc) should be passed explicitly by callers that know it — see the proxy's push.
   const record: SandboxRescueRecord = {
     at: (input.now?.() ?? new Date()).toISOString(),
     branch: input.target.branch,
