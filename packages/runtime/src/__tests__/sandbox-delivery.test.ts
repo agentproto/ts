@@ -909,8 +909,8 @@ describe("runRescuePush — outcome recording, never throwing", () => {
     })
     // one exec, with the pushed-command string and non-interactive git env
     expect(calls).toHaveLength(1)
-    expect(calls[0].command).toContain("git push --no-verify origin 'HEAD:refs/heads/rescue/wt/x'")
-    expect(calls[0].env).toEqual({ GIT_TERMINAL_PROMPT: "0" })
+    expect(calls[0]!.command).toContain("git push --no-verify origin 'HEAD:refs/heads/rescue/wt/x'")
+    expect(calls[0]!.env).toEqual({ GIT_TERMINAL_PROMPT: "0" })
   })
 
   it("an explicit rescueBranch overrides the default (`rescue/<session>` from the proxy)", async () => {
