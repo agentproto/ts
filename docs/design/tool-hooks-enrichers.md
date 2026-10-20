@@ -183,8 +183,8 @@ case and is documented as the bounded exception.
 | Value | Primitive reused | When |
 |---|---|---|
 | `append-to-session-queue` | `registry.enqueuePrompt(target, text, { queue: true, origin: "hook:<hookId>", coalesceKey, steer: true })` — **no `interrupt`, and deliberately no `deliverWithinMs`** (see the sweep note below) | Default for spawn/prompt hooks: lands after (or steered into) the target's first turn. |
-| `prepend-to-prompt` | The `runAgentTurn` context-slice slot (same as the `fyi` digest) — a descriptor field flushed as a `system-prompt` slice on the next string turn, once | When the block must be *context*, not a user-visible message, and must not start a turn. |
-| `attach-to-task-meta` | `taskLedger` `setMeta(taskId, key, value)` with `key = "hook:<enricherId>"` | `task_create` / `task_update` hooks: provenance rides the task record and `task:changed`. |
+| `prepend-to-prompt` | `registry.sendMessage({ to, body, urgency: "fyi", … })` — the AIP-46 `fyi` tier: it **never wakes** the session, sits in `desc.inbox`, and the next string turn flushes it once as a `system-prompt` slice via `renderInboxDigest` (never glued into the human's text) | When the block must be *context*, not a user-visible message, and must not start or steer a turn. Note the flush lands on the **next** string turn — a 4 s hook always misses turn 1, so only a hook on `session:spawned` (the spawn-time window, before the initial prompt dispatches — an ordering check for the implementation) can put context in turn 1 itself. |
+| `attach-to-task-meta` | A new `TaskLedger` verb — `setMeta(taskId, key, value, caller)` — modeled on the ledger's existing internal wiring verb `linkApproval` (no `rev` / no CAS, idempotent, last-write-wins, emits `task:changed`). Needed because today only `TaskCreateInput.meta` accepts arbitrary `Record<string, string>`; `TaskUpdateInput` exposes just `note → meta.note` (`task-ledger.ts`). | `task_create` / `task_update` hooks: provenance rides the task record and `task:changed`. |
 
 **The sweep trap.** `enqueuePrompt`'s `deliverWithinMs` lets the
 pending-prompt sweep force a queued item out, and that force follows
@@ -251,10 +251,13 @@ interface Budget {
 Wiring follows the existing config machinery: a `hooks` top-level block in
 `agentprotoConfigSchema` (`packages/runtime/src/config-schema.ts`), a matching
 `AgentprotoConfig.hooks` field in `config.ts`, and `CONFIG_KEYS` entries
-(`path: "hooks.enabled"`, `path: "hooks.hooks"`, `apply: "hot"` — a hook edit
-takes effect on the next call, like a spawn-time key). Forgetting a
-`CONFIG_KEYS` entry fails the existing `findUnclassifiedConfigPaths` drift
-test, so the block cannot go unclassified.
+(`path: "hooks.enabled"`, `path: "hooks.hooks"`, `apply: "hot"`, `writable: true`
+— a hook edit takes effect on the next call, like a spawn-time key), plus
+`"hooks"` added to the `ConfigKeySection` union (the same union
+`config-tools.ts` iterates when it lists sections) so `config_get` / `config_set`
+can address the block like any other. Forgetting a `CONFIG_KEYS` entry fails
+the existing `findUnclassifiedConfigPaths` drift test
+(`__tests__/config-schema.test.ts`), so the block cannot go unclassified.
 
 **(b) An AIP-shaped doc — optional, second.** `<workspace>/.agents/hooks/HOOK.md`
 with frontmatter `schema: "hook/v1"` (same markdown+frontmatter posture as
@@ -437,7 +440,8 @@ sentence; must return `null` (not throw) on partial data; must fit
 
 Kill switch: `hooks.enabled: false` (hot) — next call dispatches nothing.
 Observability: `hook:ran` / `hook:skipped` on the bus, `session_queue_list`
-for delivery, `config_get hooks.hooks` for the resolved config. Rollout is
+for delivery, `config_get` over the `hooks.*` registry keys for the resolved
+config. Rollout is
 config-only from phase 1 on: no code change to widen or narrow.
 
 ---
@@ -567,6 +571,7 @@ replays; a routine target does not carry `deliver` and is not required to.
 | `packages/runtime/src/config-schema.ts` | `hooksConfigSchema` + top-level `hooks` key + `CONFIG_KEYS` entries (`apply: "hot"`). |
 | `packages/runtime/src/config.ts` | `AgentprotoConfig.hooks?: HooksConfig` (+ the compile-time key check). |
 | `packages/runtime/src/session-event-bus.ts` | `hook:ran` / `hook:skipped` event types. |
+| `packages/runtime/src/task-ledger.ts` | One internal wiring verb, `setMeta(taskId, key, value, caller)`, cloned from `linkApproval`'s shape: no `rev`, last-write-wins on the `meta` map, `task:changed` on success. (`task-tools.ts` unchanged — hooks write through the ledger, not through a new MCP tool.) |
 | `packages/runtime/src/orchestration-tools.ts` | *(only if hooks should be followable)* add the two names to the `session_follow` `events` enum. |
 | `packages/runtime/src/index.ts` | Build the dispatcher at gateway construction (module scope), wrap the registration server with `withToolHooks` next to where `withDeferredTools` / `withToolSubset` are applied. |
 | `packages/runtime/src/http-server.ts` | *(parity)* the handful of REST routes that duplicate a hooked tool (`POST /sessions/agent`, `POST /sessions/:id/prompt`) call `dispatcher.fire` too — MCP and REST must not diverge. |
