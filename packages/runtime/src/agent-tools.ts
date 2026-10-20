@@ -1528,16 +1528,26 @@ export function registerAgentTools(
   // ── adapter_list ──────────────────────────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +
   // toMcpTool) with the shared `paginated()` transformer. COMPACT BY
-  // DEFAULT: the former `summary: true` projection (slug/name/version/
-  // protocol/models — all a UI picker needs) is now the default view;
-  // the full manifest echo (commands/modes/model details — can run to
-  // hundreds of KB) is the `full: true` / `compact: false` opt-out.
+  // DEFAULT and the compact projection is BUDGET-SAFE: slug/name/version/
+  // protocol + an `installed` flag + a `modelCount` summary — NOT the
+  // model-id array, which runs to hundreds of ids per adapter and used
+  // to push the whole listing past the MCP result cap (the response came
+  // back as a `truncated` stub that clients misread as an empty list).
+  // The full manifest echo (models/modelDetails/commands/modes) is the
+  // `full: true` / `compact: false` opt-out — paginate it with limit/
+  // cursor.
   const compactAdapterItem = (a: AdapterListEntry) => ({
     slug: a.slug,
     name: a.name,
     version: a.version,
     protocol: a.protocol,
-    models: a.models ?? [],
+    // Literal "is the package present on this host": "supported" = known to
+    // the catalog but NOT installed; "available" (installed, setup/auth
+    // pending), "unresolvable" (installed but import-broken, mid-rebuild),
+    // "ready", and an absent status (older listers only listed installed
+    // adapters) all count as installed.
+    installed: a.status !== "supported",
+    modelCount: a.models?.length ?? 0,
   })
   const adapterListSchema = z.object({
     ...pageParamsShape,
@@ -1547,13 +1557,15 @@ export function registerAgentTools(
   registerBuiltinTool<AdapterListInput, AdapterListEntry[]>(server, {
     id: "adapter_list",
     description: "Enumerate every agent CLI adapter installed on the host (claude-code, " +
-      "hermes, aider, …). Returns slug + display name + version + protocol so " +
-      "callers can let users pick from the installed set instead of guessing. " +
-      "Use before `agent_start` when the model doesn't already know " +
-      "what's available. COMPACT BY DEFAULT: each entry carries only `slug`, " +
-      "`name`, `version`, `protocol`, `models` — pass `full: true` (or " +
-      "`compact: false`) for the full manifest projection (commands/modes/" +
-      "model details, hundreds of KB).",
+      "hermes, aider, …). Returns slug + display name + version + protocol + " +
+      "an `installed` flag + a `modelCount` summary so callers can let users " +
+      "pick from the installed set instead of guessing. Use before " +
+      "`agent_start` when the model doesn't already know what's available. " +
+      "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
+      "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
+      "`modelCount` — pass `full: true` (or `compact: false`) for the full " +
+      "manifest projection (model ids/details, commands/modes — hundreds of " +
+      "KB; page through it with `limit`/`cursor`).",
     inputSchema: adapterListSchema,
     handler: async () => {
       if (!listAgentAdapters) {

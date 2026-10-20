@@ -26,7 +26,6 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
-  AdapterInfo,
   AuthProfileSummary,
   CatalogModelsResponse,
   LlmEndpointLinksResult,
@@ -34,6 +33,7 @@ import type {
   ProviderPresetEntry,
   UserPreset,
 } from "../client/types.js"
+import { makeAdaptersErrorWarner } from "../views/adaptersError.js"
 import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import { runCreateAuthProfileFlow } from "../commands/authProfiles.js"
 import {
@@ -93,17 +93,22 @@ export function registerAuthExplorer(
 ): AuthExplorerPanel {
   let panel: vscode.WebviewPanel | undefined
   let lastView: AuthExplorerView | undefined
+  const warnAdaptersError = makeAdaptersErrorWarner("harness list unavailable")
 
   async function fetchView(): Promise<AuthExplorerView> {
-    const [presets, profiles, catalog, adapters, userPresets, links, routerStatus] = await Promise.all([
+    const [presets, profiles, catalog, adapterStatus, userPresets, links, routerStatus] = await Promise.all([
       client.listProviderPresets().catch((): ProviderPresetEntry[] => []),
       client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
       client.catalogModels().catch((): CatalogModelsResponse => ({ vendors: [] })),
-      client.listAdapters().catch((): AdapterInfo[] => []),
+      client.listAdaptersWithStatus(),
       client.listUserPresets().catch((): UserPreset[] => []),
       client.llmEndpointListLinks().catch((): LlmEndpointLinksResult | null => null),
       client.llmEndpointStatus().catch((): LlmEndpointStatusResult | null => null),
     ])
+    // A FAILED listing (truncated stub, unreachable daemon) is announced —
+    // never silently rendered as an empty harness set.
+    warnAdaptersError(adapterStatus.error)
+    const adapters = adapterStatus.adapters
     lastView = buildAuthExplorerView({ presets, profiles, catalog, adapters, userPresets, links, routerStatus })
     return lastView
   }

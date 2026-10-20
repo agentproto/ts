@@ -25,11 +25,11 @@ import * as vscode from "vscode"
 
 import type { DaemonClient } from "../client/daemonClient.js"
 import type {
-  AdapterInfo,
   AuthProfileSummary,
   HarnessCapabilities,
   LlmEndpointStatusResult,
 } from "../client/types.js"
+import { makeAdaptersErrorWarner } from "../views/adaptersError.js"
 import { buildAuthModel, type AuthModelView } from "./authModelMindmap.logic.js"
 
 const VIEW_TYPE = "agentproto.authModel"
@@ -71,14 +71,19 @@ export function registerAuthModelMindmap(
   // this rides along with the first post() rather than firing blind.
   let pendingFocus: AuthModelFocusTarget | undefined
 
+  const warnAdaptersError = makeAdaptersErrorWarner("harness list unavailable")
+
   async function fetchView(): Promise<AuthModelView> {
-    const [adapters, capabilities, profiles, router] = await Promise.all([
-      client.listAdapters().catch((): AdapterInfo[] => []),
+    const [adapterStatus, capabilities, profiles, router] = await Promise.all([
+      client.listAdaptersWithStatus(),
       client.harnessCapabilities().catch((): HarnessCapabilities[] => []),
       client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
       client.llmEndpointStatus().catch((): LlmEndpointStatusResult | null => null),
     ])
-    return buildAuthModel({ adapters, capabilities, profiles, router })
+    // A FAILED listing (truncated stub, unreachable daemon) is announced —
+    // never silently rendered as an empty harness set.
+    warnAdaptersError(adapterStatus.error)
+    return buildAuthModel({ adapters: adapterStatus.adapters, capabilities, profiles, router })
   }
 
   async function post(): Promise<void> {

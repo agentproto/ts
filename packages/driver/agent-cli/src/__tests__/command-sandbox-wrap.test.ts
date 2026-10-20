@@ -23,6 +23,7 @@ import {
 import {
   defaultToolchainReadPaths,
   defaultToolchainWritePaths,
+  resolveConfinedReadPaths,
   wrapAgentCliSpawn,
 } from "../command-sandbox-wrap.js"
 
@@ -50,6 +51,28 @@ describe("defaultToolchainReadPaths", () => {
     expect(paths).toContain(join(home, ".config", "git"))
     expect(paths).toContain(join(home, ".config", "gh"))
     expect(paths).toContain(join(home, "Library", "Keychains"))
+  })
+})
+
+describe("resolveConfinedReadPaths", () => {
+  it("expands ~ against home and leaves absolute paths untouched", () => {
+    expect(
+      resolveConfinedReadPaths(["~/.config/opencode", "/opt/fixed"], "/home/op"),
+    ).toEqual(["/home/op/.config/opencode", "/opt/fixed"])
+  })
+
+  it("returns an empty list when the adapter declares none", () => {
+    expect(resolveConfinedReadPaths(undefined)).toEqual([])
+  })
+
+  it("reads $VAR from the SPAWN env and drops it when unset", () => {
+    expect(
+      resolveConfinedReadPaths(
+        ["$XDG_CONFIG_HOME/opencode/opencode.json", "$OPENCODE_CONFIG"],
+        "/home/op",
+        { XDG_CONFIG_HOME: "/custom/cfg" },
+      ),
+    ).toEqual(["/custom/cfg/opencode/opencode.json"])
   })
 })
 

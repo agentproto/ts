@@ -148,6 +148,27 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
   credentialDataHome: { env: "XDG_DATA_HOME" },
+  // opencode reads its GLOBAL config at startup even when
+  // `OPENCODE_CONFIG_CONTENT` carries the per-session overrides. A confined
+  // spawn (workflow agent step under an app boundary) denies `$HOME`, so
+  // opencode exited before the ACP handshake and the step died as "ACP
+  // connection closed" (run wfrun_162fea3e). Grant only the startup FILES,
+  // never the whole `~/.config/opencode` tree (its `skills/` and any
+  // operator extras stay outside the boundary): the per-spawn env is read
+  // for `$XDG_CONFIG_HOME`/`$OPENCODE_CONFIG`/`$OPENCODE_CONFIG_DIR`, so an
+  // overridden config dir is the one granted.
+  confinedReadPaths: [
+    "~/.config/opencode/opencode.json",
+    "~/.config/opencode/opencode.jsonc",
+    "~/.config/opencode/config.json",
+    "$XDG_CONFIG_HOME/opencode/opencode.json",
+    "$XDG_CONFIG_HOME/opencode/opencode.jsonc",
+    "$XDG_CONFIG_HOME/opencode/config.json",
+    "$OPENCODE_CONFIG",
+    "$OPENCODE_CONFIG_DIR/opencode.json",
+    "$OPENCODE_CONFIG_DIR/opencode.jsonc",
+    "$OPENCODE_CONFIG_DIR/config.json",
+  ],
   // opencode's "small model" (session titles, summaries) defaults to a pick
   // of its own — GPT-5.4 Nano on OpenCode Zen, a PAID model, so every
   // `-free` session logged a `402 Rejected` per title call and would bill

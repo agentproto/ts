@@ -701,9 +701,12 @@ export interface AdapterInfo {
    *  provider/mode a structured `models.allowed` entry states. Absent on
    *  an older daemon that predates this projection. */
   modelDetails?: AdapterModelInfo[]
-  /** Install/readiness state: ready = installed, available = installable.
-   *  `unresolvable` = package present but the last import failed (mid-rebuild)
-   *  — not reinstallable. */
+  /** Install/readiness state: ready = installed, available = installable
+   *  (installed, but setup/auth pending — still installed, NOT "not
+   *  installed"). `unresolvable` = package present but the last import
+   *  failed (mid-rebuild) — not reinstallable. `supported` = known but
+   *  package absent. adapter_list's compact `installed` flag is this
+   *  package-presence view: only `supported` reports installed: false. */
   status?: "supported" | "available" | "ready" | "unresolvable"
   /** Short human hint shown in pickers (e.g. "anthropic · ACP · resumable"). */
   hint?: string
