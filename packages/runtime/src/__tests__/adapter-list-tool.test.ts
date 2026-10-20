@@ -291,7 +291,7 @@ describe("adapter_models", () => {
   })
 
   it("pages a runaway model list with limit/cursor (the ~700-opencode-ids regression)", async () => {
-    const big: AdapterListEntry = {
+    const big: AdapterListEntry & { modelDetails: Array<Record<string, string>> } = {
       ...FULL_ADAPTER,
       models: Array.from({ length: 700 }, (_, i) => `openrouter/model-${i}`),
       modelDetails: Array.from({ length: 700 }, (_, i) => ({ id: `openrouter/model-${i}`, provider: "openrouter" })),

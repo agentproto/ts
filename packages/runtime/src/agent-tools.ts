@@ -1632,8 +1632,8 @@ export function registerAgentTools(
     transformers: [
       catchErrors(),
       paginated({
-        project: row => row,
-        keyOf: row => row.id,
+        project: (row: AdapterModelRow) => row,
+        keyOf: (row: AdapterModelRow) => row.id,
         maxLimit: 500,
         itemKey: "models",
       }),
