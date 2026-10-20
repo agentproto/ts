@@ -65,11 +65,18 @@ describe("sandbox proxy — disk guard (fake timers)", () => {
     const { proxy, checkpoint } = makeProxy(makeHost({ exec }), { onWarning })
 
     await vi.advanceTimersByTimeAsync(10 * 60_000)
-    await vi.advanceTimersByTimeAsync(0) // let the fire-and-forget guard settle
+    await vi.advanceTimersByTimeAsync(0) // let the tick's probe → checkpoint settle
     expect(exec).toHaveBeenCalled()
     expect(onWarning).toHaveBeenCalledTimes(1)
     expect(onWarning.mock.calls[0]![0]).toContain("free disk")
     expect(checkpoint).toHaveBeenCalledWith(0, { force: true })
+    // A second low tick repeats the forced checkpoint but NOT the warning —
+    // one warning per low-disk episode.
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(onWarning).toHaveBeenCalledTimes(1)
+    expect(checkpoint).toHaveBeenCalledTimes(2)
+    expect(checkpoint).toHaveBeenLastCalledWith(0, { force: true })
 
     await proxy.close().catch(() => undefined)
   })

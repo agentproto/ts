@@ -650,7 +650,15 @@ export function createSandboxCheckpointer(
   return {
     run(turn, opts) {
       if (inFlight && !opts?.force) return inFlight
-      inFlight = (async () => {
+      // A forced run still SERIALIZES — it chains on the in-flight run
+      // instead of overlapping it (two overlapping runs would race the
+      // snapshot ref, and in tar mode the same archive path), it only
+      // bypasses the unchanged-since-last-checkpoint skip.
+      const prior = inFlight
+      const chained = (fn: () => Promise<SandboxDeliveryRecord>): Promise<SandboxDeliveryRecord> =>
+        prior ? prior.catch(() => undefined).then(fn) : fn()
+      let wrapped: Promise<SandboxDeliveryRecord>
+      wrapped = chained(async () => {
         const record = await runSandboxDelivery({
           ...run,
           mode: "checkpoint",
@@ -666,10 +674,13 @@ export function createSandboxCheckpointer(
           // reporting is best-effort
         }
         return record
-      })().finally(() => {
-        inFlight = undefined
+      }).finally(() => {
+        // Only OUR run may clear the slot — a chained forced run may have
+        // already replaced it.
+        if (inFlight === wrapped) inFlight = undefined
       })
-      return inFlight
+      inFlight = wrapped
+      return wrapped
     },
   }
 }
@@ -706,8 +717,11 @@ export interface SandboxCheckpointConfig {
    *  {@link SandboxCheckpointConfig.intervalMs} of the session's life a
    *  snapshot is taken DURING a turn too, so a turn longer than the box
    *  lifetime is not lost with it (a time-based trigger, as opposed to
-   *  `turn-end`'s event-based one). `"teardown"` makes the teardown delivery
-   *  SNAPSHOT uncommitted work (not just count it, {@link
+   *  `turn-end`'s event-based one). `"turn-end"` ALSO wires the timer (the
+   *  pre-`"interval"` behaviour — an explicit `["turn-end", "teardown"]`
+   *  keeps mid-turn checkpointing across an upgrade); `"interval"` is for a
+   *  timer WITHOUT the per-turn hook. `"teardown"` makes the teardown
+   *  delivery SNAPSHOT uncommitted work (not just count it, {@link
    *  buildProbeCommand}'s `snapshotUncommitted`); absent, teardown still
    *  pushes the branch but leaves uncommitted work in the box
    *  uncounted-for-rescue, matching the pre-checkpoint behaviour.
@@ -801,7 +815,11 @@ export function resolveSandboxCheckpointConfig(
     // only ever set the env var keeps behaving identically.
     onTurnEnd: enabled && on.includes("turn-end") && intervalMs > 0,
     onTeardown: enabled && on.includes("teardown"),
-    onInterval: enabled && on.includes("interval") && intervalMs > 0,
+    // `on: ["turn-end"]` KEEPS wiring the timer (the pre-"interval" behaviour
+    // — a deployment that explicitly configured `["turn-end", "teardown"]`
+    // must not silently lose mid-turn checkpointing on upgrade); `"interval"`
+    // is for a timer WITHOUT the per-turn hook.
+    onInterval: enabled && intervalMs > 0 && (on.includes("interval") || on.includes("turn-end")),
     refPrefix: refPrefix ?? CHECKPOINT_BRANCH_PREFIX,
     minIntervalMs: minIntervalMs ?? intervalMs,
     intervalMs,

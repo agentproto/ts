@@ -978,44 +978,61 @@ export function createSandboxAgentSessionProxy(
   if (opts.checkpoint && (opts.checkpoint.periodic ?? true)) {
     const timer = setInterval(() => {
       if (closed || detached) return
-      void runCheckpoint(turnsSent)
-      void checkDiskSpace()
+      void periodicTick()
     }, opts.checkpoint.intervalMs ?? DEFAULT_CHECKPOINT_INTERVAL_MS)
     timer.unref?.()
     timers.push(timer)
   }
-  // DISK GUARD — on each periodic tick, read the box's free disk; under
-  // DISK_GUARD_MIN_FREE_FRACTION, force a checkpoint (a full disk kills the
-  // box WITHOUT a checkpoint: the agent's writes fail, the crash skips the
-  // teardown hook, so the rescue must happen while there is still room to
-  // pack/push) and warn through `onWarning`. Best-effort: a failed probe is
-  // silent, and the whole guard is skipped for a provider without exec.
-  const checkDiskSpace = async (): Promise<void> => {
+  // One periodic tick: read the box's free disk FIRST, then take exactly ONE
+  // checkpoint — forced when the disk guard tripped (bypassing the unchanged
+  // skip), so the guard can never start a second run on top of the tick's
+  // own. Forced or not, the checkpointer serializes runs behind the
+  // in-flight one.
+  const periodicTick = async (): Promise<void> => {
+    const force = await checkDiskSpace()
+    if (closed || detached) return
+    await runCheckpoint(turnsSent, force ? { force: true } : undefined).catch(() => undefined)
+  }
+  // DISK GUARD — read the box's free disk; under DISK_GUARD_MIN_FREE_FRACTION
+  // warn (through `onWarning`) and tell the caller to FORCE the checkpoint.
+  // A full disk kills a box WITHOUT a checkpoint: the agent's writes fail,
+  // the crash skips the teardown hook, so the rescue must happen while there
+  // is still room to pack/push. Best-effort: a failed probe is silent (and
+  // reads as "not low" — the plain checkpoint still runs), and the whole
+  // guard is skipped for a provider without exec. One warning per low-disk
+  // episode — the forced checkpoint itself repeats every tick while the
+  // disk stays low.
+  let diskLow = false
+  const checkDiskSpace = async (): Promise<boolean> => {
     const exec = host.exec
-    if (!exec || !opts.checkpoint || closed || detached) return
+    if (!exec || !opts.checkpoint || closed || detached) return false
     let disk: { totalBytes: number; freeBytes: number } | undefined
     try {
       const result = await exec({ command: buildDiskFreeCommand(), timeoutMs: DISK_GUARD_PROBE_TIMEOUT_MS })
       disk = result.exitCode === 0 ? parseDiskFree(result.stdout) : undefined
     } catch {
-      return
+      return false
     }
-    if (!disk) return
+    if (!disk) return false
     const fraction = diskFreeFraction(disk)
     if (fraction >= DISK_GUARD_MIN_FREE_FRACTION) {
-      return
+      diskLow = false
+      return false
     }
     const freePct = Math.floor(fraction * 100)
-    const warning =
-      `[sandbox] the box's free disk is at ${freePct}% (below the ${DISK_GUARD_MIN_FREE_FRACTION * 100}% guard) — ` +
-      "forcing a checkpoint now so the work survives a disk-full crash"
-    console.warn(`[sandbox-proxy] remote session "${remoteSessionId}": ${warning}`)
-    try {
-      opts.onWarning?.(warning)
-    } catch {
-      // a listener's failure is its own
+    if (!diskLow) {
+      const warning =
+        `[sandbox] the box's free disk is at ${freePct}% (below the ${DISK_GUARD_MIN_FREE_FRACTION * 100}% guard) — ` +
+        "forcing a checkpoint now so the work survives a disk-full crash"
+      console.warn(`[sandbox-proxy] remote session "${remoteSessionId}": ${warning}`)
+      try {
+        opts.onWarning?.(warning)
+      } catch {
+        // a listener's failure is its own
+      }
     }
-    await runCheckpoint(turnsSent, { force: true }).catch(() => undefined)
+    diskLow = true
+    return true
   }
   let deadError: Error | undefined
   const disconnectListeners: Array<(err: Error) => void> = []

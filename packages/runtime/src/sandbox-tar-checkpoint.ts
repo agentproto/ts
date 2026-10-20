@@ -251,7 +251,15 @@ export function createTarCheckpointer(
   return {
     run(turn, opts) {
       if (inFlight && !opts?.force) return inFlight
-      inFlight = (async () => {
+      // A forced run still SERIALIZES — it chains on the in-flight run
+      // instead of overlapping it (two overlapping runs would rm -f each
+      // other's box-side tar and race the host-side tmp+rename), it only
+      // bypasses the unchanged-since-last-checkpoint skip.
+      const prior = inFlight
+      const chained = (fn: () => Promise<TarCheckpointRecord>): Promise<TarCheckpointRecord> =>
+        prior ? prior.catch(() => undefined).then(fn) : fn()
+      let wrapped: Promise<TarCheckpointRecord>
+      wrapped = chained(async () => {
         const record = await runTarCheckpoint({
           ...run,
           mode: "checkpoint",
@@ -265,10 +273,13 @@ export function createTarCheckpointer(
           // reporting is best-effort
         }
         return record
-      })().finally(() => {
-        inFlight = undefined
+      }).finally(() => {
+        // Only OUR run may clear the slot — a chained forced run may have
+        // already replaced it.
+        if (inFlight === wrapped) inFlight = undefined
       })
-      return inFlight
+      inFlight = wrapped
+      return wrapped
     },
   }
 }

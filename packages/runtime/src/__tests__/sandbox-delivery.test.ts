@@ -638,8 +638,10 @@ describe("resolveSandboxCheckpointConfig", () => {
     })
   })
 
-  it("the periodic timer is its own on: [\"interval\"] trigger, default on", () => {
-    expect(resolveSandboxCheckpointConfig({ on: ["turn-end", "teardown"] }, undefined, {}).onInterval).toBe(false)
+  it("the periodic timer rides on both \"interval\" and legacy \"turn-end\" configs", () => {
+    // Back-compat: before the "interval" trigger existed, an explicit
+    // ["turn-end", "teardown"] wired the timer — it must keep doing so.
+    expect(resolveSandboxCheckpointConfig({ on: ["turn-end", "teardown"] }, undefined, {}).onInterval).toBe(true)
     expect(resolveSandboxCheckpointConfig({ on: ["interval"] }, undefined, {}).onInterval).toBe(true)
     expect(resolveSandboxCheckpointConfig({ on: ["interval"] }, undefined, {}).onTurnEnd).toBe(false)
   })
@@ -740,10 +742,10 @@ describe("sandboxCheckpointOpts", () => {
     expect(opts.checkpoint).toMatchObject({ intervalMs: 60_000, periodic: true, onTurnEnd: false })
   })
 
-  it("on: [\"turn-end\"] wires the checkpoint object with the periodic timer off", () => {
+  it("on: [\"turn-end\"] wires the checkpoint object with the periodic timer ON (legacy compat)", () => {
     const config = resolveSandboxCheckpointConfig({ on: ["turn-end"] }, undefined, {})
     const opts = sandboxCheckpointOpts({ exec: async () => result(1), target, outDir: "/tmp" }, config)
-    expect(opts.checkpoint).toMatchObject({ periodic: false, onTurnEnd: true })
+    expect(opts.checkpoint).toMatchObject({ periodic: true, onTurnEnd: true })
   })
 })
 
@@ -765,6 +767,42 @@ describe("createSandboxCheckpointer force", () => {
     expect(forced.unchanged).toBeUndefined()
     expect(exec.mock.calls.length).toBeGreaterThan(afterUnchanged)
     expect(probeCalls).toBeGreaterThan(0)
+    await rm(outDir, { recursive: true, force: true })
+  })
+
+  it("a forced run SERIALIZES behind the in-flight one instead of overlapping it", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-force-"))
+    const probe = `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`
+    let concurrent = 0
+    let maxConcurrent = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const exec = vi.fn(async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      concurrent++
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      try {
+        // The PROBE (rev-list) of run 1 hangs on the gate: run 2 (forced)
+        // must wait for it, never start on top of it.
+        if (o.command.includes("rev-list") && concurrent === 1) await gate
+        return result(0, probe)
+      } finally {
+        concurrent--
+      }
+    })
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    const first = checkpointer.run()
+    const forced = checkpointer.run(undefined, { force: true })
+    let settled = false
+    void forced.then(() => {
+      settled = true
+    })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(settled).toBe(false) // the forced run is chained behind the hung first one
+    release()
+    await Promise.all([first, forced])
+    expect(maxConcurrent).toBe(1) // never overlapped
     await rm(outDir, { recursive: true, force: true })
   })
 })

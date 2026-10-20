@@ -1111,7 +1111,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Sandbox checkpoint triggers",
-    help: 'Which events take a checkpoint: "turn-end" (after every turn), "interval" (periodic timer mid-turn, see intervalMs) and/or "teardown" (snapshot uncommitted work before delivery). Applies to the next sandbox spawn.',
+    help: 'Which events take a checkpoint: "turn-end" (after every turn, AND the periodic timer, kept for compatibility), "interval" (the periodic timer alone, no per-turn hook; see intervalMs) and/or "teardown" (snapshot uncommitted work before delivery). Applies to the next sandbox spawn.',
     default: ["turn-end", "teardown", "interval"],
   },
   {
