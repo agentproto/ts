@@ -640,20 +640,32 @@ export function contextValueFor(session: SessionDescriptor): SessionContextValue
  * default `list()` already excludes them), so in practice this only ever
  * produces `session-done-archived` (archiving is guarded to terminal-status
  * sessions). Every EXISTING `view/item/context` `when` clause in
- * package.json is written `viewItem =~ /^session-(…)(-archived)?$/` so the
- * suffix doesn't hide open-transcript/open-terminal/restart from an
- * archived row — only `agentproto.archiveSession` (exact `session-done`)
- * and `agentproto.unarchiveSession` (exact `session-done-archived`) care
- * about the distinction.
+ * package.json is written `viewItem =~ /^session-(…)(-continued)?(-archived)?$/`
+ * so the suffix doesn't hide open-transcript/open-terminal/restart from an
+ * archived (or continued) row — only `agentproto.archiveSession` (never
+ * `-archived`) and `agentproto.unarchiveSession` (only `-archived`) care
+ * about that distinction.
  *
  * A watched session additionally gets `-watched` appended (after any
  * `-archived`), so the view/item/context menu can offer Watch only on rows
- * that aren't watched yet and Unwatch only on rows that are. The existing
- * `/^session-/` prefixes still match — the suffix only ever ADDS.
+ * that aren't watched yet and Unwatch only on rows that are. The markers only
+ * ever ADD — every session `when` clause carries `(-continued)?` before them,
+ * so no existing action is lost.
+ *
+ * A CONTINUATION row (one carrying a `continuedFrom` — minted by continue-fresh
+ * or by a revival) additionally gets `-continued`, inserted between the status
+ * and `-archived`, so the menu can offer `agentproto.openContinuationPrevious`
+ * ONLY where it means something instead of provoking a dead "not a
+ * continuation" info message on every base row. menuGating.test.ts
+ * conformance-checks that the marker adds exactly that one command and hides
+ * nothing.
  */
 export function treeContextValueFor(session: SessionDescriptor, watched?: boolean): string {
   return (
-    contextValueFor(session) + (session.archived ? "-archived" : "") + (watched ? "-watched" : "")
+    contextValueFor(session) +
+    (session.continuedFrom ? "-continued" : "") +
+    (session.archived ? "-archived" : "") +
+    (watched ? "-watched" : "")
   )
 }
 

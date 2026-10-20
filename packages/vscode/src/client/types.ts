@@ -467,6 +467,10 @@ export interface SessionDescriptor {
   /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedFrom — source
    *  session when this session is a fresh continuation. */
   continuedFrom?: string
+  /** Mirrors `@agentproto/runtime` SessionDescriptor.continuationGeneration —
+   *  how many continuation hops this row is from its lineage's start (first
+   *  continuation is 1); absent on a base row. */
+  continuationGeneration?: number
   /** Mirrors `@agentproto/runtime` SessionDescriptor.continuedTo — target
    *  session when this session was continued fresh. */
   continuedTo?: string
@@ -585,6 +589,10 @@ export interface SessionSummary {
   lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
+  /** Mirrors `@agentproto/runtime` SessionSummary.continuationGeneration —
+   *  how many continuation hops this row is from its lineage's start;
+   *  absent on a base row. */
+  continuationGeneration?: number
   continuedTo?: string
   permissionHold?: boolean
   browserAdapterId?: string

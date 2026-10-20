@@ -31,7 +31,7 @@ const sessionMenus = pkg.contributes.menus["view/item/context"]!.filter(m =>
 )
 
 /** Does `when` admit this contextValue? Mirrors the two forms in use. */
-function admits(when: string, contextValue: SessionContextValue): boolean {
+function admits(when: string, contextValue: string): boolean {
   const equality = /viewItem == ([a-z-]+)/.exec(when)
   if (equality) return equality[1] === contextValue
   const regex = /viewItem =~ \/(.+?)\//.exec(when)
@@ -114,6 +114,49 @@ describe("sessions view menu gating", () => {
       const regex = /viewItem =~ \/(.+?)\//.exec(menu.when)
       if (!regex) continue
       expect(regex[1], `${menu.command} must anchor its viewItem regex`).toMatch(/^\^.*\$$/)
+    }
+  })
+
+  it("never offers Open Previous Continuation on a base row, and its -continued marker only ever ADDS that one action", () => {
+    // A continuation row renders `<status>-continued[-archived][-watched]`
+    // (treeContextValueFor). The marker exists so `openContinuationPrevious`
+    // stops being offered on base rows, where it could only answer "this is
+    // not a continuation" — so it must buy exactly that command and cost the
+    // row nothing it already had as a plain row.
+    const bases: readonly SessionContextValue[] = [
+      "session-pending",
+      "session-live",
+      "session-awaiting",
+      "session-done",
+      "session-interrupted",
+    ]
+    const tails = ["", "-archived", "-watched", "-archived-watched"]
+    const offered = (value: string): string[] =>
+      sessionMenus.filter(m => admits(m.when, value)).map(m => m.command)
+
+    for (const base of bases) {
+      for (const tail of tails) {
+        const plain = `${base}${tail}`
+        const continued = `${base}-continued${tail}`
+        const plainCommands = offered(plain)
+        const continuedCommands = offered(continued)
+
+        expect(plainCommands, `${plain} must not offer the continuation action`).not.toContain(
+          "agentproto.openContinuationPrevious",
+        )
+        expect(
+          plainCommands.filter(c => !continuedCommands.includes(c)),
+          `${continued} must hide nothing the plain row had`,
+        ).toEqual([])
+        expect(
+          continuedCommands.filter(c => !plainCommands.includes(c)),
+          `${continued} may only add openContinuationPrevious`,
+        ).toEqual(
+          continuedCommands.includes("agentproto.openContinuationPrevious")
+            ? ["agentproto.openContinuationPrevious"]
+            : [],
+        )
+      }
     }
   })
 })

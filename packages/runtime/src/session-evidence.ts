@@ -75,6 +75,9 @@ export interface SessionEvidence {
   liveChildren?: number
   /** Session lineage (`continuedFrom` / `continuedTo` on the descriptor). */
   continuedFrom?: string
+  /** How many continuation hops — see
+   *  `SessionDescriptor.continuationGeneration` (absent on a base row). */
+  continuationGeneration?: number
   continuedTo?: string
   tokensIn?: number
   tokensOut?: number
@@ -385,6 +388,9 @@ export function buildSessionEvidence(input: {
     ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
     ...(input.liveChildren !== undefined ? { liveChildren: input.liveChildren } : {}),
     ...(desc.continuedFrom ? { continuedFrom: desc.continuedFrom } : {}),
+    ...(desc.continuationGeneration !== undefined
+      ? { continuationGeneration: desc.continuationGeneration }
+      : {}),
     ...(desc.continuedTo ? { continuedTo: desc.continuedTo } : {}),
     ...(desc.tokensIn !== undefined ? { tokensIn: desc.tokensIn } : {}),
     ...(desc.tokensOut !== undefined ? { tokensOut: desc.tokensOut } : {}),

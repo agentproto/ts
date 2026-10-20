@@ -9,6 +9,7 @@
 import * as vscode from "vscode"
 import type { DaemonClient } from "../client/daemonClient.js"
 import type { SessionDescriptor } from "../client/types.js"
+import { previousContinuationSession } from "../views/sessionContinuation.logic.js"
 import type { SessionStore } from "../services/sessionStore.js"
 import { resolveSessionArg } from "./sessionActions.js"
 
@@ -24,6 +25,9 @@ export function registerSessionContinuityCommands(
     ),
     vscode.commands.registerCommand("agentproto.continueSessionFresh", (arg: unknown) =>
       continueSessionFreshCommand(client, store, arg ?? getActiveTranscriptSessionId()),
+    ),
+    vscode.commands.registerCommand("agentproto.openContinuationPrevious", (arg: unknown) =>
+      openContinuationPreviousCommand(store, arg ?? getActiveTranscriptSessionId()),
     ),
   )
 }
@@ -85,6 +89,37 @@ async function continueSessionFreshCommand(
       `Continue fresh failed: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
+}
+
+/** Open the session this one was continued from (follow `continuedFrom`).
+ *  The tree passes a `↻` row's arg; the transcript panel passes the active
+ *  session id. Resolves against the store first, then routes through
+ *  `agentproto.openSession` so terminal/browser/transcript routing stays
+ *  identical to clicking a regular row. */
+async function openContinuationPreviousCommand(store: SessionStore, arg: unknown): Promise<void> {
+  const session = await resolveSessionArg(
+    arg,
+    store,
+    "Select a session to open the previous one for",
+    () => true,
+  )
+  if (!session) return
+  if (!session.continuedFrom) {
+    vscode.window.showInformationMessage(
+      `${session.label ?? session.title ?? session.id} is not a continuation of another session.`,
+    )
+    return
+  }
+  const previous = previousContinuationSession(session, id =>
+    store.sessions.find(s => s.id === id),
+  )
+  if (!previous) {
+    vscode.window.showInformationMessage(
+      `Previous session ${session.continuedFrom} is not in the session list (forgotten or archived-hidden).`,
+    )
+    return
+  }
+  await vscode.commands.executeCommand("agentproto.openSession", previous)
 }
 
 /** Type guard used by tree/webview renderers that want to know whether a

@@ -2459,6 +2459,13 @@ export interface SessionDescriptor {
    *  wake / direct resume of the same adapter conversation — also recorded as
    *  `resumedFrom`). Absent on a row that started a conversation. */
   continuedFrom?: string
+  /** Separate lineage from `continuedFrom` — how many continue-fresh /
+   *  revival hops this generation is away from the lineage's start: the
+   *  first continuation of a base session is 1, then +1 per further hop
+   *  (a base row has none). Persisted like `continuedFrom`, which always
+   *  carries the previous hop's id; a UI can render a "↻ N" badge or walk
+   *  the chain via `continuedFrom` without recomputing it. */
+  continuationGeneration?: number
   /** The row that continued this one (the inverse of `continuedFrom`); the
    *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
@@ -2802,6 +2809,9 @@ export interface SessionSummary {
   lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
+  /** Separate continue-fresh / revival lineage generation — see
+   *  `SessionDescriptor.continuationGeneration` (absent on a base row). */
+  continuationGeneration?: number
   continuedTo?: string
   /** See `SessionDescriptor.retiredAt` — with `continuedTo`/`archived`, lets a
    *  client tell a retired row from a merely dead one (and feature-detect the
@@ -2912,6 +2922,9 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     depth: desc.depth,
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,
+    ...(desc.continuationGeneration !== undefined
+      ? { continuationGeneration: desc.continuationGeneration }
+      : {}),
     continuedTo: desc.continuedTo,
     ...(desc.retiredAt ? { retiredAt: desc.retiredAt } : {}),
     permissionHold: desc.permissionHold,
@@ -6681,8 +6694,23 @@ export function createSessionsRegistry(opts?: {
    *  row (see {@link linkContinuedTo}). */
   const resumeLineage = (
     resumedFrom: string | undefined,
-  ): { resumedFrom?: string; continuedFrom?: string } =>
-    resumedFrom ? { resumedFrom, continuedFrom: resumedFrom } : {}
+  ): { resumedFrom?: string; continuedFrom?: string; continuationGeneration?: number } => {
+    if (!resumedFrom) return {}
+    // The revived row is ONE more hop of the same lineage: prev's own
+    // generation + 1 (prev without a stamp counts as a base row, gen 0 → 1).
+    // Keeping the count here means a later `session_continue_fresh` of the
+    // revived row continues the chain instead of resetting to 1.
+    // The prior generation is read from the in-memory `sessions` map ONLY:
+    // persisted rows are rehydrated into it at startup, so a predecessor is
+    // normally resident. A predecessor that is NOT in the map (forgotten, or
+    // never loaded) reads as gen 0, so that one revival restarts at 1.
+    const prevGen = sessions.get(resumedFrom)?.desc.continuationGeneration
+    return {
+      resumedFrom,
+      continuedFrom: resumedFrom,
+      continuationGeneration: (prevGen ?? 0) + 1,
+    }
+  }
 
   const retiredListeners = new Set<(ev: SessionRetiredEvent) => void>()
 
