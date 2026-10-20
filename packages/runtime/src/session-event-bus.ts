@@ -63,6 +63,8 @@ export type SessionEventType =
   | "mcp:degraded"
   | "session:handoff-suggested"
   | "session:context-rescue"
+  | "session:idle-compact"
+  | "session:cold-wake-guard"
   | "approval:requested"
   | "approval:decided"
   | "approval:consumed"
@@ -1104,6 +1106,45 @@ export interface SessionContextRescueEvent {
 }
 
 /**
+ * Emitted when an armed idle-compact timer fires (AIP-46 amendment §Arming
+ * step 4) — announced for BOTH modes: `auto` has just performed `action`
+ * (or will, imminently), `ask` has just surfaced the structured question.
+ * Never emitted under `mode:"off"`, and never while a prompt is queued or
+ * the session is mid-turn (the timer is cancelled on prompt admission /
+ * turn start / exit).
+ */
+export interface SessionIdleCompactEvent {
+  type: "session:idle-compact"
+  sessionId: string
+  /** The configured `idleCompact.action` the fire performed or offered. */
+  action: "compact" | "continue-fresh"
+  /** The `mode` the fire ran under — `ask` mutates nothing until answered. */
+  mode: "ask" | "auto"
+  contextPct: number
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when the cold-wake guard acted on a prompt admitted to a COLD
+ * session whose context exceeded `coldWakeGuard.atPct` (AIP-46 amendment
+ * §Cold-wake guard step 3): a deterministic transcript-derived checkpoint
+ * (no model call) followed by a fresh continuation, with the incoming prompt
+ * handed to `continuedTo` — neither dropped nor run twice. Hosts MUST surface
+ * `continuedTo` wherever they attribute prompt results (same contract as
+ * `continuedTo` on the retired descriptor).
+ */
+export interface SessionColdWakeGuardEvent {
+  type: "session:cold-wake-guard"
+  sessionId: string
+  /** The fresh continuation session the incoming prompt was handed to. */
+  continuedTo: string
+  contextPct: number
+  label?: string
+  ts: string
+}
+
+/**
  * Emitted by the approvals engine (`approvals/engine.ts`) when an
  * `approval_request` (MCP or `POST /approvals`) raises a new pending
  * approval. `taskId` is present when the request is linked to a task —
@@ -1168,6 +1209,8 @@ export type SessionEvent =
   | SessionStallClearedEvent
   | SessionHandoffSuggestedEvent
   | SessionContextRescueEvent
+  | SessionIdleCompactEvent
+  | SessionColdWakeGuardEvent
   | SessionWatcherAttachedEvent
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent

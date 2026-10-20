@@ -59,4 +59,21 @@ export const contextContinuityInputSchema = z.object({
   nextStep: z.boolean().optional(),
   config: z.boolean().optional(),
   label: z.string().optional(),
+  /** AIP-46 amendment: idle-cache care block (default `mode:"off"`). The
+   *  block is picked WHOLE — the most specific level supplying it wins. */
+  idleCompact: z
+    .object({
+      mode: z.enum(["off", "ask", "auto"]).optional(),
+      atPct: z.number().int().min(0).max(100).optional(),
+      beforeCacheExpiryMs: z.number().min(0).optional(),
+      action: z.enum(["compact", "continue-fresh"]).optional(),
+    })
+    .optional(),
+  /** AIP-46 amendment: cold-wake guard block (default `mode:"off"`). */
+  coldWakeGuard: z
+    .object({
+      mode: z.enum(["off", "ask", "auto"]).optional(),
+      atPct: z.number().int().min(0).max(100).optional(),
+    })
+    .optional(),
 })

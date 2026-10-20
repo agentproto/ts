@@ -2054,6 +2054,13 @@ export async function spawnAgentSession(
       // `turnRetry: null` is an explicit opt-out, not an omission: an
       // explicit value (null included) wins over a preset turnRetry.
       turnRetry: explicit.turnRetry !== undefined ? explicit.turnRetry : preset.turnRetry,
+      // Whole-object pick (AIP-46 §Policy carrier): an explicit
+      // `contextContinuity` replaces the preset's outright; when the call
+      // says nothing, the preset's policy object feeds `resolveSpawnDefaults`
+      // as a whole (per-adapter / daemon-wide only apply when NEITHER is set).
+      ...(explicit.contextContinuity !== undefined || preset.contextContinuity !== undefined
+        ? { contextContinuity: explicit.contextContinuity ?? preset.contextContinuity }
+        : {}),
     }
     // Best-effort recency stamp — a favorite just got resolved and used for
     // this spawn. Never let the write (or its absence, for a since-deleted

@@ -19,6 +19,7 @@ import type {
 } from "./session-config.js"
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { SessionDescriptor } from "./sessions.js"
+import { contextContinuityInputSchema } from "./spawn-field-schemas.js"
 import { turnRetryInputSchema, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
@@ -92,6 +93,10 @@ export const userPresetSchema = z.object({
   bundles: z.array(z.string().min(1)).optional(),
   browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
   turnRetry: turnRetryInputSchema.optional(),
+  /** Context-continuity policy (AIP-46): a preset supplies the whole policy
+   *  object for the spawn unless `agent_start.contextContinuity` overrides
+   *  it — see the precedence rule in `resolveSpawnDefaults`. */
+  contextContinuity: contextContinuityInputSchema.optional(),
   lastUsedAt: z.string().min(1).optional(),
 }) satisfies z.ZodType<UserPreset>
 

@@ -70,6 +70,22 @@ import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
 
 // ── nested zod schemas, one per `config.ts` / `spawn-defaults.ts` interface ──
 
+const contextContinuityIdleCompactSchema = z
+  .object({
+    mode: z.enum(["off", "ask", "auto"]).optional(),
+    atPct: z.number().int().min(0).max(100).optional(),
+    beforeCacheExpiryMs: z.number().min(0).optional(),
+    action: z.enum(["compact", "continue-fresh"]).optional(),
+  })
+  .passthrough()
+
+const contextContinuityColdWakeGuardSchema = z
+  .object({
+    mode: z.enum(["off", "ask", "auto"]).optional(),
+    atPct: z.number().int().min(0).max(100).optional(),
+  })
+  .passthrough()
+
 const contextContinuityPolicySchema: z.ZodType<ContextContinuityPolicy> = z
   .object({
     mode: z.enum(["manual", "ask", "auto"]).optional(),
@@ -91,6 +107,8 @@ const contextContinuityPolicySchema: z.ZodType<ContextContinuityPolicy> = z
     nextStep: z.boolean().optional(),
     config: z.boolean().optional(),
     label: z.string().optional(),
+    idleCompact: contextContinuityIdleCompactSchema.optional(),
+    coldWakeGuard: contextContinuityColdWakeGuardSchema.optional(),
   })
   .passthrough()
 
