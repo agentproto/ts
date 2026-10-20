@@ -137,21 +137,21 @@ async function runSessionConfigFlow(
     return
   }
 
-  // A FAILED listing (e.g. a truncated adapter_list response) is shown as an
-  // error — never as "adapter no longer installed", which a `.catch(() => [])`
+  // Fetch ONLY this session's adapter detail (models/modes/postures) — the
+  // listing itself is compact, and a failure is shown as an error rather
+  // than as "adapter no longer installed", which `.catch(() => undefined)`
   // used to produce.
-  const adapters = await client.listAdapters().catch((err: unknown) => {
+  const adapter = await client.getAdapter(session.adapterSlug).catch((err: unknown) => {
     vscode.window.showErrorMessage(
-      `agentproto: couldn't load adapters — ${err instanceof Error ? err.message : String(err)}`,
+      `agentproto: couldn't load adapter \"${session.adapterSlug}\" — ${err instanceof Error ? err.message : String(err)}`,
     )
     return undefined
   })
-  if (adapters === undefined) return
+  if (adapter === undefined) return
   const [catalog, profiles] = await Promise.all([
     client.catalogModels().catch(() => undefined),
     client.listAuthProfiles().catch(() => []),
   ])
-  const adapter = adapters.find(a => a.slug === session.adapterSlug)
   if (!adapter) {
     vscode.window.showWarningMessage(
       `agentproto: adapter \"${session.adapterSlug}\" is no longer installed.`,

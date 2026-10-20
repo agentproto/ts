@@ -16,7 +16,7 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerAgentTools } from "../agent-tools.js"
 import { createSessionsRegistry } from "../sessions.js"
-import type { AdapterListEntry, AgentAdapterLister } from "../http-server.js"
+import type { AdapterListEntry, AdapterModelRow, AgentAdapterLister } from "../http-server.js"
 
 async function harness(listAgentAdapters?: AgentAdapterLister) {
   const registry = createSessionsRegistry({ persist: false })
@@ -38,7 +38,7 @@ function parseAdapters(result: unknown): unknown[] {
   return (JSON.parse(content[0]!.text) as { adapters: unknown[] }).adapters
 }
 
-const FULL_ADAPTER: AdapterListEntry & { commands: unknown[]; modelDetails: unknown[] } = {
+const FULL_ADAPTER: AdapterListEntry & { commands: unknown[] } = {
   slug: "hermes",
   name: "Hermes",
   version: "1.2.3",
@@ -49,7 +49,7 @@ const FULL_ADAPTER: AdapterListEntry & { commands: unknown[]; modelDetails: unkn
   modes: [],
   models: ["z-ai/glm-5.2", "gpt-5"],
   commands: [{ id: "compact", description: "Compact context" }],
-  modelDetails: [{ id: "z-ai/glm-5.2", provider: "openrouter" }],
+  modelDetails: [{ id: "z-ai/glm-5.2", provider: "openrouter" }] satisfies AdapterModelRow[],
 }
 
 describe("adapter_list", () => {
@@ -60,16 +60,17 @@ describe("adapter_list", () => {
     await h.close()
   })
 
-  it("default output is the COMPACT projection ({ slug, name, version, protocol, installed, modelCount })", async () => {
+  it("default output is the COMPACT projection ({ slug, name, version, protocol, installed, modes, modelCount, status?, hint? })", async () => {
     const h = await harness(async () => [FULL_ADAPTER])
     const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
     const adapters = parseAdapters(result)
     expect(adapters).toEqual([
-      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modelCount: 2 },
+      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modes: [], modelCount: 2 },
     ])
-    // And it's small: only the projection keys survive.
+    // And it's small: only the projection keys survive; an absent status/hint
+    // is omitted entirely.
     expect(Object.keys(adapters[0] as object).sort()).toEqual(
-      ["installed", "modelCount", "name", "protocol", "slug", "version"],
+      ["installed", "modelCount", "modes", "name", "protocol", "slug", "version"],
     )
     await h.close()
   })
@@ -126,7 +127,7 @@ describe("adapter_list", () => {
     const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
     const adapters = parseAdapters(result)
     expect(adapters).toEqual([
-      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modelCount: 0 },
+      { slug: "hermes", name: "Hermes", version: "1.2.3", protocol: "acp", installed: true, modes: [], modelCount: 0 },
     ])
     await h.close()
   })
@@ -181,6 +182,7 @@ describe("adapter_list", () => {
         version: a.version,
         protocol: a.protocol,
         installed: true,
+        modes: [],
         modelCount: a.models?.length ?? 0,
       })),
     )
@@ -219,6 +221,102 @@ describe("adapter_list", () => {
       fullCursor = raw.nextCursor
     } while (fullCursor)
     expect(fullUnion).toEqual(three)
+
+    await h.close()
+  })
+
+  it("the `adapter` filter scopes the listing to ONE slug (compact and full branches)", async () => {
+    const three: AdapterListEntry[] = [
+      FULL_ADAPTER,
+      { ...FULL_ADAPTER, slug: "claude-code", name: "Claude Code" },
+      { ...FULL_ADAPTER, slug: "aider", name: "Aider" },
+    ]
+    const h = await harness(async () => three)
+
+    const compactOnly = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "claude-code" } }),
+    )
+    expect(compactOnly).toEqual([
+      { slug: "claude-code", name: "Claude Code", version: "1.2.3", protocol: "acp", installed: true, modes: [], modelCount: 2 },
+    ])
+
+    const fullOnly = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "aider", full: true } }),
+    )
+    expect(fullOnly).toEqual([{ ...three[2] }])
+
+    // An unknown slug filters to an empty set — the caller reads it as
+    // "not installed" rather than paging the whole registry again.
+    const unknown = parseAdapters(
+      await h.client.callTool({ name: "adapter_list", arguments: { adapter: "nope" } }),
+    )
+    expect(unknown).toEqual([])
+
+    await h.close()
+  })
+})
+
+describe("adapter_models", () => {
+  it("reports 'not enabled' when no lister is wired", async () => {
+    const h = await harness()
+    const result = await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    await h.close()
+  })
+
+  it("lists ONE adapter's models with provider/mode from the manifest (legacy { models } wrapper)", async () => {
+    const h = await harness(async () => [FULL_ADAPTER])
+    const raw = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { models: Array<Record<string, unknown>> }
+    expect(raw.models).toEqual([{ id: "z-ai/glm-5.2", provider: "openrouter" }])
+    await h.close()
+  })
+
+  it("errors on an unknown adapter slug", async () => {
+    const h = await harness(async () => [FULL_ADAPTER])
+    const result = await h.client.callTool({ name: "adapter_models", arguments: { adapter: "nope" } })
+    expect((result as { isError?: boolean }).isError).toBe(true)
+    expect(((result as { content: Array<{ text: string }> }).content[0]!.text)).toMatch(/was not found/)
+    await h.close()
+  })
+
+  it("falls back to id-only rows when the manifest has no modelDetails", async () => {
+    const { modelDetails, ...metaOnly } = FULL_ADAPTER
+    void modelDetails
+    const h = await harness(async () => [metaOnly])
+    const raw = JSON.parse(
+      ((await h.client.callTool({ name: "adapter_models", arguments: { adapter: "hermes" } })) as { content: Array<{ text: string }> }).content[0]!.text,
+    ) as { models: Array<Record<string, unknown>> }
+    expect(raw.models).toEqual([{ id: "z-ai/glm-5.2" }, { id: "gpt-5" }])
+    await h.close()
+  })
+
+  it("pages a runaway model list with limit/cursor (the ~700-opencode-ids regression)", async () => {
+    const big: AdapterListEntry = {
+      ...FULL_ADAPTER,
+      models: Array.from({ length: 700 }, (_, i) => `openrouter/model-${i}`),
+      modelDetails: Array.from({ length: 700 }, (_, i): AdapterModelRow => ({ id: `openrouter/model-${i}`, provider: "openrouter" })),
+    }
+    const h = await harness(async () => [big])
+
+    const all: Array<{ id: string }> = []
+    let cursor: string | undefined
+    do {
+      const raw = JSON.parse(
+        (
+          (await h.client.callTool({
+            name: "adapter_models",
+            arguments: { adapter: "hermes", limit: 100, ...(cursor ? { cursor } : {}) },
+          })) as { content: Array<{ text: string }> }
+        ).content[0]!.text,
+      ) as { items: Array<{ id: string }>; total: number; truncated?: boolean; nextCursor?: string }
+      expect(raw.truncated).toBeUndefined()
+      raw.items.forEach(row => all.push(row))
+      cursor = raw.nextCursor
+    } while (cursor)
+    expect(all).toHaveLength(700)
+    expect(all.map(row => row.id).at(-1)).toBe("openrouter/model-699")
 
     await h.close()
   })

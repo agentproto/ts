@@ -207,10 +207,14 @@ async function runSpawnWizard(
   // `picked` and flows through the same leaf handling as before.
   if (picked.harness && picked.adapter) {
     const harnessSlug = picked.adapter.slug
+    // The list is compact — its route-selection flag and model list live in
+    // the per-adapter detail, fetched only now that this harness was picked.
+    const detail = await client.getAdapter(harnessSlug).catch(() => undefined)
+    const harness = detail ?? picked.adapter
     const modelItems =
       catalog && catalog.vendors.length > 0
-        ? mapHarnessCatalogModelItems(catalog, harnessSlug, picked.adapter.routeSelection)
-        : mapHarnessManifestModelItems(picked.adapter)
+        ? mapHarnessCatalogModelItems(catalog, harnessSlug, harness.routeSelection)
+        : mapHarnessManifestModelItems(harness)
     const modelPick = await vscode.window.showQuickPick(modelItems, {
       placeHolder: `${harnessSlug} — select a model`,
     })
@@ -218,7 +222,7 @@ async function runSpawnWizard(
     picked = modelPick
   }
   if (picked.configure) {
-    const configured = await runConfigureWizard(adapters, defaultCwd, holdDefault)
+    const configured = await runConfigureWizard(client, adapters, defaultCwd, holdDefault)
     if (!configured) return
     answers = configured
   } else if (picked.preset) {
@@ -373,6 +377,7 @@ async function resolveWizardDefaultCwd(): Promise<string | undefined> {
  * still gets the free choice of any declared mode, unchanged.
  */
 async function runConfigureWizard(
+  client: DaemonClient,
   adapters: SpawnAdapterInfo[],
   defaultCwd: string,
   holdDefault: boolean,
@@ -384,11 +389,16 @@ async function runConfigureWizard(
 
   const answers: SpawnWizardAnswers = { adapter: adapterPick.adapter.slug }
 
-  const entries = modelEntriesOf(adapterPick.adapter)
+  // Fetch ONLY the picked adapter's detail: the listing is compact and has
+  // no model list/modes/route-selection.
+  const detail = await client.getAdapter(adapterPick.adapter.slug).catch(() => undefined)
+  const adapter = (detail ?? adapterPick.adapter) as SpawnAdapterInfo
+
+  const entries = modelEntriesOf(adapter)
   let boundMode: string | undefined
   let modelIds = entries.map((e) => e.id)
   if (entries.length > 0) {
-    const providerPick = await vscode.window.showQuickPick(mapProviderQuickPickItems(adapterPick.adapter), {
+    const providerPick = await vscode.window.showQuickPick(mapProviderQuickPickItems(adapter), {
       placeHolder: "Select a provider",
     })
     if (!providerPick) return undefined
@@ -413,7 +423,7 @@ async function runConfigureWizard(
   if (boundMode) {
     answers.mode = boundMode
   } else {
-    const modeItems = mapModeQuickPickItems(adapterPick.adapter.modes)
+    const modeItems = mapModeQuickPickItems(adapter.modes)
     if (modeItems.length > 0) {
       const modePick = await vscode.window.showQuickPick(modeItems, { placeHolder: "Select a mode" })
       if (!modePick) return undefined

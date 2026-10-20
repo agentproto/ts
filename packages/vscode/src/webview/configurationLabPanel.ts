@@ -110,6 +110,7 @@ class ConfigurationLabWebviewProvider implements vscode.WebviewViewProvider {
             this.warnAdaptersError(status.error)
             return status.adapters
           },
+          getAdapter: (slug) => this.client.getAdapter(slug),
           harnessCapabilities: (adapter) => this.client.harnessCapabilities(adapter),
           catalogModels: () => this.client.catalogModels(),
           listAuthProfiles: () => this.client.listAuthProfiles(),
