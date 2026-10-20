@@ -57,7 +57,8 @@ export const claudeCodeCloud: AgentCliHandle = defineAgentCli({
     "the AIP-66 §4 spawn fields (sandbox, worktree, commandSandbox, " +
     "mcpServers, daemonMount, bundles, browser, appServe, inference) — the " +
     "vendor can never apply them. Requires a claude.ai sign-in (API-key " +
-    "auth is refused) and a clean, pushed git checkout.",
+    "auth is refused) and either a declared workspace remote (the relay " +
+    "clones it) or a clean, pushed git checkout as the cwd.",
   version: "0.1.0",
   bin: "node",
   bin_args: [acpBin],
@@ -226,6 +227,16 @@ export {
   type CredentialSource,
   type SessionsApiOptions,
 } from "./sessions-api.js"
+export {
+  cloudRepoSourceFromEnv,
+  materializeRepoCheckout,
+  CLOUD_GIT_TOKEN_ENV,
+  CLOUD_REPO_BRANCH_ENV,
+  CLOUD_REPO_DIR_ENV,
+  CLOUD_REPO_URL_ENV,
+  DEFAULT_CLOUD_REPO_BRANCH,
+  type CloudRepoSource,
+} from "./repo-checkout.js"
 export {
   validateRepoSource,
   defaultGitRunner,

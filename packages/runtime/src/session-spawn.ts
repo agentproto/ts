@@ -16,6 +16,7 @@ import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
   cloudMetaOf,
+  cloudRepoSpawnEnv,
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
   resolveCloudResumeId,
@@ -2285,6 +2286,9 @@ export async function spawnAgentSession(
   let sandboxTarWorkspace: { slug: string } | undefined
   // Why a remote was derived or skipped — written to the session's transcript.
   let sandboxSourceNotices: string[] = []
+  // AIP-66 cloud spawn that named a workspace with a declared `remote`: the
+  // relay clones it itself (cloudRepoSpawnEnv), so no local clone is needed.
+  let cloudWorkspaceRemote: WorkspaceRemote | undefined
   if (!cwd || !resolvedSlug) {
     try {
       const config = await loadWorkspacesConfig()
@@ -2294,6 +2298,7 @@ export async function spawnAgentSession(
           if (ws) {
             cwd = ws.path
             resolvedSlug = ws.slug
+            if (cloudResolved && ws.remote) cloudWorkspaceRemote = ws.remote
             if (input.sandbox !== undefined && !isDeviceSpawn) {
               const source = await resolveSandboxWorkspaceSource(ws)
               sandboxSourceNotices = source.notices
@@ -2980,6 +2985,29 @@ export async function spawnAgentSession(
   const resumeSource = resumeTarget?.sourceSessionId
     ? registry.get(resumeTarget.sourceSessionId)
     : undefined
+  // AIP-66 cloud on a declared workspace remote: url/branch/checkout dir (+
+  // the keychain-resolved git token) for the relay's own clone. The checkout
+  // lives in the same isolated config dir a resume re-uses.
+  let cloudRepoEnv: Record<string, string> = {}
+  if (cloudResolved && cloudWorkspaceRemote) {
+    try {
+      cloudRepoEnv = await cloudRepoSpawnEnv(
+        cloudWorkspaceRemote,
+        resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
+        async ref => (await new KeychainStore().read({ path: ref }))?.value,
+      )
+    } catch (err) {
+      if (err instanceof CloudSpawnError) {
+        return {
+          ok: false,
+          code: "cloud_spawn_refused",
+          message: `agent_start: ${err.message}`,
+          ...(err.field ? { details: { field: err.field } } : {}),
+        }
+      }
+      throw err
+    }
+  }
   // Recorded ONLY once a resume attempt actually succeeds (the local branch
   // below): a rejected id that fell back to a fresh spawn must never claim
   // continuity on the descriptor.
@@ -4782,6 +4810,7 @@ export async function spawnAgentSession(
                 [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(
                   resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
                 ),
+                ...cloudRepoEnv,
               }
             : {}),
         },

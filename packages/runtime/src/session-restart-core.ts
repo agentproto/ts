@@ -64,8 +64,11 @@ import {
 } from "./sessions.js"
 import { isRetired } from "./session-retirement.js"
 import {
+  CLOUD_SESSION_META_FILE_ENV,
   cloudHarnessFor,
   cloudMetaOf,
+  cloudRepoSpawnEnv,
+  cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
   resolveCloudResumeId,
 } from "./cloud-vendors.js"
@@ -1354,6 +1357,22 @@ export async function restartAgentSession(
     // sessionId / url and forces the relay-side-file fallback on the next
     // resume. Merged with the app-boundary meta so carrying one never drops
     // the other; encoded through the cloud-vendors helper (never hand-rolled).
+    // A cloud restart re-hands the relay its meta file and — for a workspace
+    // with a declared remote — the same clone source the spawn gave it, so
+    // `session/load` re-validates the relay's own checkout, never a host cwd
+    // that may hold no clone at all.
+    const cloudRestartEnv: Record<string, string> = prevCloudMeta
+      ? {
+          [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(restartConfigDir),
+          ...(prev.workspaceSlug
+            ? await cloudRepoSpawnEnv(
+                findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)?.remote,
+                restartConfigDir,
+                async ref => (await new KeychainStore().read({ path: ref }))?.value,
+              )
+            : {}),
+        }
+      : {}
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
@@ -1395,6 +1414,7 @@ export async function restartAgentSession(
       ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
       ...(prev.permissionHold ? { permissionHold: true } : {}),
       env: {
+        ...cloudRestartEnv,
         [SESSION_ID_ENV]: restartedSessionId,
         [WORKSPACE_SLUG_ENV]: prev.workspaceSlug,
       },

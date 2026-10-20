@@ -19,6 +19,7 @@ import { spawn } from "node:child_process"
 import { tmpdir } from "node:os"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 import { toCliSessionId } from "./sessions-api.js"
+import { CLOUD_GIT_TOKEN_ENV } from "./repo-checkout.js"
 
 // Cloud-provider redirect toggles scrubbed alongside ANTHROPIC_API_KEY —
 // byte-for-byte the same set the claude-code adapter scrubs for gateway
@@ -41,12 +42,14 @@ export const CLAUDE_CODE_GATEWAY_ENV_UNSET: readonly string[] = [
   ...CLAUDE_CODE_CLOUD_TOGGLES,
 ]
 
-/** Copy `base` with every {@link CLAUDE_CODE_GATEWAY_ENV_UNSET} key deleted. */
+/** Copy `base` with every {@link CLAUDE_CODE_GATEWAY_ENV_UNSET} key deleted,
+ *  plus the declared repo's git token — only the relay's own clone reads it
+ *  (repo-checkout.ts); the vendor CLI never needs it. */
 export function cloudChildEnv(
   base: Record<string, string | undefined> = process.env,
 ): Record<string, string> {
   const out: Record<string, string> = {}
-  const drop = new Set(CLAUDE_CODE_GATEWAY_ENV_UNSET)
+  const drop = new Set([...CLAUDE_CODE_GATEWAY_ENV_UNSET, CLOUD_GIT_TOKEN_ENV])
   for (const [key, value] of Object.entries(base)) {
     if (value === undefined || drop.has(key)) continue
     out[key] = value

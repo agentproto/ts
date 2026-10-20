@@ -128,6 +128,18 @@ The cloud runs the user's REPO from its git remote — never an uploaded
 working tree. `session/new` refuses: a non-git cwd, a dirty tree, a missing
 `origin` remote, and an unpushed HEAD. Commit and push before spawning.
 
+**Declared remote.** When the host sets `AGENTPROTO_CLOUD_REPO_URL` +
+`AGENTPROTO_CLOUD_REPO_DIR` (optional `AGENTPROTO_CLOUD_REPO_BRANCH`, default
+`main`; optional `AGENTPROTO_GIT_TOKEN`) — the agentproto runtime does so for a
+cloud spawn on a workspace whose `workspaces.json` entry declares a `remote` —
+`session/new` and `session/load` first materialize a clean checkout of
+`origin/<branch>` in that dir (shallow clone, or fetch + `checkout -f -B` +
+`clean -ffdx` when it already exists; a dir holding a different remote is
+refused), then run the same validation against it, and the vendor CLI runs
+from there instead of the session cwd. Setting only one of url/dir fails
+closed. The token is read by a per-command `credential.helper` only and is
+stripped from every vendor CLI child env.
+
 ## Refused spawn fields (AIP-66 §4)
 
 `sandbox`, `worktree`, `commandSandbox`, `mcpServers`, `daemonMount`,

@@ -20,6 +20,7 @@ import {
 } from "../acp-server.js"
 import { CLOUD_SESSION_META_FILE_ENV, CLOUD_VENDOR_SLUG } from "../meta-file.js"
 import type { CloudEventsPage, CloudSessionEvent } from "../sessions-api.js"
+import type { CloudRepoSource } from "../repo-checkout.js"
 
 // ── fixtures (FAKE ids/text, shaped like the 2026-10-14 observations) ──────
 //
@@ -215,6 +216,7 @@ interface Harness {
   sleep: ReturnType<typeof vi.fn>
   sleepDelays: number[]
   validateRepo: ReturnType<typeof vi.fn>
+  materializeRepo: ReturnType<typeof vi.fn>
 }
 
 function harness(opts: {
@@ -222,6 +224,7 @@ function harness(opts: {
   pollInitialMs?: number
   pollMaxMs?: number
   onSleep?: () => void
+  repoSource?: CloudRepoSource
 }): Harness {
   const conn = { sessionUpdate: vi.fn(async () => {}) }
   const start = vi.fn(async () => ({
@@ -236,6 +239,7 @@ function harness(opts: {
     opts.onSleep?.()
   })
   const validateRepo = vi.fn(async () => {})
+  const materializeRepo = vi.fn(async (source: CloudRepoSource) => source.dir)
   const cli: CloudCliDeps = {
     startCloudSession: start as unknown as CloudCliDeps["startCloudSession"],
     sendPrompt: send as unknown as CloudCliDeps["sendPrompt"],
@@ -244,6 +248,9 @@ function harness(opts: {
     api: opts.api,
     cli,
     validateRepo: validateRepo as unknown as (cwd: string) => Promise<void>,
+    // Never read the test process env: a declared source is opt-in per test.
+    repoSource: opts.repoSource ?? null,
+    materializeRepo,
     sleep: sleep as unknown as (ms: number) => Promise<void>,
     pollInitialMs: opts.pollInitialMs ?? 10,
     pollMaxMs: opts.pollMaxMs ?? 40,
@@ -256,6 +263,7 @@ function harness(opts: {
     sleep,
     sleepDelays,
     validateRepo,
+    materializeRepo,
   }
 }
 
@@ -307,6 +315,37 @@ describe("ClaudeCloudAcpAgent", () => {
     const id = await newSession(h2, "/repo")
     expect(h2.validateRepo).toHaveBeenCalledWith("/repo")
     expect(id).toMatch(/^[0-9a-f-]{36}$/)
+  })
+
+  it("session/new with a declared repo runs from its fresh checkout, not the session cwd", async () => {
+    const events = new FakeEvents()
+    const repoSource = {
+      url: "https://github.com/acme/repo",
+      branch: "main",
+      dir: "/cfg/repo",
+    }
+    const h = harness({
+      api: events.api(),
+      repoSource,
+      onSleep: () => events.push(resultEvent(1)),
+    })
+    const sessionId = await newSession(h, "/host/workspace-without-clone")
+    expect(h.materializeRepo).toHaveBeenCalledWith(repoSource)
+    expect(h.validateRepo).toHaveBeenCalledWith("/cfg/repo")
+    expect(h.validateRepo).not.toHaveBeenCalledWith("/host/workspace-without-clone")
+
+    await h.agent.prompt(prompt(sessionId, "hello"))
+    expect(h.start).toHaveBeenCalledWith("hello", { cwd: "/cfg/repo" })
+  })
+
+  it("session/new fails closed when the declared repo cannot be checked out", async () => {
+    const h = harness({
+      api: new FakeEvents().api(),
+      repoSource: { url: "https://github.com/acme/repo", branch: "main", dir: "/cfg/repo" },
+    })
+    h.materializeRepo.mockRejectedValueOnce(new Error("could not clone"))
+    await expect(newSession(h)).rejects.toThrow(/could not clone/)
+    expect(h.validateRepo).not.toHaveBeenCalled()
   })
 
   it("session/new refuses mcpServers (AIP-66 §4)", async () => {
