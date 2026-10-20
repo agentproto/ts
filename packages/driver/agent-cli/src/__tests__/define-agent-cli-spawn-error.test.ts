@@ -24,6 +24,7 @@ import type { AgentCliDefinition } from "../types.js"
 
 let nextSpawnError: Error | undefined
 let nextSpawnStderr: string | undefined
+let nextConnectError: Error | undefined
 const spawnCalls: Array<{ bin: string; args: string[] }> = []
 const protocolArms: Array<{ sessionId: string; _stderrTail?: () => string }> = []
 
@@ -60,7 +61,14 @@ vi.mock("../protocol/acp-client.js", () => ({
   createAcpProtocolArm: vi.fn(() => {
     const arm = {
       sessionId: "acp-sess-1",
-      async connect() {},
+      async connect() {
+        if (nextConnectError) {
+          // Let the fake child's queued stderr write land first, exactly as
+          // a real CLI prints its startup failure before exiting.
+          await new Promise(resolve => setTimeout(resolve, 5))
+          throw nextConnectError
+        }
+      },
       async send() {},
       async *events() {},
       async cancel() {},
@@ -155,6 +163,27 @@ describe("createAgentCliRuntime(...).start() — spawn failure never crashes the
     nextSpawnError = undefined
     const session = await createAgentCliRuntime(nodeBinDef).start({ cwd: "/tmp" })
     expect(session.sessionId).toBe("acp-sess-1")
+  })
+
+  it("carries the child stderr tail into a handshake failure (ACP connection closed)", async () => {
+    nextSpawnError = undefined
+    nextSpawnStderr =
+      "Error: EACCES: permission denied, open '/Users/op/.config/opencode/opencode.json'\n"
+    nextConnectError = new Error("ACP connection closed")
+
+    let err: Error | undefined
+    try {
+      await createAgentCliRuntime(nodeBinDef).start({ cwd: "/tmp" })
+    } catch (e) {
+      err = e as Error
+    }
+    expect(err?.message).toContain("ACP connection closed")
+    expect(err?.message).toContain("mastra-agent stderr (last 1 lines)")
+    expect(err?.message).toContain("EACCES: permission denied")
+    expect((err as (Error & { cause?: unknown }) | undefined)?.cause).toBe(nextConnectError)
+
+    nextConnectError = undefined
+    nextSpawnStderr = undefined
   })
 
   it("still starts when Codex reports an available update on stderr", async () => {

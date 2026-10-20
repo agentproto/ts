@@ -35,6 +35,7 @@ vi.mock("node:child_process", () => ({
 }))
 
 vi.mock("../command-sandbox-wrap.js", () => ({
+  resolveConfinedReadPaths: (paths: readonly string[] | undefined) => [...(paths ?? [])],
   wrapAgentCliSpawn: vi.fn(async (bin: string, args: string[], opts: typeof capturedSandboxOpts) => {
     capturedSandboxOpts = opts
     return [bin, args]
@@ -139,6 +140,21 @@ describe("createAgentCliRuntime(...).start() — pid + onActivity threading", ()
     )
     expect(capturedSandboxOpts?.extraReadPaths).toEqual(additionalReadPaths)
     expect(capturedSandboxOpts?.extraWritePaths).toBeUndefined()
+  })
+
+  it("adds the adapter's declared confined-read paths alongside exact-file grants", async () => {
+    // An agent step on opencode under an app boundary: the sandbox denies
+    // $HOME, so the manifest's global config dir must ride the same read
+    // grant as the exact-file AGENTS.md paths.
+    const runtime = createAgentCliRuntime({
+      ...minimalDef,
+      confinedReadPaths: ["/home/op/.config/opencode"],
+    } as AgentCliDefinition)
+    await runtime.start({ cwd: "/repo/apps/child", additionalReadPaths: ["/repo/AGENTS.md"] })
+    expect(capturedSandboxOpts?.extraReadPaths).toEqual([
+      "/home/op/.config/opencode",
+      "/repo/AGENTS.md",
+    ])
   })
 })
 

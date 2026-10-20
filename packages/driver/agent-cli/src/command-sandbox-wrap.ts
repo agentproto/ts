@@ -104,6 +104,20 @@ export function defaultToolchainReadPaths(): string[] {
   ]
 }
 
+/**
+ * Expand an adapter's declared {@link AgentCliDefinition.confinedReadPaths}
+ * into absolute sandbox grants. `~/…` anchors at the operator's home (the
+ * manifest is authored once, not per machine); anything else passes through
+ * as-is. Purely lexical: a path that does not exist is harmless (Seatbelt
+ * ignores a nonexistent subpath allow, bwrap uses `--ro-bind-try`).
+ */
+export function resolveConfinedReadPaths(
+  paths: readonly string[] | undefined,
+  home: string = homedir(),
+): string[] {
+  return (paths ?? []).map(p => (p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p))
+}
+
 export interface WrapAgentCliSpawnOptions {
   /**
    * `undefined` ⇒ this call site didn't explicitly choose a mode — falls

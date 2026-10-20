@@ -875,6 +875,16 @@ export interface AgentCliDefinition {
    */
   stateHome?: AgentCliStateHome
   /**
+   * READ-only paths the CLI needs when its spawn is OS-confined
+   * (`fsZones` / `commandSandbox`). The confinement denies `$HOME`, so a CLI
+   * that reads its own GLOBAL config at startup dies before the protocol
+   * handshake (opencode: `~/.config/opencode`, even when
+   * `OPENCODE_CONFIG_CONTENT` is set). `~/…` anchors at the operator's home;
+   * merged into `wrapAgentCliSpawn`'s `extraReadPaths`, never writes;
+   * mutable state belongs in {@link stateHome}.
+   */
+  confinedReadPaths?: string[]
+  /**
    * For a CLI whose own stored login beats an injected env credential
    * (opencode: the console account in `$XDG_DATA_HOME/opencode/opencode.db`
    * re-points its providers at the ACTIVE ORG on every start, ignoring

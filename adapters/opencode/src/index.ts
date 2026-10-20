@@ -148,6 +148,17 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
   credentialDataHome: { env: "XDG_DATA_HOME" },
+  // opencode reads its GLOBAL config (`~/.config/opencode/opencode.jsonc`)
+  // at startup even when `OPENCODE_CONFIG_CONTENT` carries the per-session
+  // overrides. A confined spawn (workflow agent step under an app boundary)
+  // denies `$HOME`, so opencode exited before the ACP handshake and the step
+  // died as "ACP connection closed" (run wfrun_162fea3e). Grant the config
+  // dir READ-only: the operator's settings stay untouchable, but the CLI can
+  // boot. `$XDG_CONFIG_HOME` spawns read the same `opencode` subdir.
+  confinedReadPaths: [
+    "~/.config/opencode",
+    ...(process.env.XDG_CONFIG_HOME ? [join(process.env.XDG_CONFIG_HOME, "opencode")] : []),
+  ],
   // opencode's "small model" (session titles, summaries) defaults to a pick
   // of its own — GPT-5.4 Nano on OpenCode Zen, a PAID model, so every
   // `-free` session logged a `402 Rejected` per title call and would bill

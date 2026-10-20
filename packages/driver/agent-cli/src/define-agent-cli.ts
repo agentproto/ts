@@ -9,7 +9,7 @@ import { createAcpProtocolArm } from "./protocol/acp-client.js"
 import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
-import { willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
+import { resolveConfinedReadPaths, willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
 import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
 import { hostContextExcludes } from "./host-context.js"
 import { resolveSmallModelEnv } from "./small-model.js"
@@ -176,6 +176,29 @@ export function mergeJsonEnvValue(base: string, over: string): string {
     // not JSON — fall through to replace
   }
   return over
+}
+
+/**
+ * Append the spawned child's last stderr lines to a spawn failure. Without
+ * this a CLI that dies before the protocol handshake (opencode exiting on a
+ * config it cannot read, a missing binary, a rejected flag) surfaces only as
+ * the transport's opaque "ACP connection closed", which names neither the
+ * cause nor the harness. The tail is bounded (the driver already keeps the
+ * last `STDERR_KEEP_LINES`); `cause` is preserved for programmatic callers.
+ */
+export function spawnErrorWithStderr(
+  err: unknown,
+  stderrLines: readonly string[],
+  label: string,
+  keep = 20,
+): Error {
+  const message = err instanceof Error ? err.message : String(err)
+  const tail = stderrLines.slice(-keep).join("\n").trim()
+  if (!tail) return err instanceof Error ? err : new Error(message)
+  return new Error(
+    `${message}\n--- ${label} stderr (last ${Math.min(stderrLines.length, keep)} lines) ---\n${tail}`,
+    { cause: err },
+  )
 }
 
 export function createAgentCliRuntime(
@@ -696,6 +719,14 @@ export function createAgentCliRuntime(
       const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
       if (credentialDataDir) extraWritePaths.push(credentialDataDir)
       if (sessionSkillsTargetDir) extraWritePaths.push(sessionSkillsTargetDir)
+      // A confined spawn denies `$HOME`, but some CLIs still READ their own
+      // global config at startup (opencode: ~/.config/opencode, even with
+      // OPENCODE_CONFIG_CONTENT set). Those are adapter-declared, READ-only
+      // grants, never writes; mutable state belongs in `stateHome`.
+      const extraReadPaths = [
+        ...resolveConfinedReadPaths(definition.confinedReadPaths),
+        ...(opts?.additionalReadPaths ?? []),
+      ]
       if (
         definition.stateHome &&
         definition.protocol !== "proprietary" &&
@@ -734,10 +765,8 @@ export function createAgentCliRuntime(
           commandSandbox: opts?.commandSandbox,
           ...(opts?.fsZones ? { fsZones: opts.fsZones } : {}),
           ...(extraWritePaths.length ? { extraWritePaths } : {}),
-          // Exact-file read grant — see the ACP arm's wrapAgentCliSpawn call.
-          ...(opts?.additionalReadPaths?.length
-            ? { extraReadPaths: opts.additionalReadPaths }
-            : {}),
+          // READ-only grants, see the ACP arm's wrapAgentCliSpawn call.
+          ...(extraReadPaths.length ? { extraReadPaths } : {}),
           ...(definition.routeSelection === "derived-from-model" && printModel
             ? { expectedModel: String(printModel) }
             : {}),
@@ -770,11 +799,9 @@ export function createAgentCliRuntime(
             cwd,
             ...(opts?.fsZones ? { zones: opts.fsZones } : {}),
             ...(extraWritePaths.length ? { extraWritePaths } : {}),
-            // Exact-file read grant (see additionalReadPaths above):
-            // READ-only exceptions to the confinement boundary, never writes.
-            ...(opts?.additionalReadPaths?.length
-              ? { extraReadPaths: opts.additionalReadPaths }
-              : {}),
+            // READ-only exceptions to the confinement boundary, never
+            // writes: adapter-declared config paths + exact-file grants.
+            ...(extraReadPaths.length ? { extraReadPaths } : {}),
             label: definition.id,
           },
         )
@@ -929,26 +956,36 @@ export function createAgentCliRuntime(
           (systemPromptDecl?.via === "argv" && definition.protocol === "proprietary"))
           ? systemPromptText
           : undefined
-      await arm.connect({
-        cwd,
-        env,
-        abortSignal: abortController.signal,
-        ...(opts?.resumeSessionId
-          ? { resumeSessionId: opts.resumeSessionId }
-          : {}),
-        ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
-        ...(configModel ? { model: configModel } : {}),
-        ...(optEffort ? { effort: String(optEffort) } : {}),
-        ...(configMode ? { mode: configMode } : {}),
-        // Channel decision above: `acp-meta` (the arm's `_meta.systemPrompt`)
-        // or a `proprietary` arm's own `argv` push.
-        ...(connectSystemPrompt !== undefined
-          ? { appendSystemPrompt: connectSystemPrompt }
-          : {}),
-        ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
-        ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
-        ...(opts?.permissionHold ? { permissionHold: true } : {}),
-      })
+      try {
+        await arm.connect({
+          cwd,
+          env,
+          abortSignal: abortController.signal,
+          ...(opts?.resumeSessionId
+            ? { resumeSessionId: opts.resumeSessionId }
+            : {}),
+          ...(opts?.mcpServers ? { mcpServers: opts.mcpServers } : {}),
+          ...(configModel ? { model: configModel } : {}),
+          ...(optEffort ? { effort: String(optEffort) } : {}),
+          ...(configMode ? { mode: configMode } : {}),
+          // Channel decision above: `acp-meta` (the arm's `_meta.systemPrompt`)
+          // or a `proprietary` arm's own `argv` push.
+          ...(connectSystemPrompt !== undefined
+            ? { appendSystemPrompt: connectSystemPrompt }
+            : {}),
+          ...(opts?.onActivity ? { onActivity: opts.onActivity } : {}),
+          ...(turnIdleTimeoutMs !== undefined ? { turnIdleTimeoutMs } : {}),
+          ...(opts?.permissionHold ? { permissionHold: true } : {}),
+        })
+      } catch (err) {
+        // The child died (or the handshake failed) before `start()` resolved;
+        // carry its stderr tail into the caller's spawn error so a workflow
+        // step names the real cause instead of only the transport's "ACP
+        // connection closed".
+        await arm.close().catch(() => {})
+        if (child && !child.killed) child.kill("SIGTERM")
+        throw spawnErrorWithStderr(err, stderrBuf, definition.id)
+      }
 
       // Derived-from-model guard: when the ACP server REJECTED the
       // connect-time model apply, the session is alive but on the agent's

@@ -91,6 +91,13 @@ export {
   agentCliSupportsHostContextIsolation,
   hostContextExcludes,
 } from "./host-context.js"
+// Adapter-declared read-only grants a CONFINED spawn needs (its own global
+// config dir under $HOME), and the `~/…` expander, exported so adapter
+// manifests/tests can resolve the same paths the driver will.
+export {
+  resolveConfinedReadPaths,
+  defaultToolchainReadPaths,
+} from "./command-sandbox-wrap.js"
 export { CREDENTIAL_DATA_SUBDIR } from "./state-home.js"
 // Whole-tree teardown for a spawned adapter process — exported so hosts that
 // spawn a harness themselves (the CLI's ACP smoke probe) tear it down the

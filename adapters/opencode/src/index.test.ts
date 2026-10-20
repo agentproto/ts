@@ -1,9 +1,9 @@
 import { describe, expect, it, afterEach, beforeEach } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { composeSpawn, RuntimeConfigError } from "@agentproto/driver-agent-cli"
+import { composeSpawn, resolveConfinedReadPaths, RuntimeConfigError } from "@agentproto/driver-agent-cli"
 
 import { LEAN_INLINE_CONFIG, opencode, readOpenCodeUsage } from "./index.js"
 
@@ -42,6 +42,15 @@ describe("@agentproto/adapter-opencode", () => {
     expect(() =>
       composeSpawn(opencode, { options: { small_model: "opencode/step-5-preview-free" } }),
     ).not.toThrow()
+  })
+
+  it("grants its global config dir READ-only to a confined spawn", () => {
+    // An app-boundary workflow step confines the adapter with fs zones that
+    // deny $HOME; opencode still reads ~/.config/opencode at startup, so
+    // without this grant it exits before the ACP handshake (run
+    // wfrun_162fea3e: "agent spawn failed - ACP connection closed").
+    const paths = resolveConfinedReadPaths(opencode.confinedReadPaths)
+    expect(paths).toContain(join(homedir(), ".config", "opencode"))
   })
 
   it("declares model-derived api-key auth", () => {
