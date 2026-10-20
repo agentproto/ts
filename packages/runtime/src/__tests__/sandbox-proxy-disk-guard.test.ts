@@ -37,7 +37,7 @@ const dfOutput = (totalK: number, freeK: number): string =>
   `/dev/sda1 ${totalK} ${totalK - freeK} ${freeK} ${Math.round(((totalK - freeK) / totalK) * 100)}% /\n`
 
 const dfExec = (totalK: number, freeK: number): FakeHost["exec"] =>
-  vi.fn(async () => ({ exitCode: 0, stdout: dfOutput(totalK, freeK), stderr: "" }))
+  vi.fn(async () => ({ exitCode: 0, stdout: dfOutput(totalK, freeK), stderr: "", durationMs: 1 }))
 
 function makeProxy(
   host: FakeHost,
@@ -91,7 +91,7 @@ describe("sandbox proxy — disk guard (fake timers)", () => {
 
   it("a failed or unparseable probe is silent — the guard never guesses", async () => {
     vi.useFakeTimers()
-    const exec = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "df failed" }))
+    const exec = vi.fn(async () => ({ exitCode: 1, stdout: "", stderr: "df failed", durationMs: 1 }))
     const onWarning = vi.fn()
     const { proxy, checkpoint } = makeProxy(makeHost({ exec }), { onWarning })
 
