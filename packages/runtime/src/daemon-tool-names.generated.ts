@@ -8,6 +8,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "activities_list",
   "adapter_install",
   "adapter_list",
+  "adapter_models",
   "agent_export",
   "agent_interrupt",
   "agent_kill",
