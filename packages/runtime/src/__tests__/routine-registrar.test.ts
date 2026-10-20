@@ -493,6 +493,58 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     ])
   })
 
+  it("trigger() leaves an already-absolute workflow file path unchanged", async () => {
+    const { workspace, calls, registrar } = setup()
+    const absolute = join(workspace, "elsewhere", "WORKFLOW.md")
+    writeRoutine(
+      workspace,
+      "workflow-absolute",
+      [
+        "schema: routine/v1",
+        "id: workflow-absolute",
+        "description: test",
+        "schedule:",
+        "  kind: cron",
+        '  cron: "0 4 * * *"',
+        "target:",
+        "  workflow:",
+        `    file: ${absolute}`,
+      ].join("\n"),
+    )
+    await registrar.trigger("workflow-absolute")
+    expect(calls[0]!.inputs).toMatchObject({ path: absolute })
+  })
+
+  it("trigger() preserves sibling inputs when defaulting repoRoot", async () => {
+    const { workspace, calls, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "workflow-siblings",
+      [
+        "schema: routine/v1",
+        "id: workflow-siblings",
+        "description: test",
+        "schedule:",
+        "  kind: cron",
+        '  cron: "0 4 * * *"',
+        "target:",
+        "  workflow:",
+        "    file: WORKFLOW.md",
+        "  inputs:",
+        "    applyMerged: false",
+        "    notify:",
+        "      provider: telegram",
+        '      address: "123"',
+      ].join("\n"),
+    )
+    await registrar.trigger("workflow-siblings")
+    expect(calls[0]!.inputs.input).toEqual({
+      applyMerged: false,
+      notify: { provider: "telegram", address: "123" },
+      repoRoot: workspace,
+    })
+  })
+
   it("trigger() on an unknown routine id throws a clear not-found error", async () => {
     const { registrar } = setup()
     await expect(registrar.trigger("nope")).rejects.toThrow(/not found/)

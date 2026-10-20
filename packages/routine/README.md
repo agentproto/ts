@@ -115,6 +115,12 @@ from source before writing any code:
    once at gateway boot; re-callable on demand (no file-watcher in this
    pass — noted as a follow-up, not silently dropped). Per-file parse/target
    errors are collected and skip only that file, not the whole scan.
+   A `target.workflow` target is bound to that same workspace: a relative
+   `file` resolves under it, the dispatched `workflow_run_file` call runs
+   with `cwd` set to it, and `input.repoRoot` defaults to it unless the
+   routine already sets one (an explicit `repoRoot` always wins). This keeps
+   a workspace's routines from silently targeting the daemon's active
+   workspace.
 6. **`routine_trigger`** (MCP tool, mirrors `cron_run`) + `POST
    /routine-defs/:id/trigger` (HTTP, mirrors `POST /cron/:id/run`) —
    re-parses the routine fresh, resolves its target to a tool call, and
