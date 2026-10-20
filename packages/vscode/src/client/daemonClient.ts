@@ -96,6 +96,27 @@ export class NoTranscriptError extends Error {
   }
 }
 
+/** The MCP server rejected a tool call's ARGUMENTS at the input schema
+ *  (JSON-RPC `-32602` — e.g. a daemon older than the additive limit/cursor
+ *  pagination params seeing an unknown key). Distinguishes "old daemon"
+ *  from any other tool failure so paging clients can fall back once. */
+export class McpInvalidParamsError extends Error {
+  constructor(toolName: string, detail: string) {
+    super(`MCP ${toolName} rejected the arguments: ${detail}`)
+    this.name = "McpInvalidParamsError"
+  }
+}
+
+/** The daemon replaced a tool result with its over-budget
+ *  `{ truncated: true }` marker. A truncated response must never be read
+ *  as an empty list — callers surface this as an error. */
+export class McpResultTruncatedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "McpResultTruncatedError"
+  }
+}
+
 /** Raised by {@link DaemonClient.addWorkspace} on a 404 — the daemon predates
  *  the isomorphic `POST /workspaces` route, not a bad request. */
 export class WorkspacesRouteMissingError extends Error {
@@ -826,6 +847,9 @@ export class DaemonClient {
     }
     const envelope = await parseMcpBody(res)
     if (envelope.error) {
+      if (envelope.error.code === -32602) {
+        throw new McpInvalidParamsError(toolName, JSON.stringify(envelope.error.message ?? envelope.error))
+      }
       throw new Error(`MCP ${toolName} error: ${JSON.stringify(envelope.error)}`)
     }
     return unwrapMcpResult<T>(envelope.result)
@@ -871,17 +895,83 @@ export class DaemonClient {
 
   /**
    * adapter_list is an MCP-only tool — fetch the daemon's installed
-   * adapter registry via mcpCall("adapter_list").
+   * adapter registry via mcpCall("adapter_list"). Full detail is paged
+   * with limit/cursor until done, because the FULL manifest echo can run
+   * past the daemon's MCP result budget — an unpaged call then comes back
+   * as a `{ truncated: true }` stub with NO adapters, which every caller
+   * used to misread as "nothing installed" (the « 0 installed » /
+   * « adapter no longer installed » bug). A truncated stub THROWS here,
+   * never resolves to an empty list. Older daemons that predate limit/
+   * cursor pagination fall back to the single unpaged call.
    */
   async listAdapters(): Promise<AdapterInfo[]> {
-    const result = await this.mcpCall<{ adapters?: AdapterInfo[] } | AdapterInfo[]>(
-      "adapter_list",
-      // Compact-by-default daemon (0.20+) drops modes/modelDetails/status
-      // without this — the Configuration Lab + mind map read them.
-      { full: true },
-    )
-    if (Array.isArray(result)) return result
-    return result.adapters ?? []
+    const page = async (args: Record<string, unknown>) => {
+      const result = await this.mcpCall<
+        | AdapterInfo[]
+        | { adapters?: AdapterInfo[] }
+        | { items?: AdapterInfo[]; nextCursor?: string; truncated?: true; totalBytes?: number }
+      >("adapter_list", args)
+      // The daemon's over-budget marker replaces the whole payload — it is
+      // neither an array nor an { adapters } wrapper. Never mistake it for
+      // an empty list.
+      if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
+        const bytes = (result as { totalBytes?: number }).totalBytes
+        throw new McpResultTruncatedError(
+          "adapter_list response was truncated by the daemon's MCP result cap" +
+            (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
+            " — page the request with limit/cursor",
+        )
+      }
+      return result
+    }
+
+    // Page-walk with limit/cursor (daemon 0.20+ additive pagination). The
+    // typed McpInvalidParamsError distinguishes "daemon predates the
+    // limit/cursor params" (fall back to the single unpaged call) from any
+    // other failure — notably the truncation error above, which must NOT
+    // re-enter the unpaged fallback (it would just truncate again).
+    try {
+      const adapters: AdapterInfo[] = []
+      let cursor: string | undefined
+      do {
+        const result = await page({ full: true, limit: 25, ...(cursor ? { cursor } : {}) })
+        if (Array.isArray(result)) {
+          adapters.push(...result)
+          break
+        }
+        const items = (result as { items?: AdapterInfo[] }).items
+        if (!items) {
+          // An unpaged envelope despite the limit — a daemon older than the
+          // pagination params echoing the legacy { adapters } shape.
+          adapters.push(...((result as { adapters?: AdapterInfo[] }).adapters ?? []))
+          break
+        }
+        adapters.push(...items)
+        cursor = (result as { nextCursor?: string }).nextCursor
+      } while (cursor)
+      return adapters
+    } catch (err) {
+      if (err instanceof McpInvalidParamsError) {
+        const result = await page({ full: true })
+        if (Array.isArray(result)) return result
+        return (result as { adapters?: AdapterInfo[] }).adapters ?? []
+      }
+      throw err
+    }
+  }
+
+  /**
+   * {@link listAdapters} for callers that degrade gracefully — the failure
+   * reason rides along instead of being swallowed, so a truncated/failed
+   * listing can be surfaced to the user rather than rendered as "no
+   * adapters installed".
+   */
+  async listAdaptersWithStatus(): Promise<{ adapters: AdapterInfo[]; error?: string }> {
+    try {
+      return { adapters: await this.listAdapters() }
+    } catch (err) {
+      return { adapters: [], error: err instanceof Error ? err.message : String(err) }
+    }
   }
 
   /**

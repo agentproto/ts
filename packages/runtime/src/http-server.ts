@@ -789,9 +789,17 @@ export interface AdapterListEntry {
   routeSelection?: "free" | "derived-from-model"
   /** Known-valid model identifiers for this adapter (`@agentproto/cli`'s
    *  `AdapterInfo.models`, forwarded verbatim). Undefined when the lister
-   *  behind `AgentAdapterLister` doesn't populate it — `adapter_list`'s
-   *  `summary` projection depends on this being present. */
+   *  behind `AgentAdapterLister` doesn't populate it. Can run to hundreds
+   *  of ids per adapter — `adapter_list`'s COMPACT projection only surfaces
+   *  its COUNT; the array itself is `full: true` material. */
   models?: string[]
+  /**
+   * Live readiness status as the daemon's merged listing reports it
+   * (`"supported"` = known but not installed). Optional: older listers
+   * (and tests) omit it — an absent status means the entry IS installed
+   * (`adapter_list`'s compact `installed` flag defaults to true).
+   */
+  status?: "supported" | "available" | "ready" | "unresolvable"
 }
 
 export type AgentAdapterLister = () => Promise<AdapterListEntry[]>
