@@ -4252,6 +4252,12 @@ export async function spawnAgentSession(
         ...(resolved?.routeSelection !== undefined
           ? { routeSelection: resolved.routeSelection }
           : {}),
+        // AIP-46 amendment: the adapter's declared prompt-cache TTL rides the
+        // row so turn end can stamp `cacheWarmUntil = now + TTL` (floor 5 min
+        // when absent).
+        ...(resolved?.promptCacheTtlMs !== undefined
+          ? { promptCacheTtlMs: resolved.promptCacheTtlMs }
+          : {}),
         ...(resolved?.authDescriptor?.provider !== undefined
           ? { adapterProvider: resolved.authDescriptor.provider }
           : {}),
@@ -4907,6 +4913,11 @@ export async function spawnAgentSession(
       harness: input.harness ?? input.adapter,
       ...(resolved?.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
+        : {}),
+      // AIP-46 amendment: adapter-declared prompt-cache TTL on the row
+      // (turn end stamps `cacheWarmUntil = now + TTL`; floor when absent).
+      ...(resolved?.promptCacheTtlMs !== undefined
+        ? { promptCacheTtlMs: resolved.promptCacheTtlMs }
         : {}),
       ...(resolved?.authDescriptor?.provider !== undefined
         ? { adapterProvider: resolved.authDescriptor.provider }

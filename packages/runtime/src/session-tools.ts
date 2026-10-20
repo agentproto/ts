@@ -902,6 +902,16 @@ export interface SessionListCompactItem {
    *  first turn ended errored or empty (bad model id / host-side adapter
    *  error). Absent otherwise. */
   firstTurnFailed?: SessionDescriptor["firstTurnFailed"]
+  /** Mirrors `SessionDescriptor.lastTurnEndAt` (AIP-46 amendment) — when the
+   *  last agent-cli turn ended. Together with `cacheWarmUntil` it tells a
+   *  poller whether a prompt would land on a warm prompt cache. Absent when
+   *  no turn has ended yet (or the row is not agent-cli). */
+  lastTurnEndAt?: SessionDescriptor["lastTurnEndAt"]
+  /** Mirrors `SessionDescriptor.cacheWarmUntil` (AIP-46 amendment) — when
+   *  the prompt cache is expected to expire (`lastTurnEndAt + promptCacheTtlMs`,
+   *  5-minute floor). At/past this instant the next prompt is a COLD wake
+   *  (`coldWakeGuard`). Absent when unknown. */
+  cacheWarmUntil?: SessionDescriptor["cacheWarmUntil"]
   /** Mirrors the derived `SessionDescriptor.interrupted` — true when a daemon
    *  restart killed this session mid-turn and that turn was NOT re-run
    *  (`session_continue_interrupted` sends it a continue prompt). Absent
@@ -971,6 +981,8 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.lastTurnErrorMessage !== undefined ? { lastTurnErrorMessage: s.lastTurnErrorMessage } : {}),
   ...(s.lastTurnReason !== undefined ? { lastTurnReason: s.lastTurnReason } : {}),
   ...(s.lastTurnEmpty !== undefined ? { lastTurnEmpty: s.lastTurnEmpty } : {}),
+  ...(s.lastTurnEndAt !== undefined ? { lastTurnEndAt: s.lastTurnEndAt } : {}),
+  ...(s.cacheWarmUntil !== undefined ? { cacheWarmUntil: s.cacheWarmUntil } : {}),
   ...(s.firstTurnFailed ? { firstTurnFailed: true as const } : {}),
   ...(s.interrupted ? { interrupted: true as const } : {}),
   ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
@@ -2071,6 +2083,9 @@ export function registerSessionTools(
         policy,
         desc.contextSize,
         desc.contextUsed,
+        // AIP-46 amendment: expose cache warmth so a caller can tell a warm
+        // prompt from a cold wake before it sends one.
+        { lastTurnEndAt: desc.lastTurnEndAt, cacheWarmUntil: desc.cacheWarmUntil },
       )
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],

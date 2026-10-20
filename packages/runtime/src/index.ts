@@ -2544,6 +2544,14 @@ export async function createGateway(
     return { ok: true, newSessionId: restarted.desc.id }
   }
 
+  // AIP-46 amendment §Arming step 2 — "when does this session next wake?".
+  // The sessions registry is built BEFORE the cron scheduler, so the answer
+  // arrives through this late-bound slot: assigned right after
+  // `createCronScheduler` below, and only ever READ at turn end (long after
+  // boot). Unassigned ⇒ `null` ⇒ arming proceeds (an unknown wake never
+  // suppresses a fire; only a KNOWN wake inside the cache window does).
+  let nextSessionWakeLookup: ((sessionId: string) => number | null) | undefined
+
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
@@ -2556,6 +2564,11 @@ export async function createGateway(
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    // AIP-46 amendment §Arming step 2: the earliest future cron
+    // `prompt-session` fire for this session — a wake before
+    // `cacheWarmUntil` lands on a warm cache and skips idle-compact
+    // arming entirely (late-bound: see `nextSessionWakeLookup`).
+    nextSessionWakeAt: sessionId => nextSessionWakeLookup?.(sessionId) ?? null,
     ...(opts.listHarnessCapabilities
       ? { listHarnessCapabilities: opts.listHarnessCapabilities }
       : {}),
@@ -2876,6 +2889,23 @@ export async function createGateway(
     observeTurn: observeCronTurn,
     observeTimeoutMs: DEFAULT_OBSERVE_TIMEOUT_MS,
   })
+
+  // AIP-46 amendment §Arming step 2 — now that the scheduler exists, bind
+  // the sessions registry's next-wake lookup to its live jobs: the earliest
+  // FUTURE fire of an active, unfinished `prompt-session` job targeting this
+  // session. Paused/finished jobs can never wake it; a job with no
+  // `nextRunAt` is treated as unknown (skipped), never as "wake at ∞".
+  nextSessionWakeLookup = sessionId => {
+    let earliest: number | null = null
+    for (const job of cronScheduler.list()) {
+      if (job.action.kind !== "prompt-session" || job.action.sessionId !== sessionId) continue
+      if (!job.active || job.finished || !job.nextRunAt) continue
+      const at = Date.parse(job.nextRunAt)
+      if (!Number.isFinite(at) || at <= Date.now()) continue
+      if (earliest === null || at < earliest) earliest = at
+    }
+    return earliest
+  }
 
   // AIP-41 routine registrar — reads `.routines/*/ROUTINE.md`, validates,
   // and reconciles live CronScheduler jobs for every enabled cron-scheduled

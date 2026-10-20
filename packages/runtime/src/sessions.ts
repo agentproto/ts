@@ -145,11 +145,17 @@ import type {
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
+  IDLE_COMPACT_DEFAULT_CACHE_TTL_MS,
+  computeCacheWarmUntil,
   computeContextContinuityStatus,
   computeContextPct,
   contextContinuityNextAction,
   contextContinuityStateForPct,
+  effectiveColdWakeGuard,
+  effectiveIdleCompact,
   isContextContinuityHardStopped,
+  planIdleCompactArm,
+  shouldColdWakeGuard,
   type ContextContinuityPolicy,
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
@@ -1652,6 +1658,23 @@ export interface SessionDescriptor {
    *  turn end (normal or abnormal); absent when the turn ended with no
    *  reason to report. */
   lastTurnReason?: string
+  /** ISO timestamp of the moment the last turn ended (AIP-46 amendment
+   *  §Descriptor fields). Stamped on EVERY agent-cli turn end (normal or
+   *  abnormal) — absent until a turn has ended. */
+  lastTurnEndAt?: string
+  /** ISO timestamp when the session's prompt cache lapses
+   *  (`lastTurnEndAt` + the adapter's declared cache TTL — AIP-45 manifest
+   *  `metadata.promptCacheTtlMs`, else `IDLE_COMPACT_DEFAULT_CACHE_TTL_MS`).
+   *  Absent until a turn has ended. Together with `lastTurnEndAt` this is
+   *  the "will this wake be cheap?" observability pair (AIP-46 §Observability)
+   *  — see `isColdCache` for the cold reading. */
+  cacheWarmUntil?: string
+  /** The adapter's declared prompt-cache TTL (AIP-45 manifest
+   *  `metadata.promptCacheTtlMs`, integer ms), stamped at spawn when the
+   *  host resolved the adapter's manifest. Internal: never projected onto
+   *  `session_list` / `session_context_status` (its EFFECT is the public
+   *  `cacheWarmUntil` above). Absent ⇒ 300_000. */
+  promptCacheTtlMs?: number
   /** Device-spawn only: true when this session's FIRST turn ended errored or
    *  EMPTY — the field-observed shape where a `device:<fp>` spawn lands on a
    *  host whose adapter rejects the model id and the turn completes with no
@@ -2943,6 +2966,12 @@ interface SessionRuntime {
    *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
    *  stop). Prompts are held (queued / answered "retry") until it settles. */
   contextRescue?: Promise<void>
+  /** Armed idle-compact timer (AIP-46 amendment §Arming) — set by
+   *  `maybeArmIdleCompact` at turn end, cleared by `clearIdleCompactTimer`
+   *  on prompt admission, turn start, exit, and re-arming. In-memory only:
+   *  a daemon restart drops it and the next turn end re-evaluates. Never
+   *  holds the daemon open (`unref`). */
+  idleCompactTimer?: ReturnType<typeof setTimeout>
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -4219,6 +4248,12 @@ export interface SessionsRegistry {
    *  caller's — else the target's parent's — inbox) once per item that has
    *  waited past `staleMs`. Driven on a timer by the daemon; callable directly. */
   sweepPendingPrompts(opts?: { now?: number; staleMs?: number }): Promise<PendingPromptSweepSummary>
+  /** Cancel a session's armed idle-compact timer (AIP-46 §Arming step 5:
+   *  a policy edit that clears the `idleCompact` block — or any external
+   *  cancellation — kills the armed timer). No-op when nothing is armed or
+   *  the id is unknown. Optional so partial test doubles keep compiling;
+   *  the registry this file builds always provides it. */
+  cancelIdleCompact?(id: string): void
   /** Cancel one not-yet-dispatched item in `SessionDescriptor.promptQueue`
    *  by id — the composer's per-item "remove" action. Idempotent: an
    *  unknown session or an id that's already gone (dispatched, already
@@ -5801,6 +5836,14 @@ export function createSessionsRegistry(opts?: {
    *  options of the `ask`-mode context question and the
    *  `session:handoff-suggested` event). Omitted → nothing is suggested. */
   listHarnessCapabilities?: AdapterCapabilitiesLister
+  /** When the host KNOWS when a session next wakes — the earliest future
+   *  fire of a cron `prompt-session` job targeting it (AIP-46 amendment
+   *  §Arming step 2, wired from the daemon's `CronScheduler` in index.ts).
+   *  A wake that falls BEFORE `cacheWarmUntil` skips idle-compact arming
+   *  entirely: that wake lands on a warm cache and needs no help. Returns
+   *  epoch ms, or `null` when nothing schedules this session (⇒ arming
+   *  proceeds — unknown wakes never suppress a fire). */
+  nextSessionWakeAt?: (sessionId: string) => number | null
   /** Proactive quota watch for `contextContinuity.handoffAtQuotaRemaining`:
    *  the reader + the profile resolver for the session's `accessProfile`.
    *  Omitted → the threshold is inert. */
@@ -6271,6 +6314,9 @@ export function createSessionsRegistry(opts?: {
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // An exiting session must never fire an armed idle-compact timer (AIP-46
+    // §Arming step 5: exit cancels) — kill it before anything else runs.
+    clearIdleCompactTimer(rt)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
     // running for this row (its queue entry is dropped, its child tree
@@ -7871,6 +7917,11 @@ export function createSessionsRegistry(opts?: {
       try {
         await maybeResumeAgent(rt, "daemon-restart", next.source ? { source: next.source } : {})
         const liveRt = validateAgentTurn(rt.desc.id, "queue-drain", { compaction: isCompactPrompt(next.message) })
+        // A drain is a prompt admission too (AIP-46 §Arming step 5): kill
+        // any armed idle-compact timer before the turn starts. Deliberately
+        // NO cold-wake guard here — this prompt was queued while the
+        // session was busy, so it never represented a cold idle wake.
+        clearIdleCompactTimer(liveRt)
         if (next.envelope) {
           await runMessageTurn(
             liveRt,
@@ -9092,6 +9143,289 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  // ── Context warmth + idle compaction (AIP-46 amendment) ─────────────────
+
+  /** Clear a session's armed idle-compact timer (§Arming step 5): prompt
+   *  admission, turn start, exit, a re-arm, or an explicit cancel. */
+  const clearIdleCompactTimer = (rt: SessionRuntime): void => {
+    if (rt.idleCompactTimer) {
+      clearTimeout(rt.idleCompactTimer)
+      rt.idleCompactTimer = undefined
+    }
+  }
+
+  /** Parse `desc.cacheWarmUntil` to epoch ms; `null` when absent/unparsed. */
+  const cacheWarmUntilMs = (rt: SessionRuntime): number | null => {
+    if (!rt.desc.cacheWarmUntil) return null
+    const ms = Date.parse(rt.desc.cacheWarmUntil)
+    return Number.isFinite(ms) ? ms : null
+  }
+
+  /**
+   * Stamp `lastTurnEndAt` + `cacheWarmUntil` at EVERY agent-cli turn end
+   * (AIP-46 §Descriptor fields): `cacheWarmUntil = now + the adapter's
+   * declared cache TTL` (`metadata.promptCacheTtlMs`, else the 5-minute
+   * floor). Normal and abnormal ends alike — the cache's TTL runs from the
+   * last turn either way.
+   */
+  const stampCacheWarmth = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    const nowMs = Date.now()
+    const declared = rt.desc.promptCacheTtlMs
+    const ttl =
+      typeof declared === "number" && Number.isFinite(declared) && declared > 0
+        ? declared
+        : IDLE_COMPACT_DEFAULT_CACHE_TTL_MS
+    rt.desc.lastTurnEndAt = new Date(nowMs).toISOString()
+    rt.desc.cacheWarmUntil = new Date(computeCacheWarmUntil(nowMs, ttl)).toISOString()
+    schedulePersist()
+  }
+
+  /**
+   * Plan + arm the idle-compact timer for a turn that just ended (AIP-46
+   * §Arming steps 1–3). No-ops when: the policy/`idleCompact` block is off,
+   * the session isn't idle, a prompt is queued, context is unknown or
+   * `<= atPct`, the cache is not in the future, or a KNOWN next wake
+   * (cron — `opts.nextSessionWakeAt`) falls before the cache expires.
+   */
+  const maybeArmIdleCompact = (rt: SessionRuntime): void => {
+    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
+    if (rt.busy || rt.contextRescue) return
+    if (rt.desc.promptQueue?.length) return
+    const policy = rt.desc.contextContinuity
+    if (!policy) return
+    const plan = planIdleCompactArm({
+      idleCompact: effectiveIdleCompact(policy),
+      contextPct: computeContextPct(rt.desc.contextSize, rt.desc.contextUsed),
+      nowMs: Date.now(),
+      cacheWarmUntilMs: cacheWarmUntilMs(rt),
+      nextWakeAtMs: opts?.nextSessionWakeAt?.(rt.desc.id) ?? null,
+    })
+    if (!plan) return
+    clearIdleCompactTimer(rt)
+    const timer = setTimeout(
+      () => {
+        rt.idleCompactTimer = undefined
+        void fireIdleCompact(rt)
+      },
+      Math.max(plan.firesAtMs - Date.now(), 0),
+    )
+    // Never hold the daemon open for an idle timer.
+    timer.unref?.()
+    rt.idleCompactTimer = timer
+  }
+
+  /**
+   * The armed timer fired (AIP-46 §Arming step 4): re-check step 1 first (a
+   * prompt may have raced in), announce `session:idle-compact`, then — per
+   * mode — `auto` performs `action` (while the cache is still warm) or `ask`
+   * surfaces it as a structured question with a `keep-going` alternative and
+   * mutates nothing until the operator answers.
+   */
+  const fireIdleCompact = async (rt: SessionRuntime): Promise<void> => {
+    try {
+      if (rt.busy || rt.desc.busy || rt.contextRescue) return
+      if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
+      if (rt.desc.promptQueue?.length) return
+      const policy = rt.desc.contextContinuity
+      if (!policy) return
+      const idleCompact = effectiveIdleCompact(policy)
+      if (idleCompact.mode === "off") return
+      const nowMs = Date.now()
+      const warmMs = cacheWarmUntilMs(rt)
+      if (warmMs === null || warmMs <= nowMs) return
+      const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+      if (pct === null || pct <= idleCompact.atPct) return
+
+      const action = idleCompact.action
+      sessionEvents?.emit({
+        type: "session:idle-compact",
+        sessionId: rt.desc.id,
+        action,
+        mode: idleCompact.mode,
+        contextPct: pct,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      if (idleCompact.mode === "ask") {
+        rt.desc.awaitingInput = true
+        rt.desc.awaitingQuestion = {
+          source: "structured",
+          text:
+            `Context is at ${pct}% and the prompt cache expires at ${rt.desc.cacheWarmUntil}. ` +
+            (action === "continue-fresh"
+              ? "Continue fresh now so the next wake stays cheap?"
+              : "Compact now so the next wake stays cheap?"),
+          options: [action, "keep-going"],
+        }
+        appendLine(
+          rt,
+          `[context] idle-compact: cache expires ${rt.desc.cacheWarmUntil} — waiting for user decision (${action} or keep going)`,
+          "stdout",
+        )
+        schedulePersist()
+        return
+      }
+      appendLine(
+        rt,
+        `[context] idle-compact firing: ${action} while the cache is still warm (expires ${rt.desc.cacheWarmUntil})`,
+        "stdout",
+      )
+      if (action === "continue-fresh") {
+        await performContextContinueFresh(rt)
+        return
+      }
+      await attemptContextCompact(rt)
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] idle-compact failed: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+  }
+
+  /**
+   * Cold-wake guard (AIP-46 §Cold-wake guard). Runs at prompt admission to
+   * an IDLE session, AFTER compaction prompts, structured-question answers
+   * and force-resume have taken their usual paths (none of them is a cold
+   * wake). Returns `{continuedTo}` when the guard HANDLED the prompt (auto:
+   * the incoming prompt rode the fresh session's FIRST prompt — the caller
+   * must NOT run it here); `undefined` means admission proceeds exactly as
+   * today (off / warm / below `atPct` / ask admitted / any failure — the
+   * prompt is never dropped).
+   */
+  const maybeColdWakeGuard = async (
+    rt: SessionRuntime,
+    message: unknown,
+    guardOpts?: { forceResume?: boolean },
+  ): Promise<{ continuedTo: string } | undefined> => {
+    if (guardOpts?.forceResume) return undefined
+    if (isCompactPrompt(message)) return undefined
+    if (rt.busy || rt.contextRescue || rt.desc.promptQueue?.length) return undefined
+    const policy = rt.desc.contextContinuity
+    if (!policy) return undefined
+    const guard = effectiveColdWakeGuard(policy)
+    const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (
+      !shouldColdWakeGuard({
+        coldWakeGuard: guard,
+        contextPct: pct,
+        nowMs: Date.now(),
+        cacheWarmUntilMs: cacheWarmUntilMs(rt),
+      })
+    ) {
+      return undefined
+    }
+    if (pct === null) return undefined
+
+    if (guard.mode === "ask") {
+      // Step 3: deterministic checkpoint FIRST — transcript-derived, no
+      // model call, nothing billed — then surface the checkpoint's
+      // continue-fresh question with `keep-going`. The incoming prompt is
+      // admitted to THIS session as usual (the caller carries on).
+      let checkpoint: ContextCheckpoint
+      try {
+        checkpoint = await checkpointBeforeContextLoss(rt, "cold wake", false)
+      } catch (err) {
+        appendLine(
+          rt,
+          `[context] cold-wake guard: no checkpoint could be written (${
+            err instanceof Error ? err.message : String(err)
+          }) — prompt admitted as usual`,
+          "stderr",
+        )
+        return undefined
+      }
+      rt.desc.awaitingInput = true
+      rt.desc.awaitingQuestion = {
+        source: "structured",
+        text: `Context is at ${pct}%. Continue fresh to avoid losing continuity?`,
+        options: ["continue-fresh", "keep-going"],
+      }
+      appendLine(
+        rt,
+        `[context] cold wake at ${pct}% — checkpoint ${checkpoint.checkpointId} written; continue fresh or keep going?`,
+        "stdout",
+      )
+      schedulePersist()
+      return undefined
+    }
+
+    // mode "auto" — deterministic checkpoint (built + persisted inside
+    // continueAgentSessionFresh with `askSource:false`: transcript-derived,
+    // no model call), then a fresh continuation with the incoming prompt
+    // folded into its FIRST prompt: neither dropped nor run twice. Any
+    // failure falls through to today's behaviour — the prompt runs on THIS
+    // session rather than being dropped.
+    if (!resolveAgentAdapter) {
+      appendLine(
+        rt,
+        "[context] cold-wake guard: no adapter resolver configured — prompt admitted to this session as usual",
+        "stderr",
+      )
+      return undefined
+    }
+    try {
+      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
+        askSource: false,
+        baseDir: transcriptBaseDir,
+        ...foldIncomingPrompt(message),
+      })
+      appendLine(
+        rt,
+        `[context] cold wake at ${pct}% — continued fresh to ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId}); incoming prompt handed to the successor`,
+        "stdout",
+      )
+      // Retire this session — the same teardown performContextContinueFresh
+      // does, minus `contextContinuityHardStopped` (a cold wake is not a hard
+      // stop). `continueAgentSessionFresh` already linked `continuedTo`.
+      rt.desc.status = "killed"
+      rt.desc.endedAt = new Date().toISOString()
+      void rt.agentSession?.close().catch(() => undefined)
+      void transcriptWriter.close(rt.desc.id)
+      tracedSessions.delete(rt.desc.id)
+      schedulePersist()
+      emitExited(rt)
+      retireRow(rt, "continued", result.descriptor.id)
+      sessionEvents?.emit({
+        type: "session:cold-wake-guard",
+        sessionId: rt.desc.id,
+        continuedTo: result.descriptor.id,
+        contextPct: pct,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      return { continuedTo: result.descriptor.id }
+    } catch (err) {
+      appendLine(
+        rt,
+        `[context] cold-wake guard continue-fresh failed: ${
+          err instanceof Error ? err.message : String(err)
+        } — prompt admitted to this session as usual`,
+        "stderr",
+      )
+      return undefined
+    }
+  }
+
+  /** Fold an incoming cold-wake prompt into the options that ride the fresh
+   *  session's first prompt — string text composes AFTER the checkpoint,
+   *  content blocks ride behind a checkpoint text block (see
+   *  `ContinueAgentSessionFreshOptions.incomingPrompt`). Anything else
+   *  (undefined/primitive) hands over nothing here. */
+  const foldIncomingPrompt = (
+    message: unknown,
+  ): { incomingPrompt?: string | Record<string, unknown> | unknown[] } => {
+    if (typeof message === "string") return { incomingPrompt: message }
+    if (Array.isArray(message)) return { incomingPrompt: message as unknown[] }
+    if (message !== null && typeof message === "object") {
+      return { incomingPrompt: message as Record<string, unknown> }
+    }
+    return {}
+  }
+
   // ── Inbox + waiters (AIP-46 §Session messages) ────────────────────────
   interface InboxWaiter {
     filter: MessageFilter
@@ -9537,6 +9871,9 @@ export function createSessionsRegistry(opts?: {
     rt.busy = true
     rt.desc.busy = true             // mirror onto the public descriptor for session_monitor
     rt.emitter.emit("busy", true)
+    // A turn starting cancels any armed idle-compact timer (AIP-46 §Arming
+    // step 5) — it must NOT fire while a prompt is in flight.
+    clearIdleCompactTimer(rt)
     rt.desc.awaitingInput = false  // clear stale awaiting-input flag from prior turn
     rt.desc.awaitingQuestion = undefined
     releaseBlockedOn(rt.desc)      // clear stale blocked-on from prior turn
@@ -9838,6 +10175,20 @@ export function createSessionsRegistry(opts?: {
         turnEndReason = reason
       }
 
+      // ── Cache warmth stamp (AIP-46 §Descriptor fields) ──────────────
+      // EVERY agent-cli turn end — normal or injected-above — records
+      // `lastTurnEndAt` + `cacheWarmUntil` (now + adapter TTL). The cache
+      // TTL runs from the last turn either way, so warm/cold decisions
+      // after an abnormal end are as accurate as after a clean one.
+      stampCacheWarmth(rt)
+      if (!turnCompleted) {
+        // Abnormal end: an ABORTED turn (cancel, not kill) leaves the
+        // session alive and idle — plan the idle-compact fire exactly as a
+        // clean end does. Errored/killed/exited sessions skip inside
+        // (status not running/starting), so a crash never arms a timer.
+        maybeArmIdleCompact(rt)
+      }
+
       if (turnCompleted) {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
@@ -9929,6 +10280,10 @@ export function createSessionsRegistry(opts?: {
 
         // ── Context-continuity policy evaluation ─────────────────────
         await evaluateContextContinuity(rt)
+        // ── Idle-compact arming (AIP-46 §Arming steps 1–3) ───────────
+        // The session is now genuinely idle (turn done, no prompt yet):
+        // plan the fire that keeps the next wake on a warm cache.
+        maybeArmIdleCompact(rt)
         if (opts?.quotaWatch && rt.desc.contextContinuity?.handoffAtQuotaRemaining !== undefined) {
           await evaluateQuotaHandoff(rt)
         }
@@ -10504,6 +10859,15 @@ export function createSessionsRegistry(opts?: {
       if (pct !== null) rt.desc.contextContinuityAckedAtPct = pct
       appendLine(rt, `[context] user chose keep-going at ${pct ?? "?"}%`, "stdout")
       schedulePersist()
+    },
+    // The ask-mode idle-compact fire's own alternative (AIP-46 §Arming step 4):
+    // answer `<action>` to run it now, `keep-going` to leave it alone.
+    compact: async rt => {
+      rt.desc.awaitingInput = false
+      rt.desc.awaitingQuestion = undefined
+      appendLine(rt, "[context] user chose compact", "stdout")
+      schedulePersist()
+      await attemptContextCompact(rt)
     },
   }
 
@@ -11701,6 +12065,19 @@ export function createSessionsRegistry(opts?: {
         await answerStructuredQuestion(rt, structuredAnswer)
         return
       }
+      // ── AIP-46 §Cold-wake guard ─────────────────────────────────────
+      // Prompt admission to an IDLE session: the guard runs after the
+      // compaction / structured-answer / force-resume paths above (none of
+      // them is a cold wake) and may hand the prompt to a fresh successor
+      // — in which case THIS session must not run it again. `system`
+      // injections (auto-continuation wakes) are not user cold wakes.
+      clearIdleCompactTimer(rt)
+      if (opts?.system === undefined) {
+        const continued = await maybeColdWakeGuard(rt, message, {
+          ...(opts?.forceResume === true ? { forceResume: true } : {}),
+        })
+        if (continued) return
+      }
       await runAgentTurn(rt, message, {
         ...(opts?.source ? { promptSource: opts.source } : {}),
         ...(opts?.system ? { system: opts.system } : {}),
@@ -11852,6 +12229,16 @@ export function createSessionsRegistry(opts?: {
         await answerStructuredQuestion(rt, structuredAnswer)
         return deliveredNow()
       }
+      // ── AIP-46 §Cold-wake guard ─────────────────────────────────────
+      // Message envelopes and structured answers took their paths above;
+      // a plain prompt admitted to this idle session is exactly the cold
+      // wake the guard exists for. Handled ⇒ the successor already carries
+      // it and this one must not run.
+      clearIdleCompactTimer(rt)
+      const continued = await maybeColdWakeGuard(rt, message, {
+        ...(opts?.forceResume === true ? { forceResume: true } : {}),
+      })
+      if (continued) return deliveredNow()
       // Execution phase — fire-and-forget from here on. Errors during
       // the turn itself (network drop, child died mid-turn) land in
       // the ring buffer as `[error]` lines so the SSE consumer sees
@@ -11869,6 +12256,10 @@ export function createSessionsRegistry(opts?: {
       return deliveredNow()
     },
     sweepPendingPrompts,
+    cancelIdleCompact(id) {
+      const rt = sessions.get(id)
+      if (rt) clearIdleCompactTimer(rt)
+    },
     async sendMessage(msg, opts) {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)

@@ -98,6 +98,13 @@ export interface ContinueAgentSessionFreshOptions {
   /** Record a `handoff` {from,to harness} pair on the fresh descriptor.
    *  Default true; a same-harness migration passes false. */
   stampHandoff?: boolean
+  /** The incoming cold-wake prompt folded into the fresh session's FIRST
+   *  prompt (AIP-46 §Cold-wake guard): the checkpoint summary opens the
+   *  turn, the original prompt rides right behind it — delivered to the
+   *  successor, never dropped, and never run a second time on the retiring
+   *  session. A string composes after the checkpoint text; a content block
+   *  or block array rides behind a checkpoint text block. */
+  incomingPrompt?: string | Record<string, unknown> | unknown[]
 }
 
 function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } | undefined {
@@ -141,6 +148,22 @@ function formatPostureForSpawn(
   desc: SessionDescriptor,
 ): import("./session-config.js").Posture | undefined {
   return desc.posture
+}
+
+/**
+ * Compose the fresh session's first prompt with an incoming cold-wake prompt
+ * (AIP-46 §Cold-wake guard). The checkpoint summary always opens the turn;
+ * the original prompt rides directly behind it — text after text with a
+ * blank line, a block array spread behind a checkpoint text block, a single
+ * content block appended behind one.
+ */
+function foldIncomingPromptIntoCheckpoint(
+  checkpointPrompt: string,
+  incoming: string | Record<string, unknown> | unknown[],
+): string | Record<string, unknown> | unknown[] {
+  if (typeof incoming === "string") return `${checkpointPrompt}\n\n${incoming}`
+  const textBlock = { type: "text", text: checkpointPrompt }
+  return Array.isArray(incoming) ? [textBlock, ...incoming] : [textBlock, incoming]
 }
 
 /**
@@ -215,7 +238,10 @@ export async function continueAgentSessionFresh(
     label: prev.label ? `${prev.label} (continued)` : undefined,
     title: prev.title ? `${prev.title} (continued)` : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
-    prompt: renderCheckpointPrompt(checkpoint),
+    prompt:
+      opts.incomingPrompt !== undefined
+        ? foldIncomingPromptIntoCheckpoint(renderCheckpointPrompt(checkpoint), opts.incomingPrompt)
+        : renderCheckpointPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
     // rather than becoming a detached root.
     ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),

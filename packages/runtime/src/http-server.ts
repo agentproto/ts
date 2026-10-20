@@ -666,6 +666,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  ordinary spawn fields instead (`agent-projection.ts`). An option merely
    *  NAMED `agent` (antigravity's `agy` agent name) is not this. */
   agentManifestOption?: string
+  /** The adapter's prompt-cache TTL in ms, projected from the AIP-45
+   *  manifest's free-form `metadata.promptCacheTtlMs` (AIP-46 amendment).
+   *  Stamped on the descriptor at spawn as `promptCacheTtlMs` so
+   *  `cacheWarmUntil = lastTurnEndAt + TTL` uses the declared value;
+   *  absent ⇒ the 5-minute floor
+   *  ({@link IDLE_COMPACT_DEFAULT_CACHE_TTL_MS}) is assumed at turn end. */
+  promptCacheTtlMs?: number
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes
