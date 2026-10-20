@@ -1,9 +1,9 @@
 import { describe, expect, it, afterEach, beforeEach } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { composeSpawn, RuntimeConfigError } from "@agentproto/driver-agent-cli"
+import { composeSpawn, resolveConfinedReadPaths, RuntimeConfigError } from "@agentproto/driver-agent-cli"
 
 import { LEAN_INLINE_CONFIG, opencode, readOpenCodeUsage } from "./index.js"
 
@@ -42,6 +42,28 @@ describe("@agentproto/adapter-opencode", () => {
     expect(() =>
       composeSpawn(opencode, { options: { small_model: "opencode/step-5-preview-free" } }),
     ).not.toThrow()
+  })
+
+  it("grants only its global startup config FILES READ-only to a confined spawn", () => {
+    // An app-boundary workflow step confines the adapter with fs zones that
+    // deny $HOME; opencode still reads ~/.config/opencode at startup, so
+    // without this grant it exits before the ACP handshake (run
+    // wfrun_162fea3e: "agent spawn failed - ACP connection closed"). The
+    // grant is per-file, never the whole dir (skills/ and operator extras
+    // stay outside the boundary).
+    const paths = resolveConfinedReadPaths(opencode.confinedReadPaths)
+    expect(paths).toContain(join(homedir(), ".config", "opencode", "opencode.json"))
+    expect(paths).toContain(join(homedir(), ".config", "opencode", "opencode.jsonc"))
+    expect(paths).toContain(join(homedir(), ".config", "opencode", "config.json"))
+    expect(paths).not.toContain(join(homedir(), ".config", "opencode"))
+  })
+
+  it("grants a per-spawn XDG_CONFIG_HOME instead of the process-level one", () => {
+    const paths = resolveConfinedReadPaths(opencode.confinedReadPaths, "/home/op", {
+      XDG_CONFIG_HOME: "/custom/cfg",
+    })
+    expect(paths).toContain("/custom/cfg/opencode/opencode.json")
+    expect(paths).toContain("/custom/cfg/opencode/opencode.jsonc")
   })
 
   it("declares model-derived api-key auth", () => {

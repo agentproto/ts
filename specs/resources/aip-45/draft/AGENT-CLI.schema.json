@@ -71,6 +71,11 @@
         { "type": "object", "description": "Inline AIP-17 runner block." }
       ]
     },
+    "confinedReadPaths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "READ-only paths an OS-confined spawn needs to boot (e.g. the CLI's own global config files under $HOME, which the sandbox denies). `~/...` anchors at the operator's home; a leading `$VAR`/`${VAR}` is read from the per-spawn env and dropped when unset. Never grants write access; mutable state belongs in the adapter's state home."
+    },
     "protocol": {
       "enum": ["acp", "mcp", "proprietary"],
       "description": "Wire protocol discriminator. acp = AIP-44 ACP server; mcp = MCP-over-stdio; proprietary = adapter package implements AgentCliClient."
