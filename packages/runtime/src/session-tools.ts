@@ -913,6 +913,15 @@ export interface SessionListCompactItem {
   /** Mirrors `SessionDescriptor.stats` - only present when the request opted
    *  in with `stats: true | "full"`. */
   stats?: SessionDescriptor["stats"]
+  /** Mirrors `SessionDescriptor.lastTurnEndAt` — the moment the last turn
+   *  ended (AIP-46 amendment §Observability). Absent until a turn has
+   *  ended. */
+  lastTurnEndAt?: string
+  /** Mirrors `SessionDescriptor.cacheWarmUntil` — when this session's prompt
+   *  cache lapses (AIP-46 amendment §Descriptor fields), so a list consumer
+   *  can answer "will this wake be cheap?" without guessing from timestamps
+   *  it was never given. Absent until a turn has ended. */
+  cacheWarmUntil?: string
   // Device-sandbox identity mapping (BOOTSTRAP P7a) — see the descriptor
   // fields' docs. A device-mirrored row carries them even in the compact
   // projection so "host: <id>" is list-visible.
@@ -975,6 +984,11 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.interrupted ? { interrupted: true as const } : {}),
   ...(s.rssBytes !== undefined ? { rssBytes: s.rssBytes } : {}),
   ...(s.stats !== undefined ? { stats: s.stats } : {}),
+  // Cache-warmth observability (AIP-46 amendment §Observability) — both
+  // stamps ride the compact projection so "will this wake be cheap?" is
+  // answerable straight off `session_list`.
+  ...(s.lastTurnEndAt !== undefined ? { lastTurnEndAt: s.lastTurnEndAt } : {}),
+  ...(s.cacheWarmUntil !== undefined ? { cacheWarmUntil: s.cacheWarmUntil } : {}),
   // Device-sandbox identity mapping (BOOTSTRAP P7a) — a device-mirrored row
   // surfaces which HOST session id the real conversation lives under, so a
   // UI can show "host: <id>" straight off the list.
@@ -2009,7 +2023,8 @@ export function registerSessionTools(
     "session_context_status",
     "Return the context-continuity status for one session — current context " +
       "percentage, resolved policy thresholds, and the next automatic action " +
-      "(warn / compact / continue-fresh / hard-stop).",
+      "(warn / compact / continue-fresh / hard-stop), plus prompt-cache " +
+      "warmth (`lastTurnEndAt` / `cacheWarmUntil`) once a turn has ended.",
     {
       ...sessionRefSchema(z),
     },
@@ -2071,6 +2086,13 @@ export function registerSessionTools(
         policy,
         desc.contextSize,
         desc.contextUsed,
+        // Cache-warmth observability (AIP-46 amendment §Observability):
+        // both stamps absent until a turn has ended, exactly like the
+        // descriptor's own fields.
+        {
+          ...(desc.lastTurnEndAt !== undefined ? { lastTurnEndAt: desc.lastTurnEndAt } : {}),
+          ...(desc.cacheWarmUntil !== undefined ? { cacheWarmUntil: desc.cacheWarmUntil } : {}),
+        },
       )
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],

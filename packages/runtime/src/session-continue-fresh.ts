@@ -98,6 +98,11 @@ export interface ContinueAgentSessionFreshOptions {
   /** Record a `handoff` {from,to harness} pair on the fresh descriptor.
    *  Default true; a same-harness migration passes false. */
   stampHandoff?: boolean
+  /** A prompt to run immediately on the fresh session, after the checkpoint
+   *  prompt — the cold-wake guard's handover (AIP-46 amendment §Cold-wake
+   *  guard step 3): the incoming prompt becomes part of the fresh session's
+   *  FIRST turn, so it is neither dropped nor run twice. */
+  firstPrompt?: string
 }
 
 function formatAccessForSpawn(desc: SessionDescriptor): { profileRef?: string } | undefined {
@@ -215,7 +220,13 @@ export async function continueAgentSessionFresh(
     label: prev.label ? `${prev.label} (continued)` : undefined,
     title: prev.title ? `${prev.title} (continued)` : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
-    prompt: renderCheckpointPrompt(checkpoint),
+    // The checkpoint prompt carries any first-prompt handover inline — the
+    // cold-wake guard's incoming prompt rides this very turn (never a second
+    // queued one, so it can neither be dropped nor run twice).
+    prompt:
+      opts.firstPrompt !== undefined
+        ? `${renderCheckpointPrompt(checkpoint)}\n\n${opts.firstPrompt}`
+        : renderCheckpointPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
     // rather than becoming a detached root.
     ...(prev.parentSessionId ? { parentSessionId: prev.parentSessionId } : {}),

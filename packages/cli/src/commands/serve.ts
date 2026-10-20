@@ -579,6 +579,18 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(typeof adapter.handle.metadata?.agentManifestOption === "string"
           ? { agentManifestOption: adapter.handle.metadata.agentManifestOption }
           : {}),
+        // The adapter's own declared prompt-cache TTL
+        // (`metadata.promptCacheTtlMs`, AIP-45 free-form metadata) — the
+        // runtime stamps `cacheWarmUntil = lastTurnEndAt + ttl` at every
+        // turn end (AIP-46 amendment §Descriptor fields). Non-positive or
+        // non-numeric values are dropped here, so the runtime's 5-minute
+        // floor (`IDLE_COMPACT_DEFAULT_CACHE_TTL_MS`) applies — same
+        // ignore-unknown-keys leniency AIP-45 already requires.
+        ...(typeof adapter.handle.metadata?.promptCacheTtlMs === "number" &&
+        Number.isFinite(adapter.handle.metadata.promptCacheTtlMs) &&
+        adapter.handle.metadata.promptCacheTtlMs > 0
+          ? { promptCacheTtlMs: adapter.handle.metadata.promptCacheTtlMs }
+          : {}),
         commandPreview:
           `${adapter.handle.bin} ${(adapter.handle.bin_args ?? []).join(" ")}`.trim(),
         ...(slug === "hermes" ? { readUsage: (sid: string) => readHermesUsage(sid) } : {}),

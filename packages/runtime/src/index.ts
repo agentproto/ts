@@ -2544,6 +2544,14 @@ export async function createGateway(
     return { ok: true, newSessionId: restarted.desc.id }
   }
 
+  // Forward-reference box for the idleCompact known-wake probe (AIP-46
+  // §Arming step 5) — same trick as `dispatchToolBox` below: the sessions
+  // registry needs the probe at turn end, but the cron scheduler that answers
+  // it is only constructed further down this file.
+  const nextWakeAtBox: {
+    fn?: (sessionId: string) => number | null
+  } = {}
+
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
@@ -2686,6 +2694,44 @@ export async function createGateway(
     ...(opts.sandboxGoneRestartDefault === true
       ? { boxRestartPolicyDefault: SANDBOX_GONE_DEFAULT_RESTART_POLICY }
       : {}),
+    // AIP-46 amendment §Descriptor fields — the prompt-cache TTL behind
+    // `cacheWarmUntil = lastTurnEndAt + ttl`. The adapter's AIP-45
+    // `metadata.promptCacheTtlMs` travels on the SAME resolver entry as
+    // `agentManifestOption` (projected by the host in serve.ts), so one
+    // resolve serves both. Memoized per slug: the manifest is static for a
+    // process, and the turn-end stamp resolves this on every turn end.
+    ...(opts.resolveAgentAdapter
+      ? {
+          promptCacheTtlMs: (() => {
+            const bySlug = new Map<string, number | undefined>()
+            return async (adapterSlug?: string): Promise<number | undefined> => {
+              if (!adapterSlug) return undefined
+              if (bySlug.has(adapterSlug)) return bySlug.get(adapterSlug)
+              let ttl: number | undefined
+              try {
+                const adapter = await opts.resolveAgentAdapter!(adapterSlug)
+                ttl =
+                  typeof adapter?.promptCacheTtlMs === "number" && Number.isFinite(adapter.promptCacheTtlMs)
+                    ? adapter.promptCacheTtlMs
+                    : undefined
+              } catch {
+                ttl = undefined
+              }
+              bySlug.set(adapterSlug, ttl)
+              return ttl
+            }
+          })(),
+        }
+      : {}),
+    // Known-next-wake probe for the idleCompact arming skip (AIP-46
+    // §Arming step 5): a cron `prompt-session` job whose fire lands BEFORE
+    // `cacheWarmUntil` would wake the session while the cache is still warm
+    // on its own — arming the idle timer then is wasted work. Filled in
+    // after the cron scheduler is constructed below (the forward-reference
+    // trick, same as `dispatchToolBox`): sessions is created before the
+    // scheduler exists, and the probe only ever runs at turn end, long
+    // after boot.
+    nextWakeAt: sessionId => nextWakeAtBox.fn?.(sessionId) ?? null,
   })
   sessionsRef = sessions
 
@@ -2876,6 +2922,29 @@ export async function createGateway(
     observeTurn: observeCronTurn,
     observeTimeoutMs: DEFAULT_OBSERVE_TIMEOUT_MS,
   })
+
+  // Known-next-wake probe (AIP-46 amendment §Arming step 5): the earliest
+  // future cron `nextRunAt` that will wake THIS session — either a
+  // `prompt-session` job aimed at it, or any owned job (its fire restarts
+  // the owner through the scheduler's successor logic). `null` means "no
+  // known wake", so the idle timer arms; a wake landing before
+  // `cacheWarmUntil` suppresses it (planIdleCompactArm's caller contract).
+  nextWakeAtBox.fn = (sessionId: string): number | null => {
+    const nowMs = Date.now()
+    let soonest: number | null = null
+    for (const job of cronScheduler.list()) {
+      if (!job.active) continue
+      if (!job.nextRunAt) continue
+      const targetsSession =
+        job.action.kind === "prompt-session" && job.action.sessionId === sessionId
+      const ownsSession = job.ownedBy === sessionId
+      if (!targetsSession && !ownsSession) continue
+      const fireAtMs = new Date(job.nextRunAt).getTime()
+      if (!Number.isFinite(fireAtMs) || fireAtMs <= nowMs) continue
+      if (soonest === null || fireAtMs < soonest) soonest = fireAtMs
+    }
+    return soonest
+  }
 
   // AIP-41 routine registrar — reads `.routines/*/ROUTINE.md`, validates,
   // and reconciles live CronScheduler jobs for every enabled cron-scheduled
