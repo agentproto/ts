@@ -2362,8 +2362,17 @@ jobs:
       - name: Choose review fixer backend
         id: fixer
         if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        env:
+          HAS_DEV_API_KEY: ${{ secrets.DEV_ANTHROPIC_API_KEY != '' }}
+          HAS_CLOUD_TOKENS: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN != '' && secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
         run: |
-          if [ -n "${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}" ] && [ -n "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}" ]; then
+          # DEV_ANTHROPIC_API_KEY set = use the API fixer for now (the cloud
+          # OAuth login returns 403 on session create). Delete that secret to
+          # go back to the Claude Code Cloud backend.
+          if [ "$HAS_DEV_API_KEY" = "true" ]; then
+            echo "has-cloud=false" >> "$GITHUB_OUTPUT"
+            echo "DEV_ANTHROPIC_API_KEY set — using the Anthropic API fixer."
+          elif [ "$HAS_CLOUD_TOKENS" = "true" ]; then
             echo "has-cloud=true" >> "$GITHUB_OUTPUT"
             echo "Cloud fixer backend selected (Claude Code Cloud)."
           else
@@ -2406,7 +2415,7 @@ jobs:
           steps.fixer.outputs.has-cloud != 'true'
         run: node scripts/apply-review.mjs --delivery commit
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.DEV_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
           # App token so any escalation comment is authored by the bot identity.
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
