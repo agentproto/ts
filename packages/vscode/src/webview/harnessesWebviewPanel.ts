@@ -18,6 +18,7 @@ import type { DaemonClient } from "../client/daemonClient.js"
 import { NATIVE_LAUNCH_ARGV } from "../../../runtime/src/conversation-store.js"
 import type { HarnessNode } from "../views/harnessesTree.logic.js"
 import type { HarnessesTreeProvider } from "../views/harnessesTree.js"
+import { makeAdaptersErrorWarner } from "../views/adaptersError.js"
 import {
   buildHarnessesWebviewModel,
   type HarnessReachEntry,
@@ -87,6 +88,7 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
   // succeeded or failed, since installHarness's `finally` always calls
   // provider.refresh() (packages/vscode/src/commands/harnesses.ts).
   private installingSlugs = new Set<string>()
+  private readonly warnAdaptersError = makeAdaptersErrorWarner("harnesses unavailable")
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -121,14 +123,17 @@ class HarnessesWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   private async fetch(): Promise<void> {
-    const [adapters, capabilities, profiles] = await Promise.all([
-      this.client.listAdapters().catch((): AdapterInfo[] => []),
+    const [adapterStatus, capabilities, profiles] = await Promise.all([
+      this.client.listAdaptersWithStatus(),
       this.client.harnessCapabilities().catch((): HarnessCapabilities[] => []),
       this.client.listAuthProfiles().catch((): AuthProfileSummary[] => []),
     ])
-    this.adapters = adapters
+    this.adapters = adapterStatus.adapters
     this.capabilities = capabilities
     this.profiles = profiles
+    // A FAILED listing (truncated stub, unreachable daemon) is announced —
+    // never silently rendered as "no harnesses installed".
+    this.warnAdaptersError(adapterStatus.error)
     // Authoritative refresh lands — drop any optimistic "installing" flags
     // and let buildHarnessesWebviewModel derive the real action from the
     // fresh adapter statuses (ready → "start", still-installable → "install").

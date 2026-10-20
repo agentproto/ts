@@ -1541,9 +1541,11 @@ export function registerAgentTools(
     name: a.name,
     version: a.version,
     protocol: a.protocol,
-    // "supported" = known-but-not-installed; every other status (and an
-    // absent one — older listers only listed installed adapters) counts
-    // as installed.
+    // Literal "is the package present on this host": "supported" = known to
+    // the catalog but NOT installed; "available" (installed, setup/auth
+    // pending), "unresolvable" (installed but import-broken, mid-rebuild),
+    // "ready", and an absent status (older listers only listed installed
+    // adapters) all count as installed.
     installed: a.status !== "supported",
     modelCount: a.models?.length ?? 0,
   })

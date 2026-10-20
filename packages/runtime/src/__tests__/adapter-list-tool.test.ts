@@ -74,17 +74,23 @@ describe("adapter_list", () => {
     await h.close()
   })
 
-  it("compact `installed` mirrors the lister's status: supported = not installed, ready/absent = installed", async () => {
+  it("compact `installed` mirrors the lister's status: supported = not installed, available/unresolvable/ready/absent = installed", async () => {
     const h = await harness(async () => [
-      { ...FULL_ADAPTER, slug: "installed-ad", status: "ready" as const },
+      { ...FULL_ADAPTER, slug: "ready-ad", status: "ready" as const },
       { ...FULL_ADAPTER, slug: "catalog-ad", status: "supported" as const },
+      // Installed but setup/auth pending — still installed.
+      { ...FULL_ADAPTER, slug: "available-ad", status: "available" as const },
+      // Package present but import-broken (mid-rebuild) — still installed.
+      { ...FULL_ADAPTER, slug: "broken-ad", status: "unresolvable" as const },
       { ...FULL_ADAPTER, slug: "legacy-ad" },
     ])
     const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
     const adapters = parseAdapters(result) as Array<{ slug: string; installed: boolean }>
     expect(adapters.map(a => [a.slug, a.installed])).toEqual([
-      ["installed-ad", true],
+      ["ready-ad", true],
       ["catalog-ad", false],
+      ["available-ad", true],
+      ["broken-ad", true],
       ["legacy-ad", true],
     ])
     await h.close()

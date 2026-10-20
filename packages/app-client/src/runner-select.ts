@@ -178,18 +178,14 @@ export const RUNNER_SELECT_SCRIPT = `<script>
       return null;
     }
 
-    function findAdapter(slug) {
-      for (var i = 0; i < adapters.length; i++) {
-        if (adapters[i].slug === slug) return adapters[i];
-      }
-      return null;
-    }
-
     function renderHarnessOptions() {
       harnessSelect.innerHTML = "";
       var seen = {};
       for (var i = 0; i < adapters.length; i++) {
         var a = adapters[i];
+        // Not-installed catalog rows (installed:false, status "supported")
+        // cannot be spawned from here — they are not selectable harnesses.
+        if (a.installed === false) continue;
         seen[a.slug] = true;
         var opt = document.createElement("option");
         opt.value = a.slug;
@@ -211,22 +207,25 @@ export const RUNNER_SELECT_SCRIPT = `<script>
         fallback.textContent = state.harness;
         harnessSelect.appendChild(fallback);
       }
-      if (!state.harness && adapters.length > 0) {
-        state.harness = adapters[0].slug;
+      if (!state.harness) {
+        for (var j = 0; j < adapters.length; j++) {
+          if (adapters[j].installed !== false) { state.harness = adapters[j].slug; break; }
+        }
       }
       harnessSelect.value = state.harness;
     }
 
     function renderModelDatalist() {
       datalist.innerHTML = "";
-      var adapter = findAdapter(state.harness);
-      var models = (adapter && adapter.models) || [];
-      for (var i = 0; i < models.length; i++) {
+      // Compact adapter_list rows carry no model-id array (that is the
+      // budget fix) — the preset's default model is the suggestion seed;
+      // the input stays free-text for anything else.
+      var preset = findDefaultPresetFor(state.harness);
+      if (preset && preset.defaultModel) {
         var opt = document.createElement("option");
-        opt.value = models[i];
+        opt.value = preset.defaultModel;
         datalist.appendChild(opt);
       }
-      var preset = findDefaultPresetFor(state.harness);
       modelInput.placeholder = (preset && preset.defaultModel) || "adapter default";
       modelInput.value = state.model || "";
     }
@@ -273,9 +272,12 @@ export const RUNNER_SELECT_SCRIPT = `<script>
     // adapter_list with NO arguments can exceed the daemon's MCP result
     // budget (the model-id arrays alone ran to >100 KB) - the daemon then
     // answers with a truncated:true stub that callers used to misread
-    // as an empty list. So: ask only for the fields the picker needs, walk
-    // the limit/cursor pages until done, and treat a truncated stub as an
-    // error, never as "nothing installed".
+    // as an empty list. So: take the COMPACT rows (slug/name/version/
+    // protocol/installed/modelCount - a page of 50 is a few KB), walk the
+    // limit/cursor pages until done, and treat a truncated stub as an
+    // error, never as "nothing installed". Deliberately NO fields list:
+    // an explicit fields filter bypasses the compact projection and would
+    // re-ship the unbounded model arrays this walk exists to avoid.
     function fetchAdapters() {
       var collected = [];
       function page(args) {
@@ -286,13 +288,13 @@ export const RUNNER_SELECT_SCRIPT = `<script>
           if (Array.isArray(r)) return r;
           if (r && r.items) {
             collected = collected.concat(r.items);
-            if (r.nextCursor) return page({ limit: 10, cursor: r.nextCursor, fields: ["slug", "name", "models"] });
+            if (r.nextCursor) return page({ limit: 50, cursor: r.nextCursor });
             return collected;
           }
           return (r && r.adapters) || [];
         });
       }
-      return page({ limit: 10, fields: ["slug", "name", "models"] });
+      return page({ limit: 50 });
     }
 
     function refresh() {

@@ -33,6 +33,7 @@ import {
   fetchConfigurationLabData,
   labSelectionToSpawnArgs,
 } from "../commands/configurationLab.logic.js"
+import { makeAdaptersErrorWarner } from "../views/adaptersError.js"
 
 const VIEW_TYPE = "agentproto.configurationLab"
 
@@ -95,12 +96,20 @@ class ConfigurationLabWebviewProvider implements vscode.WebviewViewProvider {
     await this.resolveAndPost()
   }
 
+  private readonly warnAdaptersError = makeAdaptersErrorWarner("harness list unavailable")
+
   private async resolveAndPost(): Promise<void> {
     if (!this.view) return
     try {
       const data = await fetchConfigurationLabData(
         {
-          listAdapters: () => this.client.listAdapters(),
+          // A FAILED listing (truncated stub, unreachable daemon) is
+          // announced — never silently rendered as "no harnesses".
+          listAdapters: async () => {
+            const status = await this.client.listAdaptersWithStatus()
+            this.warnAdaptersError(status.error)
+            return status.adapters
+          },
           harnessCapabilities: (adapter) => this.client.harnessCapabilities(adapter),
           catalogModels: () => this.client.catalogModels(),
           listAuthProfiles: () => this.client.listAuthProfiles(),

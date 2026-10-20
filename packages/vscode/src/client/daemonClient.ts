@@ -96,6 +96,27 @@ export class NoTranscriptError extends Error {
   }
 }
 
+/** The MCP server rejected a tool call's ARGUMENTS at the input schema
+ *  (JSON-RPC `-32602` — e.g. a daemon older than the additive limit/cursor
+ *  pagination params seeing an unknown key). Distinguishes "old daemon"
+ *  from any other tool failure so paging clients can fall back once. */
+export class McpInvalidParamsError extends Error {
+  constructor(toolName: string, detail: string) {
+    super(`MCP ${toolName} rejected the arguments: ${detail}`)
+    this.name = "McpInvalidParamsError"
+  }
+}
+
+/** The daemon replaced a tool result with its over-budget
+ *  `{ truncated: true }` marker. A truncated response must never be read
+ *  as an empty list — callers surface this as an error. */
+export class McpResultTruncatedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "McpResultTruncatedError"
+  }
+}
+
 /** Raised by {@link DaemonClient.addWorkspace} on a 404 — the daemon predates
  *  the isomorphic `POST /workspaces` route, not a bad request. */
 export class WorkspacesRouteMissingError extends Error {
@@ -826,6 +847,9 @@ export class DaemonClient {
     }
     const envelope = await parseMcpBody(res)
     if (envelope.error) {
+      if (envelope.error.code === -32602) {
+        throw new McpInvalidParamsError(toolName, JSON.stringify(envelope.error.message ?? envelope.error))
+      }
       throw new Error(`MCP ${toolName} error: ${JSON.stringify(envelope.error)}`)
     }
     return unwrapMcpResult<T>(envelope.result)
@@ -892,7 +916,7 @@ export class DaemonClient {
       // an empty list.
       if (!Array.isArray(result) && (result as { truncated?: unknown }).truncated === true) {
         const bytes = (result as { totalBytes?: number }).totalBytes
-        throw new Error(
+        throw new McpResultTruncatedError(
           "adapter_list response was truncated by the daemon's MCP result cap" +
             (typeof bytes === "number" ? ` (${bytes} bytes)` : "") +
             " — page the request with limit/cursor",
@@ -901,7 +925,11 @@ export class DaemonClient {
       return result
     }
 
-    // Page-walk with limit/cursor (daemon 0.20+ additive pagination).
+    // Page-walk with limit/cursor (daemon 0.20+ additive pagination). The
+    // typed McpInvalidParamsError distinguishes "daemon predates the
+    // limit/cursor params" (fall back to the single unpaged call) from any
+    // other failure — notably the truncation error above, which must NOT
+    // re-enter the unpaged fallback (it would just truncate again).
     try {
       const adapters: AdapterInfo[] = []
       let cursor: string | undefined
@@ -923,15 +951,26 @@ export class DaemonClient {
       } while (cursor)
       return adapters
     } catch (err) {
-      // The limit/cursor params are additive (0.20+) — a daemon older than
-      // them rejects the unknown argument at the schema. Retry once with the
-      // legacy single unpaged call; its truncated-marker guard still holds.
-      if (/limit|cursor|argument/i.test(err instanceof Error ? err.message : String(err))) {
+      if (err instanceof McpInvalidParamsError) {
         const result = await page({ full: true })
         if (Array.isArray(result)) return result
         return (result as { adapters?: AdapterInfo[] }).adapters ?? []
       }
       throw err
+    }
+  }
+
+  /**
+   * {@link listAdapters} for callers that degrade gracefully — the failure
+   * reason rides along instead of being swallowed, so a truncated/failed
+   * listing can be surfaced to the user rather than rendered as "no
+   * adapters installed".
+   */
+  async listAdaptersWithStatus(): Promise<{ adapters: AdapterInfo[]; error?: string }> {
+    try {
+      return { adapters: await this.listAdapters() }
+    } catch (err) {
+      return { adapters: [], error: err instanceof Error ? err.message : String(err) }
     }
   }
 
