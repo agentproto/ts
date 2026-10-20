@@ -375,6 +375,8 @@ export {
 } from "./sandbox-checkpoint-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
+export { openPrForSession } from "./pr-open.js"
+export type { OpenPrForSessionInput, OpenPrForSessionOutcome } from "./pr-open.js"
 export { createActivityProjector } from "./activities.js"
 export type {
   ActivityProjector,

@@ -49,6 +49,7 @@ import {
   shellQuote,
   type SandboxExec,
 } from "./sandbox-workspace-remote.js"
+import { commitMessageWithSessionTrailer } from "./pr-provenance.js"
 import {
   ADAPTER_STORE_TIMEOUT_MS,
   archiveAdapterStore,
@@ -187,6 +188,9 @@ export function buildProbeCommand(
      *  mid-session (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — purely
      *  a human-readable breadcrumb, not parsed back. */
     turn?: number
+    /** Stamped as an `Agentproto-Session:` trailer on the snapshot commit —
+     *  the branch's authoring session, for PR authorship attribution. */
+    sessionId?: string
   },
 ): string {
   const snapshotUncommitted = opts?.snapshotUncommitted ?? true
@@ -200,7 +204,12 @@ export function buildProbeCommand(
     )
   }
   const turnSuffix = opts?.turn !== undefined ? ` turn ${opts.turn}` : ""
-  const message = shellQuote(`agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`)
+  const baseMessage = `agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`
+  const message = shellQuote(
+    opts?.sessionId
+      ? commitMessageWithSessionTrailer(baseMessage, opts.sessionId)
+      : baseMessage,
+  )
   const snapshot =
     `idx=$(mktemp -u) && { cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true; } && ` +
     `GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ` +
@@ -353,6 +362,13 @@ export interface RunSandboxDeliveryInput {
    *  `sandbox-adapter-store.ts`. An archive failure is recorded on
    *  {@link SandboxDeliveryRecord.adapterStore}, never thrown. */
   adapterStore?: { adapterSessionId: string; adapter?: string }
+  /** The authoring session id, stamped as an `Agentproto-Session:` commit
+   *  trailer on the snapshot commit this run creates — PR provenance
+   *  (pr-provenance.ts `collectBranchAuthors`) reads it back so a branch is
+   *  attributed to the session that wrote it even after the registry stops
+   *  knowing the box session. Pure provenance — not parsed back for
+   *  anything secret; the id is a pointer to the descriptor. */
+  sessionId?: string
 }
 
 function errorText(err: unknown): string {
@@ -485,7 +501,11 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
       // GIT_OPTIONAL_LOCKS=0: `git status` must not take the agent's
       // index.lock while it may be committing.
       exec({
-        command: buildProbeCommand(target, { snapshotUncommitted: input.snapshotUncommitted, turn: input.turn }),
+        command: buildProbeCommand(target, {
+          snapshotUncommitted: input.snapshotUncommitted,
+          turn: input.turn,
+          sessionId: input.sessionId,
+        }),
         env: { GIT_OPTIONAL_LOCKS: "0" },
         timeoutMs,
       }),
@@ -916,6 +936,10 @@ export function trackedSandboxDeliveryOpts(input: {
   /** Checkpoint-mode conversation-store passenger — see
    *  {@link RunSandboxDeliveryInput.adapterStore}. */
   adapterStore?: { adapterSessionId: string; adapter?: string }
+  /** The authoring session id, stamped as an `Agentproto-Session:` trailer
+   *  on the checkpoint commits this session's box makes — see
+   *  {@link RunSandboxDeliveryInput.sessionId}. */
+  sessionId?: string
   onDelivery?: (record: SandboxDeliveryRecord) => void
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
   onTargetChanged?: (target: SandboxDeliveryTarget) => void
@@ -933,6 +957,7 @@ export function trackedSandboxDeliveryOpts(input: {
     exec: input.exec,
     ...(input.readFile ? { readFile: input.readFile } : {}),
     outDir: input.outDir,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
   }
   const buildCheckpoint = () =>
     sandboxCheckpointOpts(

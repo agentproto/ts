@@ -481,6 +481,16 @@ describe("uncommitted-work snapshot", () => {
     expect(countOnly).toContain("head=$(git rev-parse HEAD)")
   })
 
+  it("stamps the authoring session id as an Agentproto-Session trailer on the snapshot commit", () => {
+    const cmd = buildProbeCommand(target, { sessionId: "sess_box1" })
+    // commit-tree takes the message as ONE argv (shellSingle-quoted): the
+    // trailer is a literal multi-line suffix, octal-safe through the shell.
+    expect(cmd).toContain("agentproto checkpoint: uncommitted work on wt/x")
+    expect(cmd).toContain("\n\nAgentproto-Session: sess_box1")
+    // No credit without a session id (older callers keep the old message).
+    expect(buildProbeCommand(target)).not.toContain("Agentproto-Session")
+  })
+
   it("checkpointBranchOf/buildCheckpointPushCommand take a custom refPrefix, defaulting to the legacy one", () => {
     expect(checkpointBranchOf("wt/x")).toBe("agentproto-checkpoint/wt/x")
     expect(checkpointBranchOf("wt/x", "custom/")).toBe("custom/wt/x")

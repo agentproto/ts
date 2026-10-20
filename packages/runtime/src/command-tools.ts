@@ -86,6 +86,7 @@ import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
+import { openPrForSession } from "./pr-open.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
@@ -520,6 +521,46 @@ export function registerCommandTools(
             text: JSON.stringify({ entries }),
           },
         ],
+      }
+    },
+  )
+
+  server.tool(
+    "pr_open",
+    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'.",
+    {
+      ...sessionRefSchema(z),
+      title: z.string().min(1).describe("PR title."),
+      body: z.string().describe("PR description body."),
+    },
+    async input => {
+      const ref = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
+      if (!ref.ok) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `session reference is ${ref.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const outcome = await openPrForSession({
+        sessionId: ref.id,
+        registry: opts.registry,
+        workspacePath: opts.workspace,
+        // The caller of pr_open is the OPENER (usually the orchestrator
+        // session relaying the box's request) — shown as such on the footer.
+        ...(opts.callerSessionId ? { openedBy: opts.callerSessionId } : {}),
+        title: input.title,
+        body: input.body,
+      })
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(outcome) }],
+        isError: !outcome.opened,
       }
     },
   )
