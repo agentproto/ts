@@ -144,19 +144,20 @@ function formatPostureForSpawn(
 }
 
 /**
- * Label for a fresh continuation: `foo` -> `foo (continued)` -> `foo (continued 2)` -> `foo (continued 3)`.
- * Strips any earlier suffix (including the legacy repeated `(continued) (continued)` form, and a
- * mixed `(continued 2) (continued)` tail) so the label never grows with each generation.
+ * Remove the RETIRED " (continued)" / " (continued N)" tail a fresh
+ * continuation may have stamped on a session's label or title under the old
+ * numbering scheme — including the legacy repeated `(continued) (continued)`
+ * form and a mixed `(continued 2) (continued)` tail. A continue-fresh no
+ * longer renames the session at all: it keeps EXACTLY the previous label and
+ * title (like a session that compacts in place); the continuation lineage is
+ * shown separately (`continuedFrom` / `continuationGeneration`). This helper
+ * only exists so existing sessions that already carry a suffix from the old
+ * scheme get their clean name back on their next continuation.
  */
-export function continuedLabel(label: string): string {
+export function stripContinuedSuffix(label: string): string {
   const tail = label.match(/(?:\s+\(continued(?:\s\d+)?\))+$/)
-  if (!tail) return `${label} (continued)`
-  let generation = 0
-  for (const part of tail[0].matchAll(/\(continued(?:\s(\d+))?\)/g)) {
-    generation = part[1] ? Number(part[1]) : generation + 1
-  }
-  const base = label.slice(0, label.length - tail[0].length)
-  return `${base} (continued ${generation + 1})`
+  if (!tail) return label
+  return label.slice(0, label.length - tail[0].length)
 }
 
 /**
@@ -230,8 +231,8 @@ export async function continueAgentSessionFresh(
     posture: formatPostureForSpawn(prev),
     contextProfile: prev.contextProfile,
     mcpServers: stripOwnCallerStamp(prev.mcpServers, prev.id),
-    label: prev.label ? continuedLabel(prev.label) : undefined,
-    title: prev.title ? continuedLabel(prev.title) : undefined,
+    label: prev.label ? stripContinuedSuffix(prev.label) : undefined,
+    title: prev.title ? stripContinuedSuffix(prev.title) : undefined,
     contextContinuity: opts.contextContinuity ?? prev.contextContinuity,
     prompt: renderCheckpointPrompt(checkpoint),
     // Preserve lineage so the fresh session nests under the same parent
@@ -265,6 +266,9 @@ export async function continueAgentSessionFresh(
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
   fresh.continuedFrom = prev.id
   fresh.checkpointId = checkpoint.checkpointId
+  // Lineage generation: `prev` (gen 0, absent) → 1, then +1 per hop. Persisted
+  // on the descriptor like `continuedFrom`, exposed wherever that is.
+  fresh.continuationGeneration = (prev.continuationGeneration ?? 0) + 1
   if (opts.stampHandoff !== false) {
     fresh.handoff = {
       fromHarness: prev.harness ?? prev.adapterSlug ?? "claude-code",

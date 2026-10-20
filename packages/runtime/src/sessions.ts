@@ -2459,6 +2459,13 @@ export interface SessionDescriptor {
    *  wake / direct resume of the same adapter conversation — also recorded as
    *  `resumedFrom`). Absent on a row that started a conversation. */
   continuedFrom?: string
+  /** Separate lineage from `continuedFrom` — how many continue-fresh /
+   *  revival hops this generation is away from the lineage's start: the
+   *  first continuation of a base session is 1, then +1 per further hop
+   *  (a base row has none). Persisted like `continuedFrom`, which always
+   *  carries the previous hop's id; a UI can render a "↻ N" badge or walk
+   *  the chain via `continuedFrom` without recomputing it. */
+  continuationGeneration?: number
   /** The row that continued this one (the inverse of `continuedFrom`); the
    *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
@@ -2802,6 +2809,9 @@ export interface SessionSummary {
   lane?: "agents" | "auto"
   priorCommandSessionId?: string
   continuedFrom?: string
+  /** Separate continue-fresh / revival lineage generation — see
+   *  `SessionDescriptor.continuationGeneration` (absent on a base row). */
+  continuationGeneration?: number
   continuedTo?: string
   /** See `SessionDescriptor.retiredAt` — with `continuedTo`/`archived`, lets a
    *  client tell a retired row from a merely dead one (and feature-detect the
@@ -2912,6 +2922,9 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     depth: desc.depth,
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,
+    ...(desc.continuationGeneration !== undefined
+      ? { continuationGeneration: desc.continuationGeneration }
+      : {}),
     continuedTo: desc.continuedTo,
     ...(desc.retiredAt ? { retiredAt: desc.retiredAt } : {}),
     permissionHold: desc.permissionHold,

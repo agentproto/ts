@@ -302,6 +302,9 @@ export interface SessionTreeNode {
    *  and its `handoff` field (full record only, via `session_list full:true`)
    *  for the harness the checkpoint moved from/to. */
   continuedFrom?: string
+  /** Separate continue-fresh / revival lineage generation — see
+   *  `SessionDescriptor.continuationGeneration` (absent on a base row). */
+  continuationGeneration?: number
   /** Workspace slug this session belongs to — copied from the descriptor.
    *  Absent when the descriptor has none. */
   workspaceSlug?: string
@@ -579,6 +582,9 @@ export function buildSessionTree(
     ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
     ...(s.origin ? { origin: s.origin } : {}),
     ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
+    ...(s.continuationGeneration !== undefined
+      ? { continuationGeneration: s.continuationGeneration }
+      : {}),
     ...(s.workspaceSlug ? { workspaceSlug: s.workspaceSlug } : {}),
     ...(s.worktreePath ? { worktreePath: s.worktreePath } : {}),
     isOrchestrator: orchestratorIds.has(s.id),
@@ -862,6 +868,9 @@ export interface SessionListCompactItem {
    *  and its `handoff` field (full record only) for the harness the
    *  checkpoint moved from/to. */
   continuedFrom?: string
+  /** Separate continue-fresh / revival lineage generation — see
+   *  `SessionDescriptor.continuationGeneration` (absent on a base row). */
+  continuationGeneration?: number
   // Usage scalars (small, and codified as session_list output by
   // session-usage-mcp.test.ts): cheap badge signals for list views.
   usageSource?: SessionDescriptor["usageSource"]
@@ -958,6 +967,9 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   depth: s.depth,
   parentSessionId: s.parentSessionId,
   continuedFrom: s.continuedFrom,
+  ...(s.continuationGeneration !== undefined
+    ? { continuationGeneration: s.continuationGeneration }
+    : {}),
   usageSource: s.usageSource,
   costUsd: s.costUsd,
   tokensIn: s.tokensIn,
@@ -3640,6 +3652,9 @@ export function registerSessionTools(
           ...(s.parentSessionId ? { parentSessionId: s.parentSessionId } : {}),
           ...(s.origin ? { origin: s.origin } : {}),
           ...(s.continuedFrom ? { continuedFrom: s.continuedFrom } : {}),
+          ...(s.continuationGeneration !== undefined
+            ? { continuationGeneration: s.continuationGeneration }
+            : {}),
           ...(s.workspaceSlug ? { workspaceSlug: s.workspaceSlug } : {}),
           ...(s.worktreePath ? { worktreePath: s.worktreePath } : {}),
           isOrchestrator: orchestratorIds.has(s.id),
