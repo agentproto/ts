@@ -66,6 +66,10 @@ import {
   type SessionGrouping,
 } from "./sessionsGroups.logic.js"
 import {
+  continuationBadgeFor,
+  continuationTooltipFor,
+} from "./sessionContinuation.logic.js"
+import {
   collapseResumeChains,
   descriptionFor,
   formatDuration,
@@ -187,6 +191,12 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     return this._hiddenCount
   }
 
+  /** Id → descriptor lookup over the LIVE store snapshot (not the filtered
+   *  view) — how the continuation badge/tooltip resolves a row's previous
+   *  session even when that predecessor sits outside the current filter. */
+  private readonly continuationLookup = (id: string): SessionDescriptor | undefined =>
+    this.store.sessions.find(s => s.id === id)
+
   /** True when this rebuild's `hiddenCount` includes machine-origin sessions
    *  hidden by the `agentproto.hideMachineSessions` default (as opposed to
    *  only an explicit operator filter) — registerSessionsView's view
@@ -279,9 +289,14 @@ export class SessionsTreeProvider implements vscode.TreeDataProvider<RootNode>, 
     // view" rather than a normal terminal session. A watched row leads its
     // description with the 👁 prefix so the eye is visible at a glance.
     const withWatch = isWatched ? `👁 ${baseDescription}` : baseDescription
-    item.description = withArchivedTag(withWatch, session.archived)
+    // Continuation lineage shown separately — the row keeps the previous
+    // session's label verbatim, so the `↻ N` segment is what says "this is a
+    // fresh continuation, N hops deep" (base rows show nothing).
+    const lookup = this.continuationLookup
+    const badge = continuationBadgeFor(session, lookup)
+    item.description = withArchivedTag(withWatch, session.archived) + (badge ? ` · ${badge}` : "")
     item.contextValue = treeContextValueFor(session, isWatched)
-    item.tooltip = buildTooltip(session, this.now, isWatched)
+    item.tooltip = buildTooltip(session, this.now, isWatched, lookup)
     // A live row's icon comes from the SHARED dashboard presence classifier
     // (running ◉ / tending ◌ / attention ? / quiet ○) — same source as the CLI
     // table and the webview, so a supervisor with busy executors shows the
@@ -399,13 +414,24 @@ function toThemeIcon(icon: SessionIcon): vscode.ThemeIcon {
   return new vscode.ThemeIcon(icon.id, new vscode.ThemeColor(themeColorId))
 }
 
-function buildTooltip(session: SessionDescriptor, now: number, watched?: boolean): vscode.MarkdownString {
+function buildTooltip(
+  session: SessionDescriptor,
+  now: number,
+  watched?: boolean,
+  continuationLookup?: (id: string) => SessionDescriptor | undefined,
+): vscode.MarkdownString {
   const md = new vscode.MarkdownString()
   md.appendMarkdown(`**${labelFor(session)}**\n\n`)
   if (watched) {
     // Same vocabulary as the webview's plain-👁 chip — one watch pattern
     // across both surfaces.
     md.appendMarkdown(`👁 watched — you get a notification when this session changes state\n\n`)
+  }
+  // The continuation lineage — "Continued 3 times — previous: <prev label or
+  // id>" — leads the metadata fields, since the row abridged it to `↻ N`.
+  const continuation = continuationTooltipFor(session, continuationLookup)
+  if (continuation) {
+    md.appendMarkdown(`- **lineage:** ${continuation}\n`)
   }
   for (const field of tooltipFieldsFor(session)) {
     md.appendMarkdown(`- **${field.label}:** ${field.value}\n`)
