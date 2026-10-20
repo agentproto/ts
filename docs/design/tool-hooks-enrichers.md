@@ -110,7 +110,8 @@ interface MatchSpec {
   args?: Record<string, unknown>   // subset match against the call args
   argsText?: string[]              // ALL of these substrings (case-insensitive)
                                   // must appear somewhere in the prompt-ish args
-  caller?: { role?: string; label?: string; sessionId?: string }
+  caller?: { sessionId?: string; id?: string; role?: string
+             label?: string; depth?: number; agentId?: string }
   result?: Record<string, unknown> // subset match against the tool result (post-call hooks only)
   workspace?: string               // workspace slug the call resolves to
 }
@@ -125,11 +126,34 @@ interface ToolHookEvent {
   on: string                       // resolved trigger name
   args: Record<string, unknown>
   result?: Record<string, unknown> // e.g. agent_start → { descriptor: { id, cwd, … } }
-  caller?: { sessionId?: string; role?: string; label?: string }
+  caller?: { sessionId?: string; id?: string; label?: string
+             role?: string; depth?: number; agentId?: string }
   workspaceSlug?: string
   ts: string
 }
 ```
+
+**How `caller` is filled (the only non-literal part of `match`).** No
+descriptor carries a role field today — `SessionDescriptor` has `depth`
+(`sessions.ts`, always recorded `?? 0`) and, for AIP-42 manifest callers, a
+`meta.agentId` / `meta.agentManifestPath` / `meta.agentRoleHash` triple
+written at spawn (`session-spawn.ts`). The dispatcher therefore derives
+`caller` in three steps, all reusing code that already exists:
+
+1. `sessionId`, `label`, `depth` — straight off the caller descriptor.
+2. `agentId` — `caller.meta.agentId`, the daemon-resolved AIP-42 manifest
+   identity ("trusted because the daemon resolved it at spawn"). This is the
+   field a Pygmalion-style allowlist should actually match on.
+3. `role` — resolved with `resolveRole(explicit, depth, cutoff, registry)`
+   (`role.ts`), the *same* function spawn uses: `explicit` comes from
+   `OrchestratorScope.role` when the call arrived through the orchestrator
+   sub-gateway ("the resolved role of the SPAWNING session"), otherwise
+   omitted so the depth-derived default applies. Because that same cutoff is
+   used at spawn (`session-spawn.ts` `resolveRole(input.role, childDepth,
+   …)`), hook-time role ≡ spawn-time role for every depth-derived session.
+   Explicitly-passed spawn roles that were never persisted cannot be
+   re-derived — for those, match `label` / `sessionId` / `agentId` instead
+   (phase-1 config does exactly this; §7).
 
 Matching is pure and synchronous (no I/O) — a `match` that throws is a config
 error, reported once at load, not at call time.
@@ -208,7 +232,7 @@ interface Budget {
       {
         "id": "prior-art-on-delegation",
         "on": "agent_start",
-        "match": { "caller": { "role": "supervisor" } },
+        "match": { "caller": { "role": "supervisor", "label": "pygmalion*" } },
         "run": "prior-art",
         "mode": "async",
         "delayMs": 4000,
@@ -406,7 +430,7 @@ sentence; must return `null` (not throw) on partial data; must fit
 | Phase | Config | Gate |
 |---|---|---|
 | **0 — land, off** | Code + `hooks.enabled: false` (absent ⇒ off, `titler` precedent) | `pnpm test`, `pnpm check-types` |
-| **1 — Pygmalion first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor" } }` **and** an explicit caller-label/allowlist narrowing to the Pygmalion brain's session, `run: prior-art`, `delayMs: 4000`, `deliver: append-to-session-queue`, `budget.maxLlmCalls: 0` (deterministic only) | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors |
+| **1 — Pygmalion first** | One hook: `on: "agent_start"`, `match: { caller: { role: "supervisor", label: "pygmalion*" } }` (role is the coarse gate resolved per §2.2; the label — or `caller.agentId` for the AIP-42 manifest session — is what actually narrows to the Pygmalion brain), `run: prior-art`, `delayMs: 4000`, `deliver: append-to-session-queue`, `budget.maxLlmCalls: 0` (deterministic only) | Watch a dozen delegations: block appears in `session_queue_list`, no change to tool latencies, zero `hook:*` errors |
 | **2 — cost opt-in** | Same hook with `maxLlmCalls: 1, model: "free"` | Free route present ⇒ summary line; absent ⇒ refusal logged, block unchanged |
 | **3 — breadth** | `task_create` → `attach-to-task-meta`; `agent_prompt` (re-prompts of an existing child) → queue append with dedup `"task"` | — |
 | **4 — other brains / other enrichers** | Per-workspace `HOOK.md`, `spec-echo`, `security-check` | — |
@@ -564,6 +588,8 @@ export interface ToolHook {
   budget?: Partial<Budget>
   enabled?: boolean
 }
+export interface CallerRef { sessionId?: string; id?: string; label?: string
+  role?: string; depth?: number; agentId?: string }
 export interface ToolHookEvent { on: string; args: Record<string, unknown>
   result?: Record<string, unknown>; caller?: CallerRef
   workspaceSlug?: string; ts: string }
