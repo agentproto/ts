@@ -551,6 +551,19 @@ export const computerSandboxProvider: SandboxProvider = {
     return booted
   },
 
+  /** Open a running box for a one-shot exec. Unlike `connect()`, this takes
+   *  no session slot and never probes, restarts or re-tokens the in-box
+   *  daemon, so it is safe while a session holds the box. */
+  async connectForExec(sandboxId: string, spec: SandboxSpec, _opts: SandboxBootOpts): Promise<BootedSandbox> {
+    const base = readComputerConfig(spec)
+    const clientConfig = resolveClientConfig(spec, base)
+    const config = applyDaemonRoute(base, clientConfig)
+    const client = new ComputerControllerClient(clientConfig)
+    const booted = await connectForExecOnClient(client, sandboxId, config)
+    probeClientConfigs.set(booted.sandboxId, clientConfig)
+    return booted
+  },
+
   /** Liveness against the controller — one cheap GET, no box contact.
    *  404 ⇒ `{alive:false}`; anything else propagates ("check failed",
    *  never "box died"). Uses the spec config captured at boot/connect,
@@ -637,16 +650,14 @@ async function bootOnClient(
   return wrapBox(client, sandboxId, spec, config, port, published, daemonToken)
 }
 
-async function connectOnClient(
+/** Resolve an existing computer to a running id (resuming when suspended and
+ *  following a resume-rename alias) plus its published ports. */
+async function resolveRunningComputer(
   client: ComputerControllerClient,
   sandboxId: string,
-  spec: SandboxSpec,
   config: ComputerSandboxConfig,
-  opts: SandboxBootOpts,
-): Promise<BootedSandbox> {
+): Promise<{ currentId: string; published: readonly PortPublish[] }> {
   const port = config.port ?? DEFAULT_PORT
-  const workspace = config.workspace ?? DEFAULT_WORKSPACE
-
   const status = await client.getComputer(sandboxId)
   if (status === null) throw new SandboxBoxGoneError(sandboxId)
 
@@ -665,6 +676,20 @@ async function connectOnClient(
   if (config.gatewayUrl?.includes("{hostPort}") && !published.some((p) => p.guest === port)) {
     published = await recoverPublishedPort(client, currentId, port, published)
   }
+  return { currentId, published }
+}
+
+async function connectOnClient(
+  client: ComputerControllerClient,
+  sandboxId: string,
+  spec: SandboxSpec,
+  config: ComputerSandboxConfig,
+  opts: SandboxBootOpts,
+): Promise<BootedSandbox> {
+  const port = config.port ?? DEFAULT_PORT
+  const workspace = config.workspace ?? DEFAULT_WORKSPACE
+
+  const { currentId, published } = await resolveRunningComputer(client, sandboxId, config)
 
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
@@ -691,6 +716,29 @@ async function connectOnClient(
     throw err
   }
   return wrapBox(client, currentId, spec, config, port, published, daemonToken)
+}
+
+/** Exec-only attach: same running-box resolution as `connect()`, then a
+ *  handle that shells in directly. No session slot, no daemon probe, no
+ *  token read, no attach request. */
+async function connectForExecOnClient(
+  client: ComputerControllerClient,
+  sandboxId: string,
+  config: ComputerSandboxConfig,
+): Promise<BootedSandbox> {
+  const port = config.port ?? DEFAULT_PORT
+  const { currentId, published } = await resolveRunningComputer(client, sandboxId, config)
+  const mcpUrl = `${boxUrl(currentId, port, config.gatewayUrl, published).replace(/\/+$/, "")}/mcp`
+  return {
+    mcpUrl,
+    sandboxId: currentId,
+    ...boxIo(client, currentId),
+    async stop(): Promise<void> {
+      throw new Error(
+        `computer "${currentId}": an exec-only handle does not own the box; use connect() to manage its lifecycle`,
+      )
+    },
+  }
 }
 
 /** The controller's GET may omit `ports` (the create response is the only
@@ -972,6 +1020,16 @@ async function wrapBox(
       // extend-timeout endpoint — nothing to renew. Kept as a no-op so a
       // host that re-arms on detach/activity still succeeds.
     },
+    ...boxIo(client, id),
+  }
+}
+
+/** In-box command/file I/O shared by session-owning and exec-only handles. */
+function boxIo(
+  client: ComputerControllerClient,
+  id: string,
+): Pick<BootedSandbox, "exec" | "readFile" | "writeFile"> {
+  return {
     async exec(execOpts: SandboxExecOpts): Promise<SandboxExecResult> {
       const startedAt = Date.now()
       const timeoutSec = Math.max(

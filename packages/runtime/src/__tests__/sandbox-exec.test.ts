@@ -84,6 +84,7 @@ function fakeBooted(opts: {
 /** Fake `SandboxProviderHandle` wiring boot/connect to the procured fakes above. */
 function fakeHandle(opts: {
   connect?: (id: string, spec: SandboxSpec, bootOpts: SandboxBootOpts) => Promise<BootedSandbox>
+  connectForExec?: (id: string, spec: SandboxSpec, bootOpts: SandboxBootOpts) => Promise<BootedSandbox>
   boot?: (spec: SandboxSpec, bootOpts: SandboxBootOpts) => Promise<BootedSandbox>
   omitConnect?: boolean
 }): SandboxProviderHandle {
@@ -105,6 +106,9 @@ function fakeHandle(opts: {
                 throw new Error("should not connect in this test")
               }) as unknown as SandboxProviderHandle["provider"]["connect"]),
           }),
+      ...(opts.connectForExec
+        ? { connectForExec: opts.connectForExec as SandboxProviderHandle["provider"]["connectForExec"] }
+        : {}),
     },
     async check() {
       return true
@@ -186,6 +190,32 @@ describe("execSandboxCommand", () => {
       expect(result.result.exitCode).toBe(7)
       expect(result.result.sandboxId).toBe("sbx_existing")
     }
+  })
+
+  it("prefers the exec-only provider path over connect() when the provider offers one", async () => {
+    const procured = fakeBooted({
+      sandboxId: "sbx_existing",
+      exec: async () => ({ exitCode: 0, stdout: "ok\n", stderr: "", durationMs: 1 }),
+    })
+    const connect = vi.fn(async () => {
+      throw new Error("connect must not run for an exec-only call")
+    })
+    const connectForExec = vi.fn(async (_id: string, _spec: SandboxSpec, _opts: SandboxBootOpts) => procured.booted)
+    const handle = fakeHandle({ connect, connectForExec })
+
+    const result = await execSandboxCommand(
+      { provider: "computer", sandboxId: "sbx_existing", command: "true" },
+      { resolveSandboxProvider: resolverFor(handle) },
+    )
+
+    expect(connectForExec).toHaveBeenCalledWith(
+      "sbx_existing",
+      { provider: "computer", config: {} },
+      expect.anything(),
+    )
+    expect(connect).not.toHaveBeenCalled()
+    expect(procured.stop).not.toHaveBeenCalled()
+    expect(result.ok).toBe(true)
   })
 
   it("forwards cwd, env and timeoutMs to the box's exec", async () => {
