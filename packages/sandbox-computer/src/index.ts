@@ -12,6 +12,8 @@ export { computerSandboxProvider, DEFAULT_PORT, DEFAULT_TEMPLATE, DEFAULT_TENANT
 export { boxUrl, buildHealthCommand, buildServeCommand, buildWaitHealthyCommand, bashArgv, resolveAlias, shQuote } from "./provider.js"
 export { ComputerApiError, ComputerControllerClient, redactSecret } from "./client.js"
 export type { ComputerClientConfig, CreateComputerInput } from "./client.js"
+export { ComputerSandboxError, isComputerSandboxError } from "./errors.js"
+export type { ComputerSandboxErrorCode, ComputerSandboxErrorDetails } from "./errors.js"
 
 /**
  * Re-exported from `@agentproto/computer-api`, the versioned public

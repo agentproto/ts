@@ -44,7 +44,8 @@
       "properties": {
         "timeout_ms": { "type": "integer", "minimum": 1 },
         "memory_mb": { "type": "integer", "minimum": 1 },
-        "cpu_ms": { "type": "integer", "minimum": 1 }
+        "cpu_ms": { "type": "integer", "minimum": 1 },
+        "cpus": { "type": "number", "minimum": 0.1, "description": "vCPUs, may be fractional (AIP-36 v1.3). Provider config-level cpus maps onto this." }
       },
       "description": "Resource caps per command."
     },
@@ -74,6 +75,12 @@
           "items": { "type": "string" },
           "default": [],
           "description": "Hostnames the sandbox MAY reach. Empty / missing = no egress."
+        },
+        "egressIp": {
+          "type": "string",
+          "pattern": "^(shared|auto|dedicated|[a-z0-9]{1,8})$",
+          "default": "shared",
+          "description": "Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable."
         }
       }
     },

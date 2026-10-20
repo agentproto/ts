@@ -68,6 +68,10 @@ export interface SandboxDefinition {
     timeout_ms?: number
     memory_mb?: number
     cpu_ms?: number
+    /**
+     * vCPUs, may be fractional (AIP-36 v1.3). Provider config-level cpus maps onto this.
+     */
+    cpus?: number
   }
   env?: {
     auth?: AuthBlock
@@ -92,6 +96,10 @@ export interface SandboxDefinition {
      * Hostnames the sandbox MAY reach. Empty / missing = no egress.
      */
     egress?: string[]
+    /**
+     * Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable.
+     */
+    egressIp?: string
   }
   /**
    * Auto-join wiring: forwards a host env var (holding a join-token URL) into the sandbox by the same name, so the box can register itself with the daemon that minted the token.

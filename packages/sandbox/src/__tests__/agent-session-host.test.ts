@@ -303,6 +303,31 @@ describe("createSandboxAgentSessionHost", () => {
     expect(host.ports).toEqual({ 3210: "https://sbx-abc-3210.e2b.dev" })
   })
 
+  it("forwards egressIp from the booted sandbox when present, including an explicit null", async () => {
+    const egressIp = { id: "slot-a", publicIp: "203.0.113.10" }
+    const provider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_123",
+        stop: vi.fn(async () => {}),
+        egressIp,
+      })),
+    })
+    const host = await createSandboxAgentSessionHost({ provider, spec, secrets: { slugs: [] } })
+    expect(host.egressIp).toEqual(egressIp)
+
+    const nullProvider = fakeProvider({
+      boot: vi.fn(async () => ({
+        mcpUrl: "https://sandbox-123.e2b.dev/mcp",
+        sandboxId: "sbx_456",
+        stop: vi.fn(async () => {}),
+        egressIp: null,
+      })),
+    })
+    const nullHost = await createSandboxAgentSessionHost({ provider: nullProvider, spec, secrets: { slugs: [] } })
+    expect(nullHost.egressIp).toBeNull()
+  })
+
   it("forwards extendTimeout() to the booted sandbox when present", async () => {
     process.env[FAKE_SLUG] = "or-key-123"
     const extendTimeoutFn = vi.fn(async (_ms: number) => {})

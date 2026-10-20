@@ -8,12 +8,17 @@
 import type { z } from "zod"
 import {
   attachRequestSchema,
+  capacityResponseSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
+  egressErrorResponseSchema,
+  egressIpSchema,
+  egressPoolResponseSchema,
   errorResponseSchema,
   execRequestSchema,
   execResponseSchema,
+  hostCapacityErrorResponseSchema,
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
@@ -51,6 +56,26 @@ export const fixtures: Fixture[] = [
       egress: { allow: [{ host: "example.com", port: 443 }] },
     },
   ),
+  create("createComputerRequest: egressIp keywords", createComputerRequestSchema, true, {
+    template: "workstation",
+    tenantId: "acme",
+    egressIp: "auto",
+  }),
+  create("createComputerRequest: egressIp pool slot", createComputerRequestSchema, true, {
+    template: "workstation",
+    tenantId: "acme",
+    egressIp: "slot1",
+  }),
+  create("createComputerRequest: invalid egressIp", createComputerRequestSchema, false, {
+    template: "workstation",
+    tenantId: "acme",
+    egressIp: "NOT-VALID",
+  }),
+  create("createComputerRequest: egressIp too long", createComputerRequestSchema, false, {
+    template: "workstation",
+    tenantId: "acme",
+    egressIp: "toolongslot",
+  }),
   create(
     "createComputerRequest: unknown extra fields tolerated",
     createComputerRequestSchema,
@@ -85,6 +110,24 @@ export const fixtures: Fixture[] = [
       createdAt: "2026-01-01T00:00:00Z",
     },
   ),
+  create("createComputerResponse: egressIp", createComputerResponseSchema, true, {
+    id: "cmp-001",
+    template: "workstation",
+    state: "running",
+    egressIp: { id: "slot-a", publicIp: "203.0.113.10" },
+  }),
+  create("createComputerResponse: null egressIp", createComputerResponseSchema, true, {
+    id: "cmp-001",
+    template: "workstation",
+    state: "running",
+    egressIp: null,
+  }),
+  create("createComputerResponse: malformed egressIp", createComputerResponseSchema, false, {
+    id: "cmp-001",
+    template: "workstation",
+    state: "running",
+    egressIp: { id: "slot-a" },
+  }),
   create("createComputerResponse: missing id", createComputerResponseSchema, false, {
     template: "workstation",
     state: "running",
@@ -113,6 +156,21 @@ export const fixtures: Fixture[] = [
     true,
     { name: "cmp-001", state: "hibernating-with-bees" },
   ),
+  create("computerStatus: egressIp", computerStatusSchema, true, {
+    name: "cmp-001",
+    state: "running",
+    egressIp: { id: "slot-a", publicIp: "203.0.113.10" },
+  }),
+  create("computerStatus: null egressIp", computerStatusSchema, true, {
+    name: "cmp-001",
+    state: "running",
+    egressIp: null,
+  }),
+  create("computerStatus: malformed egressIp", computerStatusSchema, false, {
+    name: "cmp-001",
+    state: "running",
+    egressIp: { publicIp: 203 },
+  }),
   create("computerStatus: missing name", computerStatusSchema, false, { state: "running" }),
   create("computerStatus: ports with non-integer host", computerStatusSchema, false, {
     name: "cmp-001",
@@ -165,6 +223,67 @@ export const fixtures: Fixture[] = [
   create("attachRequest: holder not a string", attachRequestSchema, false, { holder: 42 }),
   create("attachRequest: overlong holder rejected", attachRequestSchema, false, {
     holder: "x".repeat(129),
+  }),
+  create("egressIp", egressIpSchema, true, { id: "slot-a", publicIp: "203.0.113.10" }),
+  create("egressIp: missing publicIp", egressIpSchema, false, { id: "slot-a" }),
+  create("egressErrorResponse: pool disabled", egressErrorResponseSchema, true, {
+    error: "egress-pool-disabled",
+  }),
+  create("egressErrorResponse: pool unknown", egressErrorResponseSchema, true, {
+    error: "egress-pool-unknown",
+  }),
+  create("egressErrorResponse: pool exhausted", egressErrorResponseSchema, true, {
+    error: "egress-pool-exhausted",
+  }),
+  create("egressErrorResponse: slot dedicated", egressErrorResponseSchema, true, {
+    error: "egress-slot-dedicated",
+  }),
+  create("egressErrorResponse: unknown code", egressErrorResponseSchema, false, {
+    error: "egress-pool-melted",
+  }),
+  create("hostCapacityErrorResponse", hostCapacityErrorResponseSchema, true, {
+    error: "host-capacity",
+    resource: "memory",
+    requested: 8192,
+    available: 4096,
+  }),
+  create("hostCapacityErrorResponse: missing available", hostCapacityErrorResponseSchema, false, {
+    error: "host-capacity",
+    resource: "memory",
+    requested: 8192,
+  }),
+  create("hostCapacityErrorResponse: wrong error code", hostCapacityErrorResponseSchema, false, {
+    error: "egress-pool-unknown",
+    resource: "cpus",
+    requested: 2,
+    available: 1,
+  }),
+  create("capacityResponse", capacityResponseSchema, true, {
+    memoryMiB: { budget: 65536, committed: 16384, available: 49152 },
+    cpus: { budget: 16, committed: 4, available: 12 },
+    computers: 3,
+  }),
+  create("capacityResponse: missing computers", capacityResponseSchema, false, {
+    memoryMiB: { budget: 65536, committed: 16384, available: 49152 },
+    cpus: { budget: 16, committed: 4, available: 12 },
+  }),
+  create("capacityResponse: fractional computers", capacityResponseSchema, false, {
+    memoryMiB: { budget: 65536, committed: 16384, available: 49152 },
+    cpus: { budget: 16, committed: 4, available: 12 },
+    computers: 1.5,
+  }),
+  create("egressPoolResponse", egressPoolResponseSchema, true, [
+    { id: "slot-a", sourceIp: "198.51.100.2", publicIp: "203.0.113.10", computers: 2 },
+  ]),
+  create("egressPoolResponse: empty pool", egressPoolResponseSchema, true, []),
+  create("egressPoolResponse: missing publicIp", egressPoolResponseSchema, false, [
+    { id: "slot-a", sourceIp: "198.51.100.2", computers: 2 },
+  ]),
+  create("egressPoolResponse: not an array", egressPoolResponseSchema, false, {
+    id: "slot-a",
+    sourceIp: "198.51.100.2",
+    publicIp: "203.0.113.10",
+    computers: 2,
   }),
   create(
     "errorResponse",

@@ -37,6 +37,11 @@ export interface FakeControllerOptions {
   createStatus?: number
   createError?: string
   execStatus?: number
+  /** Fail every GET /v1/computers/:id with this status/body (capacity tests). */
+  statusStatus?: number
+  statusError?: string
+  statusErrorExtra?: Record<string, unknown>
+  statusRetryAfter?: string
   statusNotFound?: boolean
   /** Simulate suspend: state stops being "running". */
   onSuspend?: () => void
@@ -52,6 +57,15 @@ export interface FakeControllerOptions {
   detachStatus?: number
   /** Provide a custom exec outcome for this invocation */
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
+  /** `egressIp` reported on create and GET. Omitted from responses when undefined. */
+  egressIp?: { id: string; publicIp: string } | null
+  /** `egressIp` reported by GET for a computer created by resume (models a
+   *  resumed row that carries a different address than the suspended one). */
+  egressIpAfterResume?: { id: string; publicIp: string } | null
+  /** Extra top-level fields on a create error body (e.g. host-capacity details). */
+  createErrorExtra?: Record<string, unknown>
+  /** `Retry-After` header sent with a create error. */
+  createRetryAfter?: string
 }
 
 /** Everything recorded, for assertions (no secrets captured in plain logs). */
@@ -80,6 +94,8 @@ export class FakeController {
   /** Holders currently occupying a session slot, per computer. */
   readonly sessionHolders = new Map<string, Set<string>>()
   readonly fileSystem = new Map<string, string>()
+  /** Per-computer egress overrides; absent means `options.egressIp`. */
+  readonly egressIpByComputer = new Map<string, { id: string; publicIp: string } | null>()
   // Process-wide so ids never repeat across instances: the provider keeps
   // per-id bookkeeping at module level.
   private static idCounter = 1
@@ -177,8 +193,9 @@ export class FakeController {
 
     if (url.pathname === "/v1/computers" && req.method === "POST") {
       if (this.options.createStatus) {
-        const body = { error: this.options.createError ?? "failed" }
+        const body = { error: this.options.createError ?? "failed", ...this.options.createErrorExtra }
         assertContract(errorResponseSchema, body)
+        if (this.options.createRetryAfter !== undefined) res.setHeader("Retry-After", this.options.createRetryAfter)
         return reply(res, this.options.createStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
@@ -189,7 +206,13 @@ export class FakeController {
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
       this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
-      const responseBody = { id, template: parsed.template, state, ports: this.options.publishedPorts ?? [] }
+      const responseBody = {
+        id,
+        template: parsed.template,
+        state,
+        ports: this.options.publishedPorts ?? [],
+        ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
+      }
       assertContract(createComputerResponseSchema, responseBody)
       return reply(res, 201, responseBody)
     }
@@ -199,8 +222,25 @@ export class FakeController {
     const id = decodeURIComponent(computerMatch[1] as string)
 
     if (req.method === "GET" && url.pathname === `/v1/computers/${productIdPath(computerMatch[1] as string)}`) {
+      if (this.options.statusStatus) {
+        const body = { error: this.options.statusError ?? "failed", ...this.options.statusErrorExtra }
+        assertContract(errorResponseSchema, body)
+        if (this.options.statusRetryAfter !== undefined) res.setHeader("Retry-After", this.options.statusRetryAfter)
+        return reply(res, this.options.statusStatus, body)
+      }
       if (this.options.statusNotFound || !this.states.has(id)) return reply(res, 404, { error: "not found" })
-      const responseBody = { name: id, state: this.states.get(id), ...(this.options.getOmitsPorts ? {} : { ports: this.options.publishedPorts ?? [] }), egress: [], pinsStale: false, pinsTtlSec: 21600 }
+      const egressIp = this.egressIpByComputer.has(id)
+        ? this.egressIpByComputer.get(id)
+        : this.options.egressIp
+      const responseBody = {
+        name: id,
+        state: this.states.get(id),
+        ...(this.options.getOmitsPorts ? {} : { ports: this.options.publishedPorts ?? [] }),
+        ...(egressIp !== undefined ? { egressIp } : {}),
+        egress: [],
+        pinsStale: false,
+        pinsTtlSec: 21600,
+      }
       assertContract(computerStatusSchema, responseBody)
       return reply(res, 200, responseBody)
     }
@@ -282,6 +322,9 @@ export class FakeController {
       const newId = `cmp-restored-${(this.nextId++).toString().padStart(3, "0")}`
       this.states.set(newId, "running")
       this.states.delete(id)
+      if (this.options.egressIpAfterResume !== undefined) {
+        this.egressIpByComputer.set(newId, this.options.egressIpAfterResume)
+      }
       const resumeBody = { ok: true, id: newId, state: "running" }
       assertContract(resumeResponseSchema, resumeBody)
       return reply(res, 201, resumeBody)

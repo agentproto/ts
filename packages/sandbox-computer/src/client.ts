@@ -66,13 +66,38 @@ export class ComputerApiError extends Error {
   readonly status: number
   /** Controller-provided machine error string, when it returned JSON. */
   readonly code: string | undefined
+  /** `Retry-After` response header, converted to milliseconds. */
+  readonly retryAfterMs: number | undefined
+  /** `host-capacity` error details, when the controller supplied them. */
+  readonly resource: string | undefined
+  readonly requested: number | undefined
+  readonly available: number | undefined
 
-  constructor(status: number, message: string, code?: string) {
+  constructor(
+    status: number,
+    message: string,
+    code?: string,
+    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number } = {},
+  ) {
     super(message)
     this.name = "ComputerApiError"
     this.status = status
     this.code = code
+    this.retryAfterMs = details.retryAfterMs
+    this.resource = details.resource
+    this.requested = details.requested
+    this.available = details.available
   }
+}
+
+/** Parse a `Retry-After` header (delta-seconds or HTTP-date) to ms. */
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (value === null || value.trim() === "") return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000)
+  const date = Date.parse(value)
+  if (Number.isFinite(date)) return Math.max(0, date - Date.now())
+  return undefined
 }
 
 /** Remove any occurrence of `secret` from `text` (never log the token). */
@@ -100,6 +125,9 @@ export interface CreateComputerInput {
   env?: Record<string, string>
   /** Deny-by-default egress allowlist; a computer created without one has no DNS. */
   egress?: { allow: Array<{ host: string; port: number }> }
+  /** Egress IP selection: `"auto"`, `"dedicated"`, or a pool slot id. Omitted
+   *  for the default `"shared"` so older controllers keep working. */
+  egressIp?: string
 }
 
 export class ComputerControllerClient {
@@ -171,10 +199,21 @@ export class ComputerControllerClient {
       const detail = parsedError.success && parsedError.data.detail !== undefined
         ? ` — ${JSON.stringify(parsedError.data.detail).slice(0, 500)}`
         : ""
+      const fields = parsedError.success ? (parsedError.data as Record<string, unknown>) : undefined
+      const numberField = (name: string): number | undefined => {
+        const value = fields?.[name]
+        return typeof value === "number" && Number.isFinite(value) ? value : undefined
+      }
       throw new ComputerApiError(
         res.status,
         redactSecret(`computer controller ${res.status} on ${method} ${path}: ${code ?? res.statusText}${detail}`, this.secrets()),
         code,
+        {
+          retryAfterMs: parseRetryAfterMs(res.headers.get("retry-after")),
+          resource: typeof fields?.resource === "string" ? fields.resource : undefined,
+          requested: numberField("requested"),
+          available: numberField("available"),
+        },
       )
     }
 
