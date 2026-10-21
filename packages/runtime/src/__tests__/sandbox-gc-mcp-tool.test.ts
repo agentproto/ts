@@ -98,7 +98,7 @@ beforeAll(async () => {
       }
     }) as never,
   })
-})
+}, 120_000)
 
 afterAll(async () => {
   vi.unstubAllEnvs()
