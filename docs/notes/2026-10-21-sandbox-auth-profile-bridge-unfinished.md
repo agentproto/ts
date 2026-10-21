@@ -5,6 +5,15 @@ Branch `fix/e2b-auth-profile-bridge` landed defect B only
 time box (2026-10-21) as anything other than a half-implement, which the
 mission forbids for C and which would be unsafe for A (auth surface).
 
+## Defect B caveat — version skew
+
+The host-composed supervisor prompt promises the box-side delegation surface.
+A box daemon whose `serve` predates the orchestrator sub-gateway refuses the
+forwarded `orchestrator` request (`orchestrator_not_enabled`, surfaced as
+`sandbox_proxy_failed`) — fail-closed, but the host prompt has already
+promised the surface. Boxes install `@agentproto/cli@<cliVersion pin>`; keep
+that pin >= the controller runtime when orchestrating inside boxes.
+
 ## Defect A — selective sandbox auth-profile bridge (NOT implemented)
 
 Anchor points (surveyed, none edited):
