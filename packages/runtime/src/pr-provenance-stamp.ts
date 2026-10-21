@@ -198,11 +198,12 @@ export async function stampFooterOnPr(input: {
     let authors = input.authors
     if (!authors) {
       // `Agentproto-Session:` trailers keep a box branch attributable after
-      // the registry forgot its session. Two sources: the PR's own commits,
-      // and the tip of the `agentproto-checkpoint/<branch>` snapshot (the only
-      // place sandbox delivery writes the trailer - it never lands on the work
-      // branch). Read on every stamp, legacy opener path included. Best-effort:
-      // a failed read only loses that source.
+      // the registry forgot its session. Two sources: the PR's own commits
+      // (teardown delivery appends a trailer-bearing provenance commit to the
+      // pushed work branch - `buildProvenanceStampCommand`), and the tip of the
+      // `agentproto-checkpoint/<branch>` snapshot (carries the trailer while
+      // uncommitted work is still parked there). Read on every stamp, legacy
+      // opener path included. Best-effort: a failed read only loses that source.
       const trailerIds = new Set<string>()
       const commits = await run(
         ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],

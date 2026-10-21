@@ -383,6 +383,34 @@ export function buildBundleCommand(
   )
 }
 
+/** The empty provenance commit's subject (see {@link buildProvenanceStampCommand}). */
+export const PROVENANCE_COMMIT_SUBJECT = "agentproto: delivered work"
+
+/**
+ * Stamp the authoring session onto the DELIVERED work branch itself: append
+ * an empty commit (same tree as the tip, parent: the tip) whose message
+ * carries the `Agentproto-Session:` trailer. The checkpoint ref is deleted
+ * once the checkout is clean and the branch is pushed, so it can't be the
+ * only carrier of the trailer - a PR opened after a clean teardown reads the
+ * trailer off the branch's own commits (`pr-provenance-stamp.ts`).
+ *
+ * Built with plumbing (`commit-tree` + `update-ref` with the old value
+ * guarded) so the agent's index and worktree are never touched, and a no-op
+ * when the tip already carries this session's trailer. Run for the teardown
+ * delivery only - the agent is already killed, so nothing races the ref.
+ */
+export function buildProvenanceStampCommand(target: SandboxDeliveryTarget, sessionId: string): string {
+  const ref = shellQuote(`refs/heads/${target.branch}`)
+  const trailer = shellQuote(`Agentproto-Session: ${sessionId}`)
+  const message = shellQuote(commitMessageWithSessionTrailer(PROVENANCE_COMMIT_SUBJECT, sessionId))
+  return (
+    `cd ${shellQuote(target.checkoutDir)} && ref=${ref} && ` +
+    `{ git log -1 --format=%B "$ref" | grep -qxF ${trailer} || ` +
+    `{ old=$(git rev-parse "$ref") && new=$(git commit-tree "$ref^{tree}" -p "$old" -m ${message}) && ` +
+    `git update-ref "$ref" "$new" "$old"; }; }`
+  )
+}
+
 /** Push only a branch that actually has commits to publish. */
 export function shouldPush(probe: DeliveryProbe): boolean {
   return probe.ahead > 0
@@ -636,6 +664,19 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   if (!shouldPush(probe)) {
     record.push = { status: "skipped", detail: "no commits ahead of base" }
   } else {
+    // Teardown only: carry the authoring-session trailer on the pushed work
+    // branch (the checkpoint ref that also carries it is deleted below on a
+    // clean run). Best-effort - a failure only loses the attribution hint.
+    if (!checkpointMode && input.sessionId) {
+      try {
+        await withinDeadline(deadlineAt, PROBE_TIMEOUT_MS, (timeoutMs) =>
+          exec({ command: buildProvenanceStampCommand(target, input.sessionId!), timeoutMs }),
+          input.readFile ? bundleReserveMs : 0,
+        )
+      } catch {
+        // best-effort
+      }
+    }
     record.push = await pushBranch(exec, target, deadlineAt, input.readFile ? bundleReserveMs : 0)
   }
 

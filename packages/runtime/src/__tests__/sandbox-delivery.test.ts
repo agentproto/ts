@@ -8,9 +8,12 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnSync } from "node:child_process"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
+import { sessionIdsFromTrailers } from "../pr-provenance.js"
 import {
+  buildProvenanceStampCommand,
   DELIVERY_BUNDLE_FILE,
   DELIVERY_RECORD_FILE,
   buildBundleCommand,
@@ -522,6 +525,95 @@ describe("uncommitted-work snapshot", () => {
     expect(record.checkpoint).toMatchObject({ status: "pushed", ref: "custom/wt/x" })
     const push = box.commands.find(c => c.command.includes("refs/agentproto/checkpoint:"))?.command ?? ""
     expect(push).toContain("refs/heads/custom/wt/x")
+  })
+})
+
+describe("work-branch provenance stamp", () => {
+  let outDir: string
+  beforeEach(async () => {
+    outDir = await mkdtemp(join(tmpdir(), "agentproto-provenance-stamp-"))
+  })
+  afterEach(async () => {
+    await rm(outDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  })
+
+  function cleanBox(opts: { ahead: number }) {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) return result(0, `ahead=${opts.ahead}\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes("commit-tree")) return result(0)
+      if (o.command.includes(" push ")) return result(0)
+      return result(1, "", "unexpected command")
+    }
+    return { exec, commands }
+  }
+
+  it("teardown with a session id stamps the trailer before pushing the work branch", async () => {
+    const box = cleanBox({ ahead: 2 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+    const stampAt = box.commands.findIndex(c => c.command.includes("commit-tree"))
+    const pushAt = box.commands.findIndex(c => c.command.includes(" push ") && !c.command.includes("--delete"))
+    expect(stampAt).toBeGreaterThan(-1)
+    expect(stampAt).toBeLessThan(pushAt)
+    expect(box.commands[stampAt]!.command).toContain("Agentproto-Session: sess_box1")
+  })
+
+  it("never stamps without a session id, with nothing ahead, or in checkpoint mode", async () => {
+    for (const run of [
+      { ahead: 2, input: {} },
+      { ahead: 0, input: { sessionId: "sess_box1" } },
+      { ahead: 2, input: { sessionId: "sess_box1", mode: "checkpoint" as const } },
+    ]) {
+      const box = cleanBox({ ahead: run.ahead })
+      await runSandboxDelivery({ exec: box.exec, target, outDir, ...run.input })
+      expect(box.commands.some(c => c.command.includes("commit-tree"))).toBe(false)
+    }
+  })
+
+  it("a failing stamp never blocks the push", async () => {
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes("commit-tree")) throw new Error("box hiccup")
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+  })
+
+  it("producer/consumer: the stamp command's commit is read back by the PR trailer reader, idempotently", () => {
+    const git = (cwd: string, ...args: string[]) => {
+      const r = spawnSync("git", args, { cwd, encoding: "utf8" })
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`)
+      return r.stdout
+    }
+    const repo = join(outDir, "repo")
+    spawnSync("mkdir", ["-p", repo])
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    git(repo, "config", "commit.gpgsign", "false")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    const baseSha = git(repo, "rev-parse", "HEAD").trim()
+    git(repo, "checkout", "-q", "-b", "wt/x")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "real work commit")
+    const tgt: SandboxDeliveryTarget = { checkoutDir: repo, branch: "wt/x", baseSha }
+
+    const before = git(repo, "log", "--format=%B", "wt/x")
+    expect(sessionIdsFromTrailers(before)).toEqual([])
+
+    const sh = (command: string) => spawnSync("sh", ["-c", command], { encoding: "utf8" })
+    const first = sh(buildProvenanceStampCommand(tgt, "sess_box1"))
+    expect(first.status).toBe(0)
+    expect(git(repo, "rev-list", "--count", `${baseSha}..wt/x`).trim()).toBe("2")
+    expect(sessionIdsFromTrailers(git(repo, "log", "--format=%B", "wt/x"))).toEqual(["sess_box1"])
+
+    // Re-running adds nothing (the tip already carries this session's trailer).
+    expect(sh(buildProvenanceStampCommand(tgt, "sess_box1")).status).toBe(0)
+    expect(git(repo, "rev-list", "--count", `${baseSha}..wt/x`).trim()).toBe("2")
   })
 })
 
