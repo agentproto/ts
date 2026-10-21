@@ -2033,7 +2033,10 @@ export function registerSessionTools(
     "session_context_status",
     "Return the context-continuity status for one session — current context " +
       "percentage, resolved policy thresholds, and the next automatic action " +
-      "(warn / compact / continue-fresh / hard-stop).",
+      "(warn / compact / continue-fresh / hard-stop). Also reports the " +
+      "ABSOLUTE autocompact threshold (`autoCompactAtTokens`, tokens — " +
+      "window-independent, unlike the percentages) and whether the session " +
+      "is currently above it (`autoCompactAboveThreshold`).",
     {
       ...sessionRefSchema(z),
     },
