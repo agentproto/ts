@@ -139,7 +139,7 @@ import { SessionsRegistryAgentHost } from "../sessions-registry-agent-host.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
-import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
+import { CALLER_SESSION_ID_HEADER, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import type {
   WorktreeIsolationMode,
   WorktreeProvisioner,
@@ -714,7 +714,12 @@ describe("spawnAgentSession", () => {
     // session.
     const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}`,
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+      },
     ])
   })
 
@@ -778,7 +783,12 @@ describe("spawnAgentSession", () => {
     expect(result.ok).toBe(true)
     const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}`,
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+      },
     ])
   })
 
@@ -839,7 +849,12 @@ describe("spawnAgentSession", () => {
     expect(result.ok).toBe(true)
     const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?callerSessionId=${ownId}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonMcpUrl}?callerSessionId=${ownId}`,
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+      },
     ])
   })
 
@@ -1661,6 +1676,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
+          headers: { [CALLER_SESSION_ID_HEADER]: result.descriptor.id },
         },
       ])
     }
@@ -1684,6 +1700,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
+          headers: { [CALLER_SESSION_ID_HEADER]: result.descriptor.id },
         },
       ])
     }
@@ -1704,6 +1721,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?deferred=0&callerSessionId=${result.descriptor.id}`,
+          headers: { [CALLER_SESSION_ID_HEADER]: result.descriptor.id },
         },
       ])
     }
@@ -1725,6 +1743,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${result.descriptor.id}`,
+          headers: { [CALLER_SESSION_ID_HEADER]: result.descriptor.id },
         },
       ])
     }
@@ -1746,6 +1765,7 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
           name: "agentproto",
           transport: "http",
           ref: `http://127.0.0.1:18790/mcp?deferred=1&callerSessionId=${result.descriptor.id}`,
+          headers: { [CALLER_SESSION_ID_HEADER]: result.descriptor.id },
         },
       ])
     }

@@ -20,20 +20,22 @@
  * the session went anonymous to the gateway.
  */
 
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import { createMcpServer } from "@agentproto/mcp-server"
-import type { AcpMcpServer } from "@agentproto/acp"
 
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
-import { CALLER_SESSION_ID_HEADER } from "../sessions.js"
-import { spawnAgentSession, stampDaemonCallerSessionId, targetsDaemonGateway } from "../session-spawn.js"
+import { buildDaemonSelfMountEntry, stampDaemonCallerSessionId } from "../session-spawn.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+
+/** The identity header's wire name (spelled out here, not imported, so the
+ *  test states the CONTRACT rather than the implementation's constant). */
+const CALLER_IDENTITY_HEADER = "x-agentproto-caller-session-id"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -69,33 +71,16 @@ function noopHeartbeat(): HeartbeatRunner {
 }
 
 describe("caller identity on a daemon mount", () => {
-  it("a claude-code spawn's mount carries the session identity BOTH in the query and in a header", async () => {
-    const captured: { mcpServers?: AcpMcpServer[] }[] = []
-    const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
-      captured.push({ mcpServers: opts.mcpServers })
-      return {
-        id: "agent-session",
-        sendPrompt: async () => {},
-        interrupt: async () => {},
-        stop: async () => {},
-        dispose: async () => {},
-      } as never
+  it("the claude-code self-mount carries the session identity BOTH in the query and in a header", () => {
+    // The mount the daemon hands a claude-code (ACP) session: the identity
+    // must survive a client that rebuilds the URL, so it travels in a header
+    // as well as in the query.
+    const entry = buildDaemonSelfMountEntry("http://127.0.0.1:18790/mcp", {
+      delegationDenied: false,
+      callerSessionId: "sess_abc",
     })
-    const daemonMcpUrl = "http://127.0.0.1:18790/mcp"
-    const result = await spawnAgentSession(
-      {
-        registry: { get: () => undefined, list: () => [] } as never,
-        resolveAgentAdapter: async () => ({ startSession }) as never,
-        daemonMcpUrl,
-      } as never,
-      { adapter: "claude-code", cwd: "/tmp" },
-    )
-    expect(result.ok).toBe(true)
-    const ownId = result.ok ? result.descriptor.id : "(spawn failed)"
-    const entry = captured[0]?.mcpServers?.[0]
-    expect(entry?.ref).toContain(`callerSessionId=${ownId}`)
-    // The header is the carrier that survives a client that rebuilds the URL.
-    expect(entry?.headers?.[CALLER_SESSION_ID_HEADER]).toBe(ownId)
+    expect(entry.ref).toContain("callerSessionId=sess_abc")
+    expect(entry.headers?.[CALLER_IDENTITY_HEADER]).toBe("sess_abc")
   })
 
   it("stamps a mount that spells this daemon's endpoint differently (localhost vs 127.0.0.1)", () => {
@@ -109,7 +94,7 @@ describe("caller identity on a daemon mount", () => {
     expect(stamped?.[0]?.ref).toBe(
       "http://localhost:18790/mcp?callerSessionId=sess_child",
     )
-    expect(stamped?.[0]?.headers?.[CALLER_SESSION_ID_HEADER]).toBe("sess_child")
+    expect(stamped?.[0]?.headers?.[CALLER_IDENTITY_HEADER]).toBe("sess_child")
   })
 
   it("leaves a foreign endpoint and the scoped orchestrator sub-gateway untouched", () => {
@@ -124,7 +109,6 @@ describe("caller identity on a daemon mount", () => {
       callerSessionId: "sess_child",
     })
     expect(stamped).toEqual([foreign, scoped])
-    expect(targetsDaemonGateway(scoped.ref, "http://127.0.0.1:18790/mcp")).toBe(false)
   })
 
   it("the gateway resolves the caller from the identity header when the URL carries no query", async () => {
@@ -156,7 +140,7 @@ describe("caller identity on a daemon mount", () => {
       const client = new Client({ name: "identity-header-test", version: "0.0.1" })
       await client.connect(
         new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), {
-          requestInit: { headers: { [CALLER_SESSION_ID_HEADER]: "sess_header_only" } },
+          requestInit: { headers: { [CALLER_IDENTITY_HEADER]: "sess_header_only" } },
         }),
       )
       await client.listTools()

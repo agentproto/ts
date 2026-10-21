@@ -1088,10 +1088,29 @@ export function targetsDaemonGateway(ref: string, daemonMcpUrl: string): boolean
     return false
   }
   if (target.protocol !== daemon.protocol) return false
-  if (target.host !== daemon.host) return false
+  // The daemon is loopback-bound, so a different SPELLING of the same
+  // loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same
+  // endpoint, not a different one. A non-loopback host must match exactly.
+  if (target.host !== daemon.host) {
+    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
+  }
+  if (effectivePort(target) !== effectivePort(daemon)) return false
   const targetPath = target.pathname.replace(/\/+$/, "")
   const daemonPath = daemon.pathname.replace(/\/+$/, "")
   return targetPath === daemonPath
+}
+
+/** The port a URL actually talks to (empty ⇒ the protocol's default). */
+function effectivePort(url: URL): string {
+  if (url.port) return url.port
+  return url.protocol === "https:" ? "443" : "80"
+}
+
+/** Is this hostname a loopback name? (`localhost`, `127.0.0.1`, `::1`, …) */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "")
+  if (host === "localhost" || host === "::1") return true
+  return /^127(?:\.\d{1,3}){3}$/.test(host)
 }
 
 /**

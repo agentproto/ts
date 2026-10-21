@@ -166,7 +166,12 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
         transport: "http",
         ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}`,
       },
-      { name: "agentproto", transport: "http", ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}`,
+        headers: { "x-agentproto-caller-session-id": ownId },
+      },
     ])
     expect(captured[0]?.options).toEqual({ skills: "dataviz" })
     expect(result.ok && result.descriptor.bundles).toEqual(["research"])
@@ -494,7 +499,12 @@ describe("spawnAgentSession — native default mounts (P2)", () => {
     const ownId = result.ok ? result.descriptor.id : "(failed)"
     const daemonUrl = "http://127.0.0.1:18790/mcp"
     expect(captured[0]?.mcpServers).toEqual([
-      { name: "agentproto", transport: "http", ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}`,
+        headers: { "x-agentproto-caller-session-id": ownId },
+      },
       { name: "chrome-devtools", transport: "http", ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}` },
     ])
   })
