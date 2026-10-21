@@ -179,6 +179,18 @@ export interface AccessRow {
   description?: string
   /** True on the "+ add profile" row → opens the @agentproto/auth flow (§3.7). */
   addProfile?: boolean
+  /**
+   * Whether the route ACCEPTS this profile: `true` on a route-eligible
+   * profile, `false` on a known profile the current route rejects, and
+   * absent when the route is unknown (nothing to judge against).
+   *
+   * A rejected profile is still LISTED — the picker must show the profiles
+   * that exist, not only the ones this route happens to accept (a session
+   * whose route the catalog does not know would otherwise offer nothing but
+   * "+ add profile"). The daemon stays the judge: the restart is refused
+   * with a real error when the profile is not eligible.
+   */
+  eligible?: boolean
 }
 
 /** The §3.9 capability bundle for one (adapter × model) at the current route. */
@@ -419,12 +431,21 @@ function catalogRouteFor(
 }
 
 /**
- * The access rows for the current route: the eligible profiles (§1c) as
- * selectable rows, ALWAYS followed by a "+ add profile" row (the acquisition
- * flow, §3.7) — so a route with no eligible profile still offers the way to add
- * one rather than dead-ending. Also reports whether the session's currently
- * attached profile is no longer eligible on this route (SPEC risk Rx / §6 rule
- * 4): the caller flags it and forces a re-pick, never carries a stale wallet.
+ * The access rows for the current route: EVERY profile the daemon knows,
+ * followed by a "+ add profile" row (the acquisition flow, §3.7) — so a
+ * route with no eligible profile still offers the way to add one rather
+ * than dead-ending.
+ *
+ * The route-eligible profiles come first (the ones the daemon will
+ * accept), then the profiles the route does NOT accept — listed, not
+ * hidden: the picker must show the profiles that exist, and a session
+ * whose route the catalog does not know would otherwise offer nothing but
+ * "+ add profile" (the profiles in `~/.agentproto/auth-profiles.json`
+ * stayed invisible). Only the NAMES are shown — never key material.
+ *
+ * Also reports whether the session's currently attached profile is no
+ * longer eligible on this route (SPEC risk Rx / §6 rule 4): the caller
+ * flags it and forces a re-pick, never carries a stale wallet.
  */
 export function resolveAccessRows(input: {
   currentRoute: RouteRow | undefined
@@ -433,6 +454,8 @@ export function resolveAccessRows(input: {
 }): { rows: AccessRow[]; ineligibleAttached?: string } {
   const eligible = new Set(input.currentRoute?.eligibleProfiles ?? [])
   const byId = new Map((input.profiles ?? []).map(p => [p.id, p]))
+  // The route is unknown ⇒ nothing to judge eligibility against.
+  const routeKnown = input.currentRoute !== undefined
 
   const rows: AccessRow[] = [...eligible].map(id => {
     const profile = byId.get(id)
@@ -440,8 +463,20 @@ export function resolveAccessRows(input: {
       value: id,
       label: profile?.label ?? id,
       description: profile ? `${profile.endpoint} · ${profile.method}` : undefined,
+      eligible: true,
     }
   })
+  const listed = new Set(eligible)
+  for (const profile of input.profiles ?? []) {
+    if (listed.has(profile.id)) continue
+    listed.add(profile.id)
+    rows.push({
+      value: profile.id,
+      label: profile.label ?? profile.id,
+      description: `${profile.endpoint} · ${profile.method}`,
+      ...(routeKnown ? { eligible: false } : {}),
+    })
+  }
   rows.push({ label: "+ add profile", addProfile: true })
 
   const attached = input.attachedProfileRef

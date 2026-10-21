@@ -19,6 +19,7 @@ import { resolveEffectiveRoute } from "@agentproto/runtime/catalog-models"
 
 import type { AccessRow } from "./sessionConfig.logic.js"
 import { currentRouteOf, resolveAccessRows } from "./sessionConfig.logic.js"
+import { parseRestartResult, type RestartResult } from "./sessionRestart.logic.js"
 
 /**
  * The access rows to offer for a session: its route-eligible profiles plus the
@@ -43,6 +44,43 @@ export function accessRowsForSession(input: {
     rows,
     ...(ineligibleAttached ? { ineligibleAttached } : {}),
     ...(currentProfileRef ? { currentProfileRef } : {}),
+  }
+}
+
+/**
+ * The daemon call a chosen profile turns into — the restart-with-override
+ * route (`POST /sessions/:id/restart`) with the profile as the ACCESS
+ * override. The daemon keeps the session's POSTURE (an omitted axis is
+ * carried forward from the prior session) and re-arms the cron jobs that
+ * targeted the old session id.
+ */
+export interface AccessProfileApplier {
+  restartSessionWithOverride(
+    id: string,
+    overrides: { access: { profileRef: string } },
+  ): Promise<unknown>
+}
+
+/**
+ * Apply a chosen profile: restart the session onto it.
+ *
+ * Returns the RESTARTED session (a restart always mints a fresh id — the
+ * conversation is resumed, the row is not reused) or the daemon's refusal
+ * on failure. Never throws: a rejected profile (not eligible on this
+ * session's route) is a real answer the UI has to show, not a crash.
+ */
+export async function applyAccessProfile(input: {
+  applier: AccessProfileApplier
+  sessionId: string
+  profileRef: string
+}): Promise<{ ok: true; restart?: RestartResult } | { ok: false; error: string }> {
+  try {
+    const raw = await input.applier.restartSessionWithOverride(input.sessionId, {
+      access: { profileRef: input.profileRef },
+    })
+    return { ok: true, ...(parseRestartResult(raw) ? { restart: parseRestartResult(raw) } : {}) }
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
 }
 

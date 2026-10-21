@@ -342,13 +342,20 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
     { id: "work-moonshot", endpoint: "moonshot", method: "api-key" as const, label: "Moonshot" },
   ]
 
-  it("lists only the profiles eligible for the current route + a '+ add profile' row", () => {
+  it("lists the route-eligible profiles first, then every other known profile, + a '+ add profile' row", () => {
     const direct = currentRouteOf({ model: "claude-opus-4-8" }, catalog())
     const { rows } = resolveAccessRows({ currentRoute: direct, profiles })
+    // Every profile the daemon knows is LISTED (the picker must show the
+    // profiles that exist); the ones this route rejects are flagged, not
+    // hidden — the daemon stays the judge when the restart is attempted.
     expect(rows.filter(r => !r.addProfile).map(r => r.value)).toEqual([
       "jeremy-max",
       "work-anthropic-key",
+      "work-moonshot",
     ])
+    expect(rows.find(r => r.value === "jeremy-max")?.eligible).toBe(true)
+    expect(rows.find(r => r.value === "work-anthropic-key")?.eligible).toBe(true)
+    expect(rows.find(r => r.value === "work-moonshot")?.eligible).toBe(false)
     expect(rows.at(-1)?.addProfile).toBe(true)
   })
 
@@ -365,9 +372,11 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
       attachedProfileRef: "jeremy-max",
     })
     expect(ineligibleAttached).toBe("jeremy-max")
-    // No eligible profile → only the add-profile row remains (never a stale wallet).
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.addProfile).toBe(true)
+    // No eligible profile on this route — the known profiles are still
+    // listed (flagged), and the stale wallet is flagged as ineligible
+    // rather than carried over silently.
+    expect(rows.filter(r => !r.addProfile).every(r => r.eligible === false)).toBe(true)
+    expect(rows.at(-1)?.addProfile).toBe(true)
   })
 
   it("does NOT flag an attached profile that is still eligible", () => {
@@ -394,7 +403,15 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
       profiles: routerProfiles,
       attachedProfileRef: "or-key",
     })
-    expect(rows.filter(r => !r.addProfile).map(r => r.value)).toEqual(["or-key"])
+    // The stale gateway is ignored: "or-key" leads the list (it is the
+    // route's eligible profile) and "requesty-key" is listed but flagged as
+    // not eligible on this route.
+    expect(rows.filter(r => !r.addProfile).map(r => r.value)).toEqual([
+      "or-key",
+      "requesty-key",
+    ])
+    expect(rows.find(r => r.value === "or-key")?.eligible).toBe(true)
+    expect(rows.find(r => r.value === "requesty-key")?.eligible).toBe(false)
     expect(ineligibleAttached).toBeUndefined()
   })
 })

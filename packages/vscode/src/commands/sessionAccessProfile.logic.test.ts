@@ -7,6 +7,7 @@ import type {
 } from "../client/types.js"
 import {
   accessRowsForSession,
+  applyAccessProfile,
   planAccessChange,
   withEligibleAccess,
 } from "./sessionAccessProfile.logic.js"
@@ -91,15 +92,44 @@ function descriptor(over: Partial<SessionDescriptor> = {}): SessionDescriptor {
 }
 
 describe("accessRowsForSession", () => {
-  it("offers the route-eligible profiles plus a trailing add-profile row", () => {
+  it("offers the route-eligible profiles first, then the rest, plus a trailing add-profile row", () => {
     const { rows } = accessRowsForSession({ descriptor: descriptor(), catalog, profiles })
-    expect(rows.filter(r => r.value).map(r => r.value)).toEqual(["max-agentik", "max-fabrikapp"])
+    expect(rows.filter(r => r.value).map(r => r.value)).toEqual([
+      "max-agentik",
+      "max-fabrikapp",
+      "or-key",
+    ])
+    expect(rows.find(r => r.value === "max-agentik")?.eligible).toBe(true)
     expect(rows.at(-1)?.addProfile).toBe(true)
   })
 
-  it("excludes profiles not eligible for the route (openrouter key on an anthropic route)", () => {
+  it("still LISTS a profile that is not eligible for the route (flagged, never hidden)", () => {
+    // The picker used to show only the route-eligible profiles, so a session
+    // whose route the catalog did not know offered NOTHING but
+    // "+ add profile" — the existing profiles in
+    // ~/.agentproto/auth-profiles.json were invisible. Every profile the
+    // daemon knows is listed; the ones the route rejects are flagged, and
+    // the daemon stays the judge when the restart is attempted.
     const { rows } = accessRowsForSession({ descriptor: descriptor(), catalog, profiles })
-    expect(rows.map(r => r.value)).not.toContain("or-key")
+    const orKey = rows.find(r => r.value === "or-key")
+    expect(orKey).toBeDefined()
+    expect(orKey?.eligible).toBe(false)
+    expect(orKey?.label).toBe("or-key")
+    expect(orKey?.description).not.toMatch(/sk-|key-/)
+  })
+
+  it("lists every existing profile when the catalog knows no route for the session", () => {
+    const { rows } = accessRowsForSession({
+      descriptor: descriptor({ model: "unknown-model" }),
+      catalog,
+      profiles,
+    })
+    expect(rows.filter(r => r.value).map(r => r.value)).toEqual([
+      "max-agentik",
+      "max-fabrikapp",
+      "or-key",
+    ])
+    expect(rows.at(-1)?.addProfile).toBe(true)
   })
 
   it("reports the currently-attached profile and flags it when it turns ineligible", () => {
@@ -129,14 +159,18 @@ describe("accessRowsForSession", () => {
       catalog: routerCatalog,
       profiles,
     })
-    expect(rows.rows.filter(r => r.value).map(r => r.value)).toEqual(["or-key"])
+    // The stale gateway is ignored: "or-key" is the route's eligible
+    // profile (and leads the list), and "requesty-key" is not offered as
+    // eligible at all.
+    expect(rows.rows[0]?.value).toBe("or-key")
+    expect(rows.rows.find(r => r.value === "or-key")?.eligible).toBe(true)
+    expect(rows.rows.map(r => r.value)).not.toContain("requesty-key")
     expect(rows.ineligibleAttached).toBeUndefined()
   })
 
   it("still offers add-profile when the catalog knows no route for the model", () => {
     const { rows } = accessRowsForSession({ descriptor: descriptor({ model: "unknown-model" }), catalog, profiles })
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.addProfile).toBe(true)
+    expect(rows.at(-1)?.addProfile).toBe(true)
   })
 })
 
@@ -222,5 +256,40 @@ describe("withEligibleAccess (model switch across routes)", () => {
     const cat = JSON.parse(JSON.stringify(zenGoCatalog))
     cat.vendors[0].products[0].routes[1].eligibleProfiles = []
     expect(withEligibleAccess({ model: "opencode-go/deepseek-v4.1-flash-free" }, session, cat).error).toMatch(/no auth profile/)
+  })
+})
+
+describe("applyAccessProfile — the chosen profile becomes a restart-with-override", () => {
+  it("restarts the session onto the profile (POST /sessions/:id/restart, access.profileRef)", async () => {
+    const calls: Array<{ id: string; overrides: unknown }> = []
+    const result = await applyAccessProfile({
+      applier: {
+        async restartSessionWithOverride(id, overrides) {
+          calls.push({ id, overrides })
+          return { id: "sess_new", resumedFrom: "sess_1" }
+        },
+      },
+      sessionId: "sess_1",
+      profileRef: "max-fabrikapp",
+    })
+    expect(calls).toEqual([
+      { id: "sess_1", overrides: { access: { profileRef: "max-fabrikapp" } } },
+    ])
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.restart?.id).toBe("sess_new")
+  })
+
+  it("reports the daemon's refusal instead of throwing", async () => {
+    const result = await applyAccessProfile({
+      applier: {
+        async restartSessionWithOverride() {
+          throw new Error("HTTP 400: profile \"nope\" is not eligible on route anthropic")
+        },
+      },
+      sessionId: "sess_1",
+      profileRef: "nope",
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("not eligible")
   })
 })
