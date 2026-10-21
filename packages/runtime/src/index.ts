@@ -276,6 +276,8 @@ import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createClerkTurnEndController } from "./clerk-turn-end.js"
 import { createClerkPassRunner } from "./clerk-pass-runner.js"
+import { runBoardClerkPass } from "./clerk-board-clerk.js"
+import { readRecentTurnsSync } from "./session-evidence.js"
 import {
   loadDaemonClerkHook,
   loadWorkspaceClerkHook,
@@ -411,6 +413,7 @@ export {
 } from "./clerk-turn-end.js"
 export { createClerkPassRunner, spawnClerkCommand } from "./clerk-pass-runner.js"
 export {
+  BOARD_ITEM_KINDS,
   CLERK_HOOK_DEFAULTS,
   CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
   CLERK_HOOK_EVENTS,
@@ -422,12 +425,37 @@ export {
   parseAgentClerkHook,
   parseClerkHookLevel,
   resolveClerkHookConfig,
+  type BoardItemKind,
+  type ClerkBoardRun,
   type ClerkHookConfig,
   type ClerkHookEvent,
   type ClerkHookRun,
   type ClerkHookSource,
   type ResolvedClerkHookConfig,
 } from "./clerk-hook-config.js"
+// The BOARD arm of the clerk hook - the "plateaux des PM" pass: it
+// extracts the tasks / promises / blockers from a PM's turn and writes
+// them to the session's board (the Task ledger).
+export {
+  BOARD_CLERK_DEFAULT_MAX_ITEMS,
+  BOARD_CLERK_MAX_TITLE_CHARS,
+  boardItemTitle,
+  boardRunOf,
+  classifyBoardSentence,
+  extractBoardItems,
+  isSameBoardItem,
+  normalizeBoardTitle,
+  runBoardClerkPass,
+  splitBoardSentences,
+  stripKindTag,
+  type BoardClerkCaller,
+  type BoardClerkLedger,
+  type BoardClerkPassInput,
+  type BoardClerkPassResult,
+  type BoardClerkTask,
+  type BoardClerkTurn,
+  type BoardItem,
+} from "./clerk-board-clerk.js"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,
@@ -3000,30 +3028,6 @@ export async function createGateway(
     dispatchTool,
   })
 
-  // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
-  // (steward/secretary) after a session's turn ends, debounced on the
-  // session's idle time (10 min by default), single-flight per session and
-  // fire-and-forget: the pass can never slow a turn down. DISABLED unless
-  // configured - the three levels (agent > workspace > daemon default) are
-  // resolved per session; see `clerk-hook-config.ts`.
-  const clerkTurnEnd = createClerkTurnEndController({
-    registry: sessions,
-    sessionEvents,
-    resolveConfig: session =>
-      resolveClerkHookConfig({
-        daemon: loadDaemonClerkHook(daemonConfig),
-        workspace: loadWorkspaceClerkHook(workspace),
-        agent: session.clerkHook,
-      }).config,
-    runPass: createClerkPassRunner({
-      triggerRoutine: routineId => routineRegistrar.trigger(routineId),
-      // The command arm is default-deny: same allowlist as `command_execute`.
-      allowCommand: async spec =>
-        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
-      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
-    }),
-  })
-
   // Installed-app registry — singleton per daemon, shared between
   // `registerAppTools` (app_install/app_run/…) and the workflow runner's
   // `compileWorkflow` closure below, so a declarative `kind:"agent"` step's
@@ -3235,6 +3239,48 @@ export async function createGateway(
     workspace,
     persist,
     ...(operatorWorkspaceSlug ? { operatorWorkspaceSlug } : {}),
+  })
+
+  // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
+  // (steward/secretary) after a session's turn ends, debounced on the
+  // session's idle time (10 min by default), single-flight per session and
+  // fire-and-forget: the pass can never slow a turn down. DISABLED unless
+  // configured - the three levels (agent > workspace > daemon default) are
+  // resolved per session; see `clerk-hook-config.ts`.
+  //
+  // Declared AFTER the task ledger: the BOARD arm ("plateaux des PM")
+  // writes the PM's tasks / promises / blockers to the session's board,
+  // which is the ledger's own board model.
+  const clerkTurnEnd = createClerkTurnEndController({
+    registry: sessions,
+    sessionEvents,
+    resolveConfig: session =>
+      resolveClerkHookConfig({
+        daemon: loadDaemonClerkHook(daemonConfig),
+        workspace: loadWorkspaceClerkHook(workspace),
+        agent: session.clerkHook,
+      }).config,
+    runPass: createClerkPassRunner({
+      triggerRoutine: routineId => routineRegistrar.trigger(routineId),
+      // The BOARD arm - the built-in board-clerk pass. It reads the
+      // session's transcript tail (the turns it just ended on) and writes
+      // what the PM stated to the session's board.
+      runBoardClerk: input => {
+        const desc = sessions.get(input.sessionId)
+        const eventsPath = desc?.eventsPath
+        if (!eventsPath) return { boardId: "", created: 0, skipped: 0, items: [], errors: [] }
+        return runBoardClerkPass({
+          sessionId: input.sessionId,
+          turns: readRecentTurnsSync(eventsPath),
+          config: input.config,
+          ledger: taskLedger,
+        })
+      },
+      // The command arm is default-deny: same allowlist as `command_execute`.
+      allowCommand: async spec =>
+        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
+      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
+    }),
   })
 
   // Approvals engine (approvals/engine.ts) — the daemon's human-approval

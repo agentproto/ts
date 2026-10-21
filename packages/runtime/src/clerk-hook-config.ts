@@ -61,9 +61,31 @@ import { z } from "zod"
 export const CLERK_HOOK_EVENTS = ["turn_end"] as const
 export type ClerkHookEvent = (typeof CLERK_HOOK_EVENTS)[number]
 
-/** What a clerk pass launches. Exactly one of `routine` / `command` is
- *  expected; `routine` names an AIP-41 routine (e.g. `"steward"`), `command`
- *  is a shell command run in the session's working directory. */
+/** The kinds of item the board clerk extracts from a PM's turn: a TASK
+ *  (something to do), a PROMISE (something the PM committed to) and a
+ *  BLOCKER (something standing in the way). */
+export const BOARD_ITEM_KINDS = ["task", "promise", "blocker"] as const
+export type BoardItemKind = (typeof BOARD_ITEM_KINDS)[number]
+
+/** Options of the BOARD arm - the daemon's built-in "plateaux des PM"
+ *  pass: it reads the session's last turn, extracts the tasks, promises
+ *  and blockers it states, and writes them to the session's board (the
+ *  Task ledger). */
+export interface ClerkBoardRun {
+  /** Explicit board id. Absent → the session's own default board: its
+   *  spawn-stamped `meta.boardId` (an `agent_start.boardId`), else the
+   *  lineage board `tree:<rootSessionId>`. */
+  boardId?: string
+  /** Which item kinds to write. Absent → all of them. */
+  kinds?: BoardItemKind[]
+  /** How many items one pass writes at most. Absent → 10. */
+  maxItems?: number
+}
+
+/** What a clerk pass launches. Exactly one of `routine` / `command` /
+ *  `board` is expected; `routine` names an AIP-41 routine (e.g.
+ *  `"steward"`), `command` is a shell command run in the session's working
+ *  directory, and `board` is the daemon's built-in board-clerk pass. */
 export interface ClerkHookRun {
   /** Routine id to trigger (AIP-41). The daemon's routine registrar fires
    *  it out-of-band, exactly like `cron_run` bypasses a job's schedule. */
@@ -72,6 +94,10 @@ export interface ClerkHookRun {
   command?: string
   /** argv for `command` (the command itself is argv[0]). */
   args?: string[]
+  /** The board-clerk arm: extract the PM's tasks / promises / blockers
+   *  from the turn and write them to the session's board. Mutually
+   *  exclusive with `routine` / `command`. */
+  board?: ClerkBoardRun
   /** Working directory for `command`. Defaults to the session's cwd. */
   cwd?: string
   /** Hard cap on the pass's runtime (ms). The pass is fire-and-forget, but
@@ -129,6 +155,13 @@ export const clerkHookInputSchema = z.object({
       routine: z.string().min(1).optional(),
       command: z.string().min(1).optional(),
       args: z.array(z.string()).optional(),
+      board: z
+        .object({
+          boardId: z.string().min(1).optional(),
+          kinds: z.array(z.enum(BOARD_ITEM_KINDS)).optional(),
+          maxItems: z.number().int().positive().optional(),
+        })
+        .optional(),
       cwd: z.string().min(1).optional(),
       timeoutMs: z.number().int().positive().optional(),
     })
@@ -177,13 +210,33 @@ export function parseClerkHookLevel(raw: unknown): Partial<ClerkHookConfig> {
       const args = r.args.filter((x): x is string => typeof x === "string")
       if (args.length > 0) run.args = args
     }
+    if (isRecord(r.board)) {
+      const b = r.board
+      const board: ClerkBoardRun = {}
+      if (typeof b.boardId === "string" && b.boardId.length > 0) board.boardId = b.boardId
+      if (Array.isArray(b.kinds)) {
+        const kinds = b.kinds.filter((k): k is BoardItemKind =>
+          typeof k === "string" && (BOARD_ITEM_KINDS as readonly string[]).includes(k),
+        )
+        if (kinds.length > 0) board.kinds = kinds
+      }
+      if (typeof b.maxItems === "number" && Number.isFinite(b.maxItems) && b.maxItems > 0) {
+        board.maxItems = Math.floor(b.maxItems)
+      }
+      if (Object.keys(board).length > 0) run.board = board
+    }
     if (typeof r.cwd === "string" && r.cwd.length > 0) run.cwd = r.cwd
     if (typeof r.timeoutMs === "number" && Number.isFinite(r.timeoutMs) && r.timeoutMs > 0) {
       run.timeoutMs = r.timeoutMs
     }
-    // A level names ONE arm: when it states both, the routine wins (the
-    // runner's own order), so the command and its args are dropped.
+    // A level names ONE arm: when it states several, the routine wins
+    // (the runner's own order), then the board pass, then the command -
+    // the losers and their args are dropped.
     if (run.routine) {
+      delete run.command
+      delete run.args
+      delete run.board
+    } else if (run.board) {
       delete run.command
       delete run.args
     }
@@ -192,18 +245,21 @@ export function parseClerkHookLevel(raw: unknown): Partial<ClerkHookConfig> {
   return out
 }
 
-/** True when a level's `run` selects an arm (a routine or a command), as
- *  opposed to only tuning `cwd` / `timeoutMs`. */
+/** True when a level's `run` selects an arm (a routine, a command or the
+ *  board pass), as opposed to only tuning `cwd` / `timeoutMs`. */
 function statesRunArm(run: ClerkHookRun | undefined): boolean {
-  return run !== undefined && (run.routine !== undefined || run.command !== undefined)
+  return (
+    run !== undefined &&
+    (run.routine !== undefined || run.command !== undefined || run.board !== undefined)
+  )
 }
 
 /**
- * Merge a more specific `run` over an inherited one. The `routine` and
- * `command` arms are MUTUALLY EXCLUSIVE: a level that states one arm
- * replaces the other arm entirely (a per-field spread would keep the
- * built-in `routine: "steward"` alive under an agent that only names a
- * `command`, and the runner, which tries the routine first, would never
+ * Merge a more specific `run` over an inherited one. The `routine`,
+ * `command` and `board` arms are MUTUALLY EXCLUSIVE: a level that states
+ * one arm replaces the other arms entirely (a per-field spread would keep
+ * the built-in `routine: "steward"` alive under an agent that only names
+ * a `command`, and the runner, which tries the routine first, would never
  * run the command). `cwd` and `timeoutMs` are options of the pass, not of
  * an arm, so they are still inherited field by field.
  */
@@ -211,10 +267,16 @@ export function mergeClerkRun(base: ClerkHookRun, over: ClerkHookRun): ClerkHook
   let arm: ClerkHookRun
   if (over.routine !== undefined) {
     arm = { routine: over.routine }
+  } else if (over.board !== undefined) {
+    // The board arm's own options merge per field (an agent that only
+    // sets `maxItems` inherits the workspace's `boardId` / `kinds`).
+    arm = { board: { ...(base.board ?? {}), ...over.board } }
   } else if (over.command !== undefined) {
     arm = { command: over.command, ...(over.args ? { args: over.args } : {}) }
   } else if (base.routine !== undefined) {
     arm = { routine: base.routine }
+  } else if (base.board !== undefined) {
+    arm = { board: base.board }
   } else if (base.command !== undefined) {
     const args = over.args ?? base.args
     arm = { command: base.command, ...(args ? { args } : {}) }

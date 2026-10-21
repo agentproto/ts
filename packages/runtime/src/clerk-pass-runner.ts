@@ -27,6 +27,13 @@ export interface ClerkPassRunnerOptions {
   /** Fire an AIP-41 routine by id (the daemon's routine registrar). */
   triggerRoutine?: (routineId: string) => Promise<unknown> | unknown
   /**
+   * Run the BOARD arm: the built-in board-clerk pass, which extracts the
+   * tasks / promises / blockers from the session's last turn and writes
+   * them to the session's board (the Task ledger). Absent: the arm is
+   * refused, never silently skipped.
+   */
+  runBoardClerk?: (input: ClerkPassInput) => Promise<unknown> | unknown
+  /**
    * Allowlist gate for the command arm: the same default-deny check
    * `command_execute` applies (`.agentproto/allowed-commands.json`). When
    * absent the command arm is REFUSED, never run unchecked: the enabling
@@ -101,6 +108,14 @@ export function createClerkPassRunner(opts: ClerkPassRunnerOptions) {
   return async function runClerkPass(input: ClerkPassInput): Promise<unknown> {
     const config: ClerkHookConfig = input.config
     const run = config.run
+    // The BOARD arm comes first: it is the daemon's own pass, and the
+    // arms are exclusive (the merge never leaves two of them set).
+    if (run.board) {
+      if (!opts.runBoardClerk) {
+        throw new Error("clerk hook names the board pass but no board clerk is wired")
+      }
+      return await opts.runBoardClerk(input)
+    }
     if (run.routine) {
       if (!opts.triggerRoutine) {
         throw new Error("clerk hook names a routine but no routine trigger is wired")
