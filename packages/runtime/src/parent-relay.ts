@@ -68,6 +68,9 @@ export interface ParentRelayGrant {
   /** The host-side proxy row of the BOX session (the attested sender). */
   boxSessionId: string
   expiresAt: number
+  /** The grant's own lifetime - reused to SLIDE the expiry on every
+   *  successful relay use (see `slideParentRelayGrant`). */
+  ttlMs: number
 }
 
 /** Header carrying the relay token on the box → host POST. */
@@ -76,8 +79,17 @@ export const PARENT_RELAY_TOKEN_HEADER = "x-agentproto-parent-relay"
 /** The host's relay route. */
 export const PARENT_RELAY_PATH = "/relay/parent-message"
 
-/** Default token lifetime: one hour (a box session's parent report window). */
+/** Default token lifetime: one hour (a box session's parent report window).
+ *
+ *  The lifetime SLIDES: every successful relay use pushes the expiry out by
+ *  one more TTL, so a box session that keeps reporting is never cut off
+ *  mid-flight, while a silent box session still expires (and its grant is
+ *  pruned) an hour after its last report. */
 export const PARENT_RELAY_TTL_MS = 60 * 60 * 1000
+
+/** How often expired grants are swept out of the in-memory map (the sweep
+ *  timer is unref'd, so it never keeps a daemon alive). */
+export const PARENT_RELAY_PRUNE_INTERVAL_MS = 60_000
 
 /** Default timeout for the box → host relay POST, so an unreachable host can
  *  never block `message_parent` forever. */
@@ -88,6 +100,39 @@ export const PARENT_RELAY_URL_ENV = "AGENTPROTO_PARENT_RELAY_URL"
 
 const grants = new Map<string, ParentRelayGrant>()
 
+/** The BOX side's outgoing relay tokens, keyed by the box session id.
+ *
+ *  The token is a SECRET: it authenticates the box against the host's relay
+ *  endpoint. It therefore never lands on a descriptor (and never on disk -
+ *  see `sessions.ts`'s snapshot rows): it lives in this in-memory map only,
+ *  so a daemon restart loses it (and `message_parent` then fails with a
+ *  clear "relay token lost after restart" rather than silently sending an
+ *  unauthenticated report). */
+const relayTokensBySession = new Map<string, string>()
+
+/** Remember the relay token a session was spawned with (in memory only). */
+export function rememberRelayToken(sessionId: string, token: string): void {
+  if (!sessionId || !token) return
+  relayTokensBySession.set(sessionId, token)
+}
+
+/** The relay token a session was spawned with, or `undefined` when the
+ *  session has none (never spawned with a remote parent, or the daemon
+ *  restarted and lost the in-memory token). */
+export function relayTokenForSession(sessionId: string): string | undefined {
+  return relayTokensBySession.get(sessionId)
+}
+
+/** Forget a session's outgoing relay token (e.g. when the session ends). */
+export function forgetRelayToken(sessionId: string): void {
+  relayTokensBySession.delete(sessionId)
+}
+
+/** Test seam: drop every remembered outgoing token. */
+export function clearRelayTokens(): void {
+  relayTokensBySession.clear()
+}
+
 /** The configured host relay base URL, or `undefined` when the operator did
  *  not configure one (⇒ no remote parent is forwarded at all). */
 export function parentRelayUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -96,6 +141,32 @@ export function parentRelayUrlFromEnv(env: NodeJS.ProcessEnv = process.env): str
   const trimmed = raw.trim()
   if (!trimmed) return undefined
   return trimmed.replace(/\/+$/, "")
+}
+
+/** Drop every grant whose expiry has passed. Called on each mint and on a
+ *  slow unref'd sweep, so an abandoned box session's grant does not linger
+ *  in memory forever. */
+export function pruneExpiredParentRelayGrants(nowMs: number = Date.now()): number {
+  let dropped = 0
+  for (const [token, grant] of grants) {
+    if (grant.expiresAt <= nowMs) {
+      grants.delete(token)
+      dropped++
+    }
+  }
+  return dropped
+}
+
+let pruneTimer: NodeJS.Timeout | undefined
+
+/** Start the (unref'd) expiry sweep. Never keeps the process alive; started
+ *  lazily on the first mint so a daemon that never relays pays nothing. */
+function ensurePruneTimer(): void {
+  if (pruneTimer) return
+  pruneTimer = setInterval(() => {
+    pruneExpiredParentRelayGrants()
+  }, PARENT_RELAY_PRUNE_INTERVAL_MS)
+  pruneTimer.unref?.()
 }
 
 /** Mint a relay token for one (parent, box-session) pair and return the
@@ -108,12 +179,18 @@ export function mintParentRelayGrant(input: {
   nowMs?: number
 }): RemoteParent {
   const now = input.nowMs ?? Date.now()
+  // Sweep the dead ones first: a mint is the natural moment to notice that
+  // an earlier box session's grant is stale.
+  pruneExpiredParentRelayGrants(now)
+  ensurePruneTimer()
   const token = randomBytes(24).toString("hex")
+  const ttlMs = input.ttlMs ?? PARENT_RELAY_TTL_MS
   grants.set(token, {
     token,
     parentSessionId: input.parentSessionId,
     boxSessionId: input.boxSessionId,
-    expiresAt: now + (input.ttlMs ?? PARENT_RELAY_TTL_MS),
+    expiresAt: now + ttlMs,
+    ttlMs,
   })
   return {
     sessionId: input.parentSessionId,
@@ -143,9 +220,39 @@ export function revokeParentRelayGrant(token: string): void {
   grants.delete(token)
 }
 
+/** Forget every grant minted for one host-side box session. Called when
+ *  that session ends (exit / kill / teardown): a box session that is gone
+ *  must never be able to report up again, even with a token it kept. */
+export function revokeParentRelayGrantsForBoxSession(boxSessionId: string): number {
+  let revoked = 0
+  for (const [token, grant] of grants) {
+    if (grant.boxSessionId === boxSessionId) {
+      grants.delete(token)
+      revoked++
+    }
+  }
+  return revoked
+}
+
+/** SLIDE the grant's expiry forward by its own TTL: every SUCCESSFUL relay
+ *  use buys the session one more TTL, so a live box session that keeps
+ *  reporting is never cut off at the original deadline, while a silent one
+ *  still expires (and is pruned) an hour after its last report. */
+export function slideParentRelayGrant(
+  grant: ParentRelayGrant,
+  nowMs: number = Date.now(),
+): ParentRelayGrant {
+  grant.expiresAt = nowMs + grant.ttlMs
+  return grant
+}
+
 /** Test seam: drop every minted grant. */
 export function clearParentRelayGrants(): void {
   grants.clear()
+  if (pruneTimer) {
+    clearInterval(pruneTimer)
+    pruneTimer = undefined
+  }
 }
 
 /** The minimal registry surface the relay needs (kept structural so this
@@ -300,6 +407,9 @@ export async function deliverParentRelayMessage(input: {
           : !result.queued
             ? "enqueued"
             : "queued-next-turn"
+  // SLIDING TTL: the relay just worked, so the grant's window slides one
+  // more TTL forward (see `PARENT_RELAY_TTL_MS`).
+  slideParentRelayGrant(grant, input.nowMs ?? Date.now())
   return {
     ok: true,
     messageId: result.messageId,

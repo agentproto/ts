@@ -3125,7 +3125,12 @@ export async function startHttpServer(
             allowInterrupt: messagingDefaults.agentInterrupt === "allow",
           })
           if (!result.ok) {
-            json(400, { error: result.code, message: result.message })
+            // A token that went bad between the pre-check and the delivery
+            // (revoked when the box session ended, expired in between) is
+            // an AUTHENTICATION failure, not a bad request: answer 401, the
+            // same code the pre-check above uses.
+            const status = result.code === "relay_token_unknown" ? 401 : 400
+            json(status, { error: result.code, message: result.message })
             return
           }
           json(200, {

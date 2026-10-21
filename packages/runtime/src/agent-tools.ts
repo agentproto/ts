@@ -89,7 +89,7 @@ import {
   type MessageUrgency,
 } from "./session-message.js"
 import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
-import { postParentRelayMessage } from "./parent-relay.js"
+import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
 /** Strip CSI/SGR ANSI escape sequences and bare carriage returns.
@@ -892,12 +892,24 @@ export function registerAgentTools(
       // session with a LOCAL parent always takes the local path.
       if (self.remoteParent && !self.parentSessionId) {
         const remote = self.remoteParent
+        // The relay TOKEN is a secret and lives in memory only (never on the
+        // descriptor, never on disk - see `parent-relay.ts`). A session that
+        // was restored from disk after a daemon restart has no token any
+        // more: say so clearly instead of posting an unauthenticated report.
+        const relayToken = relayTokenForSession(selfId)
+        if (!relayToken) {
+          return fail(
+            `message_parent: relay token lost after restart - the host parent ` +
+              `session "${remote.sessionId}" can no longer be reached from this ` +
+              `session (the relay token is never persisted).`,
+          )
+        }
         const effectiveRemoteInterrupt = input.interrupt ?? interruptDefault
         const remoteKind = input.kind ?? "report"
         const remoteUrgency: MessageUrgency = effectiveRemoteInterrupt
           ? "interrupt"
           : (input.urgency ?? defaultUrgencyForKind(remoteKind))
-        const relayed = await postParentRelayMessage(remote, {
+        const relayed = await postParentRelayMessage({ ...remote, token: relayToken }, {
           message: input.message,
           kind: remoteKind,
           urgency: remoteUrgency,

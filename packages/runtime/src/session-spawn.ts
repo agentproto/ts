@@ -26,7 +26,7 @@ import {
   type ResolvedCloudSpawn,
 } from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
-import { mintParentRelayGrant, parentRelayUrlFromEnv } from "./parent-relay.js"
+import { mintParentRelayGrant, parentRelayUrlFromEnv, revokeParentRelayGrant } from "./parent-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -6375,6 +6375,10 @@ export async function bootSandboxAgentSession(opts: {
     // box (kill: it holds nothing of value) and mark the ledger so the
     // failure is never a silent orphan. AIP-36 shared-box: survivors keep
     // the box — detach only.
+    // PARENT RELAY: the boot never completed, so the relay grant minted
+    // above is dead on arrival - revoke it instead of leaving a live token
+    // behind for a box session that will never exist.
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
     if (!(await detachOnBootFailure())) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -6412,6 +6416,9 @@ export async function bootSandboxAgentSession(opts: {
       github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
     })
     if (!serve.ok) {
+      // PARENT RELAY: the boot failed after the grant was minted - revoke
+      // it (see the `agent_start` failure path above).
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
       if (!(await detachOnBootFailure())) {
         await host.stop().catch(() => undefined)
         recordSandboxState(host.sandboxId, "stopped")

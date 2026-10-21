@@ -355,7 +355,8 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Optional per-session webhook URL, POSTed on turn-end / awaiting-input / exited events."
-    ),  notifySecret: z
+    ),
+  notifySecret: z
     .string()
     .refine(s => decodeWhsecSecret(s) !== null, {
       message: "must be a whsec_<base64> Standard Webhooks secret (24-64 decoded bytes)",

@@ -125,7 +125,12 @@ The push channel of (1)–(3) is implemented (`packages/runtime/src/parent-relay
   (`{ sessionId, url, token }`) into the box's own `agent_start`
   (`session-spawn.ts`'s `bootSandboxAgentSession`). The box stores it on its
   row as `remoteParent` (`SessionDescriptor.remoteParent`) instead of
-  `parentSessionId`.
+  `parentSessionId`. The TOKEN is a secret, so it never lands on the
+  descriptor: the box keeps it in an in-memory map keyed by the session id
+  (`parent-relay.ts`'s `rememberRelayToken`), and the persisted row carries
+  only `{ sessionId, url }`. A box daemon that restarts therefore loses the
+  token, and `message_parent` then fails with a clear "relay token lost
+  after restart" instead of posting an unauthenticated report.
 - **Box → host.** `message_parent` (`agent-tools.ts`) sees the remote
   parent and POSTs the envelope to the host's relay endpoint
   (`POST /relay/parent-message`) instead of looking the parent up locally. The
@@ -136,6 +141,16 @@ The push channel of (1)–(3) is implemented (`packages/runtime/src/parent-relay
   through the ordinary `registry.sendMessage` path, so the parent sees a
   normal `session-message` with the same urgency/steer semantics. The
   attested sender is the host-side proxy row of the box session.
+
+**Grant lifetime.** A grant lives for one hour (`PARENT_RELAY_TTL_MS`) and
+the window SLIDES: every successful relay use pushes the expiry out by one
+more TTL, so a box session that keeps reporting is never cut off at the
+original deadline, while a silent one still expires an hour after its last
+report. Expired grants are pruned (on every mint and on an unref'd sweep
+timer), and the grant for a box session is REVOKED when that session ends
+(`sessions.ts`'s exit funnel: clean exit, kill, crash, idle-reap) or when
+the box boot fails (`session-spawn.ts`'s boot failure path) - a session that
+is gone must never be able to report up again.
 
 The relay URL is operator-provided (`AGENTPROTO_PARENT_RELAY_URL`) and must be
 reachable FROM the box (item 4): without it nothing is forwarded and the
