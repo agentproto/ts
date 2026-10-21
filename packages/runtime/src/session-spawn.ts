@@ -119,6 +119,7 @@ import {
 import {
   GH_TOKEN_ENV,
   GIT_TOKEN_ENV,
+  SANDBOX_BRANCH_PREFIX,
   withGhTokenAlias,
   withoutReservedSandboxEnv,
   planSandboxWorkspace,
@@ -128,6 +129,7 @@ import {
   runSandboxWorkspaceSetup,
   type SandboxWorkspacePlan,
 } from "./sandbox-workspace-remote.js"
+import { resolveResumeSource } from "./checkpoint-resume.js"
 import {
   formatDeliveryNotice,
   trackedSandboxDeliveryOpts,
@@ -1698,6 +1700,16 @@ export interface SpawnAgentSessionInput {
    *  checkpoint snapshot the new box restores onto the work branch's
    *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
   sandboxCheckpointRestore?: CheckpointRestoreSnapshot
+  /** CRASH RESUME - link this spawn to the DEAD session whose work it
+   *  continues: `{ sessionId }` names the session explicitly, `{ label }`
+   *  (or `{ taskId }`) correlates with the dead sessions carrying that
+   *  label. The dead session's last checkpoint (the ref its snapshot was
+   *  pushed to) is restored onto this spawn's checkout with
+   *  `git restore --source=<ref>`, and the dead session's work branch is
+   *  reused so its pushed commits come back as commits. A live session is
+   *  never resumed. Absent ⇒ no resume, the spawn starts from its base
+   *  branch. */
+  resumeFrom?: { sessionId?: string; label?: string; taskId?: string }
   /** WP3 — serve an agentproto app's UI from INSIDE the sandbox box and
    *  return its public URL on the descriptor + result. Requires `sandbox`
    *  (a non-sandbox spawn carrying `appServe` is rejected): the app dir is
@@ -2037,6 +2049,27 @@ export async function spawnAgentSession(
   // captured value; after stripping, only the boolean stays in scope.
   const deviceBridgeArrival = input.deviceBridge === true
   if (input.deviceBridge !== undefined) delete input.deviceBridge
+  // CRASH RESUME - a relaunch linked to a DEAD session resumes THAT
+  // session's work: its last checkpoint is restored onto the new checkout
+  // (`git restore --source=<ref>`) and its work branch is reused, so the
+  // pushed commits come back as commits. Resolved BEFORE the workspace and
+  // cwd resolution so the resumed session's own workspace and branch are
+  // the ones the new spawn uses. A live session is never resumed (its work
+  // is still in its box).
+  const checkpointResumeSource = input.resumeFrom
+    ? resolveResumeSource({
+        sessions: deps.registry.list(),
+        ...(input.resumeFrom.sessionId ? { sessionId: input.resumeFrom.sessionId } : {}),
+        ...(input.resumeFrom.label ? { label: input.resumeFrom.label } : {}),
+        ...(input.resumeFrom.taskId ? { taskId: input.resumeFrom.taskId } : {}),
+      })
+    : undefined
+  const resumeCheckpoint = checkpointResumeSource?.checkpoint
+  const resumeBranch = checkpointResumeSource?.session.sandboxDeliveryTarget?.branch
+  const resumeWorkspaceSlug = checkpointResumeSource?.session.workspaceSlug
+  if (resumeWorkspaceSlug && input.workspaceSlug === undefined) {
+    input = { ...input, workspaceSlug: resumeWorkspaceSlug }
+  }
   // AIP-66 managed cloud (see cloud-vendors.ts): `cloud: "<vendor>"` resolves
   // FIRST — before inference, presets, worktree, sandbox, auth, and profile
   // resolution — so a refused field can never half-spawn and the vendor's
@@ -4726,6 +4759,12 @@ export async function spawnAgentSession(
         adapter: input.adapter,
         sessionHolder: mintedSessionId,
         checkpointConfig,
+        // CRASH RESUME - the checkpoint of the DEAD session this spawn
+        // continues, restored onto the new checkout (`git restore
+        // --source=<ref>`). Absent for a plain spawn.
+        ...(resumeCheckpoint
+          ? { checkpointResume: { ref: resumeCheckpoint.ref, ...(resumeCheckpoint.sha ? { sha: resumeCheckpoint.sha } : {}) } }
+          : {}),
         ...(input.sandboxCheckpointRestore !== undefined ? { checkpointSnapshot: input.sandboxCheckpointRestore } : {}),
         // controllers half of the #1647 pairing: the caller's EXPLICIT slug
         // rides the bridge so the TARGET daemon resolves it against ITS
@@ -4782,7 +4821,12 @@ export async function spawnAgentSession(
                 ? { worktree: false as const }
                 : normalizeWorktreeField(input.worktree) !== undefined
                   ? { worktree: normalizeWorktreeField(input.worktree) }
-                  : {}),
+                  : // CRASH RESUME - reuse the dead session's work branch so
+                    // its pushed commits come back as commits (the checkout
+                    // step tracks `origin/<branch>` when it exists).
+                    resumeBranch
+                      ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } }
+                      : {}),
               sessionId: mintedSessionId,
               onDelivery: (record: SandboxDeliveryRecord) => {
                 registry.recordSandboxDelivery(mintedSessionId, record, formatDeliveryNotice(record))
@@ -5862,6 +5906,11 @@ export async function bootSandboxAgentSession(opts: {
   checkpointConfig?: ResolvedSandboxCheckpointConfig
   /** Which checkpoint snapshot to restore onto the checkout (default `"any"`). */
   checkpointSnapshot?: CheckpointRestoreSnapshot
+  /** CRASH RESUME - the checkpoint REF to restore onto the checkout
+   *  (`agentproto-checkpoint/wt/x`), as recorded on the dead session that
+   *  produced it. Restored with `git restore --source=<ref>`; replaces the
+   *  branch-derived restore when present. */
+  checkpointResume?: { ref: string; sha?: string }
   /** A saved `adapter-store.tar.gz` (from a prior session's checkpoints —
    *  `sandbox-adapter-store.ts`): uploaded and extracted into the box at the
    *  same path BEFORE the adapter starts, so `resumeSessionId` below can
@@ -6009,6 +6058,7 @@ export async function bootSandboxAgentSession(opts: {
         ...(opts.worktree !== undefined ? { worktree: opts.worktree } : {}),
         ...(opts.checkpointConfig?.refPrefix ? { checkpointRefPrefix: opts.checkpointConfig.refPrefix } : {}),
         ...(opts.checkpointSnapshot !== undefined ? { checkpointSnapshot: opts.checkpointSnapshot } : {}),
+        ...(opts.checkpointResume !== undefined ? { checkpointResume: opts.checkpointResume } : {}),
         mintSlug: () => randomBytes(4).toString("hex"),
       })
     } catch (err) {

@@ -477,6 +477,24 @@ export const agentStartInputShape = {
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
     .describe(`Per-spawn sandbox checkpoint override: false disables, or an object. ${help("sandboxCheckpoint")}`),
+  resumeFrom: jsonTolerant(
+    opaque(
+      z
+        .object({
+          sessionId: z.string().min(1).optional(),
+          label: z.string().min(1).optional(),
+          taskId: z.string().min(1).optional(),
+        })
+        .strict(),
+    ),
+  )
+    .optional()
+    .describe(
+      `Resume the work of a DEAD session: its last checkpoint is restored onto this spawn's checkout ` +
+        `(\`git restore --source=<ref>\`) and its work branch is reused. \`sessionId\` names the session ` +
+        `explicitly, \`label\`/\`taskId\` correlate with the dead sessions carrying that label. A live session ` +
+        `is never resumed.`,
+    ),
   cloud: z
     .string()
     .min(1)
