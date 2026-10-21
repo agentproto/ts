@@ -149,6 +149,10 @@ const DEFAULT_AGENT_ADAPTER = "mastra-agent"
  *  means the session is no longer running and a sequential run can advance. */
 const TERMINAL_SESSION_STATUSES = new Set(["exited", "killed", "error"])
 
+/** The `serviceAdapter` deprecation warning fires once per process, not on
+ *  every `registerAppTools` call. */
+let serviceAdapterWarned = false
+
 function isSessionTerminal(status: string | undefined): boolean {
   return status === undefined || TERMINAL_SESSION_STATUSES.has(status)
 }
@@ -1715,7 +1719,8 @@ function createServiceOwnerKiller(
 export function buildAppServiceEnsurer(
   deps: AppServiceEnsurerDeps,
 ): NonNullable<PerformInstallOptions["ensureServices"]> {
-  if (deps.serviceAdapter !== undefined) {
+  if (deps.serviceAdapter !== undefined && !serviceAdapterWarned) {
+    serviceAdapterWarned = true
     console.warn(
       `[app-services] "serviceAdapter" (${deps.serviceAdapter}) is deprecated and ignored: ` +
         "app services now run as deterministic managed processes, not LLM-prompted owner sessions.",

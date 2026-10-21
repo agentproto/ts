@@ -345,7 +345,7 @@
         "additionalProperties": false,
         "oneOf": [
           { "required": ["entry"], "not": { "required": ["args"] } },
-          { "required": ["command"] }
+          { "required": ["command"], "not": { "required": ["entry"] } }
         ],
         "properties": {
           "name": {
