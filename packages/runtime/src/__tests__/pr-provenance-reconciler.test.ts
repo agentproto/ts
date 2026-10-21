@@ -83,6 +83,7 @@ describe("createPrProvenanceReconciler", () => {
     const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
     const editBodies: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
       if (args[1] === "edit") editBodies.push(args[4] as string)
       return { exitCode: 0, stdout: "" }
@@ -128,6 +129,7 @@ describe("createPrProvenanceReconciler", () => {
     const { reg, recorded } = fakeRegistry([execSession({ openedPrs: [{ url: PR.url }] })])
     const edits: number[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "edit") edits.push(1)
       return { exitCode: 0, stdout: "Body." }
     }
@@ -208,6 +210,7 @@ describe("createPrProvenanceReconciler", () => {
       "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
     const edits: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: body }
       if (args[1] === "edit") {
         body = args[4] as string
@@ -255,6 +258,7 @@ describe("createPrProvenanceReconciler", () => {
       "** — PR · session `sess_exec` · opencode · model `openrouter/z-ai/glm-5.3-flash` · host `mac.home` · cwd `agentproto/e2b-template-baked`</sub>"
     const edits: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: body }
       if (args[1] === "edit") {
         body = args[4] as string
@@ -294,6 +298,7 @@ describe("createPrProvenanceReconciler", () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editCalls: number[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: `Body.\n\n---\n<sub>${MARKER} — PR</sub>` }
       editCalls.push(1)
       return { exitCode: 0, stdout: "" }
@@ -371,6 +376,7 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     const { reg, recorded } = fakeRegistry([execSession(), SUPER])
     const editBodies: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
       editBodies.push(String(args[4]))
       return { exitCode: 0, stdout: "" }
@@ -404,6 +410,7 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     const { reg, recorded } = fakeRegistry([a, b])
     const editBodies: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
       editBodies.push(String(args[4]))
       return { exitCode: 0, stdout: "" }
@@ -444,6 +451,7 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     const { reg, recorded } = fakeRegistry([a, b])
     const editBodies: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
       editBodies.push(String(args[4]))
       return { exitCode: 0, stdout: "" }
@@ -516,6 +524,7 @@ describe("createPrProvenanceReconciler — recorded-tool-call lane", () => {
     let body = "Body.\n\n---\n<sub>🤖 **" + MARKER + "** — PR · session `sess_exec` · claude-code · host `h` · cwd `/wt`</sub>"
     const edits: string[] = []
     const run: GhRunner = async args => {
+      if (args[0] === "api") return { exitCode: 1, stdout: "" }
       if (args[1] === "view") return { exitCode: 0, stdout: body }
       if (args[1] === "edit") {
         body = args[4] as string
@@ -732,5 +741,68 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
 
     expect(resolveOpenPr).toHaveBeenCalledWith("/wt")
     expect(localRepoCwdFor).not.toHaveBeenCalled()
+  })
+})
+
+describe("createPrProvenanceReconciler : the checkpoint namespace", () => {
+  it("reads the checkpoint under the daemon's global refPrefix", async () => {
+    const { reg } = fakeRegistry([execSession()])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = async args => {
+      calls.push(args)
+      if (args[0] === "api") return { exitCode: 0, stdout: "cp\n\nAgentproto-Session: sess_box_gone\n" }
+      if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: "wt/box-work\n" }
+      if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: "work\n" }
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run,
+      checkpointRefPrefix: "global/cp/",
+    })
+    try {
+      bus.emit(turnEnd("sess_exec"))
+      await flush()
+      await flush()
+      expect(calls.some(c => c[0] === "api" && String(c[1]).endsWith("global/cp/wt/box-work"))).toBe(true)
+    } finally {
+      reconciler.dispose()
+    }
+  })
+
+  it("prefers the session's own per-spawn override over the global default", async () => {
+    const { reg } = fakeRegistry([
+      execSession({ sandboxCheckpointOverride: { refPrefix: "custom/" } }),
+    ])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = async args => {
+      calls.push(args)
+      if (args[0] === "api") return { exitCode: 0, stdout: "cp\n\nAgentproto-Session: sess_box_gone\n" }
+      if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: "wt/box-work\n" }
+      if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: "work\n" }
+      if (args[1] === "view") return { exitCode: 0, stdout: "Body." }
+      return { exitCode: 0, stdout: "" }
+    }
+    const bus = createSessionEventBus()
+    const reconciler = createPrProvenanceReconciler({
+      registry: reg,
+      sessionEvents: bus,
+      resolveOpenPr: async () => PR,
+      run,
+      checkpointRefPrefix: "global/cp/",
+    })
+    try {
+      bus.emit(turnEnd("sess_exec"))
+      await flush()
+      await flush()
+      expect(calls.some(c => c[0] === "api" && String(c[1]).endsWith("custom/wt/box-work"))).toBe(true)
+      expect(calls.some(c => c[0] === "api" && String(c[1]).includes("global/cp/"))).toBe(false)
+    } finally {
+      reconciler.dispose()
+    }
   })
 })

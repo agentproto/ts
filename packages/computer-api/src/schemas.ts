@@ -3,6 +3,7 @@
  * the generic, deployment-independent shape of every endpoint:
  *
  *   POST   /v1/computers            create
+ *   GET    /v1/computers            list every computer (the gc surface)
  *   GET    /v1/computers/:id        status
  *   POST   /v1/computers/:id/exec   synchronous exec of an argv array
  *   POST   /v1/computers/:id/suspend  full snapshot + stop
@@ -120,6 +121,36 @@ export const computerStatusSchema = z.object({
   egressIp: egressIpSchema.nullable().optional(),
 }).passthrough()
 export type ComputerStatus = z.infer<typeof computerStatusSchema>
+
+// ── GET /v1/computers ─────────────────────────────────────────────────
+
+/**
+ * One computer as listed by `GET /v1/computers`: its name (the id used by
+ * every other `/v1/computers/:id` route), its state, and the session slots
+ * the controller counts for it. `sessions` is read TOLERANTLY - a controller
+ * may report a count or a list of session holders, so both shapes parse.
+ */
+export const computerListEntrySchema = z.object({
+  name: z.string(),
+  state: computerStateSchema,
+  sessions: z.union([z.number().int(), z.array(z.unknown())]).optional(),
+  /** Memory the box holds, when the controller reports it. */
+  memoryMiB: z.number().int().optional(),
+  /** Creation timestamp (ISO-8601), when the controller reports it. */
+  createdAt: z.string().optional(),
+}).passthrough()
+export type ComputerListEntry = z.infer<typeof computerListEntrySchema>
+
+/**
+ * Response of `GET /v1/computers` - every computer the controller knows
+ * about for the calling tenant. This is the surface the gc pass reads to
+ * find ORPHAN boxes: computers the controller still holds (with their RAM
+ * and their session slots) that no live agentproto session references.
+ */
+export const computerListResponseSchema = z.object({
+  computers: z.array(computerListEntrySchema),
+}).passthrough()
+export type ComputerListResponse = z.infer<typeof computerListResponseSchema>
 
 // ── POST /v1/computers/:id/exec ───────────────────────────────────────
 
