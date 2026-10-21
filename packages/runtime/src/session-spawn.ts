@@ -26,7 +26,7 @@ import {
   type ResolvedCloudSpawn,
 } from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
-import { mintParentRelayGrant, parentRelayUrlFromEnv, revokeParentRelayGrant } from "./parent-relay.js"
+import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -3401,7 +3401,30 @@ export async function spawnAgentSession(
   const delegationReach = delegationReachFor(mcpServers, {
     ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
     gatewayDeferred: resolveDeferredToolsGatewayOption(configDefaults?.mcp?.deferredTools) !== undefined,
-    orchestratorDelegates,
+    orchestratorDelegates:
+      orchestratorDelegates ||
+      // Sandbox boundary: the delegation surface lives INSIDE the box (the
+      // forwarded `orchestrator` request mounts /mcp/orchestrator on the
+      // box daemon's own loopback), not on the host mounts this branch
+      // usually inspects. Factoring it in here keeps the host-composed
+      // prompt honest for a sandboxed supervisor — an explicit
+      // `role: "supervisor"` keeps the supervisor disposition instead of
+      // being rewritten to the executor text by `composeRoleContext`
+      // (role.ts), because its delegation tools genuinely exist, just
+      // box-side. An executor (delegationDenied) never forwards a scope,
+      // so `sandboxOrchestratorForward` stays undefined and the executor
+      // stays a leaf — a denial can't be resurrected through this path.
+      // A TOOL-NARROWED request that no longer includes `agent_start` is
+      // NOT delegation reach (`narrowSandboxOrchestratorForward` preserves
+      // the caller's explicit allowlist / intersects it with a scoped
+      // caller's ceiling, so `{ tools: ["message_parent"] }` or
+      // `{ tools: [] }` mints a report-only scope inside the box): the
+      // host prompt must promise the spawn surface ONLY when the
+      // forwarded scope actually carries it.
+      sandboxOrchestratorForward === true ||
+      (typeof sandboxOrchestratorForward === "object" &&
+        (sandboxOrchestratorForward.tools === undefined ||
+          sandboxOrchestratorForward.tools.includes("agent_start"))),
   })
   if (input.role === undefined) {
     role = resolveRole(
@@ -6377,15 +6400,7 @@ export async function bootSandboxAgentSession(opts: {
   // the operator configured a relay URL reachable FROM the box; without one
   // nothing is forwarded and the box's `message_parent` keeps today's clear
   // "no recorded parent" error.
-  const parentRelayUrl = parentRelayUrlFromEnv()
-  const remoteParent =
-    opts.parentRelay && parentRelayUrl
-      ? mintParentRelayGrant({
-          parentSessionId: opts.parentRelay.parentSessionId,
-          boxSessionId: opts.parentRelay.boxSessionId,
-          url: parentRelayUrl,
-        })
-      : undefined
+  const remoteParent = mintRemoteParentForBox(opts.parentRelay)
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   try {
