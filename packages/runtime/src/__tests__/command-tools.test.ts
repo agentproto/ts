@@ -858,3 +858,91 @@ describe("runCommand — timeouts are honest and reap the whole process group", 
     },
   )
 })
+
+describe("pr_open → allowlist + caller scope", () => {
+  let workspace: string
+  let registry: SessionsRegistry
+
+  beforeEach(() => {
+    workspace = mkdtempSync(join(tmpdir(), "command-tools-pr-open-test-"))
+    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+  })
+
+  afterEach(async () => {
+    await registry.settlePendingWrites()
+    registry.shutdown()
+    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  })
+
+  const spawnBox = (over: { parentSessionId?: string; sandboxId?: string } = {}) =>
+    registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: workspace,
+      agentSession: fakeAgent(),
+      adapterSlug: "fake",
+      sandboxDeliveryTarget: { checkoutDir: "/workspace/repo", branch: "wt/x", baseSha: "a".repeat(40) },
+      ...over,
+    }).id
+
+  const openPr = async (sessionId: string, callerSessionId?: string) => {
+    const { client, close } = await buildHarness(
+      workspace,
+      registry,
+      callerSessionId ? { callerSessionId } : undefined,
+    )
+    try {
+      return await client.callTool({
+        name: "pr_open",
+        arguments: { sessionId, title: "t", body: "b" },
+      })
+    } finally {
+      await close()
+    }
+  }
+
+  it("refuses when gh is not in the workspace allowlist", async () => {
+    const box = spawnBox()
+    for (const commands of [[], ["node"]]) {
+      allowlist(workspace, commands)
+      const res = await openPr(box)
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain("'gh' is not in the allowlist")
+      expect(textOf(res)).toContain("allowed-commands.json")
+    }
+  })
+
+  it("refuses when gh is allowlisted only for other subcommands", async () => {
+    allowlist(workspace, [{ command: "gh", args: ["pr", "view"] }])
+    const box = spawnBox()
+    const res = await openPr(box)
+    expect(res.isError).toBe(true)
+    expect(textOf(res)).toContain("not for `gh pr create`")
+  })
+
+  it("refuses a caller opening a PR for a session that is not its own, its box's, or a descendant's", async () => {
+    allowlist(workspace, ["gh"])
+    const stranger = spawnBox()
+    const box = spawnBox()
+    const res = await openPr(box, stranger)
+    expect(res.isError).toBe(true)
+    expect(textOf(res)).toContain("pr_open refused")
+    expect(textOf(res)).toContain(`session ${stranger} may only open a PR for its own session`)
+  })
+
+  it("lets a caller through the scope check for its own (grand)child box session", async () => {
+    // gh is constrained so the call stops right before running it: reaching
+    // the argv check proves the scope check passed.
+    allowlist(workspace, [{ command: "gh", args: ["pr", "view"] }])
+    const orchestrator = spawnBox()
+    const child = spawnBox({ parentSessionId: orchestrator })
+    const grandchild = spawnBox({ parentSessionId: child })
+    for (const target of [orchestrator, child, grandchild]) {
+      const res = await openPr(target, orchestrator)
+      expect(textOf(res)).not.toContain("may only open a PR")
+      expect(textOf(res)).toContain("not for `gh pr create`")
+    }
+    // ...but never upward: the child cannot open one for its parent.
+    const up = await openPr(orchestrator, child)
+    expect(textOf(up)).toContain("may only open a PR")
+  })
+})

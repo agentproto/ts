@@ -56,6 +56,53 @@ export interface OpenPrForSessionInput {
   /** Configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
    *  refPrefix`), when the deployment moved it. */
   checkpointRefPrefix?: string
+  /** Gate on the exact `gh` argv about to run (the MCP lane checks it
+   *  against the workspace's `allowed-commands.json`). A returned string
+   *  refuses the open with that reason; nothing has run yet. */
+  authorizeArgs?: (args: readonly string[]) => string | undefined
+}
+
+/** The `gh` argv `openPrForSession` runs to create the PR. */
+export function prCreateArgs(branch: string, title: string, body: string): string[] {
+  return ["pr", "create", "--head", branch, "--title", title, "--body", body]
+}
+
+/** Descriptor slice {@link checkPrOpenScope} reads. */
+export interface PrOpenScopeRow {
+  id: string
+  parentSessionId?: string | null
+  sandboxId?: string | null
+}
+
+/**
+ * Whether `callerSessionId` may open a PR for `targetId`: its own session,
+ * a session on its own sandbox box, or a session it (transitively) spawned
+ * through the `parentSessionId` chain. Returns the refusal reason, or
+ * `undefined` when allowed. No caller id (the daemon-wide `/mcp` mount, an
+ * operator lane) is not scoped, same as the other session tools.
+ */
+export function checkPrOpenScope(input: {
+  callerSessionId?: string
+  targetId: string
+  rows: readonly PrOpenScopeRow[]
+}): string | undefined {
+  const caller = input.callerSessionId
+  if (!caller || caller === input.targetId) return undefined
+  const byId = new Map(input.rows.map(r => [r.id, r]))
+  // Walk the target's ancestry: the caller must be on it.
+  const seen = new Set<string>()
+  let cursor = byId.get(input.targetId)?.parentSessionId ?? undefined
+  while (cursor && !seen.has(cursor)) {
+    if (cursor === caller) return undefined
+    seen.add(cursor)
+    cursor = byId.get(cursor)?.parentSessionId ?? undefined
+  }
+  const callerBox = byId.get(caller)?.sandboxId
+  if (callerBox && byId.get(input.targetId)?.sandboxId === callerBox) return undefined
+  return (
+    `session ${caller} may only open a PR for its own session, a session on its own ` +
+    `sandbox box, or a session it spawned (directly or transitively); ${input.targetId} is none of these`
+  )
 }
 
 export type OpenPrForSessionOutcome =
@@ -89,7 +136,9 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
     }
 
     const run = input.run ?? defaultGhRunner
-    const args = ["pr", "create", "--head", branch, "--title", input.title, "--body", input.body]
+    const args = prCreateArgs(branch, input.title, input.body)
+    const refused = input.authorizeArgs?.(args)
+    if (refused) return { opened: false, reason: refused }
     const create = await run(args, input.workspacePath)
     if (create.exitCode !== 0) return { opened: false, reason: `gh pr create exit ${create.exitCode}` }
     const created = parseGhPrCreate("gh", args, create.stdout)

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { buildFooter } from "../pr-provenance.js"
-import { openPrForSession, type OpenPrRegistry } from "../pr-open.js"
+import { checkPrOpenScope, openPrForSession, prCreateArgs, type OpenPrRegistry } from "../pr-open.js"
 import { stampFooterOnPr } from "../pr-provenance-stamp.js"
 import { buildProbeCommand } from "../sandbox-delivery.js"
 
@@ -263,5 +263,58 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
       run: async () => ({ exitCode: 1, stdout: "" }),
     })
     expect(outcome).toMatchObject({ opened: false })
+  })
+})
+
+describe("checkPrOpenScope", () => {
+  const rows = [
+    { id: "orch" },
+    { id: "child", parentSessionId: "orch" },
+    { id: "grandchild", parentSessionId: "child" },
+    { id: "boxA", sandboxId: "sbx_1" },
+    { id: "boxB", sandboxId: "sbx_1" },
+    { id: "loopA", parentSessionId: "loopB" },
+    { id: "loopB", parentSessionId: "loopA" },
+  ]
+
+  it("allows its own session, descendants, and sessions on its own box", () => {
+    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "orch", rows })).toBeUndefined()
+    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "child", rows })).toBeUndefined()
+    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "grandchild", rows })).toBeUndefined()
+    expect(checkPrOpenScope({ callerSessionId: "boxA", targetId: "boxB", rows })).toBeUndefined()
+  })
+
+  it("refuses ancestors, siblings, strangers and other boxes, and survives a parent loop", () => {
+    expect(checkPrOpenScope({ callerSessionId: "child", targetId: "orch", rows })).toContain("may only open a PR")
+    expect(checkPrOpenScope({ callerSessionId: "boxA", targetId: "child", rows })).toContain("may only open a PR")
+    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "boxA", rows })).toContain("may only open a PR")
+    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "loopA", rows })).toContain("may only open a PR")
+  })
+
+  it("does not scope an unidentified caller (operator lane)", () => {
+    expect(checkPrOpenScope({ targetId: "boxA", rows })).toBeUndefined()
+  })
+})
+
+describe("openPrForSession authorizeArgs", () => {
+  it("refuses before gh runs when the argv is not authorized, and passes the exact argv", async () => {
+    const registry = makeRegistry([row({ id: "box", sandboxDeliveryTarget: { branch: "wt/feat" } })])
+    const gh = fakeGh()
+    const seen: Array<readonly string[]> = []
+    const outcome = await openPrForSession({
+      sessionId: "box",
+      registry,
+      workspacePath: "/tmp",
+      title: "T",
+      body: "B",
+      run: gh.run,
+      authorizeArgs: args => {
+        seen.push(args)
+        return "nope"
+      },
+    })
+    expect(outcome).toEqual({ opened: false, reason: "nope" })
+    expect(seen).toEqual([prCreateArgs("wt/feat", "T", "B")])
+    expect(gh.calls).toEqual([])
   })
 })

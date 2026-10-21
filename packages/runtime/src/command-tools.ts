@@ -86,7 +86,7 @@ import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
-import { openPrForSession } from "./pr-open.js"
+import { checkPrOpenScope, openPrForSession } from "./pr-open.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
@@ -527,7 +527,7 @@ export function registerCommandTools(
 
   server.tool(
     "pr_open",
-    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'.",
+    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. Gated like command_execute: `gh` must be allowlisted (with an argv that permits `gh pr create`) in `<workspace>/.agentproto/allowed-commands.json`, and a calling session may only open a PR for itself, a session on its own sandbox box, or a session it spawned (directly or transitively); anything else is refused.",
     {
       ...sessionRefSchema(z),
       title: z.string().min(1).describe("PR title."),
@@ -548,10 +548,42 @@ export function registerCommandTools(
           isError: true,
         }
       }
+      const refuse = (error: string) => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ opened: false, error }) }],
+        isError: true,
+      })
+      // Scope: a session may only open a PR for itself, its own box, or a
+      // session it spawned. Without this any caller could open a PR, under
+      // the host's gh token, for any session's pushed branch.
+      const outOfScope = checkPrOpenScope({
+        ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+        targetId: ref.id,
+        rows: opts.registry.list({ includeArchived: true }),
+      })
+      if (outOfScope) return refuse(`pr_open refused: ${outOfScope}`)
+      // Same default-deny allowlist as command_execute: `pr_open` runs `gh`
+      // on the host, so `gh` (with an argv the allowlist permits) must be in
+      // the workspace's allowed-commands.json.
+      const allowlistEntries = await loadAllowlistEntries(opts.workspace)
+      const allowlistPath = join(opts.workspace, ALLOWLIST_REL)
+      if (!allowlistEntries.some(e => e.command === "gh")) {
+        return refuse(
+          `pr_open refused: 'gh' is not in the allowlist. Add it to ${allowlistPath} ` +
+            `under "commands": [...] to let pr_open run \`gh pr create\` on the host.`,
+        )
+      }
+      // The exact argv is only known once the branch is resolved: checked
+      // right before `gh` runs, against any "args" constraints for 'gh'.
+      const authorizeArgs = (args: readonly string[]): string | undefined =>
+        isCommandAllowed(allowlistEntries, "gh", [...args])
+          ? undefined
+          : `pr_open refused: 'gh' is allowlisted but not for \`gh pr create\`. ` +
+            `Check the "args" constraints for 'gh' in ${allowlistPath}.`
       const outcome = await openPrForSession({
         sessionId: ref.id,
         registry: opts.registry,
         workspacePath: opts.workspace,
+        authorizeArgs,
         // The caller of pr_open is the OPENER (usually the orchestrator
         // session relaying the box's request) — shown as such on the footer.
         ...(opts.callerSessionId ? { openedBy: opts.callerSessionId } : {}),
