@@ -9215,8 +9215,8 @@ export function createSessionsRegistry(opts?: {
    * that `transcript_search` / `transcript_read` exist, so the session can
    * recover whatever the summary dropped. A harness whose compact command
    * takes an argument gets that instruction on the command itself
-   * (claude-code: `/compact <instructions>`); for every harness the same
-   * one-line reminder is armed as a pending note and rides along with the
+   * (claude-code: `/compact <instructions>`); every other harness gets the
+   * same one-line reminder as a pending note that rides along with the
    * NEXT prompt the session receives, never as a turn of its own.
    */
   async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
@@ -9267,7 +9267,11 @@ export function createSessionsRegistry(opts?: {
     // autocompaction, also when no resume prompt is sent (the idle case):
     // arm it for the next prompt the session receives. It never starts a
     // turn of its own.
-    rt.pendingAutoCompactNote = buildAutoCompactTranscriptNote(autoCompactTranscriptPath(rt))
+    // A harness that took the pointer on the compact command itself
+    // already has it: arming it again would deliver the same line twice.
+    if (!takesInstructions) {
+      rt.pendingAutoCompactNote = buildAutoCompactTranscriptNote(autoCompactTranscriptPath(rt))
+    }
     return { ...(goal !== undefined ? { goal } : {}), snapshot }
   }
 
@@ -9280,10 +9284,12 @@ export function createSessionsRegistry(opts?: {
    * The runtime state of an idle session, read at the moment the
    * autocompact fires: what was going on when the session was compacted.
    *
-   * `awaitingInput` means the session asked something (or asked for a
-   * permission) and the answer has not come yet, an open thread, i.e. work
-   * in progress. A session that merely finished its work carries none of
-   * these flags, and gets no resume prompt.
+   * A session parked on an unanswered question (`awaitingInput`) is
+   * deliberately not read here: the resume prompt would clear the parked
+   * question and tell the agent to carry on without its answer. Likewise a
+   * `cancelled` turn end (a user stop) does not count as work in progress.
+   * A session that merely finished its work carries none of these flags,
+   * and gets no resume prompt.
    */
   function autoCompactSnapshot(rt: SessionRuntime): WorkInProgressSnapshot {
     return {
@@ -9291,7 +9297,6 @@ export function createSessionsRegistry(opts?: {
         (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
       pendingToolCall:
         rt.desc.awaitingPermission === true || (rt.activeToolCalls?.size ?? 0) > 0,
-      awaitingInput: rt.desc.awaitingInput === true,
       lastTurnOutcome: deriveLastTurnOutcome({
         reason: rt.desc.lastTurnReason,
         errored: rt.desc.lastTurnErroredAt !== undefined,

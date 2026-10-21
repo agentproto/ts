@@ -36,8 +36,10 @@
  *     That is decided by {@link hasWorkInProgress} on a snapshot of the
  *     runtime state captured BEFORE the `/compact` prompt went out: a
  *     background task outstanding, a tool call still unanswered (or a
- *     parked permission request), an unanswered prompt, or a last turn
- *     that ended on an error, a cancellation or an interruption. The
+ *     parked permission request), or a last turn that ended on an error
+ *     or an interruption. A user stop (`cancelled`) and a session parked
+ *     on an unanswered question are NOT work in progress: resuming would
+ *     restart what the user stopped, or drop the pending question. The
  *     session TITLE and the checkpoint's goal text are NEVER the trigger:
  *     the checkpoint goal falls back to the title, so a goal-based rule
  *     fires on essentially every session and spends a turn to wake an
@@ -47,8 +49,8 @@
  *     reminder that `transcript_search` / `transcript_read` exist, so the
  *     session can look up whatever the summary dropped. A harness whose
  *     compact command takes instructions carries it there (claude-code:
- *     `/compact <instructions>`); for every harness a one-line note is
- *     armed as well and rides along with the NEXT prompt the session
+ *     `/compact <instructions>`); for every other harness a one-line note
+ *     is armed instead and rides along with the NEXT prompt the session
  *     receives, never as a turn of its own.
  */
 
@@ -170,9 +172,6 @@ export interface WorkInProgressSnapshot {
   backgroundTaskOutstanding: boolean
   /** A tool call is open and unanswered (or a permission request is parked). */
   pendingToolCall: boolean
-  /** The session asked something (or asked for a permission) and the
-   *  answer has not come yet. */
-  awaitingInput: boolean
   /** How the last turn ended. */
   lastTurnOutcome: LastTurnOutcome
 }
@@ -234,9 +233,9 @@ export function compactCommandTakesInstructions(harness: string | undefined): bo
  * automatic compaction. Pure: no I/O, no timers, no side effects.
  *
  * A resume prompt is only worth a turn when the session was in the middle
- * of something: a background task still running, a tool call still open, a
- * question still unanswered, or a turn that died on an error, a
- * cancellation or an interruption. An idle session that finished its work
+ * of something: a background task still running, a tool call still open, or
+ * a turn that died on an error or an interruption. A cancelled turn (a user
+ * stop) and a pending question are left alone. An idle session that finished its work
  * (or never started any) gets its context freed and nothing else: waking it
  * up would spend a turn and a model call for nothing.
  *
@@ -248,10 +247,15 @@ export function compactCommandTakesInstructions(harness: string | undefined): bo
 export function hasWorkInProgress(snapshot: WorkInProgressSnapshot): boolean {
   if (snapshot.backgroundTaskOutstanding) return true
   if (snapshot.pendingToolCall) return true
-  if (snapshot.awaitingInput) return true
+  // `cancelled` is deliberately NOT work in progress: a user stop
+  // (`interruptSession`) cancels the turn through the adapter and reports
+  // exactly that reason, and waking a session the user just stopped would
+  // undo their intent. A session parked on an unanswered question
+  // (`awaitingInput`) is not a trigger either: the resume prompt would
+  // clear the parked question and tell the agent to carry on without the
+  // answer it is waiting for.
   return (
     snapshot.lastTurnOutcome === "error" ||
-    snapshot.lastTurnOutcome === "cancelled" ||
     snapshot.lastTurnOutcome === "interrupted"
   )
 }

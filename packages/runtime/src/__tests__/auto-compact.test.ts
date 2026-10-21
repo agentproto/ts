@@ -392,7 +392,6 @@ describe("hasWorkInProgress", () => {
   const idle: WorkInProgressSnapshot = {
     backgroundTaskOutstanding: false,
     pendingToolCall: false,
-    awaitingInput: false,
     lastTurnOutcome: "completed",
   }
 
@@ -408,16 +407,12 @@ describe("hasWorkInProgress", () => {
     expect(hasWorkInProgress({ ...idle, pendingToolCall: true })).toBe(true)
   })
 
-  it("is true while the session is awaiting an answer", () => {
-    expect(hasWorkInProgress({ ...idle, awaitingInput: true })).toBe(true)
-  })
-
   it("is true when the last turn ended on an error", () => {
     expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "error" })).toBe(true)
   })
 
-  it("is true when the last turn was cancelled", () => {
-    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "cancelled" })).toBe(true)
+  it("is false when the last turn was cancelled (a user stop must not be resumed)", () => {
+    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "cancelled" })).toBe(false)
   })
 
   it("is true when the last turn was interrupted", () => {

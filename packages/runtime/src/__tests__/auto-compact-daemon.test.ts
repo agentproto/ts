@@ -150,9 +150,10 @@ describe("autocompact at the turn boundary", () => {
     expect(resume).toContain("transcript_read")
   })
 
-  it("injects a resume prompt when the session is still awaiting an answer", async () => {
-    // The session asked something and nobody answered yet: an open thread,
-    // i.e. work in progress.
+  it("does not resume a session parked on an unanswered question", async () => {
+    // The resume prompt would clear the parked question and tell the agent
+    // to carry on without the answer it is waiting for. Compaction still
+    // happens; the resume prompt does not.
     const h = harness(200_000, 1_000_000)
     let id = ""
     const original = h.send.bind(h)
@@ -162,9 +163,24 @@ describe("autocompact at the turn boundary", () => {
     }
     id = spawn(h, 150_000)
     await reg.sendPrompt(id, "do the thing")
-    await vi.waitFor(() =>
-      expect(h.prompts.some(p => p.startsWith("[auto-compact]"))).toBe(true),
-    )
+    await vi.waitFor(() => expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+    await new Promise(r => setTimeout(r, 200))
+    expect(h.prompts.some(p => p.startsWith("[auto-compact]"))).toBe(false)
+  })
+
+  it("does not resume a session whose last turn was cancelled (a user stop)", async () => {
+    const h = harness(200_000, 1_000_000)
+    const original = h.send.bind(h)
+    h.send = async function* (message) {
+      for await (const evt of original(message)) {
+        yield evt.kind === "turn-end" ? { ...evt, reason: "cancelled" } : evt
+      }
+    }
+    const id = spawn(h, 150_000)
+    await reg.sendPrompt(id, "do the thing")
+    await vi.waitFor(() => expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+    await new Promise(r => setTimeout(r, 200))
+    expect(h.prompts.some(p => p.startsWith("[auto-compact]"))).toBe(false)
   })
 
   it("carries the transcript path and the lookup tools on the compact command for claude-code", async () => {
