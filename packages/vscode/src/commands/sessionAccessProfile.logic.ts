@@ -48,7 +48,7 @@ export function accessRowsForSession(input: {
 }
 
 /**
- * The daemon call a chosen profile turns into — the restart-with-override
+ * The daemon call a chosen profile turns into: the restart-with-override
  * route (`POST /sessions/:id/restart`) with the profile as the ACCESS
  * override. The daemon keeps the session's POSTURE (an omitted axis is
  * carried forward from the prior session) and re-arms the cron jobs that
@@ -64,7 +64,7 @@ export interface AccessProfileApplier {
 /**
  * Apply a chosen profile: restart the session onto it.
  *
- * Returns the RESTARTED session (a restart always mints a fresh id — the
+ * Returns the RESTARTED session (a restart always mints a fresh id, the
  * conversation is resumed, the row is not reused) or the daemon's refusal
  * on failure. Never throws: a rejected profile (not eligible on this
  * session's route) is a real answer the UI has to show, not a crash.

@@ -5358,7 +5358,7 @@ export interface ProfileSwitchTarget {
   id: string
   /** Human label for the row (name/label, never key material). */
   label: string
-  /** Why the session was NOT selected — present on the skipped rows. */
+  /** Why the session was NOT selected: present on the skipped rows. */
   reason?: string
 }
 
@@ -5368,8 +5368,8 @@ export interface ProfileSwitchTarget {
  * Only the sessions that actually bill against the `from` profile move
  * (a session's `accessProfile.profileRef` is the wallet it is attached
  * to). A session with no billing axis (a PTY/command session) can never
- * carry a profile, so it is reported as skipped rather than restarted —
- * the daemon would refuse it anyway.
+ * carry a profile, so it is reported as skipped rather than restarted (the
+ * daemon would refuse it anyway).
  */
 export function planProfileSwitch(
   sessions: readonly SessionDescriptor[],
@@ -5392,7 +5392,7 @@ export function planProfileSwitch(
 
 /**
  * `agentproto sessions switch-profile --from <profileRef> --to <profileRef>`
- * — move EVERY session that bills against one named auth profile onto
+ * Move EVERY session that bills against one named auth profile onto
  * another, in one command (the fleet-wide twin of the VS Code extension's
  * per-session profile picker).
  *
@@ -5455,10 +5455,10 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
       process.stdout.write(JSON.stringify({ from, to, moved: [], skipped }, null, 2) + "\n")
     } else {
       process.stdout.write(
-        `agentproto sessions switch-profile: no session bills against "${from}" — nothing to move.\n`,
+        `agentproto sessions switch-profile: no session bills against "${from}": nothing to move.\n`,
       )
       for (const row of skipped) {
-        process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+        process.stdout.write(`  skipped ${row.id} (${row.label}): ${row.reason}\n`)
       }
     }
     return 0
@@ -5477,7 +5477,7 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
         process.stdout.write(`  ${row.id} (${row.label})\n`)
       }
       for (const row of skipped) {
-        process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+        process.stdout.write(`  skipped ${row.id} (${row.label}): ${row.reason}\n`)
       }
     }
     return 0
@@ -5523,10 +5523,10 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
       }
     }
     for (const row of skipped) {
-      process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+      process.stdout.write(`  skipped ${row.id} (${row.label}): ${row.reason}\n`)
     }
     for (const row of failed) {
-      process.stderr.write(`agentproto sessions switch-profile: ${row.id} — ${row.error}\n`)
+      process.stderr.write(`agentproto sessions switch-profile: ${row.id} failed: ${row.error}\n`)
     }
     process.stdout.write(
       `agentproto sessions switch-profile: ${moved.length} session(s) moved from "${from}" to "${to}"` +

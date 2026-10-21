@@ -239,7 +239,7 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
 
     const restarted = await restartAgentSession(registry, resolver, prev, {
       forceAgentResume: true,
-      // ONLY the wallet moves — the posture (what the agent may DO) is
+      // ONLY the wallet moves: the posture (what the agent may DO) is
       // carried forward untouched, so switching profiles never silently
       // changes the session's permission posture.
       overrides: { access: { profileRef: "work-anthropic-key" } },

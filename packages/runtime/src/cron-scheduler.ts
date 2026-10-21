@@ -441,7 +441,7 @@ export interface CronScheduler {
 
   /**
    * Re-point every `prompt-session` job that named `fromSessionId` at
-   * `toSessionId` — the cron RE-ARM a session restart needs. A restart
+   * `toSessionId`: the cron RE-ARM a session restart needs. A restart
    * retires the old row and continues the same conversation under a NEW id,
    * so a job still naming the old id would fail its next tick with "session
    * not found" instead of following the conversation.

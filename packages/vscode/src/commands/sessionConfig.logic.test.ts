@@ -347,7 +347,7 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
     const { rows } = resolveAccessRows({ currentRoute: direct, profiles })
     // Every profile the daemon knows is LISTED (the picker must show the
     // profiles that exist); the ones this route rejects are flagged, not
-    // hidden — the daemon stays the judge when the restart is attempted.
+    // hidden: the daemon stays the judge when the restart is attempted.
     expect(rows.filter(r => !r.addProfile).map(r => r.value)).toEqual([
       "jeremy-max",
       "work-anthropic-key",
@@ -372,7 +372,7 @@ describe("resolveAccessRows — eligibility + ineligible-profile re-pick (SPEC R
       attachedProfileRef: "jeremy-max",
     })
     expect(ineligibleAttached).toBe("jeremy-max")
-    // No eligible profile on this route — the known profiles are still
+    // No eligible profile on this route: the known profiles are still
     // listed (flagged), and the stale wallet is flagged as ineligible
     // rather than carried over silently.
     expect(rows.filter(r => !r.addProfile).every(r => r.eligible === false)).toBe(true)

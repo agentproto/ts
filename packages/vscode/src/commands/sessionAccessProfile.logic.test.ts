@@ -106,7 +106,7 @@ describe("accessRowsForSession", () => {
   it("still LISTS a profile that is not eligible for the route (flagged, never hidden)", () => {
     // The picker used to show only the route-eligible profiles, so a session
     // whose route the catalog did not know offered NOTHING but
-    // "+ add profile" — the existing profiles in
+    // "+ add profile": the existing profiles in
     // ~/.agentproto/auth-profiles.json were invisible. Every profile the
     // daemon knows is listed; the ones the route rejects are flagged, and
     // the daemon stays the judge when the restart is attempted.
@@ -259,7 +259,7 @@ describe("withEligibleAccess (model switch across routes)", () => {
   })
 })
 
-describe("applyAccessProfile — the chosen profile becomes a restart-with-override", () => {
+describe("applyAccessProfile: the chosen profile becomes a restart-with-override", () => {
   it("restarts the session onto the profile (POST /sessions/:id/restart, access.profileRef)", async () => {
     const calls: Array<{ id: string; overrides: unknown }> = []
     const result = await applyAccessProfile({

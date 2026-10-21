@@ -3,7 +3,7 @@
  *
  * A restart retires the old session row and continues the conversation under
  * a NEW id. A `prompt-session` cron job that named the old id would fail its
- * next tick with "session not found" — so the restart re-arms it: the job's
+ * next tick with "session not found", so the restart re-arms it: the job's
  * target moves to the successor id, in memory AND in the persisted
  * `cron-jobs.json`.
  *

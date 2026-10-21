@@ -145,19 +145,19 @@ async function setSessionAccessProfileCommand(
   await store.refreshAll()
   if (!applied.ok) {
     vscode.window.showErrorMessage(
-      `agentproto: could not attach \"${plan.profileRef}\" — ${daemonErrorText(applied.error)}`,
+      `agentproto: could not attach \"${plan.profileRef}\": ${daemonErrorText(applied.error)}`,
     )
     return
   }
   const result = applied.restart
   if (!result) {
     vscode.window.showErrorMessage(
-      `agentproto: could not attach \"${plan.profileRef}\" — the daemon returned an unrecognised result`,
+      `agentproto: could not attach \"${plan.profileRef}\": the daemon returned an unrecognised result`,
     )
     return
   }
   vscode.window.showInformationMessage(
-    `${describeRestart(session, result)} — now on profile \"${plan.profileRef}\".`,
+    `${describeRestart(session, result)}: now on profile \"${plan.profileRef}\".`,
   )
   await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
 }
@@ -170,7 +170,7 @@ function daemonErrorText(raw: unknown): string {
     const text = raw.trim()
     if (!text) return "the daemon returned an unrecognised result"
     // The client wraps a failed request as "POST … failed: HTTP 400 {json}";
-    // the daemon's own reason is inside that JSON — show it, not the wrapper.
+    // the daemon's own reason is inside that JSON: show it, not the wrapper.
     const start = text.indexOf("{")
     if (start >= 0) {
       try {
@@ -183,7 +183,7 @@ function daemonErrorText(raw: unknown): string {
           nested?.message ?? nested?.reason ?? parsed.message ?? parsed.error
         if (typeof message === "string" && message.length > 0) return message
       } catch {
-        // not JSON — fall through to the raw text
+        // not JSON: fall through to the raw text
       }
     }
     return text

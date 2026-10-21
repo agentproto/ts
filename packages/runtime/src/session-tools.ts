@@ -665,7 +665,7 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.deviceMirrorSync`. */
   deviceMirrorSync?: RegisterAgentToolsOptions["deviceMirrorSync"]
-  /** Optional cron scheduler — used by `session_restart` to RE-ARM the
+  /** Optional cron scheduler: used by `session_restart` to RE-ARM the
    *  cron jobs that targeted the restarted session: a restart continues the
    *  conversation under a NEW id, so a `prompt-session` job naming the old
    *  id would fail its next tick. Omitted → no re-arm (the restart still
@@ -5366,7 +5366,7 @@ export function registerSessionTools(
             ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
             ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
           })
-          // Cron re-arm — same rule as the plain restart below: the old row
+          // Cron re-arm: same rule as the plain restart below: the old row
           // is retired, the conversation continues under the NEW id, so a
           // `prompt-session` cron job naming the old id is re-pointed.
           const rearmedCrons = opts.cronScheduler

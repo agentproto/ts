@@ -6648,7 +6648,7 @@ async function handleSessions(
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
   mcpObservations?: McpObservationStore,
-  // The daemon's cron scheduler — `POST /sessions/:id/restart` re-arms the
+  // The daemon's cron scheduler: `POST /sessions/:id/restart` re-arms the
   // `prompt-session` jobs that targeted the restarted session (the restart
   // continues the conversation under a NEW id). Absent ⇒ no re-arm.
   cronScheduler?: import("./cron-scheduler.js").CronScheduler,

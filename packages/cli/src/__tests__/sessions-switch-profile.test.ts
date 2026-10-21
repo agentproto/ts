@@ -1,6 +1,6 @@
 /**
  * `agentproto sessions switch-profile --from <profileRef> --to <profileRef>`
- * — move every session that bills against one named auth profile onto
+ * Move every session that bills against one named auth profile onto
  * another, in one command. Follows the fake-daemon pattern in
  * cron-agent-target.test.ts.
  *
