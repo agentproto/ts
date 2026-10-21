@@ -2099,7 +2099,7 @@ export async function startHttpServer(
     if (!authorizeMcp(req, res)) return
     {
       const claimed = resolveCallerSessionId(req)
-      if (claimed && opts.sessions && externalClaimTrusted(req)) {
+      if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
         opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
       }
     }
