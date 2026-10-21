@@ -51,7 +51,7 @@ import {
 } from "node:fs"
 import { Cron } from "croner"
 import { loadAllowlist, runCommand } from "./command-tools.js"
-import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
+import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterLister, AgentAdapterResolver } from "./http-server.js"
 import { restartAgentSession } from "./session-restart-core.js"
@@ -79,7 +79,21 @@ export type CronAction =
     } & DetachedAgentStartInput)
   | {
       kind: "prompt-session"
-      sessionId: string
+      /**
+       * Id of the session to re-prompt. Mutually exclusive with `agent`.
+       * A persisted job carrying a plain `sessionId` keeps working exactly
+       * as before — the id is followed to its successor / revived in place,
+       * as it always was.
+       */
+      sessionId?: string
+      /**
+       * Agent-label target: the job re-prompts whichever LIVE session
+       * carries this label, resolved at FIRE time (never at create time), so
+       * the job survives the target session being relaunched under a new id
+       * (a restart / continue-fresh keeps the label, the id changes).
+       * Mutually exclusive with `sessionId`.
+       */
+      agent?: string
       prompt: string
     }
   | {
@@ -119,6 +133,55 @@ export function assertCronActionAllowed(action: CronAction): void {
       `cron action kind "tool" cannot dispatch '${action.tool}': cron jobs may not schedule ` +
         "cron_* (self-scheduling) or create_*/delete_* authoring verbs (unattended tool/agent minting)",
     )
+  }
+}
+
+/**
+ * The CLI/MCP spelling of an agent-label target: `agent:<label>`. Accepted
+ * wherever a `prompt-session` target is spelled, and normalized to the
+ * action's `agent` field at create time.
+ */
+export const CRON_AGENT_TARGET_PREFIX = "agent:"
+
+/**
+ * Normalize a `prompt-session` action's target and validate it.
+ *
+ * - `sessionId: "agent:<label>"` becomes `{ agent: "<label>" }` (the
+ *   CLI/MCP spelling of the same thing).
+ * - Exactly ONE target must be given: a session id OR an agent label, never
+ *   both and never neither.
+ *
+ * A plain `sessionId` job is returned unchanged (minus surrounding
+ * whitespace) so persisted jobs keep working exactly as before.
+ */
+export function normalizeCronAction(action: CronAction): CronAction {
+  if (action.kind !== "prompt-session") return action
+  let sessionId = action.sessionId?.trim() || undefined
+  let agent = action.agent?.trim() || undefined
+  if (sessionId && sessionId.toLowerCase().startsWith(CRON_AGENT_TARGET_PREFIX)) {
+    if (agent) {
+      throw new Error(
+        `cron prompt-session action names two targets: sessionId '${sessionId}' and agent label '${agent}' — give exactly one`,
+      )
+    }
+    agent = sessionId.slice(CRON_AGENT_TARGET_PREFIX.length).trim() || undefined
+    sessionId = undefined
+  }
+  if (sessionId && agent) {
+    throw new Error(
+      `cron prompt-session action names two targets: sessionId '${sessionId}' and agent label '${agent}' — give exactly one`,
+    )
+  }
+  if (!sessionId && !agent) {
+    throw new Error(
+      "cron prompt-session action needs a target: a sessionId or an agent label (agent:<label>)",
+    )
+  }
+  return {
+    kind: "prompt-session",
+    ...(sessionId ? { sessionId } : {}),
+    ...(agent ? { agent } : {}),
+    prompt: action.prompt,
   }
 }
 
@@ -488,6 +551,17 @@ function loadJobs(persistPath: string): Map<string, JobState> {
     )
       continue
     const job = item as CronJob
+    // Normalize the `prompt-session` target on load too, so a persisted
+    // `sessionId: "agent:<label>"` (hand-edited cron-jobs.json) becomes an
+    // agent-label target. A malformed action is left as it is — it fails
+    // loudly at fire time instead of breaking the boot.
+    if (job.action && job.action.kind === "prompt-session") {
+      try {
+        job.action = normalizeCronAction(job.action)
+      } catch {
+        // Keep the persisted action; the tick reports the problem.
+      }
+    }
     // Ensure required fields have defaults for forward-compat.
     job.recurring = job.recurring ?? true
     job.active = job.active ?? true
@@ -669,9 +743,84 @@ export function createCronScheduler(opts: {
     persistNow()
   }
 
+  // ── Agent-label target resolution (fire time) ─────────────────────
+
+  /**
+   * True when a session carries the given agent label. The mutable spawn
+   * `label` (the field the registry's own dedupe-by-label check keys on) and
+   * the daemon-stamped immutable `operatorLabel` both count — the operator's
+   * handle for an agent is either of them. Exact match, case-insensitive.
+   */
+  const labelMatches = (desc: SessionDescriptor, want: string): boolean => {
+    const w = want.trim().toLowerCase()
+    if (!w) return false
+    const label = desc.label?.trim().toLowerCase()
+    const operator = desc.operatorLabel?.trim().toLowerCase()
+    return label === w || operator === w
+  }
+
+  /** Newest first — the registry's own "most recently started" ordering. */
+  const byStartedDesc = (a: SessionDescriptor, b: SessionDescriptor): number =>
+    (b.startedAt ?? "").localeCompare(a.startedAt ?? "") || b.id.localeCompare(a.id)
+
+  const isLive = (desc: SessionDescriptor | undefined): desc is SessionDescriptor =>
+    !!desc && !isRetired(desc) && (desc.status === "running" || desc.status === "starting")
+
+  /** Every session (archived ones included) carrying the given label. */
+  const sessionsWithLabel = (label: string): SessionDescriptor[] => {
+    if (typeof registry.list !== "function") return []
+    const all = registry.list({ includeArchived: true })
+    return all.filter(d => labelMatches(d, label)).sort(byStartedDesc)
+  }
+
+  type LabelTarget =
+    | { kind: "live"; desc: SessionDescriptor }
+    | { kind: "successor"; desc: SessionDescriptor; from: SessionDescriptor }
+    | { kind: "restart"; desc: SessionDescriptor }
+
+  /**
+   * Resolve an agent label to the session the job should prompt, at FIRE
+   * time:
+   *
+   *   1. the newest LIVE session with that label (a relaunched agent keeps
+   *      its label and gets a new id — this is what makes the job survive
+   *      the relaunch);
+   *   2. otherwise, a retired session's live successor (the successor chain
+   *      the id path already follows);
+   *   3. otherwise, an ENDED (not retired) session — revived through the
+   *      same restart path the id path uses for a dead process;
+   *   4. otherwise the tick fails, naming the label.
+   */
+  const resolveLabelTarget = (label: string, jobId: string): LabelTarget => {
+    const candidates = sessionsWithLabel(label)
+    const live = candidates.find(d => isLive(d))
+    if (live) return { kind: "live", desc: live }
+
+    for (const d of candidates) {
+      if (!isRetired(d)) continue
+      const successorId = resolveSuccessor(id => registry.get(id), d.id)
+      const successor = successorId ? registry.get(successorId) : undefined
+      if (isLive(successor)) {
+        return { kind: "successor", desc: successor, from: d }
+      }
+    }
+
+    const dead = candidates.find(d => !isRetired(d) && d.processAlive === false)
+    if (dead) return { kind: "restart", desc: dead }
+
+    throw new Error(
+      `cron job '${jobId}': no session matches agent label '${label}'` +
+        (candidates.length > 0
+          ? ` (${candidates.length} session(s) carry it, none alive)`
+          : " (no session carries that label)"),
+    )
+  }
+
   // ── Action executor ───────────────────────────────────────────────
 
-  const executeAction = async (job: CronJob): Promise<{ ok: boolean; summary: string; sessionId?: string }> => {
+  const executeAction = async (
+    job: CronJob,
+  ): Promise<{ ok: boolean; summary: string; sessionId?: string; observe?: boolean }> => {
     const action = job.action
 
     if (action.kind === "command") {
@@ -733,7 +882,73 @@ export function createCronScheduler(opts: {
     }
 
     if (action.kind === "prompt-session") {
-      const desc = registry.get(action.sessionId)
+      // ── Agent-label target (`agent:<label>`) ──────────────────────
+      // Resolved at FIRE time, so the job survives the target session
+      // being relaunched under a new id: the label rides along, the id
+      // does not. The label comes from the action's `agent` field, or from
+      // the `agent:<label>` spelling in `sessionId` (a hand-edited
+      // cron-jobs.json, say).
+      const labelTarget =
+        action.agent ??
+        (action.sessionId && action.sessionId.toLowerCase().startsWith(CRON_AGENT_TARGET_PREFIX)
+          ? action.sessionId.slice(CRON_AGENT_TARGET_PREFIX.length).trim()
+          : undefined)
+      if (labelTarget) {
+        const label = labelTarget
+        const target = resolveLabelTarget(label, job.id)
+        if (target.kind === "restart") {
+          // Same restart path the id path uses for a dead process: the
+          // agent is revived (agent-cli resume, never a PTY-native one —
+          // the job needs `sendPrompt` on the result) and re-prompted.
+          if (!resolveAgentAdapter) {
+            throw new Error(
+              `cron job '${job.id}': agent label '${label}' resolves to session ` +
+                `'${target.desc.id}', which is not alive, and agent restart is not ` +
+                "enabled (no resolveAgentAdapter)",
+            )
+          }
+          const restarted = await restartAgentSession(
+            registry,
+            resolveAgentAdapter,
+            target.desc,
+            { forceAgentResume: true, ...(daemonMcpUrl ? { daemonMcpUrl } : {}) },
+          )
+          await registry.sendPrompt(restarted.desc.id, action.prompt, { source: "cron" })
+          return {
+            ok: true,
+            sessionId: restarted.desc.id,
+            // A re-prompt is not a spawned session's first turn — don't
+            // hand it to the turn observer.
+            observe: false,
+            summary:
+              `agent label '${label}' → session '${target.desc.id}' was gone — ` +
+              `resumed as '${restarted.desc.id}' ` +
+              `(${restarted.resumeVia || "fresh spawn, no continuity"}) and re-prompted`,
+          }
+        }
+        if (target.desc.busy) {
+          return {
+            ok: true,
+            sessionId: target.desc.id,
+            observe: false,
+            summary: `agent label '${label}' → session ${target.desc.id} busy (mid-turn), tick skipped`,
+          }
+        }
+        await registry.sendPrompt(target.desc.id, action.prompt, { source: "cron" })
+        return {
+          ok: true,
+          sessionId: target.desc.id,
+          observe: false,
+          summary:
+            target.kind === "successor"
+              ? `agent label '${label}' → session '${target.from.id}' is retired — ` +
+                  `re-prompted its successor '${target.desc.id}'`
+              : `agent label '${label}' → re-prompted session ${target.desc.id}`,
+        }
+      }
+
+      // ── Session-id target (unchanged) ────────────────────────────
+      const desc = registry.get(action.sessionId!)
       if (!desc) {
         throw new Error(
           `cron job '${job.id}': session '${action.sessionId}' not found`,
@@ -799,7 +1014,7 @@ export function createCronScheduler(opts: {
       // Same underlying call as the agent_prompt MCP tool / POST
       // /sessions/:id/prompt — re-prompts the existing session in place
       // rather than spawning a new one.
-      await registry.sendPrompt(action.sessionId, action.prompt, { source: "cron" })
+      await registry.sendPrompt(action.sessionId!, action.prompt, { source: "cron" })
       return {
         ok: true,
         summary: `re-prompted session ${action.sessionId}`,
@@ -970,7 +1185,7 @@ export function createCronScheduler(opts: {
     job.lastRunAt = startedAt
     sessionEvents.emit({ type: "cron:fired", jobId: job.id, label: job.label, ts: startedAt })
 
-    let result: { ok: boolean; summary: string; sessionId?: string }
+    let result: { ok: boolean; summary: string; sessionId?: string; observe?: boolean }
     let error: string | undefined
     try {
       result = await executeAction(job)
@@ -999,7 +1214,11 @@ export function createCronScheduler(opts: {
     persistNow()
 
     const sessionId = result.sessionId
-    if (!error && sessionId && observeTurn) {
+    // `observe: false` (a re-prompt of an existing session) is recorded in
+    // the ledger but NOT followed by the turn observer — that observer is
+    // for a SPAWNED session's first turn.
+    const observe = result.observe ?? true
+    if (!error && sessionId && observeTurn && observe) {
       state.observing = true
       let obs: CronTurnObservation
       try {
@@ -1063,8 +1282,11 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
-      assertCronActionAllowed(action)
+    async create({ label, schedule, timezone, recurring = true, action: rawAction, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
+      assertCronActionAllowed(rawAction)
+      // Normalizes the `agent:<label>` spelling into the action's `agent`
+      // field and refuses an action that names two (or zero) targets.
+      const action = normalizeCronAction(rawAction)
       // Validate schedule — throws SyntaxError if invalid.
       const cronInstance = parseCron(schedule, timezone)
       await assertCronAdapterResolvable(action, {
@@ -1118,7 +1340,7 @@ export function createCronScheduler(opts: {
       const job = state.job
       const schedule = patch.schedule ?? job.schedule
       const timezone = patch.timezone === null ? undefined : (patch.timezone ?? job.timezone)
-      const action = patch.action ?? job.action
+      const action = normalizeCronAction(patch.action ?? job.action)
       if (!schedule) throw new Error("cron schedule must not be empty")
       assertCronActionAllowed(action)
       const cronInstance = parseCron(schedule, timezone)

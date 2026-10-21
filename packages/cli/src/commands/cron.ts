@@ -53,6 +53,10 @@ Three action kinds:
   --target-session <id>   Re-prompt an existing, already-running session in
                           place — no new session is spawned. Use for a
                           durable session a cron job periodically checks in on.
+                          The target may also be an AGENT LABEL, spelled
+                          'agent:<label>': the job then resolves the label to
+                          the live session carrying it AT FIRE TIME, so it
+                          survives the agent being relaunched under a new id.
 
 --options-json <json|@file> (agent kind only): extra agent_start spawn fields
   beyond the discrete flags, so a cron job can spawn a session exactly like
@@ -66,6 +70,7 @@ Examples:
   agentproto cron add --schedule "* * * * *" --command echo --args hello --once
   agentproto cron add --schedule "0 9 * * 1-5" --adapter claude-code --prompt "daily standup"
   agentproto cron add --schedule "*/15 * * * *" --target-session sess_abc123 --prompt "status?"
+  agentproto cron add --schedule "*/15 * * * *" --target-session agent:pm --prompt "status?"
   agentproto cron add --schedule "0 */2 * * *" --adapter pi --model openrouter/z-ai/glm-5.3-flash \
     --prompt "health check" --options-json '{"mcpServers":[{"name":"gateway","transport":"http","ref":"http://127.0.0.1:18790/mcp"}]}'
   agentproto cron list --json
@@ -217,6 +222,32 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     }
   }
 
+  // The `prompt-session` target: a session id, or an AGENT LABEL spelled
+  // `agent:<label>`. A label target is resolved by the daemon to the live
+  // session carrying that label AT FIRE TIME, so the job survives the agent
+  // being relaunched under a new id.
+  let promptTarget: { sessionId?: string; agent?: string } | undefined
+  if (values["target-session"]) {
+    const target = (values["target-session"] as string).trim()
+    const m = /^agent:(.*)$/i.exec(target)
+    if (m) {
+      const label = (m[1] ?? "").trim()
+      if (!label) {
+        process.stderr.write(
+          "agentproto cron add: --target-session agent:<label> needs a non-empty label\n",
+        )
+        return 2
+      }
+      promptTarget = { agent: label }
+    } else {
+      if (!target) {
+        process.stderr.write("agentproto cron add: --target-session must not be empty\n")
+        return 2
+      }
+      promptTarget = { sessionId: target }
+    }
+  }
+
   const action = values.command
     ? {
         kind: "command" as const,
@@ -228,7 +259,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     : values["target-session"]
       ? {
           kind: "prompt-session" as const,
-          sessionId: values["target-session"] as string,
+          ...promptTarget!,
           prompt: values.prompt as string,
         }
       : {
