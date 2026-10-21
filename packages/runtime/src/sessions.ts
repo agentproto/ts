@@ -144,9 +144,14 @@ import type {
 } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
+  buildAutoCompactCompactInstructions,
+  buildAutoCompactTranscriptNote,
+  compactCommandTakesInstructions,
   createAutoCompactController,
+  deriveLastTurnOutcome,
   type AutoCompactController,
   type AutoCompactOutcome,
+  type WorkInProgressSnapshot,
 } from "./auto-compact.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
@@ -1170,6 +1175,16 @@ export function promptOriginLabel(item: { source?: string; origin?: string }): s
  *  not decide the parent's context-continuity prompt. */
 export function isChildPromptSource(source: string | undefined): boolean {
   return source?.startsWith("child:") === true
+}
+
+/**
+ * True for the runtime's OWN autocompact prompts (the compaction command
+ * and the resume prompt that follows it). They never consume the pending
+ * autocompact note: the compaction is the thing the note is about, and the
+ * resume prompt already cites the transcript path and the lookup tools.
+ */
+export function isRuntimeAutoCompactSource(source: string | undefined): boolean {
+  return source === "runtime:auto-compact" || source === "runtime:auto-compact-resume"
 }
 
 /** Source/origin stamped on notices migrated out of the retired
@@ -3128,6 +3143,14 @@ interface SessionRuntime {
    *  Esc/stop, and an agent may park itself waiting for a go-ahead.
    *  Never set for a bare stop (`interruptSession`), which clears it. */
   pendingInterruptNotice?: string
+  /** One-line reminder armed by an autocompact for a harness whose
+   *  compaction command takes NO instructions (codex / opencode / hermes):
+   *  the path of the full transcript plus the two lookup tools. It is
+   *  prepended, ONCE, to the next USER prompt the session receives
+   *  (`sendPrompt`), never delivered as a turn of its own: waking an idle
+   *  session just to tell it where the transcript is would cost a turn and
+   *  a model call for nothing. Cleared when it is consumed. */
+  pendingAutoCompactNote?: string
   /** In-flight resume promise. Deduplicates concurrent prompt
    *  attempts on a dead agent session — only one resume call hits
    *  the adapter, the rest await this promise. Cleared once
@@ -9098,19 +9121,35 @@ export function createSessionsRegistry(opts?: {
   /**
    * Ask the harness to compact the session's context, the same way the
    * `session_compact` verb does (a `/compact` prompt; hermes gets
-   * `/compress`), and report whether a mission is in progress.
+   * `/compress`), and report the state of the session as it was BEFORE
+   * the compaction went out.
    *
-   * "A mission is in progress" is decided HERE, by the continuity
-   * checkpoint written just before the compaction: a non-empty `goal`
-   * section means there is a goal to carry on with. A session with no goal
-   * still gets its context freed. It is just not told to resume, because
-   * there is nothing to resume.
+   * The snapshot is taken FIRST, on purpose: the compaction is a turn of
+   * its own, and a turn overwrites the turn-end markers
+   * (`lastTurnReason` / `lastTurnErroredAt`) and clears `awaitingInput`.
+   * Read after it, every session would look like a clean, completed turn
+   * and nothing would ever be resumed.
+   *
+   * The compaction itself carries the full transcript path and a reminder
+   * that `transcript_search` / `transcript_read` exist, so the session can
+   * recover whatever the summary dropped. A harness whose compact command
+   * takes an argument gets that instruction on the command itself
+   * (claude-code: `/compact <instructions>`); for the others the same
+   * one-line reminder is armed as a pending note and rides along with the
+   * NEXT user prompt the session receives, never as a turn of its own.
    */
   async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+    const snapshot = autoCompactSnapshot(rt)
     let goal: string | undefined
     try {
       const checkpoint = await checkpointBeforeContextLoss(rt, "auto compaction", false)
-      goal = checkpoint.sections.goal
+      // The checkpoint's goal section falls back to the session TITLE when
+      // the transcript carries no goal, a title is not a mission, so it is
+      // not repeated as one. The goal is optional TEXT in the resume
+      // prompt; it never decides whether that prompt is sent.
+      const checkpointGoal = checkpoint.sections.goal?.trim()
+      const title = rt.desc.title?.trim()
+      if (checkpointGoal && checkpointGoal !== title) goal = checkpointGoal
     } catch (err) {
       appendLine(
         rt,
@@ -9118,16 +9157,62 @@ export function createSessionsRegistry(opts?: {
         "stderr",
       )
     }
-    const cmd = (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes")
-      ? "/compress"
-      : "/compact"
+    const harness = rt.desc.harness ?? rt.desc.adapterSlug ?? ""
+    const cmd = harness.includes("hermes") ? "/compress" : "/compact"
+    // Harness support for a compact ARGUMENT (the instructions that tell
+    // the summary where the full transcript is):
+    //   - claude-code: its CLI accepts `/compact <instructions>`, and the
+    //     adapter advertises the command with an input hint ("optional
+    //     context about what to preserve"), see the ACP
+    //     `available_commands_update` payload.
+    //   - codex / opencode / hermes: the adapter dispatches the command by
+    //     NAME (opencode routes `/compact` to `session.summarize`, hermes
+    //     matches `_handle_slash_command`), so trailing text is not a
+    //     compaction instruction there. Those get the pending note instead.
+    const takesInstructions = compactCommandTakesInstructions(harness)
+    const prompt = takesInstructions
+      ? `${cmd} ${buildAutoCompactCompactInstructions({ transcriptPath: autoCompactTranscriptPath(rt) })}`
+      : cmd
     // The runtime's own compaction prompt: not attributed to a session
     // (`agent:<id>`), so a policy that reserves compaction for the operator
     // (`compactRequiresOperator`) still refuses session-initiated
     // compactions while the runtime may rescue a session on its own.
-    await registry.sendPrompt(rt.desc.id, cmd, { source: "runtime:auto-compact" })
-    const missionInProgress = typeof goal === "string" && goal.trim() !== ""
-    return missionInProgress ? { missionInProgress: true, goal } : { missionInProgress: false }
+    await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact" })
+    if (!takesInstructions) {
+      // No way to hand the instructions to the compaction itself: arm them
+      // for the next user prompt instead (consumed once, no extra turn).
+      rt.pendingAutoCompactNote = buildAutoCompactTranscriptNote(autoCompactTranscriptPath(rt))
+    }
+    return { ...(goal !== undefined ? { goal } : {}), snapshot }
+  }
+
+  /** The absolute path of the session's full transcript. */
+  function autoCompactTranscriptPath(rt: SessionRuntime): string {
+    return rt.desc.eventsPath ?? sessionEventsPath(rt.desc.id, transcriptBaseDir)
+  }
+
+  /**
+   * The runtime state of an idle session, read at the moment the
+   * autocompact fires: what was going on when the session was compacted.
+   *
+   * `awaitingInput` means the session asked something (or asked for a
+   * permission) and the answer has not come yet, an open thread, i.e. work
+   * in progress. A session that merely finished its work carries none of
+   * these flags, and gets no resume prompt.
+   */
+  function autoCompactSnapshot(rt: SessionRuntime): WorkInProgressSnapshot {
+    return {
+      backgroundTaskOutstanding:
+        (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
+      pendingToolCall:
+        rt.desc.awaitingPermission === true || (rt.activeToolCalls?.size ?? 0) > 0,
+      awaitingInput: rt.desc.awaitingInput === true,
+      lastTurnOutcome: deriveLastTurnOutcome({
+        reason: rt.desc.lastTurnReason,
+        errored: rt.desc.lastTurnErroredAt !== undefined,
+        interrupted: rt.desc.killedMidTurn === true,
+      }),
+    }
   }
 
   /**
@@ -9140,7 +9225,9 @@ export function createSessionsRegistry(opts?: {
    *
    * Fires only on an idle session (turn ended, no background task), at
    * most once per compaction, and injects a short resume prompt only when
-   * a mission is in progress.
+   * the session really had WORK IN PROGRESS when it was compacted (see
+   * `hasWorkInProgress`). An idle session that was simply done gets its
+   * context freed and nothing else.
    */
   async function maybeAutoCompact(rt: SessionRuntime): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
@@ -9160,9 +9247,13 @@ export function createSessionsRegistry(opts?: {
       isCompacting: () => rt.contextRescue !== undefined,
       requestCompact: () => requestAutoCompact(rt),
       requestResume: async prompt => {
+        // The resume prompt cites the transcript path and the lookup tools
+        // itself, a pending note armed for the next USER prompt would
+        // repeat it, so drop it.
+        rt.pendingAutoCompactNote = undefined
         await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact-resume" })
       },
-      transcriptPath: () => rt.desc.eventsPath ?? sessionEventsPath(rt.desc.id, transcriptBaseDir),
+      transcriptPath: () => autoCompactTranscriptPath(rt),
       log: line => {
         appendLine(rt, line, "stdout")
         transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
@@ -11883,6 +11974,33 @@ export function createSessionsRegistry(opts?: {
         : matchStructuredQuestionAnswer(rt, message)
       if (structuredAnswer) {
         await answerStructuredQuestion(rt, structuredAnswer)
+        return
+      }
+      // A pending autocompact note (the transcript path + the two lookup
+      // tools) rides along with the NEXT USER prompt this session receives:
+      // it is delivered as part of that prompt, never as a turn of its own
+      // (waking an idle session just to tell it where the transcript is
+      // would cost a turn and a model call for nothing). Runtime-internal
+      // autocompact prompts (the compaction itself, the resume prompt) do
+      // not consume it: the resume prompt already cites the path.
+      //
+      // A prompt that starts with "/" is left alone: the adapters dispatch
+      // a slash command on the LEADING slash of the first text block, so
+      // gluing the note in front of it would turn the command into prose.
+      // Such a prompt does not consume the note either, it stays armed
+      // for the next ordinary prompt.
+      const note = rt.pendingAutoCompactNote
+      if (
+        note !== undefined &&
+        !isRuntimeAutoCompactSource(opts?.source) &&
+        typeof message === "string" &&
+        !message.trimStart().startsWith("/")
+      ) {
+        rt.pendingAutoCompactNote = undefined
+        await runAgentTurn(rt, `${note}\n\n${message}`, {
+          ...(opts?.source ? { promptSource: opts.source } : {}),
+          ...(opts?.system ? { system: opts.system } : {}),
+        })
         return
       }
       await runAgentTurn(rt, message, {

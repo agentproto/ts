@@ -31,12 +31,24 @@
  *     the same family as the hard-stop floor: a session that never
  *     compacts is a session that re-reads its whole context on every
  *     call. A session that wants neither sets `autoCompactAtTokens: 0`.
- *   - After the compaction, a short resume prompt is injected ONLY when a
- *     mission is in progress. "A mission is in progress" is decided by the
- *     caller (the daemon reads it off the continuity checkpoint written
- *     just before the compaction: a non-empty `goal` section means there is
- *     a goal to resume). A session with no goal still gets its context
- *     freed. It is just not told to carry on.
+ *   - After the compaction, a short resume prompt is injected ONLY when the
+ *     session really had WORK IN PROGRESS at the moment of the compaction.
+ *     That is decided by {@link hasWorkInProgress} on a snapshot of the
+ *     runtime state captured BEFORE the `/compact` prompt went out: a
+ *     background task outstanding, a tool call still unanswered (a parked
+ *     permission request or a tool awaiting a result), or a last turn that
+ *     ended on an error, a cancellation or an interruption. The session
+ *     TITLE and the checkpoint's goal text are NEVER the trigger: the goal
+ *     falls back to the title, so a title-based rule wakes every idle
+ *     session and spends a turn for nothing. The goal survives only as
+ *     optional TEXT inside the resume prompt.
+ *   - The compaction always carries the full transcript path and a
+ *     reminder that `transcript_search` / `transcript_read` exist, so the
+ *     agent can look up whatever the summary dropped. Harnesses whose
+ *     compact command takes instructions carry it there (claude-code:
+ *     `/compact <instructions>`); for the others the same one-line
+ *     reminder rides along with the NEXT user prompt the session receives
+ *     (a pending note consumed once), never as a turn of its own.
  */
 
 /** Default absolute threshold: 150k tokens of context. */
@@ -129,12 +141,128 @@ export function decideAutoCompact(inputs: AutoCompactInputs): AutoCompactDecisio
   return { trigger: true, reason: "above-threshold", ...base }
 }
 
+/**
+ * How the session's last turn ended, as the runtime saw it.
+ *
+ * `unknown` is a real case: a session whose first turn never produced a
+ * turn-end (or whose descriptor was reloaded without the marker) has no
+ * outcome to report, and "no outcome" is NOT work in progress.
+ */
+export type LastTurnOutcome =
+  | "completed"
+  | "error"
+  | "cancelled"
+  | "interrupted"
+  | "unknown"
+
+/**
+ * The runtime state, captured BEFORE the `/compact` prompt is sent, that
+ * decides whether the session really had work in progress.
+ *
+ * The snapshot is taken before the compaction on purpose: the compaction is
+ * itself a turn, and it OVERWRITES the turn-end markers
+ * (`lastTurnReason` / `lastTurnErroredAt`) and clears `awaitingInput`. Read
+ * after it, every session would look like a clean, completed turn.
+ */
+export interface WorkInProgressSnapshot {
+  /** A background task is outstanding for the session. */
+  backgroundTaskOutstanding: boolean
+  /** A tool call is open and unanswered (or a permission request is parked). */
+  pendingToolCall: boolean
+  /** The session asked something (or asked for a permission) and the
+   *  answer has not come yet. */
+  awaitingInput: boolean
+  /** How the last turn ended. */
+  lastTurnOutcome: LastTurnOutcome
+}
+
+/**
+ * Derive how the last turn ended, from the turn-end markers the runtime
+ * keeps. Pure: the caller passes the markers in.
+ *
+ * The mapping is deliberately narrow: only a turn that DIED counts as work
+ * in progress (see {@link hasWorkInProgress}). A clean `completed` turn, an
+ * unknown outcome (a session whose first turn never ended) and a
+ * `max_turns` stop all mean "nothing was interrupted".
+ */
+export function deriveLastTurnOutcome(input: {
+  /** The turn-end reason reported by the adapter (`completed`, `cancelled`,
+   *  `error`, `watchdog-timeout`, …) or synthesized by the runtime. */
+  reason?: string
+  /** True when the adapter reported a turn-level error. */
+  errored?: boolean
+  /** True when the turn was cut short (killed mid-turn, daemon restart). */
+  interrupted?: boolean
+}): LastTurnOutcome {
+  if (input.interrupted) return "interrupted"
+  switch (input.reason) {
+    case "error":
+      return "error"
+    case "cancelled":
+      return "cancelled"
+    case "aborted":
+      return "interrupted"
+    case "watchdog-timeout":
+      return "error"
+    case "completed":
+      return input.errored ? "error" : "completed"
+    default:
+      return input.errored ? "error" : "unknown"
+  }
+}
+
+/**
+ * Whether a harness's compaction command takes INSTRUCTIONS as an argument.
+ *
+ * `claude-code`'s CLI accepts `/compact <instructions>` (the adapter
+ * advertises the command with an input hint: "optional context about what
+ * to preserve"), so the summary can be told where the full transcript is.
+ * The other adapters dispatch the compaction by NAME only, opencode
+ * routes `/compact` to `session.summarize`, hermes matches
+ * `_handle_slash_command`, codex has no argument-taking compaction command
+ * in this repo, so trailing text there is not an instruction. Those
+ * harnesses get the reminder as a pending note on the next prompt instead.
+ */
+export function compactCommandTakesInstructions(harness: string | undefined): boolean {
+  const slug = (harness ?? "").trim().toLowerCase()
+  return slug === "claude-code"
+}
+
+/**
+ * The rule that decides whether the resume prompt is sent after an
+ * automatic compaction. Pure: no I/O, no timers, no side effects.
+ *
+ * A resume prompt is only worth a turn when the session was in the middle
+ * of something: a background task still running, a tool call still open, a
+ * question still unanswered, or a turn that died on an error, a
+ * cancellation or an interruption. An idle session that finished its work
+ * (or never started any) gets its context freed and nothing else: waking it
+ * up would spend a turn and a model call for nothing.
+ *
+ * The session title and the checkpoint's goal text are NEVER consulted
+ * here. The goal falls back to the title, so a goal-based rule fires on
+ * essentially every session; the goal survives only as optional text
+ * inside the resume prompt.
+ */
+export function hasWorkInProgress(snapshot: WorkInProgressSnapshot): boolean {
+  if (snapshot.backgroundTaskOutstanding) return true
+  if (snapshot.pendingToolCall) return true
+  if (snapshot.awaitingInput) return true
+  return (
+    snapshot.lastTurnOutcome === "error" ||
+    snapshot.lastTurnOutcome === "cancelled" ||
+    snapshot.lastTurnOutcome === "interrupted"
+  )
+}
+
 /** The result of the compaction request the controller made. */
 export interface AutoCompactOutcome {
-  /** Whether a mission was in progress (the caller decides how). */
-  missionInProgress: boolean
-  /** The mission's goal text, when there is one. */
+  /** The mission's goal text, when there is one. Optional TEXT only: it
+   *  never decides whether the resume prompt is sent. */
   goal?: string
+  /** The runtime state captured BEFORE the `/compact` prompt was sent,
+   *  the only input to {@link hasWorkInProgress}. */
+  snapshot: WorkInProgressSnapshot
 }
 
 /** The hooks the controller drives: every side effect lives behind them. */
@@ -168,11 +296,44 @@ export interface AutoCompactController {
 }
 
 /**
+ * The one-line reminder that tells the session where the FULL transcript
+ * is and how to look things up in it.
+ *
+ * It is the same line everywhere it appears: in the compaction instructions
+ * of a harness whose compact command takes arguments, in the pending note
+ * prepended to the next prompt of a harness whose compact command does not,
+ * and in the resume prompt.
+ */
+export function buildAutoCompactTranscriptNote(transcriptPath: string): string {
+  return `Full transcript: ${transcriptPath}. Use transcript_search / transcript_read to look up anything dropped.`
+}
+
+/**
+ * The instructions handed to the compaction itself, for a harness whose
+ * compact command takes an argument (claude-code: `/compact <instructions>`).
+ *
+ * They ask the summary to keep the transcript path and to mention the two
+ * lookup tools, so the compacted context still says where everything went.
+ */
+export function buildAutoCompactCompactInstructions(input: {
+  transcriptPath: string
+  focus?: string
+}): string {
+  const focus = input.focus?.trim()
+  const parts = [
+    focus ?? "Keep the current goal, open tasks and decisions in the summary.",
+    buildAutoCompactTranscriptNote(input.transcriptPath),
+  ]
+  return parts.join(" ")
+}
+
+/**
  * Build the resume prompt injected after an automatic compaction.
  *
  * Short by construction (it is billed like any other prompt): the mission
  * (when known), the instruction to carry on, and the path of the FULL
- * transcript so the session can look anything up that the summary dropped.
+ * transcript plus the two lookup tools, so the session can recover
+ * anything the summary dropped.
  */
 export function buildAutoCompactResumePrompt(input: {
   goal?: string
@@ -186,7 +347,7 @@ export function buildAutoCompactResumePrompt(input: {
   lines.push(
     "Resume the mission from where you left off; the summary above is what survived the compaction.",
   )
-  lines.push(`Full transcript: ${input.transcriptPath}`)
+  lines.push(buildAutoCompactTranscriptNote(input.transcriptPath))
   return lines.join("\n")
 }
 
@@ -257,15 +418,19 @@ export function createAutoCompactController(
         const outcome = await deps.requestCompact()
         armed = false
         floor = readFiniteTokens(deps.readTokens()) ?? decision.tokens
-        if (outcome.missionInProgress) {
+        // The snapshot was captured BEFORE the compaction went out (the
+        // compaction is a turn of its own and overwrites the turn-end
+        // markers), so it still says whether the session had work in
+        // progress when it was compacted.
+        if (hasWorkInProgress(outcome.snapshot)) {
           const prompt = buildAutoCompactResumePrompt({
             ...(outcome.goal !== undefined ? { goal: outcome.goal } : {}),
             transcriptPath: deps.transcriptPath(),
           })
-          deps.log?.("[auto-compact] mission in progress: injecting the resume prompt")
+          deps.log?.("[auto-compact] work in progress: injecting the resume prompt")
           await deps.requestResume(prompt)
         } else {
-          deps.log?.("[auto-compact] no mission in progress: no resume prompt")
+          deps.log?.("[auto-compact] nothing in progress: no resume prompt")
         }
       } catch (err) {
         deps.log?.(
