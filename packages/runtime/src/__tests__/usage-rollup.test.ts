@@ -280,4 +280,102 @@ describe("rollupUsage", () => {
     expect(r.total.spentUsd).toBeCloseTo(0.05, 10)
     expect(r.total.tokensIn).toBe(500)
   })
+
+  it("rolls the cache split up as a window delta, like the other counters", () => {
+    // Cumulative cache counters (pin 1): the window's value is
+    // latest-in-window − baseline, NOT the sum of the snapshots.
+    const sessions: SessionSnapshots[] = [
+      {
+        sessionId: "s1",
+        profileRef: "p1",
+        harness: "claude-code",
+        snapshots: [
+          snap(ago(8), {
+            costUsd: 0.5,
+            tokensIn: 5000,
+            tokensOut: 2500,
+            cacheReadTokens: 1000,
+            cacheWriteTokens: 200,
+            reasoningTokens: 50,
+            model: "m1",
+          }),
+          snap(ago(1), {
+            costUsd: 0.9,
+            tokensIn: 9000,
+            tokensOut: 4500,
+            cacheReadTokens: 4000,
+            cacheWriteTokens: 600,
+            reasoningTokens: 150,
+            model: "m1",
+          }),
+        ],
+      },
+    ]
+    const r = rollupUsage(sessions, { window: "5h", nowMs: NOW })
+    // Baseline is the 8h-ago snapshot (outside the window) → deltas.
+    expect(r.total.cacheReadTokens).toBe(3000)
+    expect(r.total.cacheWriteTokens).toBe(400)
+    expect(r.total.reasoningTokens).toBe(100)
+    // The per-attribution buckets carry the same split.
+    expect(r.byProfile[0]?.cacheReadTokens).toBe(3000)
+    expect(r.byModel[0]?.cacheWriteTokens).toBe(400)
+    expect(r.byHarness[0]?.reasoningTokens).toBe(100)
+  })
+
+  it("a session with no cache split leaves the bucket field ABSENT, never 0", () => {
+    const sessions: SessionSnapshots[] = [
+      {
+        sessionId: "s1",
+        snapshots: [snap(ago(1), { costUsd: 0.02, tokensIn: 200, tokensOut: 100 })],
+      },
+    ]
+    const r = rollupUsage(sessions, { window: "5h", nowMs: NOW })
+    expect(r.total.cacheReadTokens).toBeUndefined()
+    expect(r.total.cacheWriteTokens).toBeUndefined()
+    expect(r.total.reasoningTokens).toBeUndefined()
+    // …and a bucket that never saw one doesn't carry the key at all.
+    expect("cacheReadTokens" in r.total).toBe(false)
+  })
+
+  it("sums the cache split across sessions, and skips the sessions that report none", () => {
+    const sessions: SessionSnapshots[] = [
+      {
+        sessionId: "s1",
+        profileRef: "p1",
+        snapshots: [
+          snap(ago(1), {
+            costUsd: 0.02,
+            tokensIn: 200,
+            tokensOut: 100,
+            cacheReadTokens: 1000,
+            cacheWriteTokens: 100,
+          }),
+        ],
+      },
+      {
+        sessionId: "s2",
+        profileRef: "p1",
+        snapshots: [snap(ago(1), { costUsd: 0.03, tokensIn: 300, tokensOut: 150 })],
+      },
+    ]
+    const r = rollupUsage(sessions, { window: "5h", nowMs: NOW })
+    expect(r.total.cacheReadTokens).toBe(1000)
+    expect(r.total.cacheWriteTokens).toBe(100)
+    expect(r.total.reasoningTokens).toBeUndefined()
+    expect(r.byProfile[0]?.cacheReadTokens).toBe(1000)
+  })
+
+  it("clamps a non-monotonic cache counter to 0 (never a negative total)", () => {
+    const sessions: SessionSnapshots[] = [
+      {
+        sessionId: "s1",
+        snapshots: [
+          snap(ago(8), { costUsd: 0.5, tokensIn: 5000, tokensOut: 2500, cacheReadTokens: 9000 }),
+          snap(ago(1), { costUsd: 0.6, tokensIn: 6000, tokensOut: 3000, cacheReadTokens: 10 }),
+        ],
+      },
+    ]
+    const r = rollupUsage(sessions, { window: "5h", nowMs: NOW })
+    expect(r.total.cacheReadTokens).toBe(0)
+  })
 })

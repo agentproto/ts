@@ -942,6 +942,8 @@ export type {
   UsageBucket,
   UsageRollup,
 } from "./usage-rollup.js"
+export { projectRemoteUsage } from "./sandbox-usage.js"
+export type { RemoteUsageSnapshot } from "./sandbox-usage.js"
 // Phase-2: best-effort per-provider live remaining-quota enrichment.
 export {
   AnthropicRemainingQuotaReader,
