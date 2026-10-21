@@ -39,6 +39,8 @@ agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+agentproto sessions switch-profile --from <profileRef> --to <profileRef>
+                                           [--dry-run] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
                                            [--force] [--json]
 agentproto sessions pin      <id-or-name> [--json]

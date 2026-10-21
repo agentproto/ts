@@ -55,6 +55,7 @@ import {
   sessionRestartErrorStatus,
   type RestartOverrides,
 } from "./session-restart-core.js"
+import type { CronScheduler } from "./cron-scheduler.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -666,9 +667,14 @@ export interface RegisterSessionToolsOptions {
    *  …) through the daemon as a single MCP entry point. */
   mcpProxy?: McpProxyRegistry
   /** Forwarded to `registerAgentTools` — see
-   *  `RegisterAgentToolsOptions.deviceMirrorSync` (BOOTSTRAP P7b: the
-   *  device-mirror read-sync hook, called before `agent_output` tails). */
+   *  `RegisterAgentToolsOptions.deviceMirrorSync`. */
   deviceMirrorSync?: RegisterAgentToolsOptions["deviceMirrorSync"]
+  /** Optional cron scheduler: used by `session_restart` to RE-ARM the
+   *  cron jobs that targeted the restarted session: a restart continues the
+   *  conversation under a NEW id, so a `prompt-session` job naming the old
+   *  id would fail its next tick. Omitted → no re-arm (the restart still
+   *  works; only the cron target goes stale). */
+  cronScheduler?: CronScheduler
   /** Whether the registry was constructed with a PTY factory — when
    *  true, expose the four terminal session tools. When false, the
    *  tools return a clear "not configured" error. */
@@ -5449,6 +5455,12 @@ export function registerSessionTools(
             ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
             ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
           })
+          // Cron re-arm: same rule as the plain restart below: the old row
+          // is retired, the conversation continues under the NEW id, so a
+          // `prompt-session` cron job naming the old id is re-pointed.
+          const rearmedCrons = opts.cronScheduler
+            ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+            : []
           return {
             content: [
               {
@@ -5460,6 +5472,7 @@ export function registerSessionTools(
                     resumeVia: restarted.resumeVia,
                     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                     ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
+                    ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                   },
                   null,
                   2
@@ -5764,6 +5777,13 @@ export function registerSessionTools(
           ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         })
+        // Cron re-arm: the restart retired `prev` and continued the same
+        // conversation under `restarted.desc.id`, so a `prompt-session` cron
+        // job naming the OLD id would fail its next tick. Its target moves
+        // to the successor id (persisted with the job file).
+        const rearmedCrons = opts.cronScheduler
+          ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+          : []
         return {
           content: [
             {
@@ -5776,6 +5796,7 @@ export function registerSessionTools(
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                   ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
                   ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
+                  ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                 },
                 null,
                 2
