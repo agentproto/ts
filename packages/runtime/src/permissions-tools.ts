@@ -45,7 +45,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
     "Read-only: explain whether a principal may perform an action, and which rule decides. " +
       "Uses the same decide() the daemon enforces with. The principal is you (your session " +
       "identity, or the operator when you connect without one) unless `asSessionId` names " +
-      "another session. `sessionId` is the target (the recipient for session.message). " +
+      "another session (the operator may name any; a session may name itself or a descendant). `sessionId` is the target (the recipient for session.message). " +
       "Decisions marked authoritative:false are for actions not yet routed through decide().",
     {
       action: z
@@ -59,7 +59,35 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         .describe("Explain for this session as the principal instead of yourself."),
     },
     async input => {
-      const selfId = input.asSessionId ?? callerScope?.ownerSessionId ?? callerSessionId
+      const callerId = callerScope?.ownerSessionId ?? callerSessionId
+      // `asSessionId` is the operator's lens (a caller with no session
+      // identity). A session caller may only explain itself or a session in
+      // its own subtree, so the tool cannot be used to probe other sessions'
+      // ACL / `allowPromptFrom` or whether their ids exist.
+      if (input.asSessionId && callerId && input.asSessionId !== callerId) {
+        let inSubtree = false
+        const seen = new Set<string>()
+        let cur: string | undefined = registry.get(input.asSessionId)?.parentSessionId
+        while (cur && !seen.has(cur)) {
+          if (cur === callerId) {
+            inSubtree = true
+            break
+          }
+          seen.add(cur)
+          cur = registry.get(cur)?.parentSessionId
+        }
+        if (!inSubtree) {
+          return text(
+            {
+              ok: false,
+              error: "forbidden_as_session",
+              message: "asSessionId must be yourself or a session in your own subtree",
+            },
+            true,
+          )
+        }
+      }
+      const selfId = input.asSessionId ?? callerId
       let principal: Principal
       if (!selfId) {
         principal = { kind: "operator", via: "anonymous-local" }

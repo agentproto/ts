@@ -321,8 +321,25 @@ describe("messaging ACL parity across every entry point", () => {
       })
       const up = await tools.call("permissions_explain", { action: "session.message", sessionId: P!.id })
       expect(up).toMatchObject({ decision: { allow: true, relation: "child", rule: "tree.child" } })
+      // A session may not introspect an ancestor or an unrelated session...
       const asP = await tools.call("permissions_explain", { action: "session.drive", sessionId: B!.id, asSessionId: P!.id })
-      expect(asP).toMatchObject({ principal: { sessionId: P!.id }, decision: { allow: true, authoritative: false } })
+      expect(asP).toMatchObject({ isError: true, error: "forbidden_as_session" })
+      const asS = await tools.call("permissions_explain", { action: "session.drive", asSessionId: nodes.S!.id })
+      expect(asS).toMatchObject({ isError: true, error: "forbidden_as_session" })
+      // ...but may explain a session in its own subtree.
+      const asG = await tools.call("permissions_explain", { action: "session.message", sessionId: A!.id, asSessionId: nodes.G!.id })
+      expect(asG).toMatchObject({ principal: { sessionId: nodes.G!.id }, decision: { allow: true, relation: "child" } })
+      // An interrupt is never reported as allowed where the message is refused.
+      policy = { ...policy, agentInterrupt: "allow" }
+      const toolsAllow = await toolsAs(registry, nodes.S!.id, policy)
+      try {
+        const msg = await toolsAllow.call("permissions_explain", { action: "session.message", sessionId: A!.id })
+        const intr = await toolsAllow.call("permissions_explain", { action: "session.message.interrupt", sessionId: A!.id })
+        expect(msg).toMatchObject({ decision: { allow: false } })
+        expect(intr).toMatchObject({ decision: { allow: false, rule: "session.message" } })
+      } finally {
+        await toolsAllow.close()
+      }
       const notRouted = await tools.call("permissions_explain", { action: "config.write" })
       expect(notRouted).toMatchObject({ decision: { authoritative: false, rule: "not-routed" }, action: { routed: false } })
     } finally {

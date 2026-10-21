@@ -362,6 +362,19 @@ function decideInterrupt(principal: Principal, recipient: MessageTreeNode | unde
     // Daemon-internal senders pass their own interrupt choice to the sink.
     return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal sender" })
   }
+  // An interrupt is a flavour of message: it is only grantable when the
+  // principal may message the recipient at all.
+  if (recipient) {
+    const message = decideMessage(principal, recipient, ctx)
+    if (!message.allow) {
+      return mint({
+        ...base,
+        allow: false,
+        rule: "session.message",
+        reason: `cannot interrupt: session.message to "${recipient.id}" is refused (${message.rule}): ${message.reason}`,
+      })
+    }
+  }
   const allow = ctx.messaging?.agentInterrupt === "allow"
   return mint({
     ...base,

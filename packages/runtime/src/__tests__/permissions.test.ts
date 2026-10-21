@@ -152,6 +152,24 @@ describe("decide(session.message.interrupt)", () => {
     expect(d.allow).toBe(row.allow)
     expect(d.authoritative).toBe(true)
   })
+
+  it("never grants an interrupt on a session the principal cannot message", () => {
+    const ctx = { messaging: { agentInterrupt: "allow" as const } }
+    for (const recipient of [A, T, G]) {
+      const d = decide(as(S), "session.message.interrupt", to(recipient), ctx)
+      expect(d).toMatchObject({ allow: false, rule: "session.message", authoritative: true })
+    }
+    // siblings with allowSiblings off cannot message, so cannot interrupt
+    expect(decide(as(A), "session.message.interrupt", to(B), ctx).allow).toBe(false)
+    expect(
+      decide(as(A), "session.message.interrupt", to(B), {
+        messaging: { agentInterrupt: "allow", allowSiblings: true },
+      }).allow,
+    ).toBe(true)
+    // a relay grant only reaches its own parent
+    const relay: Principal = { kind: "relay", boxSessionId: "b", parentSessionId: "P" }
+    expect(decide(relay, "session.message.interrupt", to(A), ctx).allow).toBe(false)
+  })
 })
 
 describe("decide(session.drive) mirrors the owner gate", () => {
