@@ -288,6 +288,8 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "terminal_start",
   "tool_calls_list",
   "tool_help",
+  "transcript_read",
+  "transcript_search",
   "transmit_message",
   "tunnel_add_hostname",
   "tunnel_create",

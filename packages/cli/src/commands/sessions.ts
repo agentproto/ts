@@ -288,13 +288,18 @@ Usage:
                                stopped once the new one is up.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
+                              [--auto-compact-at-tokens <n>]
                               (respawn from history — clones the old
                                descriptor's kind/argv/cwd/workspace and starts
                                a fresh instance, resuming where the adapter
                                supports it. New id, same freed name. Output
                                buffers are NOT carried over.
                                --prefer-native-terminal opts into the adapter's
-                               native-terminal restart path when it has one.)
+                               native-terminal restart path when it has one.
+                               --auto-compact-at-tokens <n> sets the ABSOLUTE
+                               context threshold (tokens) at which an idle
+                               session is compacted automatically (clamped
+                               to 200000 max, 0 disables).)
   agentproto sessions mirror <id-or-name> [--no-color]
                               (read-only tail of the session's output — never
                                takes stdin; Ctrl-C exits without touching the
@@ -4793,12 +4798,27 @@ interface RestartBody {
  * never TUI-onboarded — see `decideRestartStrategy`'s doc). Omitted here ⇒
  * false, same default.
  */
-function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false): RestartBody {
+function buildRestartBody(
+  prev: SessionDescriptor,
+  preferNativeTerminal = false,
+  autoCompactAtTokens?: number,
+): RestartBody {
   const strategy = decideRestartStrategy(prev, { preferNativeTerminal })
   if (strategy.kind === "unsupported") {
     throw new Error(`${prev.id} is a ${strategy.reason}`)
   }
   if (strategy.kind === "agent") {
+    // Carry the context-continuity policy across the restart (a restarted
+    // session must not silently lose its autocompact threshold), and let
+    // `--auto-compact-at-tokens` override just that one field.
+    const prevContinuity = prev.contextContinuity as Record<string, unknown> | undefined
+    const continuity =
+      prevContinuity || autoCompactAtTokens !== undefined
+        ? {
+            ...(prevContinuity ?? {}),
+            ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
+          }
+        : undefined
     return {
       url: "__agent__",
       body: {
@@ -4809,6 +4829,7 @@ function buildRestartBody(prev: SessionDescriptor, preferNativeTerminal = false)
           ? { resumeSessionId: strategy.resumeSessionId }
           : {}),
         ...(prev.label ? { label: prev.label } : {}),
+        ...(continuity ? { contextContinuity: continuity } : {}),
       },
     }
   }
@@ -5170,6 +5191,21 @@ interface AttachOpts {
  * killed/exited). Output buffers are NOT carried over — we only
  * persist descriptor metadata, not byte streams.
  */
+
+/**
+ * `--auto-compact-at-tokens <n>` sets the ABSOLUTE context threshold
+ * (tokens) at which an idle session is compacted automatically. Non-numeric input is
+ * refused here rather than silently becoming the default.
+ */
+function parseAutoCompactTokens(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(`--auto-compact-at-tokens must be a number >= 0, got "${raw}"`)
+  }
+  return Math.round(n)
+}
+
 async function runRestart(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -5180,6 +5216,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
       "prefer-native-terminal": { type: "boolean" },
+      "auto-compact-at-tokens": { type: "string" },
     },
   })
   const id = positionals[0]
@@ -5221,7 +5258,11 @@ async function runRestart(args: readonly string[]): Promise<number> {
   prev = await augmentWithFsResume(prev)
   let built: RestartBody
   try {
-    built = buildRestartBody(prev, values["prefer-native-terminal"] === true)
+    built = buildRestartBody(
+      prev,
+      values["prefer-native-terminal"] === true,
+      parseAutoCompactTokens(values["auto-compact-at-tokens"]),
+    )
   } catch (err) {
     process.stderr.write(
       `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,

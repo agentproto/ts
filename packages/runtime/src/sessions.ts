@@ -144,6 +144,11 @@ import type {
 } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
 import {
+  createAutoCompactController,
+  type AutoCompactController,
+  type AutoCompactOutcome,
+} from "./auto-compact.js"
+import {
   CONTEXT_CONTINUITY_DEFAULTS,
   computeContextContinuityStatus,
   computeContextPct,
@@ -2997,6 +3002,12 @@ interface SessionRuntime {
    *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
    *  stop). Prompts are held (queued / answered "retry") until it settles. */
   contextRescue?: Promise<void>
+  /** The autocompact controller for this session (absolute token
+   *  threshold). Created lazily on the first turn boundary that reaches it. */
+  autoCompact?: AutoCompactController
+  /** True while an autocompact check is scheduled but has not run yet. It
+   *  keeps a burst of turn boundaries from queueing several checks. */
+  autoCompactScheduled?: boolean
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -9104,8 +9115,102 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Ask the harness to compact the session's context, the same way the
+   * `session_compact` verb does (a `/compact` prompt; hermes gets
+   * `/compress`), and report whether a mission is in progress.
+   *
+   * "A mission is in progress" is decided HERE, by the continuity
+   * checkpoint written just before the compaction: a non-empty `goal`
+   * section means there is a goal to carry on with. A session with no goal
+   * still gets its context freed. It is just not told to resume, because
+   * there is nothing to resume.
+   */
+  async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+    let goal: string | undefined
+    try {
+      const checkpoint = await checkpointBeforeContextLoss(rt, "auto compaction", false)
+      goal = checkpoint.sections.goal
+    } catch (err) {
+      appendLine(
+        rt,
+        `[auto-compact] no checkpoint could be written: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+    const cmd = (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes")
+      ? "/compress"
+      : "/compact"
+    // The runtime's own compaction prompt: not attributed to a session
+    // (`agent:<id>`), so a policy that reserves compaction for the operator
+    // (`compactRequiresOperator`) still refuses session-initiated
+    // compactions while the runtime may rescue a session on its own.
+    await registry.sendPrompt(rt.desc.id, cmd, { source: "runtime:auto-compact" })
+    const missionInProgress = typeof goal === "string" && goal.trim() !== ""
+    return missionInProgress ? { missionInProgress: true, goal } : { missionInProgress: false }
+  }
+
+  /**
+   * Autocompact: the ABSOLUTE token threshold path.
+   *
+   * The percent ladder (`warnAtPct` / `compactAtPct` / …) cannot see a
+   * session whose window is huge: 558k tokens in a 1M window is "55%",
+   * the warn band, so nothing ever compacts and every call re-reads the
+   * whole context. An absolute count does not care how big the window is.
+   *
+   * Fires only on an idle session (turn ended, no background task), at
+   * most once per compaction, and injects a short resume prompt only when
+   * a mission is in progress.
+   */
+  async function maybeAutoCompact(rt: SessionRuntime): Promise<void> {
+    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
+    // A harness that does not advertise compact support would be sent
+    // `/compact` again on every growth re-arm — a repeated-prompt loop. Stay
+    // silent instead, like `attemptContextCompact` (which also gates on this).
+    if (!adapterSupportsCompact(rt.agentSession)) return
+    const controller = (rt.autoCompact ??= createAutoCompactController({
+      readTokens: () => rt.desc.contextUsed,
+      readThreshold: () =>
+        rt.desc.contextContinuity?.autoCompactAtTokens ??
+        CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens,
+      isIdle: () => rt.busy !== true,
+      hasBackgroundTask: () =>
+        (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
+      isCompacting: () => rt.contextRescue !== undefined,
+      requestCompact: () => requestAutoCompact(rt),
+      requestResume: async prompt => {
+        await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact-resume" })
+      },
+      transcriptPath: () => rt.desc.eventsPath ?? sessionEventsPath(rt.desc.id, transcriptBaseDir),
+      log: line => {
+        appendLine(rt, line, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      },
+    }))
+    await controller.maybeTrigger()
+  }
+
+  /**
+   * Schedule the autocompact check for the next tick: the check runs a
+   * compaction TURN, so it must not be re-entered from inside the turn
+   * that just ended.
+   */
+  function scheduleAutoCompact(rt: SessionRuntime): void {
+    if (rt.autoCompactScheduled) return
+    rt.autoCompactScheduled = true
+    setTimeout(() => {
+      rt.autoCompactScheduled = false
+      void maybeAutoCompact(rt).catch(() => undefined)
+    }, 0)
+  }
+
   async function evaluateContextContinuity(rt: SessionRuntime): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
+    // Autocompact is ABSOLUTE and window-independent: it must be evaluated
+    // even when the window size is unknown (the percent ladder cannot act
+    // without one, and that is exactly the 1M-context case).
+    scheduleAutoCompact(rt)
     const policy = rt.desc.contextContinuity
     if (!policy) return
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)

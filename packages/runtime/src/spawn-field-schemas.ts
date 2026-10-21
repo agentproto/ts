@@ -41,6 +41,17 @@ export const promptInputSchema = z.union([
  *  carry-over sections). */
 export const contextContinuityInputSchema = z.object({
   mode: z.enum(["manual", "ask", "auto"]).optional(),
+  autoCompactAtTokens: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Absolute token threshold for autocompact: an idle session whose " +
+        "context reaches this many tokens is compacted automatically " +
+        "(window-independent, unlike the percent thresholds below). " +
+        "Clamped to 200000 max; 0 disables. Default 150000.",
+    ),
   warnAtPct: z.number().int().min(0).max(100).optional(),
   compactAtPct: z.number().int().min(0).max(100).optional(),
   continueFreshAtPct: z.number().int().min(0).max(100).optional(),

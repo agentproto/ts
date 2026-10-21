@@ -73,6 +73,7 @@ import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
 const contextContinuityPolicySchema: z.ZodType<ContextContinuityPolicy> = z
   .object({
     mode: z.enum(["manual", "ask", "auto"]).optional(),
+    autoCompactAtTokens: z.number().int().min(0).optional(),
     warnAtPct: z.number().optional(),
     compactAtPct: z.number().optional(),
     continueFreshAtPct: z.number().optional(),
