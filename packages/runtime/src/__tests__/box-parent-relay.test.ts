@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, readFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -28,12 +28,16 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 const hostStarts: Array<Record<string, unknown>> = []
+/** Test switch: make the fake box's own `agent_start` fail (the boot
+ *  failure path). */
+let boxStartFails = false
 vi.mock("@agentproto/sandbox", async importOriginal => {
   const actual = await importOriginal<typeof import("@agentproto/sandbox")>()
   const fakeHost: Record<string, unknown> = {
     sandboxId: "sbx_relay_test",
     start: async (args: Record<string, unknown>) => {
       hostStarts.push(args)
+      if (boxStartFails) throw new Error("the box refused agent_start")
       return { id: "sess_box_orch", status: "idle", startedAt: "2026-01-01T00:00:00.000Z" }
     },
     exec: async () => ({ exitCode: 0, stdout: "", stderr: "", durationMs: 1 }),
@@ -59,10 +63,13 @@ import { bootSandboxAgentSession } from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent } from "../sessions.js"
 import {
+  clearParentRelayGrants,
   deliverParentRelayMessage,
   mintParentRelayGrant,
   PARENT_RELAY_PATH,
   PARENT_RELAY_TOKEN_HEADER,
+  pruneExpiredParentRelayGrants,
+  resolveParentRelayGrant,
   type ParentRelayRegistry,
 } from "../parent-relay.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
@@ -146,13 +153,16 @@ describe("parent relay: the spawn config carries the relay info", () => {
 
   beforeEach(() => {
     hostStarts.length = 0
+    boxStartFails = false
     base = join(mkdtempSync(join(tmpdir(), "parent-relay-")), "sessions")
     setDefaultSessionsBaseDir(base)
     process.env.AGENTPROTO_PARENT_RELAY_URL = "https://host.example"
-    return () => setDefaultSessionsBaseDir(undefined)
+    clearParentRelayGrants()
   })
 
   afterEach(() => {
+    setDefaultSessionsBaseDir(undefined)
+    clearParentRelayGrants()
     if (savedEnv === undefined) delete process.env.AGENTPROTO_PARENT_RELAY_URL
     else process.env.AGENTPROTO_PARENT_RELAY_URL = savedEnv
   })
@@ -377,5 +387,160 @@ describe("parent relay: no relay configured keeps today's error", () => {
     } finally {
       await h.close()
     }
+  })
+})
+
+describe("parent relay: the relay token is a secret (never on a descriptor, never on disk)", () => {
+  let tmp: string
+  let persistPath: string
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "parent-relay-secret-"))
+    persistPath = join(tmp, "sessions.json")
+  })
+
+  it("keeps the token out of the descriptor, the summary and the persisted row", () => {
+    const token = "tok_super_secret_value"
+    const registry = createSessionsRegistry({ persistPath })
+    const boxSessionId = spawnNode(registry, {
+      remoteParent: { sessionId: "sess_parent", url: "https://host.example", token },
+    })
+    // The descriptor itself carries only the non-secret part.
+    expect(registry.get(boxSessionId)?.remoteParent).toEqual({
+      sessionId: "sess_parent",
+      url: "https://host.example",
+    })
+    // ...and so does the panel summary.
+    const { summaries } = registry.listSummaries()
+    expect(JSON.stringify(summaries)).not.toContain(token)
+    registry.shutdown()
+
+    const raw = readFileSync(persistPath, "utf8")
+    expect(raw).not.toContain(token)
+    const parsed = JSON.parse(raw) as { sessions: Array<Record<string, unknown>> }
+    const row = parsed.sessions.find(s => s.id === boxSessionId)
+    expect(row?.remoteParent).toEqual({ sessionId: "sess_parent", url: "https://host.example" })
+  })
+
+  it("after a restart the token is gone: message_parent fails clearly instead of crashing", async () => {
+    const token = "tok_super_secret_value"
+    const reg1 = createSessionsRegistry({ persistPath })
+    const boxSessionId = spawnNode(reg1, {
+      remoteParent: { sessionId: "sess_parent", url: "https://host.example", token },
+    })
+    reg1.shutdown() // forces the synchronous flush
+
+    // A fresh daemon restores the row: the remote parent survives, the
+    // token does not (it was never written).
+    const reg2 = createSessionsRegistry({ persistPath })
+    expect(reg2.get(boxSessionId)?.remoteParent).toEqual({
+      sessionId: "sess_parent",
+      url: "https://host.example",
+    })
+
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }))
+    vi.stubGlobal("fetch", fetchMock)
+    const h = await harness({ registry: reg2, callerSessionId: boxSessionId })
+    try {
+      const result = await h.client.callTool({
+        name: "message_parent",
+        arguments: { message: "anyone there?" },
+      })
+      expect(isError(result)).toBe(true)
+      expect(textOf(result)).toContain("relay token lost after restart")
+      // Nothing was posted: an unauthenticated report is never sent.
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      await h.close()
+      vi.unstubAllGlobals()
+      reg2.shutdown()
+    }
+  })
+})
+
+describe("parent relay: the grant is revoked when the box session ends", () => {
+  it("a host-side box session that ends can no longer report up", () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const boxSessionId = spawnNode(registry)
+    const remote = mintParentRelayGrant({
+      parentSessionId: "sess_parent",
+      boxSessionId,
+      url: "https://host.example",
+    })
+    expect(resolveParentRelayGrant(remote.token)).toBeDefined()
+    registry.kill(boxSessionId)
+    expect(resolveParentRelayGrant(remote.token)).toBeUndefined()
+  })
+
+  it("the grant is revoked when the box boot fails", async () => {
+    const savedEnv = process.env.AGENTPROTO_PARENT_RELAY_URL
+    process.env.AGENTPROTO_PARENT_RELAY_URL = "https://host.example"
+    boxStartFails = true
+    hostStarts.length = 0
+    try {
+      const booted = await bootSandboxAgentSession({
+        sandbox: "fake",
+        adapter: "fake-cli",
+        cwd: "/tmp",
+        explicitCwd: true,
+        parentRelay: { parentSessionId: "sess_parent", boxSessionId: "sess_box" },
+        resolveSandboxProvider: vi.fn(async () => handle),
+      })
+      expect(booted.ok).toBe(false)
+      const remoteParent = hostStarts[0]?.remoteParent as { token: string } | undefined
+      expect(remoteParent?.token).toEqual(expect.any(String))
+      // The grant was minted before the boot, so the failure path revokes it.
+      expect(resolveParentRelayGrant(remoteParent?.token)).toBeUndefined()
+    } finally {
+      boxStartFails = false
+      if (savedEnv === undefined) delete process.env.AGENTPROTO_PARENT_RELAY_URL
+      else process.env.AGENTPROTO_PARENT_RELAY_URL = savedEnv
+    }
+  })
+})
+
+describe("parent relay: expired grants are pruned and a used grant slides", () => {
+  it("an expired grant is dropped (and the sweep drops it from the map)", () => {
+    const remote = mintParentRelayGrant({
+      parentSessionId: "sess_parent",
+      boxSessionId: "sess_box",
+      url: "https://host.example",
+      ttlMs: 1000,
+      nowMs: 1000,
+    })
+    expect(resolveParentRelayGrant(remote.token, 1500)).toBeDefined()
+    expect(resolveParentRelayGrant(remote.token, 2500)).toBeUndefined()
+    // The sweep drops the dead grant (it was already dropped on resolve).
+    expect(pruneExpiredParentRelayGrants(2500)).toBe(0)
+  })
+
+  it("a grant that keeps being used does not expire at the original deadline", async () => {
+    const now = 1_000_000
+    const remote = mintParentRelayGrant({
+      parentSessionId: "sess_parent",
+      boxSessionId: "sess_box",
+      url: "https://host.example",
+      ttlMs: 1000,
+      nowMs: now,
+    })
+    const fakeRegistry: ParentRelayRegistry = {
+      get: (id: string) => ({ id, status: "running" }),
+      sendMessage: async envelope => ({
+        messageId: envelope.id,
+        queued: false,
+        urgencyApplied: envelope.urgency,
+      }),
+    }
+    const result = await deliverParentRelayMessage({
+      token: remote.token,
+      payload: { message: "still working", kind: "report", urgency: "next-turn" },
+      registry: fakeRegistry,
+      nowMs: now + 500,
+    })
+    expect(result.ok).toBe(true)
+    // The window slid: the grant is alive past its ORIGINAL deadline.
+    const slid = resolveParentRelayGrant(remote.token, now + 1200)
+    expect(slid).toBeDefined()
+    expect(slid?.expiresAt).toBe(now + 500 + 1000)
   })
 })

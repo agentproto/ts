@@ -5,7 +5,7 @@
  * authenticates with its own HMAC) and the route's own token gate.
  */
 
-import { createServer } from "node:http"
+import { createServer, request as httpRequest } from "node:http"
 import type { AddressInfo } from "node:net"
 import { describe, expect, it } from "vitest"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -15,7 +15,12 @@ import { createRuntimeEvents } from "../events.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
-import { mintParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "../parent-relay.js"
+import {
+  mintParentRelayGrant,
+  PARENT_RELAY_PATH,
+  PARENT_RELAY_TOKEN_HEADER,
+  revokeParentRelayGrant,
+} from "../parent-relay.js"
 
 const TOKEN = "tunnel-bearer-token"
 
@@ -122,6 +127,68 @@ describe("POST /relay/parent-message", () => {
       )
       expect(res.status).toBe(200)
       expect(res.json).toMatchObject({ ok: true })
+    } finally {
+      await s.stop()
+    }
+  })
+  it("a token that dies between the pre-check and the delivery is answered 401 (not 400)", async () => {
+    const s = await setup()
+    try {
+      const parent = s.registry.spawnAgent({
+        workspaceSlug: "w",
+        cwd: "/tmp",
+        agentSession: {
+          sessionId: "acp_relay",
+          // eslint-disable-next-line require-yield
+          async *send() {},
+          async cancel() {},
+          async close() {},
+        },
+        adapterSlug: "mock",
+        depth: 0,
+      })
+      const remote = mintParentRelayGrant({
+        parentSessionId: parent.id,
+        boxSessionId: "sess_box",
+        url: "https://host.example",
+      })
+      // A raw request whose BODY arrives late: the route's own token
+      // pre-check runs on the headers (and passes), the grant is revoked
+      // while the route waits for the body, and the delivery then refuses
+      // the dead token.
+      const res = await new Promise<{ status: number; json: Record<string, unknown> }>(resolve => {
+        const req = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: s.port,
+            path: PARENT_RELAY_PATH,
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              [PARENT_RELAY_TOKEN_HEADER]: remote.token,
+            },
+          },
+          r => {
+            let body = ""
+            r.on("data", chunk => {
+              body += chunk
+            })
+            r.on("end", () => {
+              resolve({ status: r.statusCode ?? 0, json: JSON.parse(body || "{}") as Record<string, unknown> })
+            })
+          },
+        )
+        req.on("error", () => resolve({ status: 0, json: {} }))
+        req.write('{"message":"report from the box","kind":"report","urgency":"next-turn"')
+        // The server has the headers now: its token pre-check passed and it
+        // is waiting for the rest of the body.
+        setTimeout(() => {
+          revokeParentRelayGrant(remote.token)
+          req.end("}")
+        }, 100)
+      })
+      expect(res.status).toBe(401)
+      expect(res.json.error).toBe("relay_token_unknown")
     } finally {
       await s.stop()
     }
