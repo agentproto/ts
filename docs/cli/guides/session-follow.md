@@ -134,7 +134,10 @@ A follow's own `triage` block overrides the daemon default, per field: a rule a
 follow sets explicitly (`true` or `false`) beats the daemon value, and a rule it
 does not name keeps the daemon value. Triage works on the whole digest, so when
 several follows feed the same digest: triage runs if ANY of them enables it, and
-for a rule they set differently ON wins.
+for a rule they set differently ON wins. A rule value named by ANY follow
+feeding the digest counts in that merge (even a follow that did not itself set
+`enabled`), so one follow's `false` is overridden by another's `true`. The
+`classifier` is never merged from follows: it only comes from the daemon config.
 
 ## MCP tools
 
