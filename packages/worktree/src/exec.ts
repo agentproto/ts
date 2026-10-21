@@ -77,6 +77,9 @@ export function execArgv(
       cwd,
       shell: false,
       env: mergedEnv(opts.env),
+      // stdin is /dev/null, never a TTY and never a pipe the child could
+      // read from: a daemon-spawned command must never block on input.
+      stdio: ["ignore", "pipe", "pipe"],
       detached: opts.signal !== undefined && process.platform !== "win32",
     })
     const detach = killOnAbort(child, opts)
@@ -108,6 +111,9 @@ export function execShell(cmd: string, cwd: string, opts: ExecOptions = {}): Pro
       cwd,
       shell: true,
       env: mergedEnv(opts.env),
+      // See `execArgv`: stdin is /dev/null, no TTY and nothing to read, so a
+      // hook can never hang waiting for input it will never get.
+      stdio: ["ignore", "pipe", "pipe"],
       detached: opts.signal !== undefined && process.platform !== "win32",
     })
     const detach = killOnAbort(child, opts)

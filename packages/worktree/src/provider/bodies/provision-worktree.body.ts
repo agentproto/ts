@@ -10,6 +10,7 @@ import { loadConfigFromBase, normalizeHook } from "../../config.js"
 import { loadLocalWorktreeConfig, resolveLocalWriteFiles } from "../../local-config.js"
 import { cloneEntries } from "../../clone.js"
 import { runSetup, HookError } from "../../lifecycle.js"
+import { nonInteractiveEnv } from "../../env.js"
 import { removeWorktreeFast } from "../../fast-remove.js"
 import {
   ProvisionCancelledError,
@@ -179,7 +180,14 @@ export const provisionWorktreeBuiltin = implementTool(
       if (depsCmd) {
         phase = "deps"
         report({ kind: "phase", phase })
-        const result = await execShell(depsCmd, cwd, signal ? { signal } : {})
+        // The install runs without a TTY: `pnpm`/`npm` would otherwise ABORT
+        // with `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` instead of
+        // purging a stale modules dir (2026-10-21 incident); see
+        // `nonInteractiveEnv`.
+        const result = await execShell(depsCmd, cwd, {
+          env: nonInteractiveEnv(process.env),
+          ...(signal ? { signal } : {}),
+        })
         // A killed install exits non-zero; that is a cancellation, not a failure.
         if (signal?.aborted) throw new ProvisionCancelledError()
         if (result.exitCode !== 0) {

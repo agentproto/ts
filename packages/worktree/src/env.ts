@@ -47,6 +47,53 @@ export function hookEnv(ctx: WorktreeEnvContext): Record<string, string> {
   }
 }
 
+/**
+ * The env defaults that make a spawned hook NON-INTERACTIVE.
+ *
+ * The daemon spawns every `worktree.setup` hook (and every `depsCmd`
+ * install) WITHOUT a TTY, so any package manager that would otherwise PROMPT
+ * aborts instead of proceeding. The 2026-10-21 incident: a workspace's
+ * bootstrap script ran `pnpm install`, pnpm wanted to confirm purging a
+ * stale `node_modules` directory, and with no TTY it aborted with
+ * `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`, killing three executors
+ * before they wrote any code.
+ *
+ * `CI=true` is pnpm's own documented opt-out of the interactive prompt, and
+ * `npm_config_confirm_modules_purge=false` (pnpm reads `npm_config_*` env)
+ * turns the specific prompt off outright. Both are DEFAULTS, never
+ * overrides: an explicit value from the caller's environment (or from a
+ * caller-supplied override) always wins; see {@link nonInteractiveEnv}.
+ */
+export const NON_INTERACTIVE_ENV_DEFAULTS: Readonly<Record<string, string>> = {
+  CI: "true",
+  npm_config_confirm_modules_purge: "false",
+}
+
+/**
+ * The non-interactive env for a spawned hook: {@link NON_INTERACTIVE_ENV_DEFAULTS}
+ * with every already-set value preserved.
+ *
+ * Precedence, highest first:
+ *   1. `overrides`: an explicit value the caller/config passes in.
+ *   2. `base` (default `process.env`): the value the ambient environment
+ *      already carries, e.g. an operator's `CI=false`.
+ *   3. the default from {@link NON_INTERACTIVE_ENV_DEFAULTS}.
+ *
+ * An EMPTY string counts as unset (an empty `CI=` is how some CI images
+ * spell "unset"), so the default applies.
+ */
+export function nonInteractiveEnv(
+  base: NodeJS.ProcessEnv = process.env,
+  overrides?: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, fallback] of Object.entries(NON_INTERACTIVE_ENV_DEFAULTS)) {
+    const explicit = overrides?.[key] ?? base[key] ?? base[key.toUpperCase()]
+    out[key] = explicit === undefined || explicit === "" ? fallback : explicit
+  }
+  return out
+}
+
 /** A sibling service, as seen by a peer's env. */
 export interface PeerService {
   /** The declared script name (e.g. `"web"`). */

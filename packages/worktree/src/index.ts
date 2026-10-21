@@ -86,6 +86,8 @@ export {
   serviceEnvToken,
   resolveWorktreesTurboCacheDir,
   WORKTREES_TURBO_CACHE_DIR_ENV,
+  nonInteractiveEnv,
+  NON_INTERACTIVE_ENV_DEFAULTS,
   type WorktreeEnvContext,
   type PeerService,
 } from "./env.js"
