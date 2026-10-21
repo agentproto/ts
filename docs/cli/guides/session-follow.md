@@ -96,7 +96,6 @@ exactly as before.
       "emptyTurnEnd": true,       // an empty/cancelled turn-end a new turn superseded -> fyi
       "ownPr": true               // a PR opened by one of your own live sessions -> fyi
     },
-    "classifier": { "command": "jev classify", "timeoutMs": 5000 },
     "reportWindowMs": 60000
   }
 }
@@ -117,7 +116,10 @@ What the decision does:
   future classifier is fitted on.
 
 The `classifier` block is the documented extension point for a future LLM
-classifier (Jev): it receives the event as JSON (on stdin for a `command`, as a
+classifier (Jev). It lives ONLY in the daemon config (`follow.triage.classifier`
+in `~/.agentproto/config.json`) because it runs a shell command or calls a URL on
+the daemon host: `session_follow` has no `classifier` field and rejects one. It
+receives the event as JSON (on stdin for a `command`, as a
 POST body for a `url`) and answers `wake`/`fyi`/`drop`. On timeout, error, or an
 unparsable answer the deterministic rules decide instead - a classifier can
 refine a decision, never silence the pipeline.
@@ -128,7 +130,11 @@ The daemon-wide default lives in `~/.agentproto/config.json`:
 { "follow": { "triage": { "enabled": true, "rules": { "operatorExit": true } } } }
 ```
 
-A follow's own `triage` block overrides the daemon default (per field).
+A follow's own `triage` block overrides the daemon default, per field: a rule a
+follow sets explicitly (`true` or `false`) beats the daemon value, and a rule it
+does not name keeps the daemon value. Triage works on the whole digest, so when
+several follows feed the same digest: triage runs if ANY of them enables it, and
+for a rule they set differently ON wins.
 
 ## MCP tools
 

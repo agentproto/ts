@@ -15,7 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -380,7 +380,6 @@ describe("follow-triage", () => {
         triage: {
           enabled: true,
           rules: { operatorExit: false },
-          classifier: { command: "jev classify" },
           reportWindowMs: 30_000,
         },
       },
@@ -390,7 +389,6 @@ describe("follow-triage", () => {
     expect(result.follow.triage).toEqual({
       enabled: true,
       rules: { operatorExit: false },
-      classifier: { command: "jev classify" },
       reportWindowMs: 30_000,
     })
     // The daemon default fills the rules the follow did not name.
@@ -404,10 +402,11 @@ describe("follow-triage", () => {
   // ── The classifier hook ─────────────────────────────────────────────
   describe("classifier hook", () => {
     it("lets the classifier downgrade a waking event", async () => {
-      const { sent } = setup([running("chief"), running("w")], {
-        selector: { sessionIds: ["w"] },
-        triage: { enabled: true, classifier: { command: "echo fyi" } },
-      })
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { triage: { ...defaultFollowTriageConfig(), enabled: true, classifier: { command: "echo fyi" } } },
+      )
       turnEnd("w")
       await handle!.flush()
       expect(sent).toHaveLength(1)
@@ -415,10 +414,11 @@ describe("follow-triage", () => {
     })
 
     it("falls back to the rules when the classifier times out", async () => {
-      const { sent } = setup([running("chief"), running("w")], {
-        selector: { sessionIds: ["w"] },
-        triage: { enabled: true, classifier: { command: "sleep 5", timeoutMs: 50 } },
-      })
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { triage: { ...defaultFollowTriageConfig(), enabled: true, classifier: { command: "sleep 5", timeoutMs: 50 } } },
+      )
       turnEnd("w")
       await handle!.flush()
       // The rules decide: a plain turn-end wakes.
@@ -432,10 +432,11 @@ describe("follow-triage", () => {
     })
 
     it("never lets the classifier silence an always-wake event", async () => {
-      const { sent } = setup([running("chief"), running("w")], {
-        selector: { sessionIds: ["w"] },
-        triage: { enabled: true, classifier: { command: "echo drop" } },
-      })
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { triage: { ...defaultFollowTriageConfig(), enabled: true, classifier: { command: "echo drop" } } },
+      )
       bus.emit({
         type: "session:awaiting-input",
         sessionId: "w",
@@ -445,6 +446,79 @@ describe("follow-triage", () => {
       await handle!.flush()
       expect(sent).toHaveLength(1)
       expect(sent[0]!.urgency).toBe("next-turn")
+    })
+    it("ignores a classifier smuggled onto a follow record (operator config only)", async () => {
+      const marker = join(tmp, "ran")
+      const { sent } = setup([running("chief"), running("w")], {
+        selector: { sessionIds: ["w"] },
+        triage: { enabled: true, classifier: { command: `touch ${marker}` } } as never,
+      })
+      turnEnd("w")
+      await handle!.flush()
+      expect(existsSync(marker)).toBe(false)
+      expect(sent).toHaveLength(1)
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
+      expect(JSON.parse(lines[0]!)).toMatchObject({ decision: "wake", rule: "default" })
+    })
+
+    it("rejects a per-follow classifier on the `session_follow` tool", () => {
+      const store = createSessionFollowStore({ persist: false })
+      const result = upsertSessionFollow(
+        { store, hasSession: () => true, defaultFollower: "chief" },
+        { selector: { all: true }, triage: { enabled: true, classifier: { command: "id" } } },
+      )
+      expect(result.ok).toBe(false)
+      expect(store.list()).toHaveLength(0)
+    })
+  })
+
+  // ── Per-follow rule overrides ───────────────────────────────────────
+  describe("per-follow rule overrides", () => {
+    it("lets a follow switch a rule OFF against the all-rules-on daemon default", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] }, triage: { enabled: true, rules: { operatorExit: false } } },
+        { triage: defaultFollowTriageConfig() },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      // operatorExit is off for this follow: the exit is NOT downgraded to fyi.
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
+      expect(JSON.parse(lines[0]!)).toMatchObject({ decision: "wake", rule: "default" })
+    })
+
+    it("keeps a rule ON for a follow that does not name it", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] }, triage: { enabled: true, rules: { cronOk: false } } },
+        { triage: defaultFollowTriageConfig() },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
+    })
+
+    it("when co-batched follows disagree on a rule, ON wins", async () => {
+      const { sent, store } = setup(
+        [running("chief"), running("w1"), running("w2")],
+        { selector: { sessionIds: ["w1"] }, triage: { enabled: true, rules: { operatorExit: false } } },
+        { triage: defaultFollowTriageConfig() },
+      )
+      store.upsert({
+        key: "second",
+        batchMs: 0,
+        follower: "chief",
+        selector: { sessionIds: ["w2"] },
+        triage: { rules: { operatorExit: true } },
+      })
+      exited("w1", { reason: "operator-stopped" })
+      exited("w2", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
     })
   })
 })

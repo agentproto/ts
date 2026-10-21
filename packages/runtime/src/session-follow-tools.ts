@@ -54,8 +54,11 @@ export const followExcludeSchema = z.object({
   labels: z.array(z.string().min(1)).max(500).optional(),
 })
 
-/** The per-follow triage block — see `follow-triage.ts`. Off by default. */
-export const followTriageSchema = z.object({
+/** The per-follow triage block, see `follow-triage.ts`. Off by default.
+ *  Strict on purpose: there is no per-follow `classifier` (it executes on the
+ *  daemon host: operator config only), so one is rejected, not dropped. */
+export const followTriageSchema = z
+  .object({
   enabled: z
     .boolean()
     .optional()
@@ -79,17 +82,14 @@ export const followTriageSchema = z.object({
       ownPr: z.boolean().optional().describe("A PR opened by one of your own live sessions → fyi."),
     })
     .optional(),
-  // NOTE: no `classifier` here on purpose. The classifier hook runs a shell
-  // command / HTTP request on the host, so it is configurable only in the
-  // operator-owned daemon config (`follow.triage.classifier`). Unknown keys
-  // are stripped by zod, so a caller-supplied one never reaches the store.
   reportWindowMs: z
     .number()
     .int()
     .min(0)
     .optional()
     .describe("How long after a report a turn-end counts as its echo. Default 60000."),
-})
+  })
+  .strict()
 
 export const followInputSchema = z.object({
   follower: z.string().min(1).optional(),

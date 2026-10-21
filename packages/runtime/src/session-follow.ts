@@ -448,10 +448,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
    *  stale batches racing for the same dead id collapse into one revival. */
   const revivals = new Map<string, Promise<string>>()
   /** follower id → reporter session id → epoch ms of the last report the
-   *  reporter sent UP to that follower (`message_parent`). The window is
-   *  only checked on read; the map itself is bounded by the number of
-   *  distinct (follower, reporter) pairs, one timestamp each. */
+   *  reporter sent UP to that follower (`message_parent`). Bounded by the
+   *  {@link REPORT_RETENTION_MS}: stale entries are pruned on every write. */
   const reports = new Map<string, Map<string, number>>()
+  const REPORT_RETENTION_MS = 60 * 60_000
 
   function park(followerId: string, text: string, reason: string): void {
     log(`[session-follow] follower ${followerId}: ${reason} — digest parked`)
@@ -469,33 +469,27 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
 
   // ── Triage ──────────────────────────────────────────────────────────
 
-  /** The effective triage config of a batch. Each contributing follow is
-   *  resolved against the daemon default (its explicitly-set fields win,
-   *  `false` included). Triage runs for the batch as soon as ONE
-   *  contributing follow has it enabled. The rules are the UNION of the
-   *  effective rules of the follows that have triage enabled: a rule is on
-   *  when ANY of them has it on, so two co-batched follows that disagree on
-   *  a rule resolve to "on". Follows that did not enable triage do not
-   *  contribute rules. The classifier hook is daemon-level only — a
-   *  per-follow `classifier` (e.g. in an older persisted record) is
-   *  ignored, since it would run a command / request on the host. */
+  /** The effective triage config of a batch: the daemon default, overridden
+   *  by every contributing follow. Triage runs for the batch as soon as ONE
+   *  contributing follow turns it on. Per rule: a value a follow set
+   *  explicitly beats the daemon default; when contributing follows disagree,
+   *  ON wins (a follow that wants the rule beats one that does not). The
+   *  classifier is operator-owned and only ever comes from the daemon config. */
   function triageConfigFor(follows: readonly SessionFollow[]): FollowTriageConfig {
-    const effective = follows.map(f => resolveFollowTriageConfig(daemonTriage, f.triage))
-    const active = effective.filter(cfg => cfg.enabled)
     const rules = { ...daemonTriage.rules }
-    if (active.length > 0) {
-      for (const key of Object.keys(rules) as (keyof FollowTriageConfig["rules"])[]) {
-        rules[key] = active.some(cfg => cfg.rules[key])
-      }
+    for (const key of Object.keys(rules) as (keyof FollowTriageConfig["rules"])[]) {
+      const explicit = follows
+        .map(f => f.triage?.rules?.[key])
+        .filter((v): v is boolean => typeof v === "boolean")
+      if (explicit.length > 0) rules[key] = explicit.some(Boolean)
     }
-    const classifier = daemonTriage.classifier
     const reportWindowMs =
       follows.find(f => f.triage?.reportWindowMs !== undefined)?.triage?.reportWindowMs ??
       daemonTriage.reportWindowMs
     return {
-      enabled: effective.some(cfg => cfg.enabled),
+      enabled: follows.some(f => (f.triage?.enabled ?? daemonTriage.enabled) === true),
       rules,
-      ...(classifier ? { classifier } : {}),
+      ...(daemonTriage.classifier ? { classifier: daemonTriage.classifier } : {}),
       reportWindowMs,
     }
   }
@@ -539,7 +533,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
 
   /** The facts the triage rules read. Engine-owned ones first, then the
    *  caller's overrides (a cron-status probe, a test seam). */
-  function factsFor(followerId: string, entries: readonly BatchEntry[]): TriageFacts {
+  function factsFor(entries: readonly BatchEntry[]): TriageFacts {
     return {
       reportedRecently,
       isFollowerSession,
@@ -750,7 +744,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       // Deterministic triage BEFORE the wake: every event is classified,
       // every decision is logged, and only the `wake` ones (plus a count of
       // the informational ones) make it into a digest that may wake.
-      const facts = factsFor(followerId, entries)
+      const facts = factsFor(entries)
       const results: TriageResult[] = []
       for (const entry of entries) {
         results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
@@ -885,6 +879,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       reports.set(ev.sessionId, byReporter)
     }
     byReporter.set(ev.fromSessionId, at)
+    for (const [reporter, reportedAt] of byReporter) {
+      if (at - reportedAt > REPORT_RETENTION_MS) byReporter.delete(reporter)
+    }
   })
 
   return {
@@ -896,6 +893,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     dispose() {
       unsubscribe()
       unsubscribeReports()
+      reports.clear()
       for (const batch of batches.values()) clearTimer(batch.timer)
       batches.clear()
     },

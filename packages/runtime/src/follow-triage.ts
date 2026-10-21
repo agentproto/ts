@@ -120,22 +120,22 @@ export interface FollowTriageInput {
   reportWindowMs?: number
 }
 
-/** The triage block a single FOLLOW may carry. Deliberately has no
- *  `classifier`: the hook runs a shell command / HTTP request on the host,
- *  so it is only configurable in the operator-owned daemon config. */
+/** The triage block a FOLLOW may carry. No `classifier`: that hook runs a
+ *  command / HTTP call on the daemon host, so it is operator-owned
+ *  (`~/.agentproto/config.json`) and never reachable from a tool call. */
 export type FollowTriageFollowInput = Omit<FollowTriageInput, "classifier">
 
 /** Resolve a partial triage block against the daemon-level default. */
 export function resolveFollowTriageConfig(
   base?: FollowTriageConfig,
-  override?: FollowTriageInput | FollowTriageFollowInput,
+  override?: FollowTriageFollowInput,
 ): FollowTriageConfig {
   const baseRules = base?.rules ?? DEFAULT_FOLLOW_TRIAGE_RULES
   const overrideClassifier = (override as FollowTriageInput | undefined)?.classifier
   return {
     enabled: override?.enabled ?? base?.enabled ?? false,
     rules: { ...baseRules, ...(override?.rules ?? {}) },
-    ...(overrideClassifier ?? base?.classifier ? { classifier: overrideClassifier ?? base?.classifier } : {}),
+    ...(base?.classifier ? { classifier: base.classifier } : {}),
     reportWindowMs:
       override?.reportWindowMs ?? base?.reportWindowMs ?? DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
   }
@@ -213,7 +213,9 @@ export const TRIAGE_RULES = {
 } as const
 
 /** Exit reasons that mean "somebody asked this session to stop" — the
- *  operator or the follower itself. */
+ *  operator or the follower itself. Deliberately narrower than
+ *  `DELIBERATE_END_REASONS` (session-end-reason.ts): a steward-completed /
+ *  steward-abandoned exit is an outcome the follower still wants to hear. */
 const OPERATOR_EXIT_REASONS: ReadonlySet<string> = new Set(["operator-stopped", "operator-completed"])
 
 /**
