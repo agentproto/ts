@@ -1,5 +1,5 @@
 /**
- * Transcript search + read over a session LINEAGE — the read side of
+ * Transcript search + read over a session LINEAGE, the read side of
  * conversation resumption.
  *
  * The contract:
@@ -67,7 +67,7 @@ describe("buildTranscriptChain", () => {
       "sess_new",
       id => (id === "sess_new" ? { id, resumedFrom: "gone" } : undefined),
     )
-    // The descriptor is gone, so nothing is walked BEYOND it — but the id
+    // The descriptor is gone, so nothing is walked BEYOND it, but the id
     // stays in the chain: its events.jsonl may still exist on disk.
     expect(chain.map(c => c.sessionId)).toEqual(["sess_new", "gone"])
     expect(chain[1]?.via).toBe("resumedFrom")

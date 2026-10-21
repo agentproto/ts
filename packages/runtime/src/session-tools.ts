@@ -2044,7 +2044,7 @@ export function registerSessionTools(
     "Return the context-continuity status for one session — current context " +
       "percentage, resolved policy thresholds, and the next automatic action " +
       "(warn / compact / continue-fresh / hard-stop). Also reports the " +
-      "ABSOLUTE autocompact threshold (`autoCompactAtTokens`, tokens — " +
+      "ABSOLUTE autocompact threshold (`autoCompactAtTokens`, tokens; " +
       "window-independent, unlike the percentages) and whether the session " +
       "is currently above it (`autoCompactAboveThreshold`).",
     {
@@ -2119,7 +2119,7 @@ export function registerSessionTools(
   // Conversation resumption: after a restart (or a continue-fresh
   // handoff) the history a session is carrying on lives in its
   // PREDECESSORS' transcripts. These two tools look back along the
-  // lineage and return DATED EXCERPTS — never a whole transcript.
+  // lineage and return DATED EXCERPTS, never a whole transcript.
   const resolveTranscriptTarget = (
     input: SessionRefInput,
   ): { desc?: SessionDescriptor; error?: string } => {
@@ -2131,7 +2131,7 @@ export function registerSessionTools(
     if (fallback) return { desc: fallback }
     return {
       error:
-        "no session given and no calling session to fall back on — pass " +
+        "no session given and no calling session to fall back on. Pass " +
         "`sessionId` (or `idOrName` / `slug`) of the session to look back from.",
     }
   }
@@ -2152,7 +2152,7 @@ export function registerSessionTools(
   server.tool(
     "transcript_search",
     "Search the transcripts of a session AND its predecessors (the restart / " +
-      "continue-fresh lineage) for a query, and return DATED EXCERPTS — one " +
+      "continue-fresh lineage) for a query, and return DATED EXCERPTS (one " +
       "bounded snippet per hit, never a whole file. Use it to recover what " +
       "was said before a restart: the chain is walked from the session " +
       "through `resumedFrom` / `continuedFrom` / `succeeds` links, so a " +
@@ -2195,7 +2195,7 @@ export function registerSessionTools(
               text: JSON.stringify({
                 error:
                   target.error ??
-                  "no session given — pass `sessionId` (or `idOrName` / `slug`).",
+                  "no session given. Pass `sessionId` (or `idOrName` / `slug`).",
               }),
             },
           ],
@@ -2248,7 +2248,7 @@ export function registerSessionTools(
     "transcript_read",
     "Read DATED EXCERPTS from the transcripts of a session and its " +
       "predecessors (the restart / continue-fresh lineage). Bounded: a " +
-      "record cap, a per-excerpt cap and a total character cap — never a " +
+      "record cap, a per-excerpt cap and a total character cap, never a " +
       "whole transcript. Optionally filtered by a query.",
     {
       ...sessionRefSchema(z),
@@ -2295,7 +2295,7 @@ export function registerSessionTools(
               text: JSON.stringify({
                 error:
                   target.error ??
-                  "no session given — pass `sessionId` (or `idOrName` / `slug`).",
+                  "no session given, pass `sessionId` (or `idOrName` / `slug`).",
               }),
             },
           ],

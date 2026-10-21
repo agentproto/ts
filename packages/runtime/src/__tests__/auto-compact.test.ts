@@ -1,5 +1,5 @@
 /**
- * Autocompact — the ABSOLUTE token threshold that compacts an idle
+ * Autocompact, the ABSOLUTE token threshold that compacts an idle
  * session's context (the percent ladder never fires on a 1M-token
  * window) and the short resume prompt that follows it.
  *
@@ -107,7 +107,7 @@ describe("decideAutoCompact", () => {
   })
 
   it("fires on a 1M-token window: the threshold is absolute, not a percent", () => {
-    // 558k of a 1M window is 55% — the warn band of the percent ladder.
+    // 558k of a 1M window is 55%, the warn band of the percent ladder.
     const decision = decideAutoCompact({ ...base, tokens: 558_000 })
     expect(decision.trigger).toBe(true)
   })
@@ -290,7 +290,7 @@ describe("session_context_status", () => {
 
     const above = computeContextContinuityStatus("sess_1", policy, 1_000_000, 200_000)
     expect(above.autoCompactAboveThreshold).toBe(true)
-    // The percent ladder still says "ok" at 20% — that is the bug the
+    // The percent ladder still says "ok" at 20%, that is the bug the
     // absolute threshold exists to cover.
     expect(above.state).toBe("ok")
   })

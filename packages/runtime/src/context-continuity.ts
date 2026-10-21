@@ -70,7 +70,7 @@ export interface ContextContinuityPolicy
    * `/compact` path as `session_compact`) and, when a mission is in
    * progress, injects a short resume prompt.
    *
-   * Window-independent by design — the percent ladder above never fires on
+   * Window-independent by design: the percent ladder above never fires on
    * a 1M-token context (558k of 1M is "55% full", the warn band), so a
    * session can grow without ever compacting. An absolute count does not
    * care how big the window is.

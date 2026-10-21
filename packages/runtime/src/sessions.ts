@@ -2985,7 +2985,7 @@ interface SessionRuntime {
   /** The autocompact controller for this session (absolute token
    *  threshold). Created lazily on the first turn boundary that reaches it. */
   autoCompact?: AutoCompactController
-  /** True while an autocompact check is scheduled but has not run yet —
+  /** True while an autocompact check is scheduled but has not run yet. It
    *  keeps a burst of turn boundaries from queueing several checks. */
   autoCompactScheduled?: boolean
   /** Active tool calls in announcement order. Multiple calls can overlap;
@@ -9103,7 +9103,7 @@ export function createSessionsRegistry(opts?: {
    * "A mission is in progress" is decided HERE, by the continuity
    * checkpoint written just before the compaction: a non-empty `goal`
    * section means there is a goal to carry on with. A session with no goal
-   * still gets its context freed — it is just not told to resume, because
+   * still gets its context freed. It is just not told to resume, because
    * there is nothing to resume.
    */
   async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
@@ -9131,7 +9131,7 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
-   * Autocompact — the ABSOLUTE token threshold path.
+   * Autocompact: the ABSOLUTE token threshold path.
    *
    * The percent ladder (`warnAtPct` / `compactAtPct` / …) cannot see a
    * session whose window is huge: 558k tokens in a 1M window is "55%",

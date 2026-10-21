@@ -14,18 +14,18 @@
  *     `succeeds` handover link) from a session to its oldest reachable
  *     ancestor. Cycle-safe, bounded, and deduplicated.
  *   - {@link searchTranscriptFile} scans a transcript for a query and
- *     returns DATED EXCERPTS — never the whole file.
+ *     returns DATED EXCERPTS, never the whole file.
  *   - {@link readTranscriptFile} reads bounded excerpts out of a
  *     transcript, optionally filtered by a query.
  *
  * Every read is bounded: a per-excerpt character cap, a total character
  * cap and a result cap. The tools built on top of this never return a whole
- * transcript — a 200 MB `events.jsonl` would be an answer no model (or
+ * transcript: a 200 MB `events.jsonl` would be an answer no model (or
  * human) can use, and would cost more than the question.
  *
  * The vscode extension's `searchTranscripts` command is a UI over the
  * daemon's brain query (`GET /brain/query`), which needs an ingested
- * corpus; this module needs none — it reads the transcripts directly — so
+ * corpus. This module needs none: it reads the transcripts directly, so
  * the shared part lives HERE, in the runtime package, and consumers import
  * it from there instead of from the vscode package.
  */
@@ -87,8 +87,8 @@ export function predecessorLinks(desc: TranscriptLineage): { via: TranscriptChai
  * session reached twice is visited once), cycle-safe (a lineage that loops
  * back on itself terminates) and bounded by {@link TRANSCRIPT_CHAIN_MAX_DEPTH}.
  * A predecessor whose DESCRIPTOR is missing (forgotten, archived away,
- * never persisted) stays in the chain as a leaf — its transcript may still
- * be on disk — but nothing is walked beyond it. That is not an error.
+ * never persisted) stays in the chain as a leaf (its transcript may still
+ * be on disk), but nothing is walked beyond it. That is not an error.
  */
 export function buildTranscriptChain(
   startId: string,
@@ -125,7 +125,7 @@ export interface TranscriptExcerpt {
   ts?: string
   /** The record's kind (`user-prompt`, `text-delta`, `notice`, …). */
   kind: string
-  /** The excerpt text — bounded, never the whole record. */
+  /** The excerpt text: bounded, never the whole record. */
   excerpt: string
 }
 

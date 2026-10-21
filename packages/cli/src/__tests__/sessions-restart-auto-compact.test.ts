@@ -1,5 +1,5 @@
 /**
- * `agentproto sessions restart --auto-compact-at-tokens <n>` — the ABSOLUTE
+ * `agentproto sessions restart --auto-compact-at-tokens <n>`, the ABSOLUTE
  * context threshold (tokens) at which an idle session is compacted
  * automatically.
  *

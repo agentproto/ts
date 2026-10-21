@@ -1,10 +1,10 @@
 /**
- * `transcript_search` / `transcript_read` — the read side of conversation
+ * `transcript_search` / `transcript_read`, the read side of conversation
  * resumption, exercised through the real MCP surface.
  *
  * A restarted session starts with an EMPTY transcript: its history lives
  * in its predecessors'. These tools walk that lineage and return dated,
- * bounded excerpts — never a whole transcript.
+ * bounded excerpts, never a whole transcript.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -100,7 +100,7 @@ describe("transcript_search / transcript_read", () => {
     expect(body.hits[0].excerpt).toContain("parser")
   })
 
-  it("never returns a whole transcript — the excerpt is bounded", async () => {
+  it("never returns a whole transcript, the excerpt is bounded", async () => {
     const oldId = spawn()
     await reg.sendPrompt(oldId, "x".repeat(5000) + " needle " + "y".repeat(5000))
     const newId = spawn(oldId)

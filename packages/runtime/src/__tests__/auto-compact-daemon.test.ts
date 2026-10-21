@@ -1,6 +1,6 @@
 /**
  * Autocompact in the daemon: an IDLE session whose context is above the
- * ABSOLUTE token threshold is compacted at the turn boundary — even when
+ * ABSOLUTE token threshold is compacted at the turn boundary, even when
  * the percent ladder would never fire (a 1M-token window at 200k tokens is
  * "20% full", deep inside the warn band).
  *

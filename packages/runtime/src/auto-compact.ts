@@ -1,13 +1,13 @@
 /**
- * Autocompact — an ABSOLUTE token threshold that compacts a session's
+ * Autocompact: an ABSOLUTE token threshold that compacts a session's
  * context while it is idle, plus the short resume prompt that puts the
  * session back on its mission afterwards.
  *
  * Why an absolute threshold at all: the percent-based continuity policy
  * (`contextContinuity.warnAtPct` / `compactAtPct` / …) never fires on a
  * session with a very large context window. A 1M-token window that has
- * grown to 558k tokens is "55% full" — the warn band, not the compact band
- * — while every single call re-reads ~330k cached tokens. The percent
+ * grown to 558k tokens is "55% full" (the warn band, not the compact
+ * band), while every single call re-reads ~330k cached tokens. The percent
  * ladder cannot see that, so nothing compacts and the bill grows. An
  * absolute token threshold is window-independent: 150k tokens of context is
  * 150k tokens of context whether the window is 200k or 1M.
@@ -36,12 +36,12 @@
  *     caller (the daemon reads it off the continuity checkpoint written
  *     just before the compaction: a non-empty `goal` section means there is
  *     a goal to resume). A session with no goal still gets its context
- *     freed — it just is not told to carry on.
+ *     freed. It is just not told to carry on.
  */
 
 /** Default absolute threshold: 150k tokens of context. */
 export const AUTO_COMPACT_DEFAULT_TOKENS = 150_000
-/** Hard ceiling for the threshold — a session never autocompacts above it. */
+/** Hard ceiling for the threshold: a session never autocompacts above it. */
 export const AUTO_COMPACT_MAX_TOKENS = 200_000
 /** Floor for a non-zero threshold (below this the threshold is noise). */
 export const AUTO_COMPACT_MIN_TOKENS = 1_000
@@ -76,12 +76,12 @@ export type AutoCompactReason =
 export interface AutoCompactInputs {
   /** Tokens currently held in the session's context. */
   tokens: number | undefined
-  /** Configured absolute threshold (already clamped by the caller or not —
-   *  {@link decideAutoCompact} clamps it again, so raw values are safe). */
+  /** Configured absolute threshold. {@link decideAutoCompact} clamps it
+   *  again, so a raw (unclamped) value is safe here. */
   threshold: number | undefined
   /** The session is between turns (not mid-turn). */
   idle: boolean
-  /** A background task is outstanding — the session is not idle. */
+  /** A background task is outstanding: the session is not idle. */
   backgroundTask: boolean
   /** A compaction is already in flight. */
   compacting: boolean
@@ -126,7 +126,7 @@ export interface AutoCompactOutcome {
   goal?: string
 }
 
-/** The hooks the controller drives — every side effect lives behind them. */
+/** The hooks the controller drives: every side effect lives behind them. */
 export interface AutoCompactControllerDeps {
   /** Current context size in tokens (undefined when unknown). */
   readTokens: () => number | undefined
@@ -142,7 +142,7 @@ export interface AutoCompactControllerDeps {
   requestCompact: () => Promise<AutoCompactOutcome>
   /** Deliver the resume prompt. */
   requestResume: (prompt: string) => Promise<void>
-  /** Absolute path of the full transcript — cited by the resume prompt. */
+  /** Absolute path of the full transcript, cited by the resume prompt. */
   transcriptPath: () => string
   /** Optional log sink (the daemon writes these to the transcript). */
   log?: (line: string) => void
@@ -224,7 +224,7 @@ export function createAutoCompactController(
       inFlight = true
       try {
         deps.log?.(
-          `[auto-compact] context at ${decision.tokens} tokens (threshold ${decision.threshold}) — compacting automatically`,
+          `[auto-compact] context at ${decision.tokens} tokens (threshold ${decision.threshold}): compacting automatically`,
         )
         const outcome = await deps.requestCompact()
         armed = false
@@ -233,10 +233,10 @@ export function createAutoCompactController(
             ...(outcome.goal !== undefined ? { goal: outcome.goal } : {}),
             transcriptPath: deps.transcriptPath(),
           })
-          deps.log?.("[auto-compact] mission in progress — injecting the resume prompt")
+          deps.log?.("[auto-compact] mission in progress: injecting the resume prompt")
           await deps.requestResume(prompt)
         } else {
-          deps.log?.("[auto-compact] no mission in progress — no resume prompt")
+          deps.log?.("[auto-compact] no mission in progress: no resume prompt")
         }
       } catch (err) {
         deps.log?.(
