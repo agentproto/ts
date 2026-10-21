@@ -3401,7 +3401,20 @@ export async function spawnAgentSession(
   const delegationReach = delegationReachFor(mcpServers, {
     ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
     gatewayDeferred: resolveDeferredToolsGatewayOption(configDefaults?.mcp?.deferredTools) !== undefined,
-    orchestratorDelegates,
+    orchestratorDelegates:
+      orchestratorDelegates ||
+      // Sandbox boundary: the delegation surface lives INSIDE the box (the
+      // forwarded `orchestrator` request mounts /mcp/orchestrator on the
+      // box daemon's own loopback), not on the host mounts this branch
+      // usually inspects. Factoring it in here keeps the host-composed
+      // prompt honest for a sandboxed supervisor — an explicit
+      // `role: "supervisor"` keeps the supervisor disposition instead of
+      // being rewritten to the executor text by `composeRoleContext`
+      // (role.ts), because its delegation tools genuinely exist, just
+      // box-side. An executor (delegationDenied) never forwards a scope,
+      // so `sandboxOrchestratorForward` stays undefined and the executor
+      // stays a leaf — a denial can't be resurrected through this path.
+      sandboxOrchestratorForward !== undefined,
   })
   if (input.role === undefined) {
     role = resolveRole(
