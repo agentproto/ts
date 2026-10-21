@@ -53,6 +53,9 @@ export interface OpenPrForSessionInput {
    *  with the stamp lane. */
   run?: GhRunner
   host?: string
+  /** Configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
+   *  refPrefix`), when the deployment moved it. */
+  checkpointRefPrefix?: string
 }
 
 export type OpenPrForSessionOutcome =
@@ -106,6 +109,7 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       ...(input.openedBy && input.openedBy !== desc.id ? { openedBy: input.openedBy } : {}),
       ...(input.run ? { run: input.run } : {}),
       ...(input.host ? { host: input.host } : {}),
+      ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
     })
     // A stamped footer already recorded the PR; otherwise record it here so
     // a created PR is never lost to a failed footer edit.

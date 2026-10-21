@@ -23,7 +23,7 @@
  */
 
 import { hostname } from "node:os"
-import { CHECKPOINT_BRANCH_PREFIX } from "./sandbox-workspace-remote.js"
+import { checkpointBranchOf } from "./sandbox-delivery.js"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
@@ -178,6 +178,10 @@ export async function stampFooterOnPr(input: {
   /** The session that opened the PR, when it isn't `session` itself (a
    *  daemon `pr_open` on behalf of a box session). */
   openedBy?: string
+  /** The configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
+   *  refPrefix`) the trailer read goes through; defaults to the legacy
+   *  `agentproto-checkpoint/` (see `checkpointBranchOf`). */
+  checkpointRefPrefix?: string
   /** Re-render an ALREADY-stamped footer when the session has learned its
    *  spend since the first stamp (the first stamp lands mid-turn, before a
    *  claude-code/claude-sdk session reports any cost). Only edits when the
@@ -205,14 +209,15 @@ export async function stampFooterOnPr(input: {
         input.cwd,
       )
       if (commits.exitCode === 0) for (const id of sessionIdsFromTrailers(commits.stdout)) trailerIds.add(id)
-      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, input.session.sandboxDeliveryTarget?.branch)) {
+      // Key everything off the PR's HEAD branch - the branch whose work the PR
+      // actually carries - never the resolved session's own branch (a host
+      // orchestrator has none; a different session may have another). The
+      // session's branch is only the fallback when the head can't be read.
+      const headBranch = (await prHeadBranch(run, input.prUrl, input.cwd)) ?? input.session.sandboxDeliveryTarget?.branch
+      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, headBranch, input.checkpointRefPrefix)) {
         trailerIds.add(id)
       }
-      authors = collectBranchAuthors(
-        input.registry.list(),
-        input.session.sandboxDeliveryTarget?.branch ?? "",
-        [...trailerIds],
-      )
+      authors = collectBranchAuthors(input.registry.list(), headBranch ?? "", [...trailerIds])
     }
     const footer = buildSessionPrFooter(input.session, {
       supervisor: input.supervisor,
@@ -287,6 +292,17 @@ export async function stampFooterOnPr(input: {
   }
 }
 
+/** The PR's head branch (`headRefName`), or undefined when it can't be read. */
+async function prHeadBranch(run: GhRunner, prUrl: string, cwd: string): Promise<string | undefined> {
+  try {
+    const head = await run(["pr", "view", prUrl, "--json", "headRefName", "--jq", ".headRefName"], cwd)
+    if (head.exitCode !== 0) return undefined
+    return head.stdout.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
 /** Session ids from the `Agentproto-Session:` trailer on the tip of the PR
  *  branch's checkpoint snapshot (`agentproto-checkpoint/<branch>`). Every
  *  failure (no checkpoint, no `gh api`, unparsable url) yields `[]`. */
@@ -294,20 +310,14 @@ async function checkpointTrailerIds(
   run: GhRunner,
   prUrl: string,
   cwd: string,
-  knownBranch: string | undefined,
+  branch: string | undefined,
+  refPrefix: string | undefined,
 ): Promise<string[]> {
   try {
     const repo = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1]
-    if (!repo) return []
-    let branch = knownBranch
-    if (!branch) {
-      const head = await run(["pr", "view", prUrl, "--json", "headRefName", "--jq", ".headRefName"], cwd)
-      if (head.exitCode !== 0) return []
-      branch = head.stdout.trim()
-    }
-    if (!branch) return []
+    if (!repo || !branch) return []
     const tip = await run(
-      ["api", `repos/${repo}/commits/${CHECKPOINT_BRANCH_PREFIX}${branch}`, "--jq", ".commit.message"],
+      ["api", `repos/${repo}/commits/${checkpointBranchOf(branch, refPrefix)}`, "--jq", ".commit.message"],
       cwd,
     )
     return tip.exitCode === 0 ? sessionIdsFromTrailers(tip.stdout) : []
