@@ -13,11 +13,111 @@
  * `setModel` path use, so those lifecycle paths cannot drift.
  */
 
+import type { SessionConfigOption } from "@agentproto/acp/client"
+
 import {
   stripFixedNativeVendor,
   stripRouteSuffix,
 } from "@agentproto/model-catalog/route-identity"
 import { WIDENING_ROUTES } from "./catalog-models.js"
+
+/** One model value the LIVE agent session advertises as acceptable. */
+export interface AdvertisedModelValue {
+  /** The value to hand the agent verbatim (`configId:"model"`). */
+  value: string
+  /** The agent's own human label for it. */
+  name: string
+  /** The agent's own description, when it gave one. */
+  description?: string
+}
+
+/**
+ * The model values a LIVE agent session advertises, read off the ACP
+ * `configOptions` snapshot the wrapper returned at connect time
+ * (`newSession`/`loadSession`). The agent's OWN list is the only authority on
+ * what it will accept on `session/set_config_option(configId:"model")` — the
+ * catalog's ids are a different vocabulary, and offering a catalog id the
+ * agent never advertised is exactly what makes a live switch fail with
+ * "Invalid value for config option model: …".
+ *
+ * Empty when the agent advertises no `model` option (older wrappers, arms
+ * without a config surface) — never inferred, never guessed.
+ */
+export function advertisedModelValues(
+  options: readonly SessionConfigOption[] | undefined,
+): AdvertisedModelValue[] {
+  if (!options) return []
+  const option = options.find(o => o.id === "model" && o.type === "select")
+  if (!option) return []
+  const select = option as Extract<SessionConfigOption, { type: "select" }>
+  const raw = select.options as unknown[]
+  if (!Array.isArray(raw)) return []
+  const values: AdvertisedModelValue[] = []
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") continue
+    const maybeGroup = entry as { group?: unknown; options?: unknown }
+    if (Array.isArray(maybeGroup.options)) {
+      // A grouped list: the group's own name describes every value under it.
+      const groupName = typeof maybeGroup.group === "string" ? maybeGroup.group : undefined
+      for (const child of maybeGroup.options) {
+        const value = valueOf(child)
+        if (!value) continue
+        const description = value.description ?? groupName
+        values.push({
+          value: value.value,
+          name: value.name,
+          ...(description ? { description } : {}),
+        })
+      }
+      continue
+    }
+    const value = valueOf(entry)
+    if (!value) continue
+    values.push(value)
+  }
+  return values
+}
+
+/** Normalize one advertised option entry to `{value, name, description?}`. */
+function valueOf(entry: unknown): AdvertisedModelValue | undefined {
+  if (!entry || typeof entry !== "object") return undefined
+  const rec = entry as { value?: unknown; name?: unknown; description?: unknown }
+  if (typeof rec.value !== "string" || rec.value.length === 0) return undefined
+  const name = typeof rec.name === "string" && rec.name.length > 0 ? rec.name : rec.value
+  const description =
+    typeof rec.description === "string" && rec.description.length > 0 ? rec.description : undefined
+  return { value: rec.value, name, ...(description ? { description } : {}) }
+}
+
+/**
+ * Resolve a requested model id to the value the live agent will actually
+ * accept, given the values it advertises.
+ *
+ * Exact match wins (the agent's own spelling is the wire truth). Failing
+ * that, a case-insensitive match. Failing THAT, a unique prefix match — the
+ * catalog publishes an UNDATED id (`claude-sonnet-5-5`) where the agent
+ * advertises a dated one (`claude-sonnet-5-5-20260101`), and refusing the
+ * switch over that suffix is a needless dead end. Anything less certain
+ * (several prefix matches, no match at all) resolves `undefined`, and the
+ * caller keeps its own normalization — a genuine "this agent does not offer
+ * that model" stays visible as the agent's own rejection.
+ */
+export function resolveAdvertisedModelValue(
+  requested: string,
+  advertised: readonly AdvertisedModelValue[],
+): string | undefined {
+  if (advertised.length === 0) return undefined
+  const exact = advertised.find(a => a.value === requested)
+  if (exact) return exact.value
+  const lower = requested.toLowerCase()
+  const insensitive = advertised.find(a => a.value.toLowerCase() === lower)
+  if (insensitive) return insensitive.value
+  const prefixed = advertised.filter(a => a.value.toLowerCase().startsWith(lower))
+  if (prefixed.length === 1) return prefixed[0].value
+  const suffixed = advertised.filter(a => lower.startsWith(a.value.toLowerCase()))
+  if (suffixed.length === 1) return suffixed[0].value
+  return undefined
+}
 
 export interface ModelWireOptions {
   /** AIP-45 `routeSelection`: how this adapter's billing route relates to the

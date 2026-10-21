@@ -136,3 +136,94 @@ export function buildChangeModelPlaceHolder(
   const current = session.model ? `currently ${session.model}` : "no model recorded"
   return `Switch model for ${session.adapterSlug ?? "this session"} (${current})`
 }
+
+/**
+ * One model value the LIVE agent session advertises as acceptable — its own
+ * ACP `configOptions` entry for `configId:"model"` (mirrored on the session
+ * descriptor as `availableModels`).
+ */
+export interface LiveModelValue {
+  value: string
+  name?: string
+  description?: string
+}
+
+/** Heading for the group of models the live agent itself advertises. */
+export const LIVE_MODELS_HEADING = "accepted by this agent"
+
+/**
+ * Build the model rows from the LIVE session's OWN advertised model values.
+ *
+ * This is the fix for the "Invalid value for config option model: …" hot-
+ * switch failure: the agent accepts the ids IT advertises, and the
+ * adapter's catalog listing is a DIFFERENT vocabulary (a claude-code session
+ * advertises its own model ids; the catalog publishes another id set). A row
+ * built from the advertised list is applicable BY CONSTRUCTION — the value
+ * sent is the value the agent named.
+ *
+ * `restartRequired` still applies: an adapter whose model is baked into
+ * spawn-time argv (`modelApply: "arg"`) cannot switch live at all, whatever
+ * the agent advertises.
+ */
+export function mapLiveModelQuickPickItems(
+  liveModels: readonly LiveModelValue[],
+  session: Pick<SessionDescriptor, "model">,
+  options: { restartRequired?: boolean } = {},
+): ChangeModelQuickPickItem[] {
+  const items: ChangeModelQuickPickItem[] = []
+  const seen = new Set<string>()
+  for (const advertised of liveModels) {
+    const value = advertised?.value
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    const current = value === session.model
+    const description = advertised.description ?? advertised.name
+    items.push({
+      label: value,
+      ...(description && description !== value ? { description } : {}),
+      model: value,
+      ...(current ? { current: true } : {}),
+      ...(options.restartRequired ? { restartRequired: true } : {}),
+    })
+  }
+  return items
+}
+
+/**
+ * A human-readable explanation for a live switch the agent refused.
+ *
+ * The ACP wrapper's own rejection text ("Invalid value for config option
+ * model: claude-sonnet-5-5") names an id the user never picked, which reads
+ * like a bug rather than a refused offer. Say what actually happened: the
+ * agent does not accept that model id.
+ */
+export function describeSwitchRejection(
+  model: string,
+  reason: string | undefined,
+): string {
+  if (!reason) return `the agent did not accept "${model}"`
+  if (/invalid value for config option/i.test(reason)) {
+    return `this agent does not accept "${model}" — pick one of the models it advertises`
+  }
+  return reason
+}
+
+/**
+ * The model rows the picker offers for a session: the LIVE agent's own
+ * advertised values when it advertises any (the only ids it will accept on a
+ * live switch), else the adapter's catalog listing (the pre-existing
+ * behaviour, for arms with no config surface).
+ */
+export function resolveChangeModelItems(args: {
+  adapter: SpawnAdapterInfo
+  session: Pick<SessionDescriptor, "model" | "mode" | "route">
+  liveModels?: readonly LiveModelValue[]
+}): ChangeModelQuickPickItem[] {
+  const { adapter, session, liveModels } = args
+  if (liveModels && liveModels.length > 0) {
+    return mapLiveModelQuickPickItems(liveModels, session, {
+      restartRequired: adapter.modelApply === "arg",
+    })
+  }
+  return mapChangeModelQuickPickItems(adapter, session)
+}

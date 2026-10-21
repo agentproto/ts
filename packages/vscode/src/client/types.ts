@@ -397,6 +397,16 @@ export interface SessionDescriptor {
    *  live-switchable) rows from this — without it only prompt-injected advisory
    *  postures are offerable. */
   availableModes?: Array<{ id: string; name?: string; description?: string }>
+  /** The model values THIS live session's agent advertises as acceptable
+   *  (mirror of `@agentproto/runtime` SessionDescriptor.availableModels — the
+   *  agent's own ACP `configOptions` entry for `configId:"model"`). The
+   *  agent's own vocabulary, NOT the catalog's: offering a catalog id the
+   *  agent never advertised is what makes a live switch fail with
+   *  "Invalid value for config option model: …". Stamped at read time by the
+   *  daemon; absent for an arm with no config surface. The mid-session model
+   *  picker offers THESE rows when the list is non-empty, and falls back to
+   *  the adapter's catalog listing otherwise. */
+  availableModels?: Array<{ value: string; name?: string; description?: string }>
   /** Canonical postures this live session's adapter enforces through its
    *  isolated spawn config (claude-code / opencode) even with no advertised
    *  mode — mirror of `@agentproto/runtime` SessionDescriptor

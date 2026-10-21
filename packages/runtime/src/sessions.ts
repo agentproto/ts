@@ -22,7 +22,7 @@
 
 import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
-import type { SessionMode } from "@agentproto/acp/client"
+import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync, watch as watchFsPath } from "node:fs"
@@ -83,7 +83,12 @@ import {
   type SessionBackgroundTask,
 } from "./background-task-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
-import { normalizeModelForWire } from "./model-wire.js"
+import {
+  advertisedModelValues,
+  normalizeModelForWire,
+  resolveAdvertisedModelValue,
+  type AdvertisedModelValue,
+} from "./model-wire.js"
 import {
   composeSessionObservers,
   filterSessionObserver,
@@ -324,6 +329,16 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
+  /**
+   * The harness's advertised session CONFIG options captured at connect time
+   * (the ACP `configOptions` list of the `newSession`/`loadSession` response)
+   * — the per-option value lists the agent will actually accept, e.g. which
+   * model ids its `session/set_config_option(configId:"model")` takes.
+   * Absent/empty for arms with no config surface (print, proprietary, older
+   * wrappers). Read-time only, never persisted — same convention as
+   * {@link AgentSessionLike.availableModes}.
+   */
+  readonly availableConfigOptions?: readonly SessionConfigOption[]
   /** Canonical postures the adapter enforces through its own isolated spawn
    *  config even with no advertised mode — mirrors
    *  `AgentCliRuntimeSession.spawnEnforcedPostures` (claude-code, opencode).
@@ -2154,6 +2169,20 @@ export interface SessionDescriptor {
    */
   availableModes?: SessionMode[]
   /**
+   * Read-surface echo of the model values the LIVE harness advertises as
+   * acceptable (its ACP `configOptions` entry for `configId:"model"`) —
+   * stamped at READ TIME from the live agent session, never persisted.
+   *
+   * This is the agent's OWN vocabulary, and it is NOT the catalog's: a
+   * claude-code session advertises the model ids its wrapper accepts, while
+   * the catalog publishes a different id set. A picker that offers catalog
+   * ids to a live agent gets "Invalid value for config option model: …"
+   * back. Absent when the agent advertises no model option (older wrappers,
+   * arms without a config surface) — the picker then falls back to the
+   * catalog listing.
+   */
+  availableModels?: AdvertisedModelValue[]
+  /**
    * Read-surface echo of the canonical postures the live session's adapter
    * enforces through its isolated spawn config (`spawnEnforcedPostures` on
    * the agent session) — stamped at READ TIME alongside `availableModes`,
@@ -3615,6 +3644,18 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
     desc.spawnEnforcedPostures = [...spawnEnforced]
   } else {
     delete desc.spawnEnforcedPostures
+  }
+  // The model values the LIVE agent advertises as acceptable (its ACP
+  // `configOptions` model entry) — the agent's own vocabulary, which is what
+  // a model picker must offer for a live switch to have any chance of
+  // applying. Same read-time, never-persisted convention as `availableModes`;
+  // DELETED (not left stale) when the handle is gone or advertises nothing,
+  // so a client never offers a dead session's model list.
+  const models = advertisedModelValues(rt.agentSession?.availableConfigOptions)
+  if (models.length > 0) {
+    desc.availableModels = models
+  } else {
+    delete desc.availableModels
   }
 }
 
@@ -12513,12 +12554,28 @@ export function createSessionsRegistry(opts?: {
       // gets the router re-added as a literal leading segment when the target
       // route is a gateway — see `ModelWireOptions.modelDerivedApiKey`'s doc.
       // Fixed native adapters get the bare product id their manifest declares.
-      const wireModel = normalizeModelForWire(modelId, {
-        routeSelection,
-        gateway: rt.desc.route?.gateway,
-        fixedProvider: adapterProvider,
-        modelDerivedApiKey,
-      })
+      //
+      // The LIVE agent's OWN advertised model values come FIRST: when the
+      // session advertises a `model` config option, that list is the agent's
+      // accepted vocabulary, and a value it lists is sent VERBATIM — our own
+      // normalization could rewrite it into something the agent rejects
+      // ("Invalid value for config option model: …"). A requested id the
+      // agent does not advertise is resolved against that list (exact →
+      // case-insensitive → unique dated-suffix match) before falling back to
+      // the catalog-wire normalization; an id the agent does not offer at all
+      // stays unresolved, so its own rejection remains visible.
+      const accepted = resolveAdvertisedModelValue(
+        modelId,
+        advertisedModelValues(rt.agentSession?.availableConfigOptions),
+      )
+      const wireModel =
+        accepted ??
+        normalizeModelForWire(modelId, {
+          routeSelection,
+          gateway: rt.desc.route?.gateway,
+          fixedProvider: adapterProvider,
+          modelDerivedApiKey,
+        })
       const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
         // Record the CATALOG id the caller requested, not the wire form the

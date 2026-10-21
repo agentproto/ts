@@ -18,8 +18,9 @@ import type { TranscriptPanelController } from "../webview/transcriptPanelContro
 import { withEligibleAccess } from "./sessionAccessProfile.logic.js"
 import {
   buildChangeModelPlaceHolder,
+  describeSwitchRejection,
   makeChangeRouteItem,
-  mapChangeModelQuickPickItems,
+  resolveChangeModelItems,
 } from "./changeModel.logic.js"
 
 export async function runChangeModelFlow(
@@ -48,10 +49,28 @@ export async function runChangeModelFlow(
     return
   }
 
-  const items = [makeChangeRouteItem(), ...mapChangeModelQuickPickItems(adapter, session)]
+  // The LIVE session's own model values — the ids the running agent
+  // advertises as acceptable (its ACP `configOptions` entry for
+  // `configId:"model"`). Read fresh from the daemon: this is a read-time
+  // echo of the live agent, and the adapter's catalog listing is a DIFFERENT
+  // vocabulary — offering a catalog id the agent never advertised is what
+  // makes a hot switch fail with "Invalid value for config option model: …".
+  // Absent (older daemon, arm with no config surface) ⇒ fall back to the
+  // adapter's catalog rows, exactly as before.
+  const live = await client.getSession(session.id).catch(() => undefined)
+  const liveModels = live?.availableModels
+  const liveSession = {
+    ...session,
+    ...(live?.model ? { model: live.model } : {}),
+  }
+
+  const items = [
+    makeChangeRouteItem(),
+    ...resolveChangeModelItems({ adapter, session: liveSession, liveModels }),
+  ]
 
   const picked = await vscode.window.showQuickPick(items, {
-    placeHolder: buildChangeModelPlaceHolder(session),
+    placeHolder: buildChangeModelPlaceHolder(liveSession),
   })
   // A separator row can't actually be returned by showQuickPick (vscode
   // never resolves a Separator-kind item as a selection), but the guard
@@ -104,7 +123,7 @@ export async function runChangeModelFlow(
   if (!result.applied) {
     void vscode.window.showWarningMessage(
       `agentproto: model switch to "${picked.model}" didn't apply` +
-        (result.reason ? ` — ${result.reason}` : "") +
+        (result.reason ? ` — ${describeSwitchRejection(picked.model, result.reason)}` : "") +
         ".",
     )
   }
