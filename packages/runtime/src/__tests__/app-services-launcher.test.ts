@@ -3,9 +3,11 @@
  * (frozen `services:` semantics, Pygmalion phase 1b item 2). A real
  * `McpServer` + InMemoryTransport over a real `createSessionsRegistry`, with a
  * fake `AgentAdapterResolver` (mirrors app-tools.test.ts). Two seams are
- * exercised: the REAL default spawn (`spawnAgentSession`, asserted via the
- * registry descriptor: label + keepAlive + restartPolicy) and an injected
- * spawn/kill stub (asserted for pid bookkeeping + uninstall cleanup).
+ * exercised: the REAL default spawn (now the DETERMINISTIC managed process of
+ * app-service-process.ts — asserted via the registry descriptor: label +
+ * origin + a live `kind:"command"` row, and asserted to engage NO LLM
+ * adapter) and an injected spawn/kill stub (asserted for pid bookkeeping +
+ * uninstall cleanup).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -116,35 +118,46 @@ describe("service-owner launcher via app_install", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("spawns one owner session per service, keepAlive + restartPolicy, and is idempotent on reinstall", async () => {
+  it("spawns one managed process per service (no LLM adapter), labels + origin recorded, idempotent on reinstall", async () => {
+    const LONG = `node -e "setInterval(()=>{},60000)"`
     await buildServiceApp(dir, [
-      { name: "web", entry: "node server.js", port: 4321 },
-      { name: "worker", entry: "node worker.js" },
+      { name: "web", entry: LONG, port: 4321 },
+      { name: "legacy", entry: LONG },
     ])
     const { client, registry, serviceStore, startSession } = await setup()
 
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
-    expect(startSession).toHaveBeenCalledTimes(2)
+    // The deterministic spawn engages NO LLM adapter session.
+    expect(startSession).not.toHaveBeenCalled()
 
     const owners = serviceStore.listForApp(APP_ID)
-    expect(owners.map(o => o.name).sort()).toEqual(["web", "worker"])
+    expect(owners.map(o => o.name).sort()).toEqual(["legacy", "web"])
     const web = owners.find(o => o.name === "web")!
-    expect(web.entry).toBe("node server.js")
     expect(web.port).toBe(4321)
     expect(web.sessionId).toMatch(/^sess_/)
+    expect(web.pid).toBeGreaterThan(0)
     expect(web.startedAt).toBeTruthy()
 
     const desc = registry.get(web.sessionId)!
-    expect(desc.keepAlive).toBe(true)
+    expect(desc.kind).toBe("command")
+    expect(desc.pty).toBeUndefined()
     expect(desc.label).toBe(`app:${APP_ID}:service:web`)
     expect(desc.origin).toBe(`app-service:${APP_ID}`)
-    expect(desc.restartPolicy?.on).toEqual(["crashed", "error"])
     expect(desc.status).toBe("running")
+    // The process is registered in the session list.
+    expect(registry.list()).toContainEqual(expect.objectContaining({ id: web.sessionId }))
 
     // Reinstall over the live owners: no duplicate spawn, same records kept.
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
-    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(startSession).not.toHaveBeenCalled()
     expect(serviceStore.listForApp(APP_ID)).toHaveLength(2)
+
+    // Cleanup: uninstall kills the recorded process groups so no test leak.
+    const uninstalled = parseToolJson(
+      await client.callTool({ name: "app_uninstall", arguments: { appId: APP_ID } }),
+    )
+    expect(uninstalled.services.sort()).toEqual(["legacy", "web"])
+    expect(serviceStore.listForApp(APP_ID)).toEqual([])
   })
 
   it("is a no-op for an app that declares no services", async () => {

@@ -7,21 +7,18 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdirSync, writeFileSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  buildServiceOwnerPrompt,
   createAppServiceStore,
   ensureAppServiceOwners,
   killServicePid,
   parseAppServices,
-  readServicePidFile,
   reensureAppServiceOwners,
   removeAppServiceOwners,
+  serviceDisplayEntry,
   serviceOwnerLabel,
-  servicePidFilePath,
   type AppServiceOwner,
 } from "../app-services.js"
 
@@ -106,6 +103,30 @@ describe("parseAppServices (frozen semantics)", () => {
     const { errors } = parseAppServices([{ name: "web", entry: "a", extra: 1 } as unknown as object])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain("not a supported service field")
+  })
+
+  it("accepts the structured { command, args, cwd } form (preferred) and keeps legacy entry", () => {
+    const { services, errors } = parseAppServices([
+      { name: "web", command: "node", args: ["server.js"], cwd: "server", port: 4321 },
+      { name: "legacy", entry: "node server.js" },
+    ])
+    expect(errors).toEqual([])
+    expect(services).toEqual([
+      { name: "web", command: "node", args: ["server.js"], cwd: "server", port: 4321 },
+      { name: "legacy", entry: "node server.js" },
+    ])
+  })
+
+  it("rejects entry + command together, and either field missing", () => {
+    expect(parseAppServices([{ name: "web", entry: "a", command: "b" }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web" }]).errors).toHaveLength(1)
+  })
+
+  it("rejects args without command, and a bad args/cwd shape", () => {
+    expect(parseAppServices([{ name: "web", entry: "a", args: ["x"] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", args: [] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", args: [1] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", cwd: "" }]).errors).toHaveLength(1)
   })
 
   it("fails fast on the first bad entry — does not accumulate every entry's error", () => {
@@ -329,38 +350,10 @@ describe("killServicePid", () => {
   })
 })
 
-describe("readServicePidFile", () => {
-  let base: string
-  beforeEach(async () => {
-    base = await mkdtemp(join(tmpdir(), "app-services-pidfile-"))
-  })
-  afterEach(async () => {
-    await rm(base, { recursive: true, force: true })
-  })
-
-  it("reads a written pid; undefined for a missing, malformed or non-positive file", () => {
-    const file = join(base, "services", "web.pid")
-    expect(readServicePidFile(file)).toBeUndefined()
-    mkdirSync(join(base, "services"), { recursive: true })
-    writeFileSync(file, "4242\n")
-    expect(readServicePidFile(file)).toBe(4242)
-    writeFileSync(file, "  not-a-pid  ")
-    expect(readServicePidFile(file)).toBeUndefined()
-    // A trailing-garbage pid must read as absent, not as the leading digits
-    // (`Number.parseInt("42junk")` is 42 — strict digits-only guards this).
-    writeFileSync(file, "42junk")
-    expect(readServicePidFile(file)).toBeUndefined()
-    writeFileSync(file, "0")
-    expect(readServicePidFile(file)).toBeUndefined()
-    writeFileSync(file, "-3")
-    expect(readServicePidFile(file)).toBeUndefined()
-  })
-})
-
 describe("reensureAppServiceOwners (boot)", () => {
   const svc = (name: string) => ({ name, entry: `run ${name}` })
 
-  it("signals each pid-file pid, then force-replaces every owner (never keeps a live one)", async () => {
+  it("force-replaces every owner (never keeps a live one)", async () => {
     const store = createAppServiceStore({ persist: false })
     store.upsert({
       appId: "@a/app",
@@ -370,7 +363,6 @@ describe("reensureAppServiceOwners (boot)", () => {
       pid: 9,
       startedAt: "2026-01-01T00:00:00.000Z",
     })
-    const killedPids: (number | undefined)[] = []
     const killOwner = vi.fn()
     const spawn = vi.fn(async (s: { name: string }) => ({
       ok: true as const,
@@ -381,16 +373,9 @@ describe("reensureAppServiceOwners (boot)", () => {
       store,
       appId: "@a/app",
       services: [svc("web"), svc("worker")],
-      stateDir: "/state/app",
       spawn,
       killOwner,
-      readPidFile: pidFile => (pidFile.endsWith("web.pid") ? 777 : undefined),
-      killPid: pid => {
-        killedPids.push(pid)
-      },
     })
-    // The pid-file pid of `web` is signalled; `worker` had left none.
-    expect(killedPids).toEqual([777, undefined])
     // The pre-boot owner is killed even though a liveness check might call it
     // alive — force never keeps.
     expect(killOwner).toHaveBeenCalledWith(
@@ -403,16 +388,12 @@ describe("reensureAppServiceOwners (boot)", () => {
   })
 })
 
-describe("service-owner prompt / paths", () => {
-  it("names the entry and the pid file, and forbids extra processes", () => {
-    const pidFile = servicePidFilePath("/state/app", "web")
-    expect(pidFile).toBe("/state/app/services/web.pid")
-    const prompt = buildServiceOwnerPrompt({ name: "web", entry: "node server.js", port: 4321 }, pidFile)
-    expect(prompt).toContain('service owner for "web"')
-    expect(prompt).toContain("node server.js")
-    expect(prompt).toContain(pidFile)
-    expect(prompt).toContain("port 4321")
-    expect(prompt).toContain("Do not spawn any additional long-running processes")
+describe("serviceDisplayEntry / label", () => {
+  it("joins the structured command argv; passes legacy entry through", () => {
+    expect(serviceDisplayEntry({ name: "web", command: "node", args: ["server.js", "--port", "4321"] })).toBe(
+      "node server.js --port 4321",
+    )
+    expect(serviceDisplayEntry({ name: "web", entry: "node server.js" })).toBe("node server.js")
   })
 
   it("label encodes the app id and service name", () => {

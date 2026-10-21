@@ -9,18 +9,19 @@
  *       entry: node server.js   # the shell command to run
  *       port: 4321          # optional 1..65535 bookkeeping/health touchpoint
  *
- * One owner SESSION per entry (the SAME spawn infra as agents — see
- * `registerAppTools`'s wiring in app-tools.ts) runs `entry` as a detached
- * child and supervises it: it restarts the child when it dies, and the owner
- * session itself is spawned with `keepAlive` + a `restartPolicy` so the daemon
- * revives it if the owner crashes. There is deliberately NO scheduler here —
- * no cron, no k8s, no queue: just one owner session per declared service.
+ * One managed process per entry (see `app-service-process.ts` — a
+ * deterministic, non-PTY child spawned detached and adopted into the
+ * `sessions` REGISTRY, no LLM adapter involved) with its ownership
+ * bookkeeping (label, origin, store record) here. The runner restarts the
+ * child with backoff on an unexpected exit, capped; there is deliberately
+ * NO scheduler here — no cron, no k8s, no queue.
  *
- * Ownership is persisted (appId + name + entry + owner `sessionId` + the
- * child/session `pid`, in a JSON store next to the installed-app registry) so
- * `app_uninstall` can (a) kill every owner session and (b) kill the recorded
- * process — otherwise a reinstall spawns a second owner for a service still
- * running from the old install ("double-cerveau à la réinstall").
+ * Ownership is persisted (appId + name + entry + the live process's
+ * `sessionId` + its process-group-leader `pid`, in a JSON store next to the
+ * installed-app registry) so `app_uninstall` can kill the recorded process
+ * group and its registry row — otherwise a reinstall spawns a second owner
+ * for a service still running from the old install
+ * ("double-cerveau à la réinstall").
  *
  * Scope note: this module is the whole SERVICE-LAUNCHER behaviour, lifted out
  * of app-tools.ts so it is unit-testable without an MCP server or a real
@@ -60,16 +61,17 @@ export function parseAppServices(raw: unknown): AppServiceValidation {
 }
 
 /** One service owner: the persisted ownership record — `appId` + the service
- *  `name`/`entry` + the owner session id and the recorded process `pid`, so
- *  uninstall can find and kill both. */
+ *  `name`/`entry` + the registry row id and process-group-leader `pid` of the
+ *  currently-live attempt, so uninstall can kill both. */
 export interface AppServiceOwner {
   appId: string
   name: string
   entry: string
-  /** The spawned owner session id (`app_uninstall` kills it). */
+  /** Registry row id of the live attempt's process (`app_uninstall` kills
+   *  the row + the process group). Updated on every respawn. */
   sessionId: string
-  /** The owner/session process id, when the spawn surfaced one — the primary
-   *  pid-bookkeeping handle `app_uninstall` signals. */
+  /** Process-group-leader pid of the live attempt (`app_uninstall` signals
+   *  `-pid`), when the spawn surfaced one. Updated on every respawn. */
   pid?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
@@ -82,31 +84,17 @@ export function serviceOwnerLabel(appId: string, name: string): string {
 }
 
 /**
- * The owner session's job, spelled out as its first prompt: run `entry` as a
- * detached child, write the child pid to `pidFile`, and restart the child when
- * it dies. The daemon does NOT loop this itself — the owner is the supervisor
- * (the simplest path the repo already has: one agent session, `keepAlive` +
- * `restartPolicy` at the daemon level, a shell supervision loop inside).
+ * The owner record's persisted `entry` — a display string regardless of
+ * whether the manifest used the legacy `entry` shell line or the structured
+ * `{ command, args }` form (joined argv, no shell interpretation shown).
+ * Uninstall bookkeeping keys off this only for humans; the real kill path
+ * signals the recorded pid's process group (see `app-service-process.ts`).
  */
-export function buildServiceOwnerPrompt(service: AppService, pidFile: string): string {
-  const portNote =
-    service.port !== undefined ? ` It is expected to listen on port ${service.port}.` : ""
-  return [
-    `You are the service owner for "${service.name}".`,
-    `Run this command as a detached background child and keep it alive, restarting it whenever it exits:`,
-    "",
-    `    ${service.entry}`,
-    "",
-    `Write the child's PID to ${pidFile} immediately after launching it, and treat that pid file as the daemon's handle to this service.${portNote}`,
-    "Use a small supervision loop (relaunch on exit) rather than exiting; this session stays alive for the lifetime of the service and is killed by `app_uninstall`.",
-    "Do not spawn any additional long-running processes beyond this one service.",
-  ].join("\n")
-}
-
-/** Absolute path of the pid file an owner writes for its service (kept beside
- *  the app's daemon-owned state so no path is caller-supplied). */
-export function servicePidFilePath(stateDir: string, name: string): string {
-  return join(stateDir, "services", `${name}.pid`)
+export function serviceDisplayEntry(service: AppService): string {
+  if (service.command !== undefined) {
+    return [service.command, ...(service.args ?? [])].join(" ")
+  }
+  return service.entry ?? ""
 }
 
 /**
@@ -120,27 +108,6 @@ export function killServicePid(pid: number | undefined, signal: NodeJS.Signals =
     process.kill(pid, signal)
   } catch {
     // ESRCH (gone) / EPERM (not ours) — best-effort cleanup.
-  }
-}
-
-/**
- * Read the pid an owner wrote to its pid file (`servicePidFilePath`), or
- * `undefined` when the file is absent or malformed. This is the ONLY handle to
- * the `entry` CHILD process: the owner record's own `pid` is the owner
- * session's, and the owner session is gone by the time the boot re-ensure runs
- * (`reensureAppServiceOwners`) — so a child that outlived the daemon would
- * otherwise hold its port against the replacement.
- */
-export function readServicePidFile(pidFile: string): number | undefined {
-  try {
-    const raw = readFileSync(pidFile, "utf8").trim()
-    // Strict digits-only: `Number.parseInt` alone would read "42junk" as 42
-    // and signal it — a malformed file must read as absent, not as a pid.
-    if (!/^\d+$/.test(raw)) return undefined
-    const pid = Number.parseInt(raw, 10)
-    return pid > 0 ? pid : undefined
-  } catch {
-    return undefined
   }
 }
 
@@ -317,7 +284,7 @@ export async function ensureAppServiceOwners(
     const owner: AppServiceOwner = {
       appId: deps.appId,
       name: service.name,
-      entry: service.entry,
+      entry: serviceDisplayEntry(service),
       sessionId: res.sessionId,
       ...(res.pid !== undefined ? { pid: res.pid } : {}),
       ...(service.port !== undefined ? { port: service.port } : {}),
@@ -332,22 +299,18 @@ export async function ensureAppServiceOwners(
 
 /**
  * Boot counterpart of `ensureAppServiceOwners` (Pygmalion phase 1b item 2):
- * the previous daemon's owner sessions are gone by definition, so every
- * recorded owner is treated as stale and replaced — liveness is NOT consulted.
- * That is the whole point: a rehydrated (or eagerly re-resumed) owner session
- * reports `running` while its `entry` child is dead, the exact state an
- * `isOwnerAlive`-gated re-ensure would KEEP and never fix. Before spawning,
- * signal the pid the owner left in its pid file, so a child that outlived the
+ * the previous daemon's owner rows are gone by definition, so every recorded
+ * owner is treated as stale and replaced — liveness is NOT consulted (a
+ * rehydrated registry row reports `running` while its process may be dead —
+ * the exact state an `isOwnerAlive`-gated re-ensure would KEEP and never
+ * fix). Leftover children from the previous daemon are killed through the
+ * replacement path itself: `killOwner` (see `killServiceProcess`) signals the
+ * RECORDED pid's process group, so a detached child that outlived the
  * daemon does not hold its port against the fresh owner.
  */
 export async function reensureAppServiceOwners(
   deps: ReensureAppServiceOwnersDeps,
 ): Promise<EnsureAppServiceOwnersResult> {
-  const readPid = deps.readPidFile ?? readServicePidFile
-  const killPid = deps.killPid ?? killServicePid
-  for (const service of deps.services) {
-    killPid(readPid(servicePidFilePath(deps.stateDir, service.name)))
-  }
   return ensureAppServiceOwners({
     store: deps.store,
     appId: deps.appId,
@@ -359,14 +322,7 @@ export async function reensureAppServiceOwners(
   })
 }
 
-export interface ReensureAppServiceOwnersDeps extends Omit<EnsureAppServiceOwnersDeps, "isOwnerAlive"> {
-  /** Per-app state dir the owner writes its `<name>.pid` under (the same dir
-   *  `ensureServices` derives: `stateDir ?? dataDir ?? dir`). */
-  stateDir: string
-  /** Test seams — default to the real pid-file read + `killServicePid`. */
-  readPidFile?: (pidFile: string) => number | undefined
-  killPid?: (pid: number | undefined) => void
-}
+export interface ReensureAppServiceOwnersDeps extends Omit<EnsureAppServiceOwnersDeps, "isOwnerAlive"> {}
 
 /**
  * Remove + kill every owner of an app — the `app_uninstall` cleanup. Kills
