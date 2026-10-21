@@ -183,7 +183,13 @@ import {
   DEFAULT_SESSION_RETENTION_BOOT_DELAY_MS,
   DEFAULT_SESSION_RETENTION_INTERVAL_MS,
 } from "./session-retention.js"
-import { resolveResumeAuth, restartAgentSession, restartPreferInPlace } from "./session-restart-core.js"
+import {
+  cloudRelayEnv,
+  resolveResumeAuth,
+  restartAgentSession,
+  restartPreferInPlace,
+} from "./session-restart-core.js"
+import { cloudMetaOf } from "./cloud-vendors.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
@@ -2669,6 +2675,16 @@ export async function createGateway(
                 prefix: "resume",
               })
               const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
+              // A cloud relay re-attaches with the same meta file and (for a
+              // declared workspace remote) clone source as `session_restart`;
+              // without them it validates the host cwd, which holds no clone.
+              const resumeCloudEnv =
+                cloudMetaOf(descriptor) && descriptor.adapterConfigDir
+                  ? await cloudRelayEnv({
+                      workspaceSlug: descriptor.workspaceSlug,
+                      configDir: descriptor.adapterConfigDir,
+                    })
+                  : {}
               // App boundary survives a lazy resume (fs zones + host-context isolation).
               const resumeBoundary = boundaryFromMeta(descriptor.meta)
               return await adapter.startSession({
@@ -2711,6 +2727,7 @@ export async function createGateway(
                 env: {
                   [SESSION_ID_ENV]: descriptor.id,
                   [WORKSPACE_SLUG_ENV]: descriptor.workspaceSlug,
+                  ...resumeCloudEnv,
                 },
               })
             } catch (err) {

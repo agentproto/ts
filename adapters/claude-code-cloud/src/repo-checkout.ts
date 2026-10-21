@@ -54,11 +54,17 @@ export function cloudRepoSourceFromEnv(
   return { url, branch, dir }
 }
 
+/** `-c` pairs on EVERY git command here: the checkout dir may have been
+ *  written to by the local `claude --cloud` process, so a planted hook or
+ *  fsmonitor command must never run while the token is in the child env. */
+const HARDENING_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"]
+
 /** `-c` pairs prepended to every network git command: reset any inherited
  *  helper, then (with a token) answer from the env var by name only. */
 function credentialArgs(hasToken: boolean): string[] {
-  if (!hasToken) return ["-c", "credential.helper="]
+  if (!hasToken) return [...HARDENING_ARGS, "-c", "credential.helper="]
   return [
+    ...HARDENING_ARGS,
     "-c",
     "credential.helper=",
     "-c",
@@ -102,7 +108,7 @@ export async function materializeRepoCheckout(
     return dir
   }
 
-  const origin = (await run(git, ["remote", "get-url", "origin"], dir, `read origin in ${dir}`)).trim()
+  const origin = (await run(git, [...HARDENING_ARGS, "remote", "get-url", "origin"], dir, `read origin in ${dir}`)).trim()
   if (origin !== url) {
     throw new Error(
       `claude code cloud: ${dir} is a checkout of ${origin}, not the declared ` +
@@ -115,7 +121,12 @@ export async function materializeRepoCheckout(
     dir,
     `fetch ${branch} from ${url}`,
   )
-  await run(git, ["checkout", "-f", "-B", branch, `origin/${branch}`], dir, `check out origin/${branch}`)
-  await run(git, ["clean", "-ffdx"], dir, `clean ${dir}`)
+  await run(
+    git,
+    [...HARDENING_ARGS, "checkout", "-f", "-B", branch, `origin/${branch}`],
+    dir,
+    `check out origin/${branch}`,
+  )
+  await run(git, [...HARDENING_ARGS, "clean", "-ffdx"], dir, `clean ${dir}`)
   return dir
 }

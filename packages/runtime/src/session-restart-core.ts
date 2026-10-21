@@ -64,6 +64,7 @@ import {
 } from "./sessions.js"
 import { isRetired } from "./session-retirement.js"
 import {
+  CloudSpawnError,
   CLOUD_SESSION_META_FILE_ENV,
   cloudHarnessFor,
   cloudMetaOf,
@@ -216,6 +217,7 @@ export type SessionRestartErrorCode =
   | "unsupported_strategy"
   | "retired"
   | "override_invalid"
+  | "cloud_spawn_refused"
 
 /**
  * The optional "and here's what to do about it" hint a client turns into a
@@ -255,6 +257,8 @@ export const SESSION_RESTART_REASONS: Record<SessionRestartErrorCode, string> = 
     "This session's restart strategy doesn't run through the agent adapter, so it can't be restarted this way.",
   retired: "This session is retired and is never revived automatically.",
   override_invalid: "That restart override isn't valid for this session.",
+  cloud_spawn_refused:
+    "This cloud session's workspace remote can't be used, so the session can't be restarted.",
 }
 
 /**
@@ -300,6 +304,28 @@ export class RestartOverrideError extends SessionRestartError {
   constructor(message: string) {
     super("override_invalid", message, { status: 400 })
     this.name = "RestartOverrideError"
+  }
+}
+
+/**
+ * Env a cloud relay needs on (re)start: the meta-file path plus, for a
+ * workspace with a declared remote, the clone source the original spawn gave
+ * it. Shared by `session_restart` and the lazy in-place resume so the two
+ * can never hand the relay different inputs. Throws {@link CloudSpawnError}.
+ */
+export async function cloudRelayEnv(input: {
+  workspaceSlug: string | undefined
+  configDir: string
+}): Promise<Record<string, string>> {
+  return {
+    [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(input.configDir),
+    ...(input.workspaceSlug
+      ? await cloudRepoSpawnEnv(
+          findWorkspace(await loadWorkspacesConfig(), input.workspaceSlug)?.remote,
+          input.configDir,
+          async ref => (await new KeychainStore().read({ path: ref }))?.value,
+        )
+      : {}),
   }
 }
 
@@ -1361,18 +1387,24 @@ export async function restartAgentSession(
     // with a declared remote — the same clone source the spawn gave it, so
     // `session/load` re-validates the relay's own checkout, never a host cwd
     // that may hold no clone at all.
-    const cloudRestartEnv: Record<string, string> = prevCloudMeta
-      ? {
-          [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(restartConfigDir),
-          ...(prev.workspaceSlug
-            ? await cloudRepoSpawnEnv(
-                findWorkspace(await loadWorkspacesConfig(), prev.workspaceSlug)?.remote,
-                restartConfigDir,
-                async ref => (await new KeychainStore().read({ path: ref }))?.value,
-              )
-            : {}),
+    let cloudRestartEnv: Record<string, string> = {}
+    if (prevCloudMeta) {
+      try {
+        cloudRestartEnv = await cloudRelayEnv({
+          workspaceSlug: prev.workspaceSlug,
+          configDir: restartConfigDir,
+        })
+      } catch (err) {
+        if (err instanceof CloudSpawnError) {
+          throw new SessionRestartError("cloud_spawn_refused", err.message, {
+            ...(err.field
+              ? { action: { kind: "fix-config" as const, detail: `fix ${err.field}` } }
+              : {}),
+          })
         }
-      : {}
+        throw err
+      }
+    }
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),

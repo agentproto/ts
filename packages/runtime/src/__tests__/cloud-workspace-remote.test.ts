@@ -14,7 +14,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
-import { restartAgentSession } from "../session-restart-core.js"
+import { cloudRelayEnv, restartAgentSession, SessionRestartError } from "../session-restart-core.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import {
   CLOUD_REPO_BRANCH_ENV,
@@ -124,6 +124,20 @@ describe("cloudRepoSpawnEnv", () => {
   })
 })
 
+describe("cloudRepoSpawnEnv — a hand-edited remote is re-validated", () => {
+  it.each([
+    ["a non-https url", { url: "http://github.com/acme/repo" }, "workspace.remote.url"],
+    ["embedded credentials", { url: "https://tok@github.com/acme/repo" }, "workspace.remote.url"],
+    ["an ssh url", { url: "git@github.com:acme/repo.git" }, "workspace.remote.url"],
+    ["a hostile branch", { url: REMOTE_URL, defaultBranch: "main; rm -rf /" }, "workspace.remote.defaultBranch"],
+  ])("refuses %s with the offending field", async (_what, remote, field) => {
+    await expect(cloudRepoSpawnEnv(remote, "/cfg", async () => undefined)).rejects.toMatchObject({
+      name: "CloudSpawnError",
+      field,
+    })
+  })
+})
+
 describe("agent_start — cloud on a declared workspace remote", () => {
   it("hands the relay the declared remote + keychain token, no local clone required", async () => {
     workspace({ url: REMOTE_URL, defaultBranch: "main", credentialRef: "git/acme" })
@@ -228,5 +242,50 @@ describe("restartAgentSession — cloud on a declared workspace remote", () => {
     expect(env[CLOUD_REPO_URL_ENV]).toBe(REMOTE_URL)
     expect(env[CLOUD_REPO_DIR_ENV]).toBe(cloudRepoCheckoutDir("/cfg/prev"))
     expect(env[GIT_TOKEN_ENV]).toBe(FAKE_TOKEN)
+  })
+
+  it("a dead credentialRef surfaces as cloud_spawn_refused naming the field, not a raw error", async () => {
+    workspace({ url: REMOTE_URL, credentialRef: "git/gone" })
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "acme",
+      cwd: "/host/acme-no-clone",
+      agentSession: mockSession("acp_uuid_prev"),
+      adapterSlug: "claude-code-cloud",
+      harness: "claude-code",
+      adapterConfigDir: "/cfg/prev",
+      meta: { cloud: encodeCloudSessionMeta({ vendor: "anthropic", sessionId: "session_live" }) },
+    })
+    registry.kill(prev.id)
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: async () => mockSession("never"),
+      commandPreview: "mock-claude-code-cloud",
+    })
+    const err = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: async () => ({}),
+    }).catch(e => e)
+    expect(err).toBeInstanceOf(SessionRestartError)
+    expect(err.code).toBe("cloud_spawn_refused")
+    expect(err.action).toEqual({ kind: "fix-config", detail: "fix workspace.remote.credentialRef" })
+  })
+})
+
+describe("cloudRelayEnv — shared by session_restart and the lazy in-place resume", () => {
+  it("returns the meta file path plus the declared clone source and token", async () => {
+    workspace({ url: REMOTE_URL, credentialRef: "git/acme" })
+    keychain.values["git/acme"] = FAKE_TOKEN
+    const env = await cloudRelayEnv({ workspaceSlug: "acme", configDir: "/cfg/prev" })
+    expect(env[CLOUD_SESSION_META_FILE_ENV]).toBe("/cfg/prev/cloud-session.json")
+    expect(env[CLOUD_REPO_URL_ENV]).toBe(REMOTE_URL)
+    expect(env[CLOUD_REPO_DIR_ENV]).toBe(cloudRepoCheckoutDir("/cfg/prev"))
+    expect(env[GIT_TOKEN_ENV]).toBe(FAKE_TOKEN)
+  })
+
+  it("carries only the meta file for a workspace without a remote", async () => {
+    workspace()
+    expect(await cloudRelayEnv({ workspaceSlug: "acme", configDir: "/cfg/prev" })).toEqual({
+      [CLOUD_SESSION_META_FILE_ENV]: "/cfg/prev/cloud-session.json",
+    })
   })
 })

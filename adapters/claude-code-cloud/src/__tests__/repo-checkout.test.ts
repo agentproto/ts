@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { execFileSync } from "node:child_process"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import {
   CLOUD_GIT_TOKEN_ENV,
   CLOUD_REPO_BRANCH_ENV,
@@ -131,6 +132,22 @@ describe("materializeRepoCheckout — real git", () => {
     expect(sh(dir, "status", "--porcelain")).toBe("")
     expect(sh(dir, "rev-parse", "HEAD")).toBe(sh(work, "rev-parse", "HEAD"))
     await expect(validateRepoSource(dir)).resolves.toBeUndefined()
+  })
+
+  it("does not run a hook planted in a resumed checkout", async () => {
+    const dir = join(root, "cfg", "repo")
+    await materializeRepoCheckout({ url: remote, branch: "main", dir }, { hasToken: false })
+    const marker = join(root, "hook-ran")
+    const hook = join(dir, ".git", "hooks", "post-checkout")
+    await mkdir(dirname(hook), { recursive: true })
+    await writeFile(hook, `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 })
+    await writeFile(join(work, "README.md"), "v2\n")
+    sh(work, "commit", "-am", "v2")
+    sh(work, "push", "origin", "HEAD:main")
+
+    await materializeRepoCheckout({ url: remote, branch: "main", dir }, { hasToken: false })
+    expect(await readFile(join(dir, "README.md"), "utf8")).toBe("v2\n")
+    expect(existsSync(marker)).toBe(false)
   })
 
   it("refuses to reuse a dir that is a checkout of a different remote", async () => {

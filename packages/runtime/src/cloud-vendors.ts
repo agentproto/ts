@@ -23,7 +23,12 @@
 import { join } from "node:path"
 import { readFile } from "node:fs/promises"
 import { GIT_TOKEN_ENV } from "./sandbox-workspace-remote.js"
-import { DEFAULT_REMOTE_BRANCH, type WorkspaceRemote } from "./workspaces-config.js"
+import {
+  DEFAULT_REMOTE_BRANCH,
+  validateRemoteBranch,
+  validateRemoteUrl,
+  type WorkspaceRemote,
+} from "./workspaces-config.js"
 
 /** One managed cloud vendor: the harnesses it runs and the adapter that
  *  relays to it (AIP-66 §2 `CloudVendor`). */
@@ -334,9 +339,29 @@ export async function cloudRepoSpawnEnv(
   readSecret: (ref: string) => Promise<string | undefined>,
 ): Promise<Record<string, string>> {
   if (!remote) return {}
+  // `workspaces.json` is hand-editable, so the same validators the sandbox
+  // path applies run here too: https only, no userinfo, a conservative branch.
+  let url: string
+  let branch: string
+  try {
+    url = validateRemoteUrl(remote.url)
+  } catch (err) {
+    throw new CloudSpawnError(
+      `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,
+      "workspace.remote.url",
+    )
+  }
+  try {
+    branch = validateRemoteBranch(remote.defaultBranch ?? DEFAULT_REMOTE_BRANCH)
+  } catch (err) {
+    throw new CloudSpawnError(
+      `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,
+      "workspace.remote.defaultBranch",
+    )
+  }
   const env: Record<string, string> = {
-    [CLOUD_REPO_URL_ENV]: remote.url,
-    [CLOUD_REPO_BRANCH_ENV]: remote.defaultBranch ?? DEFAULT_REMOTE_BRANCH,
+    [CLOUD_REPO_URL_ENV]: url,
+    [CLOUD_REPO_BRANCH_ENV]: branch,
     [CLOUD_REPO_DIR_ENV]: cloudRepoCheckoutDir(configDir),
   }
   if (remote.credentialRef !== undefined) {
