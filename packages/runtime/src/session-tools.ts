@@ -33,6 +33,7 @@ import {
   stripAnsi,
 } from "./agent-tools.js"
 import { checkSessionOwnerGate, effectiveCallerSessionId } from "./session-owner.js"
+import { registerLineageTools } from "./lineage-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
 import type { DiscoveredMcp } from "./mcp-discovery.js"
@@ -1411,6 +1412,16 @@ export function registerSessionTools(
 
   // Delegate the agent-family tools to the dedicated module.
   registerAgentTools(server, opts)
+
+  // The lineage-handover verbs (`session_adopt`) - the explicit succession
+  // surface. Root-only in practice: a scoped orchestrator's tool subset
+  // (`toolSubset`) does not name `session_adopt`, so a child session can
+  // never adopt its siblings.
+  registerLineageTools(server, {
+    registry: opts.registry,
+    ...(opts.callerScope ? { callerScope: opts.callerScope } : {}),
+    ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+  })
 
   // ── session_list (canonical lister) ──────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +

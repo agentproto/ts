@@ -217,6 +217,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "sentinel_poll_now",
   "sentinel_unwatch",
   "sentinel_watch",
+  "session_adopt",
   "session_archive",
   "session_artifact_add",
   "session_artifact_get",

@@ -63,6 +63,7 @@ export type SessionEventType =
   | "mcp:degraded"
   | "session:handoff-suggested"
   | "session:context-rescue"
+  | "session:lineage-handover"
   | "approval:requested"
   | "approval:decided"
   | "approval:consumed"
@@ -1093,6 +1094,38 @@ export interface SessionHandoffSuggestedEvent {
 export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
 
 /**
+ * Emitted when a session's LIVE CHILDREN are re-attached to a SUCCESSOR
+ * session - the "lineage handover" (a persistent orchestrator replaced by a
+ * new session: restart, wallet change, continue-fresh).
+ *
+ * `from` is the replaced session, `to` its successor; `adopted` lists the
+ * children whose `parentSessionId` was moved to `to` (their drive rights and
+ * their `message_parent` routing follow that pointer). `reason` names what
+ * triggered the handover (`continue-fresh`, `succeeds`, `session_adopt`),
+ * `actor` who asked for it (the operator, or the session id that declared
+ * the succession). `skipped` lists the children that were NOT moved
+ * (not children of the replaced row, not re-parentable, or dead rows named
+ * explicitly via `session_adopt`; the automatic path only considers live
+ * children). Same bus distribution as every other lifecycle event.
+ */
+export interface SessionLineageHandoverEvent {
+  type: "session:lineage-handover"
+  /** The replaced session - the one that lost its children. */
+  sessionId: string
+  /** The successor session - the one that inherited them. */
+  successorSessionId: string
+  /** Ids of the children re-parented to the successor. */
+  adopted: string[]
+  /** Ids of the children left where they were (see above). */
+  skipped: string[]
+  reason: string
+  /** Who triggered the handover - `"operator"` or a session id. */
+  actor: string
+  label?: string
+  ts: string
+}
+
+/**
  * Emitted when a session reached `hardStopAtPct` and the runtime acted on it
  * instead of letting it run into the window: `compacted` (auto-`/compact`
  * brought it back under the floor), `continued` (compaction did not help, a
@@ -1175,6 +1208,7 @@ export type SessionEvent =
   | SessionStallClearedEvent
   | SessionHandoffSuggestedEvent
   | SessionContextRescueEvent
+  | SessionLineageHandoverEvent
   | SessionWatcherAttachedEvent
   | SessionWatcherDetachedEvent
   | SessionBgTasksParkedEvent

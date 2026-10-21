@@ -33,6 +33,7 @@ import {
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { handoverLineage } from "./lineage-handover.js"
 
 export interface ContinueAgentSessionFreshResult {
   ok: true
@@ -285,6 +286,29 @@ export async function continueAgentSessionFresh(
   // Link provenance on the original descriptor too.
   const prevUpdated = registry.markRetired(prev.id, { continuedTo: fresh.id, cause: "continued" })
   if (prevUpdated) prevUpdated.checkpointId = checkpoint.checkpointId
+
+  // Lineage handover: the fresh session TAKES OVER the retired row's
+  // position. Its live children are re-parented onto it - so the new brain
+  // can drive them (the drive-tool gate keys on `parentSessionId`) and they
+  // report to it (`message_parent` routes to the recorded parent). Without
+  // this, a continued "brain" leaves its supervisors attached to a dead
+  // row: the new one cannot drive them and they cannot report up.
+  // Best-effort: a failed handover never fails the continuation.
+  try {
+    handoverLineage({
+      registry,
+      from: prev.id,
+      to: fresh.id,
+      reason: "continue-fresh",
+      actor: "daemon",
+    })
+  } catch (err) {
+    console.warn(
+      `[continue-fresh] lineage handover failed for ${prev.id} -> ${fresh.id}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
 
   return {
     ok: true,

@@ -2477,6 +2477,19 @@ export interface SessionDescriptor {
   /** The row that continued this one (the inverse of `continuedFrom`); the
    *  latest continuation wins when a row is revived more than once. */
   continuedTo?: string
+  /** Lineage handover (see {@link SessionDescriptor.succeededBy}) - the
+   *  session this one was DECLARED to succeed: the row whose live children
+   *  were re-attached to this session when it was created (an
+   *  `agent_start.succeeds` declaration, or a continue-fresh continuation).
+   *  Absent on a row that never took over another row's position. */
+  succeeds?: string
+  /** Lineage handover - the session that TOOK OVER this row's position: its
+   *  live children were re-parented to it, so it can drive them and they
+   *  report to it (`message_parent`). Set by the handover itself, in both
+   *  directions (`from.succeededBy = to` / `to.succeeds = from`), and
+   *  persisted so the declaration survives a daemon restart - it is what
+   *  authorizes `session_adopt`. */
+  succeededBy?: string
   /** Set alongside `continuedFrom` on the NEW session — the harness the
    *  checkpoint moved from/to and when. Present on every `continue_fresh`
    *  spawn, not just a cross-harness one, so a same-harness continuation
@@ -4653,6 +4666,27 @@ export interface SessionsRegistry {
    *  gate (`agent_set_prompt_policy` checks it). Persists via
    *  `schedulePersist` — the descriptor row is written whole. */
   setPromptPolicy(id: string, allowPromptFrom: string[] | undefined): SessionDescriptor
+  /** Lineage handover - record that `toId` TOOK OVER `fromId`'s position in
+   *  the spawn tree: `from.succeededBy = toId` and `to.succeeds = fromId`
+   *  (both persisted, both already written by the handover itself when it
+   *  ran - this method exists so a DECLARATION can be recorded without a
+   *  re-parenting, e.g. `agent_start.succeeds` on a spawn whose predecessor
+   *  had no live children). Throws when either id is unknown. */
+  setLineageSuccessor(fromId: string, toId: string): SessionDescriptor
+  /** Lineage handover - re-parent a session: `id`'s `parentSessionId`
+   *  becomes `newParentId` (the child keeps its own id, transcript and
+   *  state; only the lineage pointer moves). This is what makes the
+   *  successor the child's OWNER (the drive-tool gate keys on
+   *  `parentSessionId`) and what routes the child's `message_parent` to
+   *  the successor instead of the retired predecessor. `newParentId`
+   *  `undefined` makes the session a ROOT (no parent) - the shape a
+   *  successor of a root session takes. The child's `depth` is re-derived
+   *  from the new parent. Persists via `schedulePersist`; throws when
+   *  the session id is unknown. */
+  reassignParent(id: string, newParentId: string | undefined): SessionDescriptor
+  /** Emit a `session:lineage-handover` journal entry on the session event
+   *  bus - the lineage handover's own audit trail. Daemon-internal. */
+  emitLineageHandover(event: import("./session-event-bus.js").SessionLineageHandoverEvent): void
   /** Stamp (or clear) the immutable `operatorLabel` (see
    *  `SessionDescriptor.operatorLabel`). Daemon-internal: called only by the
    *  `agent_start` handler for operator spawns and by the restart /
@@ -13614,6 +13648,83 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    setLineageSuccessor(fromId, toId) {
+      const from = sessions.get(fromId)
+      if (!from) throw new Error(`setLineageSuccessor: no session "${fromId}"`)
+      const to = sessions.get(toId)
+      if (!to) throw new Error(`setLineageSuccessor: no session "${toId}"`)
+      if (fromId === toId) {
+        throw new Error(`setLineageSuccessor: a session cannot succeed itself ("${fromId}")`)
+      }
+      from.desc.succeededBy = toId
+      to.desc.succeeds = fromId
+      schedulePersist()
+      stampReadLiveness(from.desc)
+      stampReadLiveness(to.desc)
+      return to.desc
+    },
+    reassignParent(id, newParentId) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`reassignParent: no session "${id}"`)
+      if (id === newParentId) {
+        throw new Error(`reassignParent: a session cannot be its own parent ("${id}")`)
+      }
+      if (newParentId !== undefined && !sessions.has(newParentId)) {
+        throw new Error(`reassignParent: no session "${newParentId}"`)
+      }
+      // Cycle guard: the new parent must not sit inside the moved row's own
+      // subtree (walk its ancestor chain up; reaching `id` means a loop).
+      if (newParentId !== undefined) {
+        const seen = new Set<string>()
+        let cursor: string | undefined = newParentId
+        while (cursor !== undefined && !seen.has(cursor)) {
+          if (cursor === id) {
+            throw new Error(
+              `reassignParent: "${newParentId}" is inside the subtree of "${id}", moving it there would create a cycle`,
+            )
+          }
+          seen.add(cursor)
+          cursor = sessions.get(cursor)?.desc.parentSessionId
+        }
+      }
+      if (newParentId === undefined) {
+        delete rt.desc.parentSessionId
+        rt.desc.depth = 0
+      } else {
+        rt.desc.parentSessionId = newParentId
+        const parent = sessions.get(newParentId)
+        rt.desc.depth = parent?.desc.depth !== undefined ? parent.desc.depth + 1 : parent ? 1 : 0
+      }
+      // The whole subtree moved with the row: re-derive its depths.
+      const childrenByParent = new Map<string, string[]>()
+      for (const [childId, child] of sessions) {
+        const pid = child.desc.parentSessionId
+        if (pid === undefined) continue
+        const list = childrenByParent.get(pid)
+        if (list) list.push(childId)
+        else childrenByParent.set(pid, [childId])
+      }
+      const visited = new Set<string>([id])
+      const queue: string[] = [id]
+      while (queue.length > 0) {
+        const parentId = queue.shift()!
+        const parentDepth = sessions.get(parentId)?.desc.depth ?? 0
+        for (const childId of childrenByParent.get(parentId) ?? []) {
+          if (visited.has(childId)) continue
+          visited.add(childId)
+          const child = sessions.get(childId)
+          if (!child) continue
+          child.desc.depth = parentDepth + 1
+          queue.push(childId)
+        }
+      }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    emitLineageHandover(event) {
+      sessionEvents?.emit(event)
     },
     noteSessionPrompt(id, caller, queued) {
       sessionEvents?.emit({

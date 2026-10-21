@@ -50,6 +50,11 @@ import {
   ownerGateError,
   promptCallerLabel,
 } from "./session-owner.js"
+import {
+  checkSuccessorDeclaration,
+  handoverLineage,
+  type LineageHandoverOutcome,
+} from "./lineage-handover.js"
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import { opaqueSchema } from "./tool-schema-opaque.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
@@ -460,7 +465,43 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const { presetId: _presetId, posture: rawPosture, ...spawnInput } = input
+      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, ...spawnInput } = input
+      // Lineage handover (`agent_start.succeeds`): the caller declares that
+      // THIS new session takes over another session's position in the spawn
+      // tree. Authorized to the human operator, the replaced session itself
+      // and the session that owns it - checked BEFORE the spawn so an
+      // unauthorized declaration never creates a session.
+      let succeedsFrom: SessionDescriptor | undefined
+      if (rawSucceeds) {
+        const from = registry.get(rawSucceeds)
+        if (!from) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `agent_start: \`succeeds\` names session "${rawSucceeds}", which does not exist.`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        const gate = checkSuccessorDeclaration({
+          callerSessionId: effectiveCaller(),
+          from,
+        })
+        if (!gate.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `agent_start: \`succeeds\` refused - ${gate.message}`,
+              },
+            ],
+            isError: true,
+          }
+        }
+        succeedsFrom = from
+      }
       const result = await spawnAgentSession(
         {
           registry,
@@ -549,6 +590,27 @@ export function registerAgentTools(
             )
           }
         }
+        // Lineage handover: the new session takes over the replaced row's
+        // children (drive rights + `message_parent` routing follow the moved
+        // `parentSessionId` pointer). Best-effort - a failed handover rides
+        // back as a warning, it never fails the spawn.
+        let lineageHandover: LineageHandoverOutcome | undefined
+        if (succeedsFrom) {
+          try {
+            lineageHandover = handoverLineage({
+              registry,
+              from: succeedsFrom.id,
+              to: result.descriptor.id,
+              reason: "succeeds",
+              actor: promptCallerLabel(effectiveCaller()),
+            })
+          } catch (err) {
+            attachWarnings.push(
+              `lineage handover failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
+        // Built AFTER the handover so its failure warning rides back too.
         const warnings = [...(result.warnings ?? []), ...attachWarnings]
         const body = {
           ...result.descriptor,
@@ -557,6 +619,7 @@ export function registerAgentTools(
           ...(result.deduped ? { deduped: true } : {}),
           ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
           ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
+          ...(lineageHandover ? { lineageHandover } : {}),
         }
         return {
           content: [{ type: "text", text: JSON.stringify(body) }],
