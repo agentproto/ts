@@ -19,7 +19,7 @@ import type { SessionDescriptor } from "../client/types.js"
 import type { TranscriptPanelController } from "../webview/transcriptPanelController.js"
 import { runChangeModelFlow } from "./changeModel.js"
 
-/** The catalog id the adapter declares — the value the picker used to send
+/** The catalog id the adapter declares -- the value the picker used to send
  *  verbatim, and the one the running agent REJECTS. */
 const CATALOG_MODEL = "claude-sonnet-5-5"
 /** A value the running agent itself advertises for its model config option. */

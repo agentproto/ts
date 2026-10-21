@@ -62,7 +62,7 @@ const MODEL_OPTION: SessionConfigOption = {
   ],
 }
 
-describe("session read-surface — live ACP config options", () => {
+describe("session read-surface -- live ACP config options", () => {
   it("stamps configOptions on get() and list()", () => {
     const registry = reg()
     const id = spawnLive(registry, fakeAgentSession([MODEL_OPTION]))
@@ -88,7 +88,7 @@ describe("session read-surface — live ACP config options", () => {
   })
 })
 
-/** A driver session that records the exact model id the daemon hands it —
+/** A driver session that records the exact model id the daemon hands it --
  *  the wire value the agent will be asked to accept. */
 function recordingAgentSession(
   configOptions?: readonly SessionConfigOption[],
@@ -110,7 +110,7 @@ function recordingAgentSession(
   return session
 }
 
-describe("setModel — the live agent's own vocabulary", () => {
+describe("setModel -- the live agent's own vocabulary", () => {
   it("sends an ADVERTISED value verbatim (no catalog wire normalization)", async () => {
     const registry = reg()
     const agentSession = recordingAgentSession([

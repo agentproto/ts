@@ -69,7 +69,7 @@ function routeDescription(
 /**
  * One value the LIVE session's model config option accepts.
  *
- * `value` is the wire value to send — the agent validates against it and
+ * `value` is the wire value to send -- the agent validates against it and
  * rejects anything else ("Invalid value for config option model: <id>"), so
  * it is NOT necessarily a catalog model id.
  */
@@ -87,7 +87,7 @@ export interface LiveModelValue {
  * descriptor by the daemon at read time).
  *
  * Empty when the session advertises no model option at all (a print arm, a
- * dead session, an older daemon) — the caller then keeps the catalog-only
+ * dead session, an older daemon) -- the caller then keeps the catalog-only
  * behaviour, which is right for a harness that never had its own vocabulary.
  */
 export function liveModelValues(
@@ -135,8 +135,8 @@ export function liveModelValues(
  * When the LIVE session advertises its own model vocabulary
  * (`session.configOptions`), that vocabulary wins for the LIVE switch: a
  * catalog id the agent does not accept is flagged restart-only (it would be
- * rejected outright by a live switch), and the agent's own values — the ones
- * it accepts — are offered as extra rows.
+ * rejected outright by a live switch), and the agent's own values -- the ones
+ * it accepts -- are offered as extra rows.
  */
 export function mapChangeModelQuickPickItems(
   adapter: SpawnAdapterInfo,

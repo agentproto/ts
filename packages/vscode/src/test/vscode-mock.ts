@@ -62,7 +62,7 @@ export const window = {
   showInformationMessage: () => Promise.resolve(undefined),
   showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
-  // Quick-pick stub — resolves to "nothing picked" by default; a test that
+  // Quick-pick stub -- resolves to "nothing picked" by default; a test that
   // needs a pick spies on it (`vi.spyOn(vscode.window, "showQuickPick")`).
   showQuickPick: (_items: readonly unknown[], _options?: unknown) =>
     Promise.resolve(undefined),

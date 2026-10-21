@@ -26,7 +26,7 @@ function session(
 }
 
 /** The live agent's advertised model vocabulary (the ACP `model` config
- *  option) — the values the running agent actually accepts. */
+ *  option) -- the values the running agent actually accepts. */
 function liveModelOption(values: Array<{ value: string; name?: string }>): SessionConfigOptionRow {
   return {
     id: "model",
@@ -273,7 +273,7 @@ describe("liveModelValues", () => {
   })
 })
 
-describe("mapChangeModelQuickPickItems — the live agent's own model vocabulary", () => {
+describe("mapChangeModelQuickPickItems -- the live agent's own model vocabulary", () => {
   it("offers the agent's OWN values as live-switchable rows", () => {
     const items = mapChangeModelQuickPickItems(
       adapter({ modelDetails: [{ id: "claude-sonnet-5-5", provider: "anthropic" }] }),

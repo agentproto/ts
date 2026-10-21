@@ -161,7 +161,7 @@ async function runSessionConfigFlow(
     return
   }
 
-  // The LIVE session's own model vocabulary — the values the running agent
+  // The LIVE session's own model vocabulary -- the values the running agent
   // accepts for its model config option (the daemon stamps them onto the
   // descriptor at read time). The store's copy can predate them, so re-read
   // the session: without this the model chip offers CATALOG ids the agent

@@ -327,14 +327,14 @@ export interface AgentSessionLike {
   /**
    * The harness's advertised session CONFIG options captured at connect time
    * (the ACP `session/new` / `session/load_session` response `configOptions`)
-   * — mirrors `@agentproto/driver-agent-cli`'s
+   * -- mirrors `@agentproto/driver-agent-cli`'s
    * `AgentCliRuntimeSession.availableConfigOptions`.
    *
    * This is the read-surface that tells a client WHICH values the running
    * agent accepts for a given config option: the `model` entry carries the
    * model vocabulary the agent itself validates against, and an id outside it
    * is rejected outright ("Invalid value for config option model"). Absent /
-   * empty for arms with no config registry (print, proprietary) — treated as
+   * empty for arms with no config registry (print, proprietary) -- treated as
    * "no advertised vocabulary", never as "empty vocabulary".
    */
   readonly availableConfigOptions?: readonly SessionConfigOption[]
@@ -2170,7 +2170,7 @@ export interface SessionDescriptor {
   /**
    * Read-surface echo of the live harness's advertised ACP session CONFIG
    * options (the `session/new` / `session/load_session` response
-   * `configOptions`) — stamped at READ TIME from the live agent session by
+   * `configOptions`) -- stamped at READ TIME from the live agent session by
    * `list()`/`get()`, never persisted.
    *
    * The `model` entry is what makes a live model switch possible WITHOUT an
@@ -2178,7 +2178,7 @@ export interface SessionDescriptor {
    * model config option, and it rejects anything else ("Invalid value for
    * config option model: <id>"). A client picker therefore offers THESE
    * values for a live switch, and treats a catalog id outside this vocabulary
-   * as restart-only — never as a live switch that would fail.
+   * as restart-only -- never as a live switch that would fail.
    *
    * Absent for arms with no config registry (print/proprietary) and for a
    * session whose live runtime handle is gone.
@@ -3651,7 +3651,7 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
 
 /**
  * Read-time projection of the LIVE agent session's advertised ACP CONFIG
- * options onto the descriptor (`configOptions`) — the sibling of
+ * options onto the descriptor (`configOptions`) -- the sibling of
  * `stampLiveModes`, same convention: ephemeral, never persisted, DELETED
  * (rather than left stale) when the live handle is gone or advertises no
  * registry.
@@ -3674,13 +3674,13 @@ function stampLiveConfigOptions(desc: SessionDescriptor, rt: SessionRuntime): vo
  * True when `modelId` is one of the values the LIVE harness advertises for its
  * `model` config option (the ACP `configOptions` read-surface).
  *
- * Such a value is the agent's OWN vocabulary — the exact string it accepts
+ * Such a value is the agent's OWN vocabulary -- the exact string it accepts
  * for its model config option, and rejects everything else ("Invalid value
  * for config option model"). It must therefore reach the agent VERBATIM: the
  * catalog wire normalization (vendor-prefix stripping, `@route` suffix
  * handling) rewrites CATALOG ids into the adapter's wire form, and applying
  * it to an already-advertised value could produce a string the agent does not
- * accept — the live switch would fail with exactly the error the advertised
+ * accept -- the live switch would fail with exactly the error the advertised
  * vocabulary exists to prevent.
  */
 function isAdvertisedLiveModel(rt: SessionRuntime, modelId: string): boolean {
@@ -3695,7 +3695,7 @@ function isAdvertisedLiveModel(rt: SessionRuntime, modelId: string): boolean {
       if (entry.value === modelId) return true
       continue
     }
-    // A GROUPED option list — the value sits one level down.
+    // A GROUPED option list -- the value sits one level down.
     for (const nested of entry.options) {
       if (nested.value === modelId) return true
     }
