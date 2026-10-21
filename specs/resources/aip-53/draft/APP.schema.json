@@ -343,8 +343,8 @@
           "name"
         ],
         "additionalProperties": false,
-        "anyOf": [
-          { "required": ["entry"] },
+        "oneOf": [
+          { "required": ["entry"], "not": { "required": ["args"] } },
           { "required": ["command"] }
         ],
         "properties": {

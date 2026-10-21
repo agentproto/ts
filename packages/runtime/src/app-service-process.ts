@@ -94,8 +94,9 @@ export function appServiceLogPath(stateDir: string, name: string): string {
  * `/proc/<pid>/cmdline`: the process is signalled (group-kill) ONLY when its
  * command line contains the recorded display `entry` — a recycled pid
  * belonging to anything else is left alone. Where `/proc` is unavailable the
- * pid cannot be verified and is NOT signalled. The pid file is always
- * removed so this runs at most once per service. Never throws.
+ * pid cannot be verified and is NOT signalled. The pid file is removed once
+ * the pid is dead/unparseable/unverifiable or was reaped; a LIVE pid that did
+ * not match is kept discoverable (file retained). Never throws.
  */
 export async function cleanupLegacyServicePidFile(
   stateDir: string,
@@ -109,23 +110,34 @@ export async function cleanupLegacyServicePidFile(
   } catch {
     return { killed: false, reason: "no legacy pid file" }
   }
-  try {
-    unlinkSync(file)
-  } catch {
-    // Best-effort — a stale file only re-triggers this identity-checked pass.
+  const removeFile = (): void => {
+    try {
+      unlinkSync(file)
+    } catch {
+      // Best-effort — a stale file only re-triggers this identity-checked pass.
+    }
   }
   const pid = Number.parseInt(raw.trim(), 10)
-  if (!Number.isInteger(pid) || pid <= 0) return { killed: false, reason: "unparseable legacy pid" }
+  if (!Number.isInteger(pid) || pid <= 0) {
+    removeFile()
+    return { killed: false, reason: "unparseable legacy pid" }
+  }
   let cmdline: string
   try {
     cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
   } catch {
+    // Dead pid (nothing to reap) or no /proc (never verifiable) — drop the file.
+    removeFile()
     return { killed: false, reason: `legacy pid ${pid} is not live or unverifiable — skip` }
   }
   if (entry.length === 0 || !cmdline.includes(entry)) {
+    // A LIVE pid that did not match: keep the file so a possible orphan stays
+    // discoverable (entry changed / quoting differences) rather than lost.
     return { killed: false, reason: `legacy pid ${pid} does not match the service entry (recycled?) — skip` }
   }
   await killServiceProcess(pid)
+  // Only forget the pid once the signal pass ran for a verified match.
+  removeFile()
   return { killed: true, reason: `killed orphaned legacy service child ${pid}` }
 }
 
@@ -360,11 +372,22 @@ export function startAppServiceProcess(
   /** One death per child: `error` (ENOENT & friends) and `exit` can both
    *  fire, and the observation must not double-drive the restart budget. */
   const settled = new WeakSet<ChildProcess>()
+  /** Children whose registry row was flipped to `killed` by a deliberate
+   *  `registry.kill` before they exited — terminal, never respawned. */
+  const deliberatelyKilled = new WeakSet<ChildProcess>()
   const settleChild = (child: ChildProcess): void => {
     if (disposed || settled.has(child) || current === undefined || current.id !== childSpawnIds.get(child)) return
     settled.add(child)
     const diedId = current.id
     current = undefined
+    if (deliberatelyKilled.has(child)) {
+      // An explicit operator kill of the service's session row: honour it —
+      // stop supervising (no restart timer, no re-upsert of the owner record).
+      disposed = true
+      restartPending.delete(diedId)
+      unregister()
+      return
+    }
     failStamps.push(now())
     failStamps = failStamps.filter(ts => ts > now() - policy.windowMs)
     if (failStamps.length >= policy.maxAttempts) {
@@ -435,6 +458,19 @@ export function startAppServiceProcess(
     const startTicks = child.pid != null ? readProcessStartTicks(child.pid) : undefined
     current = { id, pid: child.pid ?? undefined, startTicks }
     const trail = attempt === 0 ? "" : ` (restart #${attempt})`
+    // Registered BEFORE `registry.register` so it runs BEFORE the registry's
+    // own exit handler (which flips a signal-death to `killed`). A deliberate
+    // `registry.kill` (operator `sessions kill`, `POST /sessions/:id/kill`)
+    // flips the row to `killed` synchronously BEFORE signalling the child, so
+    // `killed` observed here — while an external crash/OOM still reads
+    // `running` — marks a terminal operator kill the supervisor must not undo.
+    child.once("exit", () => {
+      try {
+        if (deps.registry.get(id)?.status === "killed") deliberatelyKilled.add(child)
+      } catch {
+        // Registry unavailable — treat as an ordinary exit.
+      }
+    })
     try {
       deps.registry.register({
         child,
@@ -470,6 +506,10 @@ export function startAppServiceProcess(
   const self = handle()
   handleRef = self
   registeredKey = supervisorKey(deps.appId, deps.service.name)
+  // Defensively stop a prior runner for the same service (e.g. an owner row
+  // was lost) so its restart timer cannot leak alongside the new runner.
+  const prior = supervisors.get(registeredKey)
+  if (prior !== undefined) void prior.stop().catch(() => undefined)
   supervisors.set(registeredKey, self)
   launchAttempt()
   return { ok: true, handle: self }
