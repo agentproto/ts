@@ -399,6 +399,8 @@ export {
 } from "./sandbox-checkpoint-gc.js"
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
+export { openPrForSession } from "./pr-open.js"
+export type { OpenPrForSessionInput, OpenPrForSessionOutcome } from "./pr-open.js"
 export { createActivityProjector } from "./activities.js"
 // AIP-68 clerk hook - the turn-end subscriber + its configuration
 // resolution (three levels: agent > workspace > daemon default).
@@ -2924,6 +2926,12 @@ export async function createGateway(
           session.workspaceSlug
             ? findWorkspace(await loadWorkspacesConfig(), session.workspaceSlug)?.path
             : undefined,
+        // The GLOBAL checkpoint ref namespace, a session's own per-spawn
+        // override wins over it, so the stamper reads the checkpoint from
+        // the namespace that session's delivery actually pushed to.
+        ...(configDefaults?.sandbox?.checkpoint?.refPrefix
+          ? { checkpointRefPrefix: configDefaults.sandbox.checkpoint.refPrefix }
+          : {}),
       })
     : undefined
 
@@ -3747,6 +3755,11 @@ export async function createGateway(
       registry: sessions,
       ...(callerSessionId ? { callerSessionId } : {}),
       ...(boundary ? { boundary } : {}),
+      // The GLOBAL checkpoint ref namespace, for the provenance stamp's
+      // checkpoint read (a session's own per-spawn override wins over it).
+      ...(configDefaults?.sandbox?.checkpoint?.refPrefix
+        ? { checkpointRefPrefix: configDefaults.sandbox.checkpoint.refPrefix }
+        : {}),
     })
     // Approvals (E1a) — model-visible request/get/wait/consume are safe
     // everywhere (they can request and consume, never decide) and register

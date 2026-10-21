@@ -64,6 +64,34 @@ export interface FooterProvenance {
    *  meaningless (or actively misleading) when the session's cwd is a
    *  workspace root rather than a per-branch worktree. */
   workspaceSlug?: string
+  /** The sessions that committed to the PR's branch — every box session
+   *  whose work landed on it (including several over successive rescues),
+   *  plus the trailered ids of sessions the registry no longer tracks. When
+   *  present, each author renders with ITS OWN model/wallet/box provider and
+   *  COST; the `sessionId` provenance's own cumulative cost/tokens (the
+   *  opener's ledger) is then suppressed — an orchestrator that merely runs
+   *  `gh pr create` must never appear as the PR's wallet. */
+  authors?: readonly FooterAuthor[]
+  /** The session that opened the PR (`Opened by`). Normally the same session
+   *  the footer's `session` segment already names; distinct when a daemon
+   *  `pr_open`-style tool opened the PR on behalf of a box session. */
+  openedBy?: string
+}
+
+/** One authoring session a PR footer credits. Field names are the renderer's
+ *  (collected from a session descriptor — never the credential). */
+export interface FooterAuthor {
+  sessionId: string
+  label?: string
+  adapter?: string
+  model?: string
+  /** Bound auth-profile identity — a label or ref, NEVER the credential. */
+  authProfile?: string
+  /** Sandbox provider slug the session wrote in ("e2b", "computer", …). */
+  sandboxProvider?: string
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
 }
 
 /**
@@ -114,10 +142,31 @@ export const buildFooter = ({
   if (prov?.model) parts.push(`model \`${prov.model}\``)
   if (prov?.sandboxId) parts.push(`e2b \`${prov.sandboxId}\``)
   if (prov?.parentSessionId) parts.push(`supervisor \`${prov.parentSessionId}\``)
+  // Authoring sessions first, each with its OWN wallet + spend. When authors
+  // are present, the opener's cumulative cost/tokens are suppressed: an
+  // orchestrator session's $ledger says nothing about what the PR cost.
+  if (prov?.authors?.length) {
+    for (const author of prov.authors) {
+      const inner: string[] = []
+      if (author.adapter) inner.push(author.adapter)
+      if (author.authProfile) inner.push(`auth-profile \`${author.authProfile}\``)
+      if (author.model) inner.push(`model \`${author.model}\``)
+      if (author.sandboxProvider) inner.push(author.sandboxProvider)
+      if (typeof author.costUsd === "number") inner.push(`$${author.costUsd.toFixed(4)}`)
+      parts.push(`Authored by \`${author.sessionId}\`${inner.length ? ` (${inner.join(" · ")})` : ""}`)
+    }
+  }
+  // "Opened by" stands on its own: a `pr_open` whose authors didn't resolve
+  // (registry lost the box session, no trailers) must still name the opener.
+  if (prov?.openedBy) parts.push(`Opened by \`${prov.openedBy}\``)
+  // The opener's own tokens/spend only when the PR isn't attributed to other
+  // sessions (`authors`, or a distinct `openedBy`) — else it would render the
+  // cumulative opener ledger as the PR's cost.
+  const suppressOpenerSpend = (prov?.authors?.length ?? 0) > 0 || !!prov?.openedBy
   const tin = fmtTokens(prov?.tokensIn)
   const tout = fmtTokens(prov?.tokensOut)
-  if (tin || tout) parts.push(`${tin ?? "?"} in / ${tout ?? "?"} out`)
-  if (typeof prov?.costUsd === "number") {
+  if (!suppressOpenerSpend && (tin || tout)) parts.push(`${tin ?? "?"} in / ${tout ?? "?"} out`)
+  if (!suppressOpenerSpend && typeof prov?.costUsd === "number") {
     parts.push(`$${prov.costUsd.toFixed(4)}${prov.source && prov.source !== "adapter" ? ` (${prov.source})` : ""}`)
   }
   const showLocalHostCwd = prov?.source === "local" || prov?.source === "daemon" || !runId
@@ -150,6 +199,15 @@ export interface FooterSession {
   tokensOut?: number
   auth?: { mode?: string }
   accessProfile?: { profileRef: string; label?: string }
+  /** Sandbox provider slug ("e2b", "computer", …) — authorship rendering. */
+  sandboxProvider?: string
+  /** The work branch inside the session's box (`sandboxDeliveryTarget.branch`
+   *  on the full descriptor) — how authorship is tracked per branch. */
+  sandboxDeliveryTarget?: { branch: string }
+  /** The session's own per-spawn checkpoint override, its `refPrefix` is
+   *  the namespace this session's snapshots are pushed under (see
+   *  `checkpointRefPrefixForSession` in `sandbox-delivery.ts`). */
+  sandboxCheckpointOverride?: { refPrefix?: string } | false
 }
 
 export interface SessionFooterOptions {
@@ -158,6 +216,12 @@ export interface SessionFooterOptions {
   host?: string
   /** Provenance source tag; defaults to "daemon". */
   source?: string
+  /** The sessions that authored the PR's branch — see
+   *  {@link FooterProvenance.authors}. */
+  authors?: readonly FooterAuthor[]
+  /** The session that opened the PR, when it is NOT the named session (a
+   *  daemon `pr_open` tool on behalf of a box session). */
+  openedBy?: string
 }
 
 /**
@@ -184,6 +248,8 @@ export function sessionFooterProvenance(
     host: options.host,
     cwd: session.cwd,
     workspaceSlug: session.workspaceSlug,
+    ...(options.authors?.length ? { authors: [...options.authors] } : {}),
+    ...(options.openedBy ? { openedBy: options.openedBy } : {}),
   }
   return { prov, authMode: session.auth?.mode }
 }
@@ -258,6 +324,58 @@ export function footerSessionId(body: string): string | undefined {
 }
 
 /**
+ * The `Opened by \`<id>\`` a rendered footer names, or undefined when the
+ * body carries no footer (or no opener).
+ *
+ * The stamper's REFRESH pass (the reconciler's cost refresh) re-renders the
+ * footer from the session alone, and the caller has no idea who opened the
+ * PR. Dropping the opener there would silently delete the "Opened by" entry
+ * from a footer that had it, so reading it back off the existing footer
+ * keeps it (the alternative, persisting the opener on the PR record, needs a
+ * descriptor change on every record path).
+ */
+export function footerOpenedBy(body: string): string | undefined {
+  const block = extractFooterBlock(body)
+  if (block === undefined) return undefined
+  return /Opened by `([^`]+)`/.exec(block)?.[1]
+}
+
+/** One `Authored by \`<id>\`` entry of a rendered footer. `details` is the
+ *  parenthetical payload (`codex · model \`x\` · $0.01`), empty for an
+ *  ID-only author (a session the registry no longer knows). */
+export interface FooterAuthorEntry {
+  sessionId: string
+  details: string
+}
+
+/**
+ * The `Authored by` entries of a rendered footer, in render order. Used to
+ * tell "the fresh render knows an author the posted one doesn't" (and "knows
+ * it BETTER") apart from "the posted one already says everything", the
+ * signal the replacement guard needs before it re-renders a footer.
+ */
+export function footerAuthors(body: string): FooterAuthorEntry[] {
+  const block = extractFooterBlock(body)
+  if (block === undefined) return []
+  const out: FooterAuthorEntry[] = []
+  const re = /Authored by `([^`]+)`(?:\s*\(([^)]*)\))?/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(block)) !== null) out.push({ sessionId: m[1] ?? "", details: m[2] ?? "" })
+  return out
+}
+
+/** Whether one author entry carries strictly MORE than another, a detail
+ *  token the other lacks. An ID-only author (`Authored by \`sess_x\``) is
+ *  strictly poorer than the same author rendered with a model/wallet/cost. */
+function authorDetailsRicher(candidate: string, existing: string): boolean {
+  if (!candidate) return false
+  if (!existing) return true
+  const tokens = (s: string) => s.split("·").map(t => t.trim()).filter(Boolean)
+  const have = new Set(tokens(existing))
+  return tokens(candidate).some(t => !have.has(t))
+}
+
+/**
  * Whether `candidate` (a standalone footer, as {@link buildFooter} renders
  * it, or a full body containing one) carries a provenance signal — spend,
  * bound auth-profile identity, or token counts — that `existing` doesn't.
@@ -267,6 +385,13 @@ export function footerSessionId(body: string): string | undefined {
  * session/adapter/model/host/cwd — never cost, auth-profile, or tokens, since
  * those aren't known to a bare `gh` subprocess — so a shim-stamped body
  * always has ROOM for this kind of upgrade once the daemon knows more.
+ *
+ * AUTHORSHIP counts as an upgrade too: a fresh render that knows an author
+ * the posted footer doesn't (a rescue session that landed on the branch
+ * afterwards), or knows it BETTER (the posted entry is ID-only while the
+ * fresh one carries the author's model/wallet/cost), must replace the posted
+ * footer, otherwise the PR keeps crediting an unknown session, or credits
+ * it with no wallet at all, forever.
  */
 export function footerIsRicherThan(candidate: string, existing: string): boolean {
   const candidateBlock = extractFooterBlock(candidate) ?? ""
@@ -275,7 +400,14 @@ export function footerIsRicherThan(candidate: string, existing: string): boolean
   const hasCost = (block: string) => /\$\d/.test(block)
   const hasAuthProfile = (block: string) => /auth-profile `/.test(block)
   const hasTokens = (block: string) => / in \/ .{1,20} out\b/.test(block)
-  return gained(hasCost) || gained(hasAuthProfile) || gained(hasTokens)
+  if (gained(hasCost) || gained(hasAuthProfile) || gained(hasTokens)) return true
+  // Authorship: a new author, or a richer rendering of a known one.
+  const existingAuthors = new Map(footerAuthors(existing).map(a => [a.sessionId, a]))
+  return footerAuthors(candidate).some(author => {
+    const known = existingAuthors.get(author.sessionId)
+    if (!known) return true
+    return authorDetailsRicher(author.details, known.details)
+  })
 }
 
 /**
@@ -378,4 +510,130 @@ export function pickExecutorSession<T extends FooterSession>(
   const live = candidates.filter(alive).sort(byRecency)
   if (live.length > 0) return live[0]
   return [...candidates].sort(byRecency)[0]
+}
+
+// ── PR authorship per branch ────────────────────────────────────────────
+
+/** Commit trailer the box-side commit/checkpoint paths stamp onto commits
+ *  they make on an agent's behalf, naming the authoring session. Tracked
+ *  commits stay attributable even when the session registry no longer
+ *  knows the box session (a host restart between rescue sessions, say). */
+export const AGENTPROTO_SESSION_TRAILER = "Agentproto-Session"
+
+/**
+ * Append the {@link AGENTPROTO_SESSION_TRAILER} to a commit message the
+ * box makes for `sessionId`. Idempotent: a message already carrying the
+ * trailer is returned unchanged. `git commit -m` takes the whole value as
+ * ONE argv, so multi-line bodies are safe; git renders trailing lines as
+ * trailers like `Co-authored-by`.
+ */
+export function commitMessageWithSessionTrailer(message: string, sessionId: string): string {
+  if (!sessionId) return message
+  const re = new RegExp(`^${AGENTPROTO_SESSION_TRAILER}:\\s*\\S+\\s*$`, "m")
+  if (re.test(message)) return message
+  return `${message.replace(/\s*$/, "")}\n\n${AGENTPROTO_SESSION_TRAILER}: ${sessionId}`
+}
+
+/** Every session id named by {@link AGENTPROTO_SESSION_TRAILER} lines in
+ *  `input` (one or many commit messages). Deduped, order preserved. */
+export function sessionIdsFromTrailers(input: string): string[] {
+  const re = new RegExp(`^${AGENTPROTO_SESSION_TRAILER}:\\s*(\\S+)`, "gm")
+  const ids: string[] = []
+  for (let m: RegExpExecArray | null; (m = re.exec(input)) !== null; ) {
+    const id = m[1] ?? ""
+    if (!ids.includes(id)) ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * The scope a branch's authors are resolved in.
+ *
+ *  - `workspaceSlug`, the workspace (repository) the PR belongs to. Branch
+ *    names are repository-LOCAL: two workspaces can both use `wt/feat`, and
+ *    crediting both would put another repo's session (and its cost) on this
+ *    PR. Registry-derived matches are therefore scoped to the PR's own
+ *    workspace. EXPLICIT trailer ids stay global, a trailer on the PR's own
+ *    commits is proof of authorship whoever the session belongs to.
+ *  - `extraSessionIds`, sessions always credited, whatever the branch /
+ *    workspace match says (the session a PR is opened FOR).
+ */
+export interface BranchAuthorScope {
+  workspaceSlug?: string
+  extraSessionIds?: readonly string[]
+}
+
+/**
+ * The sessions that authored a branch — everything that committed to it,
+ * gathered from two complementary sources:
+ *
+ *  1. REGISTRY — live/registered sandboxed sessions whose
+ *     `sandboxDeliveryTarget.branch` is this branch (checkpoint, delivery
+ *     and rescue pushes all name their session), narrowed to the PR's own
+ *     workspace when the scope names one (branch names are repo-local);
+ *  2. TRAILERS — session ids cited by `Agentproto-Session:` commit
+ *     trailers, covering a session the registry no longer knows (restarted
+ *     daemon, a second rescue session on the same branch). A trailer id
+ *     resolves through the registry even when the session is ARCHIVED, so a
+ *     archived author still renders with its model, wallet and cost.
+ *
+ * Deduped by session id (first seen wins: registry descriptors are richer),
+ * ordered by `startedAt` (oldest first — how the work happened). Trailers
+ * that resolve to no known session still appear, id only — the PR names
+ * every author even when its descriptor is gone.
+ */
+export function collectBranchAuthors(
+  sessions: readonly FooterSession[],
+  branch: string,
+  trailerSessionIds: readonly string[] = [],
+  scope: BranchAuthorScope = {},
+): FooterAuthor[] {
+  const byId = new Map(sessions.map(s => [s.id, s]))
+  const authorOf = (s: FooterSession): FooterAuthor => ({
+    sessionId: s.id,
+    ...(s.label ? { label: s.label } : {}),
+    ...(s.harness ?? s.adapterSlug ? { adapter: s.harness ?? s.adapterSlug } : {}),
+    ...(s.model ? { model: s.model } : {}),
+    ...(s.accessProfile ? { authProfile: s.accessProfile.label ?? s.accessProfile.profileRef } : {}),
+    ...(s.sandboxProvider ? { sandboxProvider: s.sandboxProvider } : {}),
+    ...(typeof s.costUsd === "number" ? { costUsd: s.costUsd } : {}),
+    ...(s.tokensIn !== undefined ? { tokensIn: s.tokensIn } : {}),
+    ...(s.tokensOut !== undefined ? { tokensOut: s.tokensOut } : {}),
+  })
+  const seen: FooterAuthor[] = []
+  const seenIds = new Set<string>()
+  const push = (s: FooterSession): boolean => {
+    if (seenIds.has(s.id)) return false
+    seenIds.add(s.id)
+    seen.push(authorOf(s))
+    return true
+  }
+  const inScope = (s: FooterSession): boolean =>
+    !scope.workspaceSlug || s.workspaceSlug === scope.workspaceSlug
+  for (const s of sessions) {
+    if (s.sandboxDeliveryTarget?.branch === branch && inScope(s)) push(s)
+  }
+  // The session the PR is opened FOR is always an author, even when its
+  // branch isn't the PR's head branch (a rescue on another branch) and even
+  // when the registry no longer lists it under this branch.
+  for (const id of scope.extraSessionIds ?? []) {
+    const s = byId.get(id)
+    if (s) push(s)
+  }
+  for (const id of trailerSessionIds) {
+    if (seenIds.has(id)) continue
+    const s = byId.get(id)
+    if (s) push(s)
+    else {
+      seenIds.add(id)
+      seen.push({ sessionId: id })
+    }
+  }
+  return seen.sort((a, b) => {
+    // Sessions the registry doesn't know (unknown trailers) sort last — the
+    // descriptor'd authors are the ones with a real timeline.
+    const sa = byId.get(a.sessionId)?.startedAt ?? "9999-12-31"
+    const sb = byId.get(b.sessionId)?.startedAt ?? "9999-12-31"
+    return sa.localeCompare(sb)
+  })
 }
