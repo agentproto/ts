@@ -692,11 +692,27 @@ export {
   reapGcEntry,
   DEAD_SESSION_STATUSES,
   GC_REAPABLE_STATES,
+  GONE_RE,
+  isGoneError,
   type SandboxGcCandidate,
   type SandboxGcReapDeps,
   type SandboxGcProviderHandle,
   type SandboxGcReapResult,
 } from "./sandbox-gc.js"
+export {
+  collectProviderOrphanCandidates,
+  liveSessionBoxIds,
+  ORPHAN_GRACE_MS,
+  reapSandboxOrphan,
+  runSandboxOrphanGcPass,
+  scanSandboxProviderOrphans,
+  type SandboxGcLiveSession,
+  type SandboxOrphanCandidate,
+  type SandboxOrphanGcPassResult,
+  type SandboxOrphanReapResult,
+  type SandboxOrphanScan,
+  type SandboxOrphanScanDeps,
+} from "./sandbox-orphan-gc.js"
 export {
   reconcileSandboxLedger,
   type SandboxReconcileDeps,
