@@ -176,6 +176,7 @@ import {
 import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
+import type { ClerkHookConfig } from "./clerk-hook-config.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,
@@ -1766,6 +1767,13 @@ export interface SessionDescriptor {
    *  revives a dead process): this re-prompts a LIVE session with a short
    *  continuation prompt — see `turn-retry.ts`. */
   turnRetry?: TurnRetryPolicy
+  /** The AGENT level of the AIP-68 clerk hook (`agent_start.hooks.clerk`,
+   *  or the agent manifest's `metadata.hooks.clerk`). Recorded verbatim so
+   *  the clerk-turn-end controller can resolve the three-level
+   *  configuration (agent > workspace > daemon default) per session - see
+   *  `clerk-hook-config.ts`. Absent ⇒ this session contributes no agent
+   *  level, and the less specific level applies. */
+  clerkHook?: Partial<ClerkHookConfig>
   /** Consecutive continuation prompts the turn-retry controller has SENT
    *  since the last clean turn-end — the retry counter, compared against
    *  `turnRetry.maxRetries`. Reset (deleted) by the next turn that completes
@@ -5370,6 +5378,10 @@ export interface SpawnAgentInput {
   /** Opt-in turn-retry policy (`turn-retry.ts`), recorded verbatim onto
    *  {@link SessionDescriptor.turnRetry}. Absent ⇒ no automatic retry. */
   turnRetry?: TurnRetryPolicy
+  /** The AGENT level of the AIP-68 clerk hook - recorded verbatim onto
+   *  {@link SessionDescriptor.clerkHook}. Absent ⇒ this session contributes
+   *  no agent level and the less specific level applies. */
+  clerkHook?: Partial<ClerkHookConfig>
   /** Resolved context-continuity policy — recorded verbatim onto
    *  {@link SessionDescriptor.contextContinuity}. */
   contextContinuity?: ResolvedContextContinuityPolicy
@@ -9087,6 +9099,9 @@ export function createSessionsRegistry(opts?: {
             ...handoffHarnesses.map(h => `${HANDOFF_OPTION_PREFIX}${h}`),
             "keep-going",
           ],
+          // The question IS the recommendation — "Continue fresh" is the
+          // daemon's own sentence — so surface it for one-click answers.
+          recommended: "continue-fresh",
         }
         appendLine(
           rt,
@@ -10896,6 +10911,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
+        ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -11077,6 +11093,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
+        ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }

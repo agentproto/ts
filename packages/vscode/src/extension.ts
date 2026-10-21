@@ -22,6 +22,7 @@ import { registerOnboardingCommand } from "./commands/onboarding.js"
 import { maybeAutoAdoptLocalLogin } from "./commands/localLogin.js"
 import { registerCreateWorkspaceCommand } from "./commands/createWorkspace.js"
 import { registerPermissionCommands } from "./commands/permissions.js"
+import { registerAnswerQuestionCommand } from "./commands/answerSessionQuestion.js"
 import {
   registerSessionActions,
   resolveSessionArg,
@@ -145,6 +146,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSessionActions(ctx, client, store)
   registerTranscript(ctx, client, store) // agentproto.openTranscriptChannel (raw log)
   registerPermissionCommands(ctx, client, store)
+  registerAnswerQuestionCommand(ctx, client, store) // agentproto.answerSessionQuestion
   registerSessionRestart(ctx, client, store) // agentproto.restartSession (new id)
   registerSessionResume(ctx, client, store) // agentproto.resumeSession (in place, same id)
   registerSessionAccessProfile(ctx, client, store, authProfilesProvider) // agentproto.setSessionAccessProfile

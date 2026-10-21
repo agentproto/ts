@@ -26,7 +26,8 @@ import { createMcpServer, registerEventsMethods, registerUiResource } from "@age
 import type { DoctypeSpec } from "@agentproto/manifest"
 
 import { writeRuntimeMeta } from "./agentproto-dir.js"
-import { registerCommandTools } from "./command-tools.js"
+import { makeCwdAnchor, registerCommandTools } from "./command-tools.js"
+import { isCommandAllowed, loadAllowlistEntries } from "./command-allowlist.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
 import { registerFsTools } from "./fs-tools.js"
@@ -262,6 +263,13 @@ import { getAuthProfile } from "@agentproto/auth"
 import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
 import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
+import { createClerkTurnEndController } from "./clerk-turn-end.js"
+import { createClerkPassRunner } from "./clerk-pass-runner.js"
+import {
+  loadDaemonClerkHook,
+  loadWorkspaceClerkHook,
+  resolveClerkHookConfig,
+} from "./clerk-hook-config.js"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
   WatcherStartInput,
@@ -381,6 +389,34 @@ export {
 export { createPrProvenanceReconciler } from "./pr-provenance-reconciler.js"
 export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { createActivityProjector } from "./activities.js"
+// AIP-68 clerk hook - the turn-end subscriber + its configuration
+// resolution (three levels: agent > workspace > daemon default).
+export {
+  createClerkTurnEndController,
+  type ClerkTurnEndController,
+  type ClerkTurnEndControllerOptions,
+  type ClerkPassInput,
+  type ClerkSessionLike,
+} from "./clerk-turn-end.js"
+export { createClerkPassRunner, spawnClerkCommand } from "./clerk-pass-runner.js"
+export {
+  CLERK_HOOK_DEFAULTS,
+  CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
+  CLERK_HOOK_EVENTS,
+  clerkHookInputSchema,
+  clerkHooksInputSchema,
+  loadDaemonClerkHook,
+  loadWorkspaceClerkHook,
+  mergeClerkHookLevels,
+  parseAgentClerkHook,
+  parseClerkHookLevel,
+  resolveClerkHookConfig,
+  type ClerkHookConfig,
+  type ClerkHookEvent,
+  type ClerkHookRun,
+  type ClerkHookSource,
+  type ResolvedClerkHookConfig,
+} from "./clerk-hook-config.js"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,
@@ -2901,6 +2937,30 @@ export async function createGateway(
     dispatchTool,
   })
 
+  // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
+  // (steward/secretary) after a session's turn ends, debounced on the
+  // session's idle time (10 min by default), single-flight per session and
+  // fire-and-forget: the pass can never slow a turn down. DISABLED unless
+  // configured - the three levels (agent > workspace > daemon default) are
+  // resolved per session; see `clerk-hook-config.ts`.
+  const clerkTurnEnd = createClerkTurnEndController({
+    registry: sessions,
+    sessionEvents,
+    resolveConfig: session =>
+      resolveClerkHookConfig({
+        daemon: loadDaemonClerkHook(daemonConfig),
+        workspace: loadWorkspaceClerkHook(workspace),
+        agent: session.clerkHook,
+      }).config,
+    runPass: createClerkPassRunner({
+      triggerRoutine: routineId => routineRegistrar.trigger(routineId),
+      // The command arm is default-deny: same allowlist as `command_execute`.
+      allowCommand: async spec =>
+        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
+      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
+    }),
+  })
+
   // Installed-app registry — singleton per daemon, shared between
   // `registerAppTools` (app_install/app_run/…) and the workflow runner's
   // `compileWorkflow` closure below, so a declarative `kind:"agent"` step's
@@ -4850,6 +4910,9 @@ export async function createGateway(
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
       turnRetryController.dispose()
+      // Detach the clerk turn-end subscriber + cancel its pending debounce
+      // timers (a pending pass must not fire into a shutting-down daemon).
+      clerkTurnEnd.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       // Stop the sentinel poll loop and flush its store before sessions shut

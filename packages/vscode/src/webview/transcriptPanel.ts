@@ -810,6 +810,7 @@ export function buildHtml(
     .tstatus.stalled { background: var(--vscode-charts-red, #e51400); }
     .tstatus.delegating { background: transparent; border: 2px solid var(--vscode-charts-green, #4caf50); }
     .tstatus.awaiting { background: var(--vscode-charts-yellow, #d7a600); }
+    .tstatus.idle-awaiting { background: transparent; border: 1px solid var(--vscode-descriptionForeground); }
     .tstatus.parked { background: var(--vscode-descriptionForeground); }
     /* The harness/adapter mark, sitting left of the session name so a glance at
        any transcript tab says which agent answers there. A quiet glyph, not a
@@ -2234,6 +2235,15 @@ export function buildHtml(
     }
     #book .pause .pquestion th { font-weight: 650; border-bottom-color: rgba(27,27,28,.32); }
     #book .pause .pquestion tr:last-child td { border-bottom: none; }
+    /* The daemon-enumerated one-click answers (awaitingQuestion.options). */
+    #book .pause .pmuted { color: rgba(27,27,28,.6); font-size: 12px; margin: 0 0 8px; }
+    #book .pause .panswers { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    #book .pause .panswer {
+      font: 12px var(--bkmono); color: var(--ink); background: transparent;
+      border: 1px solid var(--edge); border-radius: 6px; padding: 4px 10px; cursor: pointer;
+    }
+    #book .pause .panswer:hover { background: var(--ink-2); }
+    #book .pause .panswer.recommended { border-color: var(--phosphor); color: var(--ink); font-weight: 650; }
   </style>
   ${bundles.xtermCss ? `<style>${bundles.xtermCss}</style>` : ""}
 </head>
@@ -3234,6 +3244,7 @@ export function buildHtml(
             : st === 'delegating' ? 'Delegating — waiting on its busy subtree'
             : st === 'parked' ? 'Parked — supervised, will be re-prompted'
             : st === 'awaiting' ? 'Awaiting your input'
+            : st === 'idle-awaiting' ? 'Idle — waiting for the next prompt (no question pending)'
             : st === 'busy' ? 'Working' : 'Quiet';
         }
       }
@@ -4341,16 +4352,66 @@ export function buildHtml(
           head.appendChild(document.createTextNode('THE AGENT PAUSED TO ASK'));
           pause.appendChild(head);
           pause.appendChild(el('div', 'pquestion'));
+          // One-click answers, rebuilt on every sessionUpdate — the options
+          // the daemon enumerated on the descriptor's awaitingQuestion are
+          // rendered as buttons; each sends the EXACT option string as the
+          // session's next prompt through the normal send path
+          // ({type:'send'} → controller.onSend → POST prompt with queue:true,
+          // the same route the composer uses). The daemon-recommended option
+          // (question.recommended) carries a check marker.
+          pause.appendChild(el('div', 'panswers'));
           page.appendChild(pause);
-          // Focus the composer once, so the user can answer immediately (M0:
-          // structured answer buttons are M1).
+          // Focus the composer once, so the user can answer immediately (the
+          // structured answer buttons are these .panswers options); a
+          // question whose daemon didn't enumerate options still types fine.
           if (!exited) input.focus();
         } else {
           page.appendChild(pause); // keep it last
         }
-        const question = pause.querySelector('.pquestion');
-        question.innerHTML = pauseQuestionHtml(chapters);
-        enhanceBookBlocks(question);
+        const question = lastSession ? lastSession.awaitingQuestion : undefined;
+        const qEl = pause.querySelector('.pquestion');
+        if (question && question.text) {
+          // The daemon's structured question is authoritative over the
+          // transcript tail narration ("best-effort read") — the text is the
+          // real question, options the real answer set. Render it escaped
+          // (plain textContent, no HTML from the daemon) with the options
+          // beneath.
+          qEl.innerHTML = '';
+          qEl.appendChild(el('p', undefined, question.text));
+          if (question.source === 'heuristic') {
+            qEl.appendChild(el('p', 'pmuted', '(best-effort read of the transcript — not an authoritative prompt)'));
+          }
+          // The answers row can be absent: a card first rendered WITHOUT a
+          // question had its row removed below, then the daemon attached one.
+          var answers = pause.querySelector('.panswers');
+          if (!answers) { answers = el('div', 'panswers'); pause.appendChild(answers); }
+          answers.innerHTML = '';
+          var options = question.options || [];
+          var recommended = question.recommended;
+          for (var i = 0; i < options.length; i++) {
+            (function(option) {
+              var btn = el('button', 'panswer' + (option === recommended ? ' recommended' : ''),
+                (option === recommended ? '✓ ' : '') + option);
+              btn.title = option === recommended ? 'Recommended — send as the next prompt' : 'Send as the next prompt';
+              btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                // The option string is the payload the daemon's question
+                // enumerated — send it verbatim (no prefix), like the
+                // answerSessionQuestion quick-pick and the CLI do.
+                vscode.postMessage({ type: 'send', text: option });
+                var all = answers.querySelectorAll('button');
+                for (var k = 0; k < all.length; k++) all[k].disabled = true;
+              });
+              answers.appendChild(btn);
+            })(options[i]);
+          }
+          if (options.length === 0) answers.remove();
+        } else {
+          qEl.innerHTML = pauseQuestionHtml(chapters);
+          var staleAnswers = pause.querySelector('.panswers');
+          if (staleAnswers) staleAnswers.remove();
+          enhanceBookBlocks(qEl);
+        }
       }
 
       // The blank-conversation view. Rather than a dead "No messages yet."

@@ -1034,7 +1034,7 @@ export function buildHtml(nonce: string, cspSource: string): string {
     .dot.awaiting-bg { background: var(--bg-task); }
     .dot.stalled, .dot.failed { background: var(--stalled); }
     .dot.parked { background: var(--ws, var(--faint)); opacity: 0.5; }
-    .dot.idle, .dot.stopped { background: transparent; border: 1px solid var(--ws, var(--faint)); opacity: 0.7; }
+    .dot.idle, .dot.idle-awaiting, .dot.stopped { background: transparent; border: 1px solid var(--ws, var(--faint)); opacity: 0.7; }
     .dot.done { background: var(--ws, var(--faint)); opacity: 0.55; }
     .dot.done.unread { background: var(--ws, var(--working)); opacity: 1; border-color: var(--ws, var(--working)); }
     /* Background tasks pending/running (childrenBusy or pendingBgTasks) — an

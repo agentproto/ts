@@ -183,6 +183,12 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "agentproto.answerSessionQuestion",
+        "title": "agentproto: Answer Session Question",
+        "category": "agentproto",
+        "icon": "$(comment-draft)"
+      },
+      {
         "command": "agentproto.interruptSession",
         "title": "agentproto: Interrupt Session",
         "category": "agentproto",
@@ -713,8 +719,13 @@
           "group": "1_app@2"
         },
         {
+          "command": "agentproto.answerSessionQuestion",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-awaiting-question(-continued)?(-watched)?$/",
+          "group": "inline@0"
+        },
+        {
           "command": "agentproto.promptSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?(-watched)?$/",
           "group": "inline@1"
         },
         {
@@ -724,27 +735,27 @@
         },
         {
           "command": "agentproto.killSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?(-watched)?$/",
           "group": "inline@3"
         },
         {
           "command": "agentproto.watchSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?$/",
           "group": "inline@5"
         },
         {
           "command": "agentproto.unwatchSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?-watched$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?-watched$/",
           "group": "inline@5"
         },
         {
           "command": "agentproto.openTranscript",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "inline@4"
         },
         {
           "command": "agentproto.openStory",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "modify@0"
         },
         {
@@ -764,17 +775,17 @@
         },
         {
           "command": "agentproto.renameSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "modify@1"
         },
         {
           "command": "agentproto.copySessionId",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "modify@2"
         },
         {
           "command": "agentproto.saveFavorite",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "modify@3"
         },
         {
@@ -789,27 +800,27 @@
         },
         {
           "command": "agentproto.openTerminal",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "inline@7"
         },
         {
           "command": "agentproto.switchHarness",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?(-watched)?$/",
           "group": "inline@8"
         },
         {
           "command": "agentproto.openTranscriptChannel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "transcript@1"
         },
         {
           "command": "agentproto.openSessionInChat",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "transcript@2"
         },
         {
           "command": "agentproto.openSessionInChatPanel",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?(-watched)?$/",
           "group": "transcript@3"
         },
         {
@@ -934,27 +945,27 @@
         },
         {
           "command": "agentproto.configureSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?$/",
           "group": "1_config@2"
         },
         {
           "command": "agentproto.compactSession",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?$/",
           "group": "context@1"
         },
         {
           "command": "agentproto.continueSessionFresh",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting)(-continued)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question)(-continued)?$/",
           "group": "context@2"
         },
         {
           "command": "agentproto.openContinuationPrevious",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)(-archived)?(-watched)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)(-archived)?(-watched)?$/",
           "group": "context@3"
         },
         {
           "command": "agentproto.setSessionAccessProfile",
-          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|done|interrupted)(-continued)?(-archived)?$/",
+          "when": "view == agentproto.sessions && viewItem =~ /^session-(live|awaiting|awaiting-question|done|interrupted)(-continued)?(-archived)?$/",
           "group": "1_config@1"
         }
       ],
