@@ -108,6 +108,30 @@ describe("collectProviderOrphanCandidates", () => {
     expect(candidates).toEqual([])
   })
 
+  it("never proposes a dated box whose provider did not report sessions", () => {
+    const candidates = collectProviderOrphanCandidates({
+      provider: "computer",
+      boxes: [{ id: "cmp-unknown-sessions", state: "running", createdAt: OLD }],
+      registryBoxIds: new Set(),
+      liveBoxIds: new Set(),
+      now: NOW,
+    })
+    expect(candidates).toEqual([])
+  })
+
+  it("proposes an unknown-sessions box only with includeAttached, saying so", () => {
+    const candidates = collectProviderOrphanCandidates({
+      provider: "computer",
+      boxes: [{ id: "cmp-unknown-sessions", state: "running", createdAt: OLD }],
+      registryBoxIds: new Set(),
+      liveBoxIds: new Set(),
+      includeAttached: true,
+      now: NOW,
+    })
+    expect(candidates.map(c => c.boxId)).toEqual(["cmp-unknown-sessions"])
+    expect(candidates[0]?.reason).toContain("unknown")
+  })
+
   it("proposes an attached box only with includeAttached", () => {
     const candidates = collectProviderOrphanCandidates({
       provider: "computer",

@@ -866,6 +866,16 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
         `orphan box ${boxId} (${orphans.find(o => o.boxId === boxId)?.provider ?? "?"}) deleted\n`,
       )
     }
+    for (const s of orphanPass.notScanned) {
+      process.stdout.write(
+        `orphan provider boxes: ${s.provider} not scanned - ${s.reason}. No orphan on that provider was looked at.\n`,
+      )
+    }
+    if (orphanPass.notScanned.length === 0 && !orphanPass.scanned) {
+      process.stdout.write(
+        "orphan provider boxes: not scanned - the provider control plane was not enumerated.\n",
+      )
+    }
   }
   if (values.json) {
     process.stdout.write(

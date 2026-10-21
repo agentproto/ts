@@ -104,8 +104,10 @@ export function collectProviderOrphanCandidates(opts: {
     const ageMs = ageOf(box, now)
     if (ageMs === undefined) continue
     if (ageMs < graceMs) continue
-    const sessions = box.sessions ?? 0
-    if (sessions > 0 && !includeAttached) continue
+    // Unknown session count (provider did not report it) is NOT proof of
+    // "no attached session": only an explicit `sessions === 0` qualifies.
+    const sessions = box.sessions
+    if (!includeAttached && sessions !== 0) continue
     out.push({
       provider: opts.provider,
       boxId: box.id,
@@ -113,10 +115,13 @@ export function collectProviderOrphanCandidates(opts: {
       reason:
         "not in the daemon's sandbox registry, held by no live session, " +
         `older than the ${Math.round(graceMs / 60_000)}min grace window` +
-        (sessions > 0
-          ? ` (the provider still counts ${sessions} attached session(s)` +
-            (includeAttached ? " - proposed anyway, --include-attached)" : ")")
-          : " (no attached session)"),
+        (sessions === undefined
+          ? " (the provider did not report attached sessions - unknown" +
+            (includeAttached ? ", proposed anyway, --include-attached)" : ")")
+          : sessions > 0
+            ? ` (the provider still counts ${sessions} attached session(s)` +
+              (includeAttached ? " - proposed anyway, --include-attached)" : ")")
+            : " (no attached session)"),
       ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
       ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
       ...(ageMs !== undefined ? { ageMs } : {}),
