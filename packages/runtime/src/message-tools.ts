@@ -161,7 +161,7 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
         `${tool}: "${toId}" is not a tree neighbour you may message ` +
           `(allowed: your parent, your direct children` +
           `${allowSiblings ? ", your siblings" : ""}` +
-          `${allowSameWorkspace ? ", or any session in your workspace" : ""}` +
+          `${allowSameWorkspace ? ", or any session in your workspace that is not a tree sibling" : ""}` +
           `${peerGroups.length > 0 ? ", or any session in a workspace of your peer groups" : ""}). ` +
           `The same-workspace allowance is config \`defaults.messaging.allowSameWorkspace\` ` +
           `(currently ${allowSameWorkspace}); the cross-workspace allowance is config ` +

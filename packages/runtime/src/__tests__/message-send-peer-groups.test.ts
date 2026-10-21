@@ -244,11 +244,11 @@ describe("message_send - peer groups", () => {
     }
   })
 
-  it("tree rules are unchanged: parent and direct child still allowed, sibling still gated", async () => {
+  it("tree rules are unchanged: parent still allowed, a sibling outside every peer group still gated", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const root = spawnNode(registry, undefined, STUDIO, "root")
     const child = spawnNode(registry, root.id, STUDIO, "child")
-    const sib = spawnNode(registry, root.id, PYGMALION, "sibling")
+    const sib = spawnNode(registry, root.id, "unrelated-workspace", "sibling")
     const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
     const h = await harness({
       registry,
@@ -266,6 +266,30 @@ describe("message_send - peer groups", () => {
         arguments: { to: sib.id, text: "hi" },
       })
       expect(isError(toSibling)).toBe(true)
+    } finally {
+      await h.close()
+    }
+  })
+
+  it("a peer group overrides a denied sibling edge and records relation `peer`", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const root = spawnNode(registry, undefined, STUDIO, "root")
+    const child = spawnNode(registry, root.id, STUDIO, "child")
+    const sib = spawnNode(registry, root.id, PYGMALION, "sibling")
+    const enqueue = vi.spyOn(registry, "enqueuePrompt").mockResolvedValue({ queued: false })
+    const h = await harness({
+      registry,
+      callerSessionId: child.id,
+      peerGroups: [[STUDIO, PYGMALION]],
+    })
+    try {
+      const toSibling = await h.client.callTool({
+        name: "message_send",
+        arguments: { to: sib.id, text: "hi" },
+      })
+      expect(isError(toSibling)).toBeFalsy()
+      expect(JSON.parse(textOf(toSibling)).relation).toBe("peer")
+      expect(enqueue).toHaveBeenCalled()
     } finally {
       await h.close()
     }

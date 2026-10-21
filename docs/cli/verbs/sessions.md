@@ -1188,6 +1188,15 @@ session without a workspace slug is never linked, and a pair whose slugs only
 appear in different groups keeps today's refusal. The default is no group at
 all, so a deployment that never configures one behaves exactly as before.
 
+Precedence: a tree edge decides first. A parent and a direct child always
+pass; a sibling passes only with `allowSiblings` - **except** that a sibling
+pair whose workspaces are linked by a peer group is allowed even without
+`allowSiblings` (the operator explicitly grouped those workspaces, and agents
+spawned under one orchestrator are always siblings); the message then carries
+relation `peer`. Two siblings of the SAME workspace are still gated by
+`allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
+and a peer-group link always passes.
+
 ### Tools (MCP)
 
 | Tool | Inputs | Use |
