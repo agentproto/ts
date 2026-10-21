@@ -120,16 +120,22 @@ export interface FollowTriageInput {
   reportWindowMs?: number
 }
 
+/** The triage block a single FOLLOW may carry. Deliberately has no
+ *  `classifier`: the hook runs a shell command / HTTP request on the host,
+ *  so it is only configurable in the operator-owned daemon config. */
+export type FollowTriageFollowInput = Omit<FollowTriageInput, "classifier">
+
 /** Resolve a partial triage block against the daemon-level default. */
 export function resolveFollowTriageConfig(
   base?: FollowTriageConfig,
-  override?: FollowTriageInput,
+  override?: FollowTriageInput | FollowTriageFollowInput,
 ): FollowTriageConfig {
   const baseRules = base?.rules ?? DEFAULT_FOLLOW_TRIAGE_RULES
+  const overrideClassifier = (override as FollowTriageInput | undefined)?.classifier
   return {
     enabled: override?.enabled ?? base?.enabled ?? false,
     rules: { ...baseRules, ...(override?.rules ?? {}) },
-    ...(override?.classifier ?? base?.classifier ? { classifier: override?.classifier ?? base?.classifier } : {}),
+    ...(overrideClassifier ?? base?.classifier ? { classifier: overrideClassifier ?? base?.classifier } : {}),
     reportWindowMs:
       override?.reportWindowMs ?? base?.reportWindowMs ?? DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
   }

@@ -448,8 +448,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
    *  stale batches racing for the same dead id collapse into one revival. */
   const revivals = new Map<string, Promise<string>>()
   /** follower id → reporter session id → epoch ms of the last report the
-   *  reporter sent UP to that follower (`message_parent`). Bounded by the
-   *  report window — old entries are dropped on read. */
+   *  reporter sent UP to that follower (`message_parent`). The window is
+   *  only checked on read; the map itself is bounded by the number of
+   *  distinct (follower, reporter) pairs, one timestamp each. */
   const reports = new Map<string, Map<string, number>>()
 
   function park(followerId: string, text: string, reason: string): void {
@@ -468,20 +469,26 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
 
   // ── Triage ──────────────────────────────────────────────────────────
 
-  /** The effective triage config of a batch: the daemon default, overridden
-   *  by every contributing follow. Triage runs for the batch as soon as ONE
-   *  contributing follow asks for it; a rule is on when ANY contributing
-   *  follow has it on (a follow that wants the rule wins over one that does
-   *  not). */
+  /** The effective triage config of a batch. Each contributing follow is
+   *  resolved against the daemon default (its explicitly-set fields win,
+   *  `false` included). Triage runs for the batch as soon as ONE
+   *  contributing follow has it enabled. The rules are the UNION of the
+   *  effective rules of the follows that have triage enabled: a rule is on
+   *  when ANY of them has it on, so two co-batched follows that disagree on
+   *  a rule resolve to "on". Follows that did not enable triage do not
+   *  contribute rules. The classifier hook is daemon-level only — a
+   *  per-follow `classifier` (e.g. in an older persisted record) is
+   *  ignored, since it would run a command / request on the host. */
   function triageConfigFor(follows: readonly SessionFollow[]): FollowTriageConfig {
     const effective = follows.map(f => resolveFollowTriageConfig(daemonTriage, f.triage))
+    const active = effective.filter(cfg => cfg.enabled)
     const rules = { ...daemonTriage.rules }
-    for (const cfg of effective) {
+    if (active.length > 0) {
       for (const key of Object.keys(rules) as (keyof FollowTriageConfig["rules"])[]) {
-        if (cfg.rules[key]) rules[key] = true
+        rules[key] = active.some(cfg => cfg.rules[key])
       }
     }
-    const classifier = effective.find(cfg => cfg.classifier)?.classifier ?? daemonTriage.classifier
+    const classifier = daemonTriage.classifier
     const reportWindowMs =
       follows.find(f => f.triage?.reportWindowMs !== undefined)?.triage?.reportWindowMs ??
       daemonTriage.reportWindowMs

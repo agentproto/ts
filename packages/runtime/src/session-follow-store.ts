@@ -16,7 +16,7 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { ulid } from "./app-state.js"
-import type { FollowTriageInput } from "./follow-triage.js"
+import type { FollowTriageFollowInput } from "./follow-triage.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -92,7 +92,7 @@ export interface SessionFollow {
   /** Per-follow triage block: classify each event `wake`/`fyi`/`drop` BEFORE
    *  the digest is allowed to wake the follower. Unset ⇒ the daemon default
    *  (`config.follow.triage`) applies; triage is OFF by default. */
-  triage?: FollowTriageInput
+  triage?: FollowTriageFollowInput
 }
 
 /** Fully-resolved input for {@link SessionFollowStore.upsert}. */
@@ -106,7 +106,7 @@ export interface SessionFollowInput {
   skipEmptyTurns?: boolean
   excludeFollowerChildren?: boolean
   urgency?: FollowUrgency
-  triage?: FollowTriageInput
+  triage?: FollowTriageFollowInput
 }
 
 export interface SessionFollowStore {

@@ -79,18 +79,10 @@ export const followTriageSchema = z.object({
       ownPr: z.boolean().optional().describe("A PR opened by one of your own live sessions → fyi."),
     })
     .optional(),
-  classifier: z
-    .object({
-      command: z.string().min(1).optional().describe("Shell command: event JSON on stdin, decision on stdout."),
-      url: z.string().min(1).optional().describe("HTTP endpoint: event JSON posted, decision answered."),
-      timeoutMs: z.number().int().min(1).optional().describe("Per-call timeout. Default 5000."),
-    })
-    .optional()
-    .describe(
-      "Optional classifier hook (the extension point for a future LLM classifier): " +
-        "it receives the event and answers wake/fyi/drop. On timeout or error the " +
-        "deterministic rules decide instead.",
-    ),
+  // NOTE: no `classifier` here on purpose. The classifier hook runs a shell
+  // command / HTTP request on the host, so it is configurable only in the
+  // operator-owned daemon config (`follow.triage.classifier`). Unknown keys
+  // are stripped by zod, so a caller-supplied one never reaches the store.
   reportWindowMs: z
     .number()
     .int()
