@@ -2351,6 +2351,18 @@ export interface SessionDescriptor {
    *  list/kill and the per-parent child quota (orchestrator WP4).
    *  Persisted so the tree survives a daemon restart. */
   parentSessionId?: string
+  /** A REMOTE parent: this session lives in a BOX daemon's registry while its
+   *  parent lives in the HOST daemon's registry (see
+   *  `docs/lineage-handover.md`, "Known gap - sessions running INSIDE a box"
+   *  and `parent-relay.ts`). The block is forwarded by the host at spawn
+   *  time; `message_parent` POSTs the report to the host's relay endpoint
+   *  instead of looking the parent up locally. Present ONLY on the box-side
+   *  row - the host's own row keeps its ordinary `parentSessionId`. */
+  remoteParent?: {
+    sessionId: string
+    url: string
+    token: string
+  }
   /** Opt-in (default false/absent): when this session crashes
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
@@ -2940,6 +2952,7 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     ...(desc.lastError ? { lastError: desc.lastError.slice(0, 2000) } : {}),
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
+    ...(desc.remoteParent ? { remoteParent: desc.remoteParent } : {}),
     depth: desc.depth,
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,
@@ -5356,6 +5369,11 @@ export interface SpawnAgentInput {
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
   parentSessionId?: string
+  /** A REMOTE parent (host relay) — recorded verbatim onto
+   *  {@link SessionDescriptor.remoteParent}. Set by the box-side spawn that
+   *  received a forwarded `remoteParent` block from the host; see
+   *  `parent-relay.ts`. */
+  remoteParent?: { sessionId: string; url: string; token: string }
   /** Source label for the new session (channel/harness). */
   origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
@@ -10895,6 +10913,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
@@ -11086,6 +11105,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
