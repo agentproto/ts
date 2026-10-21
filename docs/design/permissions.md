@@ -16,7 +16,7 @@ The model this plan proposes is mostly already written down. The daemon has not 
 | AIP | What it already fixes | Where |
 |---|---|---|
 | **AIP-38 POLICY** | One vocabulary: grants of `(principal, action)`, `default: deny`. Composition: grants are unioned, and the **most restrictive** default and requirements win. Conditions are ANDed, and an unknown condition means deny. | `aip-38.mdx:84-111`, `:155-240`, `:317-348` |
-| **AIP-39 ACTION** | Grants name *actions* (`storage:commit`), never tool names. | `aip-38.mdx:93-95` |
+| **AIP-39 ACTION** | Grants name *actions* (`storage:commit`), never tool names. | `aip-38.mdx:91-93` |
 | **AIP-46 §Delegation** | The spawn gate must bind to the **authenticated calling-session identity, not the surface**. A URL param or header the caller supplies is "a request, not a gate". Every surface that reaches a delegation action must carry session identity. **Loopback is not an auth boundary, so hosts MUST authenticate the delegation surface per-session even on loopback.** No self-widening: "a child may be given less than its parent has, never more". There must be one predicate for enforcement and introspection. Delegation verbs are gated *as actions*. | `aip-46.mdx:424-500`, `:520-560`, `:1364-1420` |
 | **AIP-46 §Session messages** | `from` must be host-derived. Allowed pairs: child→parent, parent→direct child, human/system→any. Siblings are OPTIONAL and off by default. **"Any other pair … MUST be refused."** `interrupt` should not be granted to session senders by default. The HTTP mirror is `POST /sessions/:id/messages`, where "the sender is the authenticated caller". | `aip-46.mdx:812-931` |
 | **AIP-46 §Security / Open questions** | A `workspaceSlug` is caller input until the registry says otherwise. Partitioning is not isolation. **There is no workspace-scoped credential today.** That rule and the credential it keys off "should land together". | `aip-46.mdx:1425-1445`, `:1470-1480` |
@@ -111,8 +111,6 @@ All fields are from `agent-start-schema.ts`. "Bounded by parent?" means whether 
 6. Plus the *claim* `callerSessionId` (not a token at all).
 
 Only #3 is a real per-session capability. It is used only for orchestrator-mode children, while every other child gets #6.
-
----
 
 ---
 
