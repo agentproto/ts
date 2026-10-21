@@ -40,6 +40,8 @@ import { spawnAgentSession } from "./session-spawn.js"
 import {
   killServiceProcess,
   startAppServiceProcess,
+  stopAppServiceSupervisor,
+  cleanupLegacyServicePidFile,
   appServiceLogPath,
   assessRecordedServicePid,
   isAppServicePendingRestart,
@@ -1666,12 +1668,43 @@ export interface AppServiceEnsurerDeps {
 }
 
 /**
- * Build the `ensureServices` callback `app_install` runs (frozen `services:`
- * semantics). Extracted to module scope so the boot re-ensure
- * (`reensureInstalledAppServicesOnBoot`) reuses the exact same spawn/kill
- * wiring — `registerAppTools` runs per `/mcp` request (stateless pattern), so
- * a handle returned from it is not a boot singleton.
+ * Kill seam for one service owner. FIRST disposes the in-daemon supervisor
+ * for `<appId>:<name>` (cancels the restart loop, kills the live process
+ * group, flips the row) — otherwise the runner would see the child exit and
+ * respawn it, re-creating the owner record we are about to drop. A custom
+ * `killServiceOwner` (tests/embedders) still runs after the supervisor is
+ * stopped. With no live supervisor (an owner recorded by a PREVIOUS daemon),
+ * the recorded process group is signalled — IDENTITY-GATED (audit F-4): a
+ * recorded pid may name an unrelated process by now (recycling), so it is
+ * only signalled when the recorded start ticks still match.
  */
+function createServiceOwnerKiller(
+  registry: SessionsRegistry,
+  custom?: (owner: AppServiceOwner) => void | Promise<void>,
+): (owner: AppServiceOwner) => Promise<void> {
+  return async owner => {
+    const stopped = await stopAppServiceSupervisor(owner.appId, owner.name)
+    if (custom !== undefined) {
+      await custom(owner)
+      return
+    }
+    if (!stopped) {
+      const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
+      if (owner.pid !== undefined && !verdict.kill) {
+        console.warn(
+          `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
+        )
+      }
+      await killServiceProcess(verdict.kill ? owner.pid : undefined)
+    }
+    try {
+      registry.kill(owner.sessionId)
+    } catch {
+      // Row already gone — same best-effort cleanup contract.
+    }
+  }
+}
+
 /**
  * Build the `ensureServices` callback `app_install` runs (frozen `services:`
  * semantics). Extracted to module scope so the boot re-ensure
@@ -1682,6 +1715,12 @@ export interface AppServiceEnsurerDeps {
 export function buildAppServiceEnsurer(
   deps: AppServiceEnsurerDeps,
 ): NonNullable<PerformInstallOptions["ensureServices"]> {
+  if (deps.serviceAdapter !== undefined) {
+    console.warn(
+      `[app-services] "serviceAdapter" (${deps.serviceAdapter}) is deprecated and ignored: ` +
+        "app services now run as deterministic managed processes, not LLM-prompted owner sessions.",
+    )
+  }
   /** The default spawn: a DETERMINISTIC managed process (no PTY, no adapter,
    *  no LLM prompt) — `startAppServiceProcess` spawns the declared command
    *  detached, adopts it in the registry (`origin`/`label` kept identical to
@@ -1695,6 +1734,14 @@ export function buildAppServiceEnsurer(
     workspaceSlug?: string
     stateDir: string
   }): Promise<SpawnServiceOwnerResult> => {
+    // Upgrade path: reap a service child orphaned by the previous
+    // (owner-session) model before spawning its replacement.
+    const legacy = await cleanupLegacyServicePidFile(
+      input.stateDir,
+      input.service.name,
+      serviceDisplayEntry(input.service),
+    )
+    if (legacy.killed) console.warn(`[app-services] ${input.appId}:${input.service.name}: ${legacy.reason}`)
     const result = startAppServiceProcess({
       registry: deps.registry,
       appId: input.appId,
@@ -1726,25 +1773,6 @@ export function buildAppServiceEnsurer(
     }
   }
 
-  /** Kill seam: the recorded process group + the registry row. The group
-   *  signal is IDENTITY-GATED (audit F-4): a pid recorded by a previous
-   *  daemon may name an unrelated process by now (recycling) — only signal
-   *  it when the recorded start ticks still match the live process. */
-  const killServiceOwner = async (owner: AppServiceOwner): Promise<void> => {
-    const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
-    if (owner.pid !== undefined && !verdict.kill) {
-      console.warn(
-        `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
-      )
-    }
-    await killServiceProcess(verdict.kill ? owner.pid : undefined)
-    try {
-      deps.registry.kill(owner.sessionId)
-    } catch {
-      // Row already gone — same best-effort cleanup contract.
-    }
-  }
-
   return async ({ app, dir, services, force }) => {
     const workspaceSlug = await ensureAppWorkspace({
       appId: app.appId,
@@ -1761,7 +1789,7 @@ export function buildAppServiceEnsurer(
         service,
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
       })
-    const killOwner = deps.killServiceOwner ?? killServiceOwner
+    const killOwner = createServiceOwnerKiller(deps.registry, deps.killServiceOwner)
     const result =
       force === true
         ? await reensureAppServiceOwners({
@@ -1894,25 +1922,6 @@ export function registerAppTools(
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
   })
-
-  /** Kill seam for `app_uninstall` below: the recorded process group + the
-   *  registry row. Mirrors `buildAppServiceEnsurer`'s own default (same
-   *  logic, just closed over this function's `registry` instead of
-   *  `deps.registry`). */
-  const killServiceOwner = async (owner: AppServiceOwner): Promise<void> => {
-    const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
-    if (owner.pid !== undefined && !verdict.kill) {
-      console.warn(
-        `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
-      )
-    }
-    await killServiceProcess(verdict.kill ? owner.pid : undefined)
-    try {
-      registry.kill(owner.sessionId)
-    } catch {
-      // Row already gone — same best-effort cleanup contract.
-    }
-  }
 
   interface RemoteCatalogEntryRef {
     entry: AppCatalogEntry
@@ -3168,7 +3177,7 @@ export function registerAppTools(
       const killedServices = await removeAppServiceOwners({
         store: serviceStore,
         appId: removed.appId,
-        killOwner: opts.killServiceOwner ?? killServiceOwner,
+        killOwner: createServiceOwnerKiller(registry, opts.killServiceOwner),
       })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
       return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })

@@ -27,7 +27,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
-import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
+import { createWriteStream, mkdirSync, readFileSync, unlinkSync, type WriteStream } from "node:fs"
 import { dirname, join, resolve as nodeResolve } from "node:path"
 import type { AppService } from "@agentproto/app-kit"
 import { mintSessionId, APP_ID_ENV, SESSION_ID_ENV, type SessionsRegistry } from "./sessions.js"
@@ -43,6 +43,34 @@ import { serviceOwnerLabel } from "./app-services.js"
  */
 const restartPending = new Set<string>()
 
+/**
+ * Live supervisors keyed by `<appId>:<serviceName>`. The kill paths
+ * (`app_uninstall`, reconcile, operator kill of an owner row) signal a
+ * process group but never held the `AppServiceProcess` handle — without this
+ * registry the runner would see the child exit and RESPAWN it (and re-create
+ * the owner record). `stopAppServiceSupervisor` disposes the runner first.
+ */
+const supervisors = new Map<string, AppServiceProcess>()
+
+function supervisorKey(appId: string, name: string): string {
+  return `${appId}:${name}`
+}
+
+/**
+ * Stop the supervisor for `<appId>:<name>` if one is live in this daemon:
+ * cancels the restart loop, kills the current process group and flips the
+ * registry row. Resolves `true` when a supervisor was found (and stopped),
+ * `false` when none exists (e.g. an owner recorded by a previous daemon).
+ */
+export async function stopAppServiceSupervisor(appId: string, name: string): Promise<boolean> {
+  const key = supervisorKey(appId, name)
+  const sup = supervisors.get(key)
+  if (sup === undefined) return false
+  supervisors.delete(key)
+  await sup.stop()
+  return true
+}
+
 /** Is this registry row id a dead-but-restarting managed service attempt? */
 export function isAppServicePendingRestart(sessionId: string): boolean {
   return restartPending.has(sessionId)
@@ -53,6 +81,52 @@ export function isAppServicePendingRestart(sessionId: string): boolean {
  *  owner-prompt pid files used). */
 export function appServiceLogPath(stateDir: string, name: string): string {
   return join(stateDir, "services", `${name}.log`)
+}
+
+/**
+ * One-time upgrade cleanup for the pre-managed-process model. The old
+ * LLM-prompted owner session wrote the SERVICE CHILD's pid to
+ * `<stateDir>/services/<name>.pid`; the persisted owner `pid` was the owner
+ * SESSION's, so after an upgrade nothing else points at the old child and it
+ * would keep holding its port while the new runner spawns a replacement.
+ *
+ * The pid file carries no start-ticks stamp, so identity is checked via
+ * `/proc/<pid>/cmdline`: the process is signalled (group-kill) ONLY when its
+ * command line contains the recorded display `entry` — a recycled pid
+ * belonging to anything else is left alone. Where `/proc` is unavailable the
+ * pid cannot be verified and is NOT signalled. The pid file is always
+ * removed so this runs at most once per service. Never throws.
+ */
+export async function cleanupLegacyServicePidFile(
+  stateDir: string,
+  name: string,
+  entry: string,
+): Promise<{ killed: boolean; reason: string }> {
+  const file = join(stateDir, "services", `${name}.pid`)
+  let raw: string
+  try {
+    raw = readFileSync(file, "utf8")
+  } catch {
+    return { killed: false, reason: "no legacy pid file" }
+  }
+  try {
+    unlinkSync(file)
+  } catch {
+    // Best-effort — a stale file only re-triggers this identity-checked pass.
+  }
+  const pid = Number.parseInt(raw.trim(), 10)
+  if (!Number.isInteger(pid) || pid <= 0) return { killed: false, reason: "unparseable legacy pid" }
+  let cmdline: string
+  try {
+    cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0").join(" ").trim()
+  } catch {
+    return { killed: false, reason: `legacy pid ${pid} is not live or unverifiable — skip` }
+  }
+  if (entry.length === 0 || !cmdline.includes(entry)) {
+    return { killed: false, reason: `legacy pid ${pid} does not match the service entry (recycled?) — skip` }
+  }
+  await killServiceProcess(pid)
+  return { killed: true, reason: `killed orphaned legacy service child ${pid}` }
 }
 
 /** Fully-resolved, shell-free launch spec for one service process. */
@@ -225,6 +299,17 @@ export function startAppServiceProcess(
   const lastIds: string[] = []
   let current: { id: string; pid: number | undefined; startTicks: number | undefined } | undefined
   let cancelScheduled: (() => void) | undefined
+  let registeredKey: string | undefined
+
+  /** Drop this runner from the supervisor registry (only if it is still the
+   *  registered one — a newer runner for the same service may have replaced it). */
+  const unregister = (): void => {
+    if (registeredKey === undefined) return
+    if (handleRef !== undefined && supervisors.get(registeredKey) === handleRef) {
+      supervisors.delete(registeredKey)
+    }
+  }
+  let handleRef: AppServiceProcess | undefined
 
   const baseEnv = (): Record<string, string> => ({
     ...(process.env as Record<string, string>),
@@ -254,6 +339,7 @@ export function startAppServiceProcess(
 
   const stop = async (): Promise<void> => {
     if (!disposed) disposed = true
+    unregister()
     cancelScheduled?.()
     cancelScheduled = undefined
     for (const id of lastIds) restartPending.delete(id)
@@ -288,6 +374,7 @@ export function startAppServiceProcess(
       console.warn(message)
       deps.onError?.(message)
       restartPending.delete(diedId)
+      unregister()
       return
     }
     // A scheduled restart is in flight — the session id of the dead attempt
@@ -300,6 +387,8 @@ export function startAppServiceProcess(
     )
     cancelScheduled = schedule(() => {
       cancelScheduled = undefined
+      // The restart gap is over: the dead attempt is no longer "pending".
+      restartPending.delete(diedId)
       if (disposed) return
       attempt += 1
       launchAttempt()
@@ -318,6 +407,7 @@ export function startAppServiceProcess(
       const message = `${deps.service.name}: spawn failed: ${err instanceof Error ? err.message : String(err)}`
       console.warn(`[app-services] ${message}`)
       deps.onError?.(message)
+      unregister()
       return
     }
     let logStream: WriteStream | undefined
@@ -377,8 +467,12 @@ export function startAppServiceProcess(
     })
   }
 
+  const self = handle()
+  handleRef = self
+  registeredKey = supervisorKey(deps.appId, deps.service.name)
+  supervisors.set(registeredKey, self)
   launchAttempt()
-  return { ok: true, handle: handle() }
+  return { ok: true, handle: self }
 }
 
 function defaultSchedule(fn: () => void, delayMs: number): () => void {

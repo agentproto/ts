@@ -107,6 +107,11 @@ export function serviceDisplayEntry(service: AppService): string {
  * SIGTERM a recorded pid, swallowing the two benign failures: `ESRCH` (the
  * process already exited) and `EPERM` (not ours to signal). Never throws — a
  * cleanup path must not fail on a stale pid.
+ *
+ * @deprecated Signals a bare pid with no identity check and not its process
+ * group. Service cleanup now goes through `killServiceProcess` /
+ * `assessRecordedServicePid` (see `app-service-process.ts`). Kept only for
+ * backward compatibility; it will be removed in a future major.
  */
 export function killServicePid(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): void {
   if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return
@@ -233,10 +238,16 @@ const appServiceLocks = new Map<string, Promise<unknown>>()
 export async function withAppServiceLock<T>(appId: string, fn: () => Promise<T>): Promise<T> {
   const prev = appServiceLocks.get(appId) ?? Promise.resolve()
   const run = prev.then(fn, fn)
-  appServiceLocks.set(
-    appId,
-    run.catch(() => undefined),
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
   )
+  appServiceLocks.set(appId, tail)
+  // Drop the entry once this call is the settled tail — otherwise the map
+  // would keep one promise chain per app id for the daemon lifetime.
+  void tail.then(() => {
+    if (appServiceLocks.get(appId) === tail) appServiceLocks.delete(appId)
+  })
   return run
 }
 
