@@ -214,6 +214,7 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         name: "agentproto",
         transport: "http",
         ref: `${daemonMcpUrl}?denyTools=agent_start,agent_prompt&deferred=0&callerSessionId=${desc.id}`,
+        headers: { "x-agentproto-caller-session-id": desc.id },
       },
     ]
     expect(startSession).toHaveBeenCalledWith(
@@ -262,7 +263,12 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
     }
 
     const expectedEntry = [
-      { name: "agentproto", transport: "http", ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${desc.id}` },
+      {
+        name: "agentproto",
+        transport: "http",
+        ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${desc.id}`,
+        headers: { "x-agentproto-caller-session-id": desc.id },
+      },
     ]
     expect(startSession).toHaveBeenCalledWith(
       expect.objectContaining({ mcpServers: expectedEntry }),

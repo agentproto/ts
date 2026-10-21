@@ -32,7 +32,7 @@ import {
   type SpawnAgentSessionInput,
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { CALLER_SESSION_ID_HEADER, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
 
 export interface ContinueAgentSessionFreshResult {
@@ -126,15 +126,33 @@ export function stripOwnCallerStamp(
   if (!servers) return servers
   return servers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    // The identity header travels with the query (see
+    // `CALLER_SESSION_ID_HEADER`): strip OURS too, or the fresh session
+    // would keep speaking to the daemon under the dead session's id.
+    const original = entry.headers
+    const kept = original
+      ? Object.entries(original).filter(
+          ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
+        )
+      : []
+    const strippedHeader = original !== undefined && kept.length !== Object.keys(original).length
+    // Apply the header strip independently of URL parseability. When our
+    // header was the only one, drop the `headers` key entirely so the spawn
+    // path sees no identity header and re-stamps with the fresh id.
+    let next: typeof entry = entry
+    if (strippedHeader) {
+      const { headers: _drop, ...rest } = entry
+      next = kept.length > 0 ? { ...rest, headers: Object.fromEntries(kept) } : rest
+    }
     let url: URL
     try {
       url = new URL(entry.ref)
     } catch {
-      return entry
+      return next
     }
-    if (url.searchParams.get("callerSessionId") !== prevId) return entry
+    if (url.searchParams.get("callerSessionId") !== prevId) return next
     url.searchParams.delete("callerSessionId")
-    return { ...entry, ref: url.toString() }
+    return { ...next, ref: url.toString() }
   })
 }
 

@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
@@ -1046,7 +1046,71 @@ export function buildDaemonSelfMountEntry(
     ref += `${ref.includes("?") ? "&" : "?"}deferred=${opts.deferredToolsOverride ? "1" : "0"}`
   }
   ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
-  return { name: "agentproto", transport: "http", ref }
+  // The identity travels BOTH ways: the query above (the historical carrier,
+  // read by the `?callerSessionId=` trust checks) AND a dedicated header
+  // (the robust carrier: a client that rebuilds or normalizes the mount URL
+  // drops the query, and an anonymous session means `message_parent` can
+  // neither identify its caller nor report up, and every spawn it makes
+  // lands as a depth-0 orphan). See `CALLER_SESSION_ID_HEADER`.
+  return {
+    name: "agentproto",
+    transport: "http",
+    ref,
+    headers: { [CALLER_SESSION_ID_HEADER]: opts.callerSessionId },
+  }
+}
+
+/** Does `ref` point at THIS daemon's own `/mcp` gateway?
+ *
+ *  The historical check was an exact string comparison against
+ *  `daemonMcpUrl` (plus a `?`-prefixed variant). That is too strict for the
+ *  mounts that actually show up in the field: an ambient mount (a project
+ *  `.mcp.json`, an operator's global MCP config, a config a supervisor
+ *  passed down) spells the SAME endpoint differently: `localhost` instead
+ *  of `127.0.0.1`, a trailing slash, a `?host=…` query, and every one of
+ *  those spellings FAILED the exact match, so the entry was never
+ *  identity-stamped: the session reached the daemon anonymously and lost
+ *  its lineage. The comparison is therefore by origin (host:port) and path,
+ *  which is the same endpoint however it is spelled.
+ *
+ *  Deliberately NOT a match: a different port/host (another daemon), a
+ *  deeper path (the scoped `/mcp/orchestrator` sub-gateway, which attributes
+ *  through its own scope token), and a non-http transport.
+ */
+export function targetsDaemonGateway(ref: string, daemonMcpUrl: string): boolean {
+  if (ref === daemonMcpUrl) return true
+  let target: URL
+  let daemon: URL
+  try {
+    target = new URL(ref)
+    daemon = new URL(daemonMcpUrl)
+  } catch {
+    return false
+  }
+  if (target.protocol !== daemon.protocol) return false
+  // The daemon is loopback-bound, so a different SPELLING of the same
+  // loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same
+  // endpoint, not a different one. A non-loopback host must match exactly.
+  if (target.host !== daemon.host) {
+    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
+  }
+  if (effectivePort(target) !== effectivePort(daemon)) return false
+  const targetPath = target.pathname.replace(/\/+$/, "")
+  const daemonPath = daemon.pathname.replace(/\/+$/, "")
+  return targetPath === daemonPath
+}
+
+/** The port a URL actually talks to (empty ⇒ the protocol's default). */
+function effectivePort(url: URL): string {
+  if (url.port) return url.port
+  return url.protocol === "https:" ? "443" : "80"
+}
+
+/** Is this hostname a loopback name? (`localhost`, `127.0.0.1`, `::1`, …) */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "")
+  if (host === "localhost" || host === "::1") return true
+  return /^127(?:\.\d{1,3}){3}$/.test(host)
 }
 
 /**
@@ -1076,17 +1140,30 @@ export function stampDaemonCallerSessionId(
   opts: { daemonMcpUrl: string; callerSessionId: string },
 ): AcpMcpServer[] | undefined {
   if (!mcpServers) return undefined
-  const daemonQ = `${opts.daemonMcpUrl}?`
   return mcpServers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
-    const targetsDaemon = entry.ref === opts.daemonMcpUrl || entry.ref.startsWith(daemonQ)
-    if (!targetsDaemon || entry.ref.includes("callerSessionId=")) return entry
+    if (!targetsDaemonGateway(entry.ref, opts.daemonMcpUrl)) return entry
+    // An entry that already carries a caller identity (an explicit pin, or
+    // one left over from a prior stamp) is respected and never overwritten.
+    if (entry.ref.includes("callerSessionId=")) return entry
+    if (hasCallerSessionIdHeader(entry.headers)) return entry
     const sep = entry.ref.includes("?") ? "&" : "?"
     return {
       ...entry,
       ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
+      headers: {
+        ...entry.headers,
+        [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+      },
     }
   })
+}
+
+/** Does this mount already carry the caller-identity header? Header names
+ *  are case-insensitive on the wire, so the comparison is too. */
+function hasCallerSessionIdHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false
+  return Object.keys(headers).some(k => k.toLowerCase() === CALLER_SESSION_ID_HEADER)
 }
 
 /** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,

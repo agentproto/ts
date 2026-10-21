@@ -59,7 +59,7 @@ import {
   parseSessionListFilterParams,
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
-import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
+import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -2015,6 +2015,38 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** The header twin of `parseCallerSessionIdQuery`; see
+   *  `CALLER_SESSION_ID_HEADER` (sessions.ts).
+   *
+   *  The query is the historical carrier of the caller's identity, but a URL
+   *  query is fragile: a client (or an intermediary) that rebuilds the mount
+   *  URL drops it, and the session goes anonymous to the gateway: no
+   *  `message_parent` (it cannot identify its caller), and no auto-parent
+   *  for the spawns it makes (they land as depth-0 orphans). The header
+   *  travels with the request whatever the client does to the URL, so the
+   *  identity is read from whichever carrier survived. The QUERY WINS when
+   *  both are present (it is the form the trust checks already read), and
+   *  the header is honoured on the same trust footing as a query claim
+   *  (loopback socket or a valid daemon bearer; see `externalClaimTrusted`).
+   */
+  function parseCallerSessionIdHeader(req: IncomingMessage): string | undefined {
+    const raw = req.headers[CALLER_SESSION_ID_HEADER]
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (!value) return undefined
+    const trimmed = value.trim()
+    if (!trimmed || !/^[A-Za-z0-9._:-]{1,128}$/.test(trimmed)) return undefined
+    return trimmed
+  }
+
+  /** The caller's session id for this request: the trusted query claim, else
+   *  the identity header (same trust rules; see `externalClaimTrusted`). */
+  function resolveCallerSessionId(req: IncomingMessage): string | undefined {
+    const fromQuery = parseCallerSessionIdQuery(req.url ?? "")
+    if (fromQuery) return fromQuery
+    if (!externalClaimTrusted(req)) return undefined
+    return parseCallerSessionIdHeader(req)
+  }
+
   /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
    *  (#session-visibility) — the connecting client's source label
    *  (cowork/vscode/codex/cron). A non-session bridge client that omits a
@@ -2066,14 +2098,14 @@ export async function startHttpServer(
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     {
-      const claimed = parseCallerSessionIdQuery(req.url ?? "")
+      const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
         opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
       }
     }
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
     const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
-    const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
+    const callerSessionId = resolveCallerSessionId(req)
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
     const surface = parseSurfaceQuery(req.url ?? "")
