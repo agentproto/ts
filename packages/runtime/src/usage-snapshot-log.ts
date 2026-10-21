@@ -59,6 +59,12 @@ export async function readUsageSnapshots(
     if (typeof rec.costUsd === "number") record.costUsd = rec.costUsd
     if (typeof rec.tokensIn === "number") record.tokensIn = rec.tokensIn
     if (typeof rec.tokensOut === "number") record.tokensOut = rec.tokensOut
+    // Cache split: the writer records it on every snapshot that carries it
+    // (claude-code's transcript reader, hermes state.db, opencode.db). A
+    // snapshot without it keeps the field ABSENT — never a 0.
+    if (typeof rec.cacheReadTokens === "number") record.cacheReadTokens = rec.cacheReadTokens
+    if (typeof rec.cacheWriteTokens === "number") record.cacheWriteTokens = rec.cacheWriteTokens
+    if (typeof rec.reasoningTokens === "number") record.reasoningTokens = rec.reasoningTokens
     if (typeof rec.model === "string") record.model = rec.model
     out.push(record)
   }

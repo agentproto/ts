@@ -10,7 +10,9 @@
  *
  * Absent stays absent: a total is the sum of the sessions that REPORT the
  * field, and is omitted entirely when none of them do — a subtree of
- * cost-less sessions never reads as a measured $0.
+ * cost-less sessions never reads as a measured $0. The same rule applies to
+ * the per-child rows: a child carries its OWN cache / reasoning split when
+ * it reports one, and omits the fields it doesn't.
  */
 
 import { collectSubtree } from "./agent-tools.js"
@@ -26,6 +28,9 @@ export interface SubtreeUsageTotals {
   tokensOut?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
+  /** Reasoning tokens, rolled up like the cache split — omitted when no
+   *  session in the subtree reports them. */
+  reasoningTokens?: number
 }
 
 /** One direct child of the root, with that child's OWN usage (its own
@@ -37,6 +42,11 @@ export interface SubtreeChildUsage {
   costUsd?: number
   tokensIn?: number
   tokensOut?: number
+  /** The child's own cache split, so a child row carries the same token
+   *  detail `self` does. Absent when the child reports none. */
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
 }
 
 export interface SessionUsageWithSubtree {
@@ -51,6 +61,7 @@ const SUMMED_KEYS = [
   "tokensOut",
   "cacheReadTokens",
   "cacheWriteTokens",
+  "reasoningTokens",
 ] as const satisfies readonly (keyof SubtreeUsageTotals)[]
 
 /**
@@ -88,6 +99,13 @@ export function rollupSessionSubtree(
         ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
         ...(usage.tokensIn !== undefined ? { tokensIn: usage.tokensIn } : {}),
         ...(usage.tokensOut !== undefined ? { tokensOut: usage.tokensOut } : {}),
+        ...(usage.cacheReadTokens !== undefined
+          ? { cacheReadTokens: usage.cacheReadTokens }
+          : {}),
+        ...(usage.cacheWriteTokens !== undefined
+          ? { cacheWriteTokens: usage.cacheWriteTokens }
+          : {}),
+        ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
       }
     })
 

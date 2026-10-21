@@ -46,6 +46,13 @@ export type UsageSnapshotRecord = {
   costUsd?: number
   tokensIn?: number
   tokensOut?: number
+  /** Prompt-cache read / cache-creation / reasoning tokens, as the writer
+   *  recorded them. Cumulative like the other counters (pin 1). Optional:
+   *  a source that doesn't report the split leaves the field out, so a
+   *  missing value never reads as a measured 0. */
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
   model?: string
   source: "adapter" | "computed" | "no-pricing" | "none"
 }
@@ -61,12 +68,22 @@ export interface SessionSnapshots {
 }
 
 /** A summed spend bucket. `spentUsd` counts only priced snapshots; unpriced
- *  token deltas land in `unpricedTokens` (pin 2). */
+ *  token deltas land in `unpricedTokens` (pin 2).
+ *
+ *  The cache-split fields are OPTIONAL and absent-stays-absent: they carry the
+ *  window's summed prompt-cache read / cache-creation / reasoning tokens and
+ *  are omitted entirely when no contributing session reported them — a window
+ *  of adapters that expose no cache split never reads as a measured 0. They
+ *  are filled for priced sessions only (an unpriced session's tokens land in
+ *  `unpricedTokens`, never in a priced bucket). */
 export interface UsageBucket {
   spentUsd: number
   tokensIn: number
   tokensOut: number
   unpricedTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  reasoningTokens?: number
 }
 
 export interface UsageRollup {
@@ -174,11 +191,27 @@ function emptyBucket(): UsageBucket {
   return { spentUsd: 0, tokensIn: 0, tokensOut: 0, unpricedTokens: 0 }
 }
 
+/** The optional cache-split fields of a bucket, in response order. The same
+ *  keys exist on {@link UsageSnapshotRecord} (the rollup's input shape), so
+ *  one list drives both the delta math and the bucket merge. */
+const CACHE_KEYS = [
+  "cacheReadTokens",
+  "cacheWriteTokens",
+  "reasoningTokens",
+] as const satisfies readonly (keyof UsageBucket & keyof UsageSnapshotRecord)[]
+
 function addInto(target: UsageBucket, b: UsageBucket): void {
   target.spentUsd += b.spentUsd
   target.tokensIn += b.tokensIn
   target.tokensOut += b.tokensOut
   target.unpricedTokens += b.unpricedTokens
+  // Absent stays absent: a bucket that never saw a reported cache split
+  // keeps the field missing rather than reading as a measured 0.
+  for (const k of CACHE_KEYS) {
+    const v = b[k]
+    if (v === undefined) continue
+    target[k] = (target[k] ?? 0) + v
+  }
 }
 
 /** Group buckets by a key, sum each group, then sort `spentUsd` desc, key asc,
@@ -264,6 +297,15 @@ export function rollupUsage(
       bucket.spentUsd = costDelta
       bucket.tokensIn = tokInDelta
       bucket.tokensOut = tokOutDelta
+      // Cache split: cumulative like the other counters (pin 1), so the
+      // window's value is latest-in-window − baseline. A session whose
+      // latest snapshot doesn't report the field contributes nothing for
+      // it — the field stays absent rather than reading as a measured 0.
+      for (const k of CACHE_KEYS) {
+        const latestValue = latest[k]
+        if (latestValue === undefined) continue
+        bucket[k] = Math.max(0, latestValue - num(baseline?.[k]))
+      }
     } else {
       // Unpriced: 0 dollars, tokens accumulate in the separate bucket.
       bucket.unpricedTokens = tokInDelta + tokOutDelta

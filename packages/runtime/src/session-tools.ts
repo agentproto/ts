@@ -1956,8 +1956,9 @@ export function registerSessionTools(
       "`toolCalls`, `durationMs` (time inside turns). Absent fields are " +
       "omitted rather than zeroed. `includeSubtree: true` returns " +
       "`{ sessionId, self, subtree, children }` instead: `subtree` sums cost + " +
-      "tokens over this session and everything it (transitively) spawned, " +
-      "`children` lists the direct children with their own cost/tokens. Same " +
+      "tokens (including the cache / reasoning split) over this session and " +
+      "everything it (transitively) spawned, `children` lists the direct " +
+      "children with their own cost/tokens and cache split. Same " +
       "lookup as `session_list` / `session_restart` (by id or name).",
     {
       ...sessionRefSchema(z),
@@ -2631,6 +2632,10 @@ export function registerSessionTools(
       "the pre-priced snapshots (adapter-reported or catalog-computed) and is " +
       "never re-priced here; tokens for models with no catalog price are " +
       "surfaced separately in `unpricedTokens` (never fabricated as $0). " +
+      "The window's prompt-cache split is carried alongside: " +
+      "`cacheReadTokens` / `cacheWriteTokens` / `reasoningTokens` on the " +
+      "buckets, omitted entirely when no session in the window reports them " +
+      "(never zero-filled). " +
       "Broken down by profile, model, and harness. On the scoped orchestrator " +
       "gateway it is subtree-scoped — a child orchestrator only sees sessions " +
       "it (transitively) spawned.",

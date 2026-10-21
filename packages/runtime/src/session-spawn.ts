@@ -253,6 +253,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { projectRemoteUsage, type RemoteUsageSnapshot } from "./sandbox-usage.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -6510,14 +6511,11 @@ export async function bootSandboxAgentSession(opts: {
     ...(typeof host.usage === "function"
       ? {
           readUsage: async () => {
-            const snap = await host.usage!(remoteSessionId)
-            const usage = {
-              ...(typeof snap.model === "string" && snap.model.length > 0 ? { model: snap.model } : {}),
-              ...(typeof snap.costUsd === "number" ? { costUsd: snap.costUsd } : {}),
-              ...(typeof snap.tokensIn === "number" ? { tokensIn: snap.tokensIn } : {}),
-              ...(typeof snap.tokensOut === "number" ? { tokensOut: snap.tokensOut } : {}),
-            }
-            return Object.keys(usage).length > 0 ? usage : null
+            // The harness's `SessionUsageSnapshot` type predates the cache
+            // split, so it doesn't declare these fields — the box's answer
+            // does carry them.
+            const snap: RemoteUsageSnapshot = await host.usage!(remoteSessionId)
+            return projectRemoteUsage(snap)
           },
         }
       : {}),

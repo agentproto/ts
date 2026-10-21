@@ -204,16 +204,24 @@ describe("session_usage detail fields + includeSubtree", () => {
       tokensOut: 57,
       cacheReadTokens: 1_300,
       cacheWriteTokens: 200,
+      reasoningTokens: 7,
     })
 
     expect(res.children.map(c => c.id).sort()).toEqual([child.id, bare.id].sort())
     const childRow = res.children.find(c => c.id === child.id)!
     // The child's OWN usage — the grandchild rolls into `subtree`, not here.
     expect(childRow).toMatchObject({ label: "child", costUsd: 0.5, tokensIn: 10, tokensOut: 5 })
+    // The child's own cache split rides along, so a child row carries the
+    // same token detail `self` does.
+    expect(childRow.cacheReadTokens).toBe(300)
+    // …and the fields the child never reported stay absent, never 0.
+    expect("cacheWriteTokens" in childRow).toBe(false)
+    expect("reasoningTokens" in childRow).toBe(false)
     expect(typeof childRow.status).toBe("string")
     const bareRow = res.children.find(c => c.id === bare.id)!
     expect("costUsd" in bareRow).toBe(false)
     expect("tokensIn" in bareRow).toBe(false)
+    expect("cacheReadTokens" in bareRow).toBe(false)
 
     // A subtree where nothing reports cache tokens omits those totals.
     const leaf = parseToolJson(
