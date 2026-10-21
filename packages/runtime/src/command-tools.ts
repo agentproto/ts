@@ -86,6 +86,9 @@ import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
+import { checkPrOpenScope, openPrForSession, resolvePrOpenWorkspace } from "./pr-open.js"
+import type { GhRunner } from "./pr-provenance-stamp.js"
+import { loadWorkspacesConfig, type WorkspacesConfig } from "./workspaces-config.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
@@ -158,6 +161,19 @@ export interface RegisterCommandToolsOptions {
    * best-effort runs unconfined with an explicit `warning` on the result.
    */
   boundary?: AppBoundary
+  /** The `gh` runner of the provenance lane, `pr_open`'s `gh pr create`
+   *  and the `command_execute` stamp's `gh pr view`/`gh pr edit` (tests
+   *  inject a fake). Defaults to the real subprocess. */
+  ghRunner?: GhRunner
+  /** `pr_open` only: the registered workspaces, used to find the TARGET
+   *  session's host checkout. Defaults to the workspaces config file. */
+  loadWorkspaces?: () => Promise<WorkspacesConfig | undefined>
+  /** The daemon's GLOBAL checkpoint ref namespace
+   *  (`defaults.sandbox.checkpoint.refPrefix`). The provenance stamp reads
+   *  the checkpoint branch under this namespace, unless the stamped session
+   *  carries its own per-spawn override, which wins (that is the namespace
+   *  its delivery actually pushed to). */
+  checkpointRefPrefix?: string
 }
 
 export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
@@ -437,6 +453,10 @@ export function registerCommandTools(
         // command session above — the authoritative attribution when present,
         // see `StampPrInput.callerSessionId`.
         ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+        ...(opts.checkpointRefPrefix ? { checkpointRefPrefix: opts.checkpointRefPrefix } : {}),
+        // The same `gh` seam as `pr_open`, the stamp reads and edits the PR
+        // with it (tests drive both lanes through one fake).
+        ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
       })
       if (stamp.stamped) {
         console.error(
@@ -520,6 +540,93 @@ export function registerCommandTools(
             text: JSON.stringify({ entries }),
           },
         ],
+      }
+    },
+  )
+
+  server.tool(
+    "pr_open",
+    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. a calling session may only open a PR for itself or a session it spawned (directly or transitively); the operator (no calling session) is not scoped. Every `gh` argv this runs — the create AND the footer stamp's own `gh pr view`/`gh pr edit`/checkpoint `gh api` reads — is checked against that workspace's allowlist, an argv the entry does not permit stops the run. `gh` runs in the TARGET session's own workspace (its worktree, or for a sandbox session the host checkout of its workspace) and that workspace's allowlist applies, not the daemon's boot workspace's.",
+    {
+      ...sessionRefSchema(z),
+      title: z.string().min(1).describe("PR title."),
+      body: z.string().min(1).describe("PR description body."),
+    },
+    async input => {
+      const ref = resolveSessionRef(archivedInclusiveRegistry(opts.registry), input)
+      if (!ref.ok) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error: `session reference is ${ref.error.code}: "${input.sessionId ?? input.idOrName ?? input.slug}"`,
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const refuse = (error: string) => ({
+        content: [{ type: "text" as const, text: JSON.stringify({ opened: false, error }) }],
+        isError: true,
+      })
+      // Scope: a session may only open a PR for itself or for a session it
+      // spawned (the operator, with no caller id, is not scoped). Without
+      // this any caller could open a PR, under the host's gh token, for any
+      // session's pushed branch.
+      const outOfScope = checkPrOpenScope({
+        ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+        targetId: ref.id,
+        rows: opts.registry.list({ includeArchived: true }),
+      })
+      if (outOfScope) return refuse(`pr_open refused: ${outOfScope}`)
+      const target = opts.registry.get(ref.id)
+      if (!target) return refuse(`pr_open refused: session ${ref.id} not found`)
+      // `gh` runs in the TARGET session's own workspace and is gated by THAT
+      // workspace's allowlist, never the daemon boot workspace's: a session
+      // from repo B must not open a PR against repo A.
+      const workspaces = await (opts.loadWorkspaces ?? loadWorkspacesConfig)().catch(() => undefined)
+      const where = resolvePrOpenWorkspace(target, workspaces)
+      if ("error" in where) return refuse(`pr_open refused: ${where.error}`)
+      // Same default-deny allowlist as command_execute: `pr_open` runs `gh`
+      // on the host, so `gh` must be in the target workspace's
+      // allowed-commands.json — and the "args" constraints for 'gh' gate the
+      // create AND every `gh` call the footer stamp makes (pr view / pr edit /
+      // the checkpoint `gh api` read), not just `gh pr create`.
+      const allowlistEntries = await loadAllowlistEntries(where.allowlistRoot)
+      const allowlistPath = join(where.allowlistRoot, ALLOWLIST_REL)
+      if (!allowlistEntries.some(e => e.command === "gh")) {
+        return refuse(
+          `pr_open refused: 'gh' is not in the allowlist. Add it to ${allowlistPath} ` +
+            `under "commands": [...] to let pr_open run \`gh pr create\` on the host.`,
+        )
+      }
+      // The exact argv is only known once the branch is resolved: checked
+      // right before `gh` runs, against any "args" constraints for 'gh'.
+      const authorizeArgs = (args: readonly string[]): string | undefined =>
+        isCommandAllowed(allowlistEntries, "gh", [...args])
+          ? undefined
+          : `pr_open refused: 'gh' is allowlisted but not for \`gh pr create\`. ` +
+            `Check the "args" constraints for 'gh' in ${allowlistPath}.`
+      const outcome = await openPrForSession({
+        sessionId: ref.id,
+        registry: opts.registry,
+        workspacePath: where.ghCwd,
+        authorizeArgs,
+        ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
+        // The checkpoint namespace the target session's delivery used, the
+        // session's own override wins over the daemon's global default.
+        ...(opts.checkpointRefPrefix ? { checkpointRefPrefix: opts.checkpointRefPrefix } : {}),
+        // The caller of pr_open is the OPENER (usually the orchestrator
+        // session relaying the box's request) — shown as such on the footer.
+        ...(opts.callerSessionId ? { openedBy: opts.callerSessionId } : {}),
+        title: input.title,
+        body: input.body,
+      })
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(outcome) }],
+        isError: !outcome.opened,
       }
     },
   )

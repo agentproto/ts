@@ -40,6 +40,7 @@ export {
   type SandboxExecResult,
   type SandboxProvider,
   type SandboxProbeResult,
+  type SandboxProviderBox,
   type SandboxSecretsConfig,
   type CreateSandboxAgentSessionHostOpts,
   type SandboxAgentSessionHost,

@@ -6530,6 +6530,10 @@ export async function bootSandboxAgentSession(opts: {
           // passenger is keyed by — the id this spawn's descriptor records
           // as `adapterSessionId` (the proxy's `sessionId`).
           adapterStore: { adapterSessionId: remoteSessionId, adapter: opts.adapter },
+          // Stamps `Agentproto-Session:` trailers onto the session's
+          // checkpoint commits — PR authorship attribution
+          // (pr-provenance.ts `collectBranchAuthors`).
+          ...(deliverySessionId ? { sessionId: deliverySessionId } : {}),
           ...(opts.onDelivery ? { onDelivery: opts.onDelivery } : {}),
           ...(opts.onCheckpoint ? { onCheckpoint: opts.onCheckpoint } : {}),
           ...(opts.onDeliveryTargetChanged ? { onTargetChanged: opts.onDeliveryTargetChanged } : {}),

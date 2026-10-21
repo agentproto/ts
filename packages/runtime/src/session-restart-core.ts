@@ -1895,6 +1895,15 @@ export async function restartAgentSession(
             // box-side id — the id the descriptor records as
             // `adapterSessionId` (the proxy's `sessionId`).
             adapterStore: { adapterSessionId: remoteSessionId, adapter: adapterSlug },
+            // Stamps `Agentproto-Session:` trailers onto the RESTARTED
+            // session's checkpoint commits and work branch, for PR
+            // authorship attribution (pr-provenance.ts
+            // `collectBranchAuthors`). The restarted session has its own id:
+            // after a restart the adapter runs under a new session id, and
+            // the old one's descriptor is gone; without this the restarted
+            // session's authorship cannot be recovered from trailers once it
+            // is gone too.
+            sessionId: restartedSessionId,
             onDelivery: record => {
               registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
             },
