@@ -8,9 +8,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { spawnSync } from "node:child_process"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
+import { sessionIdsFromTrailers } from "../pr-provenance.js"
 import {
+  buildProvenanceStampCommand,
+  PROVENANCE_COMMIT_SUBJECT,
   DELIVERY_BUNDLE_FILE,
   DELIVERY_RECORD_FILE,
   buildBundleCommand,
@@ -19,6 +23,7 @@ import {
   buildCheckpointDeleteCommand,
   buildPushCommand,
   checkpointBranchOf,
+  checkpointRefPrefixForSession,
   CHECKPOINT_BUNDLE_FILE,
   CHECKPOINT_RECORD_FILE,
   CHECKPOINT_REF_ABSENT_MARKER,
@@ -485,6 +490,16 @@ describe("uncommitted-work snapshot", () => {
     expect(countOnly).toContain("head=$(git rev-parse HEAD)")
   })
 
+  it("stamps the authoring session id as an Agentproto-Session trailer on the snapshot commit", () => {
+    const cmd = buildProbeCommand(target, { sessionId: "sess_box1" })
+    // commit-tree takes the message as ONE argv (shellSingle-quoted): the
+    // trailer is a literal multi-line suffix, octal-safe through the shell.
+    expect(cmd).toContain("agentproto checkpoint: uncommitted work on wt/x")
+    expect(cmd).toContain("\n\nAgentproto-Session: sess_box1")
+    // No credit without a session id (older callers keep the old message).
+    expect(buildProbeCommand(target)).not.toContain("Agentproto-Session")
+  })
+
   it("checkpointBranchOf/buildCheckpointPushCommand take a custom refPrefix, defaulting to the legacy one", () => {
     expect(checkpointBranchOf("wt/x")).toBe("agentproto-checkpoint/wt/x")
     expect(checkpointBranchOf("wt/x", "custom/")).toBe("custom/wt/x")
@@ -512,6 +527,206 @@ describe("uncommitted-work snapshot", () => {
     expect(record.checkpoint).toMatchObject({ status: "pushed", ref: "custom/wt/x" })
     const push = box.commands.find(c => c.command.includes("refs/agentproto/checkpoint:"))?.command ?? ""
     expect(push).toContain("refs/heads/custom/wt/x")
+  })
+})
+
+describe("work-branch provenance stamp", () => {
+  let outDir: string
+  beforeEach(async () => {
+    outDir = await mkdtemp(join(tmpdir(), "agentproto-provenance-stamp-"))
+  })
+  afterEach(async () => {
+    await rm(outDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  })
+
+  function cleanBox(opts: { ahead: number }) {
+    const commands: SandboxExecOpts[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o)
+      if (o.command.includes("rev-list")) return result(0, `ahead=${opts.ahead}\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes("commit-tree")) return result(0)
+      if (o.command.includes(" push ")) return result(0)
+      return result(1, "", "unexpected command")
+    }
+    return { exec, commands }
+  }
+
+  it("teardown with a session id stamps the trailer before pushing the work branch", async () => {
+    const box = cleanBox({ ahead: 2 })
+    const record = await runSandboxDelivery({ exec: box.exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+    const stampAt = box.commands.findIndex(c => c.command.includes(PROVENANCE_COMMIT_SUBJECT))
+    const pushAt = box.commands.findIndex(c => c.command.includes(" push ") && !c.command.includes("--delete"))
+    expect(stampAt).toBeGreaterThan(-1)
+    expect(stampAt).toBeLessThan(pushAt)
+    expect(box.commands[stampAt]!.command).toContain("Agentproto-Session: sess_box1")
+  })
+
+  it("never stamps without a session id, with nothing ahead, or in checkpoint mode", async () => {
+    for (const run of [
+      { ahead: 2, input: {} },
+      { ahead: 0, input: { sessionId: "sess_box1" } },
+      { ahead: 2, input: { sessionId: "sess_box1", mode: "checkpoint" as const } },
+    ]) {
+      const box = cleanBox({ ahead: run.ahead })
+      await runSandboxDelivery({ exec: box.exec, target, outDir, ...run.input })
+      expect(box.commands.some(c => c.command.includes(PROVENANCE_COMMIT_SUBJECT))).toBe(false)
+    }
+  })
+
+  it("a failing stamp never blocks the push", async () => {
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes("commit-tree")) throw new Error("box hiccup")
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+  })
+
+  it("a stamp that fails once is retried before the push, and recorded as stamped", async () => {
+    for (const failure of ["throw", "exit"] as const) {
+      const commands: string[] = []
+      let stampCalls = 0
+      const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+        commands.push(o.command)
+        if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+        if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) {
+          stampCalls++
+          if (stampCalls === 1) {
+            if (failure === "throw") throw new Error("box hiccup")
+            return result(1, "", "cannot lock ref")
+          }
+          return result(0)
+        }
+        return result(0)
+      }
+      const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+      expect(stampCalls).toBe(2)
+      expect(record.provenanceStamp).toEqual({ status: "stamped" })
+      expect(record.push.status).toBe("pushed")
+      const lastStamp = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT)).lastIndexOf(true)
+      const firstPush = commands.findIndex(c => c.includes(" push ") && !c.includes("--delete"))
+      expect(lastStamp).toBeLessThan(firstPush)
+    }
+  })
+
+  it("a stamp still failing after the push is retried once more and the stamped tip re-pushed", async () => {
+    const commands: string[] = []
+    let stampCalls = 0
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) {
+        stampCalls++
+        return stampCalls <= 2 ? result(1, "", "cannot lock ref") : result(0)
+      }
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.provenanceStamp).toEqual({ status: "stamped" })
+    const lastStamp = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT)).lastIndexOf(true)
+    const pushes = commands
+      .map((c, i) => (c.includes(" push ") && !c.includes("--delete") ? i : -1))
+      .filter(i => i >= 0)
+    expect(pushes.length).toBe(2)
+    expect(pushes[1]).toBeGreaterThan(lastStamp)
+  })
+
+  it("a stamp that never lands is recorded as failed, never blocks the push nor counts against delivery", async () => {
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) return result(1, "", "cannot lock ref")
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+    expect(record.provenanceStamp?.status).toBe("failed")
+    expect(record.provenanceStamp?.detail).toContain("cannot lock ref")
+    expect(isFullyDelivered(record)).toBe(true)
+  })
+
+  it("never stamps the work branch when the uncommitted-work snapshot exists", async () => {
+    // The snapshot commit ALREADY carries the session trailer, and stamping
+    // the branch would move its tip to a sibling of the snapshot, the
+    // restore path then rejects the checkpoint and the uncommitted work is
+    // lost on restart.
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=${"c".repeat(40)}\n`)
+      }
+      if (o.command.includes(" push ")) return result(0)
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(commands.some(c => c.includes(PROVENANCE_COMMIT_SUBJECT))).toBe(false)
+    expect(record.provenanceStamp?.status).toBe("skipped")
+    // The snapshot is still pushed to the checkpoint ref, it is the carrier.
+    expect(record.checkpoint?.status).toBe("pushed")
+    expect(record.push.status).toBe("pushed")
+  })
+
+  it("a failed checkpoint push re-stamps the work branch so the trailer survives", async () => {
+    // The snapshot commit carries the session trailer and was the branch
+    // stamp's ONLY carrier — but its push FAILED, so NEITHER the remote
+    // checkpoint NOR a trailer on the work branch exists: attribution is
+    // lost exactly when the snapshot rescue failed. The recovery stamps
+    // the work branch after all and re-pushes it (the checkpoint is not
+    // the restore source in that case, so the sibling-of-snapshot hazard
+    // the normal skip guards against does not apply).
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=${"c".repeat(40)}\n`)
+      }
+      if (o.command.includes(" push ") && o.command.includes("agentproto-checkpoint/")) return result(1, "", "cannot lock ref")
+      if (o.command.includes(" push ")) return result(0)
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.provenanceStamp?.status).toBe("stamped")
+    expect(record.checkpoint?.status).toBe("failed")
+    expect(record.push.status).toBe("pushed")
+    const stamps = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT))
+    const checkpointPushes = commands.map(c => c.includes(" push ") && c.includes("agentproto-checkpoint/"))
+    expect(stamps.lastIndexOf(true)).toBeGreaterThan(checkpointPushes.indexOf(true))
+  })
+
+  it("producer/consumer: the stamp command's commit is read back by the PR trailer reader, idempotently", () => {
+    const git = (cwd: string, ...args: string[]) => {
+      const r = spawnSync("git", args, { cwd, encoding: "utf8" })
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`)
+      return r.stdout
+    }
+    const repo = join(outDir, "repo")
+    spawnSync("mkdir", ["-p", repo])
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@example.com")
+    git(repo, "config", "user.name", "t")
+    git(repo, "config", "commit.gpgsign", "false")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+    const baseSha = git(repo, "rev-parse", "HEAD").trim()
+    git(repo, "checkout", "-q", "-b", "wt/x")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "real work commit")
+    const tgt: SandboxDeliveryTarget = { checkoutDir: repo, branch: "wt/x", baseSha }
+
+    const before = git(repo, "log", "--format=%B", "wt/x")
+    expect(sessionIdsFromTrailers(before)).toEqual([])
+
+    const sh = (command: string) => spawnSync("sh", ["-c", command], { encoding: "utf8" })
+    const first = sh(buildProvenanceStampCommand(tgt, "sess_box1"))
+    expect(first.status).toBe(0)
+    expect(git(repo, "rev-list", "--count", `${baseSha}..wt/x`).trim()).toBe("2")
+    expect(sessionIdsFromTrailers(git(repo, "log", "--format=%B", "wt/x"))).toEqual(["sess_box1"])
+
+    // Re-running adds nothing (the tip already carries this session's trailer).
+    expect(sh(buildProvenanceStampCommand(tgt, "sess_box1")).status).toBe(0)
+    expect(git(repo, "rev-list", "--count", `${baseSha}..wt/x`).trim()).toBe("2")
   })
 })
 
@@ -941,5 +1156,19 @@ describe("runRescuePush — outcome recording, never throwing", () => {
     })
     expect(record.status).toBe("failed")
     expect(record.detail).toContain("box unreachable")
+  })
+})
+
+describe("checkpointRefPrefixForSession", () => {
+  it("prefers the session's own per-spawn override over the global default", () => {
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: { refPrefix: "custom/" } }, "global/")).toBe("custom/")
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: { refPrefix: "custom/" } })).toBe("custom/")
+  })
+
+  it("falls back to the global default, then to the legacy prefix", () => {
+    expect(checkpointRefPrefixForSession({}, "global/")).toBe("global/")
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: false }, "global/")).toBe("global/")
+    expect(checkpointRefPrefixForSession({})).toBe(CHECKPOINT_BRANCH_PREFIX)
+    expect(checkpointRefPrefixForSession(undefined)).toBe(CHECKPOINT_BRANCH_PREFIX)
   })
 })

@@ -49,6 +49,7 @@ import {
   shellQuote,
   type SandboxExec,
 } from "./sandbox-workspace-remote.js"
+import { commitMessageWithSessionTrailer } from "./pr-provenance.js"
 import {
   ADAPTER_STORE_TIMEOUT_MS,
   archiveAdapterStore,
@@ -100,6 +101,28 @@ export const DEFAULT_CHECKPOINT_DEADLINE_MS = 300_000
  *  ts`'s `planSandboxWorkspace` takes the same `refPrefix` for that reason). */
 export function checkpointBranchOf(branch: string, refPrefix: string = CHECKPOINT_BRANCH_PREFIX): string {
   return `${refPrefix}${branch}`
+}
+
+/**
+ * The checkpoint ref namespace a session's snapshots actually live under:
+ * the SAME value `resolveSandboxCheckpointConfig` resolved when the session
+ * booted: the session's own per-spawn override wins over the daemon's global
+ * `defaults.sandbox.checkpoint.refPrefix`, which wins over the legacy
+ * default.
+ *
+ * Readers of a checkpoint (the PR-provenance stamper, looking for the
+ * `Agentproto-Session:` trailer on the checkpoint tip) MUST resolve it the
+ * same way the writer did, reading `agentproto-checkpoint/<branch>` while
+ * the delivery pushed to `custom/<branch>` silently loses every author only
+ * the checkpoint knows.
+ */
+export function checkpointRefPrefixForSession(
+  session: { sandboxCheckpointOverride?: { refPrefix?: string } | false } | undefined,
+  globalRefPrefix?: string,
+): string {
+  const override = session?.sandboxCheckpointOverride
+  const perSpawn = override && typeof override === "object" ? override.refPrefix : undefined
+  return perSpawn ?? globalRefPrefix ?? CHECKPOINT_BRANCH_PREFIX
 }
 
 export interface SandboxDeliveryTarget {
@@ -236,6 +259,13 @@ export interface SandboxDeliveryRecord {
    *  deliveries and on a checkpoint taken without an
    *  {@link RunSandboxDeliveryInput.adapterStore} input. */
   adapterStore?: AdapterStoreRecord
+  /** Teardown-only: outcome of the `Agentproto-Session:` provenance stamp
+   *  on the work branch (see {@link buildProvenanceStampCommand}). Absent
+   *  when no stamp was attempted (no session id, checkpoint mode, nothing
+   *  ahead, or the uncommitted-work snapshot already carries the trailer ,
+   *  `"skipped"` then). Attribution only: never part of
+   *  {@link isFullyDelivered}. */
+  provenanceStamp?: { status: "stamped" | "failed" | "skipped"; detail?: string }
   /** Turn count this checkpoint/delivery was taken after, when the caller
    *  knew one (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — also baked
    *  into the snapshot commit message. Absent when no turn context was
@@ -276,6 +306,9 @@ export function buildProbeCommand(
      *  mid-session (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — purely
      *  a human-readable breadcrumb, not parsed back. */
     turn?: number
+    /** Stamped as an `Agentproto-Session:` trailer on the snapshot commit —
+     *  the branch's authoring session, for PR authorship attribution. */
+    sessionId?: string
   },
 ): string {
   const snapshotUncommitted = opts?.snapshotUncommitted ?? true
@@ -289,7 +322,12 @@ export function buildProbeCommand(
     )
   }
   const turnSuffix = opts?.turn !== undefined ? ` turn ${opts.turn}` : ""
-  const message = shellQuote(`agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`)
+  const baseMessage = `agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`
+  const message = shellQuote(
+    opts?.sessionId
+      ? commitMessageWithSessionTrailer(baseMessage, opts.sessionId)
+      : baseMessage,
+  )
   const snapshot =
     `idx=$(mktemp -u) && { cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true; } && ` +
     `GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ` +
@@ -374,6 +412,68 @@ export function buildBundleCommand(
   )
 }
 
+/** The empty provenance commit's subject (see {@link buildProvenanceStampCommand}). */
+export const PROVENANCE_COMMIT_SUBJECT = "agentproto: delivered work"
+
+/**
+ * Stamp the authoring session onto the DELIVERED work branch itself: append
+ * an empty commit (same tree as the tip, parent: the tip) whose message
+ * carries the `Agentproto-Session:` trailer. The checkpoint ref is deleted
+ * once the checkout is clean and the branch is pushed, so it can't be the
+ * only carrier of the trailer - a PR opened after a clean teardown reads the
+ * trailer off the branch's own commits (`pr-provenance-stamp.ts`).
+ *
+ * Built with plumbing (`commit-tree` + `update-ref` with the old value
+ * guarded) so the agent's index and worktree are never touched, and a no-op
+ * when the tip already carries this session's trailer. Run for the teardown
+ * delivery only - the agent is already killed, so nothing races the ref.
+ */
+export function buildProvenanceStampCommand(target: SandboxDeliveryTarget, sessionId: string): string {
+  const ref = shellQuote(`refs/heads/${target.branch}`)
+  const trailer = shellQuote(`Agentproto-Session: ${sessionId}`)
+  const message = shellQuote(commitMessageWithSessionTrailer(PROVENANCE_COMMIT_SUBJECT, sessionId))
+  return (
+    `cd ${shellQuote(target.checkoutDir)} && ref=${ref} && ` +
+    `{ git log -1 --format=%B "$ref" | grep -qxF ${trailer} || ` +
+    `{ old=$(git rev-parse "$ref") && new=$(git commit-tree "$ref^{tree}" -p "$old" -m ${message}) && ` +
+    `git update-ref "$ref" "$new" "$old"; }; }`
+  )
+}
+
+/** Attempts per {@link runProvenanceStamp} call. */
+const PROVENANCE_STAMP_ATTEMPTS = 2
+
+/**
+ * Run {@link buildProvenanceStampCommand}, retrying a failed attempt (a
+ * throw, a timeout or a non-zero exit). Never throws: the outcome is the
+ * record. The command is idempotent, so a retry after a partial success
+ * adds nothing.
+ */
+async function runProvenanceStamp(
+  exec: SandboxExec,
+  target: SandboxDeliveryTarget,
+  sessionId: string,
+  deadlineAt: number,
+  reserveMs: number,
+): Promise<NonNullable<SandboxDeliveryRecord["provenanceStamp"]>> {
+  let detail = "not attempted"
+  for (let attempt = 0; attempt < PROVENANCE_STAMP_ATTEMPTS; attempt++) {
+    try {
+      const result = await withinDeadline(
+        deadlineAt,
+        PROBE_TIMEOUT_MS,
+        (timeoutMs) => exec({ command: buildProvenanceStampCommand(target, sessionId), timeoutMs }),
+        reserveMs,
+      )
+      if (result.exitCode === 0) return { status: "stamped" }
+      detail = describeExecFailure(result)
+    } catch (err) {
+      detail = errorText(err)
+    }
+  }
+  return { status: "failed", detail }
+}
+
 /** Push only a branch that actually has commits to publish. */
 export function shouldPush(probe: DeliveryProbe): boolean {
   return probe.ahead > 0
@@ -442,6 +542,13 @@ export interface RunSandboxDeliveryInput {
    *  `sandbox-adapter-store.ts`. An archive failure is recorded on
    *  {@link SandboxDeliveryRecord.adapterStore}, never thrown. */
   adapterStore?: { adapterSessionId: string; adapter?: string }
+  /** The authoring session id, stamped as an `Agentproto-Session:` commit
+   *  trailer on the snapshot commit this run creates — PR provenance
+   *  (pr-provenance.ts `collectBranchAuthors`) reads it back so a branch is
+   *  attributed to the session that wrote it even after the registry stops
+   *  knowing the box session. Pure provenance — not parsed back for
+   *  anything secret; the id is a pointer to the descriptor. */
+  sessionId?: string
 }
 
 function errorText(err: unknown): string {
@@ -574,7 +681,11 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
       // GIT_OPTIONAL_LOCKS=0: `git status` must not take the agent's
       // index.lock while it may be committing.
       exec({
-        command: buildProbeCommand(target, { snapshotUncommitted: input.snapshotUncommitted, turn: input.turn }),
+        command: buildProbeCommand(target, {
+          snapshotUncommitted: input.snapshotUncommitted,
+          turn: input.turn,
+          sessionId: input.sessionId,
+        }),
         env: { GIT_OPTIONAL_LOCKS: "0" },
         timeoutMs,
       }),
@@ -616,7 +727,42 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   if (!shouldPush(probe)) {
     record.push = { status: "skipped", detail: "no commits ahead of base" }
   } else {
-    record.push = await pushBranch(exec, target, deadlineAt, input.readFile ? bundleReserveMs : 0)
+    // Teardown only: carry the authoring-session trailer on the pushed work
+    // branch (the checkpoint ref that also carries it is deleted below on a
+    // clean run). Best-effort - a failure only loses the attribution hint,
+    // never blocks the push. A failed attempt is retried, and the outcome is
+    // recorded so a stamp that never landed is visible, not swallowed.
+    //
+    // NOT when the probe took a snapshot of the uncommitted work: the
+    // snapshot commit ALREADY carries the session trailer, and stamping the
+    // branch would move the branch tip to a SIBLING of that snapshot, the
+    // restore path then rejects the checkpoint (its new HEAD is neither its
+    // parent nor an ancestor of its parent) and the uncommitted work is lost
+    // on restart. The snapshot is the carrier here.
+    const reserveMs = input.readFile ? bundleReserveMs : 0
+    const stamp = !checkpointMode && input.sessionId && probe.snapshot === undefined
+      ? () => runProvenanceStamp(exec, target, input.sessionId!, deadlineAt, reserveMs)
+      : undefined
+    if (stamp) record.provenanceStamp = await stamp()
+    else if (!checkpointMode && input.sessionId && probe.snapshot !== undefined) {
+      record.provenanceStamp = { status: "skipped", detail: "the uncommitted-work snapshot already carries the session trailer" }
+    }
+    record.push = await pushBranch(exec, target, deadlineAt, reserveMs)
+    // The push landed but the stamp did not: retry it once more and, when it
+    // lands now, push again so the remote branch carries the trailer too.
+    // Without this a failed stamp was never retried: nothing else re-runs
+    // the teardown delivery once its push succeeded.
+    if (stamp && record.provenanceStamp?.status === "failed" && record.push.status === "pushed") {
+      const retry = await stamp()
+      if (retry.status === "stamped") {
+        const again = await pushBranch(exec, target, deadlineAt, reserveMs)
+        record.provenanceStamp = again.status === "pushed"
+          ? retry
+          : { status: "failed", detail: `stamped but the re-push failed: ${again.detail ?? "unknown"}` }
+      } else {
+        record.provenanceStamp = retry
+      }
+    }
   }
 
   if (probe.snapshot !== undefined) {
@@ -636,6 +782,31 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
           : { status: "failed", ref, sha: probe.snapshot, detail: describeExecFailure(result) }
     } catch (err) {
       record.checkpoint = { status: "failed", ref, sha: probe.snapshot, detail: errorText(err) }
+    }
+    // The snapshot was the trailer's only carrier and its push FAILED: stamp
+    // the work branch after all so the attribution survives. The skipped
+    // sibling-of-snapshot hazard only applies while the checkpoint is the
+    // restore source; with the checkpoint push failed the restore falls back
+    // to the work branch, which then carries the trailer. Best-effort, and
+    // the re-push is the same branch push that already succeeded.
+    if (
+      !checkpointMode &&
+      input.sessionId &&
+      record.provenanceStamp?.status === "skipped" &&
+      record.checkpoint.status !== "pushed"
+    ) {
+      const recovery = await runProvenanceStamp(
+        exec,
+        target,
+        input.sessionId!,
+        deadlineAt,
+        input.readFile ? bundleReserveMs : 0,
+      )
+      record.provenanceStamp = recovery
+      if (recovery.status === "stamped") {
+        const again = await pushBranch(exec, target, deadlineAt, input.readFile ? bundleReserveMs : 0)
+        record.push = again
+      }
     }
   } else if (shouldCleanupCheckpoint(probe, record, checkpointMode, input.checkpointPushed)) {
     // Clean checkout with the work branch safe on the remote: a checkpoint
@@ -1020,6 +1191,10 @@ export function trackedSandboxDeliveryOpts(input: {
   /** Checkpoint-mode conversation-store passenger — see
    *  {@link RunSandboxDeliveryInput.adapterStore}. */
   adapterStore?: { adapterSessionId: string; adapter?: string }
+  /** The authoring session id, stamped as an `Agentproto-Session:` trailer
+   *  on the checkpoint commits this session's box makes — see
+   *  {@link RunSandboxDeliveryInput.sessionId}. */
+  sessionId?: string
   onDelivery?: (record: SandboxDeliveryRecord) => void
   onCheckpoint?: (record: SandboxDeliveryRecord) => void
   onTargetChanged?: (target: SandboxDeliveryTarget) => void
@@ -1042,6 +1217,7 @@ export function trackedSandboxDeliveryOpts(input: {
     exec: input.exec,
     ...(input.readFile ? { readFile: input.readFile } : {}),
     outDir: input.outDir,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
   }
   const buildCheckpoint = () =>
     sandboxCheckpointOpts(

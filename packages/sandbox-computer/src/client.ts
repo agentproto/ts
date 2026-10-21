@@ -10,6 +10,7 @@
 
 import {
   attachRequestSchema,
+  computerListResponseSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -18,6 +19,7 @@ import {
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  type ComputerListEntry,
   type ComputerStatus,
   type CreateComputerResponse,
   type ExecResponse,
@@ -254,6 +256,14 @@ export class ComputerControllerClient {
       )
     }
     return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data)
+  }
+
+  /** `GET /v1/computers` - every computer the controller holds for the
+   *  calling tenant. The gc surface: a box the controller still lists (and
+   *  still charges RAM for) that no live session references is an orphan. */
+  async listComputers(): Promise<ComputerListEntry[]> {
+    const body = await this.request("GET", "/v1/computers", computerListResponseSchema)
+    return body.computers
   }
 
   /** `GET /v1/computers/:id`. `null` on 404 (never mind why) — callers map
