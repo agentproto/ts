@@ -20,6 +20,7 @@
 import { posix } from "node:path"
 import type { SandboxExecOpts, SandboxExecResult, SandboxSpec } from "@agentproto/sandbox"
 import { DEFAULT_REMOTE_BRANCH, validateRemoteBranch, type WorkspaceRemote } from "./workspaces-config.js"
+import { planCheckpointResumeRestore } from "./checkpoint-resume.js"
 
 /** Env var the box sees the git token under. */
 export const GIT_TOKEN_ENV = "AGENTPROTO_GIT_TOKEN"
@@ -117,6 +118,13 @@ export interface SandboxWorkspaceRequest {
   /** Which checkpoint snapshot may be restored onto the checkout. Default
    *  `"any"`. See {@link CheckpointRestoreSnapshot}. */
   checkpointSnapshot?: CheckpointRestoreSnapshot
+  /** The checkpoint REF to restore, as recorded on the session that took it
+   *  (`agentproto-checkpoint/wt/x`): the session -> checkpoint link that
+   *  survives a crash. When present it REPLACES the branch-derived restore
+   *  ({@link restoreCheckpointSteps}): both restore the same snapshot, and
+   *  running the branch-derived one afterwards would find a dirty tree and
+   *  skip. */
+  checkpointResume?: { ref: string; sha?: string }
 }
 
 export interface SandboxSetupStep {
@@ -334,12 +342,19 @@ export function planSandboxWorkspace(req: SandboxWorkspaceRequest): SandboxWorks
       })
     }
     steps.push(
-      ...restoreCheckpointSteps({
-        checkoutDir,
-        branch,
-        ...(req.checkpointRefPrefix !== undefined ? { refPrefix: req.checkpointRefPrefix } : {}),
-        ...(req.checkpointSnapshot !== undefined ? { snapshot: req.checkpointSnapshot } : {}),
-      }),
+      ...(req.checkpointResume?.ref
+        ? planCheckpointResumeRestore({
+            checkoutDir,
+            ref: req.checkpointResume.ref,
+            ...(req.checkpointResume.sha ? { sha: req.checkpointResume.sha } : {}),
+            timeoutMs: STEP_TIMEOUT_MS,
+          })
+        : restoreCheckpointSteps({
+            checkoutDir,
+            branch,
+            ...(req.checkpointRefPrefix !== undefined ? { refPrefix: req.checkpointRefPrefix } : {}),
+            ...(req.checkpointSnapshot !== undefined ? { snapshot: req.checkpointSnapshot } : {}),
+          })),
     )
   } else {
     steps.push({
