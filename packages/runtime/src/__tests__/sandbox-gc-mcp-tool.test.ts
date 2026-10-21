@@ -30,6 +30,10 @@ function noopStub(): never {
 }
 const noopFn = (): never => (async () => undefined) as never
 const listFn = (): never => (async () => []) as never
+/** A creation timestamp well past the 15-minute grace window. */
+const oldEnough = (): string => new Date(Date.now() - 60 * 60 * 1000).toISOString()
+/** A creation timestamp inside the grace window. */
+const freshEnough = (): string => new Date(Date.now() - 60 * 1000).toISOString()
 
 let home = ""
 let gateway: { url: string; stop: () => Promise<void> } | undefined
@@ -75,8 +79,15 @@ beforeAll(async () => {
       return {
         provider: {
           listBoxes: async () => [
-            { id: "cmp-orphan", state: "stopped", sessions: 1, memoryMiB: 4096 },
-            { id: "cmp-known", state: "running" },
+            // An orphan: unknown to the ledger, no live session, past the
+            // grace window, no attached session.
+            { id: "cmp-orphan", state: "stopped", sessions: 0, memoryMiB: 4096, createdAt: oldEnough() },
+            // A box the provider still counts a session on: IN USE, never a
+            // candidate (not even while it runs).
+            { id: "cmp-attached", state: "running", sessions: 1, createdAt: oldEnough() },
+            // A box that is still inside the 15-minute grace window: too
+            // fresh to be proven stale.
+            { id: "cmp-fresh", state: "stopped", sessions: 0, createdAt: freshEnough() },
           ],
           remove: async (id: string, opts?: { force?: boolean }) => {
             removed.push({ id, force: opts?.force })
@@ -122,7 +133,9 @@ describe("sandbox_gc MCP tool", () => {
     const out = await callTool({ providers: ["computer"] })
     expect(out.applied).toBe(false)
     const candidates = out.candidates as Array<{ boxId: string; state: string; reason: string }>
-    expect(candidates.map(c => c.boxId)).toEqual(["cmp-orphan", "cmp-known"])
+    // Only the past-the-grace-window, unattached, unknown box is a
+    // candidate: the attached one and the fresh one are NOT.
+    expect(candidates.map(c => c.boxId)).toEqual(["cmp-orphan"])
     expect(candidates[0]?.reason).toContain("no live session")
     expect(removed).toEqual([])
   })
@@ -131,10 +144,10 @@ describe("sandbox_gc MCP tool", () => {
     removed = []
     const out = await callTool({ providers: ["computer"], apply: true })
     expect(out.applied).toBe(true)
-    expect(removed).toEqual([
-      { id: "cmp-orphan", force: true },
-      { id: "cmp-known", force: true },
-    ])
-    expect(out.deleted).toEqual(["cmp-orphan", "cmp-known"])
+    // ONLY the proven orphan is force-deleted: a box the provider still
+    // counts a session on (cmp-attached) and a box inside the grace window
+    // (cmp-fresh) are NEVER destroyed, running or not.
+    expect(removed).toEqual([{ id: "cmp-orphan", force: true }])
+    expect(out.deleted).toEqual(["cmp-orphan"])
   })
 })

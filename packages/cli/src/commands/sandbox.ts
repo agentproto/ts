@@ -135,10 +135,19 @@ gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
            the ledger rows "stopped".
   --pause  With --apply: PAUSE the boxes instead of killing them (keeps
            them attachable later) — note a paused e2b box still bills, so
-           the default kill is usually what you want for orphans.
+           the default kill is usually what you want for orphans. It
+           applies to the LEDGER orphans only: the ORPHAN PROVIDER BOXES
+           are always FORCE-DELETED on the provider (a paused orphan
+           would keep holding its RAM).
   --provider <slug>
            Provider whose control plane is swept for orphan boxes.
            Repeatable. Default: computer.
+  --include-attached
+           Also propose the orphan boxes the provider still counts an
+           ATTACHED SESSION on. By default they are left alone (they may
+           be in use by a session the daemon cannot see): a candidate must
+           be older than the 15-minute grace window AND carry no attached
+           session.
   --json   Print the plan / outcomes as JSON.
 
 checkpoint-gc
@@ -664,6 +673,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
       pause: { type: "boolean" },
       json: { type: "boolean" },
       provider: { type: "string", multiple: true },
+      "include-attached": { type: "boolean" },
     },
   })
   const deps = cliDeps ?? {}
@@ -700,7 +710,21 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
   const resolveProvider = deps.resolveProvider ?? defaultResolveProvider
   const orphanPass =
     liveSessions === undefined
-      ? { candidates: [], providerErrors: [], deleted: [], failed: [] }
+      ? {
+          candidates: [],
+          providerErrors: [],
+          scanned: false,
+          notScanned: [
+            {
+              provider: "all",
+              reason:
+                liveSessionsError ??
+                "the live sessions could not be read - the provider sweep is skipped",
+            },
+          ],
+          deleted: [],
+          failed: [],
+        }
       : await runSandboxOrphanGcPass({
           resolveProvider: resolveProvider as unknown as GcProviderResolver,
           providerSlugs:
@@ -709,6 +733,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
               : deps.providerSlugs ?? DEFAULT_GC_PROVIDER_SLUGS,
           registryBoxIds: new Set(ledger.map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
+          includeAttached: values["include-attached"] === true,
           apply: values.apply === true,
         })
   const orphans = orphanPass.candidates
@@ -746,6 +771,8 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
               ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
             })),
             providerErrors: orphanPass.providerErrors,
+            scanned: orphanPass.scanned,
+            notScanned: orphanPass.notScanned,
             applied: false,
             results: [],
             orphanResults: [],
@@ -786,7 +813,10 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
           `${values.pause ? "" : " (kill is the default; pass --pause to pause instead)"}.\n`,
       )
     }
-    printOrphanPlan(orphans)
+    printOrphanPlan(orphans, {
+      scanned: orphanPass.scanned,
+      notScanned: orphanPass.notScanned,
+    })
     return orphanPass.providerErrors.length > 0 ? 1 : 0
   }
 
@@ -858,6 +888,8 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
             ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
           })),
           providerErrors: orphanPass.providerErrors,
+          scanned: orphanPass.scanned,
+          notScanned: orphanPass.notScanned,
           applied: true,
           results,
           orphanResults,
@@ -872,9 +904,27 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
 
 /** Print the orphan-box plan (dry run). The RAM the pass would free is only
  *  known when the provider reports a per-box memory; otherwise the line says
- *  so rather than guessing. */
-function printOrphanPlan(orphans: readonly SandboxOrphanCandidate[]): void {
+ *  so rather than guessing.
+ *
+ *  An EMPTY list is not the same thing as a clean sweep: when the provider
+ *  control plane was never enumerated (no daemon, no provider configured,
+ *  no `listBoxes`) the plan says "not scanned" instead of claiming that
+ *  every box the provider lists is known or in use. */
+function printOrphanPlan(
+  orphans: readonly SandboxOrphanCandidate[],
+  scan: { scanned: boolean; notScanned: ReadonlyArray<{ provider: string; reason: string }> },
+): void {
   if (orphans.length === 0) {
+    if (!scan.scanned) {
+      const why =
+        scan.notScanned.length > 0
+          ? scan.notScanned.map(s => `${s.provider}: ${s.reason}`).join("; ")
+          : "the provider control plane was not enumerated"
+      process.stdout.write(
+        `orphan provider boxes: not scanned - ${why}. Nothing was looked at, so no orphan can be ruled out.\n`,
+      )
+      return
+    }
     process.stdout.write("no orphan provider boxes - every box the provider lists is known or in use\n")
     return
   }

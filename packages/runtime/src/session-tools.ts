@@ -4673,7 +4673,10 @@ export function registerSessionTools(
       "controller is the case that matters: a stale box keeps its memory " +
       "(and its session slots) pinned on the host, and every later launch " +
       "then fails with \"host capacity\". A box held by a live session is " +
-      "NEVER a candidate. DEFAULTS TO A DRY RUN: it lists the orphan boxes " +
+      "NEVER a candidate, and neither is a box that is younger than the " +
+      "15-minute grace window or that the provider still counts a session " +
+      "on (`includeAttached` lifts that last check). DEFAULTS TO A DRY " +
+      "RUN: it lists the orphan boxes " +
       "with their state, age (when known) and the RAM they hold (when the " +
       "provider reports it). `apply: true` deletes them on the provider, " +
       "forced, because a stale provider-side session slot would otherwise " +
@@ -4684,6 +4687,12 @@ export function registerSessionTools(
       apply: mcpBool
         .optional()
         .describe("When true, DELETE the orphan boxes on their provider (forced). Default false - a dry run."),
+      includeAttached: mcpBool
+        .optional()
+        .describe(
+          "When true, ALSO propose the boxes the provider still counts an " +
+            "attached session on (the default is to leave them alone: they may be in use).",
+        ),
       providers: z
         .array(z.string())
         .optional()
@@ -4711,6 +4720,7 @@ export function registerSessionTools(
             input.providers && input.providers.length > 0 ? input.providers : ["computer"],
           registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
+          includeAttached: input.includeAttached === true,
           apply: input.apply === true,
         })
         return {
@@ -4721,6 +4731,8 @@ export function registerSessionTools(
                 applied: input.apply === true,
                 candidates: pass.candidates,
                 providerErrors: pass.providerErrors,
+                scanned: pass.scanned,
+                notScanned: pass.notScanned,
                 deleted: pass.deleted,
                 failed: pass.failed,
               }),

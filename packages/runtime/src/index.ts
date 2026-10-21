@@ -692,6 +692,8 @@ export {
   reapGcEntry,
   DEAD_SESSION_STATUSES,
   GC_REAPABLE_STATES,
+  GONE_RE,
+  isGoneError,
   type SandboxGcCandidate,
   type SandboxGcReapDeps,
   type SandboxGcProviderHandle,
@@ -700,6 +702,7 @@ export {
 export {
   collectProviderOrphanCandidates,
   liveSessionBoxIds,
+  ORPHAN_GRACE_MS,
   reapSandboxOrphan,
   runSandboxOrphanGcPass,
   scanSandboxProviderOrphans,
