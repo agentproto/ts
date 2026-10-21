@@ -3414,7 +3414,17 @@ export async function spawnAgentSession(
       // box-side. An executor (delegationDenied) never forwards a scope,
       // so `sandboxOrchestratorForward` stays undefined and the executor
       // stays a leaf — a denial can't be resurrected through this path.
-      sandboxOrchestratorForward !== undefined,
+      // A TOOL-NARROWED request that no longer includes `agent_start` is
+      // NOT delegation reach (`narrowSandboxOrchestratorForward` preserves
+      // the caller's explicit allowlist / intersects it with a scoped
+      // caller's ceiling, so `{ tools: ["message_parent"] }` or
+      // `{ tools: [] }` mints a report-only scope inside the box): the
+      // host prompt must promise the spawn surface ONLY when the
+      // forwarded scope actually carries it.
+      sandboxOrchestratorForward === true ||
+      (typeof sandboxOrchestratorForward === "object" &&
+        (sandboxOrchestratorForward.tools === undefined ||
+          sandboxOrchestratorForward.tools.includes("agent_start"))),
   })
   if (input.role === undefined) {
     role = resolveRole(

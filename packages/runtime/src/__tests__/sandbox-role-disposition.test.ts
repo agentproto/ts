@@ -200,6 +200,62 @@ describe("sandbox spawn — the role disposition reaches the inner prompt", () =
     expect(receivedPrompts[0]).toContain("You are the executor.")
     expect(receivedPrompts[0]).not.toContain("You are the supervisor.")
   })
+
+  it("a TOOL-NARROWED orchestrator request without agent_start does NOT promise delegation: the inner prompt falls back to the executor disposition", async () => {
+    // Regression (PR review): `narrowSandboxOrchestratorForward` preserves an
+    // explicit `tools` allowlist verbatim on a root spawn, so
+    // `orchestrator: { tools: ["message_parent"] }` forwards a REPORT-ONLY
+    // scope to the box — the inner session can talk to its parent but cannot
+    // `agent_start` anything. The reach check must therefore inspect the
+    // forwarded shape, not mere presence.
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+      role: "supervisor",
+      orchestrator: { tools: ["message_parent"] },
+      prompt: "report upward only",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    // composeRoleContext swaps in the executor disposition AND drops the
+    // spawn line when delegation is unreachable, even though the caller
+    // passed role:"supervisor" explicitly:
+    expect(receivedPrompts[0]).toContain("You are the executor.")
+    expect(receivedPrompts[0]).not.toContain("agent_start")
+  })
+
+  it("an explicitly tool-narrowed request that still includes agent_start IS delegation reach: the supervisor composition stays honest", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+      role: "supervisor",
+      orchestrator: { tools: ["agent_start", "message_parent"] },
+      prompt: "decompose, but only with the listed tools",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(receivedPrompts[0]).toContain("You are the supervisor.")
+    expect(receivedPrompts[0]).not.toContain("You are the executor.")
+  })
+
+  it("a role-defaulted sandbox spawn with a narrowed orchestrator request (no agent_start) resolves executor, not supervisor", async () => {
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+      orchestrator: { tools: [] },
+      prompt: "no explicit role, no spawn tool",
+      wait: true,
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(receivedPrompts[0]).toContain("You are the executor.")
+    expect(receivedPrompts[0]).not.toContain("You are the supervisor.")
+  })
 })
 
 describe("spawn-lattice: supervisor spawns executor, executor cannot delegate", () => {
