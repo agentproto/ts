@@ -26,7 +26,7 @@ import {
   type ResolvedCloudSpawn,
 } from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
-import { mintParentRelayGrant, parentRelayUrlFromEnv, revokeParentRelayGrant } from "./parent-relay.js"
+import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -6377,15 +6377,7 @@ export async function bootSandboxAgentSession(opts: {
   // the operator configured a relay URL reachable FROM the box; without one
   // nothing is forwarded and the box's `message_parent` keeps today's clear
   // "no recorded parent" error.
-  const parentRelayUrl = parentRelayUrlFromEnv()
-  const remoteParent =
-    opts.parentRelay && parentRelayUrl
-      ? mintParentRelayGrant({
-          parentSessionId: opts.parentRelay.parentSessionId,
-          boxSessionId: opts.parentRelay.boxSessionId,
-          url: parentRelayUrl,
-        })
-      : undefined
+  const remoteParent = mintRemoteParentForBox(opts.parentRelay)
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   try {

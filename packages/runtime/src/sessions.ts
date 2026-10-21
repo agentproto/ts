@@ -136,9 +136,10 @@ import {
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import {
+  attachParentRelayStore,
   forgetRelayToken,
   rememberRelayToken,
-  revokeParentRelayGrantsForBoxSession,
+  revokeParentRelayGrantsForSession,
 } from "./parent-relay.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type {
@@ -6299,6 +6300,23 @@ export function createSessionsRegistry(opts?: {
     process.on("exit", onProcessExit)
   }
 
+  // PARENT RELAY (host side): the grants this daemon minted for its box
+  // sessions persist next to the registry's own state (token HASHES only,
+  // see `parent-relay.ts`), so a host daemon restart does not turn every
+  // live box's relay into `relay_token_unknown`. The liveness probe lets the
+  // periodic sweep renew a grant while both its sessions are live and revoke
+  // it once either is dead. Detached again by `shutdown()`.
+  const detachParentRelayStore = persist
+    ? attachParentRelayStore({
+        dir: dirname(legacyPath),
+        liveness: id => {
+          const rt = sessions.get(id)
+          if (!rt) return "unknown"
+          return rt.desc.status === "running" || rt.desc.status === "starting" ? "live" : "dead"
+        },
+      })
+    : undefined
+
   // Record (or refresh) the derived outcome of an ended agent-cli session —
   // see `SessionDescriptor.outcome`. Idempotent via `shouldReplaceOutcome`,
   // so every terminal path can call it without coordinating. The summary
@@ -6404,11 +6422,13 @@ export function createSessionsRegistry(opts?: {
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
     // PARENT RELAY: this session is over, so it must not be able to report
-    // up to its host parent any more. Revoke the grant the host minted for
+    // up to its host parent any more. Revoke the grants the host minted for
     // it (the grant names this row as its box session) and forget this row's
     // own outgoing relay token. Runs from the ONE exit funnel every
     // terminal path funnels through (clean exit, kill, crash, idle-reap).
-    revokeParentRelayGrantsForBoxSession(rt.desc.id)
+    // The same funnel also covers a PARENT that ends: its children's grants
+    // have nobody left to deliver to, so they are revoked as well.
+    revokeParentRelayGrantsForSession(rt.desc.id)
     forgetRelayToken(rt.desc.id)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
@@ -6852,6 +6872,11 @@ export function createSessionsRegistry(opts?: {
     // A retired session's AGENT.md is no longer worth watching — stop the
     // opt-in hot-role-refresh watch, if any (never leaked across retirement).
     stopAgentRoleWatch(rt.desc.id)
+    // PARENT RELAY: an archived / forgotten / retired row (box session or
+    // parent) never takes part in a relay again - revoke its grants (the
+    // exit funnel already did for a row that ended; this covers a retire
+    // that did not go through it).
+    revokeParentRelayGrantsForSession(rt.desc.id)
     schedulePersist()
     const ev: SessionRetiredEvent = {
       sessionId: rt.desc.id,
@@ -14350,6 +14375,10 @@ export function createSessionsRegistry(opts?: {
         emitExited(rt)
       }
     }
+    // PARENT RELAY: the exits above already revoked (and persisted) the
+    // grants of the sessions that died with this daemon; detached boxes keep
+    // theirs for the next boot. Stop writing to the store from here on.
+    detachParentRelayStore?.()
     // Tracked so `settlePendingWrites()` after `shutdown()` waits for the
     // streams to finish flushing into `transcriptBaseDir`.
     trackWrite(transcriptWriter.closeAll())

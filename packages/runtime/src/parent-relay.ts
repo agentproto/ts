@@ -27,13 +27,29 @@
  *     through the ordinary `registry.sendMessage` path - so the parent sees
  *     a normal `session-message`, with the same kind/urgency semantics.
  *
+ * Token lifecycle:
+ *  - BOX: the raw token lives in memory only (never on a descriptor, a
+ *    summary, a log or `sessions.json`). Nothing about it is persisted on
+ *    the box: a box session does not outlive its box daemon, and a restarted
+ *    box session gets a FRESH token from the host's restart path.
+ *  - HOST: only the token's SHA-256 hash is kept, in memory and in
+ *    `parent-relay-grants.json` (0600, next to the sessions registry's
+ *    state), reloaded at boot so a host daemon restart keeps live relays.
+ *  - A grant SLIDES on every successful use and is RENEWED by the periodic
+ *    sweep while both its sessions are live; it is REVOKED when the box
+ *    session or the parent ends / is archived / is forgotten, when the box
+ *    boot fails, and by the sweep once either session is dead. Expired
+ *    grants are pruned.
+ *
  * Reachability (design item 4) is the operator's job: the host's relay URL
  * must be reachable FROM the box (a tunnel / public endpoint). When no relay
  * URL is configured the host forwards NO remote parent, and the box's
  * `message_parent` keeps today's clear "no recorded parent" error.
  */
 
-import { randomBytes } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname, join } from "node:path"
 import {
   createSessionMessage,
   messageFrom,
@@ -61,9 +77,15 @@ export interface ParentRelayPayload {
   replyTo?: string
 }
 
-/** The host-side record a relay token stands for. */
+/** The host-side record a relay token stands for.
+ *
+ *  The host never keeps the RAW token: it stores (in memory and on disk) only
+ *  its SHA-256 hash, so a leaked grants file cannot be replayed against the
+ *  relay route. The raw token exists only in the mint result (forwarded once
+ *  into the box) and in the box's own memory. */
 export interface ParentRelayGrant {
-  token: string
+  /** SHA-256 (hex) of the relay token - see {@link hashParentRelayToken}. */
+  tokenHash: string
   /** The host-side parent session the report is delivered to. */
   parentSessionId: string
   /** The host-side proxy row of the BOX session (the attested sender). */
@@ -99,7 +121,116 @@ export const PARENT_RELAY_TIMEOUT_MS = 15_000
 /** Env var naming the host relay base URL (operator-provided reachability). */
 export const PARENT_RELAY_URL_ENV = "AGENTPROTO_PARENT_RELAY_URL"
 
+/** File (under the daemon's state dir) holding the host-side grants, so a
+ *  host daemon restart does not turn every live box's relay into
+ *  `relay_token_unknown`. Holds HASHES only (never a raw token), mode 0600. */
+export const PARENT_RELAY_GRANTS_FILE = "parent-relay-grants.json"
+
+/** Host-side grants, keyed by the token HASH (never by the raw token). */
 const grants = new Map<string, ParentRelayGrant>()
+
+/** SHA-256 (hex) of a relay token: the only form the host keeps. */
+export function hashParentRelayToken(token: string): string {
+  return createHash("sha256").update(token, "utf8").digest("hex")
+}
+
+/** Liveness of a session row as the attached registry sees it: `live`
+ *  (running/starting), `dead` (a terminal row) or `unknown` (no such row in
+ *  this registry - e.g. not restored yet, or another daemon's). */
+export type ParentRelayLiveness = "live" | "dead" | "unknown"
+
+interface ParentRelayStore {
+  path: string
+  liveness?: (sessionId: string) => ParentRelayLiveness
+}
+
+let store: ParentRelayStore | undefined
+
+function isGrantShape(v: unknown): v is ParentRelayGrant {
+  if (!v || typeof v !== "object") return false
+  const g = v as Record<string, unknown>
+  return (
+    typeof g.tokenHash === "string" &&
+    /^[0-9a-f]{64}$/.test(g.tokenHash) &&
+    typeof g.parentSessionId === "string" &&
+    typeof g.boxSessionId === "string" &&
+    typeof g.expiresAt === "number" &&
+    typeof g.ttlMs === "number"
+  )
+}
+
+/** Write the grants (hashes only) to the attached store, atomically and
+ *  owner-only. Best-effort: a failed write never breaks a relay (the
+ *  in-memory map stays authoritative for this process). */
+function persistGrants(): void {
+  if (!store) return
+  const path = store.path
+  try {
+    mkdirSync(dirname(path), { recursive: true })
+    const tmp = `${path}.${process.pid}.tmp`
+    const body = JSON.stringify({ version: 1, grants: Array.from(grants.values()) }, null, 2)
+    writeFileSync(tmp, body, { mode: 0o600 })
+    renameSync(tmp, path)
+  } catch (err) {
+    console.warn(
+      `[parent-relay] could not persist the relay grants to ${path}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+/** Load the grants persisted at `path` into the in-memory map (expired and
+ *  malformed entries are dropped). Merges: a grant already in memory wins. */
+function loadGrants(path: string, nowMs: number): void {
+  let raw: string
+  try {
+    raw = readFileSync(path, "utf8")
+  } catch {
+    return
+  }
+  try {
+    const parsed = JSON.parse(raw) as { grants?: unknown }
+    const list = Array.isArray(parsed.grants) ? parsed.grants : []
+    for (const g of list) {
+      if (!isGrantShape(g) || g.expiresAt <= nowMs) continue
+      if (!grants.has(g.tokenHash)) {
+        grants.set(g.tokenHash, {
+          tokenHash: g.tokenHash,
+          parentSessionId: g.parentSessionId,
+          boxSessionId: g.boxSessionId,
+          expiresAt: g.expiresAt,
+          ttlMs: g.ttlMs,
+        })
+      }
+    }
+  } catch {
+    // A corrupt file is ignored (and rewritten on the next mutation).
+  }
+}
+
+/** HOST: attach the grant store to a state dir (the sessions registry's own,
+ *  see `createSessionsRegistry`) and reload the grants it persisted, so live
+ *  box sessions keep reporting across a host daemon restart. `liveness`
+ *  lets the periodic sweep RENEW a grant while both its sessions are live
+ *  and REVOKE it once either is dead. Returns a detach function (a no-op once
+ *  another store was attached). */
+export function attachParentRelayStore(opts: {
+  dir: string
+  liveness?: (sessionId: string) => ParentRelayLiveness
+  nowMs?: number
+}): () => void {
+  const path = join(opts.dir, PARENT_RELAY_GRANTS_FILE)
+  loadGrants(path, opts.nowMs ?? Date.now())
+  const attached: ParentRelayStore = { path, ...(opts.liveness ? { liveness: opts.liveness } : {}) }
+  store = attached
+  if (grants.size > 0) {
+    persistGrants()
+    ensurePruneTimer()
+  }
+  return () => {
+    if (store === attached) store = undefined
+  }
+}
 
 /** The BOX side's outgoing relay tokens, keyed by the box session id.
  *
@@ -149,13 +280,52 @@ export function parentRelayUrlFromEnv(env: NodeJS.ProcessEnv = process.env): str
  *  in memory forever. */
 export function pruneExpiredParentRelayGrants(nowMs: number = Date.now()): number {
   let dropped = 0
-  for (const [token, grant] of grants) {
+  for (const [hash, grant] of grants) {
     if (grant.expiresAt <= nowMs) {
-      grants.delete(token)
+      grants.delete(hash)
       dropped++
     }
   }
+  if (dropped > 0) persistGrants()
   return dropped
+}
+
+/** The periodic grant sweep: drops expired grants, REVOKES a grant once its
+ *  box session or its parent session is dead (a terminal row in the attached
+ *  registry), and RENEWS a grant while BOTH sessions are live - so a box
+ *  session that runs (silently) longer than one TTL keeps its relay, while a
+ *  grant whose sessions are gone still dies. Renewal happens once less than
+ *  half the TTL is left, so a live grant is rewritten at most twice per TTL. */
+export function sweepParentRelayGrants(nowMs: number = Date.now()): {
+  pruned: number
+  revoked: number
+  renewed: number
+} {
+  let pruned = 0
+  let revoked = 0
+  let renewed = 0
+  const liveness = store?.liveness
+  for (const [hash, grant] of grants) {
+    if (grant.expiresAt <= nowMs) {
+      grants.delete(hash)
+      pruned++
+      continue
+    }
+    if (!liveness) continue
+    const parent = liveness(grant.parentSessionId)
+    const box = liveness(grant.boxSessionId)
+    if (parent === "dead" || box === "dead") {
+      grants.delete(hash)
+      revoked++
+      continue
+    }
+    if (parent === "live" && box === "live" && grant.expiresAt - nowMs < grant.ttlMs / 2) {
+      grant.expiresAt = nowMs + grant.ttlMs
+      renewed++
+    }
+  }
+  if (pruned + revoked + renewed > 0) persistGrants()
+  return { pruned, revoked, renewed }
 }
 
 let pruneTimer: NodeJS.Timeout | undefined
@@ -165,7 +335,7 @@ let pruneTimer: NodeJS.Timeout | undefined
 function ensurePruneTimer(): void {
   if (pruneTimer) return
   pruneTimer = setInterval(() => {
-    pruneExpiredParentRelayGrants()
+    sweepParentRelayGrants()
   }, PARENT_RELAY_PRUNE_INTERVAL_MS)
   pruneTimer.unref?.()
 }
@@ -186,13 +356,15 @@ export function mintParentRelayGrant(input: {
   ensurePruneTimer()
   const token = randomBytes(24).toString("hex")
   const ttlMs = input.ttlMs ?? PARENT_RELAY_TTL_MS
-  grants.set(token, {
-    token,
+  const tokenHash = hashParentRelayToken(token)
+  grants.set(tokenHash, {
+    tokenHash,
     parentSessionId: input.parentSessionId,
     boxSessionId: input.boxSessionId,
     expiresAt: now + ttlMs,
     ttlMs,
   })
+  persistGrants()
   return {
     sessionId: input.parentSessionId,
     url: input.url.replace(/\/+$/, ""),
@@ -207,32 +379,51 @@ export function resolveParentRelayGrant(
   nowMs: number = Date.now(),
 ): ParentRelayGrant | undefined {
   if (!token) return undefined
-  const grant = grants.get(token)
+  const hash = hashParentRelayToken(token)
+  const grant = grants.get(hash)
   if (!grant) return undefined
   if (grant.expiresAt <= nowMs) {
-    grants.delete(token)
+    grants.delete(hash)
+    persistGrants()
     return undefined
   }
   return grant
 }
 
-/** Forget a grant (e.g. when the box session ends). */
+/** Forget a grant by its raw token (e.g. when the box boot fails). */
 export function revokeParentRelayGrant(token: string): void {
-  grants.delete(token)
+  if (grants.delete(hashParentRelayToken(token))) persistGrants()
 }
 
-/** Forget every grant minted for one host-side box session. Called when
- *  that session ends (exit / kill / teardown): a box session that is gone
- *  must never be able to report up again, even with a token it kept. */
-export function revokeParentRelayGrantsForBoxSession(boxSessionId: string): number {
+/** Forget every grant one session takes part in - as the BOX session or as
+ *  the PARENT. Called when that session ends or is archived/forgotten: a box
+ *  session that is gone must never report up again (even with a token it
+ *  kept), and a parent that is gone has nobody left to receive. */
+export function revokeParentRelayGrantsForSession(sessionId: string): number {
   let revoked = 0
-  for (const [token, grant] of grants) {
-    if (grant.boxSessionId === boxSessionId) {
-      grants.delete(token)
+  for (const [hash, grant] of grants) {
+    if (grant.boxSessionId === sessionId || grant.parentSessionId === sessionId) {
+      grants.delete(hash)
       revoked++
     }
   }
+  if (revoked > 0) persistGrants()
   return revoked
+}
+
+/** HOST: mint the grant for a box session that has a host-side parent and
+ *  return the remote-parent block to forward into the box's `agent_start`,
+ *  or `undefined` when no relay URL is configured (nothing is forwarded and
+ *  the box keeps the clear "no recorded parent" error). Shared by the
+ *  spawn boot and both restart paths (live-box re-attach and fresh box). */
+export function mintRemoteParentForBox(
+  parentRelay: { parentSessionId: string; boxSessionId: string } | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): RemoteParent | undefined {
+  if (!parentRelay) return undefined
+  const url = parentRelayUrlFromEnv(env)
+  if (!url) return undefined
+  return mintParentRelayGrant({ ...parentRelay, url })
 }
 
 /** SLIDE the grant's expiry forward by its own TTL: every SUCCESSFUL relay
@@ -244,12 +435,14 @@ export function slideParentRelayGrant(
   nowMs: number = Date.now(),
 ): ParentRelayGrant {
   grant.expiresAt = nowMs + grant.ttlMs
+  persistGrants()
   return grant
 }
 
-/** Test seam: drop every minted grant. */
+/** Test seam: drop every minted grant (and detach any store). */
 export function clearParentRelayGrants(): void {
   grants.clear()
+  store = undefined
   if (pruneTimer) {
     clearInterval(pruneTimer)
     pruneTimer = undefined

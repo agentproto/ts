@@ -426,6 +426,25 @@ export function registerAgentTools(
       },
     },
     async input => {
+      // PARENT RELAY: `remoteParent` is DAEMON-INTERNAL. The host daemon
+      // sets it on the box daemon's `agent_start` when it boots a box
+      // session - a ROOT-gateway call (no caller session, no orchestrator
+      // scope). Any session caller (scoped sub-gateway or the self-ref
+      // `?callerSessionId=` query) is refused: a remote parent names the
+      // relay URL the session's reports (and its relay token) are sent to.
+      if (input.remoteParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: `remoteParent` is daemon-internal (the host daemon forwards it into a box " +
+                "at spawn time) and cannot be supplied by a session caller.",
+            },
+          ],
+          isError: true,
+        }
+      }
       if (!resolveAgentAdapter) {
         return {
           content: [
