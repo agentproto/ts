@@ -14,8 +14,8 @@ import {
   reapSandboxOrphan,
   runSandboxOrphanGcPass,
   scanSandboxProviderOrphans,
-  type SandboxGcProviderHandle,
 } from "../sandbox-orphan-gc.js"
+import type { SandboxGcProviderHandle } from "../sandbox-gc.js"
 
 function handleWith(
   boxes: Array<{ id: string; state?: string; sessions?: number; memoryMiB?: number; createdAt?: string }>,

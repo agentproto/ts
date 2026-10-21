@@ -67,7 +67,6 @@ beforeAll(async () => {
     resolveOpenPr: noopFn(),
     resolvePrState: noopFn(),
     runBranchGc: noopFn(),
-    runBranchGcAutoReclaim: noopFn(),
     runWorktreeAutoReclaim: noopFn(),
     runWorktreeGc: noopFn(),
     listSandboxProviders: listFn(),
