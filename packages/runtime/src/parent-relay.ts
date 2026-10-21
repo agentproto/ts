@@ -34,6 +34,7 @@
  */
 
 import { randomBytes } from "node:crypto"
+import { decide, type Decision } from "./permissions.js"
 import {
   createSessionMessage,
   messageFrom,
@@ -271,7 +272,7 @@ export interface ParentRelayRegistry {
     | undefined
   sendMessage(
     envelope: SessionMessage,
-    opts: { source: string; origin: string; allowInterrupt: boolean },
+    opts: { source: string; origin: string; allowInterrupt: boolean; decision?: Decision },
   ): Promise<{ messageId: string; queued: boolean; urgencyApplied: MessageUrgency; delivered?: { via: string } | null }>
 }
 
@@ -375,9 +376,24 @@ export async function deliverParentRelayMessage(input: {
   // host already parented under `parentId`. The payload never names a
   // sender: the host attests it.
   const boxRow = input.registry.get(grant.boxSessionId)
+  // Same ACL as every other messaging entry point (permissions.ts). The
+  // relay grant, not the tree, is what proves the `child` relation: the
+  // box session may have no host row at all.
+  const principal = {
+    kind: "relay",
+    boxSessionId: grant.boxSessionId,
+    parentSessionId: grant.parentSessionId,
+  } as const
+  const resource = { kind: "session", session: parent } as const
+  const policy = { messaging: { agentInterrupt: input.allowInterrupt === true ? "allow" : "deny" } } as const
+  const decision = decide(principal, "session.message", resource, policy)
+  if (!decision.allow || !decision.relation) {
+    return { ok: false, code: "relay_forbidden", message: decision.reason }
+  }
+  const interruptDecision = decide(principal, "session.message.interrupt", resource, policy)
   const envelope = createSessionMessage({
     to: parentId,
-    from: messageFrom(boxRow ?? { id: grant.boxSessionId }, "child"),
+    from: messageFrom(boxRow ?? { id: grant.boxSessionId }, decision.relation),
     text: input.payload.message,
     kind: input.payload.kind,
     urgency: input.payload.urgency,
@@ -389,7 +405,8 @@ export async function deliverParentRelayMessage(input: {
     result = await input.registry.sendMessage(envelope, {
       source: provenance,
       origin: provenance,
-      allowInterrupt: input.allowInterrupt === true,
+      allowInterrupt: interruptDecision.allow,
+      decision,
     })
   } catch (err) {
     return {
