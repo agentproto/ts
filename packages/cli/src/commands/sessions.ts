@@ -4811,10 +4811,11 @@ function buildRestartBody(
     // Carry the context-continuity policy across the restart (a restarted
     // session must not silently lose its autocompact threshold), and let
     // `--auto-compact-at-tokens` override just that one field.
+    const prevContinuity = prev.contextContinuity as Record<string, unknown> | undefined
     const continuity =
-      prev.contextContinuity || autoCompactAtTokens !== undefined
+      prevContinuity || autoCompactAtTokens !== undefined
         ? {
-            ...(prev.contextContinuity ?? {}),
+            ...(prevContinuity ?? {}),
             ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
           }
         : undefined

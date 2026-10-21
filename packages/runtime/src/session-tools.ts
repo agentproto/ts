@@ -121,6 +121,16 @@ import {
 import { coldSessionRows, coldSessionDescriptor } from "./session-cold-list.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import {
+  buildTranscriptChain,
+  clampExcerptChars,
+  clampMaxResults,
+  clampTotalChars,
+  readTranscriptFile,
+  searchTranscriptFile,
+  type TranscriptExcerpt,
+  type TranscriptHit,
+} from "./transcript-search.js"
+import {
   INDEX_DEFAULT_LIMIT,
   buildSessionRecap,
   indexEntryFromDescriptor,
@@ -2101,6 +2111,235 @@ export function registerSessionTools(
       )
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
+      }
+    },
+  )
+
+  // ── transcript_search / transcript_read ───────────────────────────
+  // Conversation resumption: after a restart (or a continue-fresh
+  // handoff) the history a session is carrying on lives in its
+  // PREDECESSORS' transcripts. These two tools look back along the
+  // lineage and return DATED EXCERPTS — never a whole transcript.
+  const resolveTranscriptTarget = (
+    input: SessionRefInput,
+  ): { desc?: SessionDescriptor; error?: string } => {
+    const desc = resolveSessionDesc(registry, input)
+    if (desc) return { desc }
+    const fallback = callerSessionId
+      ? registry.get(callerSessionId)
+      : undefined
+    if (fallback) return { desc: fallback }
+    return {
+      error:
+        "no session given and no calling session to fall back on — pass " +
+        "`sessionId` (or `idOrName` / `slug`) of the session to look back from.",
+    }
+  }
+
+  const transcriptChainFor = (desc: SessionDescriptor) => {
+    const baseDir = registry.transcriptBaseDir
+    const byId = new Map<string, SessionDescriptor>()
+    for (const row of registry.list({ includeArchived: true })) byId.set(row.id, row)
+    const chain = buildTranscriptChain(desc.id, id => byId.get(id))
+    const nodes = chain.map(node => {
+      const row = byId.get(node.sessionId)
+      const path = row?.eventsPath ?? sessionEventsPath(node.sessionId, baseDir)
+      return { ...node, path }
+    })
+    return nodes
+  }
+
+  server.tool(
+    "transcript_search",
+    "Search the transcripts of a session AND its predecessors (the restart / " +
+      "continue-fresh lineage) for a query, and return DATED EXCERPTS — one " +
+      "bounded snippet per hit, never a whole file. Use it to recover what " +
+      "was said before a restart: the chain is walked from the session " +
+      "through `resumedFrom` / `continuedFrom` / `succeeds` links, so a " +
+      "resumed session can find its own earlier history.",
+    {
+      ...sessionRefSchema(z),
+      query: z
+        .string()
+        .min(1)
+        .describe("The text to look for (case-insensitive substring match)."),
+      maxResults: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Maximum hits (default 10, max 50)."),
+      excerptChars: z
+        .number()
+        .int()
+        .min(80)
+        .max(4000)
+        .optional()
+        .describe("Characters per excerpt (default 600, max 4000)."),
+      totalChars: z
+        .number()
+        .int()
+        .min(200)
+        .max(100000)
+        .optional()
+        .describe("Total characters returned (default 20000, max 100000)."),
+    },
+    async input => {
+      const target = resolveTranscriptTarget(input)
+      if (!target.desc) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error:
+                  target.error ??
+                  "no session given — pass `sessionId` (or `idOrName` / `slug`).",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const nodes = transcriptChainFor(target.desc)
+      const maxResults = clampMaxResults(input.maxResults)
+      const excerptChars = clampExcerptChars(input.excerptChars)
+      const totalChars = clampTotalChars(input.totalChars)
+      const hits: TranscriptHit[] = []
+      let spent = 0
+      let truncated = false
+      for (const node of nodes) {
+        if (hits.length >= maxResults) {
+          truncated = true
+          break
+        }
+        const remaining = Math.max(200, totalChars - spent)
+        const result = await searchTranscriptFile(node.path, node.sessionId, {
+          query: input.query,
+          maxResults: maxResults - hits.length,
+          excerptChars,
+          totalChars: remaining,
+        })
+        for (const hit of result.hits) {
+          spent += hit.excerpt.length
+          hits.push(hit)
+        }
+        if (result.truncated) truncated = true
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              sessionId: target.desc.id,
+              query: input.query,
+              chain: nodes.map(n => ({ sessionId: n.sessionId, ...(n.via ? { via: n.via } : {}), depth: n.depth })),
+              hits,
+              truncated,
+            }),
+          },
+        ],
+      }
+    },
+  )
+
+  server.tool(
+    "transcript_read",
+    "Read DATED EXCERPTS from the transcripts of a session and its " +
+      "predecessors (the restart / continue-fresh lineage). Bounded: a " +
+      "record cap, a per-excerpt cap and a total character cap — never a " +
+      "whole transcript. Optionally filtered by a query.",
+    {
+      ...sessionRefSchema(z),
+      query: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Only return excerpts whose text contains this (case-insensitive)."),
+      since: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Only records with a sequence number above this cursor."),
+      maxRecords: z
+        .number()
+        .int()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Maximum excerpts (default 10, max 50)."),
+      excerptChars: z
+        .number()
+        .int()
+        .min(80)
+        .max(4000)
+        .optional()
+        .describe("Characters per excerpt (default 600, max 4000)."),
+      totalChars: z
+        .number()
+        .int()
+        .min(200)
+        .max(100000)
+        .optional()
+        .describe("Total characters returned (default 20000, max 100000)."),
+    },
+    async input => {
+      const target = resolveTranscriptTarget(input)
+      if (!target.desc) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                error:
+                  target.error ??
+                  "no session given — pass `sessionId` (or `idOrName` / `slug`).",
+              }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      const nodes = transcriptChainFor(target.desc)
+      const maxRecords = clampMaxResults(input.maxRecords)
+      const excerptChars = clampExcerptChars(input.excerptChars)
+      const totalChars = clampTotalChars(input.totalChars)
+      const excerpts: TranscriptExcerpt[] = []
+      let spent = 0
+      let truncated = false
+      for (const node of nodes) {
+        if (excerpts.length >= maxRecords) {
+          truncated = true
+          break
+        }
+        const remaining = Math.max(200, totalChars - spent)
+        const result = await readTranscriptFile(node.path, node.sessionId, {
+          ...(input.query !== undefined ? { query: input.query } : {}),
+          ...(input.since !== undefined ? { since: input.since } : {}),
+          maxRecords: maxRecords - excerpts.length,
+          excerptChars,
+          totalChars: remaining,
+        })
+        for (const excerpt of result.excerpts) {
+          spent += excerpt.excerpt.length
+          excerpts.push(excerpt)
+        }
+        if (result.truncated) truncated = true
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              sessionId: target.desc.id,
+              chain: nodes.map(n => ({ sessionId: n.sessionId, ...(n.via ? { via: n.via } : {}), depth: n.depth })),
+              excerpts,
+              truncated,
+            }),
+          },
+        ],
       }
     },
   )
