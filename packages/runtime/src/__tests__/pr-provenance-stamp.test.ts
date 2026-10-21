@@ -467,7 +467,7 @@ describe("stampFooterOnPr — recognizing the gh PATH shim's own-session footer"
 })
 
 /** A registry whose ARCHIVED sessions are only visible through
- *  `list({ includeArchived: true })` — the real registry's shape. */
+ *  `list({ includeArchived: true })`, the real registry's shape. */
 function registryWithArchived(
   live: FooterSession[],
   archived: FooterSession[],
@@ -516,7 +516,7 @@ function stampGh(opts: {
   return { run, calls, edits }
 }
 
-describe("stampFooterOnPr — archived authors", () => {
+describe("stampFooterOnPr : archived authors", () => {
   const ARCHIVED: FooterSession = {
     id: "sess_archived",
     kind: "agent-cli",
@@ -568,10 +568,10 @@ describe("stampFooterOnPr — archived authors", () => {
   })
 })
 
-describe("stampFooterOnPr — the opener survives a refresh", () => {
+describe("stampFooterOnPr : the opener survives a refresh", () => {
   it("keeps the existing 'Opened by' when the caller omits it", async () => {
     // The posted footer names the opener and an author whose cost was not
-    // known yet; the refresh knows it — the re-render must not drop the
+    // known yet; the refresh knows it, the re-render must not drop the
     // opener on the way (the refresh caller only knows the session).
     const posted =
       `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`sess_exec\` · claude-code / subscription · ` +
@@ -604,7 +604,7 @@ describe("stampFooterOnPr — the opener survives a refresh", () => {
   })
 })
 
-describe("stampFooterOnPr — an own footer that gains authorship is re-rendered", () => {
+describe("stampFooterOnPr : an own footer that gains authorship is re-rendered", () => {
   it("replaces a footer that has the cost but no authors with one that credits them", async () => {
     const posted =
       `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`sess_exec\` · claude-code / subscription · ` +
@@ -634,7 +634,7 @@ describe("stampFooterOnPr — an own footer that gains authorship is re-rendered
   })
 })
 
-describe("stampFooterOnPr — the checkpoint namespace the delivery actually used", () => {
+describe("stampFooterOnPr : the checkpoint namespace the delivery actually used", () => {
   it("prefers the session's own per-spawn override over the daemon's global default", async () => {
     const gh = stampGh({
       headRefName: "wt/box-work",

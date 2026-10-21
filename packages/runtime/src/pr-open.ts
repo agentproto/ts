@@ -56,7 +56,7 @@ export interface OpenPrForSessionInput {
   /** The daemon's GLOBAL checkpoint ref namespace
    *  (`defaults.sandbox.checkpoint.refPrefix`), when the deployment moved it.
    *  The target session's own per-spawn override wins over it (see
-   *  `checkpointRefPrefixForSession`) — the stamper must read the checkpoint
+   *  `checkpointRefPrefixForSession`), the stamper must read the checkpoint
    *  from the namespace the delivery actually pushed to. */
   checkpointRefPrefix?: string
   /** Gate on the exact `gh` argv about to run (the MCP lane checks it
@@ -208,7 +208,7 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       ...(input.host ? { host: input.host } : {}),
       ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
       // The session the PR is opened FOR is an author, whatever the branch
-      // match says — it is the session whose work the PR carries.
+      // match says, it is the session whose work the PR carries.
       extraAuthorSessionIds: [desc.id],
     })
     // A stamped footer already recorded the PR; otherwise record it here so

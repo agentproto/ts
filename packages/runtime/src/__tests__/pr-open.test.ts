@@ -218,7 +218,7 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
 
   it("credits an ARCHIVED target session (get()-able, absent from list()) with its model, wallet and cost", async () => {
     // The archived-session case: the registry can still RESOLVE the target,
-    // so the PR must credit it as an author — not reduce it to a bare id.
+    // so the PR must credit it as an author, not reduce it to a bare id.
     const gh = fakeGh()
     const outcome = await openPrForSession({
       ...input,

@@ -52,7 +52,7 @@ export type GhRunner = (
  *  the module doesn't drag the full registry type (and its imports) in. */
 export interface StampRegistry {
   /** The registered sessions. `includeArchived` returns ARCHIVED sessions
-   *  too — they are omitted by default, and an archived author must still be
+   *  too, they are omitted by default, and an archived author must still be
    *  credited with its model/wallet/cost, not reduced to a bare id. */
   list(opts?: { includeArchived?: boolean }): readonly FooterSession[]
   get(id: string): FooterSession | undefined
@@ -190,7 +190,7 @@ export async function stampFooterOnPr(input: {
   /** The configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
    *  refPrefix`) the trailer read goes through; defaults to the legacy
    *  `agentproto-checkpoint/` (see `checkpointBranchOf`). When the stamped
-   *  session carries its own per-spawn override, that one wins — it is the
+   *  session carries its own per-spawn override, that one wins, it is the
    *  namespace its delivery actually pushed to. */
   checkpointRefPrefix?: string
   /** Sessions credited as authors whatever the branch/workspace match says
@@ -236,7 +236,7 @@ export async function stampFooterOnPr(input: {
         trailerIds.add(id)
       }
       // ARCHIVED sessions are authors too: `list()` drops them by default,
-      // while `get()` still resolves them — so the registry side asks for
+      // while `get()` still resolves them, so the registry side asks for
       // them explicitly and the trailer side resolves through `get()`, which
       // is what keeps an archived author's model/wallet/cost on the footer
       // instead of a bare id.
@@ -257,7 +257,7 @@ export async function stampFooterOnPr(input: {
       })
     }
     // The opener survives a re-render: the refresh pass (the reconciler's
-    // cost refresh) knows the session, not who opened the PR — so the
+    // cost refresh) knows the session, not who opened the PR, so the
     // existing footer's "Opened by" is carried over instead of being
     // dropped from the PR.
     const openedBy = input.openedBy ?? footerOpenedBy(body)

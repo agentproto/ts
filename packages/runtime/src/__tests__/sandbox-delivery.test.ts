@@ -650,7 +650,7 @@ describe("work-branch provenance stamp", () => {
 
   it("never stamps the work branch when the uncommitted-work snapshot exists", async () => {
     // The snapshot commit ALREADY carries the session trailer, and stamping
-    // the branch would move its tip to a sibling of the snapshot — the
+    // the branch would move its tip to a sibling of the snapshot, the
     // restore path then rejects the checkpoint and the uncommitted work is
     // lost on restart.
     const commands: string[] = []
@@ -665,7 +665,7 @@ describe("work-branch provenance stamp", () => {
     const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
     expect(commands.some(c => c.includes(PROVENANCE_COMMIT_SUBJECT))).toBe(false)
     expect(record.provenanceStamp?.status).toBe("skipped")
-    // The snapshot is still pushed to the checkpoint ref — it is the carrier.
+    // The snapshot is still pushed to the checkpoint ref, it is the carrier.
     expect(record.checkpoint?.status).toBe("pushed")
     expect(record.push.status).toBe("pushed")
   })

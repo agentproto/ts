@@ -993,7 +993,7 @@ describe("pr_open → target workspace, allowlist + caller scope", () => {
       slugs: { "repo-b": repoB },
     })
     expect(res.isError).toBeFalsy()
-    // The delivery pushed to `custom/wt/x` — the stamp must read THAT ref,
+    // The delivery pushed to `custom/wt/x`, the stamp must read THAT ref,
     // not the legacy `agentproto-checkpoint/wt/x`.
     expect(calls.some(c => c.args[0] === "api" && String(c.args[1]).endsWith("custom/wt/x"))).toBe(true)
     expect(calls.some(c => c.args[0] === "api" && String(c.args[1]).includes("agentproto-checkpoint/"))).toBe(false)
@@ -1001,7 +1001,7 @@ describe("pr_open → target workspace, allowlist + caller scope", () => {
 
   it("the command_execute stamp reads the checkpoint under the configured refPrefix", async () => {
     // The legacy stamping lane must read the checkpoint from the SAME
-    // namespace the delivery pushed to — the daemon's global default here.
+    // namespace the delivery pushed to, the daemon's global default here.
     const binDir = mkdtempSync(join(tmpdir(), "pr-stamp-gh-"))
     writeFileSync(join(binDir, "gh"), "#!/bin/sh\necho 'https://github.com/o/b/pull/9'\n", { mode: 0o755 })
     const oldPath = process.env.PATH

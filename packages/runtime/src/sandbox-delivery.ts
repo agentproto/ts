@@ -104,7 +104,7 @@ export function checkpointBranchOf(branch: string, refPrefix: string = CHECKPOIN
 }
 
 /**
- * The checkpoint ref namespace a session's snapshots actually live under —
+ * The checkpoint ref namespace a session's snapshots actually live under:
  * the SAME value `resolveSandboxCheckpointConfig` resolved when the session
  * booted: the session's own per-spawn override wins over the daemon's global
  * `defaults.sandbox.checkpoint.refPrefix`, which wins over the legacy
@@ -112,7 +112,7 @@ export function checkpointBranchOf(branch: string, refPrefix: string = CHECKPOIN
  *
  * Readers of a checkpoint (the PR-provenance stamper, looking for the
  * `Agentproto-Session:` trailer on the checkpoint tip) MUST resolve it the
- * same way the writer did — reading `agentproto-checkpoint/<branch>` while
+ * same way the writer did, reading `agentproto-checkpoint/<branch>` while
  * the delivery pushed to `custom/<branch>` silently loses every author only
  * the checkpoint knows.
  */
@@ -262,7 +262,7 @@ export interface SandboxDeliveryRecord {
   /** Teardown-only: outcome of the `Agentproto-Session:` provenance stamp
    *  on the work branch (see {@link buildProvenanceStampCommand}). Absent
    *  when no stamp was attempted (no session id, checkpoint mode, nothing
-   *  ahead, or the uncommitted-work snapshot already carries the trailer —
+   *  ahead, or the uncommitted-work snapshot already carries the trailer ,
    *  `"skipped"` then). Attribution only: never part of
    *  {@link isFullyDelivered}. */
   provenanceStamp?: { status: "stamped" | "failed" | "skipped"; detail?: string }
@@ -735,7 +735,7 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     //
     // NOT when the probe took a snapshot of the uncommitted work: the
     // snapshot commit ALREADY carries the session trailer, and stamping the
-    // branch would move the branch tip to a SIBLING of that snapshot — the
+    // branch would move the branch tip to a SIBLING of that snapshot, the
     // restore path then rejects the checkpoint (its new HEAD is neither its
     // parent nor an ancestor of its parent) and the uncommitted work is lost
     // on restart. The snapshot is the carrier here.

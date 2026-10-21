@@ -565,7 +565,7 @@ describe("collectBranchAuthors", () => {
   })
 })
 
-describe("collectBranchAuthors — workspace scoping (branch names are repo-local)", () => {
+describe("collectBranchAuthors : workspace scoping (branch names are repo-local)", () => {
   const sess = (over: Partial<FooterSession> & { id: string }): FooterSession => ({
     kind: "agent-cli",
     ...over,

@@ -131,7 +131,7 @@ export function createPrProvenanceReconciler(opts: {
   localRepoCwdFor?: (session: ReconcilerSession) => Promise<string | undefined>
   /** The daemon's GLOBAL checkpoint ref namespace
    *  (`defaults.sandbox.checkpoint.refPrefix`). The session's own per-spawn
-   *  override wins over it — the checkpoint the delivery pushed lives under
+   *  override wins over it, the checkpoint the delivery pushed lives under
    *  the session's namespace, not the global one. */
   checkpointRefPrefix?: string
 }): PrProvenanceReconciler {

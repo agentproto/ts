@@ -204,7 +204,7 @@ export interface FooterSession {
   /** The work branch inside the session's box (`sandboxDeliveryTarget.branch`
    *  on the full descriptor) — how authorship is tracked per branch. */
   sandboxDeliveryTarget?: { branch: string }
-  /** The session's own per-spawn checkpoint override — its `refPrefix` is
+  /** The session's own per-spawn checkpoint override, its `refPrefix` is
    *  the namespace this session's snapshots are pushed under (see
    *  `checkpointRefPrefixForSession` in `sandbox-delivery.ts`). */
   sandboxCheckpointOverride?: { refPrefix?: string } | false
@@ -329,9 +329,9 @@ export function footerSessionId(body: string): string | undefined {
  *
  * The stamper's REFRESH pass (the reconciler's cost refresh) re-renders the
  * footer from the session alone, and the caller has no idea who opened the
- * PR — dropping the opener there would silently delete the "Opened by" entry
- * from a footer that had it. Reading it back off the existing footer keeps it
- * (the alternative — persisting the opener on the PR record — needs a
+ * PR. Dropping the opener there would silently delete the "Opened by" entry
+ * from a footer that had it, so reading it back off the existing footer
+ * keeps it (the alternative, persisting the opener on the PR record, needs a
  * descriptor change on every record path).
  */
 export function footerOpenedBy(body: string): string | undefined {
@@ -351,7 +351,7 @@ export interface FooterAuthorEntry {
 /**
  * The `Authored by` entries of a rendered footer, in render order. Used to
  * tell "the fresh render knows an author the posted one doesn't" (and "knows
- * it BETTER") apart from "the posted one already says everything" — the
+ * it BETTER") apart from "the posted one already says everything", the
  * signal the replacement guard needs before it re-renders a footer.
  */
 export function footerAuthors(body: string): FooterAuthorEntry[] {
@@ -364,7 +364,7 @@ export function footerAuthors(body: string): FooterAuthorEntry[] {
   return out
 }
 
-/** Whether one author entry carries strictly MORE than another — a detail
+/** Whether one author entry carries strictly MORE than another, a detail
  *  token the other lacks. An ID-only author (`Authored by \`sess_x\``) is
  *  strictly poorer than the same author rendered with a model/wallet/cost. */
 function authorDetailsRicher(candidate: string, existing: string): boolean {
@@ -390,7 +390,7 @@ function authorDetailsRicher(candidate: string, existing: string): boolean {
  * the posted footer doesn't (a rescue session that landed on the branch
  * afterwards), or knows it BETTER (the posted entry is ID-only while the
  * fresh one carries the author's model/wallet/cost), must replace the posted
- * footer — otherwise the PR keeps crediting an unknown session, or credits
+ * footer, otherwise the PR keeps crediting an unknown session, or credits
  * it with no wallet at all, forever.
  */
 export function footerIsRicherThan(candidate: string, existing: string): boolean {
@@ -549,13 +549,13 @@ export function sessionIdsFromTrailers(input: string): string[] {
 /**
  * The scope a branch's authors are resolved in.
  *
- *  - `workspaceSlug` — the workspace (repository) the PR belongs to. Branch
+ *  - `workspaceSlug`, the workspace (repository) the PR belongs to. Branch
  *    names are repository-LOCAL: two workspaces can both use `wt/feat`, and
  *    crediting both would put another repo's session (and its cost) on this
  *    PR. Registry-derived matches are therefore scoped to the PR's own
- *    workspace. EXPLICIT trailer ids stay global — a trailer on the PR's own
+ *    workspace. EXPLICIT trailer ids stay global, a trailer on the PR's own
  *    commits is proof of authorship whoever the session belongs to.
- *  - `extraSessionIds` — sessions always credited, whatever the branch /
+ *  - `extraSessionIds`, sessions always credited, whatever the branch /
  *    workspace match says (the session a PR is opened FOR).
  */
 export interface BranchAuthorScope {

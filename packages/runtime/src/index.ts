@@ -2827,7 +2827,7 @@ export async function createGateway(
           session.workspaceSlug
             ? findWorkspace(await loadWorkspacesConfig(), session.workspaceSlug)?.path
             : undefined,
-        // The GLOBAL checkpoint ref namespace — a session's own per-spawn
+        // The GLOBAL checkpoint ref namespace, a session's own per-spawn
         // override wins over it, so the stamper reads the checkpoint from
         // the namespace that session's delivery actually pushed to.
         ...(configDefaults?.sandbox?.checkpoint?.refPrefix

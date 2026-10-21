@@ -161,7 +161,7 @@ export interface RegisterCommandToolsOptions {
    * best-effort runs unconfined with an explicit `warning` on the result.
    */
   boundary?: AppBoundary
-  /** The `gh` runner of the provenance lane — `pr_open`'s `gh pr create`
+  /** The `gh` runner of the provenance lane, `pr_open`'s `gh pr create`
    *  and the `command_execute` stamp's `gh pr view`/`gh pr edit` (tests
    *  inject a fake). Defaults to the real subprocess. */
   ghRunner?: GhRunner
@@ -170,7 +170,7 @@ export interface RegisterCommandToolsOptions {
   loadWorkspaces?: () => Promise<WorkspacesConfig | undefined>
   /** The daemon's GLOBAL checkpoint ref namespace
    *  (`defaults.sandbox.checkpoint.refPrefix`). The provenance stamp reads
-   *  the checkpoint branch under this namespace — unless the stamped session
+   *  the checkpoint branch under this namespace, unless the stamped session
    *  carries its own per-spawn override, which wins (that is the namespace
    *  its delivery actually pushed to). */
   checkpointRefPrefix?: string
@@ -454,7 +454,7 @@ export function registerCommandTools(
         // see `StampPrInput.callerSessionId`.
         ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
         ...(opts.checkpointRefPrefix ? { checkpointRefPrefix: opts.checkpointRefPrefix } : {}),
-        // The same `gh` seam as `pr_open` — the stamp reads and edits the PR
+        // The same `gh` seam as `pr_open`, the stamp reads and edits the PR
         // with it (tests drive both lanes through one fake).
         ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
       })
@@ -613,7 +613,7 @@ export function registerCommandTools(
         workspacePath: where.ghCwd,
         authorizeArgs,
         ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
-        // The checkpoint namespace the target session's delivery used — the
+        // The checkpoint namespace the target session's delivery used, the
         // session's own override wins over the daemon's global default.
         ...(opts.checkpointRefPrefix ? { checkpointRefPrefix: opts.checkpointRefPrefix } : {}),
         // The caller of pr_open is the OPENER (usually the orchestrator

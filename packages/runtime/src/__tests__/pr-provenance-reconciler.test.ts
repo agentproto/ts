@@ -744,7 +744,7 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
   })
 })
 
-describe("createPrProvenanceReconciler — the checkpoint namespace", () => {
+describe("createPrProvenanceReconciler : the checkpoint namespace", () => {
   it("reads the checkpoint under the daemon's global refPrefix", async () => {
     const { reg } = fakeRegistry([execSession()])
     const calls: Array<readonly string[]> = []
