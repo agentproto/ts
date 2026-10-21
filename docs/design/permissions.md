@@ -2,7 +2,7 @@
 
 **Status:** Design, owner decisions recorded (§5). No code changes in this document.
 **Scope:** Every permission, capability and flag the daemon (`@agentproto/runtime`) evaluates, across global, workspace and session scope, and the plan to put them behind one decision point.
-**Code base:** `agentproto/ts` `main` @ `c9553f798` (includes #2161 caller-identity header and #2162 box relay, both merged 2026-10-21). Every `file:line` is from that commit unless marked `#2163` or `#2149` (open PRs).
+**Code base:** `agentproto/ts` `main` @ `a3075d4df`. Every `file:line` is from that commit unless marked `#2163` (open PR). This revision incorporates the two steps that landed after the original snapshot: #2167 (`decide()` + one messaging ACL, steps 1-2 below) and #2168 (persisted relay grants, controller-only `remoteParent`).
 **Specs:** `agentproto/agentproto` `specs/aip-*.mdx`.
 
 Paths are relative to `packages/runtime/src/` unless they say otherwise.
@@ -92,25 +92,27 @@ All fields are from `agent-start-schema.ts`. "Bounded by parent?" means whether 
 
 ### 1.4 Messaging ACL, every path that delivers a `SessionMessage`
 
+All five entry points now call `decide()` (#2167). The remaining defect is the **identity**, not the ACL: the session id is still a caller-supplied claim (problem 2).
+
 | Path | Sender identity | ACL | Interrupt | Problems |
 |---|---|---|---|---|
-| `message_send` / `message_reply` (`message-tools.ts:142`) | scope token or callerSessionId claim | `resolveRelation` + `isMessageAllowed(rel,{allowSiblings})` (`session-message.ts:75`, `:94`) | `agentInterrupt` | Correct shape, but the identity is a claim. |
-| `message_parent` (`agent-tools.ts:831`) | same | implicit: own `parentSessionId`, else `remoteParent` relay (`:893`) | `agentPromptInterrupt` / `agentInterrupt` | **DUP**: its own path. |
-| `POST /sessions/:id/messages` (`http-server.ts:7624-7700`) | `?callerSessionId=` **query only** (no header, no trust check), else **human** | `isMessageAllowed(relation)`, **no `allowSiblings`** (`:7661`) | human: always (`:7688`) | **INC + FO**: siblings are refused here even when the config allows them. Any holder of the runtime.json token (every child) who omits the query is `human`, reaches every session, and may interrupt. |
-| `POST /relay/parent-message` (#2162, `http-server.ts:3108`, `parent-relay.ts:343`) | relay grant (in-memory `Map`, `parent-relay.ts:102`, 1 h sliding TTL `:89`) | hard-coded relation `"child"` (`parent-relay.ts:380`) | `agentInterrupt` | **DUP**: the third ACL. A fourth token store that is lost on restart. Correct by construction, but not routed through the shared decision. |
-| `registry.sendMessage` (`sessions.ts:12145`) | n/a | **none** (it checks liveness only) | caller-passed `allowInterrupt` | The sink trusts every caller to have run *some* ACL. |
-| Drive tools `agent_prompt`/`agent_interrupt`/… | same claim | owner gate plus `allowPromptFrom` (`session-owner.ts`) | | A second ACL for the same effect ("text lands in X's context"). |
+| `message_send` / `message_reply` (`message-tools.ts:147`) | scope token or callerSessionId claim | `decide(principal, "session.message", …)` (`permissions.ts:427`) | `decide(…, "session.message.interrupt", …)` (`message-tools.ts:176`) | Routed. The identity is still a claim. |
+| `message_parent` (`agent-tools.ts:997`) | same | `decide()`; target is own `parentSessionId`, else the relay | `decide(…, "session.message.interrupt", …)` (`:1001`) | Routed. |
+| `POST /sessions/:id/messages` (`http-server.ts:7691`) | `?callerSessionId=` query, else the trusted header (`:7673`), else **operator** | `decide()`, honouring `allowSiblings`/`agentInterrupt` | `decide()` (`:7697`) | Routed; the query still wins with no trust check, so identity is a claim. A caller that omits it is operator-equivalent and may interrupt (D2). |
+| `POST /relay/parent-message` (#2162/#2168, `http-server.ts:3154`, `parent-relay.ts:582`) | relay grant (hashed, persisted in `parent-relay-grants.json` 0600, 1 h sliding TTL `parent-relay.ts:112`) | `decide()` with the grant's scoped principal | `decide(…, "session.message.interrupt", …)` (`:586`) | Routed; grants now survive restart, are renewed before expiry and revoked on retire. |
+| `registry.sendMessage` (`sessions.ts:12266`) | n/a | **refuses** any message whose attached `Decision` does not allow it | decision-derived | The sink no longer trusts callers to have run an ACL. |
+| Drive tools `agent_prompt`/`agent_interrupt`/… | same claim | owner gate plus `allowPromptFrom` (`session-owner.ts`); `decide(…, "session.drive", …)` mirrors it but is marked non-authoritative | | A second ACL for the same effect ("text lands in X's context"), not yet routed (#2167). |
 
 ### 1.5 Credential and token systems in the daemon today
 
 1. Daemon bearer (tunnel), `http-server.ts:1625`.
 2. Per-boot sessions token (`runtime.json`), `:1747`.
 3. Orchestrator scope token (`/mcp/orchestrator?scope=`), persisted, `orchestrator-gateway.ts:289`, `:513`.
-4. Parent relay token, in-memory only, `parent-relay.ts:102`.
+4. Parent relay token, hashed and persisted (`parent-relay-grants.json`, `parent-relay.ts:128`), renewed before expiry and revoked on retire (since #2168).
 5. Widget embed token `?et=`, app link tokens (`app-link-gate.ts`), `/inbound/:slug` HMAC.
 6. Plus the *claim* `callerSessionId` (not a token at all).
 
-Only #3 is a real per-session capability. It is used only for orchestrator-mode children, while every other child gets #6.
+Only #3 and #4 are real per-session capabilities. #3 is used only for orchestrator-mode children, while every other child gets #6.
 
 ---
 
@@ -120,13 +122,13 @@ Only #3 is a real per-session capability. It is used only for orchestrator-mode 
 2. **Identity is a claim (P0).** A child can name *any* session id on loopback (`http-server.ts:2052-2106`) and send or drive as its parent or a sibling. The query path skips even the trust check that the header path runs.
 3. **Policy can be widened by the governed (P0).** `config_set` (hot+writable `defaults.messaging.*`, `maxGrantableDelegation`, `spawn.attach`) is reachable from every child's mount. #2163 adds two more such keys (`allowSameWorkspace`, `peerGroups`).
 4. **Executor "no delegation" is URL-only (P1).** `?denyTools=` (`session-spawn.ts:1042`) is a request, and cron `agent` actions, `workflow_start` and `app_run` are delegation twins outside `DELEGATION_TOOL_NAMES` (`role.ts:87`). AIP-46 wants actions gated, not tool-name strings.
-5. **The messaging ACL is implemented 3-4 times, inconsistently (P1).** MCP tool, HTTP route (no siblings, anonymous=human), relay (hard-coded child), and `message_parent`. The sink (`sessions.ts:12145`) checks nothing.
+5. **The messaging ACL is implemented 3-4 times, inconsistently (P1) — fixed by #2167.** All entry points (MCP tools, HTTP route, relay, `message_parent`) now call `decide()`, and `registry.sendMessage` refuses a non-allowing decision. What remains is problem 2: the ACL is only as trustworthy as the unauthenticated sender identity it is given.
 6. **Workspace identity is caller-supplied and collapses to `"default"` (P1).** `session-spawn.ts:2360`, `:2385`, `:2492`. Fine as a storage bucket, fatal as a principal. #2163 makes it a principal, with default ON.
 7. **The command allowlist has two evaluators and the wrong scope (P1).** argv constraints are bypassable through cron, policy gates and commit. The file comes from the daemon boot workspace, not the session's (`index.ts:2163`). Command execution also happens outside it through stdio `mcpServers`, `pr_open` (#2149), `terminal_start` with `terminalGate: all`, and the adapters' own shells.
 8. **Nothing narrows at spawn except orchestrator scope and app boundary (P2).** `posture`, `access.profileRef`, `mcpServers`, `commandSandbox` opt-out, and `allowPromptFrom: ["any"]` are all unbounded by the parent, against AIP-46 "no self-widening".
 9. **Internal fields on the public schema (P2).** `remoteParent`, `deviceBridge`, `resumeSessionId` (`agent-start-schema.ts:336`, `:537`, `:550`).
-10. **Token sprawl (P2).** Five-plus credential types with separate stores, TTLs and revocation, and the relay grants die with the daemon (`parent-relay.ts:102`).
-11. **No introspection predicate (P3).** No `permissions_explain`: nobody can ask "may S do A on T, and why", which AIP-46 requires to be the *same* predicate as enforcement (`aip-46.mdx:487-491`).
+10. **Token sprawl (P2).** Five-plus credential types with separate stores, TTLs and revocation. Relay grants now persist and revoke correctly (#2168), but they are still a separate store from the orchestrator/session scopes.
+11. **No introspection predicate (P3) — fixed for routed actions by #2167.** `permissions_explain` (`permissions-tools.ts:44`) answers from the same `decide()` enforcement uses. For actions not yet routed it returns `authoritative: false` plus the site that still enforces them.
 12. **Unread transcripts are world-readable to loopback (P3).** GET `/sessions/*` routes are ungated (`http-server.ts:1862`). This is acknowledged as an open question in AIP-46, but it should be on the list.
 
 **Residual, accepted for now (D1).** Every session runs as the daemon's UID. A child with a native shell can read `runtime.json`, `~/.agentproto/*` and the keychain-backed files, run `agentproto` itself, or simply open `/mcp` without the identity its mount carries and be treated as an anonymous local caller (operator-equivalent by default, D2). The threat model this plan defends against is a **confused** child: accidental or casual bypass, which is the realistic defeat AIP-46 names (`aip-46.mdx:1405-1412`). A child that uses the mounts it was given is always evaluated as itself and narrowed. A **hostile** child that deliberately strips its identity or steals the operator credential is out of scope until the optional OS sandbox step (§4 step 12), and an operator who wants anonymous callers narrowed earlier sets `policy.anonymousLoopback` (§3.3).
@@ -282,7 +284,7 @@ Two more rules:
 
 ### 3.8 Introspection
 
-`permissions_explain({ action, target?, sessionId? })` returns the `Decision`, with provenance listing global, workspace, agent, role, parent and request. `session_capabilities` gains `effectiveCapabilities`. Both read the same `decide()`, which satisfies the single-predicate requirement in `aip-46.mdx:487`.
+`permissions_explain({ action, sessionId?, asSessionId? })` (shipped by #2167, `permissions-tools.ts:44`) returns the `Decision`, including the rule that decided it and, for routed actions, the collected relations. `session_capabilities` still gains `effectiveCapabilities`. Both read the same `decide()`, which satisfies the single-predicate requirement in `aip-46.mdx:487`. The current cut is read-only and authoritative only for `session.message`/`session.message.interrupt`; the rest report the legacy enforcement site.
 
 ---
 
@@ -296,15 +298,15 @@ Each step is independently mergeable from `main` (no stacking), and each keeps b
 - AIP-23: add a `session://<id>` identity-ref scheme for AIP-38 principals.
 - Cite AIP-34 doors as the v2 of `links`.
 
-**Step 1: `permissions.ts` with `decide()` plus the action map. No behaviour change.**
-- `decide()` encodes *today's* rules exactly (tree ACL, `allowSiblings`, owner gate, allowlist), plus the generated tool→action table.
+**Step 1: `permissions.ts` with `decide()` plus the action map. No behaviour change. — DONE (#2167).**
+- `decide()` encodes today's rules (tree ACL, `allowSiblings`, owner gate, allowlist) over the v1 action vocabulary (`permissions.ts:427`); the tool→action table is still hand-maintained (`PERMISSION_ACTION_INFO`) rather than generated.
 - `permissions_explain` is read-only.
 - Tests assert `decide()` agrees with every existing call site.
 - Gain: one predicate exists. Back-compat: total.
 
-**Step 2: unify the messaging ACL. Small, deliberate behaviour fixes.**
-- `message-tools.ts`, `message_parent`, `http-server.ts:7624`, and `parent-relay.ts:343` call `decideMessage`. `registry.sendMessage` takes a `Decision`.
-- Fixes: the HTTP route honours `allowSiblings` and reads the caller identity through the same resolver as `/mcp` (header too).
+**Step 2: unify the messaging ACL. Small, deliberate behaviour fixes. — DONE (#2167).**
+- `message-tools.ts`, `message_parent`, `POST /sessions/:id/messages` and the parent relay call `decide()` (`session.message` + `session.message.interrupt`). `registry.sendMessage` requires an allowing `Decision` (`sessions.ts:12266`).
+- Fixes: the HTTP route honours `allowSiblings`/`agentInterrupt` and reads the caller identity through the same resolver as `/mcp` (query, else trusted header).
 - This is the "one function" half of #2163, without the peer widening.
 
 **Step 3: rework #2163 on top of steps 1-2.**
@@ -345,10 +347,10 @@ Each step is independently mergeable from `main` (no stacking), and each keeps b
 - `posture` is clamped to `parent ∩ workspace.postures ∩ sessionCeiling.postures` (`bypass` must be explicitly listed).
 - `access.profileRef` must be in the parent's profile set (or the operator's).
 - `allowPromptFrom: ["any"]` requires an operator or workspace grant.
-- Internal-only fields (`remoteParent`, `deviceBridge`, `resumeSessionId`) are accepted only from a `controller:` principal.
+- Internal-only fields (`remoteParent`, `deviceBridge`, `resumeSessionId`) are accepted only from a `controller:` principal. **Partially done (#2168):** `agent_start.remoteParent` is refused from any session caller and dropped from the detached cron/routine schema; `deviceBridge` and `resumeSessionId` are still not gated.
 
 **Step 10: relay and token consolidation.**
-- Relay grants move into the session-credential store (persisted, hashed, revoked on retire).
+- Relay grants are now persisted hashed (`parent-relay-grants.json`), renewed before expiry and revoked on retire (#2168). They still live in their own store rather than the session-credential store shared with orchestrator scopes. **Partially done.**
 - Fold the remaining token types behind one `credentials.ts` interface. The embed, link and HMAC tokens keep their semantics and get one registry for listing and revocation.
 
 **Step 11: workspace policy file plus AIP-34 mapping.**
@@ -362,7 +364,7 @@ Each step is independently mergeable from `main` (no stacking), and each keeps b
 | PR | State | Recommendation |
 |---|---|---|
 | **#2163** `feat/messaging-same-workspace` | open, head `59d9c02af`, based on `9309cd51c` (behind main) | **Rework on top of steps 1-2; do not merge as-is** (step 3). Keep the single `resolveMessageAcl` idea and the HTTP-route fix: they become step 2. Drop:<br>• `allowSameWorkspace` default **true**, which conflicts with AIP-46's "MUST be refused" and widens every workspace silently (off by default instead);<br>• the tree-first precedence, where a sibling is refused and a stranger allowed (`session-message.ts` #2163 `resolveMessageAcl`: sibling becomes peer only via `peerGroup`);<br>• `peerGroups` and `allowSameWorkspace` as hot, session-writable keys (operator-only `policy.messaging.*` instead);<br>• `sameWorkspace()` on the raw caller-supplied slug, where `"default"` makes every unregistered session a peer.<br>Also fix the stale PR body (`workspaceId`). |
-| **#2162** box relay | **merged** (`e4ca9cc1a`) | Keep. Follow-ups:<br>• route delivery through `decideMessage` (step 2);<br>• move grants into the persisted credential store, since today they die on daemon restart (`parent-relay.ts:102`) (step 10);<br>• make `agent_start.remoteParent` controller-only (step 9).<br>The bearer exemption at `http-server.ts:1644` is correct as designed. |
+| **#2162** box relay | **merged** (`e4ca9cc1a`); follow-ups landed in #2167/#2168 | Done: delivery routes through `decide()` (step 2); grants persist hashed, renew and revoke on retire (step 10); `agent_start.remoteParent` is refused from session callers and absent from the detached schema (step 9). Remaining: `deviceBridge`/`resumeSessionId` gating.<br>The bearer exemption at `http-server.ts:1644` is correct as designed. |
 | **#2149** `pr_open` | open, head `094006555` | **Park until step 8, or merge only with three fixes.** (a) Add a relation check: the caller is the target session, its ancestor, or the operator. Today any `/mcp` caller can open a PR, with caller-chosen title and body, for *any* session's branch. (b) Run `gh` in the **target session's** workspace checkout, not `opts.workspace` (the daemon boot dir, `#2149 command-tools.ts` `workspacePath: opts.workspace`), or a session from repo B opens against repo A. (c) Register it so `denyTools` / role capability can remove it. It is the `pr.open` action, deliberately *outside* the command allowlist but *inside* the capability model. |
 
 ---
@@ -373,7 +375,7 @@ Each step is independently mergeable from `main` (no stacking), and each keeps b
 
 - **D1. Threat model: a confused child, now.** The plan defends against accidental and casual bypass by a child session that uses the mounts and credentials it was given. It does not try to stop a hostile child that deliberately strips its identity or reads the operator credential with its own shell; that residual (§2) is accepted. The OS sandbox deny-read (step 12) stays a later, optional step.
 - **D2. Anonymous local callers stay operator-equivalent by default.** Claude (Desktop, Cowork, a bare `/mcp` client) must not be blocked from interacting with any session by default, so a local caller with no session token keeps today's operator-equivalent access (`policy.anonymousLoopback: "operator"`). The fix targets child sessions instead: every daemon-spawned session gets a daemon-minted identity on its mounts (§3.4, step 5), and a request carrying a session identity is evaluated as that session, narrowed, never as operator (step 6). A caller cannot claim another session's id: a claim without the matching token is refused. Restricting anonymous callers further (`"restricted"` or `"deny"`) is opt-in config.
-- **D3. Next steps.** Step 1 is `decide()` with no behaviour change; step 2 is the unified messaging ACL. #2163 is reworked on top of those (step 3): same-workspace messaging off by default, no tree-first precedence, no session-writable peer keys.
+- **D3. Next steps.** Steps 1-2 are landed (#2167: `decide()` + one messaging ACL). The next code step is #2163 reworked on top of them (step 3): same-workspace messaging off by default, no tree-first precedence, no session-writable peer keys.
 
 ### Open
 
