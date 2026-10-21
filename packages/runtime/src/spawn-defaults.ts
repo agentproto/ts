@@ -184,6 +184,11 @@ export interface SpawnDefaultsConfig {
     /** Let `message_send` / `message_reply` reach any session of the SAME
      *  workspace, even without a tree edge. Default true. */
     allowSameWorkspace?: boolean
+    /** Groups of workspace slugs. Two sessions may message each other
+     *  without a tree edge when both workspace slugs sit in the SAME group
+     *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
+     *  no cross-workspace link. Independent of `allowSameWorkspace`. */
+    peerGroups?: string[][]
     /** Whether a SESSION sender may use urgency `interrupt` (cancel the
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */

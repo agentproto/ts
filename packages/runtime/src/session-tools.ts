@@ -735,6 +735,9 @@ export interface RegisterSessionToolsOptions {
   /** `defaults.messaging.allowSameWorkspace` - forwarded to
    *  `registerAgentTools`. */
   messagingAllowSameWorkspace?: RegisterAgentToolsOptions["messagingAllowSameWorkspace"]
+  /** `defaults.messaging.peerGroups` - forwarded to
+   *  `registerAgentTools`. */
+  messagingPeerGroups?: RegisterAgentToolsOptions["messagingPeerGroups"]
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]

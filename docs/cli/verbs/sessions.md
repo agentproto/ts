@@ -1178,6 +1178,16 @@ workspace, even without a tree edge (relation `peer`) - that allowance is on
 by default and is turned off with `defaults.messaging.allowSameWorkspace:
 false`.
 
+Workspaces that belong together can be linked with
+`defaults.messaging.peerGroups`, a list of groups of workspace slugs, e.g.
+`[["agentik-studio", "app-agentik-pygmalion"]]`: two sessions may message
+each other without a tree edge when both workspace slugs sit in the **same**
+group. The group allowance is independent of `allowSameWorkspace` (a group
+link holds even when the same-workspace rule is off) and it is narrow: a
+session without a workspace slug is never linked, and a pair whose slugs only
+appear in different groups keeps today's refusal. The default is no group at
+all, so a deployment that never configures one behaves exactly as before.
+
 ### Tools (MCP)
 
 | Tool | Inputs | Use |

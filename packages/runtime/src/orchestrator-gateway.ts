@@ -681,6 +681,11 @@ export interface OrchestratorGatewayDeps {
    *  `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
   messagingAllowSameWorkspace?: boolean
+  /** EXPLICIT override for config.json
+   *  `defaults.messaging.peerGroups` - see `defaultAgentPromptInterrupt`
+   *  above for the override/resolve precedence. Forwarded to
+   *  `registerAgentTools`. */
+  messagingPeerGroups?: string[][]
   /** EXPLICIT override for config.json `defaults.messaging.agentInterrupt` —
    *  see `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
@@ -748,6 +753,7 @@ export function createOrchestratorMcpServerFactory(
       messagingAllowSiblings: deps.messagingAllowSiblings ?? messagingDefaults.allowSiblings,
       messagingAllowSameWorkspace:
         deps.messagingAllowSameWorkspace ?? messagingDefaults.allowSameWorkspace,
+      messagingPeerGroups: deps.messagingPeerGroups ?? messagingDefaults.peerGroups,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),

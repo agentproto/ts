@@ -121,31 +121,71 @@ export function sameWorkspace(
 }
 
 /**
+ * Do two sessions belong to the same PEER GROUP? `peerGroups` is the
+ * operator's list of workspace families (`defaults.messaging.peerGroups`,
+ * e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`): two sessions are
+ * peers when both workspace slugs appear in the SAME group.
+ *
+ * The rules: a missing/blank slug on either side is never a peer (an unset
+ * workspace must not widen the ACL), and a slug listed in two groups links
+ * within EACH of them - two sessions whose slugs only share different
+ * groups are NOT linked.
+ */
+export function samePeerGroup(
+  a: MessageTreeNode | undefined,
+  b: MessageTreeNode | undefined,
+  peerGroups: readonly (readonly string[])[] | undefined,
+): boolean {
+  if (!peerGroups || peerGroups.length === 0) return false
+  const slugA = a?.workspaceSlug?.trim()
+  const slugB = b?.workspaceSlug?.trim()
+  if (!slugA || !slugB) return false
+  for (const group of peerGroups) {
+    if (!group || group.length === 0) continue
+    let inA = false
+    let inB = false
+    for (const raw of group) {
+      const slug = raw?.trim()
+      if (!slug) continue
+      if (slug === slugA) inA = true
+      if (slug === slugB) inB = true
+    }
+    if (inA && inB) return true
+  }
+  return false
+}
+
+/**
  * The relation the messaging ACL is evaluated against: the tree relation
  * when there IS a tree edge, else `peer` for two sessions of the same
- * workspace (the `allowSameWorkspace` allowance), else `undefined` (a
- * refusal - a different workspace, or a session messaging itself).
+ * workspace (the `allowSameWorkspace` allowance) OR of the same peer group
+ * (the `peerGroups` allowance), else `undefined` (a refusal - a different
+ * workspace, or a session messaging itself).
  */
 export function resolveEffectiveRelation(
   sender: MessageTreeNode | undefined,
   recipient: MessageTreeNode,
+  peerGroups?: readonly (readonly string[])[],
 ): MessageRelation | undefined {
   const relation = resolveRelation(sender, recipient)
   if (relation) return relation
   if (!sender || sender.id === recipient.id) return undefined
-  return sameWorkspace(sender, recipient) ? "peer" : undefined
+  if (sameWorkspace(sender, recipient)) return "peer"
+  return samePeerGroup(sender, recipient, peerGroups) ? "peer" : undefined
 }
 
 /**
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
  * only when `allowSiblings` (config-gated, default off). A `peer` - two
  * sessions of the same workspace with no tree edge - is allowed when
- * `allowSameWorkspace` (config-gated, default ON). Anything else - a cousin
- * of another workspace, a stranger, yourself - is refused.
+ * `allowSameWorkspace` (config-gated, default ON); a `peer` linked by a PEER
+ * GROUP (`peerGroup: true`) is allowed whatever `allowSameWorkspace` says -
+ * the group list is an independent operator decision. Anything else - a
+ * cousin of another workspace, a stranger, yourself - is refused.
  */
 export function isMessageAllowed(
   relation: MessageRelation | undefined,
-  opts?: { allowSiblings?: boolean; allowSameWorkspace?: boolean },
+  opts?: { allowSiblings?: boolean; allowSameWorkspace?: boolean; peerGroup?: boolean },
 ): relation is MessageRelation {
   switch (relation) {
     case "child":
@@ -156,7 +196,7 @@ export function isMessageAllowed(
     case "sibling":
       return opts?.allowSiblings === true
     case "peer":
-      return opts?.allowSameWorkspace !== false
+      return opts?.peerGroup === true || opts?.allowSameWorkspace !== false
     default:
       return false
   }

@@ -322,6 +322,11 @@ export interface RegisterAgentToolsOptions {
    *  `message_send` / `message_reply` reach any session of the SAME
    *  workspace, even without a tree edge. Default true. */
   messagingAllowSameWorkspace?: boolean
+  /** config.json `defaults.messaging.peerGroups` - groups of workspace
+   *  slugs. Lets `message_send` / `message_reply` reach a session whose
+   *  workspace slug sits in the same group, even without a tree edge.
+   *  Default [] (no cross-workspace link). */
+  messagingPeerGroups?: string[][]
   /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
    *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
@@ -355,6 +360,7 @@ export function registerAgentTools(
     isSessionChatInstalled,
     messagingAllowSiblings,
     messagingAllowSameWorkspace,
+    messagingPeerGroups,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
@@ -997,6 +1003,9 @@ export function registerAgentTools(
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
     ...(messagingAllowSameWorkspace === false ? { allowSameWorkspace: false } : {}),
+    ...(messagingPeerGroups && messagingPeerGroups.length > 0
+      ? { peerGroups: messagingPeerGroups }
+      : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 

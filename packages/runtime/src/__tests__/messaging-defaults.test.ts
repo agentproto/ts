@@ -25,6 +25,7 @@ describe("resolveMessagingDefaults", () => {
         messaging: {
           allowSiblings: true,
           allowSameWorkspace: false,
+          peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
         },
@@ -34,9 +35,18 @@ describe("resolveMessagingDefaults", () => {
       agentPromptInterrupt: true,
       allowSiblings: true,
       allowSameWorkspace: false,
+      peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
     })
+  })
+
+  it("defaults the peer groups to none (no cross-workspace link)", async () => {
+    const result = await resolveMessagingDefaults(async () => ({
+      defaults: { messaging: { allowSiblings: true } },
+    }))
+    expect(result.peerGroups).toEqual([])
+    expect(DEFAULT_MESSAGING_DEFAULTS.peerGroups).toEqual([])
   })
 
   it("defaults the same-workspace allowance to ON", async () => {

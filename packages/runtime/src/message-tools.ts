@@ -20,6 +20,7 @@ import {
   isMessageAllowed,
   messageFrom,
   resolveEffectiveRelation,
+  samePeerGroup,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageFilter,
@@ -52,6 +53,11 @@ export interface RegisterMessageToolsOptions {
    *  other session of the SAME workspace, even without a tree edge. On by
    *  default. */
   allowSameWorkspace?: boolean
+  /** `defaults.messaging.peerGroups` - groups of workspace slugs. A session
+   *  may message any other session whose workspace slug sits in the SAME
+   *  group, even without a tree edge and even when the same-workspace
+   *  allowance is off. Empty (the default) = no cross-workspace link. */
+  peerGroups?: readonly (readonly string[])[]
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
@@ -107,6 +113,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.allowSameWorkspace` - ON unless the operator turned
    *  it off. */
   const allowSameWorkspace = opts.allowSameWorkspace !== false
+  /** `defaults.messaging.peerGroups` - the operator's workspace families.
+   *  Empty (the default) = no cross-workspace link. */
+  const peerGroups = opts.peerGroups ?? []
 
   /** The verified caller, or a tool error explaining why there's none. */
   const resolveCaller = (tool: string): SessionDescriptor | ToolResult => {
@@ -146,16 +155,21 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
-    const relation = resolveEffectiveRelation(self, recipient)
-    if (!isMessageAllowed(relation, { allowSiblings, allowSameWorkspace })) {
+    const relation = resolveEffectiveRelation(self, recipient, peerGroups)
+    const peerGroup = samePeerGroup(self, recipient, peerGroups)
+    if (!isMessageAllowed(relation, { allowSiblings, allowSameWorkspace, peerGroup })) {
       return fail(
         "forbidden_recipient",
         `${tool}: "${toId}" is not a tree neighbour you may message ` +
           `(allowed: your parent, your direct children` +
           `${allowSiblings ? ", your siblings" : ""}` +
-          `${allowSameWorkspace ? ", or any session in your workspace" : ""}). ` +
+          `${allowSameWorkspace ? ", or any session in your workspace" : ""}` +
+          `${peerGroups.length > 0 ? ", or any session in a workspace of your peer groups" : ""}). ` +
           `The same-workspace allowance is config \`defaults.messaging.allowSameWorkspace\` ` +
-          `(currently ${allowSameWorkspace}).`,
+          `(currently ${allowSameWorkspace}); the cross-workspace allowance is config ` +
+          `\`defaults.messaging.peerGroups\` (currently ${
+            peerGroups.length > 0 ? `${peerGroups.length} group(s)` : "no group"
+          }).`,
       )
     }
     const kind = input.kind ?? "report"
@@ -222,7 +236,8 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     "Send a typed message to a tree neighbour - `to: \"parent\"` or a session id " +
       "of your parent or one of your direct children - or, while the operator leaves " +
       "`defaults.messaging.allowSameWorkspace` on (the default), to any session of " +
-      "your own workspace. The daemon attests the sender " +
+      "your own workspace, or to any session whose workspace sits in the same " +
+      "`defaults.messaging.peerGroups` group as yours. The daemon attests the sender " +
       "(you) in the header the recipient sees; you never set it. Not a delegation " +
       "tool: it reaches only neighbours and grants no control. If the recipient is " +
       "blocked in `inbox_wait` it gets the message as that call's result; otherwise " +
