@@ -74,6 +74,42 @@ export interface SessionWatcherInfo {
   since: string
 }
 
+/** Mirrors the ACP `SessionConfigSelectOption` -- one value a live harness
+ *  accepts for a config option. `value` is the wire value the harness
+ *  validates against (NOT a catalog model id): an id outside the advertised
+ *  vocabulary is rejected outright ("Invalid value for config option model"). */
+export interface SessionConfigValueRow {
+  value: string
+  name?: string
+  description?: string
+}
+
+/** Mirrors the ACP `SessionConfigSelectGroup` -- a named bucket of values. */
+export interface SessionConfigValueGroup {
+  group?: string
+  name?: string
+  options?: SessionConfigValueRow[]
+}
+
+/** Mirrors the ACP `SessionConfigOption` -- one advertised config option of the
+ *  LIVE session (the `model` entry carries the model's value vocabulary).
+ *  Mirrored by hand, like the rest of this file: the client takes no
+ *  runtime/ACP import. */
+export interface SessionConfigOptionRow {
+  id: string
+  name?: string
+  description?: string
+  /** ACP `category` -- "model" for the model selector, "mode" for the posture
+   *  registry. */
+  category?: string
+  /** ACP option kind -- "select" (the value list) or "boolean". */
+  type?: string
+  /** The value the harness currently has selected, when it says so. */
+  currentValue?: string
+  /** The selectable values -- flat, or grouped (ACP allows both). */
+  options?: Array<SessionConfigValueRow | SessionConfigValueGroup>
+}
+
 export type SessionKind = "terminal" | "agent-cli" | "command" | "browser"
 export type SessionStatus =
   | "starting"
@@ -397,6 +433,14 @@ export interface SessionDescriptor {
    *  live-switchable) rows from this — without it only prompt-injected advisory
    *  postures are offerable. */
   availableModes?: Array<{ id: string; name?: string; description?: string }>
+  /** Config options advertised by the LIVE harness (mirror of
+   *  `@agentproto/runtime` SessionDescriptor.configOptions -- the ACP
+   *  `session/new` response's `configOptions`, stamped at read time by the
+   *  daemon). The `model` entry lists the model values THIS agent accepts for
+   *  its model config option: a live switch must send one of them, because the
+   *  agent rejects anything else ("Invalid value for config option model").
+   *  Absent for a print/proprietary arm, a dead session, or an older daemon. */
+  configOptions?: SessionConfigOptionRow[]
   /** Canonical postures this live session's adapter enforces through its
    *  isolated spawn config (claude-code / opencode) even with no advertised
    *  mode — mirror of `@agentproto/runtime` SessionDescriptor

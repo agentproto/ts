@@ -48,7 +48,18 @@ export async function runChangeModelFlow(
     return
   }
 
-  const items = [makeChangeRouteItem(), ...mapChangeModelQuickPickItems(adapter, session)]
+  // The LIVE session's own model vocabulary: the values the running agent
+  // accepts for its model config option (the daemon stamps them onto the
+  // descriptor at read time). Without them the picker would offer CATALOG ids
+  // the agent rejects outright ("Invalid value for config option model"), so
+  // we re-read the session to get the live list before building the menu.
+  const live = await client.getSession(session.id).catch(() => undefined)
+  const liveSession = {
+    ...session,
+    ...(live?.configOptions ? { configOptions: live.configOptions } : {}),
+  }
+
+  const items = [makeChangeRouteItem(), ...mapChangeModelQuickPickItems(adapter, liveSession)]
 
   const picked = await vscode.window.showQuickPick(items, {
     placeHolder: buildChangeModelPlaceHolder(session),
