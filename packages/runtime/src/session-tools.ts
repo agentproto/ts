@@ -732,6 +732,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.allowSiblings`. */
   messagingAllowSiblings?: RegisterAgentToolsOptions["messagingAllowSiblings"]
+  /** `defaults.messaging.allowSameWorkspace` - forwarded to
+   *  `registerAgentTools`. */
+  messagingAllowSameWorkspace?: RegisterAgentToolsOptions["messagingAllowSameWorkspace"]
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]

@@ -14,8 +14,9 @@
 
 import { randomUUID } from "node:crypto"
 
-/** Sender's position in the tree, relative to the recipient. */
-export type MessageRelation = "child" | "parent" | "sibling" | "human" | "system"
+/** Sender's position in the tree, relative to the recipient. `peer` = no tree
+ *  edge, but the same workspace (the `allowSameWorkspace` allowance). */
+export type MessageRelation = "child" | "parent" | "sibling" | "peer" | "human" | "system"
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
@@ -64,6 +65,14 @@ export interface MessageTreeNode {
   label?: string
   role?: string
   adapterSlug?: string
+  /** The workspace the session belongs to. Two sessions of the SAME
+   *  workspace may message each other even without a tree edge - see
+   *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
+  workspaceSlug?: string
+  /** A workspace ID, when the descriptor carries one (a Pygmalion-style
+   *  workspace identifies by id as well as by slug). Compared ONLY when both
+   *  sides carry it - see {@link sameWorkspace}. */
+  workspaceId?: string
 }
 
 /**
@@ -87,13 +96,56 @@ export function resolveRelation(
 }
 
 /**
+ * Do two sessions belong to the SAME workspace? Both must carry a non-empty
+ * `workspaceSlug` and the slugs must match. When the descriptors also carry
+ * a `workspaceId` (a Pygmalion-style workspace id), both must carry it and
+ * the ids must match too - a slug that matches but an id that differs is NOT
+ * the same workspace. A missing/blank slug on either side is never the same
+ * workspace (an unset workspace must not widen the ACL).
+ */
+export function sameWorkspace(
+  a: MessageTreeNode | undefined,
+  b: MessageTreeNode | undefined,
+): boolean {
+  const slugA = a?.workspaceSlug?.trim()
+  const slugB = b?.workspaceSlug?.trim()
+  if (!slugA || !slugB) return false
+  if (slugA !== slugB) return false
+  const idA = a?.workspaceId?.trim()
+  const idB = b?.workspaceId?.trim()
+  if (idA !== undefined || idB !== undefined) {
+    if (!idA || !idB) return false
+    if (idA !== idB) return false
+  }
+  return true
+}
+
+/**
+ * The relation the messaging ACL is evaluated against: the tree relation
+ * when there IS a tree edge, else `peer` for two sessions of the same
+ * workspace (the `allowSameWorkspace` allowance), else `undefined` (a
+ * refusal - a different workspace, or a session messaging itself).
+ */
+export function resolveEffectiveRelation(
+  sender: MessageTreeNode | undefined,
+  recipient: MessageTreeNode,
+): MessageRelation | undefined {
+  const relation = resolveRelation(sender, recipient)
+  if (relation) return relation
+  if (!sender || sender.id === recipient.id) return undefined
+  return sameWorkspace(sender, recipient) ? "peer" : undefined
+}
+
+/**
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
- * only when `allowSiblings` (config-gated, default off). Anything else — a
- * cousin, a stranger, yourself — is refused.
+ * only when `allowSiblings` (config-gated, default off). A `peer` - two
+ * sessions of the same workspace with no tree edge - is allowed when
+ * `allowSameWorkspace` (config-gated, default ON). Anything else - a cousin
+ * of another workspace, a stranger, yourself - is refused.
  */
 export function isMessageAllowed(
   relation: MessageRelation | undefined,
-  opts?: { allowSiblings?: boolean },
+  opts?: { allowSiblings?: boolean; allowSameWorkspace?: boolean },
 ): relation is MessageRelation {
   switch (relation) {
     case "child":
@@ -103,6 +155,8 @@ export function isMessageAllowed(
       return true
     case "sibling":
       return opts?.allowSiblings === true
+    case "peer":
+      return opts?.allowSameWorkspace !== false
     default:
       return false
   }

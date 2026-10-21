@@ -165,6 +165,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     messaging: z
       .object({
         allowSiblings: z.boolean().optional(),
+        allowSameWorkspace: z.boolean().optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
       })
@@ -1200,6 +1201,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Allow sibling messaging",
     help: "Let message_send/message_reply reach a sibling session (same parent). Takes effect on the next call.",
     default: false,
+  },
+  {
+    path: "defaults.messaging.allowSameWorkspace",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Allow same-workspace messaging",
+    help: "Let message_send/message_reply reach any session of the same workspace, even without a tree edge. Takes effect on the next call.",
+    default: true,
   },
   {
     path: "defaults.messaging.agentInterrupt",

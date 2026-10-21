@@ -1172,7 +1172,11 @@ it can't forge a header. The recipient's transcript records a
 `session-message` record, never a `user-prompt`.
 
 Who may message whom: child → parent, parent → direct child, human/daemon
-→ anyone. Siblings only with `defaults.messaging.allowSiblings: true`.
+→ anyone. Siblings only with `defaults.messaging.allowSiblings: true`. Any
+session of the **same workspace** may also message any other session of that
+workspace, even without a tree edge (relation `peer`) - that allowance is on
+by default and is turned off with `defaults.messaging.allowSameWorkspace:
+false`.
 
 ### Tools (MCP)
 

@@ -315,9 +315,13 @@ export interface RegisterAgentToolsOptions {
    *  binds to the legacy `ui://agentproto_session_chat/view`, today's
    *  behaviour. */
   isSessionChatInstalled?: () => boolean
-  /** config.json `defaults.messaging.allowSiblings` — lets `message_send` /
+  /** config.json `defaults.messaging.allowSiblings` - lets `message_send` /
    *  `message_reply` reach a sibling (same parent). Default false. */
   messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.allowSameWorkspace` - lets
+   *  `message_send` / `message_reply` reach any session of the SAME
+   *  workspace, even without a tree edge. Default true. */
+  messagingAllowSameWorkspace?: boolean
   /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
    *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
@@ -350,6 +354,7 @@ export function registerAgentTools(
     defaultAgentPromptInterrupt,
     isSessionChatInstalled,
     messagingAllowSiblings,
+    messagingAllowSameWorkspace,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
@@ -991,6 +996,7 @@ export function registerAgentTools(
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAllowSameWorkspace === false ? { allowSameWorkspace: false } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 

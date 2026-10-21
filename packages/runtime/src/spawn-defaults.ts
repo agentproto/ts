@@ -179,8 +179,11 @@ export interface SpawnDefaultsConfig {
   /** Inter-session messaging policy (AIP-46 §Session messages). */
   messaging?: {
     /** Let `message_send` / `message_reply` reach a sibling session (same
-     *  parent). Default false — only child↔parent. */
+     *  parent). Default false - only child↔parent. */
     allowSiblings?: boolean
+    /** Let `message_send` / `message_reply` reach any session of the SAME
+     *  workspace, even without a tree edge. Default true. */
+    allowSameWorkspace?: boolean
     /** Whether a SESSION sender may use urgency `interrupt` (cancel the
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */

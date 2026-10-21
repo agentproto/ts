@@ -672,10 +672,15 @@ export interface OrchestratorGatewayDeps {
    *  reads the live config, hot-applying a `config_set` change with no
    *  restart. Forwarded to `registerSessionTools`. */
   defaultAgentPromptInterrupt?: boolean
-  /** EXPLICIT override for config.json `defaults.messaging.allowSiblings` —
+  /** EXPLICIT override for config.json `defaults.messaging.allowSiblings` -
    *  see `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
   messagingAllowSiblings?: boolean
+  /** EXPLICIT override for config.json
+   *  `defaults.messaging.allowSameWorkspace` - see
+   *  `defaultAgentPromptInterrupt` above for the override/resolve
+   *  precedence. Forwarded to `registerAgentTools`. */
+  messagingAllowSameWorkspace?: boolean
   /** EXPLICIT override for config.json `defaults.messaging.agentInterrupt` —
    *  see `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
@@ -741,6 +746,8 @@ export function createOrchestratorMcpServerFactory(
       defaultAgentPromptInterrupt:
         deps.defaultAgentPromptInterrupt ?? messagingDefaults.agentPromptInterrupt,
       messagingAllowSiblings: deps.messagingAllowSiblings ?? messagingDefaults.allowSiblings,
+      messagingAllowSameWorkspace:
+        deps.messagingAllowSameWorkspace ?? messagingDefaults.allowSameWorkspace,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),

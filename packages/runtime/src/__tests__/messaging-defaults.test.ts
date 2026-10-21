@@ -1,7 +1,8 @@
 /**
  * `resolveMessagingDefaults` (messaging-defaults.ts) — the per-call reader
  * for `defaults.agentPromptInterrupt` / `defaults.messaging.allowSiblings` /
- * `defaults.messaging.agentInterrupt` that replaced the boot-time
+ * `defaults.messaging.allowSameWorkspace` / `defaults.messaging.agentInterrupt`
+ * that replaced the boot-time
  * `configDefaults` snapshot in index.ts. No caching: every call re-reads
  * via the injected loader, exactly like `spawn-attach.ts` /
  * `worktree-isolation.ts` — a `config_set` change is visible on the very
@@ -17,19 +18,33 @@ describe("resolveMessagingDefaults", () => {
     expect(result).toEqual(DEFAULT_MESSAGING_DEFAULTS)
   })
 
-  it("reads all three knobs from config.defaults when set", async () => {
+  it("reads every knob from config.defaults when set", async () => {
     const result = await resolveMessagingDefaults(async () => ({
       defaults: {
         agentPromptInterrupt: true,
-        messaging: { allowSiblings: true, agentInterrupt: "allow", pendingPromptStaleMinutes: 12 },
+        messaging: {
+          allowSiblings: true,
+          allowSameWorkspace: false,
+          agentInterrupt: "allow",
+          pendingPromptStaleMinutes: 12,
+        },
       },
     }))
     expect(result).toEqual({
       agentPromptInterrupt: true,
       allowSiblings: true,
+      allowSameWorkspace: false,
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
     })
+  })
+
+  it("defaults the same-workspace allowance to ON", async () => {
+    const result = await resolveMessagingDefaults(async () => ({
+      defaults: { messaging: { allowSiblings: true } },
+    }))
+    expect(result.allowSameWorkspace).toBe(true)
+    expect(DEFAULT_MESSAGING_DEFAULTS.allowSameWorkspace).toBe(true)
   })
 
   it("falls back to the defaults when the loader throws (never propagates)", async () => {
