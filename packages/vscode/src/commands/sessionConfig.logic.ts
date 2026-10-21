@@ -544,17 +544,30 @@ function describePosture(posture: Posture | undefined): string | undefined {
 export function buildSessionConfigChips(
   descriptor: Pick<
     SessionDescriptor,
-    "model" | "mode" | "effort" | "posture" | "route" | "contextProfile" | "accessProfile"
+    | "model"
+    | "activeModel"
+    | "mode"
+    | "effort"
+    | "posture"
+    | "route"
+    | "contextProfile"
+    | "accessProfile"
+    | "configOptions"
   >,
   input: CapabilityResolutionInput,
 ): ConfigChip[] {
   const chips: ConfigChip[] = []
 
   // model — live, reuse the existing grouped menu + restart-trap flagging.
+  // The LIVE session's own model vocabulary (`configOptions`) rides along so a
+  // catalog id the running agent would reject is flagged restart-only instead
+  // of being offered as a live switch.
   const modelRows: ConfigChipRow[] = mapChangeModelQuickPickItems(input.adapter, {
     model: descriptor.model,
+    activeModel: descriptor.activeModel,
     mode: descriptor.mode,
     route: descriptor.route,
+    ...(descriptor.configOptions ? { configOptions: descriptor.configOptions } : {}),
   })
     .filter(item => item.model !== undefined)
     .map(item => ({

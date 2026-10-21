@@ -14,7 +14,7 @@
 
 import { resolveEffectiveRoute } from "@agentproto/runtime/catalog-models"
 
-import type { SessionDescriptor } from "../client/types.js"
+import type { SessionConfigOptionRow, SessionDescriptor } from "../client/types.js"
 import { modelEntriesOf, type SpawnAdapterInfo } from "./spawn.logic.js"
 
 /** Mirrors `vscode.QuickPickItemKind.Separator` (`-1`) without importing
@@ -54,12 +54,73 @@ function routeDescription(
   restartRequired: boolean,
   current: boolean,
   route: string | undefined,
+  notAcceptedLive?: boolean,
 ): string | undefined {
   const parts: string[] = []
   if (restartRequired) parts.push("restart required")
   else if (current) parts.push("current")
+  if (notAcceptedLive) parts.push("not accepted live")
   if (route) parts.push(`via ${route}`)
   return parts.length > 0 ? parts.join(" · ") : undefined
+}
+
+// ── The live agent's OWN model vocabulary ───────────────────────────────────
+
+/**
+ * One value the LIVE session's model config option accepts.
+ *
+ * `value` is the wire value to send -- the agent validates against it and
+ * rejects anything else ("Invalid value for config option model: <id>"), so
+ * it is NOT necessarily a catalog model id.
+ */
+export interface LiveModelValue {
+  value: string
+  name?: string
+  description?: string
+  /** The group the value sits under, when the harness groups its options. */
+  group?: string
+}
+
+/**
+ * The model values the LIVE session's harness advertises for its model config
+ * option (the ACP `session/new` response's `configOptions`, echoed onto the
+ * descriptor by the daemon at read time).
+ *
+ * Empty when the session advertises no model option at all (a print arm, a
+ * dead session, an older daemon) -- the caller then keeps the catalog-only
+ * behaviour, which is right for a harness that never had its own vocabulary.
+ */
+export function liveModelValues(
+  configOptions: readonly SessionConfigOptionRow[] | undefined,
+): LiveModelValue[] {
+  if (!configOptions || configOptions.length === 0) return []
+  const option =
+    configOptions.find(o => o.id.toLowerCase() === "model") ??
+    configOptions.find(o => o.category?.toLowerCase() === "model")
+  if (!option || !option.options || option.options.length === 0) return []
+
+  const values: LiveModelValue[] = []
+  for (const entry of option.options) {
+    // A grouped option list: `{ group, name, options: [...] }`.
+    if (!("value" in entry) && Array.isArray(entry.options)) {
+      for (const nested of entry.options) {
+        values.push({
+          value: nested.value,
+          ...(nested.name ? { name: nested.name } : {}),
+          ...(nested.description ? { description: nested.description } : {}),
+          ...(entry.name ? { group: entry.name } : {}),
+        })
+      }
+      continue
+    }
+    if (!("value" in entry)) continue
+    values.push({
+      value: entry.value,
+      ...(entry.name ? { name: entry.name } : {}),
+      ...(entry.description ? { description: entry.description } : {}),
+    })
+  }
+  return values
 }
 
 /**
@@ -70,12 +131,22 @@ function routeDescription(
  * groups under the adapter's own name (an unstated provider is never
  * guessed). Group order follows first appearance in `modelEntriesOf`'s
  * order (which itself mirrors the manifest's declared order).
+ *
+ * When the LIVE session advertises its own model vocabulary
+ * (`session.configOptions`), that vocabulary wins for the LIVE switch: a
+ * catalog id the agent does not accept is flagged restart-only (it would be
+ * rejected outright by a live switch), and the agent's own values -- the ones
+ * it accepts -- are offered as extra rows.
  */
 export function mapChangeModelQuickPickItems(
   adapter: SpawnAdapterInfo,
-  session: Pick<SessionDescriptor, "model" | "mode" | "route">,
+  session: Pick<SessionDescriptor, "model" | "activeModel" | "mode" | "route"> & {
+    configOptions?: readonly SessionConfigOptionRow[]
+  },
 ): ChangeModelQuickPickItem[] {
   const groups = new Map<string, { heading: string; rows: ChangeModelQuickPickItem[] }>()
+  const live = liveModelValues(session.configOptions)
+  const liveIds = new Set(live.map(v => v.value))
 
   for (const entry of modelEntriesOf(adapter)) {
     const key = entry.provider ?? `adapter:${adapter.slug}`
@@ -94,8 +165,14 @@ export function mapChangeModelQuickPickItems(
     const rowRoute = resolveEffectiveRoute(entry.id, undefined)
     const sessionRoute = resolveEffectiveRoute(session.model, session.route?.gateway)
     const routeMismatch = rowRoute !== undefined && rowRoute !== sessionRoute
-    const restartRequired = adapter.modelApply === "arg" || modeMismatch || routeMismatch
-    const description = routeDescription(restartRequired, current, rowRoute)
+    // The live agent validates the model value it is given: a catalog id
+    // outside its advertised vocabulary is REJECTED ("Invalid value for
+    // config option model"), so such a row can only be reached through a
+    // restart, never a live switch.
+    const notAcceptedLive = liveIds.size > 0 && !liveIds.has(entry.id)
+    const restartRequired =
+      adapter.modelApply === "arg" || modeMismatch || routeMismatch || notAcceptedLive
+    const description = routeDescription(restartRequired, current, rowRoute, notAcceptedLive)
 
     group.rows.push({
       label: entry.id,
@@ -112,8 +189,31 @@ export function mapChangeModelQuickPickItems(
     items.push({ label: group.heading, kind: SEPARATOR_KIND })
     items.push(...group.rows)
   }
+
+  // The agent's OWN values, when they are not already a catalog row: these
+  // are the ids a live switch can actually apply.
+  const catalogIds = new Set(
+    items.filter(i => i.model !== undefined).map(i => i.model as string),
+  )
+  const extra = live.filter(v => !catalogIds.has(v.value))
+  if (extra.length > 0) {
+    items.push({ label: LIVE_MODELS_HEADING, kind: SEPARATOR_KIND })
+    for (const value of extra) {
+      const current = value.value === session.model || value.value === session.activeModel
+      const description = value.name ?? value.description
+      items.push({
+        label: value.value,
+        ...(description ? { description } : {}),
+        model: value.value,
+        ...(current ? { current: true } : {}),
+      })
+    }
+  }
   return items
 }
+
+/** Heading of the group carrying the live agent's own model values. */
+export const LIVE_MODELS_HEADING = "accepted by this agent"
 
 /** Label for the synthetic top-row that hands off to the route chip picker. */
 export const CHANGE_ROUTE_LABEL = "$(arrow-swap) Change route…"
