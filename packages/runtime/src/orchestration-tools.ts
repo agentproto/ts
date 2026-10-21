@@ -2724,10 +2724,20 @@ export function registerOrchestrationTools(
       detachedAgentStartSchema.extend({ kind: z.literal("agent") }),
       z.object({
         kind: z.literal("prompt-session"),
-        sessionId: z.string().min(1).describe(
-          "Id of an existing, already-running session (from agent_start or agent_sessions_list) to re-prompt.",
+        sessionId: z.string().min(1).optional().describe(
+          "Id of an existing, already-running session (from agent_start or agent_sessions_list) to re-prompt. " +
+            "Mutually exclusive with `agent`. The spelling 'agent:<label>' is accepted here too and is " +
+            "normalized to the `agent` field.",
+        ),
+        agent: z.string().min(1).optional().describe(
+          "Agent label to re-prompt, resolved at FIRE time to the live session carrying that label " +
+            "(exact, case-insensitive; the newest live one wins). Use this instead of `sessionId` " +
+            "when the target agent gets relaunched under a new id — the label survives the relaunch. " +
+            "Mutually exclusive with `sessionId`.",
         ),
         prompt: z.string().min(1).describe("Prompt to send to the existing session."),
+      }).refine(a => (a.sessionId ? 1 : 0) + (a.agent ? 1 : 0) === 1, {
+        message: "a prompt-session action needs exactly one target: `sessionId` or `agent` (agent:<label>)",
       }),
       z.object({
         kind: z.literal("tool"),
@@ -2748,6 +2758,9 @@ export function registerOrchestrationTools(
       "Schedule a recurring or one-shot cron job on the daemon. " +
         "Accepts a 5-field cron expression (minute hour day-of-month month day-of-week, local time) " +
         "and a command, agent-spawn, session-reprompt, or daemon-tool action. " +
+        "A session-reprompt action may target a session id OR an agent label ('agent:<label>'), " +
+        "which is resolved to the live session carrying that label when the job fires — so the job " +
+        "survives the agent being relaunched under a new id. " +
         "Returns the created job id and nextRunAt. " +
         "WARNING: this installs a persistent host-level job that survives daemon restarts.",
       {
@@ -2764,7 +2777,10 @@ export function registerOrchestrationTools(
           "What to do when the job fires. 'command' runs an allowlisted shell command; " +
           "'agent' spawns a brand-new agent session and takes every agent_start field " +
           "(access.profileRef, role, worktree, …; not `wait`); 'prompt-session' re-prompts an " +
-          "existing, already-running session in place (for durable check-in jobs); " +
+          "existing, already-running session in place (for durable check-in jobs) — targeted by " +
+          "`sessionId`, or by `agent` (the 'agent:<label>' spelling), which is resolved to the live " +
+          "session carrying that label AT FIRE TIME so the job survives the agent being relaunched " +
+          "under a new id; " +
           "'tool' calls a registered daemon MCP tool in-process (cron_* refused).",
         ),
         maxConsecutiveFailures: z.number().int().min(1).optional().describe(
