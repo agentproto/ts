@@ -8,6 +8,7 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import {
   attachRequestSchema,
+  computerListResponseSchema,
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
@@ -37,6 +38,9 @@ export interface FakeControllerOptions {
   createStatus?: number
   createError?: string
   execStatus?: number
+  /** Fail GET /v1/computers (the list) with this status/body. */
+  listStatus?: number
+  listError?: string
   /** Fail every GET /v1/computers/:id with this status/body (capacity tests). */
   statusStatus?: number
   statusError?: string
@@ -77,6 +81,8 @@ export class FakeController {
   readonly suspended: string[] = []
   readonly resumed: string[] = []
   readonly removed: string[] = []
+  /** Every DELETE, with the force flag the caller sent. */
+  readonly deletes: Array<{ id: string; force: boolean }> = []
   /** Bodies of the attach/detach calls, for holder assertions. `holder` is
    *  undefined for a body-less legacy call. */
   readonly attachBodies: Array<{ id: string; holder?: string }> = []
@@ -222,6 +228,23 @@ export class FakeController {
       return reply(res, 201, responseBody)
     }
 
+    if (url.pathname === "/v1/computers" && req.method === "GET") {
+      // LIST every computer the controller holds - the orphan-gc surface.
+      if (this.options.listStatus) {
+        const body = { error: this.options.listError ?? "failed" }
+        assertContract(errorResponseSchema, body)
+        return reply(res, this.options.listStatus, body)
+      }
+      const computers = [...this.states.keys()].map((name) => ({
+        name,
+        state: this.states.get(name) ?? "unknown",
+        sessions: this.sessions.get(name) ?? 0,
+      }))
+      const responseBody = { computers }
+      assertContract(computerListResponseSchema, responseBody)
+      return reply(res, 200, responseBody)
+    }
+
     const computerMatch = /^\/v1\/computers\/([^/]+)/.exec(url.pathname)
     if (!computerMatch) return reply(res, 404, { error: "not found" })
     const id = decodeURIComponent(computerMatch[1] as string)
@@ -297,10 +320,12 @@ export class FakeController {
     }
     if (req.method === "DELETE") {
       const attached = this.sessions.get(id) ?? 0
-      if (attached > 0 && url.searchParams.get("force") !== "true") {
+      const force = url.searchParams.get("force") === "true"
+      if (attached > 0 && !force) {
         return reply(res, 409, { error: "computer has attached sessions", sessions: attached })
       }
       this.removed.push(id)
+      this.deletes.push({ id, force })
       this.states.delete(id)
       const deleteBody = { ok: true }
       assertContract(suspendResponseSchema, deleteBody)

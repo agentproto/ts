@@ -37,6 +37,7 @@ import {
   attachSandbox,
   buildMcpConfigSnippet,
   collectGcCandidates,
+  liveSessionBoxIds,
   makeSandboxCredsStore,
   makeSandboxResolver,
   readSandboxLedger,
@@ -44,7 +45,10 @@ import {
   reconcileSandboxLedger,
   removeSandboxLedgerEntry,
   reapGcEntry,
+  runSandboxOrphanGcPass,
+  type SandboxGcLiveSession,
   type SandboxLedgerEntry,
+  type SandboxOrphanCandidate,
 } from "@agentproto/runtime"
 import { parseDuration } from "../util/duration.js"
 import { repoRootOf } from "./worktree.js"
@@ -119,12 +123,22 @@ gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
        failure state (error / killed / exited) — the session can never come
        back to its box, so the box is just money. Dry run by default; it
        prints what WOULD be torn down.
+       ORPHAN PROVIDER BOXES are reaped too: boxes the PROVIDER's control
+       plane still holds (the computer controller keeps their RAM, and their
+       session slots, pinned on the host) that the daemon's sandbox registry
+       never knew and that no LIVE session references. A box a live session
+       holds is never a candidate. With --apply they are deleted on the
+       provider, forced (a stale provider-side session slot would otherwise
+       make the provider refuse the destroy).
 
   --apply  Actually tear the boxes down (kill on the provider) and stamp
            the ledger rows "stopped".
   --pause  With --apply: PAUSE the boxes instead of killing them (keeps
            them attachable later) — note a paused e2b box still bills, so
            the default kill is usually what you want for orphans.
+  --provider <slug>
+           Provider whose control plane is swept for orphan boxes.
+           Repeatable. Default: computer.
   --json   Print the plan / outcomes as JSON.
 
 checkpoint-gc
@@ -196,11 +210,27 @@ export interface SandboxGcCliDeps {
   /** Resolves a ledger row's provider to its handle. Defaults to the
    *  local sandbox-creds store (same as `attach`). */
   resolveProvider?: SandboxGcProviderHandleResolver
+  /** The daemon's live sessions (id / status / sandboxId): the boxes a LIVE
+   *  session holds. A box a live session holds is never a gc candidate.
+   *  Defaults to the daemon's `GET /sessions`. */
+  fetchLiveSessions?: () => Promise<SandboxGcLiveSession[]>
+  /** Provider slugs swept for ORPHAN boxes (boxes the provider's control
+   *  plane still holds that no live session references). Defaults to
+   *  {@link DEFAULT_GC_PROVIDER_SLUGS}. */
+  providerSlugs?: readonly string[]
 }
 
 type SandboxGcProviderHandleResolver = (
   slug: string,
 ) => Promise<import("@agentproto/runtime").SandboxGcProviderHandle | null>
+
+/** The resolver shape the runtime gc helpers take. */
+type GcProviderResolver = SandboxGcProviderHandleResolver
+
+/** Providers whose control plane can enumerate its boxes, so the gc can find
+ *  the boxes the daemon's ledger never knew about. The `computer` provider is
+ *  the one that pins RAM on a shared controller. */
+export const DEFAULT_GC_PROVIDER_SLUGS: readonly string[] = ["computer"]
 
 export interface SandboxExecCliDeps {
   /** Defaults to `discoverDaemon()`. */
@@ -599,6 +629,31 @@ const defaultResolveProvider: SandboxGcProviderHandleResolver = async slug => {
   return handle as unknown as import("@agentproto/runtime").SandboxGcProviderHandle
 }
 
+/** Default live-session source: the daemon's `GET /sessions` (read-only).
+ *  Only the fields the gc needs: the id, the status and the box id a
+ *  remote session holds. */
+async function defaultFetchLiveSessions(): Promise<SandboxGcLiveSession[]> {
+  const report = await discoverDaemon()
+  if (!report.found) {
+    throw new Error(
+      "no live daemon found - sandbox gc needs the daemon to read the live sessions " +
+        "(start one with `agentproto serve`, or set AGENTPROTO_DAEMON_URL).",
+    )
+  }
+  const body = await httpGetJson<{
+    sessions?: Array<{ id?: unknown; status?: unknown; sandboxId?: unknown }>
+  }>(`${report.found.url}/sessions`)
+  const out: SandboxGcLiveSession[] = []
+  for (const s of body.sessions ?? []) {
+    out.push({
+      ...(typeof s.id === "string" ? { id: s.id } : {}),
+      ...(typeof s.status === "string" ? { status: s.status } : {}),
+      ...(typeof s.sandboxId === "string" ? { sandboxId: s.sandboxId } : {}),
+    })
+  }
+  return out
+}
+
 async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
@@ -608,6 +663,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
       apply: { type: "boolean" },
       pause: { type: "boolean" },
       json: { type: "boolean" },
+      provider: { type: "string", multiple: true },
     },
   })
   const deps = cliDeps ?? {}
@@ -622,7 +678,51 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
     return 1
   }
 
-  const candidates = collectGcCandidates(readSandboxLedger(), statuses)
+  // The live sessions decide what is STILL IN USE: a box a live session
+  // holds is never a gc candidate, whatever the provider's control plane
+  // says about it. Without them the provider sweep is SKIPPED (never delete
+  // what we cannot prove is unused); the ledger pass below still runs.
+  let liveSessions: SandboxGcLiveSession[] | undefined
+  let liveSessionsError: string | undefined
+  try {
+    liveSessions = await (deps.fetchLiveSessions ?? defaultFetchLiveSessions)()
+  } catch (err) {
+    liveSessionsError = err instanceof Error ? err.message : String(err)
+  }
+
+  const ledger = readSandboxLedger()
+  const candidates = collectGcCandidates(ledger, statuses)
+
+  // ORPHAN boxes: the PROVIDER's control plane still holds them (and their
+  // RAM), but the daemon's sandbox registry never knew them and no live
+  // session references them. The ledger pass above cannot see those: the
+  // provider can.
+  const resolveProvider = deps.resolveProvider ?? defaultResolveProvider
+  const orphanPass =
+    liveSessions === undefined
+      ? { candidates: [], providerErrors: [], deleted: [], failed: [] }
+      : await runSandboxOrphanGcPass({
+          resolveProvider: resolveProvider as unknown as GcProviderResolver,
+          providerSlugs:
+            values.provider && values.provider.length > 0
+              ? values.provider
+              : deps.providerSlugs ?? DEFAULT_GC_PROVIDER_SLUGS,
+          registryBoxIds: new Set(ledger.map(e => e.sandboxId)),
+          liveBoxIds: liveSessionBoxIds(liveSessions),
+          apply: values.apply === true,
+        })
+  const orphans = orphanPass.candidates
+  if (liveSessionsError !== undefined) {
+    process.stderr.write(
+      `agentproto sandbox gc: cannot read the live sessions - ${liveSessionsError}; ` +
+        "the provider sweep is skipped (no box is deleted without knowing what is in use)\n",
+    )
+  }
+  for (const s of orphanPass.providerErrors) {
+    process.stderr.write(
+      `agentproto sandbox gc: provider "${s.provider}" could not be scanned - ${s.error}\n`,
+    )
+  }
 
   if (!values.apply) {
     if (values.json) {
@@ -636,56 +736,66 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
               originSessionId: c.entry.originSessionId,
               sessionStatus: c.sessionStatus,
             })),
+            orphans: orphans.map(o => ({
+              provider: o.provider,
+              boxId: o.boxId,
+              state: o.state,
+              reason: o.reason,
+              ...(o.sessions !== undefined ? { sessions: o.sessions } : {}),
+              ...(o.memoryMiB !== undefined ? { memoryMiB: o.memoryMiB } : {}),
+              ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
+            })),
+            providerErrors: orphanPass.providerErrors,
             applied: false,
             results: [],
+            orphanResults: [],
           },
           null,
           2,
         ) + "\n",
       )
-      return 0
+      return orphanPass.providerErrors.length > 0 ? 1 : 0
     }
     if (candidates.length === 0) {
       process.stdout.write(
         "no orphan sandboxes — no ledger entries have an origin session in " +
           "error/killed/exited\n",
       )
-      return 0
+    } else {
+      const rows: Array<string[]> = [["ID", "PROVIDER", "STATE", "SESSION", "STATUS"]]
+      for (const c of candidates) {
+        const id =
+          c.entry.sandboxId.length > 20 ? `${c.entry.sandboxId.slice(0, 17)}…` : c.entry.sandboxId
+        rows.push([
+          id,
+          c.entry.provider,
+          c.entry.state,
+          c.entry.originSessionId ?? "-",
+          c.sessionStatus,
+        ])
+      }
+      const header = rows[0]
+      if (header) {
+        const widths = header.map((_, i) => Math.max(...rows.map(r => r[i]?.length ?? 0)))
+        for (const [i, row] of rows.entries()) {
+          process.stdout.write(row.map((cell, j) => cell.padEnd(widths[j] ?? 0)).join("  ") + "\n")
+        }
+      }
+      process.stdout.write(
+        `\n${candidates.length} orphan sandbox(es): dry run only. Re-run with --apply to tear them down` +
+          `${values.pause ? "" : " (kill is the default; pass --pause to pause instead)"}.\n`,
+      )
     }
-    const rows: Array<string[]> = [["ID", "PROVIDER", "STATE", "SESSION", "STATUS"]]
-    for (const c of candidates) {
-      const id =
-        c.entry.sandboxId.length > 20 ? `${c.entry.sandboxId.slice(0, 17)}…` : c.entry.sandboxId
-      rows.push([
-        id,
-        c.entry.provider,
-        c.entry.state,
-        c.entry.originSessionId ?? "—",
-        c.sessionStatus,
-      ])
-    }
-    const header = rows[0]
-    if (!header) return 0
-    const widths = header.map((_, i) => Math.max(...rows.map(r => r[i]?.length ?? 0)))
-    for (const [i, row] of rows.entries()) {
-      process.stdout.write(row.map((cell, j) => cell.padEnd(widths[j] ?? 0)).join("  ") + "\n")
-    }
-    process.stdout.write(
-      `\n${candidates.length} orphan sandbox(es) — dry run only. Re-run with --apply to tear them down` +
-        `${values.pause ? "" : " (kill is the default; pass --pause to pause instead)"}.\n`,
-    )
-    return 0
+    printOrphanPlan(orphans)
+    return orphanPass.providerErrors.length > 0 ? 1 : 0
   }
 
-  const resolveProvider = deps.resolveProvider ?? defaultResolveProvider
   const results: Array<{ sandboxId: string; ok: boolean; action?: string; error?: string }> = []
   let failures = 0
   for (const c of candidates) {
     const res = await reapGcEntry(c.entry, {
       ...(values.pause ? { pause: true } : {}),
-      resolveProvider: resolveProvider as unknown as (
-        slug: string,
-      ) => Promise<import("@agentproto/runtime").SandboxGcProviderHandle | null>,
+      resolveProvider: resolveProvider as unknown as GcProviderResolver,
     })
     const record = res.ok
       ? { sandboxId: c.entry.sandboxId, ok: true, action: res.action }
@@ -700,6 +810,33 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
       )
     }
   }
+  // The orphan boxes were DELETED by the pass above (forced: a stale
+  // provider-side session slot would otherwise make the provider refuse the
+  // destroy and keep the RAM pinned).
+  const orphanResults: Array<{ boxId: string; provider: string; ok: boolean; error?: string }> = [
+    ...orphanPass.deleted.map(boxId => ({
+      boxId,
+      provider: orphans.find(o => o.boxId === boxId)?.provider ?? "",
+      ok: true,
+    })),
+    ...orphanPass.failed.map(f => ({
+      boxId: f.boxId,
+      provider: orphans.find(o => o.boxId === f.boxId)?.provider ?? "",
+      ok: false,
+      error: f.error,
+    })),
+  ]
+  for (const f of orphanPass.failed) {
+    failures++
+    if (!values.json) process.stderr.write(`agentproto sandbox gc: ${f.error}\n`)
+  }
+  if (!values.json) {
+    for (const boxId of orphanPass.deleted) {
+      process.stdout.write(
+        `orphan box ${boxId} (${orphans.find(o => o.boxId === boxId)?.provider ?? "?"}) deleted\n`,
+      )
+    }
+  }
   if (values.json) {
     process.stdout.write(
       JSON.stringify(
@@ -711,16 +848,81 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
             originSessionId: c.entry.originSessionId,
             sessionStatus: c.sessionStatus,
           })),
+          orphans: orphans.map(o => ({
+            provider: o.provider,
+            boxId: o.boxId,
+            state: o.state,
+            reason: o.reason,
+            ...(o.sessions !== undefined ? { sessions: o.sessions } : {}),
+            ...(o.memoryMiB !== undefined ? { memoryMiB: o.memoryMiB } : {}),
+            ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
+          })),
+          providerErrors: orphanPass.providerErrors,
           applied: true,
           results,
+          orphanResults,
         },
         null,
         2,
       ) + "\n",
     )
-    return failures > 0 ? 1 : 0
   }
-  return failures > 0 ? 1 : 0
+  return failures > 0 || orphanPass.providerErrors.length > 0 ? 1 : 0
+}
+
+/** Print the orphan-box plan (dry run). The RAM the pass would free is only
+ *  known when the provider reports a per-box memory; otherwise the line says
+ *  so rather than guessing. */
+function printOrphanPlan(orphans: readonly SandboxOrphanCandidate[]): void {
+  if (orphans.length === 0) {
+    process.stdout.write("no orphan provider boxes - every box the provider lists is known or in use\n")
+    return
+  }
+  process.stdout.write("\nOrphan boxes (provider control plane):\n")
+  const rows: Array<string[]> = [["BOX", "PROVIDER", "STATE", "AGE", "SESSIONS", "MEMORY", "REASON"]]
+  for (const o of orphans) {
+    rows.push([
+      o.boxId,
+      o.provider,
+      o.state,
+      o.ageMs !== undefined ? relativeAge(o.ageMs) : "-",
+      o.sessions !== undefined ? String(o.sessions) : "-",
+      o.memoryMiB !== undefined ? `${o.memoryMiB} MiB` : "-",
+      o.reason,
+    ])
+  }
+  const header = rows[0]
+  if (!header) return
+  const widths = header.map((_, i) => Math.max(...rows.map(r => r[i]?.length ?? 0)))
+  for (const [i, row] of rows.entries()) {
+    process.stdout.write(row.map((cell, j) => cell.padEnd(widths[j] ?? 0)).join("  ") + "\n")
+  }
+  const known = orphans.filter(o => o.memoryMiB !== undefined)
+  const ram = known.reduce((sum, o) => sum + (o.memoryMiB ?? 0), 0)
+  const ramNote =
+    known.length === orphans.length
+      ? ` about ${ram} MiB of RAM`
+      : known.length > 0
+        ? ` about ${ram} MiB of RAM (the provider does not report the memory of every box)`
+        : " (RAM unknown - the provider does not report per-box memory)"
+  process.stdout.write(
+    `\n${orphans.length} orphan provider box(es)${ramNote} - dry run only. Pass --apply to delete them.\n`,
+  )
+}
+
+/** Age in ms -> a short "3h"/"2d" string. */
+function relativeAge(ms: number): string {
+  const units: Array<[number, string]> = [
+    [1000, "s"],
+    [60_000, "m"],
+    [3_600_000, "h"],
+    [86_400_000, "d"],
+  ]
+  let out = `${ms}ms`
+  for (const [size, unit] of units) {
+    if (ms >= size) out = `${Math.round(ms / size)}${unit}`
+  }
+  return out
 }
 
 async function runAttach(args: readonly string[]): Promise<number> {

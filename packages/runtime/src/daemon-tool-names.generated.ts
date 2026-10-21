@@ -212,6 +212,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "sandbox_checkpoint_gc",
   "sandbox_checkpoint_gc_status",
   "sandbox_exec",
+  "sandbox_gc",
   "self_inspect",
   "sentinel_list",
   "sentinel_poll_now",

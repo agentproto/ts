@@ -16,6 +16,7 @@
  * keeps it attachable for boxes you still want) and stamps the ledger.
  * Dry run by default.
  */
+import type { SandboxProviderBox } from "@agentproto/sandbox"
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { SandboxLedgerEntry, SandboxLedgerState } from "./sandbox-ledger.js"
 import { readSandboxLedger, recordSandboxState } from "./sandbox-ledger.js"
@@ -92,6 +93,10 @@ export interface SandboxGcProviderHandle {
      *  caller allowed to `force` past a shared-box 409. Optional: providers
      *  without it fall back to the connect path. */
     remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
+    /** Control-plane enumeration of the provider's boxes: the orphan-box
+     *  gc reads it to find boxes no live session holds (see
+     *  `sandbox-orphan-gc.ts`). */
+    listBoxes?(): Promise<SandboxProviderBox[]>
   }
 }
 

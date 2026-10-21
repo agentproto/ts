@@ -48,6 +48,7 @@ import type {
   SandboxProbeResult,
   SandboxSpec,
   SandboxProvider,
+  SandboxProviderBox,
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError } from "@agentproto/sandbox"
 import {
@@ -762,6 +763,36 @@ export const computerSandboxProvider: SandboxProvider = {
       }
     }
   },
+
+  /**
+   * Every computer the controller still holds (`GET /v1/computers`) - the
+   * orphan-box gc's view of the provider's control plane. Read-only: no box
+   * is touched, no session slot is taken. The controller's session count is
+   * reported as the box's `sessions` (the stale attachments an orphan box
+   * keeps), and `memoryMiB`/`createdAt` when the controller reports them.
+   */
+  async listBoxes(): Promise<SandboxProviderBox[]> {
+    const fallbackConfig = () =>
+      resolveClientConfig(
+        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+        readComputerConfig({ provider: "computer", config: {} }),
+      )
+    const client = new ComputerControllerClient(fallbackConfig())
+    const computers = await client.listComputers()
+    return computers.map(entry => ({
+      id: entry.name,
+      state: entry.state,
+      ...(entry.sessions !== undefined ? { sessions: countSessions(entry.sessions) } : {}),
+      ...(entry.memoryMiB !== undefined ? { memoryMiB: entry.memoryMiB } : {}),
+      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    }))
+  },
+}
+
+/** The controller reports the session slots of a computer either as a count
+ *  or as a list of holders - normalize both to a number. */
+function countSessions(sessions: number | readonly unknown[]): number {
+  return typeof sessions === "number" ? sessions : sessions.length
 }
 
 async function bootOnClient(

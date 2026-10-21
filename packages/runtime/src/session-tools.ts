@@ -96,6 +96,10 @@ import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } fro
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
+import { readSandboxLedger } from "./sandbox-ledger.js"
+import { liveSessionBoxIds, runSandboxOrphanGcPass } from "./sandbox-orphan-gc.js"
+import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
+import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -4657,6 +4661,79 @@ export function registerSessionTools(
             text: JSON.stringify(sandboxCheckpointGcDoneView(job.id, job.resultPath, job.result!, job.endedAt)),
           },
         ],
+      }
+    },
+  )
+
+  server.tool(
+    "sandbox_gc",
+    "Reap ORPHAN sandbox boxes: boxes a PROVIDER's control plane still " +
+      "holds (and still charges RAM for) that the daemon's sandbox registry " +
+      "never knew and that no LIVE session references. The computer " +
+      "controller is the case that matters: a stale box keeps its memory " +
+      "(and its session slots) pinned on the host, and every later launch " +
+      "then fails with \"host capacity\". A box held by a live session is " +
+      "NEVER a candidate. DEFAULTS TO A DRY RUN: it lists the orphan boxes " +
+      "with their state, age (when known) and the RAM they hold (when the " +
+      "provider reports it). `apply: true` deletes them on the provider, " +
+      "forced, because a stale provider-side session slot would otherwise " +
+      "make the provider refuse the destroy. One provider failing (a " +
+      "controller that is down) is reported as `providerErrors` and never " +
+      "stops the sweep of the others.",
+    {
+      apply: mcpBool
+        .optional()
+        .describe("When true, DELETE the orphan boxes on their provider (forced). Default false - a dry run."),
+      providers: z
+        .array(z.string())
+        .optional()
+        .describe('Provider slugs to sweep. Default ["computer"].'),
+    },
+    async input => {
+      try {
+        const resolveProvider =
+          opts.resolveSandboxProvider ??
+          makeSandboxResolver(makeSandboxCredsStore())
+        const liveSessions = registry
+          .list({ includeArchived: false })
+          .map(s => ({
+            id: s.id,
+            status: s.status,
+            ...(s.sandboxId !== undefined ? { sandboxId: s.sandboxId } : {}),
+          }))
+        const pass = await runSandboxOrphanGcPass({
+          resolveProvider: async slug => {
+            const handle = await resolveProvider(slug)
+            if (!handle) return null
+            return handle as unknown as SandboxGcProviderHandle
+          },
+          providerSlugs:
+            input.providers && input.providers.length > 0 ? input.providers : ["computer"],
+          registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
+          liveBoxIds: liveSessionBoxIds(liveSessions),
+          apply: input.apply === true,
+        })
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                applied: input.apply === true,
+                candidates: pass.candidates,
+                providerErrors: pass.providerErrors,
+                deleted: pass.deleted,
+                failed: pass.failed,
+              }),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `sandbox_gc failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
       }
     },
   )

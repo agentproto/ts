@@ -698,6 +698,19 @@ export {
   type SandboxGcReapResult,
 } from "./sandbox-gc.js"
 export {
+  collectProviderOrphanCandidates,
+  liveSessionBoxIds,
+  reapSandboxOrphan,
+  runSandboxOrphanGcPass,
+  scanSandboxProviderOrphans,
+  type SandboxGcLiveSession,
+  type SandboxOrphanCandidate,
+  type SandboxOrphanGcPassResult,
+  type SandboxOrphanReapResult,
+  type SandboxOrphanScan,
+  type SandboxOrphanScanDeps,
+} from "./sandbox-orphan-gc.js"
+export {
   reconcileSandboxLedger,
   type SandboxReconcileDeps,
   type SandboxReconcileProviderHandle,
