@@ -23,6 +23,7 @@ import {
 } from "../auto-compact.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
+  computeContextContinuityStatus,
   resolveContextContinuityPolicy,
 } from "../context-continuity.js"
 
@@ -272,5 +273,25 @@ describe("context-continuity policy", () => {
       { autoCompactAtTokens: 42_000 },
     )
     expect(resolved.autoCompactAtTokens).toBe(42_000)
+  })
+})
+
+describe("session_context_status", () => {
+  it("reports the absolute threshold and whether the session is above it", () => {
+    const policy = resolveContextContinuityPolicy(
+      { autoCompactAtTokens: 150_000 },
+      undefined,
+      undefined,
+      undefined,
+    )
+    const below = computeContextContinuityStatus("sess_1", policy, 1_000_000, 100_000)
+    expect(below.autoCompactAtTokens).toBe(150_000)
+    expect(below.autoCompactAboveThreshold).toBe(false)
+
+    const above = computeContextContinuityStatus("sess_1", policy, 1_000_000, 200_000)
+    expect(above.autoCompactAboveThreshold).toBe(true)
+    // The percent ladder still says "ok" at 20% — that is the bug the
+    // absolute threshold exists to cover.
+    expect(above.state).toBe("ok")
   })
 })
