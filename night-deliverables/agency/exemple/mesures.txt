@@ -1,0 +1,28 @@
+
+METRIQUES PAR PM
+PM    | livrables | acceptes | taux % | h-h livrees | cout $ | cout/livrable $
+------+-----------+----------+--------+-------------+--------+----------------
+alice |         3 |        2 |   66.7 |        8.00 |   3.47 |            1.74
+bob   |         3 |        3 |  100.0 |        5.50 |   1.30 |            0.43
+
+METRIQUES PAR NUIT
+nuit       | livrables | acceptes | taux % | h-h livrees | cout $ | cout/livrable $
+-----------+-----------+----------+--------+-------------+--------+----------------
+2026-10-20 |         3 |        2 |   66.7 |        8.00 |   3.47 |            1.74
+2026-10-21 |         3 |        3 |  100.0 |        5.50 |   1.30 |            0.43
+
+TOTAL
+indicateur                    | valeur
+------------------------------+-------
+nuits mesurees                |      2
+livrables (total)             |      6
+livrables acceptes            |      5
+livrables hors plan           |      1
+taux d'acceptation %          |   83.3
+heures-homme livrees          |  13.50
+cout total $                  |   4.77
+cout par livrable accepte $   |   0.95
+cout par heure-homme livree $ |   0.35
+livrables acceptes par nuit   |   2.50
+heures-homme livrees par nuit |   6.75
+

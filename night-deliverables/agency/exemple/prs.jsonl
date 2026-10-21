@@ -1,0 +1,6 @@
+{"pr": 9001, "pm": "alice", "night": "2026-10-20", "title": "Refonte du rapport de nuit", "task": "T1", "cost_usd": 1.35, "merged": true, "accepted": true}
+{"pr": 9002, "pm": "alice", "night": "2026-10-20", "title": "Migration du schema session", "task": "T2", "cost_usd": 1.9, "merged": false, "accepted": false, "status": "changes_requested"}
+{"pr": 9003, "pm": "alice", "night": "2026-10-20", "title": "Notes de revue de code", "task": "T3", "cost_usd": 0.22, "merged": true, "accepted": true}
+{"pr": 9010, "pm": "bob", "night": "2026-10-21", "title": "Correctif du daemon cron", "task": "T1", "cost_usd": 0.75, "merged": true, "accepted": true}
+{"pr": 9011, "pm": "bob", "night": "2026-10-21", "title": "Documentation du protocole PM", "task": "T2", "cost_usd": 0.40, "merged": true, "accepted": true}
+{"pr": 9020, "pm": "bob", "night": "2026-10-21", "title": "PR hors plan (hotfix)", "cost_usd": 0.15, "merged": true, "accepted": true}
