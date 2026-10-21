@@ -465,3 +465,214 @@ describe("stampFooterOnPr — recognizing the gh PATH shim's own-session footer"
     expect(reg.recorded).toEqual([{ sessionId: "sess_exec", adapter: "claude-code", number: 601, url: PR_URL }])
   })
 })
+
+/** A registry whose ARCHIVED sessions are only visible through
+ *  `list({ includeArchived: true })` — the real registry's shape. */
+function registryWithArchived(
+  live: FooterSession[],
+  archived: FooterSession[],
+): StampRegistry & { recorded: Array<{ sessionId: string; adapter: string; number: number; url: string }> } {
+  const recorded: Array<{ sessionId: string; adapter: string; number: number; url: string }> = []
+  return {
+    recorded,
+    list: (opts?: { includeArchived?: boolean }) => (opts?.includeArchived ? [...live, ...archived] : live),
+    get: (id: string) => [...live, ...archived].find(s => s.id === id),
+    recordOpenedPr: (sessionId, input) => {
+      recorded.push({ sessionId, ...input })
+      return undefined
+    },
+  }
+}
+
+/** A `gh` that answers the stamper's three reads (body / head / commits). */
+function stampGh(opts: {
+  prBody?: string
+  headRefName?: string
+  commitText?: string
+  checkpointMessage?: string
+  checkpointRef?: string
+}) {
+  const calls: Array<readonly string[]> = []
+  const edits: string[] = []
+  const run: GhRunner = async args => {
+    calls.push(args)
+    if (args[0] === "api") {
+      const ok = opts.checkpointMessage !== undefined && String(args[1]).endsWith(opts.checkpointRef ?? "")
+      return ok ? { exitCode: 0, stdout: opts.checkpointMessage ?? "" } : { exitCode: 1, stdout: "" }
+    }
+    if (args[1] === "view" && args.includes("headRefName")) {
+      return { exitCode: 0, stdout: `${opts.headRefName ?? "wt/box-work"}\n` }
+    }
+    if (args[1] === "view" && args.includes("commits")) {
+      return { exitCode: 0, stdout: opts.commitText ?? "" }
+    }
+    if (args[1] === "view") return { exitCode: 0, stdout: opts.prBody ?? "Original body.\n" }
+    if (args[1] === "edit") {
+      edits.push(args[args.indexOf("--body") + 1] ?? "")
+      return { exitCode: 0, stdout: "" }
+    }
+    return { exitCode: 0, stdout: "" }
+  }
+  return { run, calls, edits }
+}
+
+describe("stampFooterOnPr — archived authors", () => {
+  const ARCHIVED: FooterSession = {
+    id: "sess_archived",
+    kind: "agent-cli",
+    startedAt: "2026-07-21T09:00:00.000Z",
+    harness: "codex",
+    model: "free-model",
+    accessProfile: { profileRef: "prof_2", label: "Wallet 2" },
+    costUsd: 0.0031,
+    sandboxDeliveryTarget: { branch: "wt/box-work" },
+  }
+
+  it("credits an ARCHIVED session with its model, wallet and cost", async () => {
+    const reg = registryWithArchived([EXECUTOR], [ARCHIVED])
+    const gh = stampGh({ headRefName: "wt/box-work" })
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_archived`")
+    // Rich, not id-only: the descriptor was available all along.
+    expect(gh.edits[0]).toContain("model `free-model`")
+    expect(gh.edits[0]).toContain("auth-profile `Wallet 2`")
+    expect(gh.edits[0]).toContain("$0.0031")
+  })
+
+  it("resolves a trailer id through get(), so an archived author is not id-only", async () => {
+    const reg = registryWithArchived([EXECUTOR], [ARCHIVED])
+    const gh = stampGh({
+      headRefName: "wt/box-work",
+      commitText: "real work\n\nAgentproto-Session: sess_archived\n",
+    })
+    const outcome = await stampFooterOnPr({
+      registry: reg,
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_archived` (codex · auth-profile `Wallet 2` · model `free-model` · $0.0031)")
+  })
+})
+
+describe("stampFooterOnPr — the opener survives a refresh", () => {
+  it("keeps the existing 'Opened by' when the caller omits it", async () => {
+    // The posted footer names the opener and an author whose cost was not
+    // known yet; the refresh knows it — the re-render must not drop the
+    // opener on the way (the refresh caller only knows the session).
+    const posted =
+      `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`sess_exec\` · claude-code / subscription · ` +
+      "auth-profile `Jeremy Max` · model `opus-4.8` · supervisor `sess_super` · Authored by `sess_box1` (codex) · " +
+      "Opened by `sess_orch` · host `h` · cwd `/wt`</sub>"
+    const gh = stampGh({ prBody: posted, headRefName: "wt/box-work" })
+    const author: FooterSession = {
+      id: "sess_box1",
+      kind: "agent-cli",
+      startedAt: "2026-07-21T08:00:00.000Z",
+      harness: "codex",
+      model: "free-model",
+      costUsd: 0.0031,
+      sandboxDeliveryTarget: { branch: "wt/box-work" },
+    }
+    const outcome = await stampFooterOnPr({
+      registry: fakeRegistry([EXECUTOR, SUPER, author]),
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      refresh: true,
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, refreshed: true })
+    // The re-render gained the author's amount AND kept the opener.
+    expect(gh.edits[0]).toContain("$0.0031")
+    expect(gh.edits[0]).toContain("Opened by `sess_orch`")
+  })
+})
+
+describe("stampFooterOnPr — an own footer that gains authorship is re-rendered", () => {
+  it("replaces a footer that has the cost but no authors with one that credits them", async () => {
+    const posted =
+      `Original body.\n\n---\n<sub>🤖 **${MARKER}** — PR · session \`sess_exec\` · claude-code / subscription · ` +
+      "auth-profile `Jeremy Max` · model `opus-4.8` · supervisor `sess_super` · 100 in / 200 out · $0.5000 · " +
+      "host `h` · cwd `/wt`</sub>"
+    const gh = stampGh({ prBody: posted, headRefName: "wt/box-work" })
+    const author: FooterSession = {
+      id: "sess_box1",
+      kind: "agent-cli",
+      startedAt: "2026-07-21T08:00:00.000Z",
+      harness: "codex",
+      model: "free-model",
+      costUsd: 0.0031,
+      sandboxDeliveryTarget: { branch: "wt/box-work" },
+    }
+    const outcome = await stampFooterOnPr({
+      registry: fakeRegistry([EXECUTOR, SUPER, author]),
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true, refreshed: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_box1`")
+  })
+})
+
+describe("stampFooterOnPr — the checkpoint namespace the delivery actually used", () => {
+  it("prefers the session's own per-spawn override over the daemon's global default", async () => {
+    const gh = stampGh({
+      headRefName: "wt/box-work",
+      checkpointRef: "custom/cp/wt/box-work",
+      checkpointMessage: "cp\n\nAgentproto-Session: sess_box_gone\n",
+    })
+    const outcome = await stampFooterOnPr({
+      registry: fakeRegistry([EXECUTOR, SUPER]),
+      session: { ...EXECUTOR, sandboxCheckpointOverride: { refPrefix: "custom/cp/" } },
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      checkpointRefPrefix: "global/cp/",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true })
+    expect(gh.calls.some(c => c[0] === "api" && String(c[1]).endsWith("custom/cp/wt/box-work"))).toBe(true)
+    expect(gh.edits[0]).toContain("Authored by `sess_box_gone`")
+  })
+
+  it("falls back to the global default when the session has no override", async () => {
+    const gh = stampGh({
+      headRefName: "wt/box-work",
+      checkpointRef: "global/cp/wt/box-work",
+      checkpointMessage: "cp\n\nAgentproto-Session: sess_box_gone\n",
+    })
+    const outcome = await stampFooterOnPr({
+      registry: fakeRegistry([EXECUTOR, SUPER]),
+      session: EXECUTOR,
+      supervisor: SUPER,
+      prNumber: 601,
+      prUrl: PR_URL,
+      cwd: "/work/wt",
+      checkpointRefPrefix: "global/cp/",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ stamped: true })
+    expect(gh.calls.some(c => c[0] === "api" && String(c[1]).endsWith("global/cp/wt/box-work"))).toBe(true)
+  })
+})

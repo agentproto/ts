@@ -26,6 +26,8 @@ type Row = {
   parentSessionId?: string
   sandboxProvider?: string
   sandboxDeliveryTarget?: { branch: string }
+  workspaceSlug?: string
+  sandboxCheckpointOverride?: { refPrefix?: string } | false
 }
 
 const row = (over: Row): Row => ({ kind: "agent-cli", ...over })
@@ -214,9 +216,9 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
     expect(gh.edits[0]).not.toContain("sess_gone")
   })
 
-  it("still names the opener and hides its ledger when no authors resolve", async () => {
-    // The authoring session is `get`-able but absent from `list()` (the
-    // archived-session case), and no commit carries a trailer: no authors.
+  it("credits an ARCHIVED target session (get()-able, absent from list()) with its model, wallet and cost", async () => {
+    // The archived-session case: the registry can still RESOLVE the target,
+    // so the PR must credit it as an author — not reduce it to a bare id.
     const gh = fakeGh()
     const outcome = await openPrForSession({
       ...input,
@@ -231,7 +233,65 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
     })
     expect(outcome).toMatchObject({ opened: true })
     expect(gh.edits[0]).toContain("Opened by `sess_box1`")
+    expect(gh.edits[0]).toContain("Authored by `sess_orchestrator`")
+    expect(gh.edits[0]).toContain("$469.0000")
+  })
+
+  it("never credits the OPENER's ledger as the PR's wallet (no author resolves)", async () => {
+    // The opener is not the target and no author resolves: the footer names
+    // the opener, but its cumulative spend is NOT the PR's cost.
+    const gh = fakeGh()
+    const outcome = await openPrForSession({
+      ...input,
+      sessionId: "sess_box1",
+      registry: {
+        get: id => (id === "sess_box1" ? row({ id, sandboxDeliveryTarget: { branch: "wt/feat" } }) : undefined),
+        list: () => [],
+        recordOpenedPr: () => {},
+      },
+      openedBy: "sess_orchestrator",
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ opened: true })
+    expect(gh.edits[0]).toContain("Opened by `sess_orchestrator`")
     expect(gh.edits[0]).not.toContain("$469")
+  })
+
+  it("does not credit another workspace's session that used the same branch name", async () => {
+    // Branch names are repo-local: `wt/feat` in workspace "other" is a
+    // different branch of a different repo.
+    const gh = fakeGh()
+    const outcome = await openPrForSession({
+      ...input,
+      registry: makeRegistry([
+        row({ id: "sess_box1", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/feat" }, costUsd: 0.0031 }),
+        row({ id: "sess_elsewhere", workspaceSlug: "other", sandboxDeliveryTarget: { branch: "wt/feat" }, costUsd: 42 }),
+      ]),
+      run: gh.run,
+    })
+    expect(outcome).toMatchObject({ opened: true, stamped: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_box1`")
+    expect(gh.edits[0]).not.toContain("sess_elsewhere")
+    expect(gh.edits[0]).not.toContain("$42")
+  })
+
+  it("reads the checkpoint under the target session's own refPrefix override", async () => {
+    const gh = fakeGh({
+      refPrefix: "custom/cp/",
+      checkpointMessage: "cp\n\nAgentproto-Session: sess_gone\n",
+    })
+    const outcome = await openPrForSession({
+      ...input,
+      registry: makeRegistry([
+        row({ id: "sess_box1", sandboxDeliveryTarget: { branch: "wt/feat" }, sandboxCheckpointOverride: { refPrefix: "custom/cp/" } }),
+      ]),
+      run: gh.run,
+      checkpointRefPrefix: "global/cp/",
+    })
+    expect(outcome).toMatchObject({ opened: true, stamped: true })
+    expect(gh.edits[0]).toContain("Authored by `sess_gone`")
+    expect(gh.calls.some(c => c.args[0] === "api" && String(c.args[1]).endsWith("custom/cp/wt/feat"))).toBe(true)
+    expect(gh.calls.some(c => c.args[0] === "api" && String(c.args[1]).includes("global/cp/"))).toBe(false)
   })
 
   it("records the PR even when the footer edit fails", async () => {

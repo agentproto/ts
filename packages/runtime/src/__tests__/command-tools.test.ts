@@ -892,7 +892,10 @@ describe("pr_open → target workspace, allowlist + caller scope", () => {
     }).id
 
   /** A sandbox (box) session of workspace `slug`: its cwd is in the box. */
-  const spawnBox = (slug: string, over: { parentSessionId?: string } = {}) =>
+  const spawnBox = (
+    slug: string,
+    over: { parentSessionId?: string; sandboxCheckpointOverride?: { refPrefix?: string } | false } = {},
+  ) =>
     registry.spawnAgent({
       workspaceSlug: slug,
       cwd: "/home/user/workspace",
@@ -972,6 +975,64 @@ describe("pr_open → target workspace, allowlist + caller scope", () => {
     const orphan = await openPr(spawnBox("unknown"), { gh })
     expect(orphan.isError).toBe(true)
     expect(textOf(orphan)).toContain("has no registered host checkout")
+  })
+
+  it("reads the checkpoint under the TARGET session's own refPrefix override", async () => {
+    allowlist(repoB, ["gh"])
+    const calls: Array<{ args: readonly string[]; cwd: string }> = []
+    const run = async (args: readonly string[], cwd: string) => {
+      calls.push({ args, cwd })
+      if (args[1] === "create") return { exitCode: 0, stdout: "https://github.com/o/b/pull/7\n" }
+      if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: "wt/x\n" }
+      if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: "work\n" }
+      if (args[1] === "view") return { exitCode: 0, stdout: "body\n" }
+      return { exitCode: 1, stdout: "" }
+    }
+    const res = await openPr(spawnBox("repo-b", { sandboxCheckpointOverride: { refPrefix: "custom/" } }), {
+      gh: { run, calls },
+      slugs: { "repo-b": repoB },
+    })
+    expect(res.isError).toBeFalsy()
+    // The delivery pushed to `custom/wt/x` — the stamp must read THAT ref,
+    // not the legacy `agentproto-checkpoint/wt/x`.
+    expect(calls.some(c => c.args[0] === "api" && String(c.args[1]).endsWith("custom/wt/x"))).toBe(true)
+    expect(calls.some(c => c.args[0] === "api" && String(c.args[1]).includes("agentproto-checkpoint/"))).toBe(false)
+  })
+
+  it("the command_execute stamp reads the checkpoint under the configured refPrefix", async () => {
+    // The legacy stamping lane must read the checkpoint from the SAME
+    // namespace the delivery pushed to — the daemon's global default here.
+    const binDir = mkdtempSync(join(tmpdir(), "pr-stamp-gh-"))
+    writeFileSync(join(binDir, "gh"), "#!/bin/sh\necho 'https://github.com/o/b/pull/9'\n", { mode: 0o755 })
+    const oldPath = process.env.PATH
+    process.env.PATH = `${binDir}:${oldPath ?? ""}`
+    try {
+      allowlist(daemon, ["gh"])
+      spawnIn(daemon)
+      const calls: Array<readonly string[]> = []
+      const run = async (args: readonly string[]) => {
+        calls.push(args)
+        if (args[0] === "api") return { exitCode: 0, stdout: "cp\n\nAgentproto-Session: sess_box_gone\n" }
+        if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: "wt/box-work\n" }
+        if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: "work\n" }
+        if (args[1] === "view") return { exitCode: 0, stdout: "body\n" }
+        return { exitCode: 0, stdout: "" }
+      }
+      const { client, close } = await buildHarness(daemon, registry, {
+        ghRunner: run,
+        checkpointRefPrefix: "global/cp/",
+      })
+      const res = await client.callTool({
+        name: "command_execute",
+        arguments: { command: "gh", args: ["pr", "create", "--title", "t", "--body", "b"] },
+      })
+      expect(res.isError).toBeFalsy()
+      expect(calls.some(c => c[0] === "api" && String(c[1]).endsWith("global/cp/wt/box-work"))).toBe(true)
+      await close()
+    } finally {
+      process.env.PATH = oldPath
+      rmSync(binDir, { recursive: true, force: true })
+    }
   })
 
   it("refuses when gh is allowlisted only for other subcommands", async () => {

@@ -24,6 +24,8 @@ import {
   detectShellPrCreate,
   hasProvenanceFooter,
   footerSessionId,
+  footerAuthors,
+  footerOpenedBy,
   footerIsRicherThan,
   pickExecutorSession,
   sessionFooterProvenance,
@@ -560,5 +562,130 @@ describe("collectBranchAuthors", () => {
     const trailers = ["sess_box1"]
     expect(collectBranchAuthors(sessions, "wt/feat", trailers).map(a => a.sessionId)).toEqual(["sess_box1"])
     expect(collectBranchAuthors(sessions, "wt/main", trailers)).toEqual([{ sessionId: "sess_box1" }])
+  })
+})
+
+describe("collectBranchAuthors — workspace scoping (branch names are repo-local)", () => {
+  const sess = (over: Partial<FooterSession> & { id: string }): FooterSession => ({
+    kind: "agent-cli",
+    ...over,
+  })
+
+  it("credits only the PR's own workspace, even when another workspace used the same branch name", () => {
+    const sessions: FooterSession[] = [
+      sess({
+        id: "sess_box_here",
+        workspaceSlug: "ts",
+        startedAt: "2026-10-20T10:00:00Z",
+        harness: "codex",
+        costUsd: 0.0031,
+        sandboxDeliveryTarget: { branch: "wt/feat" },
+      }),
+      sess({
+        id: "sess_box_elsewhere",
+        workspaceSlug: "other",
+        startedAt: "2026-10-20T11:00:00Z",
+        harness: "claude-code",
+        costUsd: 42,
+        sandboxDeliveryTarget: { branch: "wt/feat" },
+      }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", [], { workspaceSlug: "ts" })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here"])
+    // Without a scope (no workspace known) the legacy behaviour stands.
+    expect(collectBranchAuthors(sessions, "wt/feat").map(a => a.sessionId)).toEqual([
+      "sess_box_here",
+      "sess_box_elsewhere",
+    ])
+  })
+
+  it("still resolves an explicit trailer id globally, whatever its workspace", () => {
+    const sessions: FooterSession[] = [
+      sess({ id: "sess_box_here", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/feat" } }),
+      sess({ id: "sess_rescued", workspaceSlug: "other" }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", ["sess_rescued"], { workspaceSlug: "ts" })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here", "sess_rescued"])
+  })
+
+  it("credits the session a PR is opened FOR, whatever its branch", () => {
+    const sessions: FooterSession[] = [
+      sess({ id: "sess_box_here", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/feat" } }),
+      sess({ id: "sess_target", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/other" } }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", [], {
+      workspaceSlug: "ts",
+      extraSessionIds: ["sess_target"],
+    })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here", "sess_target"])
+  })
+})
+
+describe("footer authorship comparison", () => {
+  const withAuthors = (body: string) => body
+
+  it("reads the 'Authored by' entries, with their details", () => {
+    const footer = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [
+          { sessionId: "sess_box1", adapter: "codex", model: "free-model", costUsd: 0.0031 },
+          { sessionId: "sess_gone" },
+        ],
+      },
+      kind: "PR",
+    })
+    expect(footerAuthors(footer)).toEqual([
+      { sessionId: "sess_box1", details: "codex · model `free-model` · $0.0031" },
+      { sessionId: "sess_gone", details: "" },
+    ])
+    expect(withAuthors(footer)).toContain("Authored by")
+  })
+
+  it("reads the 'Opened by' entry", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_exec", openedBy: "sess_orch" }, kind: "PR" })
+    expect(footerOpenedBy(footer)).toBe("sess_orch")
+    expect(footerOpenedBy(buildFooter({ prov: { sessionId: "sess_exec" }, kind: "PR" }))).toBeUndefined()
+  })
+
+  it("a new author, or a richer rendering of a known one, counts as richer", () => {
+    const posted = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1", adapter: "codex" }] },
+      kind: "PR",
+    })
+    const rescued = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [
+          { sessionId: "sess_box1", adapter: "codex" },
+          { sessionId: "sess_rescue", adapter: "codex" },
+        ],
+      },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(rescued, posted)).toBe(true)
+
+    const idOnly = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1" }] },
+      kind: "PR",
+    })
+    const enriched = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [{ sessionId: "sess_box1", adapter: "codex", model: "free-model", costUsd: 0.0031 }],
+      },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(enriched, idOnly)).toBe(true)
+    // …and the other way round never "upgrades".
+    expect(footerIsRicherThan(idOnly, enriched)).toBe(false)
+  })
+
+  it("an unchanged authorship is not richer (no-op guard)", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1", adapter: "codex" }] },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(footer, footer)).toBe(false)
   })
 })

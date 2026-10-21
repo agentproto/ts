@@ -23,6 +23,7 @@ import {
   buildCheckpointDeleteCommand,
   buildPushCommand,
   checkpointBranchOf,
+  checkpointRefPrefixForSession,
   CHECKPOINT_BUNDLE_FILE,
   CHECKPOINT_RECORD_FILE,
   CHECKPOINT_REF_ABSENT_MARKER,
@@ -647,6 +648,28 @@ describe("work-branch provenance stamp", () => {
     expect(isFullyDelivered(record)).toBe(true)
   })
 
+  it("never stamps the work branch when the uncommitted-work snapshot exists", async () => {
+    // The snapshot commit ALREADY carries the session trailer, and stamping
+    // the branch would move its tip to a sibling of the snapshot — the
+    // restore path then rejects the checkpoint and the uncommitted work is
+    // lost on restart.
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=${"c".repeat(40)}\n`)
+      }
+      if (o.command.includes(" push ")) return result(0)
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(commands.some(c => c.includes(PROVENANCE_COMMIT_SUBJECT))).toBe(false)
+    expect(record.provenanceStamp?.status).toBe("skipped")
+    // The snapshot is still pushed to the checkpoint ref — it is the carrier.
+    expect(record.checkpoint?.status).toBe("pushed")
+    expect(record.push.status).toBe("pushed")
+  })
+
   it("producer/consumer: the stamp command's commit is read back by the PR trailer reader, idempotently", () => {
     const git = (cwd: string, ...args: string[]) => {
       const r = spawnSync("git", args, { cwd, encoding: "utf8" })
@@ -1106,5 +1129,19 @@ describe("runRescuePush — outcome recording, never throwing", () => {
     })
     expect(record.status).toBe("failed")
     expect(record.detail).toContain("box unreachable")
+  })
+})
+
+describe("checkpointRefPrefixForSession", () => {
+  it("prefers the session's own per-spawn override over the global default", () => {
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: { refPrefix: "custom/" } }, "global/")).toBe("custom/")
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: { refPrefix: "custom/" } })).toBe("custom/")
+  })
+
+  it("falls back to the global default, then to the legacy prefix", () => {
+    expect(checkpointRefPrefixForSession({}, "global/")).toBe("global/")
+    expect(checkpointRefPrefixForSession({ sandboxCheckpointOverride: false }, "global/")).toBe("global/")
+    expect(checkpointRefPrefixForSession({})).toBe(CHECKPOINT_BRANCH_PREFIX)
+    expect(checkpointRefPrefixForSession(undefined)).toBe(CHECKPOINT_BRANCH_PREFIX)
   })
 })

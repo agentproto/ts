@@ -103,6 +103,28 @@ export function checkpointBranchOf(branch: string, refPrefix: string = CHECKPOIN
   return `${refPrefix}${branch}`
 }
 
+/**
+ * The checkpoint ref namespace a session's snapshots actually live under —
+ * the SAME value `resolveSandboxCheckpointConfig` resolved when the session
+ * booted: the session's own per-spawn override wins over the daemon's global
+ * `defaults.sandbox.checkpoint.refPrefix`, which wins over the legacy
+ * default.
+ *
+ * Readers of a checkpoint (the PR-provenance stamper, looking for the
+ * `Agentproto-Session:` trailer on the checkpoint tip) MUST resolve it the
+ * same way the writer did — reading `agentproto-checkpoint/<branch>` while
+ * the delivery pushed to `custom/<branch>` silently loses every author only
+ * the checkpoint knows.
+ */
+export function checkpointRefPrefixForSession(
+  session: { sandboxCheckpointOverride?: { refPrefix?: string } | false } | undefined,
+  globalRefPrefix?: string,
+): string {
+  const override = session?.sandboxCheckpointOverride
+  const perSpawn = override && typeof override === "object" ? override.refPrefix : undefined
+  return perSpawn ?? globalRefPrefix ?? CHECKPOINT_BRANCH_PREFIX
+}
+
 export interface SandboxDeliveryTarget {
   checkoutDir: string
   /** `wt/<slug>` */
@@ -240,8 +262,10 @@ export interface SandboxDeliveryRecord {
   /** Teardown-only: outcome of the `Agentproto-Session:` provenance stamp
    *  on the work branch (see {@link buildProvenanceStampCommand}). Absent
    *  when no stamp was attempted (no session id, checkpoint mode, nothing
-   *  ahead). Attribution only: never part of {@link isFullyDelivered}. */
-  provenanceStamp?: { status: "stamped" | "failed"; detail?: string }
+   *  ahead, or the uncommitted-work snapshot already carries the trailer —
+   *  `"skipped"` then). Attribution only: never part of
+   *  {@link isFullyDelivered}. */
+  provenanceStamp?: { status: "stamped" | "failed" | "skipped"; detail?: string }
   /** Turn count this checkpoint/delivery was taken after, when the caller
    *  knew one (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — also baked
    *  into the snapshot commit message. Absent when no turn context was
@@ -708,11 +732,21 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     // clean run). Best-effort - a failure only loses the attribution hint,
     // never blocks the push. A failed attempt is retried, and the outcome is
     // recorded so a stamp that never landed is visible, not swallowed.
+    //
+    // NOT when the probe took a snapshot of the uncommitted work: the
+    // snapshot commit ALREADY carries the session trailer, and stamping the
+    // branch would move the branch tip to a SIBLING of that snapshot — the
+    // restore path then rejects the checkpoint (its new HEAD is neither its
+    // parent nor an ancestor of its parent) and the uncommitted work is lost
+    // on restart. The snapshot is the carrier here.
     const reserveMs = input.readFile ? bundleReserveMs : 0
-    const stamp = !checkpointMode && input.sessionId
+    const stamp = !checkpointMode && input.sessionId && probe.snapshot === undefined
       ? () => runProvenanceStamp(exec, target, input.sessionId!, deadlineAt, reserveMs)
       : undefined
     if (stamp) record.provenanceStamp = await stamp()
+    else if (!checkpointMode && input.sessionId && probe.snapshot !== undefined) {
+      record.provenanceStamp = { status: "skipped", detail: "the uncommitted-work snapshot already carries the session trailer" }
+    }
     record.push = await pushBranch(exec, target, deadlineAt, reserveMs)
     // The push landed but the stamp did not: retry it once more and, when it
     // lands now, push again so the remote branch carries the trailer too.

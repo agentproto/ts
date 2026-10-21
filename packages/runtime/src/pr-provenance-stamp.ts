@@ -23,12 +23,13 @@
  */
 
 import { hostname } from "node:os"
-import { checkpointBranchOf } from "./sandbox-delivery.js"
+import { checkpointBranchOf, checkpointRefPrefixForSession } from "./sandbox-delivery.js"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
   hasProvenanceFooter,
   footerHasCost,
+  footerOpenedBy,
   footerSessionId,
   footerIsRicherThan,
   collectBranchAuthors,
@@ -50,7 +51,10 @@ export type GhRunner = (
 /** The slice of `SessionsRegistry` this stamper touches — kept structural so
  *  the module doesn't drag the full registry type (and its imports) in. */
 export interface StampRegistry {
-  list(): readonly FooterSession[]
+  /** The registered sessions. `includeArchived` returns ARCHIVED sessions
+   *  too — they are omitted by default, and an archived author must still be
+   *  credited with its model/wallet/cost, not reduced to a bare id. */
+  list(opts?: { includeArchived?: boolean }): readonly FooterSession[]
   get(id: string): FooterSession | undefined
   recordOpenedPr(sessionId: string, input: { adapter: string; number: number; url: string }): unknown
 }
@@ -75,6 +79,10 @@ export interface StampPrInput {
   run?: GhRunner
   /** Host label for the footer; defaults to `os.hostname()`. */
   host?: string
+  /** The daemon's GLOBAL checkpoint ref namespace
+   *  (`defaults.sandbox.checkpoint.refPrefix`). The session's own per-spawn
+   *  override wins over it (see `checkpointRefPrefixForSession`). */
+  checkpointRefPrefix?: string
 }
 
 export type StampOutcome =
@@ -126,6 +134,7 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
       cwd: input.cwd,
       ...(input.run ? { run: input.run } : {}),
       ...(input.host ? { host: input.host } : {}),
+      ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
     })
   } catch (err) {
     return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
@@ -180,8 +189,13 @@ export async function stampFooterOnPr(input: {
   openedBy?: string
   /** The configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
    *  refPrefix`) the trailer read goes through; defaults to the legacy
-   *  `agentproto-checkpoint/` (see `checkpointBranchOf`). */
+   *  `agentproto-checkpoint/` (see `checkpointBranchOf`). When the stamped
+   *  session carries its own per-spawn override, that one wins — it is the
+   *  namespace its delivery actually pushed to. */
   checkpointRefPrefix?: string
+  /** Sessions credited as authors whatever the branch/workspace match says
+   *  (the session a PR is opened FOR). */
+  extraAuthorSessionIds?: readonly string[]
   /** Re-render an ALREADY-stamped footer when the session has learned its
    *  spend since the first stamp (the first stamp lands mid-turn, before a
    *  claude-code/claude-sdk session reports any cost). Only edits when the
@@ -215,17 +229,44 @@ export async function stampFooterOnPr(input: {
       // orchestrator has none; a different session may have another). The
       // session's branch is only the fallback when the head can't be read.
       const headBranch = (await prHeadBranch(run, input.prUrl, input.cwd)) ?? input.session.sandboxDeliveryTarget?.branch
-      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, headBranch, input.checkpointRefPrefix)) {
+      // The checkpoint ref namespace the session's delivery actually used:
+      // its own per-spawn override wins over the daemon's global default.
+      const refPrefix = checkpointRefPrefixForSession(input.session, input.checkpointRefPrefix)
+      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, headBranch, refPrefix)) {
         trailerIds.add(id)
       }
-      authors = collectBranchAuthors(input.registry.list(), headBranch ?? "", [...trailerIds])
+      // ARCHIVED sessions are authors too: `list()` drops them by default,
+      // while `get()` still resolves them — so the registry side asks for
+      // them explicitly and the trailer side resolves through `get()`, which
+      // is what keeps an archived author's model/wallet/cost on the footer
+      // instead of a bare id.
+      const registrySessions = input.registry.list({ includeArchived: true })
+      const trailerSessions = [...trailerIds]
+        .map(id => input.registry.get(id))
+        .filter((s): s is FooterSession => s !== undefined)
+      const extraSessions = (input.extraAuthorSessionIds ?? [])
+        .map(id => input.registry.get(id))
+        .filter((s): s is FooterSession => s !== undefined)
+      const sessions = [...registrySessions, ...trailerSessions, ...extraSessions]
+      authors = collectBranchAuthors(sessions, headBranch ?? "", [...trailerIds], {
+        // Branch names are repo-local: scope the registry side to the PR's
+        // own workspace so another workspace's same-named branch doesn't
+        // contribute its session (and its cost) to this PR.
+        ...(input.session.workspaceSlug ? { workspaceSlug: input.session.workspaceSlug } : {}),
+        ...(input.extraAuthorSessionIds?.length ? { extraSessionIds: input.extraAuthorSessionIds } : {}),
+      })
     }
+    // The opener survives a re-render: the refresh pass (the reconciler's
+    // cost refresh) knows the session, not who opened the PR — so the
+    // existing footer's "Opened by" is carried over instead of being
+    // dropped from the PR.
+    const openedBy = input.openedBy ?? footerOpenedBy(body)
     const footer = buildSessionPrFooter(input.session, {
       supervisor: input.supervisor,
       host: input.host ?? hostname(),
       sha: undefined,
       ...(authors.length ? { authors } : {}),
-      ...(input.openedBy ? { openedBy: input.openedBy } : {}),
+      ...(openedBy ? { openedBy } : {}),
     })
 
     const alreadyStamped = hasProvenanceFooter(body)
