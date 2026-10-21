@@ -61,6 +61,17 @@ export function clampAutoCompactTokens(value: number | undefined | null): number
   return Math.min(Math.max(Math.round(value), AUTO_COMPACT_MIN_TOKENS), AUTO_COMPACT_MAX_TOKENS)
 }
 
+/**
+ * After a compaction, the controller re-arms once the context has grown by
+ * this fraction of the threshold (at least {@link AUTO_COMPACT_MIN_TOKENS})
+ * past the lowest reading seen since, even without a sub-threshold reading.
+ */
+const AUTO_COMPACT_REARM_GROWTH_FRACTION = 0.25
+
+function readFiniteTokens(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? value : undefined
+}
+
 /** Why autocompact did (not) fire. */
 export type AutoCompactReason =
   | "above-threshold"
@@ -191,10 +202,15 @@ export function createAutoCompactController(
   deps: AutoCompactControllerDeps,
 ): AutoCompactController {
   let inFlight = false
-  // A compaction only re-arms once the context has actually dropped below
-  // the threshold: a harness that reports a compacted-but-unchanged usage
-  // figure must not put the session into a compaction loop.
+  // After a compaction the controller disarms so a harness that reports a
+  // compacted-but-unchanged usage figure cannot put the session into a
+  // compaction loop. It re-arms when the context drops below the threshold,
+  // OR when it grows materially past the lowest reading seen since the
+  // compaction (`floor`): a harness that ignores `/compact`, or a resumed
+  // turn that regrows the context before a sub-threshold reading is ever
+  // sampled, must not leave the session above the threshold forever.
   let armed = true
+  let floor: number | undefined
   return {
     get inFlight() {
       return inFlight
@@ -203,8 +219,20 @@ export function createAutoCompactController(
       const tokens = deps.readTokens()
       const threshold = clampAutoCompactTokens(deps.readThreshold())
       if (!armed) {
-        if (tokens !== undefined && tokens < threshold) armed = true
-        else {
+        if (tokens !== undefined && Number.isFinite(tokens)) {
+          floor = floor === undefined ? tokens : Math.min(floor, tokens)
+        }
+        const growth = Math.max(
+          AUTO_COMPACT_MIN_TOKENS,
+          Math.round(threshold * AUTO_COMPACT_REARM_GROWTH_FRACTION),
+        )
+        if (
+          tokens !== undefined &&
+          (tokens < threshold || (floor !== undefined && tokens >= floor + growth))
+        ) {
+          armed = true
+          floor = undefined
+        } else {
           return {
             trigger: false,
             reason: "awaiting-drop",
@@ -228,6 +256,7 @@ export function createAutoCompactController(
         )
         const outcome = await deps.requestCompact()
         armed = false
+        floor = readFiniteTokens(deps.readTokens()) ?? decision.tokens
         if (outcome.missionInProgress) {
           const prompt = buildAutoCompactResumePrompt({
             ...(outcome.goal !== undefined ? { goal: outcome.goal } : {}),
