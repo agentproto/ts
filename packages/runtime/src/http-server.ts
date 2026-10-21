@@ -272,7 +272,7 @@ import { computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
-import { deliverParentRelayMessage, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
+import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
@@ -1635,6 +1635,13 @@ export async function startHttpServer(
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
     if (method === "POST" && /^\/apps\/(.+)\/link-auth$/.test(path)) return true
+    // PARENT RELAY: the route authenticates itself with the per-session
+    // relay token (short-lived, single-session-scoped, minted by this
+    // daemon), exactly like `/inbound/:slug` authenticates with its own
+    // HMAC: a box that cannot carry the daemon bearer must still be able to
+    // report up to its host parent. POST-only, and the token gate inside
+    // the route refuses anything without a valid token.
+    if (method === "POST" && path === PARENT_RELAY_PATH) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -3076,6 +3083,20 @@ export async function startHttpServer(
             return
           }
           const token = req.headers[PARENT_RELAY_TOKEN_HEADER]
+          const relayToken = Array.isArray(token) ? token[0] : token
+          // The relay token IS this route's authentication (the route is
+          // exempt from the tunnel-bearer gate because a box carries only
+          // this token): refuse an absent or unknown token BEFORE any
+          // work, so a bad caller never reaches the body parser or the
+          // registry.
+          if (!relayToken) {
+            json(401, { error: "relay_token_missing", message: "no relay token presented" })
+            return
+          }
+          if (!resolveParentRelayGrant(relayToken)) {
+            json(401, { error: "relay_token_unknown", message: "the relay token is unknown or expired" })
+            return
+          }
           const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
           if (typeof body.message !== "string" || body.message.length === 0) {
             json(400, { error: "message_required" })
@@ -3093,7 +3114,7 @@ export async function startHttpServer(
           }
           const messagingDefaults = await resolveMessagingDefaults()
           const result = await deliverParentRelayMessage({
-            token: Array.isArray(token) ? token[0] : token,
+            token: relayToken,
             payload: {
               message: body.message,
               kind: kind as MessageKind,
