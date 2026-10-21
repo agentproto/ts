@@ -41,19 +41,18 @@ function makeRegistry(rows: Row[]): OpenPrRegistry & { recorded: Recorded[] } {
 /** A fake `gh`: create prints the PR url, `pr view --json commits` replays
  *  `commitText`, `pr view --json body` replays `prBody`, `pr edit` captures
  *  the new body. */
-function fakeGh(opts: { commitText?: string; checkpointText?: string; prBody?: string; editExit?: number } = {}) {
+function fakeGh(opts: { commitText?: string; checkpointMessage?: string; headRefName?: string; prBody?: string; editExit?: number } = {}) {
   const calls: Array<{ args: readonly string[]; cwd: string }> = []
   const edits: string[] = []
   const run = async (args: readonly string[], cwd: string) => {
     calls.push({ args, cwd })
-    // `gh api repos/{owner}/{repo}/commits/<checkpoint branch>` replays the
-    // snapshot commit message — where delivery actually stamps the trailer.
+    if (args[1] === "create") return { exitCode: 0, stdout: "https://github.com/agentproto/agentproto/pull/77" }
     if (args[0] === "api") {
-      return opts.checkpointText !== undefined
-        ? { exitCode: 0, stdout: opts.checkpointText }
+      return args[1] === `repos/agentproto/agentproto/commits/agentproto-checkpoint/${opts.headRefName ?? "wt/feat"}` && opts.checkpointMessage !== undefined
+        ? { exitCode: 0, stdout: opts.checkpointMessage }
         : { exitCode: 1, stdout: "" }
     }
-    if (args[1] === "create") return { exitCode: 0, stdout: "https://github.com/agentproto/agentproto/pull/77" }
+    if (args[1] === "view" && args.includes("headRefName")) return { exitCode: 0, stdout: `${opts.headRefName ?? "wt/feat"}\n` }
     if (args[1] === "view" && args.includes("commits")) return { exitCode: 0, stdout: opts.commitText ?? "" }
     if (args[1] === "view") return { exitCode: 0, stdout: opts.prBody ?? "does things" }
     if (args[1] === "edit") {
@@ -117,15 +116,19 @@ describe("openPrForSession — gh runs on the host, attributed to the authoring 
     expect(gh.edits[0]).toContain("Authored by `sess_box1`")
   })
 
-  it("reads the trailer from the delivery's checkpoint branch, where delivery stamps it", async () => {
-    const gh = fakeGh({
-      checkpointText: "agentproto checkpoint: uncommitted work on wt/feat\n\nAgentproto-Session: sess_gone\n",
-    })
+  it("credits a session known only by the trailer on the checkpoint branch tip (never on the PR commits)", async () => {
+    const gh = fakeGh({ commitText: "real work commit\n", checkpointMessage: "agentproto checkpoint: work\n\nAgentproto-Session: sess_gone\n" })
     const outcome = await openPrForSession({ ...input, registry: makeRegistry(rows), run: gh.run })
     expect(outcome).toMatchObject({ opened: true, stamped: true })
-    const api = gh.calls.find(c => c.args[0] === "api")
-    expect(api?.args[1]).toBe("repos/{owner}/{repo}/commits/agentproto-checkpoint/wt/feat")
     expect(gh.edits[0]).toContain("Authored by `sess_gone`")
+    expect(gh.calls.some(c => c.args[0] === "api" && String(c.args[1]).endsWith("agentproto-checkpoint/wt/feat"))).toBe(true)
+  })
+
+  it("still stamps when the checkpoint branch does not exist", async () => {
+    const gh = fakeGh({ commitText: "real work commit\n" })
+    const outcome = await openPrForSession({ ...input, registry: makeRegistry(rows), run: gh.run })
+    expect(outcome).toMatchObject({ opened: true, stamped: true })
+    expect(gh.edits[0]).not.toContain("sess_gone")
   })
 
   it("still names the opener and hides its ledger when no authors resolve", async () => {

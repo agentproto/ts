@@ -193,53 +193,25 @@ export async function stampFooterOnPr(input: {
 
     let authors = input.authors
     if (!authors) {
-      // `Agentproto-Session:` trailers on the PR's own commits keep a box
-      // branch attributable after the registry forgot its session. Only box
-      // sessions (or a `pr_open` on their behalf) carry them, so a plain
-      // local stamp has none to find. The read is unconditional: the legacy
-      // opener path (`gh pr create` run by an orchestrator on a box branch)
-      // must also see them to avoid crediting the opener. Best-effort: a
-      // failed read only loses the trailer source.
-      let trailerIds: string[] = []
-      try {
-        const commits = await run(
-          ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
-          input.cwd,
-        )
-        if (commits.exitCode === 0) trailerIds = sessionIdsFromTrailers(commits.stdout)
-      } catch {
-        // swallow — trailers are an optional attribution source
-      }
-      // Second source: the snapshot commit `sandbox-delivery.ts` stamps with
-      // the trailer is force-pushed to `agentproto-checkpoint/<branch>`, NOT
-      // onto the work branch the PR opens from — so read the checkpoint
-      // branch's head message too. Absent for a clean checkout / local
-      // session; best-effort like the read above.
-      const workBranch = input.session.sandboxDeliveryTarget?.branch
-      if (workBranch) {
-        try {
-          const checkpoint = await run(
-            [
-              "api",
-              `repos/{owner}/{repo}/commits/${CHECKPOINT_BRANCH_PREFIX}${workBranch}`,
-              "--jq",
-              ".commit.message",
-            ],
-            input.cwd,
-          )
-          if (checkpoint.exitCode === 0) {
-            for (const id of sessionIdsFromTrailers(checkpoint.stdout)) {
-              if (!trailerIds.includes(id)) trailerIds.push(id)
-            }
-          }
-        } catch {
-          // swallow — optional attribution source
-        }
+      // `Agentproto-Session:` trailers keep a box branch attributable after
+      // the registry forgot its session. Two sources: the PR's own commits,
+      // and the tip of the `agentproto-checkpoint/<branch>` snapshot (the only
+      // place sandbox delivery writes the trailer - it never lands on the work
+      // branch). Read on every stamp, legacy opener path included. Best-effort:
+      // a failed read only loses that source.
+      const trailerIds = new Set<string>()
+      const commits = await run(
+        ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
+        input.cwd,
+      )
+      if (commits.exitCode === 0) for (const id of sessionIdsFromTrailers(commits.stdout)) trailerIds.add(id)
+      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, input.session.sandboxDeliveryTarget?.branch)) {
+        trailerIds.add(id)
       }
       authors = collectBranchAuthors(
         input.registry.list(),
         input.session.sandboxDeliveryTarget?.branch ?? "",
-        trailerIds,
+        [...trailerIds],
       )
     }
     const footer = buildSessionPrFooter(input.session, {
@@ -312,6 +284,35 @@ export async function stampFooterOnPr(input: {
     }
   } catch (err) {
     return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** Session ids from the `Agentproto-Session:` trailer on the tip of the PR
+ *  branch's checkpoint snapshot (`agentproto-checkpoint/<branch>`). Every
+ *  failure (no checkpoint, no `gh api`, unparsable url) yields `[]`. */
+async function checkpointTrailerIds(
+  run: GhRunner,
+  prUrl: string,
+  cwd: string,
+  knownBranch: string | undefined,
+): Promise<string[]> {
+  try {
+    const repo = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1]
+    if (!repo) return []
+    let branch = knownBranch
+    if (!branch) {
+      const head = await run(["pr", "view", prUrl, "--json", "headRefName", "--jq", ".headRefName"], cwd)
+      if (head.exitCode !== 0) return []
+      branch = head.stdout.trim()
+    }
+    if (!branch) return []
+    const tip = await run(
+      ["api", `repos/${repo}/commits/${CHECKPOINT_BRANCH_PREFIX}${branch}`, "--jq", ".commit.message"],
+      cwd,
+    )
+    return tip.exitCode === 0 ? sessionIdsFromTrailers(tip.stdout) : []
+  } catch {
+    return []
   }
 }
 

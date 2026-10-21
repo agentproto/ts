@@ -86,6 +86,36 @@ describe("stampPrProvenance", () => {
     ])
   })
 
+  it("reads the checkpoint-branch trailer on the legacy opener path (no sandbox target, no openedBy)", async () => {
+    const reg = fakeRegistry([EXECUTOR, SUPER])
+    const calls: Array<readonly string[]> = []
+    const run: GhRunner = vi.fn(async args => {
+      calls.push(args)
+      if (args[0] === "api") {
+        return args[1] === "repos/agentproto/ts/commits/agentproto-checkpoint/wt/box-work"
+          ? { exitCode: 0, stdout: "agentproto checkpoint: work\n\nAgentproto-Session: sess_box_gone\n" }
+          : { exitCode: 1, stdout: "" }
+      }
+      if (args.includes("headRefName")) return { exitCode: 0, stdout: "wt/box-work\n" }
+      if (args.includes("commits")) return { exitCode: 0, stdout: "plain commit\n" }
+      if (args[1] === "view") return { exitCode: 0, stdout: "Original body.\n" }
+      return { exitCode: 0, stdout: "" }
+    })
+    const outcome = await stampPrProvenance({
+      command: "gh",
+      args: CREATE_ARGS,
+      cwd: "/work/wt",
+      exitCode: 0,
+      stdout: `${PR_URL}\n`,
+      registry: reg,
+      run,
+      host: "build-box",
+    })
+    expect(outcome).toMatchObject({ stamped: true })
+    const edit = calls.find(c => c[1] === "edit")!
+    expect(edit[4]).toContain("Authored by `sess_box_gone`")
+  })
+
   it("is idempotent: a body already carrying the marker is not re-edited", async () => {
     const reg = fakeRegistry([EXECUTOR, SUPER])
     const run: GhRunner = vi.fn(async args => {
