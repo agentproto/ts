@@ -63,6 +63,7 @@ import {
   mintParentRelayGrant,
   PARENT_RELAY_PATH,
   PARENT_RELAY_TOKEN_HEADER,
+  type ParentRelayRegistry,
 } from "../parent-relay.js"
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 
@@ -279,16 +280,16 @@ describe("parent relay — the box forwards its report", () => {
 describe("parent relay — the host delivers to the right parent", () => {
   it("resolves the recipient from the token (never the payload) and preserves kind/urgency", async () => {
     const sent: Array<{ to: string; from?: { sessionId?: string; relation?: string }; kind: string; urgency: string; text: string }> = []
-    const fakeRegistry = {
+    const fakeRegistry: ParentRelayRegistry = {
       get: (id: string) =>
         id === "sess_parent"
           ? { id: "sess_parent", status: "running" }
           : id === "sess_box"
             ? { id: "sess_box", status: "running", parentSessionId: "sess_parent" }
             : undefined,
-      sendMessage: async (envelope: { to: string; from: { sessionId?: string; relation?: string }; kind: string; urgency: string; text: string }) => {
+      sendMessage: async envelope => {
         sent.push(envelope)
-        return { messageId: envelope.to, queued: false, urgencyApplied: envelope.urgency }
+        return { messageId: envelope.id, queued: false, urgencyApplied: envelope.urgency }
       },
     }
     const remote = mintParentRelayGrant({
@@ -312,7 +313,7 @@ describe("parent relay — the host delivers to the right parent", () => {
   })
 
   it("an unknown/expired token is refused — the payload cannot pick the recipient", async () => {
-    const fakeRegistry = {
+    const fakeRegistry: ParentRelayRegistry = {
       get: () => undefined,
       sendMessage: async () => {
         throw new Error("must not be called")

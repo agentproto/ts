@@ -3067,6 +3067,10 @@ export async function startHttpServer(
         // parent sees a normal `session-message`, kind/urgency preserved).
         // See `parent-relay.ts` and `docs/lineage-handover.md`.
         if (path === PARENT_RELAY_PATH && req.method === "POST") {
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(body))
+          }
           if (!opts.sessions) {
             json(501, { error: "no_registry" })
             return

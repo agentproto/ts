@@ -194,7 +194,14 @@ export async function postParentRelayMessage(
       ...(opts?.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
     })
     const body = (await res.json().catch(() => undefined)) as
-      | { ok?: boolean; messageId?: string; delivery?: string; error?: string; message?: string }
+      | {
+          ok?: boolean
+          messageId?: string
+          delivery?: string
+          urgencyApplied?: string
+          error?: string
+          message?: string
+        }
       | undefined
     if (!res.ok || !body?.ok) {
       return {
