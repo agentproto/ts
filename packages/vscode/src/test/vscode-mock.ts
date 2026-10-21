@@ -62,6 +62,10 @@ export const window = {
   showInformationMessage: () => Promise.resolve(undefined),
   showWarningMessage: () => Promise.resolve(undefined),
   showErrorMessage: () => Promise.resolve(undefined),
+  // Quick-pick stub — resolves to "nothing picked" by default; a test that
+  // needs a pick spies on it (`vi.spyOn(vscode.window, "showQuickPick")`).
+  showQuickPick: (_items: readonly unknown[], _options?: unknown) =>
+    Promise.resolve(undefined),
 }
 
 export const workspace = {
@@ -73,6 +77,7 @@ export const workspace = {
 
 export const commands = {
   registerCommand: () => new Disposable(),
+  executeCommand: async (_command: string, ..._args: unknown[]) => undefined,
 }
 
 // The VS Code API exposes many more members; the tests only touch the

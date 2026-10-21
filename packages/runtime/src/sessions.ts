@@ -22,7 +22,7 @@
 
 import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
-import type { SessionMode } from "@agentproto/acp/client"
+import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { mkdirSync, writeFileSync, promises as fs, readFileSync, existsSync, renameSync, watch as watchFsPath } from "node:fs"
@@ -324,6 +324,20 @@ export interface AgentSessionLike {
    * routes to restart.
    */
   readonly availableModes?: readonly SessionMode[]
+  /**
+   * The harness's advertised session CONFIG options captured at connect time
+   * (the ACP `session/new` / `session/load_session` response `configOptions`)
+   * — mirrors `@agentproto/driver-agent-cli`'s
+   * `AgentCliRuntimeSession.availableConfigOptions`.
+   *
+   * This is the read-surface that tells a client WHICH values the running
+   * agent accepts for a given config option: the `model` entry carries the
+   * model vocabulary the agent itself validates against, and an id outside it
+   * is rejected outright ("Invalid value for config option model"). Absent /
+   * empty for arms with no config registry (print, proprietary) — treated as
+   * "no advertised vocabulary", never as "empty vocabulary".
+   */
+  readonly availableConfigOptions?: readonly SessionConfigOption[]
   /** Canonical postures the adapter enforces through its own isolated spawn
    *  config even with no advertised mode — mirrors
    *  `AgentCliRuntimeSession.spawnEnforcedPostures` (claude-code, opencode).
@@ -2154,6 +2168,23 @@ export interface SessionDescriptor {
    */
   availableModes?: SessionMode[]
   /**
+   * Read-surface echo of the live harness's advertised ACP session CONFIG
+   * options (the `session/new` / `session/load_session` response
+   * `configOptions`) — stamped at READ TIME from the live agent session by
+   * `list()`/`get()`, never persisted.
+   *
+   * The `model` entry is what makes a live model switch possible WITHOUT an
+   * error: it lists the model values the RUNNING agent accepts for its own
+   * model config option, and it rejects anything else ("Invalid value for
+   * config option model: <id>"). A client picker therefore offers THESE
+   * values for a live switch, and treats a catalog id outside this vocabulary
+   * as restart-only — never as a live switch that would fail.
+   *
+   * Absent for arms with no config registry (print/proprietary) and for a
+   * session whose live runtime handle is gone.
+   */
+  configOptions?: SessionConfigOption[]
+  /**
    * Read-surface echo of the canonical postures the live session's adapter
    * enforces through its isolated spawn config (`spawnEnforcedPostures` on
    * the agent session) — stamped at READ TIME alongside `availableModes`,
@@ -3615,6 +3646,27 @@ function stampLiveModes(desc: SessionDescriptor, rt: SessionRuntime): void {
     desc.spawnEnforcedPostures = [...spawnEnforced]
   } else {
     delete desc.spawnEnforcedPostures
+  }
+}
+
+/**
+ * Read-time projection of the LIVE agent session's advertised ACP CONFIG
+ * options onto the descriptor (`configOptions`) — the sibling of
+ * `stampLiveModes`, same convention: ephemeral, never persisted, DELETED
+ * (rather than left stale) when the live handle is gone or advertises no
+ * registry.
+ *
+ * This is what carries the agent's OWN model vocabulary to a client picker:
+ * the `model` entry lists the values the running agent accepts for its model
+ * config option, so a picker can offer a live switch that the agent will
+ * actually apply instead of sending a catalog id the agent rejects outright.
+ */
+function stampLiveConfigOptions(desc: SessionDescriptor, rt: SessionRuntime): void {
+  const options = rt.agentSession?.availableConfigOptions
+  if (options && options.length > 0) {
+    desc.configOptions = options.map(o => ({ ...o }))
+  } else {
+    delete desc.configOptions
   }
 }
 
@@ -7101,6 +7153,7 @@ export function createSessionsRegistry(opts?: {
         eventsPath: _eventsPath,
         availableModes: _availableModes,
         spawnEnforcedPostures: _spawnEnforcedPostures,
+        configOptions: _configOptions,
         ...rest
       } = s.desc
       if (rest.remoteParent) {
@@ -11209,6 +11262,7 @@ export function createSessionsRegistry(opts?: {
       // reports the live modes + spawn-enforced postures — a host proxying
       // this session from a sandbox reads them off this response.
       stampLiveModes(desc, rt)
+      stampLiveConfigOptions(desc, rt)
       // Fire-and-forget the initial prompt (if any). Errors land in
       // the ring buffer + bump status to "error" but don't reject
       // the spawn — the descriptor was already returned.
@@ -12685,6 +12739,7 @@ export function createSessionsRegistry(opts?: {
           stampCurrentStatus(rt)
           stampWatchers(desc)
           stampLiveModes(desc, rt)
+          stampLiveConfigOptions(desc, rt)
           stampAdapterConnected(desc, rt)
           desc.childrenBusy = childrenBusy.get(desc.id) ?? 0
           desc.queuedPrompts = desc.promptQueue?.length ?? 0
@@ -12765,6 +12820,7 @@ export function createSessionsRegistry(opts?: {
         stampCurrentStatus(rt)
         stampWatchers(desc)
         stampLiveModes(desc, rt)
+        stampLiveConfigOptions(desc, rt)
         stampAdapterConnected(desc, rt)
         desc.childrenBusy = childrenBusyCounts().get(desc.id) ?? 0
         desc.queuedPrompts = desc.promptQueue?.length ?? 0
