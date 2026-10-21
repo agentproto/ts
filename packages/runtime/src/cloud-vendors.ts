@@ -22,6 +22,13 @@
 
 import { join } from "node:path"
 import { readFile } from "node:fs/promises"
+import { GIT_TOKEN_ENV } from "./sandbox-workspace-remote.js"
+import {
+  DEFAULT_REMOTE_BRANCH,
+  validateRemoteBranch,
+  validateRemoteUrl,
+  type WorkspaceRemote,
+} from "./workspaces-config.js"
 
 /** One managed cloud vendor: the harnesses it runs and the adapter that
  *  relays to it (AIP-66 §2 `CloudVendor`). */
@@ -302,6 +309,74 @@ export const CLOUD_SESSION_META_FILE = "cloud-session.json"
 /** Absolute path of the relay's cloud-session meta file for a config dir. */
 export function cloudSessionMetaFilePath(configDir: string): string {
   return join(configDir, CLOUD_SESSION_META_FILE)
+}
+
+/** Env vars carrying a workspace's declared remote to the cloud relay —
+ *  mirrors the adapter's `CLOUD_REPO_*_ENV` (repo-checkout.ts). With these
+ *  set, the relay clones the remote into {@link cloudRepoCheckoutDir} and
+ *  runs the vendor CLI from there, so a workspace needs no local clone. */
+export const CLOUD_REPO_URL_ENV = "AGENTPROTO_CLOUD_REPO_URL"
+export const CLOUD_REPO_BRANCH_ENV = "AGENTPROTO_CLOUD_REPO_BRANCH"
+export const CLOUD_REPO_DIR_ENV = "AGENTPROTO_CLOUD_REPO_DIR"
+
+/** The relay's checkout of the declared remote, inside the session's
+ *  isolated config dir — so a resume against the same dir re-uses it. */
+export function cloudRepoCheckoutDir(configDir: string): string {
+  return join(configDir, "repo")
+}
+
+/**
+ * Spawn env for a cloud session on a workspace with a declared `remote`
+ * (`workspaces.json`): url, branch, checkout dir, and — when the remote has
+ * a `credentialRef` — the git token under {@link GIT_TOKEN_ENV}, the same
+ * name a sandbox clone uses. `readSecret` resolves the keychain slot; a ref
+ * that resolves to nothing throws a field-named {@link CloudSpawnError}
+ * rather than cloning anonymously. Returns `{}` when no remote is declared.
+ */
+export async function cloudRepoSpawnEnv(
+  remote: WorkspaceRemote | undefined,
+  configDir: string,
+  readSecret: (ref: string) => Promise<string | undefined>,
+): Promise<Record<string, string>> {
+  if (!remote) return {}
+  // `workspaces.json` is hand-editable, so the same validators the sandbox
+  // path applies run here too: https only, no userinfo, a conservative branch.
+  let url: string
+  let branch: string
+  try {
+    url = validateRemoteUrl(remote.url)
+  } catch (err) {
+    throw new CloudSpawnError(
+      `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,
+      "workspace.remote.url",
+    )
+  }
+  try {
+    branch = validateRemoteBranch(remote.defaultBranch ?? DEFAULT_REMOTE_BRANCH)
+  } catch (err) {
+    throw new CloudSpawnError(
+      `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,
+      "workspace.remote.defaultBranch",
+    )
+  }
+  const env: Record<string, string> = {
+    [CLOUD_REPO_URL_ENV]: url,
+    [CLOUD_REPO_BRANCH_ENV]: branch,
+    [CLOUD_REPO_DIR_ENV]: cloudRepoCheckoutDir(configDir),
+  }
+  if (remote.credentialRef !== undefined) {
+    const token = await readSecret(remote.credentialRef)
+    if (!token) {
+      throw new CloudSpawnError(
+        `the workspace remote's credentialRef "${remote.credentialRef}" ` +
+          "resolved to no secret — re-run `agentproto workspace remote set " +
+          "--token-stdin` or unset the credential for a public repo",
+        "workspace.remote.credentialRef",
+      )
+    }
+    env[GIT_TOKEN_ENV] = token
+  }
+  return env
 }
 
 /** Read + validate the relay's meta file. Returns null when absent,

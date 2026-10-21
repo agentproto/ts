@@ -70,6 +70,11 @@ import {
 } from "./sessions-api.js"
 import { CLOUD_VENDOR_SLUG, writeCloudSessionMeta } from "./meta-file.js"
 import { validateRepoSource } from "./repo-source.js"
+import {
+  cloudRepoSourceFromEnv,
+  materializeRepoCheckout,
+  type CloudRepoSource,
+} from "./repo-checkout.js"
 
 /**
  * The wire shape the cloud events API serves as `event.payload`: a Claude
@@ -157,6 +162,11 @@ export interface ClaudeCloudAcpDeps {
   cli?: CloudCliDeps
   /** Repo-source validator (AIP-66 §3). Default: real git invocations. */
   validateRepo?: (cwd: string) => Promise<void>
+  /** Declared repo source (repo-checkout.ts). Default: read from env; `null`
+   *  means none is declared and the session cwd is validated as-is. */
+  repoSource?: CloudRepoSource | null
+  /** Materialize the declared repo; returns the checkout dir. Default: real git. */
+  materializeRepo?: (source: CloudRepoSource) => Promise<string>
   sleep?: (ms: number) => Promise<void>
   pollInitialMs?: number
   pollMaxMs?: number
@@ -260,6 +270,8 @@ export class ClaudeCloudAcpAgent implements Agent {
   readonly #api: CloudEventsClient
   readonly #cli: CloudCliDeps
   readonly #validateRepo: (cwd: string) => Promise<void>
+  readonly #repoSource: CloudRepoSource | null
+  readonly #materializeRepo: (source: CloudRepoSource) => Promise<string>
   readonly #sleep: (ms: number) => Promise<void>
   readonly #pollInitialMs: number
   readonly #pollMaxMs: number
@@ -273,6 +285,9 @@ export class ClaudeCloudAcpAgent implements Agent {
     this.#api = deps.api ?? defaults.api
     this.#cli = deps.cli ?? defaults.cli
     this.#validateRepo = deps.validateRepo ?? defaults.validateRepo
+    this.#repoSource =
+      deps.repoSource !== undefined ? deps.repoSource : cloudRepoSourceFromEnv()
+    this.#materializeRepo = deps.materializeRepo ?? (source => materializeRepoCheckout(source))
     this.#sleep = deps.sleep ?? defaultSleep
     this.#pollInitialMs = deps.pollInitialMs ?? POLL_INITIAL_MS
     this.#pollMaxMs = deps.pollMaxMs ?? POLL_MAX_MS
@@ -306,11 +321,11 @@ export class ClaudeCloudAcpAgent implements Agent {
       )
     }
     // AIP-66 §3 — refuse BEFORE any vendor side effect.
-    await this.#validateRepo(params.cwd)
+    const cwd = await this.#repoCwd(params.cwd)
     const id = crypto.randomUUID()
     this.#sessions.set(id, {
       id,
-      cwd: params.cwd,
+      cwd,
       vendorSessionId: null,
       vendorUrl: null,
       lastSeq: 0,
@@ -363,13 +378,13 @@ export class ClaudeCloudAcpAgent implements Agent {
     }
     // AIP-66 §3 — refuse BEFORE any vendor side effect: a re-attach runs
     // code from this cwd on the vendor's machine too.
-    await this.#validateRepo(params.cwd)
+    const cwd = await this.#repoCwd(params.cwd)
     // Keyed BY THE VENDOR ID: the ACP client registers the loaded session
     // under the id it passed in, so `session/prompt` (and our own
     // `session/update` notifications) address this state by that id.
     const session: CloudSessionState = {
       id: vendorSessionId,
-      cwd: params.cwd,
+      cwd,
       vendorSessionId,
       vendorUrl: null,
       lastSeq: 0,
@@ -388,6 +403,17 @@ export class ClaudeCloudAcpAgent implements Agent {
     // The ACP client keys the loaded session on the id IT sent (the vendor
     // id) — `LoadSessionResponse` carries no id of its own.
     return {}
+  }
+
+  /** The cwd the vendor CLI runs from: a fresh checkout of the declared
+   *  repo when the host declared one, else the session cwd — validated
+   *  (AIP-66 §3) either way. */
+  async #repoCwd(sessionCwd: string): Promise<string> {
+    const cwd = this.#repoSource
+      ? await this.#materializeRepo(this.#repoSource)
+      : sessionCwd
+    await this.#validateRepo(cwd)
+    return cwd
   }
 
   /** Seed `lastSeq` from the vendor's newest events page. Best effort: a

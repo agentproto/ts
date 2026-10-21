@@ -31,10 +31,27 @@ zero — AIP-66 §7).
   and retries — a still-failing call reports `run \`claude auth login\``. The
   token is only ever used as a request header — never logged or persisted
   (AIP-66 §8).
-- **A clean, pushed git checkout as the session cwd.** The cloud runs the repo
-  from its git remote, never an uploaded working tree, so `session/new`
-  refuses (AIP-66 §3) a non-git cwd, a dirty working tree, a missing `origin`
-  remote, and an unpushed HEAD. Commit and push first.
+- **A repo source: a declared workspace remote, or a clean, pushed git
+  checkout as the session cwd.** The cloud runs the repo from its git remote,
+  never an uploaded working tree.
+  - **Declared remote (no local clone needed):** declare the repo on the
+    workspace, the same way a sandbox (e2b, …) spawn gets its checkout:
+
+    ```bash
+    agentproto workspace remote set <slug> --url https://github.com/acme/repo \
+      [--branch main] [--token-stdin]   # token only for a private repo
+    ```
+
+    A `cloud` spawn on that workspace (`agent_start({ cloud: "anthropic",
+    workspaceSlug: "<slug>" })`) hands the relay the remote; the relay
+    shallow-clones `origin/<branch>` into the session's isolated config dir
+    and runs `claude --cloud` from there. A resume re-uses that checkout
+    (fetch + hard reset). The git token reaches the clone through a
+    credential helper only — never argv, the clone URL, `.git/config`, or the
+    vendor CLI's env.
+  - **Local checkout (no remote declared):** `session/new` refuses
+    (AIP-66 §3) a non-git cwd, a dirty working tree, a missing `origin`
+    remote, and an unpushed HEAD. Commit and push first.
 
 ## Usage
 
