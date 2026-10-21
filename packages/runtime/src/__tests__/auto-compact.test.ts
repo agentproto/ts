@@ -7,7 +7,11 @@
  *   - the threshold is clamped (never rejected, never above the max)
  *   - autocompact fires only on an idle session above the threshold
  *   - it never fires twice while a compaction is in flight
- *   - the resume prompt is injected only when a mission is in progress
+ *   - the resume prompt is injected only when the session really had work
+ *     in progress (a background task, a pending tool call, an unanswered
+ *     prompt, or a turn that died) — never because it has a title or goal
+ *   - the compaction carries the full transcript path and the two lookup
+ *     tools, so the session can recover what the summary dropped
  */
 
 import { describe, expect, it, vi } from "vitest"
@@ -15,11 +19,17 @@ import {
   AUTO_COMPACT_DEFAULT_TOKENS,
   AUTO_COMPACT_MAX_TOKENS,
   AUTO_COMPACT_MIN_TOKENS,
+  buildAutoCompactCompactInstructions,
   buildAutoCompactResumePrompt,
+  buildAutoCompactTranscriptNote,
   clampAutoCompactTokens,
+  compactCommandTakesInstructions,
   createAutoCompactController,
   decideAutoCompact,
+  deriveLastTurnOutcome,
+  hasWorkInProgress,
   type AutoCompactControllerDeps,
+  type WorkInProgressSnapshot,
 } from "../auto-compact.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
@@ -113,6 +123,22 @@ describe("decideAutoCompact", () => {
   })
 })
 
+/** The state of a session that was simply done: nothing in progress. */
+const idleSnapshot: WorkInProgressSnapshot = {
+  backgroundTaskOutstanding: false,
+  pendingToolCall: false,
+  awaitingInput: false,
+  lastTurnOutcome: "completed",
+}
+
+/** The state of a session that was cut short mid-work. */
+const workingSnapshot: WorkInProgressSnapshot = {
+  backgroundTaskOutstanding: false,
+  pendingToolCall: false,
+  awaitingInput: false,
+  lastTurnOutcome: "error",
+}
+
 function deps(overrides: Partial<AutoCompactControllerDeps> = {}): AutoCompactControllerDeps {
   return {
     readTokens: () => 200_000,
@@ -120,7 +146,7 @@ function deps(overrides: Partial<AutoCompactControllerDeps> = {}): AutoCompactCo
     isIdle: () => true,
     hasBackgroundTask: () => false,
     isCompacting: () => false,
-    requestCompact: async () => ({ missionInProgress: false }),
+    requestCompact: async () => ({ snapshot: idleSnapshot }),
     requestResume: async () => undefined,
     transcriptPath: () => "/tmp/sessions/sess_1/events.jsonl",
     ...overrides,
@@ -129,7 +155,7 @@ function deps(overrides: Partial<AutoCompactControllerDeps> = {}): AutoCompactCo
 
 describe("createAutoCompactController", () => {
   it("compacts an idle session above the threshold", async () => {
-    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const requestCompact = vi.fn(async () => ({ snapshot: idleSnapshot }))
     const controller = createAutoCompactController(deps({ requestCompact }))
     const decision = await controller.maybeTrigger()
     expect(decision.trigger).toBe(true)
@@ -137,7 +163,7 @@ describe("createAutoCompactController", () => {
   })
 
   it("does not compact a busy session", async () => {
-    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const requestCompact = vi.fn(async () => ({ snapshot: idleSnapshot }))
     const controller = createAutoCompactController(
       deps({ requestCompact, isIdle: () => false }),
     )
@@ -153,7 +179,7 @@ describe("createAutoCompactController", () => {
     })
     const requestCompact = vi.fn(async () => {
       await gate
-      return { missionInProgress: false }
+      return { snapshot: idleSnapshot }
     })
     const controller = createAutoCompactController(deps({ requestCompact }))
     const first = controller.maybeTrigger()
@@ -166,11 +192,11 @@ describe("createAutoCompactController", () => {
     expect(requestCompact).toHaveBeenCalledTimes(1)
   })
 
-  it("injects the resume prompt only when a mission is in progress", async () => {
+  it("injects the resume prompt when the session had work in progress", async () => {
     const requestResume = vi.fn(async (_prompt: string) => undefined)
     const controller = createAutoCompactController(
       deps({
-        requestCompact: async () => ({ missionInProgress: true, goal: "ship the PR" }),
+        requestCompact: async () => ({ snapshot: workingSnapshot, goal: "ship the PR" }),
         requestResume,
       }),
     )
@@ -181,11 +207,25 @@ describe("createAutoCompactController", () => {
     expect(prompt).toContain("/tmp/sessions/sess_1/events.jsonl")
   })
 
-  it("does not inject a resume prompt without a mission", async () => {
+  it("does not inject a resume prompt when nothing was in progress", async () => {
     const requestResume = vi.fn(async (_prompt: string) => undefined)
     const controller = createAutoCompactController(
       deps({
-        requestCompact: async () => ({ missionInProgress: false }),
+        requestCompact: async () => ({ snapshot: idleSnapshot }),
+        requestResume,
+      }),
+    )
+    await controller.maybeTrigger()
+    expect(requestResume).not.toHaveBeenCalled()
+  })
+
+  it("does not inject a resume prompt just because the session has a goal", async () => {
+    // The goal is TEXT for the resume prompt, never the trigger: a session
+    // that merely finished its work must not be woken up.
+    const requestResume = vi.fn(async (_prompt: string) => undefined)
+    const controller = createAutoCompactController(
+      deps({
+        requestCompact: async () => ({ snapshot: idleSnapshot, goal: "ship the PR" }),
         requestResume,
       }),
     )
@@ -196,7 +236,7 @@ describe("createAutoCompactController", () => {
   it("does not compact again until the context has dropped below the threshold", async () => {
     // A harness that reports an unchanged usage figure after the
     // compaction must not put the session into a compaction loop.
-    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const requestCompact = vi.fn(async () => ({ snapshot: idleSnapshot }))
     const controller = createAutoCompactController(deps({ requestCompact }))
     await controller.maybeTrigger()
     const second = await controller.maybeTrigger()
@@ -209,7 +249,7 @@ describe("createAutoCompactController", () => {
     let tokens = 200_000
     const requestCompact = vi.fn(async () => {
       tokens = 1_000
-      return { missionInProgress: false }
+      return { snapshot: idleSnapshot }
     })
     const controller = createAutoCompactController(
       deps({ requestCompact, readTokens: () => tokens }),
@@ -232,7 +272,7 @@ describe("createAutoCompactController", () => {
     let tokens = 200_000
     const requestCompact = vi.fn(async () => {
       tokens = 160_000
-      return { missionInProgress: false }
+      return { snapshot: idleSnapshot }
     })
     const controller = createAutoCompactController(
       deps({ requestCompact, readTokens: () => tokens }),
@@ -261,7 +301,7 @@ describe("createAutoCompactController", () => {
 
   it("clears the floor on re-arm so the next compaction measures growth afresh", async () => {
     let tokens = 160_000
-    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const requestCompact = vi.fn(async () => ({ snapshot: idleSnapshot }))
     const controller = createAutoCompactController(
       deps({ requestCompact, readTokens: () => tokens }),
     )
@@ -305,6 +345,109 @@ describe("buildAutoCompactResumePrompt", () => {
     const prompt = buildAutoCompactResumePrompt({ transcriptPath: "/tmp/e.jsonl" })
     expect(prompt).not.toContain("Mission:")
     expect(prompt).toContain("/tmp/e.jsonl")
+  })
+
+  it("names the two lookup tools so the session can recover what was dropped", () => {
+    const prompt = buildAutoCompactResumePrompt({ transcriptPath: "/tmp/e.jsonl" })
+    expect(prompt).toContain("transcript_search")
+    expect(prompt).toContain("transcript_read")
+  })
+})
+
+describe("buildAutoCompactTranscriptNote", () => {
+  it("cites the transcript path and the two lookup tools", () => {
+    const note = buildAutoCompactTranscriptNote("/tmp/sessions/sess_1/events.jsonl")
+    expect(note).toContain("/tmp/sessions/sess_1/events.jsonl")
+    expect(note).toContain("transcript_search")
+    expect(note).toContain("transcript_read")
+    // One line: it rides along with a prompt.
+    expect(note).not.toContain("\n")
+  })
+})
+
+describe("buildAutoCompactCompactInstructions", () => {
+  it("asks the summary to keep the transcript path and the lookup tools", () => {
+    const instructions = buildAutoCompactCompactInstructions({
+      transcriptPath: "/tmp/sessions/sess_1/events.jsonl",
+    })
+    expect(instructions).toContain("/tmp/sessions/sess_1/events.jsonl")
+    expect(instructions).toContain("transcript_search")
+    expect(instructions).toContain("transcript_read")
+  })
+})
+
+describe("compactCommandTakesInstructions", () => {
+  it("is true for claude-code, whose /compact takes an argument", () => {
+    expect(compactCommandTakesInstructions("claude-code")).toBe(true)
+  })
+
+  it("is false for the harnesses that dispatch the compaction by name only", () => {
+    for (const harness of ["codex", "opencode", "hermes", "fake", undefined]) {
+      expect(compactCommandTakesInstructions(harness)).toBe(false)
+    }
+  })
+})
+
+describe("hasWorkInProgress", () => {
+  const idle: WorkInProgressSnapshot = {
+    backgroundTaskOutstanding: false,
+    pendingToolCall: false,
+    awaitingInput: false,
+    lastTurnOutcome: "completed",
+  }
+
+  it("is false for a session that was simply done", () => {
+    expect(hasWorkInProgress(idle)).toBe(false)
+  })
+
+  it("is true while a background task is outstanding", () => {
+    expect(hasWorkInProgress({ ...idle, backgroundTaskOutstanding: true })).toBe(true)
+  })
+
+  it("is true while a tool call is pending", () => {
+    expect(hasWorkInProgress({ ...idle, pendingToolCall: true })).toBe(true)
+  })
+
+  it("is true while the session is awaiting an answer", () => {
+    expect(hasWorkInProgress({ ...idle, awaitingInput: true })).toBe(true)
+  })
+
+  it("is true when the last turn ended on an error", () => {
+    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "error" })).toBe(true)
+  })
+
+  it("is true when the last turn was cancelled", () => {
+    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "cancelled" })).toBe(true)
+  })
+
+  it("is true when the last turn was interrupted", () => {
+    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "interrupted" })).toBe(true)
+  })
+
+  it("is false when the last turn's outcome is unknown", () => {
+    expect(hasWorkInProgress({ ...idle, lastTurnOutcome: "unknown" })).toBe(false)
+  })
+})
+
+describe("deriveLastTurnOutcome", () => {
+  it("maps the turn-end reasons that mean the work died", () => {
+    expect(deriveLastTurnOutcome({ reason: "error" })).toBe("error")
+    expect(deriveLastTurnOutcome({ reason: "cancelled" })).toBe("cancelled")
+    expect(deriveLastTurnOutcome({ reason: "aborted" })).toBe("interrupted")
+    expect(deriveLastTurnOutcome({ reason: "watchdog-timeout" })).toBe("error")
+    expect(deriveLastTurnOutcome({ interrupted: true })).toBe("interrupted")
+  })
+
+  it("maps a clean turn to completed", () => {
+    expect(deriveLastTurnOutcome({ reason: "completed" })).toBe("completed")
+  })
+
+  it("reports an adapter-reported error even without a reason", () => {
+    expect(deriveLastTurnOutcome({ errored: true })).toBe("error")
+  })
+
+  it("reports unknown when there is no marker at all", () => {
+    expect(deriveLastTurnOutcome({})).toBe("unknown")
   })
 })
 
