@@ -71,15 +71,15 @@ export function prCreateArgs(branch: string, title: string, body: string): strin
 export interface PrOpenScopeRow {
   id: string
   parentSessionId?: string | null
-  sandboxId?: string | null
 }
 
 /**
- * Whether `callerSessionId` may open a PR for `targetId`: its own session,
- * a session on its own sandbox box, or a session it (transitively) spawned
- * through the `parentSessionId` chain. Returns the refusal reason, or
- * `undefined` when allowed. No caller id (the daemon-wide `/mcp` mount, an
- * operator lane) is not scoped, same as the other session tools.
+ * Whether `callerSessionId` may open a PR for `targetId`: the target session
+ * itself or one of its ancestors (the `parentSessionId` chain, so an
+ * orchestrator can open for the box sessions it spawned, directly or
+ * transitively). Returns the refusal reason, or `undefined` when allowed.
+ * No caller id is the operator (the daemon-wide `/mcp` mount: CLI, HTTP,
+ * UI), which is not scoped, same as the other session tools.
  */
 export function checkPrOpenScope(input: {
   callerSessionId?: string
@@ -89,7 +89,6 @@ export function checkPrOpenScope(input: {
   const caller = input.callerSessionId
   if (!caller || caller === input.targetId) return undefined
   const byId = new Map(input.rows.map(r => [r.id, r]))
-  // Walk the target's ancestry: the caller must be on it.
   const seen = new Set<string>()
   let cursor = byId.get(input.targetId)?.parentSessionId ?? undefined
   while (cursor && !seen.has(cursor)) {
@@ -97,12 +96,58 @@ export function checkPrOpenScope(input: {
     seen.add(cursor)
     cursor = byId.get(cursor)?.parentSessionId ?? undefined
   }
-  const callerBox = byId.get(caller)?.sandboxId
-  if (callerBox && byId.get(input.targetId)?.sandboxId === callerBox) return undefined
   return (
-    `session ${caller} may only open a PR for its own session, a session on its own ` +
-    `sandbox box, or a session it spawned (directly or transitively); ${input.targetId} is none of these`
+    `session ${caller} may only open a PR for itself or for a session it spawned ` +
+    `(directly or transitively); ${input.targetId} is neither`
   )
+}
+
+/** Descriptor slice {@link resolvePrOpenWorkspace} reads. */
+export interface PrOpenWorkspaceRow {
+  id: string
+  workspaceSlug?: string
+  cwd?: string
+  worktreePath?: string
+  mainRepoPath?: string
+  remote?: boolean
+  sandboxId?: string
+}
+
+/**
+ * Where `gh pr create` runs for a target session, and whose
+ * `.agentproto/allowed-commands.json` gates it: the TARGET session's own
+ * workspace, never the daemon's boot workspace (a session from repo B must
+ * not open a PR against repo A).
+ *
+ * - A sandbox (box) session's `cwd` is a path inside the box: `gh` runs in
+ *   the host checkout of its registered workspace (`workspaceSlug`).
+ * - A host session runs `gh` in its own worktree (`worktreePath`, else
+ *   `cwd`); the allowlist is the one of the repo that worktree belongs to
+ *   (`mainRepoPath`, else the registered workspace containing it, else the
+ *   directory itself).
+ */
+export function resolvePrOpenWorkspace(
+  desc: PrOpenWorkspaceRow,
+  workspaces: { workspaces: readonly { slug: string; path: string }[] } | undefined,
+): { ghCwd: string; allowlistRoot: string } | { error: string } {
+  const list = workspaces?.workspaces ?? []
+  const bySlug = desc.workspaceSlug ? list.find(w => w.slug === desc.workspaceSlug) : undefined
+  if (desc.remote === true || desc.sandboxId) {
+    if (!bySlug) {
+      return {
+        error:
+          `session ${desc.id} runs in a sandbox and its workspace "${desc.workspaceSlug ?? "(none)"}" ` +
+          "has no registered host checkout to run gh from",
+      }
+    }
+    return { ghCwd: bySlug.path, allowlistRoot: bySlug.path }
+  }
+  const ghCwd = desc.worktreePath ?? desc.cwd
+  if (!ghCwd) return { error: `session ${desc.id} has no host working directory to run gh from` }
+  const containing = list
+    .filter(w => ghCwd === w.path || ghCwd.startsWith(w.path.endsWith("/") ? w.path : `${w.path}/`))
+    .sort((a, b) => b.path.length - a.path.length)[0]
+  return { ghCwd, allowlistRoot: desc.mainRepoPath ?? containing?.path ?? ghCwd }
 }
 
 export type OpenPrForSessionOutcome =

@@ -86,7 +86,9 @@ import { z } from "zod"
 import { SESSION_ID_ENV, WORKSPACE_SLUG_ENV, mintSessionId, type SessionsRegistry } from "./sessions.js"
 import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import { stampPrProvenance } from "./pr-provenance-stamp.js"
-import { checkPrOpenScope, openPrForSession } from "./pr-open.js"
+import { checkPrOpenScope, openPrForSession, resolvePrOpenWorkspace } from "./pr-open.js"
+import type { GhRunner } from "./pr-provenance-stamp.js"
+import { loadWorkspacesConfig, type WorkspacesConfig } from "./workspaces-config.js"
 import { type AppBoundary, boundaryToSandboxZones, resolveBoundaryPath } from "./app-boundary.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
 import {
@@ -159,6 +161,12 @@ export interface RegisterCommandToolsOptions {
    * best-effort runs unconfined with an explicit `warning` on the result.
    */
   boundary?: AppBoundary
+  /** `pr_open` only: the `gh` runner (tests inject a fake). Defaults to
+   *  the real subprocess. */
+  ghRunner?: GhRunner
+  /** `pr_open` only: the registered workspaces, used to find the TARGET
+   *  session's host checkout. Defaults to the workspaces config file. */
+  loadWorkspaces?: () => Promise<WorkspacesConfig | undefined>
 }
 
 export function makeCwdAnchor(workspace: string): (input: string | undefined) => string {
@@ -527,7 +535,7 @@ export function registerCommandTools(
 
   server.tool(
     "pr_open",
-    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. Gated like command_execute: `gh` must be allowlisted (with an argv that permits `gh pr create`) in `<workspace>/.agentproto/allowed-commands.json`, and a calling session may only open a PR for itself, a session on its own sandbox box, or a session it spawned (directly or transitively); anything else is refused.",
+    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. Gated like command_execute: `gh` must be allowlisted (with an argv that permits `gh pr create`) in `<workspace>/.agentproto/allowed-commands.json`, and a calling session may only open a PR for itself or a session it spawned (directly or transitively); the operator (no calling session) is not scoped. `gh` runs in the TARGET session's own workspace (its worktree, or for a sandbox session the host checkout of its workspace) and that workspace's allowlist applies, not the daemon's boot workspace's.",
     {
       ...sessionRefSchema(z),
       title: z.string().min(1).describe("PR title."),
@@ -552,20 +560,29 @@ export function registerCommandTools(
         content: [{ type: "text" as const, text: JSON.stringify({ opened: false, error }) }],
         isError: true,
       })
-      // Scope: a session may only open a PR for itself, its own box, or a
-      // session it spawned. Without this any caller could open a PR, under
-      // the host's gh token, for any session's pushed branch.
+      // Scope: a session may only open a PR for itself or for a session it
+      // spawned (the operator, with no caller id, is not scoped). Without
+      // this any caller could open a PR, under the host's gh token, for any
+      // session's pushed branch.
       const outOfScope = checkPrOpenScope({
         ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
         targetId: ref.id,
         rows: opts.registry.list({ includeArchived: true }),
       })
       if (outOfScope) return refuse(`pr_open refused: ${outOfScope}`)
+      const target = opts.registry.get(ref.id)
+      if (!target) return refuse(`pr_open refused: session ${ref.id} not found`)
+      // `gh` runs in the TARGET session's own workspace and is gated by THAT
+      // workspace's allowlist, never the daemon boot workspace's: a session
+      // from repo B must not open a PR against repo A.
+      const workspaces = await (opts.loadWorkspaces ?? loadWorkspacesConfig)().catch(() => undefined)
+      const where = resolvePrOpenWorkspace(target, workspaces)
+      if ("error" in where) return refuse(`pr_open refused: ${where.error}`)
       // Same default-deny allowlist as command_execute: `pr_open` runs `gh`
       // on the host, so `gh` (with an argv the allowlist permits) must be in
-      // the workspace's allowed-commands.json.
-      const allowlistEntries = await loadAllowlistEntries(opts.workspace)
-      const allowlistPath = join(opts.workspace, ALLOWLIST_REL)
+      // the target workspace's allowed-commands.json.
+      const allowlistEntries = await loadAllowlistEntries(where.allowlistRoot)
+      const allowlistPath = join(where.allowlistRoot, ALLOWLIST_REL)
       if (!allowlistEntries.some(e => e.command === "gh")) {
         return refuse(
           `pr_open refused: 'gh' is not in the allowlist. Add it to ${allowlistPath} ` +
@@ -582,8 +599,9 @@ export function registerCommandTools(
       const outcome = await openPrForSession({
         sessionId: ref.id,
         registry: opts.registry,
-        workspacePath: opts.workspace,
+        workspacePath: where.ghCwd,
         authorizeArgs,
+        ...(opts.ghRunner ? { run: opts.ghRunner } : {}),
         // The caller of pr_open is the OPENER (usually the orchestrator
         // session relaying the box's request) — shown as such on the footer.
         ...(opts.callerSessionId ? { openedBy: opts.callerSessionId } : {}),

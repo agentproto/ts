@@ -12,7 +12,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { buildFooter } from "../pr-provenance.js"
-import { checkPrOpenScope, openPrForSession, prCreateArgs, type OpenPrRegistry } from "../pr-open.js"
+import { checkPrOpenScope, openPrForSession, prCreateArgs, resolvePrOpenWorkspace, type OpenPrRegistry } from "../pr-open.js"
 import { stampFooterOnPr } from "../pr-provenance-stamp.js"
 import { buildProbeCommand } from "../sandbox-delivery.js"
 
@@ -271,28 +271,52 @@ describe("checkPrOpenScope", () => {
     { id: "orch" },
     { id: "child", parentSessionId: "orch" },
     { id: "grandchild", parentSessionId: "child" },
-    { id: "boxA", sandboxId: "sbx_1" },
-    { id: "boxB", sandboxId: "sbx_1" },
     { id: "loopA", parentSessionId: "loopB" },
     { id: "loopB", parentSessionId: "loopA" },
   ]
 
-  it("allows its own session, descendants, and sessions on its own box", () => {
-    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "orch", rows })).toBeUndefined()
-    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "child", rows })).toBeUndefined()
+  it("allows the target itself and its ancestors", () => {
+    expect(checkPrOpenScope({ callerSessionId: "grandchild", targetId: "grandchild", rows })).toBeUndefined()
+    expect(checkPrOpenScope({ callerSessionId: "child", targetId: "grandchild", rows })).toBeUndefined()
     expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "grandchild", rows })).toBeUndefined()
-    expect(checkPrOpenScope({ callerSessionId: "boxA", targetId: "boxB", rows })).toBeUndefined()
   })
 
-  it("refuses ancestors, siblings, strangers and other boxes, and survives a parent loop", () => {
+  it("refuses descendants-to-ancestor, strangers, and survives a parent loop", () => {
     expect(checkPrOpenScope({ callerSessionId: "child", targetId: "orch", rows })).toContain("may only open a PR")
-    expect(checkPrOpenScope({ callerSessionId: "boxA", targetId: "child", rows })).toContain("may only open a PR")
-    expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "boxA", rows })).toContain("may only open a PR")
+    expect(checkPrOpenScope({ callerSessionId: "stranger", targetId: "child", rows })).toContain("may only open a PR")
     expect(checkPrOpenScope({ callerSessionId: "orch", targetId: "loopA", rows })).toContain("may only open a PR")
   })
 
-  it("does not scope an unidentified caller (operator lane)", () => {
-    expect(checkPrOpenScope({ targetId: "boxA", rows })).toBeUndefined()
+  it("does not scope the operator (no caller id)", () => {
+    expect(checkPrOpenScope({ targetId: "child", rows })).toBeUndefined()
+  })
+})
+
+describe("resolvePrOpenWorkspace", () => {
+  const ws = { workspaces: [{ slug: "a", path: "/repos/a" }, { slug: "b", path: "/repos/b" }] }
+
+  it("a box session runs gh in its workspace's host checkout", () => {
+    expect(resolvePrOpenWorkspace({ id: "s", workspaceSlug: "b", cwd: "/home/user/workspace", sandboxId: "sbx" }, ws))
+      .toEqual({ ghCwd: "/repos/b", allowlistRoot: "/repos/b" })
+    expect(resolvePrOpenWorkspace({ id: "s", workspaceSlug: "zz", remote: true }, ws)).toHaveProperty("error")
+  })
+
+  it("a host session runs gh in its worktree, gated by its repo's allowlist", () => {
+    expect(
+      resolvePrOpenWorkspace(
+        { id: "s", workspaceSlug: "a", cwd: "/wt/x/sub", worktreePath: "/wt/x", mainRepoPath: "/repos/b" },
+        ws,
+      ),
+    ).toEqual({ ghCwd: "/wt/x", allowlistRoot: "/repos/b" })
+    expect(resolvePrOpenWorkspace({ id: "s", workspaceSlug: "default", cwd: "/repos/b/pkg" }, ws)).toEqual({
+      ghCwd: "/repos/b/pkg",
+      allowlistRoot: "/repos/b",
+    })
+    expect(resolvePrOpenWorkspace({ id: "s", cwd: "/elsewhere" }, ws)).toEqual({
+      ghCwd: "/elsewhere",
+      allowlistRoot: "/elsewhere",
+    })
+    expect(resolvePrOpenWorkspace({ id: "s" }, ws)).toHaveProperty("error")
   })
 })
 

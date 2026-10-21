@@ -54,7 +54,7 @@ const fakeAgent = (): AgentSessionLike => ({
 async function buildHarness(
   workspace: string,
   registry: SessionsRegistry,
-  opts?: { callerSessionId?: string },
+  opts?: Partial<Omit<Parameters<typeof registerCommandTools>[1], "workspace" | "registry">>,
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerCommandTools(server, { workspace, registry, ...opts })
@@ -859,90 +859,155 @@ describe("runCommand — timeouts are honest and reap the whole process group", 
   )
 })
 
-describe("pr_open → allowlist + caller scope", () => {
-  let workspace: string
+describe("pr_open → target workspace, allowlist + caller scope", () => {
+  // `daemon` is the daemon's boot workspace (where the MCP mount lives);
+  // `repoB` is a DIFFERENT repo the target session works in.
+  let daemon: string
+  let repoB: string
   let registry: SessionsRegistry
 
   beforeEach(() => {
-    workspace = mkdtempSync(join(tmpdir(), "command-tools-pr-open-test-"))
-    registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
+    daemon = mkdtempSync(join(tmpdir(), "pr-open-daemon-"))
+    repoB = mkdtempSync(join(tmpdir(), "pr-open-repo-b-"))
+    registry = createSessionsRegistry({ persistPath: join(daemon, "sessions.json"), persist: false })
   })
 
   afterEach(async () => {
     await registry.settlePendingWrites()
     registry.shutdown()
-    rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+    for (const dir of [daemon, repoB]) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
-  const spawnBox = (over: { parentSessionId?: string; sandboxId?: string } = {}) =>
+  const deliveryTarget = { checkoutDir: "/workspace/repo", branch: "wt/x", baseSha: "a".repeat(40) }
+
+  /** A host session working in `cwd`. */
+  const spawnIn = (cwd: string, over: { parentSessionId?: string } = {}) =>
     registry.spawnAgent({
       workspaceSlug: "default",
-      cwd: workspace,
+      cwd,
       agentSession: fakeAgent(),
       adapterSlug: "fake",
-      sandboxDeliveryTarget: { checkoutDir: "/workspace/repo", branch: "wt/x", baseSha: "a".repeat(40) },
+      sandboxDeliveryTarget: deliveryTarget,
       ...over,
     }).id
 
-  const openPr = async (sessionId: string, callerSessionId?: string) => {
-    const { client, close } = await buildHarness(
-      workspace,
-      registry,
-      callerSessionId ? { callerSessionId } : undefined,
-    )
+  /** A sandbox (box) session of workspace `slug`: its cwd is in the box. */
+  const spawnBox = (slug: string, over: { parentSessionId?: string } = {}) =>
+    registry.spawnAgent({
+      workspaceSlug: slug,
+      cwd: "/home/user/workspace",
+      agentSession: fakeAgent(),
+      adapterSlug: "fake",
+      sandboxId: "sbx_1",
+      sandboxDeliveryTarget: deliveryTarget,
+      ...over,
+    }).id
+
+  /** A fake gh that records where each call ran. */
+  const fakeGh = () => {
+    const calls: Array<{ args: readonly string[]; cwd: string }> = []
+    const run = async (args: readonly string[], cwd: string) => {
+      calls.push({ args, cwd })
+      if (args[1] === "create") return { exitCode: 0, stdout: "https://github.com/o/b/pull/7\n" }
+      return { exitCode: 1, stdout: "" }
+    }
+    return { run, calls }
+  }
+
+  const openPr = async (
+    sessionId: string,
+    opts: { callerSessionId?: string; gh?: ReturnType<typeof fakeGh>; slugs?: Record<string, string> } = {},
+  ) => {
+    const { client, close } = await buildHarness(daemon, registry, {
+      ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+      ghRunner: (opts.gh ?? fakeGh()).run,
+      loadWorkspaces: async () => ({
+        version: 1,
+        workspaces: Object.entries(opts.slugs ?? {}).map(([slug, path]) => ({ slug, path })),
+      }) as never,
+    })
     try {
-      return await client.callTool({
-        name: "pr_open",
-        arguments: { sessionId, title: "t", body: "b" },
-      })
+      return await client.callTool({ name: "pr_open", arguments: { sessionId, title: "t", body: "b" } })
     } finally {
       await close()
     }
   }
 
-  it("refuses when gh is not in the workspace allowlist", async () => {
-    const box = spawnBox()
-    for (const commands of [[], ["node"]]) {
-      allowlist(workspace, commands)
-      const res = await openPr(box)
-      expect(res.isError).toBe(true)
-      expect(textOf(res)).toContain("'gh' is not in the allowlist")
-      expect(textOf(res)).toContain("allowed-commands.json")
-    }
+  it("runs gh in the target session's own workspace, not the daemon's", async () => {
+    allowlist(repoB, ["gh"])
+    const gh = fakeGh()
+    const res = await openPr(spawnIn(repoB), { gh })
+    expect(res.isError).toBeFalsy()
+    expect(JSON.parse(textOf(res))).toMatchObject({ opened: true, number: 7 })
+    const create = gh.calls.find(c => c.args[1] === "create")!
+    expect(create.cwd).toBe(repoB)
+    expect(gh.calls.every(c => c.cwd === repoB)).toBe(true)
+  })
+
+  it("checks the TARGET workspace's allowlist: the daemon workspace allowing gh is not enough", async () => {
+    allowlist(daemon, ["gh"])
+    const gh = fakeGh()
+    const res = await openPr(spawnIn(repoB), { gh })
+    expect(res.isError).toBe(true)
+    expect(textOf(res)).toContain("'gh' is not in the allowlist")
+    expect(textOf(res)).toContain(join(repoB, ".agentproto", "allowed-commands.json"))
+    expect(gh.calls).toEqual([])
+  })
+
+  it("for a sandbox session, runs gh in the host checkout of its workspace and uses that allowlist", async () => {
+    allowlist(daemon, ["gh"])
+    const gh = fakeGh()
+    // repoB is not allowlisted: refused although the daemon allows gh.
+    const refused = await openPr(spawnBox("repo-b"), { gh, slugs: { "repo-b": repoB } })
+    expect(refused.isError).toBe(true)
+    expect(textOf(refused)).toContain(join(repoB, ".agentproto", "allowed-commands.json"))
+    expect(gh.calls).toEqual([])
+
+    allowlist(repoB, ["gh"])
+    const ok = await openPr(spawnBox("repo-b"), { gh, slugs: { "repo-b": repoB } })
+    expect(ok.isError).toBeFalsy()
+    expect(gh.calls.find(c => c.args[1] === "create")!.cwd).toBe(repoB)
+
+    // A box whose workspace has no registered host checkout: refused.
+    const orphan = await openPr(spawnBox("unknown"), { gh })
+    expect(orphan.isError).toBe(true)
+    expect(textOf(orphan)).toContain("has no registered host checkout")
   })
 
   it("refuses when gh is allowlisted only for other subcommands", async () => {
-    allowlist(workspace, [{ command: "gh", args: ["pr", "view"] }])
-    const box = spawnBox()
-    const res = await openPr(box)
+    allowlist(repoB, [{ command: "gh", args: ["pr", "view"] }])
+    const gh = fakeGh()
+    const res = await openPr(spawnIn(repoB), { gh })
     expect(res.isError).toBe(true)
     expect(textOf(res)).toContain("not for `gh pr create`")
+    expect(gh.calls).toEqual([])
   })
 
-  it("refuses a caller opening a PR for a session that is not its own, its box's, or a descendant's", async () => {
-    allowlist(workspace, ["gh"])
-    const stranger = spawnBox()
-    const box = spawnBox()
-    const res = await openPr(box, stranger)
-    expect(res.isError).toBe(true)
-    expect(textOf(res)).toContain("pr_open refused")
-    expect(textOf(res)).toContain(`session ${stranger} may only open a PR for its own session`)
-  })
+  it("lets the target itself, its ancestors and the operator open; refuses anyone else", async () => {
+    allowlist(repoB, ["gh"])
+    const orchestrator = spawnIn(repoB)
+    const child = spawnIn(repoB, { parentSessionId: orchestrator })
+    const grandchild = spawnIn(repoB, { parentSessionId: child })
+    const stranger = spawnIn(repoB)
 
-  it("lets a caller through the scope check for its own (grand)child box session", async () => {
-    // gh is constrained so the call stops right before running it: reaching
-    // the argv check proves the scope check passed.
-    allowlist(workspace, [{ command: "gh", args: ["pr", "view"] }])
-    const orchestrator = spawnBox()
-    const child = spawnBox({ parentSessionId: orchestrator })
-    const grandchild = spawnBox({ parentSessionId: child })
-    for (const target of [orchestrator, child, grandchild]) {
-      const res = await openPr(target, orchestrator)
-      expect(textOf(res)).not.toContain("may only open a PR")
-      expect(textOf(res)).toContain("not for `gh pr create`")
+    for (const [target, caller] of [
+      [grandchild, grandchild],
+      [grandchild, child],
+      [grandchild, orchestrator],
+      [grandchild, undefined],
+    ] as const) {
+      const res = await openPr(target, caller ? { callerSessionId: caller } : {})
+      expect(res.isError).toBeFalsy()
     }
-    // ...but never upward: the child cannot open one for its parent.
-    const up = await openPr(orchestrator, child)
-    expect(textOf(up)).toContain("may only open a PR")
+    for (const [target, caller] of [
+      [grandchild, stranger],
+      [orchestrator, child],
+    ] as const) {
+      const gh = fakeGh()
+      const res = await openPr(target, { callerSessionId: caller, gh })
+      expect(res.isError).toBe(true)
+      expect(textOf(res)).toContain(`session ${caller} may only open a PR for itself or for a session it spawned`)
+      expect(gh.calls).toEqual([])
+    }
   })
 })
