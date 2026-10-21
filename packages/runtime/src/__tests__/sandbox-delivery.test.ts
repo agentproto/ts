@@ -14,6 +14,7 @@ import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 import { sessionIdsFromTrailers } from "../pr-provenance.js"
 import {
   buildProvenanceStampCommand,
+  PROVENANCE_COMMIT_SUBJECT,
   DELIVERY_BUNDLE_FILE,
   DELIVERY_RECORD_FILE,
   buildBundleCommand,
@@ -553,7 +554,7 @@ describe("work-branch provenance stamp", () => {
     const box = cleanBox({ ahead: 2 })
     const record = await runSandboxDelivery({ exec: box.exec, target, outDir, sessionId: "sess_box1" })
     expect(record.push.status).toBe("pushed")
-    const stampAt = box.commands.findIndex(c => c.command.includes("commit-tree"))
+    const stampAt = box.commands.findIndex(c => c.command.includes(PROVENANCE_COMMIT_SUBJECT))
     const pushAt = box.commands.findIndex(c => c.command.includes(" push ") && !c.command.includes("--delete"))
     expect(stampAt).toBeGreaterThan(-1)
     expect(stampAt).toBeLessThan(pushAt)
@@ -568,7 +569,7 @@ describe("work-branch provenance stamp", () => {
     ]) {
       const box = cleanBox({ ahead: run.ahead })
       await runSandboxDelivery({ exec: box.exec, target, outDir, ...run.input })
-      expect(box.commands.some(c => c.command.includes("commit-tree"))).toBe(false)
+      expect(box.commands.some(c => c.command.includes(PROVENANCE_COMMIT_SUBJECT))).toBe(false)
     }
   })
 
