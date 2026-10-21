@@ -129,27 +129,30 @@ export function stripOwnCallerStamp(
     // The identity header travels with the query (see
     // `CALLER_SESSION_ID_HEADER`): strip OURS too, or the fresh session
     // would keep speaking to the daemon under the dead session's id.
-    const headers = entry.headers
-      ? Object.fromEntries(
-          Object.entries(entry.headers).filter(
-            ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
-          ),
+    const original = entry.headers
+    const kept = original
+      ? Object.entries(original).filter(
+          ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
         )
-      : undefined
-    const hasHeaders = headers !== undefined && Object.keys(headers).length > 0
+      : []
+    const strippedHeader = original !== undefined && kept.length !== Object.keys(original).length
+    // Apply the header strip independently of URL parseability. When our
+    // header was the only one, drop the `headers` key entirely so the spawn
+    // path sees no identity header and re-stamps with the fresh id.
+    let next: typeof entry = entry
+    if (strippedHeader) {
+      const { headers: _drop, ...rest } = entry
+      next = kept.length > 0 ? { ...rest, headers: Object.fromEntries(kept) } : rest
+    }
     let url: URL
     try {
       url = new URL(entry.ref)
     } catch {
-      return entry
+      return next
     }
-    if (url.searchParams.get("callerSessionId") !== prevId) {
-      // The query does not carry our stamp; the header might still.
-      if (!hasHeaders) return entry
-      return { ...entry, headers: headers! }
-    }
+    if (url.searchParams.get("callerSessionId") !== prevId) return next
     url.searchParams.delete("callerSessionId")
-    return { ...entry, ref: url.toString(), ...(hasHeaders ? { headers: headers! } : {}) }
+    return { ...next, ref: url.toString() }
   })
 }
 
