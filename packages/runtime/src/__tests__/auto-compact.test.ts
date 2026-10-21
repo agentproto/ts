@@ -9,7 +9,7 @@
  *   - it never fires twice while a compaction is in flight
  *   - the resume prompt is injected only when the session really had work
  *     in progress (a background task, a pending tool call, an unanswered
- *     prompt, or a turn that died) — never because it has a title or goal
+ *     prompt, or a turn that died), never because it has a title or goal
  *   - the compaction carries the full transcript path and the two lookup
  *     tools, so the session can recover what the summary dropped
  */
