@@ -111,7 +111,7 @@ describe("sandbox spawn — the role disposition reaches the inner prompt", () =
   let receivedPrompts: string[]
   let receivedStarts: Array<Record<string, unknown>>
   let box: Awaited<ReturnType<typeof bootFakeBox>>
-  let registry: createSessionsRegistry extends (...a: never) => never ? never : ReturnType<typeof createSessionsRegistry>
+  let registry: ReturnType<typeof createSessionsRegistry>
   let workspace: string
   let deps: SpawnAgentSessionDeps
 
