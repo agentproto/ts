@@ -17,10 +17,8 @@ import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import {
   createSessionMessage,
-  isMessageAllowed,
   messageFrom,
-  resolveEffectiveRelation,
-  samePeerGroup,
+  resolveMessageAcl,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageFilter,
@@ -155,9 +153,9 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
-    const relation = resolveEffectiveRelation(self, recipient, peerGroups)
-    const peerGroup = samePeerGroup(self, recipient, peerGroups)
-    if (!isMessageAllowed(relation, { allowSiblings, allowSameWorkspace, peerGroup })) {
+    const acl = resolveMessageAcl(self, recipient, { allowSiblings, allowSameWorkspace, peerGroups })
+    const relation = acl.relation
+    if (!acl.allowed || !relation) {
       return fail(
         "forbidden_recipient",
         `${tool}: "${toId}" is not a tree neighbour you may message ` +

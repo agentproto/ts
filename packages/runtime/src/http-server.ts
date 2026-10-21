@@ -64,14 +64,14 @@ import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
-  isMessageAllowed,
   messageFrom,
-  resolveRelation,
+  resolveMessageAcl,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
@@ -7539,8 +7539,16 @@ code { color: #9ad; }
       json(404, { error: "no_such_caller", callerSessionId: callerId })
       return true
     }
-    const relation = resolveRelation(sender, recipient)
-    if (!isMessageAllowed(relation)) {
+    // Same ACL decision as the `message_send` tool (siblings,
+    // same-workspace, peer groups) - read fresh from config per request.
+    const messagingDefaults = await resolveMessagingDefaults()
+    const acl = resolveMessageAcl(sender, recipient, {
+      allowSiblings: messagingDefaults.allowSiblings,
+      allowSameWorkspace: messagingDefaults.allowSameWorkspace,
+      peerGroups: messagingDefaults.peerGroups,
+    })
+    const relation = acl.relation
+    if (!acl.allowed || !relation) {
       json(403, { error: "forbidden_recipient", id, callerSessionId: callerId })
       return true
     }

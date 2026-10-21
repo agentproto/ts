@@ -69,10 +69,6 @@ export interface MessageTreeNode {
    *  workspace may message each other even without a tree edge - see
    *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
   workspaceSlug?: string
-  /** A workspace ID, when the descriptor carries one (a Pygmalion-style
-   *  workspace identifies by id as well as by slug). Compared ONLY when both
-   *  sides carry it - see {@link sameWorkspace}. */
-  workspaceId?: string
 }
 
 /**
@@ -97,11 +93,14 @@ export function resolveRelation(
 
 /**
  * Do two sessions belong to the SAME workspace? Both must carry a non-empty
- * `workspaceSlug` and the slugs must match. When the descriptors also carry
- * a `workspaceId` (a Pygmalion-style workspace id), both must carry it and
- * the ids must match too - a slug that matches but an id that differs is NOT
- * the same workspace. A missing/blank slug on either side is never the same
- * workspace (an unset workspace must not widen the ACL).
+ * `workspaceSlug` and the slugs must match. A missing/blank slug on either
+ * side is never the same workspace (an unset workspace must not widen the
+ * ACL).
+ *
+ * NOTE: `workspaceSlug` is recorded at spawn time from the spawn input; it is
+ * a routing label, NOT an authenticated security boundary. The same-workspace
+ * and peer-group allowances are conveniences for cooperating sessions of one
+ * operator, not isolation between mutually untrusted ones.
  */
 export function sameWorkspace(
   a: MessageTreeNode | undefined,
@@ -110,14 +109,7 @@ export function sameWorkspace(
   const slugA = a?.workspaceSlug?.trim()
   const slugB = b?.workspaceSlug?.trim()
   if (!slugA || !slugB) return false
-  if (slugA !== slugB) return false
-  const idA = a?.workspaceId?.trim()
-  const idB = b?.workspaceId?.trim()
-  if (idA !== undefined || idB !== undefined) {
-    if (!idA || !idB) return false
-    if (idA !== idB) return false
-  }
-  return true
+  return slugA === slugB
 }
 
 /**
@@ -136,16 +128,17 @@ export function samePeerGroup(
   b: MessageTreeNode | undefined,
   peerGroups: readonly (readonly string[])[] | undefined,
 ): boolean {
-  if (!peerGroups || peerGroups.length === 0) return false
+  if (!Array.isArray(peerGroups) || peerGroups.length === 0) return false
   const slugA = a?.workspaceSlug?.trim()
   const slugB = b?.workspaceSlug?.trim()
   if (!slugA || !slugB) return false
   for (const group of peerGroups) {
-    if (!group || group.length === 0) continue
+    // Config can be hand-edited: tolerate a non-array group / non-string slug.
+    if (!Array.isArray(group) || group.length === 0) continue
     let inA = false
     let inB = false
-    for (const raw of group) {
-      const slug = raw?.trim()
+    for (const raw of group as readonly unknown[]) {
+      const slug = typeof raw === "string" ? raw.trim() : undefined
       if (!slug) continue
       if (slug === slugA) inA = true
       if (slug === slugB) inB = true
@@ -200,6 +193,49 @@ export function isMessageAllowed(
     default:
       return false
   }
+}
+
+export interface MessageAclOptions {
+  allowSiblings?: boolean
+  allowSameWorkspace?: boolean
+  peerGroups?: readonly (readonly string[])[]
+}
+
+export interface MessageAclDecision {
+  /** The relation the message is sent under (`undefined` = no link at all). */
+  relation: MessageRelation | undefined
+  /** Whether the ACL lets the message through. */
+  allowed: boolean
+  /** Whether sender and recipient are linked by a peer group. */
+  peerGroup: boolean
+}
+
+/**
+ * The ONE messaging ACL decision, shared by the `message_send` /
+ * `message_reply` tools and `POST /sessions/:id/messages`.
+ *
+ * Precedence: a tree edge decides first (parent/child/human always pass;
+ * `sibling` passes only with `allowSiblings`) - EXCEPT that a denied sibling
+ * edge is overridden by a peer-group link (the operator explicitly grouped
+ * those two workspaces, and two agents spawned under one orchestrator are
+ * always siblings). With no tree edge, same-workspace needs
+ * `allowSameWorkspace` (default on) and a peer-group link always passes.
+ */
+export function resolveMessageAcl(
+  sender: MessageTreeNode | undefined,
+  recipient: MessageTreeNode,
+  opts: MessageAclOptions = {},
+): MessageAclDecision {
+  const peerGroup =
+    !!sender && sender.id !== recipient.id && samePeerGroup(sender, recipient, opts.peerGroups)
+  let relation = resolveEffectiveRelation(sender, recipient, opts.peerGroups)
+  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "peer"
+  const allowed = isMessageAllowed(relation, {
+    allowSiblings: opts.allowSiblings,
+    allowSameWorkspace: opts.allowSameWorkspace,
+    peerGroup,
+  })
+  return { relation, allowed, peerGroup }
 }
 
 /** Build a `from` block from the verified sender + the resolved relation. */
