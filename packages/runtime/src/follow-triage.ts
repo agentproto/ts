@@ -131,7 +131,6 @@ export function resolveFollowTriageConfig(
   override?: FollowTriageFollowInput,
 ): FollowTriageConfig {
   const baseRules = base?.rules ?? DEFAULT_FOLLOW_TRIAGE_RULES
-  const overrideClassifier = (override as FollowTriageInput | undefined)?.classifier
   return {
     enabled: override?.enabled ?? base?.enabled ?? false,
     rules: { ...baseRules, ...(override?.rules ?? {}) },
