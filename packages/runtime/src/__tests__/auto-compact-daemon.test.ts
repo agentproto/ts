@@ -64,7 +64,11 @@ describe("autocompact at the turn boundary", () => {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
-  const spawn = (h: AgentSessionLike, autoCompactAtTokens: number) =>
+  const spawn = (
+    h: AgentSessionLike,
+    autoCompactAtTokens: number | undefined,
+    mode: "manual" | "ask" | "auto" = "ask",
+  ) =>
     reg.spawnAgent({
       workspaceSlug: "default",
       cwd: tmp,
@@ -72,10 +76,56 @@ describe("autocompact at the turn boundary", () => {
       adapterSlug: "fake",
       contextContinuity: {
         ...CONTEXT_CONTINUITY_DEFAULTS,
-        mode: "manual",
-        autoCompactAtTokens,
+        mode,
+        ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
       },
     }).id
+
+  /** Let the turn end and the scheduled autocompact check run. */
+  const settle = () => new Promise(r => setTimeout(r, 200))
+
+  it("is opt-in: no threshold set means no autocompact", async () => {
+    // 500k tokens: far above any former default, still below every percent
+    // band of a 1M window (the ladder is a separate mechanism).
+    const h = harness(500_000, 1_000_000)
+    const id = spawn(h, undefined)
+    await reg.sendPrompt(id, "do the thing")
+    await settle()
+    expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(false)
+
+    // No continuity policy at all: same.
+    const bare = harness(500_000, 1_000_000)
+    const bareId = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: bare,
+      adapterSlug: "fake",
+    }).id
+    await reg.sendPrompt(bareId, "do the thing")
+    await settle()
+    expect(bare.prompts.some(p => p.startsWith("/compact"))).toBe(false)
+  })
+
+  it("mode manual disables autocompact even with a threshold set", async () => {
+    const h = harness(200_000, 1_000_000)
+    const id = spawn(h, 150_000, "manual")
+    await reg.sendPrompt(id, "do the thing")
+    await settle()
+    expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(false)
+  })
+
+  it("honours a threshold above 200k on a 1M-token window (no 200k cap)", async () => {
+    const below = harness(300_000, 1_000_000)
+    const belowId = spawn(below, 600_000)
+    await reg.sendPrompt(belowId, "do the thing")
+    await settle()
+    expect(below.prompts.some(p => p.startsWith("/compact"))).toBe(false)
+
+    const above = harness(650_000, 1_000_000)
+    const aboveId = spawn(above, 600_000)
+    await reg.sendPrompt(aboveId, "do the thing")
+    await vi.waitFor(() => expect(above.prompts.some(p => p.startsWith("/compact"))).toBe(true))
+  })
 
   it("compacts an idle session above the absolute threshold on a 1M-token window", async () => {
     const h = harness(200_000, 1_000_000)

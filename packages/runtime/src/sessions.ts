@@ -145,6 +145,7 @@ import type {
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   createAutoCompactController,
+  effectiveAutoCompactTokens,
   type AutoCompactController,
   type AutoCompactOutcome,
 } from "./auto-compact.js"
@@ -9151,9 +9152,8 @@ export function createSessionsRegistry(opts?: {
     if (!adapterSupportsCompact(rt.agentSession)) return
     const controller = (rt.autoCompact ??= createAutoCompactController({
       readTokens: () => rt.desc.contextUsed,
-      readThreshold: () =>
-        rt.desc.contextContinuity?.autoCompactAtTokens ??
-        CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens,
+      // Opt-in: 0 (off) with no threshold set or in `manual` mode.
+      readThreshold: () => effectiveAutoCompactTokens(rt.desc.contextContinuity),
       isIdle: () => rt.busy !== true,
       hasBackgroundTask: () =>
         (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,

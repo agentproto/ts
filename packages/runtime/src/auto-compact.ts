@@ -14,10 +14,15 @@
  *
  * The rules this module encodes (all pure, all testable):
  *
- *   - The threshold is clamped to `[AUTO_COMPACT_MIN_TOKENS,
- *     AUTO_COMPACT_MAX_TOKENS]`. A value above the maximum is clamped down
- *     (never rejected), a value of `0` disables autocompact, and an absent
- *     value resolves to {@link AUTO_COMPACT_DEFAULT_TOKENS}.
+ *   - Autocompact is OPT-IN. With no threshold configured it never fires:
+ *     an absent (or non-finite) value resolves to `0`, disabled. A session
+ *     opts in by setting `contextContinuity.autoCompactAtTokens`.
+ *   - A non-zero threshold is floored at `AUTO_COMPACT_MIN_TOKENS` (below
+ *     that it is noise). There is no ceiling: a session on a 1M-token
+ *     window may set a threshold above 200k. A value of `0` disables.
+ *   - The context-continuity mode `manual` disables autocompact (see
+ *     {@link effectiveAutoCompactTokens}): `manual` means "nothing happens
+ *     to my context unless I ask", and that includes this.
  *   - Autocompact only fires on an IDLE session (the turn ended and no
  *     background task is outstanding). A busy session is mid-flight; its
  *     context is the live turn's context, and compacting under it would
@@ -25,12 +30,6 @@
  *   - It never fires twice for the same compaction: while a compaction is
  *     in flight the controller reports `already-compacting` and does
  *     nothing.
- *   - The context-continuity MODE does not gate autocompact. `manual`
- *     suppresses the percent ladder's nudges (warn / compact /
- *     continue-fresh), but autocompact is an absolute, cost-driven guard in
- *     the same family as the hard-stop floor: a session that never
- *     compacts is a session that re-reads its whole context on every
- *     call. A session that wants neither sets `autoCompactAtTokens: 0`.
  *   - After the compaction, a short resume prompt is injected ONLY when a
  *     mission is in progress. "A mission is in progress" is decided by the
  *     caller (the daemon reads it off the continuity checkpoint written
@@ -39,26 +38,34 @@
  *     freed. It is just not told to carry on.
  */
 
-/** Default absolute threshold: 150k tokens of context. */
-export const AUTO_COMPACT_DEFAULT_TOKENS = 150_000
-/** Hard ceiling for the threshold: a session never autocompacts above it. */
-export const AUTO_COMPACT_MAX_TOKENS = 200_000
 /** Floor for a non-zero threshold (below this the threshold is noise). */
 export const AUTO_COMPACT_MIN_TOKENS = 1_000
 
 /**
  * Clamp a user-supplied absolute threshold.
  *
- * - `undefined` / `null` / non-finite → {@link AUTO_COMPACT_DEFAULT_TOKENS}
+ * - `undefined` / `null` / non-finite → `0` (autocompact is opt-in: off)
  * - `<= 0` → `0` (autocompact disabled)
- * - otherwise → clamped into `[AUTO_COMPACT_MIN_TOKENS,
- *   AUTO_COMPACT_MAX_TOKENS]`
+ * - otherwise → rounded, floored at {@link AUTO_COMPACT_MIN_TOKENS}; no
+ *   ceiling
  */
 export function clampAutoCompactTokens(value: number | undefined | null): number {
-  if (value === undefined || value === null) return AUTO_COMPACT_DEFAULT_TOKENS
-  if (!Number.isFinite(value)) return AUTO_COMPACT_DEFAULT_TOKENS
+  if (value === undefined || value === null) return 0
+  if (!Number.isFinite(value)) return 0
   if (value <= 0) return 0
-  return Math.min(Math.max(Math.round(value), AUTO_COMPACT_MIN_TOKENS), AUTO_COMPACT_MAX_TOKENS)
+  return Math.max(Math.round(value), AUTO_COMPACT_MIN_TOKENS)
+}
+
+/**
+ * The threshold a session's policy actually arms: `0` (off) when the policy
+ * is absent, sets no threshold, or is in `manual` mode; otherwise the
+ * clamped `autoCompactAtTokens`.
+ */
+export function effectiveAutoCompactTokens(
+  policy: { mode?: string; autoCompactAtTokens?: number } | undefined,
+): number {
+  if (!policy || policy.mode === "manual") return 0
+  return clampAutoCompactTokens(policy.autoCompactAtTokens)
 }
 
 /**

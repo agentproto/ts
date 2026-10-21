@@ -632,9 +632,10 @@ same path `session_compact` uses) and, when a mission is in progress, injects a
 short resume prompt that cites the path of the full transcript. It is
 window-independent: the percent ladder never fires on a 1M-token window (558k
 of 1M is "55% full", the warn band), so a long session grew without ever
-compacting. Default 150000, clamped to 200000 max, `0` disables. The
-continuity mode does not gate it (like the hard-stop floor, it is a safety
-guard, not a nudge).
+compacting. It is OPT-IN: with no threshold set it never fires, and `0`
+disables it too. `mode: "manual"` also turns it off. There is no ceiling (a
+1M-window session can set e.g. `600000`); a non-zero value below `1000` is
+raised to `1000`.
 
 `compactHandoffTurn: true` has a `/compact` or `/compress` prompt ask the
 live session for a handoff turn (its own goal, decisions, risks) before the

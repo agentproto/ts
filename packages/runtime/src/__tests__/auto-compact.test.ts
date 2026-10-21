@@ -12,13 +12,12 @@
 
 import { describe, expect, it, vi } from "vitest"
 import {
-  AUTO_COMPACT_DEFAULT_TOKENS,
-  AUTO_COMPACT_MAX_TOKENS,
   AUTO_COMPACT_MIN_TOKENS,
   buildAutoCompactResumePrompt,
   clampAutoCompactTokens,
   createAutoCompactController,
   decideAutoCompact,
+  effectiveAutoCompactTokens,
   type AutoCompactControllerDeps,
 } from "../auto-compact.js"
 import {
@@ -28,15 +27,15 @@ import {
 } from "../context-continuity.js"
 
 describe("clampAutoCompactTokens", () => {
-  it("defaults to 150k when unset", () => {
-    expect(clampAutoCompactTokens(undefined)).toBe(AUTO_COMPACT_DEFAULT_TOKENS)
-    expect(AUTO_COMPACT_DEFAULT_TOKENS).toBe(150_000)
+  it("is disabled (0) when unset: autocompact is opt-in", () => {
+    expect(clampAutoCompactTokens(undefined)).toBe(0)
+    expect(clampAutoCompactTokens(null)).toBe(0)
+    expect(clampAutoCompactTokens(Number.NaN)).toBe(0)
   })
 
-  it("clamps a value above the maximum down to 200k", () => {
-    expect(clampAutoCompactTokens(500_000)).toBe(AUTO_COMPACT_MAX_TOKENS)
-    expect(AUTO_COMPACT_MAX_TOKENS).toBe(200_000)
-    expect(clampAutoCompactTokens(200_001)).toBe(200_000)
+  it("has no 200k ceiling: a 1M-window session can set a higher threshold", () => {
+    expect(clampAutoCompactTokens(200_001)).toBe(200_001)
+    expect(clampAutoCompactTokens(800_000)).toBe(800_000)
   })
 
   it("clamps a value below the floor up to the floor", () => {
@@ -309,18 +308,30 @@ describe("buildAutoCompactResumePrompt", () => {
 })
 
 describe("context-continuity policy", () => {
-  it("carries the autocompact threshold with the default", () => {
-    expect(CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens).toBe(AUTO_COMPACT_DEFAULT_TOKENS)
+  it("ships no default threshold: autocompact is off unless a policy sets one", () => {
+    expect(CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens).toBeUndefined()
+    const resolved = resolveContextContinuityPolicy(undefined, undefined, undefined, undefined)
+    expect(effectiveAutoCompactTokens(resolved)).toBe(0)
   })
 
-  it("clamps an out-of-range threshold instead of rejecting the policy", () => {
-    const resolved = resolveContextContinuityPolicy(
+  it("keeps a large threshold and clamps only below the floor", () => {
+    const big = resolveContextContinuityPolicy(
       { autoCompactAtTokens: 999_999 },
       undefined,
       undefined,
       undefined,
     )
-    expect(resolved.autoCompactAtTokens).toBe(AUTO_COMPACT_MAX_TOKENS)
+    expect(big.autoCompactAtTokens).toBe(999_999)
+    const tiny = resolveContextContinuityPolicy({ autoCompactAtTokens: 5 }, undefined, undefined, undefined)
+    expect(tiny.autoCompactAtTokens).toBe(AUTO_COMPACT_MIN_TOKENS)
+  })
+
+  it("mode manual disables autocompact", () => {
+    expect(effectiveAutoCompactTokens({ mode: "manual", autoCompactAtTokens: 150_000 })).toBe(0)
+    expect(effectiveAutoCompactTokens({ mode: "ask", autoCompactAtTokens: 150_000 })).toBe(150_000)
+    expect(effectiveAutoCompactTokens({ mode: "auto", autoCompactAtTokens: 150_000 })).toBe(150_000)
+    expect(effectiveAutoCompactTokens({ mode: "ask" })).toBe(0)
+    expect(effectiveAutoCompactTokens(undefined)).toBe(0)
   })
 
   it("lets a session override the threshold", () => {
@@ -351,5 +362,22 @@ describe("session_context_status", () => {
     // The percent ladder still says "ok" at 20%, that is the bug the
     // absolute threshold exists to cover.
     expect(above.state).toBe("ok")
+  })
+
+  it("reports 0 / not above for a session without a threshold or in manual mode", () => {
+    const none = resolveContextContinuityPolicy(undefined, undefined, undefined, undefined)
+    const status = computeContextContinuityStatus("sess_1", none, 1_000_000, 900_000)
+    expect(status.autoCompactAtTokens).toBe(0)
+    expect(status.autoCompactAboveThreshold).toBe(false)
+
+    const manual = resolveContextContinuityPolicy(
+      { mode: "manual", autoCompactAtTokens: 150_000 },
+      undefined,
+      undefined,
+      undefined,
+    )
+    const m = computeContextContinuityStatus("sess_1", manual, 1_000_000, 200_000)
+    expect(m.autoCompactAtTokens).toBe(0)
+    expect(m.autoCompactAboveThreshold).toBe(false)
   })
 })

@@ -298,8 +298,9 @@ Usage:
                                native-terminal restart path when it has one.
                                --auto-compact-at-tokens <n> sets the ABSOLUTE
                                context threshold (tokens) at which an idle
-                               session is compacted automatically (clamped
-                               to 200000 max, 0 disables).)
+                               session is compacted automatically (opt-in:
+                               off unless set; 0 disables; no upper cap;
+                               ignored when the policy mode is manual).)
   agentproto sessions mirror <id-or-name> [--no-color]
                               (read-only tail of the session's output — never
                                takes stdin; Ctrl-C exits without touching the

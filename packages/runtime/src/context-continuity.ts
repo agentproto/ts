@@ -1,6 +1,6 @@
 import {
-  AUTO_COMPACT_DEFAULT_TOKENS,
   clampAutoCompactTokens,
+  effectiveAutoCompactTokens,
 } from "./auto-compact.js"
 
 /**
@@ -75,8 +75,9 @@ export interface ContextContinuityPolicy
    * session can grow without ever compacting. An absolute count does not
    * care how big the window is.
    *
-   * Clamped into `[1000, 200000]`; `0` disables autocompact. Unset = the
-   * default (150k). */
+   * OPT-IN: unset = autocompact off. A non-zero value is floored at 1000
+   * (no ceiling, so a 1M-window session can set e.g. 600000); `0`
+   * disables. Ignored (off) when `mode` is `manual`. */
   autoCompactAtTokens?: number
   /** Optional display label for UIs. */
   label?: string
@@ -115,7 +116,7 @@ export interface ResolvedContextContinuityPolicy
   mode: ContextContinuityMode
   /** See {@link ContextContinuityPolicy.autoCompactAtTokens} (clamped).
    *  Optional so a policy persisted before autocompact existed still
-   *  deserialises; absent = {@link AUTO_COMPACT_DEFAULT_TOKENS}. */
+   *  deserialises; absent = autocompact off (it is opt-in). */
   autoCompactAtTokens?: number
   /** Effective label (falls back to mode when absent). */
   label: string
@@ -129,7 +130,6 @@ export interface ResolvedContextContinuityPolicy
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
   mode: "ask",
-  autoCompactAtTokens: AUTO_COMPACT_DEFAULT_TOKENS,
   warnAtPct: 55,
   compactAtPct: 65,
   continueFreshAtPct: 75,
@@ -162,7 +162,8 @@ export interface ContextContinuityStatus {
   nextAction: ContextContinuityNextAction
   /** Distance to the next threshold in percentage points (null if unknown). */
   nextThresholdDelta: number | null
-  /** The effective ABSOLUTE autocompact threshold (tokens). 0 = disabled. */
+  /** The effective ABSOLUTE autocompact threshold (tokens). 0 = disabled
+   *  (no threshold set, or `manual` mode). */
   autoCompactAtTokens: number
   /** Whether the session is currently at or above the absolute threshold. */
   autoCompactAboveThreshold: boolean
@@ -240,6 +241,11 @@ export function validateContextContinuityPolicy(
   return { ok: true }
 }
 
+/** The autocompact field of a merged layer: absent stays absent (opt-in). */
+function autoCompactLayer(value: number | undefined): { autoCompactAtTokens?: number } {
+  return value === undefined ? {} : { autoCompactAtTokens: clampAutoCompactTokens(value) }
+}
+
 function mergePolicyLayer(
   base: ResolvedContextContinuityPolicy,
   override: ContextContinuityPolicy | undefined,
@@ -247,9 +253,7 @@ function mergePolicyLayer(
   if (!override) return base
   return {
     mode: override.mode ?? base.mode,
-    autoCompactAtTokens: clampAutoCompactTokens(
-      override.autoCompactAtTokens ?? base.autoCompactAtTokens,
-    ),
+    ...autoCompactLayer(override.autoCompactAtTokens ?? base.autoCompactAtTokens),
     warnAtPct: override.warnAtPct ?? base.warnAtPct,
     compactAtPct: override.compactAtPct ?? base.compactAtPct,
     continueFreshAtPct: override.continueFreshAtPct ?? base.continueFreshAtPct,
@@ -405,7 +409,7 @@ export function computeContextContinuityStatus(
   const nextThreshold = pct === null ? null : thresholds.find(t => t > pct) ?? null
   const nextThresholdDelta = pct === null || nextThreshold === null ? null : nextThreshold - pct
 
-  const autoCompactAtTokens = clampAutoCompactTokens(policy.autoCompactAtTokens)
+  const autoCompactAtTokens = effectiveAutoCompactTokens(policy)
   return {
     sessionId,
     contextSize,
