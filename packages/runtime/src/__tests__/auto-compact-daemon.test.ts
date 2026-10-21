@@ -32,6 +32,7 @@ function harness(used: number, size: number, usedAfterCompact = 1_000): Harness 
   const h: Harness = {
     sessionId: "acp-autocompact",
     prompts: [],
+    availableModes: [{ id: "compact", name: "Compact" }],
     async *send(message): AsyncIterable<AgentStreamEvent> {
       const text = (Array.isArray(message) ? message : [message])
         .map(b => (typeof b === "string" ? b : ((b as { text?: string } | undefined)?.text ?? "")))
@@ -93,6 +94,15 @@ describe("autocompact at the turn boundary", () => {
     expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(false)
   })
 
+  it("never sends /compact to a harness that does not advertise compact support", async () => {
+    const h = harness(200_000, 1_000_000)
+    delete (h as { availableModes?: unknown }).availableModes
+    const id = spawn(h, 150_000)
+    await reg.sendPrompt(id, "do the thing")
+    await new Promise(r => setTimeout(r, 200))
+    expect(h.prompts.some(p => p.startsWith("/compact"))).toBe(false)
+  })
+
   it("injects a resume prompt that cites the full transcript when a mission is in progress", async () => {
     const h = harness(200_000, 1_000_000)
     const id = spawn(h, 150_000)
@@ -112,6 +122,7 @@ describe("autocompact at the turn boundary", () => {
     const h: Harness = {
       sessionId: "acp-autocompact-gated",
       prompts: [],
+      availableModes: [{ id: "compact", name: "Compact" }],
       async *send(message): AsyncIterable<AgentStreamEvent> {
         const text = (Array.isArray(message) ? message : [message])
           .map(b => (typeof b === "string" ? b : ((b as { text?: string } | undefined)?.text ?? "")))

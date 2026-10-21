@@ -9145,6 +9145,10 @@ export function createSessionsRegistry(opts?: {
   async function maybeAutoCompact(rt: SessionRuntime): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
     if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
+    // A harness that does not advertise compact support would be sent
+    // `/compact` again on every growth re-arm — a repeated-prompt loop. Stay
+    // silent instead, like `attemptContextCompact` (which also gates on this).
+    if (!adapterSupportsCompact(rt.agentSession)) return
     const controller = (rt.autoCompact ??= createAutoCompactController({
       readTokens: () => rt.desc.contextUsed,
       readThreshold: () =>
