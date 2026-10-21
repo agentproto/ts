@@ -4673,13 +4673,21 @@ export function registerSessionTools(
       "controller is the case that matters: a stale box keeps its memory " +
       "(and its session slots) pinned on the host, and every later launch " +
       "then fails with \"host capacity\". A box held by a live session is " +
-      "NEVER a candidate. DEFAULTS TO A DRY RUN: it lists the orphan boxes " +
-      "with their state, age (when known) and the RAM they hold (when the " +
-      "provider reports it). `apply: true` deletes them on the provider, " +
-      "forced, because a stale provider-side session slot would otherwise " +
-      "make the provider refuse the destroy. One provider failing (a " +
-      "controller that is down) is reported as `providerErrors` and never " +
-      "stops the sweep of the others.",
+      "NEVER a candidate. Two guards keep the destructive path safe: a " +
+      "GRACE WINDOW (a box younger than `minAgeMs` - default 15 minutes - " +
+      "may be an in-flight boot, and a box of UNKNOWN age is never a " +
+      "candidate), and the provider's own session count: only a box the " +
+      "provider reports as UNATTACHED (`sessions === 0`) is a candidate, " +
+      "because on a shared controller tenant a box another daemon still " +
+      "uses is unknown here. `includeAttached: true` opts in to the boxes " +
+      "the provider still counts a session for. DEFAULTS TO A DRY RUN: it " +
+      "lists the orphan boxes with their state, age (when known) and the " +
+      "RAM they hold (when the provider reports it). `apply: true` deletes " +
+      "them on the provider, forced, because a stale provider-side session " +
+      "slot would otherwise make the provider refuse the destroy (provider " +
+      "orphans are always deleted - there is no pause for them). One " +
+      "provider failing (a controller that is down) is reported as " +
+      "`providerErrors` and never stops the sweep of the others.",
     {
       apply: mcpBool
         .optional()
@@ -4688,6 +4696,18 @@ export function registerSessionTools(
         .array(z.string())
         .optional()
         .describe('Provider slugs to sweep. Default ["computer"].'),
+      includeAttached: mcpBool
+        .optional()
+        .describe(
+          "When true, boxes the provider still counts a session for are candidates too. " +
+            "Default false - only boxes the provider reports as unattached (sessions === 0) are deleted.",
+        ),
+      minAgeMs: mcpNumber
+        .optional()
+        .describe(
+          "Grace window: only boxes older than this are candidates. Default 900000 (15 minutes). " +
+            "A box whose age the provider does not report is never a candidate.",
+        ),
     },
     async input => {
       try {
@@ -4711,6 +4731,10 @@ export function registerSessionTools(
             input.providers && input.providers.length > 0 ? input.providers : ["computer"],
           registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
+          ...(input.includeAttached !== undefined
+            ? { includeAttached: input.includeAttached }
+            : {}),
+          ...(input.minAgeMs !== undefined ? { minAgeMs: input.minAgeMs } : {}),
           apply: input.apply === true,
         })
         return {
@@ -4719,6 +4743,7 @@ export function registerSessionTools(
               type: "text",
               text: JSON.stringify({
                 applied: input.apply === true,
+                scanned: pass.scanned,
                 candidates: pass.candidates,
                 providerErrors: pass.providerErrors,
                 deleted: pass.deleted,

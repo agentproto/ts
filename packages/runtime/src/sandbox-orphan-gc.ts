@@ -25,15 +25,36 @@
  *      stale controller-side session slot would otherwise make the
  *      controller refuse the destroy with a 409.
  *
+ * Two guards stand between "the daemon does not know this box" and "this
+ * box may be destroyed":
+ *
+ *   - a GRACE WINDOW ({@link DEFAULT_ORPHAN_MIN_AGE_MS}, 15 minutes): a box
+ *     younger than that may be an in-flight boot whose ledger row is not
+ *     written yet. A box of UNKNOWN age is never a candidate at all.
+ *   - ATTACHMENT: the provider must report NO session slot for the box
+ *     (`sessions === 0`). On a shared controller tenant a box another
+ *     daemon still uses is unknown here, so "the daemon does not know it"
+ *     says nothing about "nobody uses it". A box the provider reports as
+ *     ATTACHED (`sessions > 0`) is only ever a candidate with the explicit
+ *     opt-in (`includeAttached`), never by default.
+ *
  * Every provider is scanned INDEPENDENTLY: a controller that errors (down,
  * unauthorized, mid-deploy) is reported as an error for THAT provider and
  * never stops the gc of the others.
  */
 import type { SandboxProviderBox } from "@agentproto/sandbox"
-import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
+import { GONE_RE, isGoneError, type SandboxGcProviderHandle } from "./sandbox-gc.js"
 
 /** Host session statuses after which a session can never hold a box again. */
 const DEAD_SESSION_STATUSES: ReadonlySet<string> = new Set(["error", "killed", "exited"])
+
+/**
+ * The grace window of the provider orphan sweep: a box younger than this
+ * may be an in-flight boot (created, not yet registered in the ledger), so
+ * it is never a candidate before it is this old. A box whose age the
+ * provider does not report is never a candidate either.
+ */
+export const DEFAULT_ORPHAN_MIN_AGE_MS = 15 * 60_000
 
 /** One box the provider still holds that no live session references. */
 export interface SandboxOrphanCandidate {
@@ -59,7 +80,14 @@ export interface SandboxOrphanCandidate {
  *
  * A box is a candidate when it is
  *   - unknown to the daemon's sandbox registry (the ledger), AND
- *   - held by no live daemon session.
+ *   - held by no live daemon session, AND
+ *   - OLDER than the grace window (`minAgeMs`, default
+ *     {@link DEFAULT_ORPHAN_MIN_AGE_MS}) - a box of unknown age never
+ *     qualifies, AND
+ *   - reported by the provider as UNATTACHED (`sessions === 0`). A box the
+ *     provider reports as attached (`sessions > 0`) - the shape a box of
+ *     ANOTHER daemon on the shared tenant has - qualifies only with the
+ *     explicit `includeAttached` opt-in.
  *
  * A box held by a live session is skipped even when the ledger does not
  * know it: the live session is the authority on what is in use, and the
@@ -72,24 +100,43 @@ export function collectProviderOrphanCandidates(opts: {
   registryBoxIds: ReadonlySet<string>
   /** Box ids held by a live daemon session. */
   liveBoxIds: ReadonlySet<string>
+  /** Grace window: only boxes older than this are candidates. */
+  minAgeMs?: number
+  /** Opt in to boxes the provider still counts a session for. */
+  includeAttached?: boolean
   /** Clock injection for the age computation (tests). */
   now?: number
 }): SandboxOrphanCandidate[] {
   const now = opts.now ?? Date.now()
+  const minAgeMs = opts.minAgeMs ?? DEFAULT_ORPHAN_MIN_AGE_MS
+  const includeAttached = opts.includeAttached === true
   const out: SandboxOrphanCandidate[] = []
   for (const box of opts.boxes) {
     if (opts.liveBoxIds.has(box.id)) continue
     if (opts.registryBoxIds.has(box.id)) continue
+    // UNKNOWN AGE: the provider does not say when the box was created, so
+    // the grace window cannot be proven - never a candidate.
     const ageMs = ageOf(box, now)
+    if (ageMs === undefined) continue
+    if (ageMs < minAgeMs) continue
+    // ATTACHMENT: the provider must report no session slot for the box.
+    // Anything else (a count > 0, or an unreported count) needs the
+    // explicit opt-in.
+    const attached = box.sessions !== undefined && box.sessions > 0
+    const unknownSessions = box.sessions === undefined
+    if (!includeAttached && (attached || unknownSessions)) continue
     out.push({
       provider: opts.provider,
       boxId: box.id,
       state: box.state ?? "unknown",
       reason:
-        "not in the daemon's sandbox registry and held by no live session" +
-        (box.sessions !== undefined && box.sessions > 0
-          ? ` (the provider still counts ${box.sessions} attached session(s))`
-          : ""),
+        "not in the daemon's sandbox registry, held by no live session, " +
+        `older than the ${Math.round(minAgeMs / 1000)}s grace window` +
+        (attached
+          ? ` (the provider still counts ${box.sessions} attached session(s) - a candidate only because the attached-box opt-in was given)`
+          : unknownSessions
+            ? " (the provider does not report the box's session slots - a candidate only because the attached-box opt-in was given)"
+            : ""),
       ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
       ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
       ...(ageMs !== undefined ? { ageMs } : {}),
@@ -118,6 +165,12 @@ export interface SandboxOrphanScan {
   candidates: SandboxOrphanCandidate[]
   /** Why the provider could not be scanned - when it could not. */
   error?: string
+  /** True when the provider's control plane was actually listed. False
+   *  means the provider was skipped (not configured, no `listBoxes`), so
+   *  "no candidates" says nothing about the provider's boxes. */
+  scanned: boolean
+  /** Why the provider was skipped - when it was. */
+  skipped?: string
 }
 
 export interface SandboxOrphanScanDeps {
@@ -128,12 +181,20 @@ export interface SandboxOrphanScanDeps {
   registryBoxIds: ReadonlySet<string>
   /** Box ids held by a live daemon session. */
   liveBoxIds: ReadonlySet<string>
+  /** Grace window: only boxes older than this are candidates. */
+  minAgeMs?: number
+  /** Opt in to boxes the provider still counts a session for. */
+  includeAttached?: boolean
   now?: number
 }
 
 /**
  * Scan every provider for orphan boxes. One provider's failure is reported
  * on that provider's scan and never aborts the others.
+ *
+ * Every provider gets a scan entry, so a caller can tell "the provider was
+ * swept and holds no orphan" from "the provider was never swept"
+ * (`scanned: false`).
  */
 export async function scanSandboxProviderOrphans(
   deps: SandboxOrphanScanDeps,
@@ -148,12 +209,29 @@ export async function scanSandboxProviderOrphans(
         provider: slug,
         candidates: [],
         error: err instanceof Error ? err.message : String(err),
+        scanned: false,
       })
       continue
     }
-    if (!handle) continue
+    if (!handle) {
+      scans.push({
+        provider: slug,
+        candidates: [],
+        scanned: false,
+        skipped: "the provider is not configured",
+      })
+      continue
+    }
     const listBoxes = handle.provider.listBoxes
-    if (typeof listBoxes !== "function") continue
+    if (typeof listBoxes !== "function") {
+      scans.push({
+        provider: slug,
+        candidates: [],
+        scanned: false,
+        skipped: "the provider cannot list its boxes",
+      })
+      continue
+    }
     let boxes: SandboxProviderBox[]
     try {
       boxes = await listBoxes.call(handle.provider)
@@ -163,11 +241,20 @@ export async function scanSandboxProviderOrphans(
       // in the creds store or the env) is not a gc failure: there is no
       // control plane to sweep. Anything else is a real error for THAT
       // provider - reported, and never fatal for the others.
-      if (isNotConfiguredError(message)) continue
+      if (isNotConfiguredError(message)) {
+        scans.push({
+          provider: slug,
+          candidates: [],
+          scanned: false,
+          skipped: "the provider is not configured",
+        })
+        continue
+      }
       scans.push({
         provider: slug,
         candidates: [],
         error: message,
+        scanned: false,
       })
       continue
     }
@@ -178,8 +265,11 @@ export async function scanSandboxProviderOrphans(
         boxes,
         registryBoxIds: deps.registryBoxIds,
         liveBoxIds: deps.liveBoxIds,
+        ...(deps.minAgeMs !== undefined ? { minAgeMs: deps.minAgeMs } : {}),
+        ...(deps.includeAttached !== undefined ? { includeAttached: deps.includeAttached } : {}),
         ...(deps.now !== undefined ? { now: deps.now } : {}),
       }),
+      scanned: true,
     })
   }
   return scans
@@ -225,8 +315,11 @@ export async function reapSandboxOrphan(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     // Already gone is success: the goal (the box is not there any more)
-    // holds either way.
-    if (/\b404\b|doesn't exist|does not exist|no such|not found/i.test(message)) {
+    // holds either way. The SAME test the ledger gc uses
+    // (`GONE_RE`/`isGoneError`): a bare "not found" is NOT a gone box -
+    // an error like `provider "x" not found` must never be stamped as a
+    // successful reap while the box (and its RAM) is still there.
+    if (GONE_RE.test(message) || isGoneError(err)) {
       return { ok: true }
     }
     return { ok: false, error: `removing "${candidate.boxId}" failed - ${message}` }
@@ -262,6 +355,10 @@ export interface SandboxOrphanGcPassResult {
   /** Providers that could not be scanned - reported, never fatal for the
    *  other providers. */
   providerErrors: Array<{ provider: string; error: string }>
+  /** True when at least one provider's control plane was really listed.
+   *  False means the sweep did not run (no provider to sweep, no live
+   *  daemon, …) - "no candidates" then says nothing about the provider. */
+  scanned: boolean
   /** Boxes actually deleted (only with `apply`). */
   deleted: string[]
   /** Boxes whose delete failed (only with `apply`). */
@@ -280,6 +377,7 @@ export async function runSandboxOrphanGcPass(
   const providerErrors = scans
     .filter(s => s.error !== undefined)
     .map(s => ({ provider: s.provider, error: s.error as string }))
+  const scanned = scans.some(s => s.scanned)
   const deleted: string[] = []
   const failed: Array<{ boxId: string; error: string }> = []
   if (deps.apply === true) {
@@ -291,5 +389,5 @@ export async function runSandboxOrphanGcPass(
       else failed.push({ boxId: candidate.boxId, error: res.error })
     }
   }
-  return { candidates, providerErrors, deleted, failed }
+  return { candidates, providerErrors, scanned, deleted, failed }
 }

@@ -67,7 +67,7 @@ Usage:
   agentproto sandbox list [--json] [--no-probe] [--reconcile]
   agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
   agentproto sandbox rm <sandboxId|label|id-prefix> [--box] [--yes] [--json]
-  agentproto sandbox gc [--apply] [--pause] [--json]
+  agentproto sandbox gc [--apply] [--pause] [--include-attached] [--json]
   agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
   agentproto sandbox exec <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
@@ -127,15 +127,27 @@ gc     Reap ORPHAN boxes: ledger entries whose origin session ended in a
        plane still holds (the computer controller keeps their RAM, and their
        session slots, pinned on the host) that the daemon's sandbox registry
        never knew and that no LIVE session references. A box a live session
-       holds is never a candidate. With --apply they are deleted on the
-       provider, forced (a stale provider-side session slot would otherwise
-       make the provider refuse the destroy).
+       holds is never a candidate. A provider orphan is only a candidate
+       when it is OLDER than a grace window (15 minutes - a younger box may
+       be an in-flight boot) and the provider reports NO attached session
+       for it (a box another daemon still uses is unknown here). With
+       --apply they are deleted on the provider, forced (a stale
+       provider-side session slot would otherwise make the provider refuse
+       the destroy); they are never paused.
 
   --apply  Actually tear the boxes down (kill on the provider) and stamp
            the ledger rows "stopped".
-  --pause  With --apply: PAUSE the boxes instead of killing them (keeps
-           them attachable later) — note a paused e2b box still bills, so
-           the default kill is usually what you want for orphans.
+  --pause  With --apply: PAUSE the LEDGER boxes instead of killing them
+           (keeps them attachable later) — note a paused e2b box still
+           bills, so the default kill is usually what you want for orphans.
+           It does NOT apply to PROVIDER ORPHANS: those have no pause, so
+           under --apply they are always deleted (forced).
+  --include-attached
+           Also treat PROVIDER ORPHANS the provider still counts a session
+           for as candidates. Off by default: on a shared controller tenant
+           such a box may belong to ANOTHER daemon, and this one cannot
+           prove it is unused. Only the provider orphans are affected; the
+           ledger gc is unchanged.
   --provider <slug>
            Provider whose control plane is swept for orphan boxes.
            Repeatable. Default: computer.
@@ -664,6 +676,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
       pause: { type: "boolean" },
       json: { type: "boolean" },
       provider: { type: "string", multiple: true },
+      "include-attached": { type: "boolean" },
     },
   })
   const deps = cliDeps ?? {}
@@ -700,7 +713,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
   const resolveProvider = deps.resolveProvider ?? defaultResolveProvider
   const orphanPass =
     liveSessions === undefined
-      ? { candidates: [], providerErrors: [], deleted: [], failed: [] }
+      ? { candidates: [], providerErrors: [], scanned: false, deleted: [], failed: [] }
       : await runSandboxOrphanGcPass({
           resolveProvider: resolveProvider as unknown as GcProviderResolver,
           providerSlugs:
@@ -709,6 +722,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
               : deps.providerSlugs ?? DEFAULT_GC_PROVIDER_SLUGS,
           registryBoxIds: new Set(ledger.map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
+          ...(values["include-attached"] === true ? { includeAttached: true } : {}),
           apply: values.apply === true,
         })
   const orphans = orphanPass.candidates
@@ -746,6 +760,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
               ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
             })),
             providerErrors: orphanPass.providerErrors,
+            orphansScanned: orphanPass.scanned,
             applied: false,
             results: [],
             orphanResults: [],
@@ -786,7 +801,12 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
           `${values.pause ? "" : " (kill is the default; pass --pause to pause instead)"}.\n`,
       )
     }
-    printOrphanPlan(orphans)
+    printOrphanPlan(orphans, {
+      scanned: orphanPass.scanned,
+      ...(liveSessions === undefined
+        ? { skipReason: "no live daemon - the live sessions could not be read" }
+        : {}),
+    })
     return orphanPass.providerErrors.length > 0 ? 1 : 0
   }
 
@@ -858,6 +878,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
             ...(o.ageMs !== undefined ? { ageMs: o.ageMs } : {}),
           })),
           providerErrors: orphanPass.providerErrors,
+          orphansScanned: orphanPass.scanned,
           applied: true,
           results,
           orphanResults,
@@ -872,10 +893,29 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
 
 /** Print the orphan-box plan (dry run). The RAM the pass would free is only
  *  known when the provider reports a per-box memory; otherwise the line says
- *  so rather than guessing. */
-function printOrphanPlan(orphans: readonly SandboxOrphanCandidate[]): void {
+ *  so rather than guessing.
+ *
+ *  An EMPTY list is not the same as a clean sweep: when the sweep never
+ *  ran (no live daemon, no provider configured, a provider that cannot
+ *  list its boxes) the line says "not scanned" - claiming "every box the
+ *  provider lists is known or in use" about a sweep that never happened
+ *  is false assurance. */
+function printOrphanPlan(
+  orphans: readonly SandboxOrphanCandidate[],
+  opts: { scanned: boolean; skipReason?: string },
+): void {
   if (orphans.length === 0) {
-    process.stdout.write("no orphan provider boxes - every box the provider lists is known or in use\n")
+    if (!opts.scanned) {
+      process.stdout.write(
+        "provider orphan boxes: not scanned" +
+          (opts.skipReason !== undefined ? ` (${opts.skipReason})` : "") +
+          "\n",
+      )
+      return
+    }
+    process.stdout.write(
+      "no orphan provider boxes - every box the provider lists is known or in use\n",
+    )
     return
   }
   process.stdout.write("\nOrphan boxes (provider control plane):\n")
@@ -907,6 +947,9 @@ function printOrphanPlan(orphans: readonly SandboxOrphanCandidate[]): void {
         : " (RAM unknown - the provider does not report per-box memory)"
   process.stdout.write(
     `\n${orphans.length} orphan provider box(es)${ramNote} - dry run only. Pass --apply to delete them.\n`,
+  )
+  process.stdout.write(
+    "Provider orphans are always DELETED (forced) under --apply - there is no pause for them.\n",
   )
 }
 

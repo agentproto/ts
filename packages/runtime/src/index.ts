@@ -692,6 +692,8 @@ export {
   reapGcEntry,
   DEAD_SESSION_STATUSES,
   GC_REAPABLE_STATES,
+  GONE_RE,
+  isGoneError,
   type SandboxGcCandidate,
   type SandboxGcReapDeps,
   type SandboxGcProviderHandle,
@@ -699,6 +701,7 @@ export {
 } from "./sandbox-gc.js"
 export {
   collectProviderOrphanCandidates,
+  DEFAULT_ORPHAN_MIN_AGE_MS,
   liveSessionBoxIds,
   reapSandboxOrphan,
   runSandboxOrphanGcPass,
