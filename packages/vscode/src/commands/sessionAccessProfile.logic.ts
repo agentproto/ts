@@ -22,7 +22,8 @@ import { currentRouteOf, resolveAccessRows } from "./sessionConfig.logic.js"
 import { parseRestartResult, type RestartResult } from "./sessionRestart.logic.js"
 
 /**
- * The access rows to offer for a session: its route-eligible profiles plus the
+ * The access rows to offer for a session: every known profile (each flagged
+ * with whether it is eligible on the session's route) plus the
  * trailing "+ add profile" row, whether the currently-attached profile has
  * become ineligible (→ the caller nudges a re-pick), and the current profileRef
  * (so the flow can no-op a re-pick of the same wallet). Thin adapter over the
@@ -78,7 +79,8 @@ export async function applyAccessProfile(input: {
     const raw = await input.applier.restartSessionWithOverride(input.sessionId, {
       access: { profileRef: input.profileRef },
     })
-    return { ok: true, ...(parseRestartResult(raw) ? { restart: parseRestartResult(raw) } : {}) }
+    const restart = parseRestartResult(raw)
+    return { ok: true, ...(restart ? { restart } : {}) }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }

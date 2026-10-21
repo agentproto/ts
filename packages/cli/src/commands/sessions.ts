@@ -313,7 +313,10 @@ Usage:
                                conversation is resumed under a new id, the
                                session's posture is kept, and the cron jobs
                                that targeted the old id are re-armed.
-                               --dry-run lists the sessions that WOULD move.)
+                               WARNING: live sessions are restarted too, with
+                               no busy check or confirmation — any in-flight
+                               turn is interrupted. Run --dry-run first to list
+                               the sessions that WOULD move.)
 
 Discovers the daemon in this order — first live candidate wins:
   1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
@@ -5483,7 +5486,9 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
     return 0
   }
 
-  const moved: Array<{ id: string; from: string; to: string; rearmedCrons?: string[] }> = []
+  // `from` / `to` are the OLD and SUCCESSOR session ids (a restart mints a
+  // fresh id), so a consumer can map old → new directly.
+  const moved: Array<{ from: string; to: string; rearmedCrons?: string[] }> = []
   const failed: Array<{ id: string; error: string }> = []
   for (const target of targets) {
     try {
@@ -5496,7 +5501,6 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
         endpoint.token,
       )
       moved.push({
-        id: target.id,
         from: target.id,
         to: next?.id ?? target.id,
         ...(next?.rearmedCrons && next.rearmedCrons.length > 0
@@ -5516,7 +5520,7 @@ async function runSwitchProfile(args: readonly string[]): Promise<number> {
   } else {
     for (const row of moved) {
       process.stdout.write(
-        `agentproto sessions switch-profile: ${row.id} → ${row.to} (now on "${to}")\n`,
+        `agentproto sessions switch-profile: ${row.from} → ${row.to} (now on "${to}")\n`,
       )
       for (const jobId of row.rearmedCrons ?? []) {
         process.stdout.write(`  re-armed cron job ${jobId}\n`)

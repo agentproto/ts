@@ -101,6 +101,24 @@ describe("agentproto sessions switch-profile", () => {
     expect(stdoutChunks.join("")).toContain("sess_c")
   })
 
+  it("--json maps each old session id to its successor id", async () => {
+    httpGetJson.mockResolvedValue({ sessions: [agentSession("sess_a", "old-wallet")] })
+    httpPostJson.mockResolvedValue({ id: "sess_new", rearmedCrons: ["job_1"] })
+
+    const code = await runSessions([
+      "switch-profile",
+      "--from",
+      "old-wallet",
+      "--to",
+      "new-wallet",
+      "--json",
+    ])
+
+    expect(code).toBe(0)
+    const out = JSON.parse(stdoutChunks.join(""))
+    expect(out.moved).toEqual([{ from: "sess_a", to: "sess_new", rearmedCrons: ["job_1"] }])
+  })
+
   it("leaves sessions on another profile alone", async () => {
     httpGetJson.mockResolvedValue({
       sessions: [agentSession("sess_a", "other-wallet")],

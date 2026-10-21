@@ -83,13 +83,23 @@ async function setSessionAccessProfileCommand(
   }
 
   const pick = await vscode.window.showQuickPick(
-    rows.map(row => ({
-      label: row.label,
-      ...(row.description ? { description: row.description } : {}),
-      ...(currentProfileRef && row.value === currentProfileRef ? { picked: true, description: `${row.description ?? ""} (current)`.trim() } : {}),
-      value: row.value,
-      addProfile: row.addProfile,
-    })),
+    rows.map(row => {
+      const isCurrent = Boolean(currentProfileRef && row.value === currentProfileRef)
+      const description = [
+        row.description,
+        isCurrent ? "(current)" : undefined,
+        row.eligible === false ? "not eligible for this route" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ")
+      return {
+        label: row.label,
+        ...(description ? { description } : {}),
+        ...(isCurrent ? { picked: true } : {}),
+        value: row.value,
+        addProfile: row.addProfile,
+      }
+    }),
     {
       title: `Auth profile — ${describeSession(session)}`,
       placeHolder: "Pick the wallet this session bills against",
