@@ -370,6 +370,9 @@ function runCommandClassifier(
       /* stderr is not part of the contract */
     })
     child.on("error", err => finish({ error: err.message }))
+    child.stdin?.on("error", () => {
+      /* a classifier may exit without reading stdin (EPIPE); close reports the outcome */
+    })
     child.on("close", code => {
       const decision = parseClassifierAnswer(out)
       if (decision) finish({ decision })
