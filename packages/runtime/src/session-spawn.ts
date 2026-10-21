@@ -26,6 +26,7 @@ import {
   type ResolvedCloudSpawn,
 } from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
+import { mintParentRelayGrant, parentRelayUrlFromEnv, revokeParentRelayGrant } from "./parent-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -1742,6 +1743,13 @@ export interface SpawnAgentSessionInput {
    *  external webhook path (`notifyUrl`) already fires regardless of this
    *  flag. */
   notifyParentOnCrash?: boolean
+  /** A REMOTE parent (host relay) forwarded by the host into a BOX daemon's
+   *  `agent_start`: the parent session lives in the HOST daemon's registry,
+   *  so the box row records it as `remoteParent` instead of
+   *  `parentSessionId` and `message_parent` relays the report to the host
+   *  (see `parent-relay.ts` and `docs/lineage-handover.md`). Recorded
+   *  verbatim onto {@link SessionDescriptor.remoteParent}. */
+  remoteParent?: { sessionId: string; url: string; token: string }
   /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4): `false`
    *  means a PR this session opens is never auto-watched, regardless of
    *  `config.sentinel.autoWatchPrs`. Recorded verbatim onto
@@ -4385,6 +4393,7 @@ export async function spawnAgentSession(
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         ...(input.boardId || input.workflowOwner
@@ -4782,6 +4791,12 @@ export async function spawnAgentSession(
         // so the box daemon enforces the executor/supervisor delegation rule
         // consistently (see `bootSandboxAgentSession`'s `role` opt).
         ...(input.sandbox !== undefined ? { role: role.name } : {}),
+        // PARENT RELAY: when this box session has a host-side parent, the
+        // boot mints a relay token and forwards a REMOTE parent into the
+        // box's own `agent_start` (the parent lives in the HOST registry).
+        // No relay URL configured ⇒ nothing forwarded (the box keeps today's
+        // clear "no recorded parent" error).
+        ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -5062,6 +5077,7 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
       ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
       // descriptor — the task ledger's board resolution reads it BEFORE the
@@ -5764,6 +5780,15 @@ export async function bootSandboxAgentSession(opts: {
    *  `/mcp/orchestrator` on ITS loopback (reachable by the adapter inside
    *  the box). Absent for every non-sandbox spawn. */
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
+  /** PARENT RELAY: the host's parent session id + the host-side box-session
+   *  row id, so the boot can mint a short-lived relay token and forward a
+   *  REMOTE parent into the box's own `agent_start` (the parent lives in the
+   *  HOST registry; the box row therefore has no local `parentSessionId`).
+   *  The relay URL itself comes from the operator's configuration
+   *  (`AGENTPROTO_PARENT_RELAY_URL`): without it no remote parent is
+   *  forwarded and the box keeps today's clear "no recorded parent" error.
+   *  Absent for every non-sandbox spawn. */
+  parentRelay?: { parentSessionId: string; boxSessionId: string }
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -6344,6 +6369,23 @@ export async function bootSandboxAgentSession(opts: {
       : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
+  // PARENT RELAY: mint the short-lived, single-session-scoped relay token
+  // and forward the REMOTE parent into the box's own `agent_start` so a
+  // session running INSIDE the box can report up to its host parent (the
+  // parent lives in the HOST registry, so the box row has no local
+  // `parentSessionId` (see `docs/lineage-handover.md`). Only possible when
+  // the operator configured a relay URL reachable FROM the box; without one
+  // nothing is forwarded and the box's `message_parent` keeps today's clear
+  // "no recorded parent" error.
+  const parentRelayUrl = parentRelayUrlFromEnv()
+  const remoteParent =
+    opts.parentRelay && parentRelayUrl
+      ? mintParentRelayGrant({
+          parentSessionId: opts.parentRelay.parentSessionId,
+          boxSessionId: opts.parentRelay.boxSessionId,
+          url: parentRelayUrl,
+        })
+      : undefined
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   try {
@@ -6387,6 +6429,9 @@ export async function bootSandboxAgentSession(opts: {
       // host would have, so an executor's role is enforced consistently
       // wherever the spawn runs — no re-resolution-from-nothing box-side.
       ...(opts.role !== undefined ? { role: opts.role } : {}),
+      // PARENT RELAY: the REMOTE parent (host relay) block; see the
+      // `remoteParent` mint above.
+      ...(remoteParent ? { remoteParent } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
@@ -6407,6 +6452,10 @@ export async function bootSandboxAgentSession(opts: {
     // box (kill: it holds nothing of value) and mark the ledger so the
     // failure is never a silent orphan. AIP-36 shared-box: survivors keep
     // the box — detach only.
+    // PARENT RELAY: the boot never completed, so the relay grant minted
+    // above is dead on arrival - revoke it instead of leaving a live token
+    // behind for a box session that will never exist.
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
     if (!(await detachOnBootFailure())) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -6444,6 +6493,9 @@ export async function bootSandboxAgentSession(opts: {
       github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
     })
     if (!serve.ok) {
+      // PARENT RELAY: the boot failed after the grant was minted - revoke
+      // it (see the `agent_start` failure path above).
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
       if (!(await detachOnBootFailure())) {
         await host.stop().catch(() => undefined)
         recordSandboxState(host.sandboxId, "stopped")

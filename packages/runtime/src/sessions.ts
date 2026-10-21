@@ -135,6 +135,11 @@ import {
 } from "./usage.js"
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import {
+  forgetRelayToken,
+  rememberRelayToken,
+  revokeParentRelayGrantsForBoxSession,
+} from "./parent-relay.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type {
   WorktreeAutoReclaimer,
@@ -2376,6 +2381,22 @@ export interface SessionDescriptor {
    *  list/kill and the per-parent child quota (orchestrator WP4).
    *  Persisted so the tree survives a daemon restart. */
   parentSessionId?: string
+  /** A REMOTE parent: this session lives in a BOX daemon's registry while its
+   *  parent lives in the HOST daemon's registry (see
+   *  `docs/lineage-handover.md`, "Known gap - sessions running INSIDE a box"
+   *  and `parent-relay.ts`). The block is forwarded by the host at spawn
+   *  time; `message_parent` POSTs the report to the host's relay endpoint
+   *  instead of looking the parent up locally. Present ONLY on the box-side
+   *  row - the host's own row keeps its ordinary `parentSessionId`.
+   *
+   *  The relay TOKEN is deliberately NOT here: it is a secret, so it lives
+   *  in an in-memory map keyed by the session id (see `parent-relay.ts`'s
+   *  `rememberRelayToken`) and never reaches a descriptor - and therefore
+   *  never reaches disk. */
+  remoteParent?: {
+    sessionId: string
+    url: string
+  }
   /** Opt-in (default false/absent): when this session crashes
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
@@ -5387,6 +5408,13 @@ export interface SpawnAgentInput {
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
   parentSessionId?: string
+  /** A REMOTE parent (host relay): the descriptor records ONLY the
+   *  non-secret part ({@link SessionDescriptor.remoteParent}); the relay
+   *  TOKEN is kept in an in-memory map keyed by the session id (see
+   *  `parent-relay.ts`'s `rememberRelayToken`), never on a descriptor and
+   *  never on disk. Set by the box-side spawn that received a forwarded
+   *  `remoteParent` block from the host. */
+  remoteParent?: { sessionId: string; url: string; token: string }
   /** Source label for the new session (channel/harness). */
   origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
@@ -5767,6 +5795,20 @@ export function computePinnedOrder(
     })
   unlisted.forEach((s, i) => order.set(s.id, ids.length + i))
   return order
+}
+
+/** The descriptor fields for a REMOTE parent (host relay), plus the side
+ *  effect that keeps the relay TOKEN out of the descriptor entirely: the
+ *  token is a secret, so it goes into an in-memory map keyed by the session
+ *  id (see `parent-relay.ts`) and never onto a descriptor - and therefore
+ *  never onto disk. */
+function remoteParentFields(
+  remoteParent: { sessionId: string; url: string; token: string } | undefined,
+  sessionId: string,
+): { remoteParent?: { sessionId: string; url: string } } {
+  if (!remoteParent) return {}
+  rememberRelayToken(sessionId, remoteParent.token)
+  return { remoteParent: { sessionId: remoteParent.sessionId, url: remoteParent.url } }
 }
 
 export function createSessionsRegistry(opts?: {
@@ -6361,6 +6403,13 @@ export function createSessionsRegistry(opts?: {
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // PARENT RELAY: this session is over, so it must not be able to report
+    // up to its host parent any more. Revoke the grant the host minted for
+    // it (the grant names this row as its box session) and forget this row's
+    // own outgoing relay token. Runs from the ONE exit funnel every
+    // terminal path funnels through (clean exit, kill, crash, idle-reap).
+    revokeParentRelayGrantsForBoxSession(rt.desc.id)
+    forgetRelayToken(rt.desc.id)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
     // running for this row (its queue entry is dropped, its child tree
@@ -7036,7 +7085,11 @@ export function createSessionsRegistry(opts?: {
 
   /** Descriptors as they go to disk. Read-time projections are stripped so a
    *  restored descriptor is never seen with a stale value before the next
-   *  list()/get() recomputes it. */
+   *  list()/get() recomputes it.
+   *
+   *  The remote parent's relay TOKEN is stripped too (belt and braces: the
+   *  descriptor never carries it in the first place - see
+   *  `remoteParentFields`), so a secret can never reach `sessions.json`. */
   const snapshotRows = (): SessionDescriptor[] =>
     Array.from(sessions.values()).map(s => {
       const {
@@ -7050,6 +7103,14 @@ export function createSessionsRegistry(opts?: {
         spawnEnforcedPostures: _spawnEnforcedPostures,
         ...rest
       } = s.desc
+      if (rest.remoteParent) {
+        const { token: _token, ...remoteParent } = rest.remoteParent as {
+          sessionId: string
+          url: string
+          token?: string
+        }
+        rest.remoteParent = remoteParent
+      }
       // A live provider-box session keeps its re-attach record on disk, so a
       // daemon that dies without a graceful shutdown (crash, SIGKILL) still
       // leaves the next boot something to reattach with. The cursor can be
@@ -11020,6 +11081,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        // The relay TOKEN stays in memory (see `remoteParentFields`) - the
+        // descriptor (and therefore the persisted row) carries only the
+        // parent session id and the relay URL.
+        ...remoteParentFields(input.remoteParent, id),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
@@ -11211,6 +11276,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        // The relay TOKEN stays in memory (see `remoteParentFields`) - the
+        // descriptor (and therefore the persisted row) carries only the
+        // parent session id and the relay URL.
+        ...remoteParentFields(input.remoteParent, id),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
