@@ -280,7 +280,7 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
     expect(jobs.find(j => j.id === jobId)?.action).toEqual(supervisorAction)
   })
 
-  it("advertises exactly agent_start's fields (minus wait) on the agent action", async () => {
+  it("advertises exactly agent_start's fields (minus wait and the daemon-internal remoteParent) on the agent action", async () => {
     const { scheduler } = makeScheduler()
     const client = await buildClient(scheduler)
     const { tools } = await client.listTools()
@@ -289,7 +289,9 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
     const agentVariant = (action.anyOf as Array<{ properties: Record<string, { const?: unknown }> }>).find(
       v => v.properties.kind?.const === "agent",
     )!
-    const expected = Object.keys(agentStartInputShape).filter(k => k !== "wait")
+    // `remoteParent` is daemon-internal (parent relay): a cron job fires later
+    // as a root call, so it must never carry one.
+    const expected = Object.keys(agentStartInputShape).filter(k => k !== "wait" && k !== "remoteParent")
     expect(Object.keys(agentVariant.properties).sort()).toEqual([...expected, "kind"].sort())
   })
 
