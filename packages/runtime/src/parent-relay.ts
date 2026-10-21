@@ -15,8 +15,9 @@
  *     SINGLE-SESSION-SCOPED token bound to that pair and forwards
  *     `{ sessionId, url, token }` (a "remote parent") into the box's own
  *     `agent_start` (see `session-spawn.ts`'s `bootSandboxAgentSession`).
- *     The box stores it on its row as `remoteParent` instead of
- *     `parentSessionId`.
+ *     The box stores the non-secret part on its row as `remoteParent`
+ *     instead of `parentSessionId`; the TOKEN stays in memory (see
+ *     `rememberRelayToken`) and never reaches a descriptor or the disk.
  *  2. BOX: `message_parent` sees the remote parent and POSTs the envelope
  *     to the host's relay endpoint instead of looking the parent up in the
  *     box registry. The payload carries only the message itself - never the
