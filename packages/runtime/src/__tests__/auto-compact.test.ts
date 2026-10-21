@@ -215,10 +215,68 @@ describe("createAutoCompactController", () => {
       deps({ requestCompact, readTokens: () => tokens }),
     )
     await controller.maybeTrigger()
+    // The post-compaction reading is below the threshold: nothing to do.
+    const settled = await controller.maybeTrigger()
+    expect(settled.trigger).toBe(false)
+    expect(settled.reason).toBe("below-threshold")
+    // Once the context regrows past the threshold, it compacts again.
     tokens = 200_000
     const second = await controller.maybeTrigger()
-    expect(second.trigger).toBe(false)
-    expect(second.reason).toBe("awaiting-drop")
+    expect(second.trigger).toBe(true)
+    expect(requestCompact).toHaveBeenCalledTimes(2)
+  })
+
+  it("stays disarmed on regrowth smaller than the growth delta, re-arms at it", async () => {
+    // Threshold 150k → growth delta is 25% of it (37.5k). The compaction
+    // leaves usage above the threshold (floor = 160k).
+    let tokens = 200_000
+    const requestCompact = vi.fn(async () => {
+      tokens = 160_000
+      return { missionInProgress: false }
+    })
+    const controller = createAutoCompactController(
+      deps({ requestCompact, readTokens: () => tokens }),
+    )
+    await controller.maybeTrigger()
+    expect(requestCompact).toHaveBeenCalledTimes(1)
+
+    // Unchanged usage after the compaction does not loop.
+    const unchanged = await controller.maybeTrigger()
+    expect(unchanged.trigger).toBe(false)
+    expect(unchanged.reason).toBe("awaiting-drop")
+
+    // One token short of the growth delta: still disarmed.
+    tokens = 160_000 + 37_499
+    const short = await controller.maybeTrigger()
+    expect(short.trigger).toBe(false)
+    expect(short.reason).toBe("awaiting-drop")
+    expect(requestCompact).toHaveBeenCalledTimes(1)
+
+    // At the growth delta: re-armed and compacts again.
+    tokens = 160_000 + 37_500
+    const rearmed = await controller.maybeTrigger()
+    expect(rearmed.trigger).toBe(true)
+    expect(requestCompact).toHaveBeenCalledTimes(2)
+  })
+
+  it("clears the floor on re-arm so the next compaction measures growth afresh", async () => {
+    let tokens = 160_000
+    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const controller = createAutoCompactController(
+      deps({ requestCompact, readTokens: () => tokens }),
+    )
+    await controller.maybeTrigger() // compacts, floor = 160k
+    tokens = 200_000 // 160k + 40k >= growth delta: re-arms
+    await controller.maybeTrigger()
+    expect(requestCompact).toHaveBeenCalledTimes(2)
+    // The new floor is 200k (the post-compaction reading), not the stale
+    // 160k: a modest bump does not re-arm, and unchanged usage does not loop.
+    const unchanged = await controller.maybeTrigger()
+    expect(unchanged.reason).toBe("awaiting-drop")
+    tokens = 210_000
+    const small = await controller.maybeTrigger()
+    expect(small.reason).toBe("awaiting-drop")
+    expect(requestCompact).toHaveBeenCalledTimes(2)
   })
 
   it("never throws when the compaction fails", async () => {
