@@ -25,6 +25,12 @@
  *   - It never fires twice for the same compaction: while a compaction is
  *     in flight the controller reports `already-compacting` and does
  *     nothing.
+ *   - The context-continuity MODE does not gate autocompact. `manual`
+ *     suppresses the percent ladder's nudges (warn / compact /
+ *     continue-fresh), but autocompact is an absolute, cost-driven guard in
+ *     the same family as the hard-stop floor: a session that never
+ *     compacts is a session that re-reads its whole context on every
+ *     call. A session that wants neither sets `autoCompactAtTokens: 0`.
  *   - After the compaction, a short resume prompt is injected ONLY when a
  *     mission is in progress. "A mission is in progress" is decided by the
  *     caller (the daemon reads it off the continuity checkpoint written
@@ -64,6 +70,7 @@ export type AutoCompactReason =
   | "not-idle"
   | "background-task"
   | "already-compacting"
+  | "awaiting-drop"
 
 /** The inputs of one autocompact decision. */
 export interface AutoCompactInputs {
@@ -184,14 +191,31 @@ export function createAutoCompactController(
   deps: AutoCompactControllerDeps,
 ): AutoCompactController {
   let inFlight = false
+  // A compaction only re-arms once the context has actually dropped below
+  // the threshold: a harness that reports a compacted-but-unchanged usage
+  // figure must not put the session into a compaction loop.
+  let armed = true
   return {
     get inFlight() {
       return inFlight
     },
     async maybeTrigger(): Promise<AutoCompactDecision> {
+      const tokens = deps.readTokens()
+      const threshold = clampAutoCompactTokens(deps.readThreshold())
+      if (!armed) {
+        if (tokens !== undefined && tokens < threshold) armed = true
+        else {
+          return {
+            trigger: false,
+            reason: "awaiting-drop",
+            threshold,
+            tokens: tokens ?? 0,
+          }
+        }
+      }
       const decision = decideAutoCompact({
-        tokens: deps.readTokens(),
-        threshold: deps.readThreshold(),
+        tokens,
+        threshold,
         idle: deps.isIdle(),
         backgroundTask: deps.hasBackgroundTask(),
         compacting: inFlight || deps.isCompacting(),
@@ -203,6 +227,7 @@ export function createAutoCompactController(
           `[auto-compact] context at ${decision.tokens} tokens (threshold ${decision.threshold}) — compacting automatically`,
         )
         const outcome = await deps.requestCompact()
+        armed = false
         if (outcome.missionInProgress) {
           const prompt = buildAutoCompactResumePrompt({
             ...(outcome.goal !== undefined ? { goal: outcome.goal } : {}),

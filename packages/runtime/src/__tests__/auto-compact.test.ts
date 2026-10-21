@@ -192,6 +192,34 @@ describe("createAutoCompactController", () => {
     expect(requestResume).not.toHaveBeenCalled()
   })
 
+  it("does not compact again until the context has dropped below the threshold", async () => {
+    // A harness that reports an unchanged usage figure after the
+    // compaction must not put the session into a compaction loop.
+    const requestCompact = vi.fn(async () => ({ missionInProgress: false }))
+    const controller = createAutoCompactController(deps({ requestCompact }))
+    await controller.maybeTrigger()
+    const second = await controller.maybeTrigger()
+    expect(second.trigger).toBe(false)
+    expect(second.reason).toBe("awaiting-drop")
+    expect(requestCompact).toHaveBeenCalledTimes(1)
+  })
+
+  it("re-arms once the context has dropped below the threshold", async () => {
+    let tokens = 200_000
+    const requestCompact = vi.fn(async () => {
+      tokens = 1_000
+      return { missionInProgress: false }
+    })
+    const controller = createAutoCompactController(
+      deps({ requestCompact, readTokens: () => tokens }),
+    )
+    await controller.maybeTrigger()
+    tokens = 200_000
+    const second = await controller.maybeTrigger()
+    expect(second.trigger).toBe(false)
+    expect(second.reason).toBe("awaiting-drop")
+  })
+
   it("never throws when the compaction fails", async () => {
     const controller = createAutoCompactController(
       deps({
