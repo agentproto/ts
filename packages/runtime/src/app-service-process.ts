@@ -27,11 +27,26 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process"
-import { createWriteStream, mkdirSync, type WriteStream } from "node:fs"
+import { createWriteStream, mkdirSync, readFileSync, type WriteStream } from "node:fs"
 import { dirname, join, resolve as nodeResolve } from "node:path"
 import type { AppService } from "@agentproto/app-kit"
 import { mintSessionId, APP_ID_ENV, SESSION_ID_ENV, type SessionsRegistry } from "./sessions.js"
 import { serviceOwnerLabel } from "./app-services.js"
+
+/**
+ * Session ids of attempts that DIED but whose runner has a restart
+ * dependency in flight (backoff timer scheduled). `ensureAppServiceOwners`'
+ * `isOwnerAlive` consults this so a concurrent reinstall in the restart gap
+ * sees "supervised — pending respawn" instead of double-spawning. Daemon
+ * boot clears it naturally (no runners exist yet); `stop()` removes its
+ * entries. Keyed by the registry row id.
+ */
+const restartPending = new Set<string>()
+
+/** Is this registry row id a dead-but-restarting managed service attempt? */
+export function isAppServicePendingRestart(sessionId: string): boolean {
+  return restartPending.has(sessionId)
+}
 
 /** Absolute path of a service's durable log file (kept beside the app's
  *  daemon-owned state; the same `<stateDir>/services/` location the old
@@ -106,6 +121,12 @@ export interface AppServiceProcess {
   readonly sessionId: string
   /** Process-group leader pid of the current attempt, when known. */
   readonly pid: number | undefined
+  /** The process' `/proc/<pid>/stat` start ticks at spawn time — the
+   *  UNFORGEABLE identity token persisted with the owner record so a later
+   *  boot reconcile signals the recorded pid ONLY if it still names the
+   *  same live process (a recycled pid has different start ticks; see
+   *  `isSameProcess`). */
+  readonly startTicks: number | undefined
   /** True once stop() ran — no further spawn/restart will happen. */
   readonly disposed: boolean
   /** Stop the restart loop, kill the current process group, and flip the
@@ -167,7 +188,7 @@ export interface StartAppServiceProcessDeps {
    *  persisted owner record (`sessionId`/`pid`) pointing at the LIVE
    *  attempt — uninstall then kills the right process group, not a dead
    *  ancestor attempt. */
-  onRespawn?: (attempt: number, info: { sessionId: string; pid?: number }) => void
+  onRespawn?: (attempt: number, info: { sessionId: string; pid?: number; startTicks?: number }) => void
   /** Where a restart-exhausted / failed runner reports for ops. */
   onError?: (message: string) => void
 }
@@ -202,7 +223,7 @@ export function startAppServiceProcess(
   let attempt = 0
   let failStamps: number[] = []
   const lastIds: string[] = []
-  let current: { id: string; pid: number | undefined } | undefined
+  let current: { id: string; pid: number | undefined; startTicks: number | undefined } | undefined
   let cancelScheduled: (() => void) | undefined
 
   const baseEnv = (): Record<string, string> => ({
@@ -220,6 +241,9 @@ export function startAppServiceProcess(
     get pid() {
       return current?.pid
     },
+    get startTicks() {
+      return current?.startTicks
+    },
     get disposed() {
       return disposed
     },
@@ -232,6 +256,7 @@ export function startAppServiceProcess(
     if (!disposed) disposed = true
     cancelScheduled?.()
     cancelScheduled = undefined
+    for (const id of lastIds) restartPending.delete(id)
     const target = current
     current = undefined
     if (target !== undefined) {
@@ -252,6 +277,7 @@ export function startAppServiceProcess(
   const settleChild = (child: ChildProcess): void => {
     if (disposed || settled.has(child) || current === undefined || current.id !== childSpawnIds.get(child)) return
     settled.add(child)
+    const diedId = current.id
     current = undefined
     failStamps.push(now())
     failStamps = failStamps.filter(ts => ts > now() - policy.windowMs)
@@ -261,8 +287,13 @@ export function startAppServiceProcess(
         `${failStamps.length} exits within ${policy.windowMs}ms — no further restarts`
       console.warn(message)
       deps.onError?.(message)
+      restartPending.delete(diedId)
       return
     }
+    // A scheduled restart is in flight — the session id of the dead attempt
+    // is marked PENDING-RESTART so a concurrent `isOwnerAlive` (reinstall
+    // racing the restart gap) sees "supervised, do not replace".
+    restartPending.add(diedId)
     const delay = Math.min(
       policy.baseDelayMs * Math.pow(policy.factor, failStamps.length - 1),
       policy.maxDelayMs,
@@ -309,7 +340,10 @@ export function startAppServiceProcess(
     }
     childSpawnIds.set(child, id)
     lastIds.push(id)
-    current = { id, pid: child.pid }
+    // Identity stamp for the owner record — read IMMEDIATELY after spawn
+    // (the child is alive; start ticks are fixed at process birth anyway).
+    const startTicks = child.pid != null ? readProcessStartTicks(child.pid) : undefined
+    current = { id, pid: child.pid ?? undefined, startTicks }
     const trail = attempt === 0 ? "" : ` (restart #${attempt})`
     try {
       deps.registry.register({
@@ -339,6 +373,7 @@ export function startAppServiceProcess(
     deps.onRespawn?.(attempt, {
       sessionId: id,
       ...(child.pid !== null && child.pid !== undefined ? { pid: child.pid } : {}),
+      ...(startTicks !== undefined ? { startTicks } : {}),
     })
   }
 
@@ -349,6 +384,81 @@ export function startAppServiceProcess(
 function defaultSchedule(fn: () => void, delayMs: number): () => void {
   const t = setTimeout(fn, delayMs)
   return () => clearTimeout(t)
+}
+
+// ── process identity (survives pid recycling) ───────────────────────────────
+
+/**
+ * The process' start ticks from `/proc/<pid>/stat` (field 22) — stable for
+ * the lifetime of the machine's pid space, so a recycled pid never shares it
+ * with its previous owner. `undefined` on a dead pid or a platform without
+ * `/proc` — callers treat undefined as "identity unverifiable".
+ */
+export function readProcessStartTicks(pid: number): number | undefined {
+  if (!Number.isInteger(pid) || pid <= 0) return undefined
+  try {
+    const raw = readFileSync(`/proc/${pid}/stat`, "utf8")
+    // The comm field may contain spaces AND parentheses — split on the LAST
+    // ')' so field 22 is counted from the right.
+    const close = raw.lastIndexOf(")")
+    if (close < 0) return undefined
+    const fields = raw.slice(close + 2).trim().split(/\s+/)
+    // After comm, field 3 is the first entry; starttime is field 22 → index 19.
+    const ticks = Number.parseInt(fields[19] ?? "", 10)
+    return Number.isFinite(ticks) ? ticks : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Decide whether a RECORDED service pid (from a previous daemon or an older
+ * record) may still be signalled on-sight. A bare recorded pid must NEVER be
+ * trusted blindly: pid recycling hands the SAME number to an unrelated
+ * process, and the boot re-ensure would SIGTERM that stranger. Verdicts:
+ *
+ *   - no/invalid pid — skip;
+ *   - start ticks recorded AND matching the live process' — kill (identity
+ *     proven);
+ *   - start ticks recorded and NOT matching — skip (recycled pid);
+ *   - start ticks recorded but unreadable now — skip (identity
+ *     unverifiable; per the audit contract never signal blind);
+ *   - no start ticks in the record AND `/proc` is unavailable at all on
+ *     this platform — kill (no stamp was ever possible; the pid is the only
+ *     handle — non-Linux degradation);
+ *   - no start ticks in the record but `/proc` says the pid IS live — skip
+ *     + log: a stamped record would have proven it, without one this could
+ *     be anybody's process.
+ */
+export function assessRecordedServicePid(
+  pid: number | undefined,
+  startTicks: number | undefined,
+): { kill: boolean; reason: string } {
+  if (pid === undefined || !Number.isInteger(pid) || pid <= 0) {
+    return { kill: false, reason: "no usable recorded pid" }
+  }
+  const current = readProcessStartTicks(pid)
+  if (startTicks === undefined) {
+    if (current === undefined) {
+      // Either the pid is dead (nothing to signal anyway) or this platform
+      // never exposes start ticks — the recorded pid is the only handle.
+      return { kill: true, reason: "identity opaque (no /proc reading available)" }
+    }
+    return {
+      kill: false,
+      reason: `record lacks a start-ticks stamp and pid ${pid} is live — skip (possible recycled pid)`,
+    }
+  }
+  if (current === undefined) {
+    return { kill: false, reason: `cannot verify identity of pid ${pid} — skip` }
+  }
+  if (current !== startTicks) {
+    return {
+      kill: false,
+      reason: `pid ${pid} was recycled (start ticks ${startTicks} ≠ ${current}) — skip`,
+    }
+  }
+  return { kill: true, reason: "start-ticks identity match" }
 }
 
 /** The default child spawn: detached (own process group — the pid is the

@@ -858,6 +858,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
         bootResumePolicy: cfgDaemon.bootResumePolicy,
+        // App-service boot re-ensure: OWN knob, default ON — resolved from
+        // daemon.resumeServicesOnBoot (only an explicit false disables).
+        // Decoupled from resumeSessionsOnBoot (bedrock F-11): installed
+        // services should come back regardless of the agent-adapter
+        // opt-in's cost concerns.
+        resumeServicesOnBoot: cfgDaemon.resumeServicesOnBoot !== false,
         // Opt-in continue-on-boot: after the eager pass, prompt the sessions
         // the last restart cut off mid-turn to continue. Off ⇒ no-op.
         continueInterruptedOnBoot: cfgDaemon.continueInterruptedOnBoot === true,
@@ -1152,9 +1158,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // the resume passes above: it force-replaces every app-service owner, so
     // it must not race them for an owner session id. `ensureServices` otherwise
     // runs only on the install path, leaving a service whose owner died with
-    // the previous daemon down until the next reinstall. Same boot-automation
-    // gate as the passes (`daemon.resumeSessionsOnBoot`), enforced in the
-    // gateway method. Best-effort.
+    // the previous daemon down until the next reinstall. Gated by its OWN
+    // knob (`daemon.resumeServicesOnBoot`), default ON — decoupled from the
+    // resume passes' gate (bedrock F-11) — enforced in the gateway method.
+    // Best-effort.
     const services = await gateway.reensureAppServicesOnBoot()
     if (services.enabled && services.apps > 0) {
       process.stderr.write(

@@ -76,6 +76,13 @@ export interface DaemonConfig {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Boot re-ensure of installed apps' service owners. DEFAULT ON: an
+   *  installed app's services are part of the service contract, and they
+   *  are deterministic processes (cost/spawn-storm concerns behind
+   *  `resumeSessionsOnBoot`'s default-off do not apply). Set
+   *  `daemon.resumeServicesOnBoot false` to keep services down after a
+   *  restart. Surfaced in `daemon_health` / `GET /health`. */
+  resumeServicesOnBoot?: boolean
   /** Opt-in continue-on-boot (continue-interrupted). When true, right after
    *  the eager resume pass, the boot sends a "the daemon restarted mid-turn,
    *  check the state on disk and continue" prompt to every session the LAST

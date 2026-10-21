@@ -26,6 +26,9 @@ export interface RegisterDaemonHealthToolsOptions {
    *  sessions or leave them dead-but-lazy-resumable. */
   resumeSessionsOnBoot: boolean
   bootResumePolicy?: "all" | "keepalive"
+  /** Effective value of the `daemon.resumeServicesOnBoot` knob — whether a
+   *  restart re-ensures installed apps' service owners at boot. Default ON. */
+  resumeServicesOnBoot?: boolean
   /** Effective value of the `daemon.continueInterruptedOnBoot` knob — whether
    *  a restart will also send a one-shot continue prompt to the sessions it
    *  interrupted mid-turn. Omitted ⇒ false. */
@@ -121,6 +124,7 @@ export function registerDaemonHealthTools(
         resumeSessionsOnBoot: opts.resumeSessionsOnBoot,
         memory: process.memoryUsage(),
         bootResumePolicy: opts.bootResumePolicy ?? "all",
+        resumeServicesOnBoot: opts.resumeServicesOnBoot !== false,
         continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.idleReapAfterMs,
         sandboxIdleReapAfterMs: opts.sandboxIdleReapAfterMs ?? 0,

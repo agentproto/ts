@@ -73,6 +73,12 @@ export interface AppServiceOwner {
   /** Process-group-leader pid of the live attempt (`app_uninstall` signals
    *  `-pid`), when the spawn surfaced one. Updated on every respawn. */
   pid?: number
+  /** `/proc/<pid>/stat` start ticks of the recorded pid, captured at spawn
+   *  time — the identity token a later boot reconcile verifies BEFORE
+   *  signalling the recorded pid (a recycled pid has different ticks; see
+   *  `assessRecordedServicePid`). Never signal a bare recorded pid without
+   *  this check. */
+  startTicks?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
   startedAt: string
@@ -155,17 +161,31 @@ function saveServiceState(state: AppServiceStoreState, persistPath: string): voi
   }
 }
 
+/**
+ * Memo of persisting stores per resolved path (audit F-6): each
+ * `registerAppTools` call and the daemon boot pass each build a store for the
+ * SAME persist file; without the memo, instance A's `upsert` rewrites the
+ * whole file from ITS in-memory snapshot and silently erases instance B's
+ * later write. One path ⇒ one shared state. Stores created with an explicit
+ * `persist: false` NEVER join the memo (tests rely on isolated instances).
+ */
+const persistedServiceStores = new Map<string, AppServiceStore>()
+
 export function createAppServiceStore(opts?: {
   persistPath?: string
   persist?: boolean
 }): AppServiceStore {
   const persistPath = opts?.persistPath ?? DEFAULT_SERVICE_STORE_PATH()
   const shouldPersist = opts?.persist ?? opts?.persistPath !== undefined
+  if (shouldPersist) {
+    const memo = persistedServiceStores.get(persistPath)
+    if (memo !== undefined) return memo
+  }
   const state = shouldPersist ? loadServiceState(persistPath) : { version: 1 as const, owners: [] as AppServiceOwner[] }
   const persist = (): void => {
     if (shouldPersist) saveServiceState(state, persistPath)
   }
-  return {
+  const store: AppServiceStore = {
     list() {
       return [...state.owners]
     },
@@ -194,13 +214,35 @@ export function createAppServiceStore(opts?: {
       return removed
     },
   }
+  if (shouldPersist) persistedServiceStores.set(persistPath, store)
+  return store
 }
 
 // ── orchestration ───────────────────────────────────────────────────────────
 
+/**
+ * Per-app transition locks (audit F-5): every ensure/reensure/remove for an
+ * appId is serialized through this in-flight promise chain, so a concurrent
+ * `app_install` racing the boot reconcile (or two MCP clients) can never
+ * read-modify-write the same owner set at once — no double-spawns, no
+ * clobbered records. Module-level: it spans every store instance and every
+ * handle creation inside one daemon process.
+ */
+const appServiceLocks = new Map<string, Promise<unknown>>()
+
+export async function withAppServiceLock<T>(appId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = appServiceLocks.get(appId) ?? Promise.resolve()
+  const run = prev.then(fn, fn)
+  appServiceLocks.set(
+    appId,
+    run.catch(() => undefined),
+  )
+  return run
+}
+
 /** The outcome of spawning one owner session. */
 export type SpawnServiceOwnerResult =
-  | { ok: true; sessionId: string; pid?: number }
+  | { ok: true; sessionId: string; pid?: number; startTicks?: number }
   | { ok: false; error: string }
 
 /** Spawn seam for one service owner — injectable so unit tests never spawn a
@@ -238,11 +280,17 @@ export interface EnsureAppServiceOwnersResult {
   /** Per-service spawn failures — surfaced, never thrown (a failed service
    *  must not fail the install that succeeded). */
   errors: Array<{ name: string; error: string }>
+  /** Owners of services the manifest NO LONGER declares — killed and
+   *  dropped by THIS call (full reconciliation; audit F-7: a purged
+   *  manifest entry must not keep a live process across a reinstall). */
+  removed: string[]
 }
 
 /**
  * Ensure exactly one live owner per declared service (idempotent, "ensure"
- * semantics — mirroring `ensureAppWorkspace`):
+ * semantics — mirroring `ensureAppWorkspace`), AND a full reconciliation of
+ * the store against the declared set: every owner of an app whose service
+ * was removed from the manifest is killed + dropped (`removed`).
  *
  *   - a service whose recorded owner is still alive is KEPT (no duplicate
  *     owner on reinstall / repeated `app_install`);
@@ -250,51 +298,72 @@ export interface EnsureAppServiceOwnersResult {
  *     killed + dropped, a fresh one is spawned;
  *   - a service with no record is spawned.
  *
+ * The whole reconcile runs under the per-app lock (`withAppServiceLock`) —
+ * a concurrent call waits its turn and re-reads the store, so it sees this
+ * call's writes (no double-spawns).
  * Spawn failures are collected in `errors` and never abort the loop.
  */
 export async function ensureAppServiceOwners(
   deps: EnsureAppServiceOwnersDeps,
 ): Promise<EnsureAppServiceOwnersResult> {
-  const now = deps.now ?? (() => new Date())
-  const existing = deps.store.listForApp(deps.appId)
-  const byName = new Map(existing.map(o => [o.name, o]))
-  const spawned: AppServiceOwner[] = []
-  const kept: AppServiceOwner[] = []
-  const errors: Array<{ name: string; error: string }> = []
+  return withAppServiceLock(deps.appId, async () => {
+    const now = deps.now ?? (() => new Date())
+    const existing = deps.store.listForApp(deps.appId)
+    const byName = new Map(existing.map(o => [o.name, o]))
+    const spawned: AppServiceOwner[] = []
+    const kept: AppServiceOwner[] = []
+    const errors: Array<{ name: string; error: string }> = []
+    const removed: string[] = []
 
-  for (const service of deps.services) {
-    const prev = byName.get(service.name)
-    if (prev !== undefined && deps.isOwnerAlive(prev)) {
-      kept.push(prev)
-      continue
-    }
-    if (prev !== undefined) {
-      try {
-        await deps.killOwner(prev)
-      } catch {
-        // A failed kill of a dead owner must not block the replacement.
+    for (const service of deps.services) {
+      const prev = byName.get(service.name)
+      if (prev !== undefined && deps.isOwnerAlive(prev)) {
+        kept.push(prev)
+        continue
       }
-      deps.store.remove(deps.appId, service.name)
+      if (prev !== undefined) {
+        try {
+          await deps.killOwner(prev)
+        } catch {
+          // A failed kill of a dead owner must not block the replacement.
+        }
+        deps.store.remove(deps.appId, service.name)
+      }
+      const res = await deps.spawn(service)
+      if (!res.ok) {
+        errors.push({ name: service.name, error: res.error })
+        continue
+      }
+      const owner: AppServiceOwner = {
+        appId: deps.appId,
+        name: service.name,
+        entry: serviceDisplayEntry(service),
+        sessionId: res.sessionId,
+        ...(res.pid !== undefined ? { pid: res.pid } : {}),
+        ...(res.startTicks !== undefined ? { startTicks: res.startTicks } : {}),
+        ...(service.port !== undefined ? { port: service.port } : {}),
+        startedAt: now().toISOString(),
+      }
+      deps.store.upsert(owner)
+      spawned.push(owner)
     }
-    const res = await deps.spawn(service)
-    if (!res.ok) {
-      errors.push({ name: service.name, error: res.error })
-      continue
-    }
-    const owner: AppServiceOwner = {
-      appId: deps.appId,
-      name: service.name,
-      entry: serviceDisplayEntry(service),
-      sessionId: res.sessionId,
-      ...(res.pid !== undefined ? { pid: res.pid } : {}),
-      ...(service.port !== undefined ? { port: service.port } : {}),
-      startedAt: now().toISOString(),
-    }
-    deps.store.upsert(owner)
-    spawned.push(owner)
-  }
 
-  return { spawned, kept, errors }
+    // Full reconciliation (F-7): every recorded owner the manifest no longer
+    // declares is stopped and dropped.
+    const declared = new Set(deps.services.map(s => s.name))
+    for (const orphan of deps.store.listForApp(deps.appId)) {
+      if (declared.has(orphan.name)) continue
+      try {
+        await deps.killOwner(orphan)
+      } catch {
+        // Best-effort — still drop the record.
+      }
+      deps.store.remove(deps.appId, orphan.name)
+      removed.push(orphan.name)
+    }
+
+    return { spawned, kept, errors, removed }
+  })
 }
 
 /**
@@ -335,16 +404,18 @@ export async function removeAppServiceOwners(deps: {
   appId: string
   killOwner: (owner: AppServiceOwner) => void | Promise<void>
 }): Promise<string[]> {
-  const owners = deps.store.listForApp(deps.appId)
-  const removed: string[] = []
-  for (const owner of owners) {
-    try {
-      await deps.killOwner(owner)
-    } catch {
-      // Best-effort — still drop the record.
+  return withAppServiceLock(deps.appId, async () => {
+    const owners = deps.store.listForApp(deps.appId)
+    const removed: string[] = []
+    for (const owner of owners) {
+      try {
+        await deps.killOwner(owner)
+      } catch {
+        // Best-effort — still drop the record.
+      }
+      deps.store.remove(deps.appId, owner.name)
+      removed.push(owner.name)
     }
-    deps.store.remove(deps.appId, owner.name)
-    removed.push(owner.name)
-  }
-  return removed
+    return removed
+  })
 }

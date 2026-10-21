@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { spawn } from "node:child_process"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -23,6 +24,7 @@ import { defineAgent } from "@agentproto/agent"
 import { registerAppTools, reensureInstalledAppServicesOnBoot } from "../app-tools.js"
 import { createAppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
+import { readProcessStartTicks } from "../app-service-process.js"
 import { createAppServiceStore, type AppServiceOwner, type SpawnServiceOwner } from "../app-services.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -278,5 +280,70 @@ describe("app-service boot re-ensure (reensureAppServicesOnBoot)", () => {
     })
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
     expect(await reensureServicesOnBoot()).toEqual({ apps: 0, spawned: 0, errors: [] })
+  })
+
+  // ── identity-gated group kill (audit F-4) ──────────────────────────────────
+
+  it("boot re-ensure does NOT signal a recorded pid whose start ticks mismatch (recycled pid)", async () => {
+    // REPRO: the owner record names the pid of an UNRELATED process with a
+    // WRONG startTicks stamp — exactly the footprint of a recycled pid. The
+    // re-ensure replaces the owner, but must never signal the stranger.
+    await buildServiceApp(dir, [{ name: "web", entry: "node server.js", port: 4321 }])
+    const stranger = spawn("sleep", ["30"], { stdio: "ignore" })
+    const strangerPid = stranger.pid!
+    expect(strangerPid).toBeGreaterThan(0)
+    const truth = readProcessStartTicks(strangerPid)
+    expect(truth).toBeDefined()
+    try {
+      const spawnServiceOwner = vi.fn(async () => ({
+        ok: true as const,
+        sessionId: "owner_sess_1",
+        pid: strangerPid,
+        // A bogus stamp ⇒ identity verdict "recycled" ⇒ skip the signal.
+        startTicks: truth! + 123_456,
+      }))
+      const { client, serviceStore, reensureServicesOnBoot } = await setup({
+        spawnServiceOwner,
+        workspacesConfigPath: join(dir, "workspaces.json"),
+      })
+      expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+      const owner = serviceStore.listForApp(APP_ID)[0]
+      expect(owner?.pid).toBe(strangerPid)
+      const result = await reensureServicesOnBoot()
+      expect(result.spawned).toBe(1)
+      // The stranger STILL ALIVE — old code would have SIGTERM+SIGKILL'd it.
+      expect(() => process.kill(strangerPid, 0)).not.toThrow()
+      expect(readProcessStartTicks(strangerPid)).toBe(truth)
+      // …and the stale record was replaced anyway.
+      expect(serviceStore.listForApp(APP_ID)[0]?.sessionId).toBe("owner_sess_1")
+    } finally {
+      stranger.kill("SIGKILL")
+    }
+  })
+
+  it("boot re-ensure DOES kill the recorded pid when its start ticks match", async () => {
+    await buildServiceApp(dir, [{ name: "web", entry: "node server.js", port: 4321 }])
+    const victim = spawn("sleep", ["30"], { stdio: "ignore" })
+    const victimPid = victim.pid!
+    const truth = readProcessStartTicks(victimPid)
+    expect(truth).toBeDefined()
+    try {
+      const spawnServiceOwner = vi.fn(async () => ({
+        ok: true as const,
+        sessionId: "owner_sess_1",
+        pid: victimPid,
+        startTicks: truth!,
+      }))
+      const { client, serviceStore, reensureServicesOnBoot } = await setup({
+        spawnServiceOwner,
+        workspacesConfigPath: join(dir, "workspaces.json"),
+      })
+      expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+      await reensureServicesOnBoot()
+      // Identity proven → the group signal went through.
+      await vi.waitFor(() => expect(() => process.kill(victimPid, 0)).toThrow())
+    } finally {
+      victim.kill("SIGKILL")
+    }
   })
 })

@@ -41,6 +41,8 @@ import {
   killServiceProcess,
   startAppServiceProcess,
   appServiceLogPath,
+  assessRecordedServicePid,
+  isAppServicePendingRestart,
 } from "./app-service-process.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
@@ -1707,6 +1709,7 @@ export function buildAppServiceEnsurer(
           entry: serviceDisplayEntry(input.service),
           sessionId: info.sessionId,
           ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
+          ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
           ...(input.service.port !== undefined ? { port: input.service.port } : {}),
           startedAt: new Date().toISOString(),
         })
@@ -1719,12 +1722,22 @@ export function buildAppServiceEnsurer(
       ok: true,
       sessionId: handle.sessionId,
       ...(handle.pid !== undefined ? { pid: handle.pid } : {}),
+      ...(handle.startTicks !== undefined ? { startTicks: handle.startTicks } : {}),
     }
   }
 
-  /** Kill seam: the recorded process group + the registry row. */
+  /** Kill seam: the recorded process group + the registry row. The group
+   *  signal is IDENTITY-GATED (audit F-4): a pid recorded by a previous
+   *  daemon may name an unrelated process by now (recycling) — only signal
+   *  it when the recorded start ticks still match the live process. */
   const killServiceOwner = async (owner: AppServiceOwner): Promise<void> => {
-    await killServiceProcess(owner.pid)
+    const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
+    if (owner.pid !== undefined && !verdict.kill) {
+      console.warn(
+        `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
+      )
+    }
+    await killServiceProcess(verdict.kill ? owner.pid : undefined)
     try {
       deps.registry.kill(owner.sessionId)
     } catch {
@@ -1763,6 +1776,10 @@ export function buildAppServiceEnsurer(
             appId: app.appId,
             services,
             isOwnerAlive: owner => {
+              // Dead-but-restarting (backoff timer in flight): still
+              // supervised — a concurrent install in the restart gap must
+              // KEEP the record instead of double-spawning (F-5).
+              if (isAppServicePendingRestart(owner.sessionId)) return true
               const desc = deps.registry.get(owner.sessionId)
               return desc !== undefined && !isSessionTerminal(desc.status)
             },
@@ -1883,7 +1900,13 @@ export function registerAppTools(
    *  logic, just closed over this function's `registry` instead of
    *  `deps.registry`). */
   const killServiceOwner = async (owner: AppServiceOwner): Promise<void> => {
-    await killServiceProcess(owner.pid)
+    const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
+    if (owner.pid !== undefined && !verdict.kill) {
+      console.warn(
+        `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
+      )
+    }
+    await killServiceProcess(verdict.kill ? owner.pid : undefined)
     try {
       registry.kill(owner.sessionId)
     } catch {

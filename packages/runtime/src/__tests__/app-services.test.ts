@@ -350,6 +350,205 @@ describe("killServicePid", () => {
   })
 })
 
+describe("store persistence is shared per path (audit F-6)", () => {
+  let base: string
+  const mkOwner = (appId: string, name: string, pid: number): AppServiceOwner => ({
+    appId,
+    name,
+    entry: `run ${name}`,
+    sessionId: `sess_${name}`,
+    pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  })
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), "app-services-store-memo-"))
+  })
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+
+  it("two persisting stores on the same path share state — no lost updates", () => {
+    // The lost-update repro: two instances over ONE file, interleaved writes.
+    // Without the persist-path memo, store A's upsert would rewrite the whole
+    // file from its stale snapshot and erase store B's record.
+    const path = join(base, "app-services.json")
+    const a = createAppServiceStore({ persistPath: path })
+    const b = createAppServiceStore({ persistPath: path })
+    a.upsert(mkOwner("@a/app", "web", 1))
+    b.upsert(mkOwner("@a/app", "worker", 2))
+    expect(a.listForApp("@a/app").map(o => o.name).sort()).toEqual(["web", "worker"])
+    const reloaded = createAppServiceStore({ persistPath: path })
+    expect(reloaded.listForApp("@a/app")).toHaveLength(2)
+  })
+
+  it("a non-persisting store never joins the memo (isolated)", () => {
+    const path = join(base, "isolated.json")
+    const demo = createAppServiceStore({ persistPath: path })
+    demo.upsert(mkOwner("@a/app", "web", 1))
+    const isolated = createAppServiceStore({ persist: false })
+    isolated.upsert(mkOwner("@zz/test", "ghost", 9))
+    expect(demo.listForApp("@zz/test")).toEqual([])
+    expect(createAppServiceStore({ persistPath: path }).listForApp("@zz/test")).toEqual([])
+  })
+})
+
+describe("ensureAppServiceOwners reconciles the manifest (audit F-7)", () => {
+  const svc = (name: string) => ({ name, entry: `run ${name}` })
+  let base: string
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), "app-services-reconcile-"))
+  })
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+
+  it("purges owners whose service is no longer declared — kills + drops them", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const orphan: AppServiceOwner = {
+      appId: "@a/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_worker",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    }
+    store.upsert(orphan)
+    // Persist a manifest WITHOUT "worker" (reinstall dropped the service).
+    const result = await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true as const, sessionId: "sess_web", pid: 6 }),
+      killOwner: vi.fn(),
+    })
+    expect(result.removed).toEqual(["worker"])
+    expect(store.listForApp("@a/app").map(o => o.name)).toEqual(["web"])
+  })
+
+  it("purging kills the orphan even when its owner still looks alive", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const live: AppServiceOwner = {
+      appId: "@a/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_worker",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    }
+    store.upsert(live)
+    const killOwner = vi.fn()
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [], // manifest no longer declares ANY service
+      isOwnerAlive: () => true, // worker still looks alive
+      spawn: vi.fn(),
+      killOwner,
+    })
+    expect(killOwner).toHaveBeenCalledWith(live)
+    expect(store.listForApp("@a/app")).toEqual([])
+  })
+
+  it("warehouses other apps' owners untouched while reconciling", async () => {
+    const store = createAppServiceStore({ persist: false })
+    store.upsert({
+      appId: "@other/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_other",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const killOwner = vi.fn()
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true as const, sessionId: "sess_web", pid: 6 }),
+      killOwner,
+    })
+    expect(killOwner).not.toHaveBeenCalled()
+    expect(store.listForApp("@other/app")).toHaveLength(1)
+  })
+
+  it("serializes concurrent ensures for the same app — exactly one spawn", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const spawnCalls: string[] = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const spawn = vi.fn(async (service: { name: string }) => {
+      spawnCalls.push(service.name)
+      if (spawnCalls.length === 1) await gate
+      return { ok: true as const, sessionId: `sess_${service.name}`, pid: spawnCalls.length }
+    })
+    // Two ensures for the SAME app invoked concurrently: the second must not
+    // read the store before the first finished mutating it (would
+    // double-spawn "web" — the exact lost-update double-spawn of F-5).
+    const p1 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    const p2 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: owner => owner.sessionId === "sess_web",
+      spawn,
+      killOwner: () => {},
+    })
+    await new Promise(r => setTimeout(r, 10))
+    expect(spawnCalls).toEqual(["web"]) // p2 has NOT spawned while p1 hangs
+    release()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(spawnCalls).toEqual(["web"]) // exactly ONE spawn across both calls
+    expect(r1.spawned).toHaveLength(1)
+    expect(r2.kept).toHaveLength(1) // the second call KEPT p1's owner
+    expect(r2.spawned).toEqual([])
+    expect(r2.removed).toEqual([])
+    expect(store.listForApp("@a/app")).toHaveLength(1)
+  })
+
+  it("does not serialize across DIFFERENT apps", async () => {
+    const store = createAppServiceStore({ persist: false })
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const spawn = vi.fn(async () => {
+      await gate
+      return { ok: true as const, sessionId: "sess_x", pid: 1 }
+    })
+    const p1 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    const p2 = ensureAppServiceOwners({
+      store,
+      appId: "@b/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    await new Promise(r => setTimeout(r, 10))
+    expect(spawn).toHaveBeenCalledTimes(2) // b did NOT wait on a's lock
+    release()
+    await Promise.all([p1, p2])
+  })
+})
+
 describe("reensureAppServiceOwners (boot)", () => {
   const svc = (name: string) => ({ name, entry: `run ${name}` })
 

@@ -13,6 +13,7 @@ import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import EventEmitter from "node:events"
+import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import {
   startAppServiceProcess,
@@ -20,6 +21,8 @@ import {
   killServiceProcess,
   appServiceLogPath,
   DEFAULT_APP_SERVICE_RESTART_POLICY,
+  readProcessStartTicks,
+  assessRecordedServicePid,
 } from "../app-service-process.js"
 import { SESSION_ID_ENV, APP_ID_ENV, createSessionsRegistry } from "../sessions.js"
 import type { SessionsRegistry } from "../sessions.js"
@@ -337,5 +340,47 @@ describe("cleanup kills the process group", () => {
   it("killServiceProcess is a no-op for a stale/invalid pid", async () => {
     await expect(killServiceProcess(undefined)).resolves.toBeUndefined()
     await expect(killServiceProcess(1_999_999_999)).resolves.toBeUndefined()
+  })
+})
+
+describe("recorded-pid identity assessment (audit F-4)", () => {
+  it("assessRecordedServicePid verdicts", async () => {
+    // invalid pid → never signal
+    expect(assessRecordedServicePid(undefined, 123)).toEqual({ kill: false, reason: expect.any(String) })
+    expect(assessRecordedServicePid(-5, 123)).toEqual({ kill: false, reason: expect.any(String) })
+    // a LIVE pid of a process we just spawned: match kill, mismatch skip
+    const child = spawn("sleep", ["10"], { stdio: "ignore" })
+    try {
+      const ticks = readProcessStartTicks(child.pid!)
+      expect(ticks).toBeGreaterThan(0)
+      expect(assessRecordedServicePid(child.pid!, ticks)).toMatchObject({ kill: true })
+      expect(assessRecordedServicePid(child.pid!, ticks! + 1)).toMatchObject({ kill: false })
+      // stamped record, pid gone (dead): cannot verify → skip
+      expect(assessRecordedServicePid(1_999_999_999, 42)).toMatchObject({ kill: false })
+    } finally {
+      child.kill("SIGKILL")
+    }
+  })
+
+  it("startAppServiceProcess records start ticks (onLinux /proc available)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const result = startAppServiceProcess({
+      registry,
+      appId: "@x/y",
+      dir: "/tmp",
+      service: { name: "web", entry: "sleep 10" },
+    })
+    expect(result.ok).toBe(true)
+    const handle = (result as { handle: { pid: number; startTicks?: number; stop(): Promise<void> } }).handle
+    const ticks = readProcessStartTicks(handle.pid)
+    try {
+      if (ticks !== undefined) {
+        expect(handle.startTicks).toBe(ticks)
+      } else {
+        // non-/proc platform: skip
+      }
+    } finally {
+      await handle.stop()
+    }
   })
 })
