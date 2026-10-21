@@ -97,6 +97,7 @@ import {
 } from "./spawn-defaults.js"
 import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
+import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
 import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
@@ -1774,9 +1775,20 @@ export async function restartAgentSession(
 
     let remoteSessionId: string
     let boxSpawnEnforcedPostures: string[] | undefined
+    // PARENT RELAY: the restarted session is a NEW host row (fresh id) under
+    // the same parent, so it gets a FRESH relay grant (the prior row's grant
+    // was revoked when that row ended) and the box's new session gets the
+    // remote parent again - without it a restart would silently drop the
+    // relay. Revoked below when the box's agent_start fails.
+    const remoteParent = mintRemoteParentForBox(
+      prev.parentSessionId
+        ? { parentSessionId: prev.parentSessionId, boxSessionId: restartedSessionId }
+        : undefined,
+    )
     try {
       const remoteDesc = await host.start({
         adapter: adapterSlug,
+        ...(remoteParent ? { remoteParent } : {}),
         ...(boxResumeId ? { resumeSessionId: boxResumeId } : {}),
         ...(cwd ? { cwd } : {}),
         ...(effModel ? { model: effModel } : {}),
@@ -1816,6 +1828,7 @@ export async function restartAgentSession(
       boxResumed = remoteDesc.resumeVia === "resumed via ACP"
       if (boxResumeId && !boxResumed) resumeFallback = true
     } catch (err) {
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
       await host.stop().catch(() => undefined)
       throw new SessionRestartError(
         "sandbox_box_start_failed",
@@ -2062,6 +2075,12 @@ export async function restartAgentSession(
       ...(boxLogin ? { boxLogin } : {}),
       ...workspaceArgs,
       sessionId: restartedSessionId,
+      // PARENT RELAY: re-pass the host-side parent so the fresh box's
+      // session gets a fresh grant + remote parent (`bootSandboxAgentSession`
+      // mints it, and revokes it if the boot fails).
+      ...(prev.parentSessionId
+        ? { parentRelay: { parentSessionId: prev.parentSessionId, boxSessionId: restartedSessionId } }
+        : {}),
       onDelivery: record => {
         registry.recordSandboxDelivery(restartedSessionId, record, formatDeliveryNotice(record))
       },

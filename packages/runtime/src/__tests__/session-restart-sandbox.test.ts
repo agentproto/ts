@@ -34,6 +34,7 @@ import {
   BOX_ADAPTER_STORE_RESTORE_PATH,
   adapterStoreArchivePath,
 } from "../sandbox-adapter-store.js"
+import { clearParentRelayGrants, relayTokenForSession, resolveParentRelayGrant } from "../parent-relay.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -219,6 +220,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     workspaceSlug?: string
     rejectResumeIds?: boolean
     sandboxConfig?: Record<string, unknown>
+    parentSessionId?: (registry: SessionsRegistry) => string
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -241,10 +243,49 @@ describe("restartAgentSession on a sandboxed session", () => {
       sandboxTeardown: "pause",
       ...(opts.sandboxConfig ? { sandboxConfig: opts.sandboxConfig } : {}),
       ...(opts.deliveryTarget ? { sandboxDeliveryTarget: opts.deliveryTarget } : {}),
+      ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId(registry), depth: 1 } : {}),
     })
     if (opts.killPrev ?? true) registry.kill(prev.id)
     return makeResolver(box)
   }
+
+  it("re-passes the parent relay on a live-box restart: the box's new session gets a fresh remote parent", async () => {
+    const savedUrl = process.env.AGENTPROTO_PARENT_RELAY_URL
+    process.env.AGENTPROTO_PARENT_RELAY_URL = "https://host.example"
+    clearParentRelayGrants()
+    let parentId = ""
+    try {
+      const { resolver, providerResolver } = await setup({
+        parentSessionId: reg => {
+          parentId = reg.spawnAgent({
+            workspaceSlug: "default",
+            cwd: "/tmp",
+            agentSession: fakeAgentSession("host"),
+            adapterSlug: "fake-cli",
+          }).id
+          return parentId
+        },
+      })
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: providerResolver,
+      })
+      expect(result.desc.parentSessionId).toBe(parentId)
+      // The box daemon's new row records the (non-secret) remote parent...
+      const boxRow = box.gateway.sessions.list().find(r => r.remoteParent !== undefined)
+      expect(boxRow?.remoteParent).toEqual({ sessionId: parentId, url: "https://host.example" })
+      // ...holds a token in memory, and that token resolves on the host to a
+      // grant bound to the RESTARTED host row under the same parent.
+      const token = relayTokenForSession(boxRow!.id)
+      expect(token).toEqual(expect.any(String))
+      const grant = resolveParentRelayGrant(token)
+      expect(grant?.parentSessionId).toBe(parentId)
+      expect(grant?.boxSessionId).toBe(result.desc.id)
+    } finally {
+      clearParentRelayGrants()
+      if (savedUrl === undefined) delete process.env.AGENTPROTO_PARENT_RELAY_URL
+      else process.env.AGENTPROTO_PARENT_RELAY_URL = savedUrl
+    }
+  })
 
   it("re-attaches the EXISTING box via connect() and resumes the in-box conversation — never a local spawn", async () => {
     const { resolver, providerResolver } = await setup()
@@ -805,6 +846,53 @@ describe("restartAgentSession on a sandboxed session", () => {
       // The dead box's row is closed: nothing is shared with the new one.
       expect(prevClosed).toBe(true)
       expect(registry.get(prev.id)?.status).not.toBe("running")
+    })
+
+    it("re-passes the parent relay on a fresh-box restart: the new box's session gets a fresh remote parent", async () => {
+      wsConfigState.value = {
+        version: 1,
+        workspaces: [
+          {
+            slug: "agentproto",
+            path: "/Users/op/projects/agentproto",
+            addedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            remote: { url: "https://github.com/acme/agentproto.git" },
+          },
+        ],
+      }
+      const savedUrl = process.env.AGENTPROTO_PARENT_RELAY_URL
+      process.env.AGENTPROTO_PARENT_RELAY_URL = "https://host.example"
+      clearParentRelayGrants()
+      let parentId = ""
+      try {
+        const { resolver, providerResolver } = await setup({
+          deliveryTarget: target,
+          workspaceSlug: "agentproto",
+          parentSessionId: reg => {
+            parentId = reg.spawnAgent({
+              workspaceSlug: "default",
+              cwd: "/tmp",
+              agentSession: fakeAgentSession("host"),
+              adapterSlug: "fake-cli",
+            }).id
+            return parentId
+          },
+        })
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], { count: 0 }),
+        })
+        expect(result.desc.sandboxId).toBe("sbx_fresh_2")
+        const boxRow = box.gateway.sessions.list().find(r => r.remoteParent !== undefined)
+        expect(boxRow?.remoteParent).toEqual({ sessionId: parentId, url: "https://host.example" })
+        const grant = resolveParentRelayGrant(relayTokenForSession(boxRow!.id))
+        expect(grant?.parentSessionId).toBe(parentId)
+        expect(grant?.boxSessionId).toBe(result.desc.id)
+      } finally {
+        clearParentRelayGrants()
+        if (savedUrl === undefined) delete process.env.AGENTPROTO_PARENT_RELAY_URL
+        else process.env.AGENTPROTO_PARENT_RELAY_URL = savedUrl
+      }
     })
 
     // A checkpoint archived the dead box's adapter conversation store
