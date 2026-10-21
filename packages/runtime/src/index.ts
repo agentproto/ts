@@ -197,6 +197,11 @@ import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
 import { registerSentinelTools, cancelSentinelWatch } from "./sentinel-tools.js"
 import { createSessionFollowStore } from "./session-follow-store.js"
 import { wireSessionFollow } from "./session-follow.js"
+import {
+  defaultFollowTriageConfig,
+  resolveFollowTriageConfig,
+  type FollowTriageInput,
+} from "./follow-triage.js"
 import { registerSessionFollowTools } from "./session-follow-tools.js"
 import {
   eventsList,
@@ -1053,6 +1058,29 @@ export {
   type SessionFollowStore,
 } from "./session-follow-store.js"
 export { wireSessionFollow, type SessionFollowHandle } from "./session-follow.js"
+// Session-follow triage (deterministic pre-wake classification).
+export {
+  classifyFollowEvent,
+  defaultFollowTriageConfig,
+  isTriageDecision,
+  parseClassifierAnswer,
+  resolveFollowTriageConfig,
+  runFollowTriageClassifier,
+  triageFollowEvent,
+  DEFAULT_FOLLOW_TRIAGE_CLASSIFIER_TIMEOUT_MS,
+  DEFAULT_FOLLOW_TRIAGE_REPORT_WINDOW_MS,
+  DEFAULT_FOLLOW_TRIAGE_RULES,
+  FOLLOW_TRIAGE_DECISIONS,
+  TRIAGE_RULES,
+  type FollowTriageClassifier,
+  type FollowTriageConfig,
+  type FollowTriageInput,
+  type FollowTriageRules,
+  type TriageDecision,
+  type TriageEvent,
+  type TriageFacts,
+  type TriageResult,
+} from "./follow-triage.js"
 // MCP Events adapter (W-C of .plans/sentinel-mcp-events): deterministic
 // subscription ids, the per-scheme event registry, and the three native
 // methods' logic (`eventsList`/`eventsSubscribe`/`eventsUnsubscribe`). The
@@ -3352,11 +3380,30 @@ export async function createGateway(
   // merged. Delivery never interrupts; a dead follower is resumed through the
   // same automatic-path restart core the sentinel uses (never a deliberate
   // end). See session-follow.ts.
+  //
+  // TRIAGE (off by default): every event is classified wake/fyi/drop by
+  // deterministic rules BEFORE a digest may wake the follower; a digest whose
+  // events are all fyi/drop lands in the follower's inbox instead of waking
+  // it. The daemon-level default comes from `config.follow.triage` (read
+  // fresh per digest), a follow's own `triage` block overrides it.
   const sessionFollow = wireSessionFollow({
     registry: sessions,
     sessionEvents,
     store: sessionFollowStore,
     restartSession: restartSentinelSession,
+    triage: async () => {
+      const cfg = await loadConfig().catch((): { follow?: { triage?: FollowTriageInput } } => ({}))
+      return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg.follow?.triage)
+    },
+    triageFacts: {
+      // "A cron run that finished OK already reported itself" — the cron
+      // ledger is the only place that knows the run's real outcome.
+      cronOk: (sessionId: string): boolean | undefined => {
+        const runs = cronScheduler.runs({ limit: 200 }).runs
+        const run = runs.find(r => r.sessionId === sessionId)
+        return run ? run.ok : undefined
+      },
+    },
   })
 
   // Retirement cleanup — re-point follows/sentinels of a superseded session

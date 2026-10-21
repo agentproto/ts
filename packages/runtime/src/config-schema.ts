@@ -700,6 +700,30 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: "~/.agentproto/sessions",
   },
   {
+    path: "follow.triage.enabled",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Session-follow triage",
+    help:
+      "Classify every session-follow event wake/fyi/drop BEFORE a digest may wake the " +
+      "follower. Off by default: with it off a follow behaves exactly as before.",
+    default: false,
+  },
+  {
+    path: "follow.triage.reportWindowMs",
+    schema: num,
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Triage report window (ms)",
+    help:
+      "How long after a session reported up to the follower a turn-end counts as that " +
+      "report's echo (and is dropped). Default 60000.",
+    default: 60_000,
+  },
+  {
     path: "profiles",
     schema: z.record(str, profileConfigSchema),
     apply: "restart",

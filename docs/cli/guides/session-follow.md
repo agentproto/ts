@@ -75,11 +75,67 @@ cannot be, the digest is appended to `~/.agentproto/follows-parked.jsonl`.
 
 Follows persist in `~/.agentproto/follows.json` (next to `sentinels.json`).
 
+## Triage (pre-wake classification)
+
+An orchestrator that follows many sessions gets woken dozens of times an hour,
+and most digests ask for nothing. **Triage** classifies EVERY event `wake` /
+`fyi` / `drop` BEFORE a digest is allowed to wake the follower. It is
+deterministic (no LLM) and **off by default** - a follow without it behaves
+exactly as before.
+
+```jsonc
+{
+  "selector": { "all": true },
+  "triage": {
+    "enabled": true,
+    "rules": {
+      "ownTaskChanges": true,     // your own board writes -> drop
+      "operatorExit": true,       // an exit you/the operator asked for -> fyi
+      "cronOk": true,             // a cron run that finished OK -> drop
+      "reportedTurnEnd": true,    // a turn-end right after the session reported up -> drop
+      "emptyTurnEnd": true,       // an empty/cancelled turn-end a new turn superseded -> fyi
+      "ownPr": true               // a PR opened by one of your own live sessions -> fyi
+    },
+    "classifier": { "command": "jev classify", "timeoutMs": 5000 },
+    "reportWindowMs": 60000
+  }
+}
+```
+
+Each rule is a separate switch; the rules are checked in a fixed order and the
+first match wins. **Always wake**: `awaiting-input`, `crashed`, and a turn-end
+that carries a question - no rule (and no classifier) can downgrade those.
+
+What the decision does:
+
+- a digest whose events are all `fyi`/`drop` never wakes: it is parked in the
+  follower's inbox as `fyi`;
+- one `wake` is enough to wake - and then the digest carries ONLY the `wake`
+  events plus a `[session-follow] N other event(s) in info` counter;
+- every triaged event is appended to `~/.agentproto/follow-triage.jsonl`
+  (`{ ts, follower, event, sessionId, decision, rule }`) - the training data a
+  future classifier is fitted on.
+
+The `classifier` block is the documented extension point for a future LLM
+classifier (Jev): it receives the event as JSON (on stdin for a `command`, as a
+POST body for a `url`) and answers `wake`/`fyi`/`drop`. On timeout, error, or an
+unparsable answer the deterministic rules decide instead - a classifier can
+refine a decision, never silence the pipeline.
+
+The daemon-wide default lives in `~/.agentproto/config.json`:
+
+```jsonc
+{ "follow": { "triage": { "enabled": true, "rules": { "operatorExit": true } } } }
+```
+
+A follow's own `triage` block overrides the daemon default (per field).
+
 ## MCP tools
 
-- `session_follow { follower?, key?, selector, exclude?, events?, batchMs?, skipEmptyTurns?, urgency?, excludeFollowerChildren? }`
+- `session_follow { follower?, key?, selector, exclude?, events?, batchMs?, skipEmptyTurns?, urgency?, excludeFollowerChildren?, triage? }`
   - `follower` defaults to the calling session; re-using a `key` updates in place.
   - `urgency` is `"next-turn"` (default) or `"fyi"`; existing follows keep `next-turn`.
+  - `triage` is the pre-wake classification block (see above).
 - `session_unfollow { id }` - follow id (`fol_...`) or key.
 - `session_follows { follower? }` - list.
 

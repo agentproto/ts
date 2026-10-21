@@ -31,6 +31,7 @@ import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import type { ModelRolesConfig } from "./model-roles.js"
+import type { FollowTriageInput } from "./follow-triage.js"
 import { validateConfig } from "./config-schema.js"
 
 export const CONFIG_VERSION = 1 as const
@@ -492,6 +493,16 @@ export interface SentinelConfig {
 }
 
 /**
+ * Session-follow policy (`session-follow.ts` + `follow-triage.ts`).
+ */
+export interface FollowConfig {
+  /** Daemon-wide triage default for every session-follow digest: classify
+   *  each event `wake`/`fyi`/`drop` BEFORE a digest is allowed to wake the
+   *  follower. OFF by default. A follow's own `triage` block overrides it. */
+  triage?: FollowTriageInput
+}
+
+/**
  * Review-primitive host policy (`@agentproto/review` + `review-runner.ts`).
  */
 export interface ReviewConfig {
@@ -708,6 +719,8 @@ export interface AgentprotoConfig {
   approvals?: ApprovalsConfig
   /** Sentinel auto-link policy. See {@link SentinelConfig}. */
   sentinel?: SentinelConfig
+  /** Session-follow policy (triage). See {@link FollowConfig}. */
+  follow?: FollowConfig
   /** Review-primitive host policy. See {@link ReviewConfig}. */
   review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */

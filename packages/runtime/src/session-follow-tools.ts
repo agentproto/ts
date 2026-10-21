@@ -54,6 +54,51 @@ export const followExcludeSchema = z.object({
   labels: z.array(z.string().min(1)).max(500).optional(),
 })
 
+/** The per-follow triage block — see `follow-triage.ts`. Off by default. */
+export const followTriageSchema = z.object({
+  enabled: z
+    .boolean()
+    .optional()
+    .describe(
+      "Classify each event wake/fyi/drop BEFORE a digest may wake you. " +
+        "Off by default (the daemon's `follow.triage` default applies when unset).",
+    ),
+  rules: z
+    .object({
+      ownTaskChanges: z.boolean().optional().describe("Your own task-board writes → drop."),
+      operatorExit: z.boolean().optional().describe("Exits you or the operator asked for → fyi."),
+      cronOk: z.boolean().optional().describe("A cron run that finished OK → drop."),
+      reportedTurnEnd: z
+        .boolean()
+        .optional()
+        .describe("A turn-end right after the session reported up to you → drop."),
+      emptyTurnEnd: z
+        .boolean()
+        .optional()
+        .describe("An empty/cancelled turn-end superseded by a new turn → fyi."),
+      ownPr: z.boolean().optional().describe("A PR opened by one of your own live sessions → fyi."),
+    })
+    .optional(),
+  classifier: z
+    .object({
+      command: z.string().min(1).optional().describe("Shell command: event JSON on stdin, decision on stdout."),
+      url: z.string().min(1).optional().describe("HTTP endpoint: event JSON posted, decision answered."),
+      timeoutMs: z.number().int().min(1).optional().describe("Per-call timeout. Default 5000."),
+    })
+    .optional()
+    .describe(
+      "Optional classifier hook (the extension point for a future LLM classifier): " +
+        "it receives the event and answers wake/fyi/drop. On timeout or error the " +
+        "deterministic rules decide instead.",
+    ),
+  reportWindowMs: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("How long after a report a turn-end counts as its echo. Default 60000."),
+})
+
 export const followInputSchema = z.object({
   follower: z.string().min(1).optional(),
   key: z.string().min(1).max(200).optional(),
@@ -64,6 +109,7 @@ export const followInputSchema = z.object({
   skipEmptyTurns: z.boolean().optional(),
   excludeFollowerChildren: z.boolean().optional(),
   urgency: z.enum(FOLLOW_URGENCIES).optional(),
+  triage: followTriageSchema.optional(),
 })
 
 export type FollowInputBody = z.infer<typeof followInputSchema>
@@ -134,6 +180,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
       ? { excludeFollowerChildren: body.excludeFollowerChildren }
       : {}),
     ...(body.urgency ? { urgency: body.urgency } : {}),
+    ...(body.triage ? { triage: body.triage } : {}),
   }
   const { follow, created } = deps.store.upsert(input)
   return { ok: true, follow, created }
@@ -210,9 +257,14 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
           'Digest delivery. Default "next-turn" (wakes the follower). "fyi" parks digests in the inbox without starting a turn.',
         ),
       excludeFollowerChildren: z.boolean().optional().describe(
-          "Ignore the follower's own descendants. Default true. `false` delivers them " +
-            "(any depth, even under `rootOnly`) — what a supervisor wants for its own children.",
-        ),
+        "Ignore the follower's own descendants. Default true. `false` delivers them " +
+          "(any depth, even under `rootOnly`) — what a supervisor wants for its own children.",
+      ),
+      triage: followTriageSchema.optional().describe(
+        "Triage each event wake/fyi/drop before a digest may wake you (off by default). " +
+          "A digest whose events are all fyi/drop lands in your inbox as fyi and never " +
+          "starts a turn.",
+      ),
     },
     async (input: Record<string, unknown>) => {
       const result = upsertSessionFollow(

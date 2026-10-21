@@ -43,6 +43,15 @@ import type { FollowEvent, FollowUrgency, SessionFollow, SessionFollowStore } fr
 import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
+import {
+  defaultFollowTriageConfig,
+  resolveFollowTriageConfig,
+  triageFollowEvent,
+  type FollowTriageConfig,
+  type TriageEvent,
+  type TriageFacts,
+  type TriageResult,
+} from "./follow-triage.js"
 
 /** Max characters of the per-line excerpt. */
 export const FOLLOW_EXCERPT_MAX = 300
@@ -74,6 +83,16 @@ export interface WireSessionFollowOptions {
   clearTimer?: (handle: unknown) => void
   /** Parked-digest journal (tests). Default `~/.agentproto/follows-parked.jsonl`. */
   parkedPath?: string
+  /** Daemon-level triage default (what `config.follow.triage` resolves to).
+   *  A follow's own `triage` block overrides it. Triage is OFF by default:
+   *  with it off nothing about delivery changes. A FUNCTION is re-read
+   *  before every digest (the daemon passes the live config resolver). */
+  triage?: FollowTriageConfig | (() => FollowTriageConfig | Promise<FollowTriageConfig>)
+  /** Per-event triage ledger (tests). Default `~/.agentproto/follow-triage.jsonl`. */
+  triagePath?: string
+  /** Extra facts the triage rules need but the engine cannot see alone (e.g.
+   *  "did this session's cron run finish OK?"). */
+  triageFacts?: TriageFacts
   log?: (line: string) => void
 }
 
@@ -106,6 +125,8 @@ interface Signal {
   boardId?: string
   /** Set on `task-changed` signals: the task that moved. */
   taskId?: string
+  /** The turn-end / exit reason (`cancelled`, `error`, `operator-stopped`, …). */
+  reason?: string
 }
 
 function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
@@ -123,6 +144,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
         ts: ev.ts,
         ...(ev.label ? { label: ev.label } : {}),
         ...(detail ? { detail } : {}),
+        ...(ev.reason ? { reason: ev.reason } : {}),
       }
     }
     case "session:awaiting-input":
@@ -144,7 +166,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
         empty: false,
         ts: ev.ts,
         ...(ev.label ? { label: ev.label } : {}),
-        ...(ev.reason ? { detail: ev.reason } : {}),
+        ...(ev.reason ? { detail: ev.reason, reason: ev.reason } : {}),
       }
     }
     case "activity:changed":
@@ -247,6 +269,24 @@ export function followCoversSession(
   return true
 }
 
+/** Would the follow's selector cover the FOLLOWER's own session? Used by
+ *  the triage path: the follower's own board write may reach the triage
+ *  stage (where the `ownTaskChanges` rule drops it) but triage must never
+ *  WIDEN what a follow sees. */
+function selectorCoversFollower(
+  follow: SessionFollow,
+  followerDesc: SessionDescriptor | undefined,
+): boolean {
+  const sel = follow.selector
+  if (sel.sessionIds?.includes(follow.follower)) return true
+  const broad = sel.all === true || (sel.cwdPrefix !== undefined && sel.cwdPrefix !== "")
+  if (!broad) return false
+  if (sel.cwdPrefix && !cwdUnder(followerDesc?.cwd, sel.cwdPrefix)) return false
+  const rootOnly = sel.rootOnly ?? sel.all === true
+  if (rootOnly && followerDesc?.parentSessionId) return false
+  return true
+}
+
 /** The event kind `follow` would deliver for `signal`, or undefined when its
  *  event filter / empty-turn rule drops it. */
 function followWants(follow: SessionFollow, signal: Signal): FollowEvent | undefined {
@@ -283,6 +323,12 @@ interface BatchEntry {
    *  `boardId` is set the digest renders a board line, not a session line. */
   boardId?: string
   taskId?: string
+  /** `turn-end` / `awaiting-input`: the session is waiting on the human. */
+  awaitingInput?: boolean
+  /** `turn-end`: the turn produced no output at all. */
+  empty?: boolean
+  /** The turn-end / exit reason. */
+  reason?: string
 }
 
 const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-input"])
@@ -302,16 +348,21 @@ export function excerptOf(text: string | undefined): string | undefined {
   return flat.length <= FOLLOW_EXCERPT_MAX ? flat : `…${flat.slice(flat.length - (FOLLOW_EXCERPT_MAX - 1))}`
 }
 
-/** Compose the digest text. Exported for tests. */
+/** Compose the digest text. Exported for tests. `mode:"fyi"` renders the
+ *  header of a digest that must NOT wake the follower. */
 export function formatFollowDigest(
   entries: readonly BatchEntry[],
   resolveText: (entry: BatchEntry) => string | undefined,
   desc: (id: string) => SessionDescriptor | undefined,
+  mode: "wake" | "fyi" = "wake",
 ): string {
   const header =
-    `[session-follow] automatic digest — ${entries.length} event${entries.length === 1 ? "" : "s"} ` +
-    `from sessions you follow. Decide whether anything needs the human's attention; ` +
-    `if not, no reply is needed.`
+    mode === "fyi"
+      ? `[session-follow] automatic digest (for your information only — no action expected) — ` +
+        `${entries.length} event${entries.length === 1 ? "" : "s"} from sessions you follow.`
+      : `[session-follow] automatic digest — ${entries.length} event${entries.length === 1 ? "" : "s"} ` +
+        `from sessions you follow. Decide whether anything needs the human's attention; ` +
+        `if not, no reply is needed.`
   const lines = entries.slice(0, FOLLOW_DIGEST_MAX_LINES).map(entry => {
     if (entry.boardId !== undefined) {
       const parts = [`[session-follow] board ${entry.boardId} task ${entry.taskId ?? "?"} ${entry.event}`]
@@ -363,6 +414,28 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const clearTimer =
     opts.clearTimer ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>))
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "follows-parked.jsonl")
+  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "follow-triage.jsonl")
+  const daemonTriage: FollowTriageConfig =
+    typeof opts.triage === "object" && opts.triage !== null
+      ? opts.triage
+      : defaultFollowTriageConfig()
+  /** Re-read the daemon-level triage default (the daemon passes a resolver
+   *  so a `config_set` applies to the next digest). */
+  async function refreshDaemonTriage(): Promise<void> {
+    if (typeof opts.triage !== "function") return
+    try {
+      const next = await opts.triage()
+      if (next) {
+        daemonTriage.enabled = next.enabled
+        daemonTriage.rules = { ...next.rules }
+        daemonTriage.reportWindowMs = next.reportWindowMs
+        if (next.classifier) daemonTriage.classifier = next.classifier
+        else delete daemonTriage.classifier
+      }
+    } catch (err) {
+      log(`[session-follow] could not refresh the triage config: ${describeError(err)}`)
+    }
+  }
   const readLastOutput =
     opts.readLastOutput ??
     ((d: SessionDescriptor): string | undefined =>
@@ -374,6 +447,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   /** One in-flight `restartSession` promise per dead follower id, so two
    *  stale batches racing for the same dead id collapse into one revival. */
   const revivals = new Map<string, Promise<string>>()
+  /** follower id → reporter session id → epoch ms of the last report the
+   *  reporter sent UP to that follower (`message_parent`). Bounded by the
+   *  report window — old entries are dropped on read. */
+  const reports = new Map<string, Map<string, number>>()
 
   function park(followerId: string, text: string, reason: string): void {
     log(`[session-follow] follower ${followerId}: ${reason} — digest parked`)
@@ -386,6 +463,125 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       )
     } catch (err) {
       log(`[session-follow] failed to park digest for ${followerId}: ${describeError(err)}`)
+    }
+  }
+
+  // ── Triage ──────────────────────────────────────────────────────────
+
+  /** The effective triage config of a batch: the daemon default, overridden
+   *  by every contributing follow. Triage runs for the batch as soon as ONE
+   *  contributing follow asks for it; a rule is on when ANY contributing
+   *  follow has it on (a follow that wants the rule wins over one that does
+   *  not). */
+  function triageConfigFor(follows: readonly SessionFollow[]): FollowTriageConfig {
+    const effective = follows.map(f => resolveFollowTriageConfig(daemonTriage, f.triage))
+    const rules = { ...daemonTriage.rules }
+    for (const cfg of effective) {
+      for (const key of Object.keys(rules) as (keyof FollowTriageConfig["rules"])[]) {
+        if (cfg.rules[key]) rules[key] = true
+      }
+    }
+    const classifier = effective.find(cfg => cfg.classifier)?.classifier ?? daemonTriage.classifier
+    const reportWindowMs =
+      follows.find(f => f.triage?.reportWindowMs !== undefined)?.triage?.reportWindowMs ??
+      daemonTriage.reportWindowMs
+    return {
+      enabled: effective.some(cfg => cfg.enabled),
+      rules,
+      ...(classifier ? { classifier } : {}),
+      reportWindowMs,
+    }
+  }
+
+  /** Did `sessionId` report UP to `follower` within the window before the
+   *  event? A report is a child→parent message (`message_parent`). */
+  function reportedRecently(event: TriageEvent, windowMs: number): boolean {
+    const byReporter = reports.get(event.follower)
+    const at = byReporter?.get(event.sessionId)
+    if (at === undefined) return false
+    const evAt = Date.parse(event.ts)
+    if (!Number.isFinite(evAt)) return false
+    // The report may land a hair AFTER the turn-end it announces (same
+    // tick) — a 2s grace covers that without widening the window.
+    const delta = evAt - at
+    return delta <= windowMs && delta >= -2_000
+  }
+
+  /** Is this session one of the follower's OWN live sessions (the follower
+   *  itself or one of its descendants)? */
+  function isFollowerSession(sessionId: string, follower: string): boolean {
+    if (sessionId === follower) return true
+    const desc = registry.get(sessionId)
+    if (!desc || !isAlive(desc)) return false
+    return descendsFrom(registry, desc, follower)
+  }
+
+  /** Was this turn-end followed by a NEW turn of the same session? True
+   *  when a later turn-end of the same session is already in the batch, or
+   *  when the session is busy again (a new turn is in flight). */
+  function supersededByNewTurn(event: TriageEvent, entries: readonly BatchEntry[]): boolean {
+    const evAt = Date.parse(event.ts)
+    for (const entry of entries) {
+      if (entry.sessionId !== event.sessionId) continue
+      if (entry.event !== "turn-end") continue
+      const at = Date.parse(entry.ts)
+      if (Number.isFinite(evAt) && Number.isFinite(at) && at > evAt) return true
+    }
+    return registry.get(event.sessionId)?.busy === true
+  }
+
+  /** The facts the triage rules read. Engine-owned ones first, then the
+   *  caller's overrides (a cron-status probe, a test seam). */
+  function factsFor(followerId: string, entries: readonly BatchEntry[]): TriageFacts {
+    return {
+      reportedRecently,
+      isFollowerSession,
+      supersededByNewTurn: event => supersededByNewTurn(event, entries),
+      ...(opts.triageFacts ?? {}),
+    }
+  }
+
+  function toTriageEvent(followerId: string, entry: BatchEntry): TriageEvent {
+    return {
+      follower: followerId,
+      event: entry.event,
+      sessionId: entry.sessionId,
+      ts: entry.ts,
+      ...(entry.label ? { label: entry.label } : {}),
+      ...(entry.detail ? { detail: entry.detail } : {}),
+      ...(entry.key ? { key: entry.key } : {}),
+      ...(entry.boardId ? { boardId: entry.boardId } : {}),
+      ...(entry.taskId ? { taskId: entry.taskId } : {}),
+      ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
+      ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
+      ...(entry.reason ? { reason: entry.reason } : {}),
+    }
+  }
+
+  /** One JSONL line per triaged event — the training data a future
+   *  classifier is fitted on. Never throws: a failed write is logged. */
+  function writeTriageLedger(followerId: string, entries: readonly BatchEntry[], results: readonly TriageResult[]): void {
+    try {
+      mkdirSync(dirname(triagePath), { recursive: true })
+      const lines = entries
+        .map((entry, i) => {
+          const result = results[i]
+          if (!result) return null
+          return JSON.stringify({
+            ts: new Date().toISOString(),
+            follower: followerId,
+            event: entry.event,
+            sessionId: entry.sessionId,
+            ...(entry.label ? { label: entry.label } : {}),
+            decision: result.decision,
+            rule: result.rule,
+          })
+        })
+        .filter((line): line is string => line !== null)
+      if (lines.length === 0) return
+      appendFileSync(triagePath, lines.join("\n") + "\n", { mode: 0o600 })
+    } catch (err) {
+      log(`[session-follow] failed to write the triage ledger: ${describeError(err)}`)
     }
   }
 
@@ -529,14 +725,51 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     }
   }
 
-  function flushFollower(followerId: string): Promise<void> {
+  async function flushFollower(followerId: string): Promise<void> {
     const batch = batches.get(followerId)
-    if (!batch) return Promise.resolve()
+    if (!batch) return
     batches.delete(followerId)
     clearTimer(batch.timer)
-    if (batch.entries.length === 0) return Promise.resolve()
-    const text = formatFollowDigest(batch.entries, textFor, id => registry.get(id))
-    const p = deliver(followerId, text, batch.followIds, batch.urgency)
+    if (batch.entries.length === 0) return
+    await refreshDaemonTriage()
+    const entries = batch.entries
+    const follows = [...batch.followIds]
+      .map(id => store.get(id))
+      .filter((f): f is SessionFollow => f !== undefined)
+    const triage = triageConfigFor(follows)
+    let text: string
+    let urgency: FollowUrgency = batch.urgency
+    if (triage.enabled) {
+      // Deterministic triage BEFORE the wake: every event is classified,
+      // every decision is logged, and only the `wake` ones (plus a count of
+      // the informational ones) make it into a digest that may wake.
+      const facts = factsFor(followerId, entries)
+      const results: TriageResult[] = []
+      for (const entry of entries) {
+        results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
+      }
+      writeTriageLedger(followerId, entries, results)
+      const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
+      const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
+      if (wakeEntries.length === 0) {
+        if (fyiEntries.length === 0) {
+          // Everything was dropped: nothing to deliver, nothing to wake.
+          log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
+          return
+        }
+        text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
+        urgency = "fyi"
+      } else {
+        text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
+        if (fyiEntries.length > 0) {
+          text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
+        }
+        urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
+      }
+    } else {
+      text = formatFollowDigest(entries, textFor, id => registry.get(id))
+    }
+    const p = deliver(followerId, text, batch.followIds, urgency)
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
@@ -584,7 +817,19 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         if (alreadyClaimed && follow.urgency === "fyi") continue
         const event = followWants(follow, signal)
         if (!event) continue
-        if (signal.boardId !== undefined) {
+        const triageOn = resolveFollowTriageConfig(daemonTriage, follow.triage).enabled
+        // The follower's OWN board write. With triage on it reaches the
+        // triage stage (where the `ownTaskChanges` rule drops it — and the
+        // decision is logged as training data); with triage off the legacy
+        // anti-loop filter below skips it outright.
+        const selfTaskChange =
+          signal.event === "task-changed" && signal.sessionId !== "" && signal.sessionId === follow.follower
+        if (selfTaskChange) {
+          if (!triageOn) continue
+          // Only if the follow's selector would otherwise cover the
+          // follower itself — triage must not WIDEN what a follow sees.
+          if (!selectorCoversFollower(follow, registry.get(follow.follower))) continue
+        } else if (signal.boardId !== undefined) {
           // Board follow: match the board, never wake the actor's own session
           // (anti-loop — the brain/secretary's own writes come back attributed
           // to it).
@@ -611,11 +856,28 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           ...(signal.key ? { key: signal.key } : {}),
           ...(signal.boardId ? { boardId: signal.boardId } : {}),
           ...(signal.taskId ? { taskId: signal.taskId } : {}),
+          ...(signal.awaitingInput ? { awaitingInput: true } : {}),
+          ...(signal.empty ? { empty: true } : {}),
+          ...(signal.reason ? { reason: signal.reason } : {}),
         })
       }
     } catch (err) {
       log(`[session-follow] event handling failed: ${describeError(err)}`)
     }
+  })
+
+  const unsubscribeReports = sessionEvents.on("session:message", ev => {
+    // A child→parent report (`message_parent`): the follower will read it
+    // as a message, so the turn-end that follows is its echo.
+    if (ev.relation !== "child" || !ev.fromSessionId) return
+    const at = Date.parse(ev.ts)
+    if (!Number.isFinite(at)) return
+    let byReporter = reports.get(ev.sessionId)
+    if (!byReporter) {
+      byReporter = new Map()
+      reports.set(ev.sessionId, byReporter)
+    }
+    byReporter.set(ev.fromSessionId, at)
   })
 
   return {
@@ -626,6 +888,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     },
     dispose() {
       unsubscribe()
+      unsubscribeReports()
       for (const batch of batches.values()) clearTimer(batch.timer)
       batches.clear()
     },
