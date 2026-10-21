@@ -32,7 +32,7 @@ import {
   type SpawnAgentSessionInput,
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
-import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
+import { CALLER_SESSION_ID_HEADER, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
 
 export interface ContinueAgentSessionFreshResult {
@@ -126,15 +126,30 @@ export function stripOwnCallerStamp(
   if (!servers) return servers
   return servers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    // The identity header travels with the query (see
+    // `CALLER_SESSION_ID_HEADER`): strip OURS too, or the fresh session
+    // would keep speaking to the daemon under the dead session's id.
+    const headers = entry.headers
+      ? Object.fromEntries(
+          Object.entries(entry.headers).filter(
+            ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
+          ),
+        )
+      : undefined
+    const hasHeaders = headers !== undefined && Object.keys(headers).length > 0
     let url: URL
     try {
       url = new URL(entry.ref)
     } catch {
       return entry
     }
-    if (url.searchParams.get("callerSessionId") !== prevId) return entry
+    if (url.searchParams.get("callerSessionId") !== prevId) {
+      // The query does not carry our stamp; the header might still.
+      if (!hasHeaders) return entry
+      return { ...entry, headers: headers! }
+    }
     url.searchParams.delete("callerSessionId")
-    return { ...entry, ref: url.toString() }
+    return { ...entry, ref: url.toString(), ...(hasHeaders ? { headers: headers! } : {}) }
   })
 }
 
