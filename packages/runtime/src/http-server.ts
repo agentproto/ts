@@ -64,9 +64,7 @@ import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
   createSessionMessage,
-  isMessageAllowed,
   messageFrom,
-  resolveRelation,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageKind,
@@ -273,7 +271,8 @@ import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-co
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
-import { resolveMessagingDefaults } from "./messaging-defaults.js"
+import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
+import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -1015,6 +1014,13 @@ export interface RuntimeHttpServerOptions {
    * Absent → `/mcp` behaves exactly as before.
    */
   mcpObservations?: McpObservationStore
+  /**
+   * Resolver for `defaults.messaging.*` (allowSiblings, agentInterrupt)
+   * used by the messaging ACL on `POST /sessions/:id/messages` and the
+   * box parent relay. Defaults to `resolveMessagingDefaults` (config.json,
+   * read per request). A seam for tests.
+   */
+  resolveMessagingDefaults?: () => Promise<ResolvedMessagingDefaults>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -3144,7 +3150,7 @@ export async function startHttpServer(
             json(400, { error: "invalid_urgency", allowed: MESSAGE_URGENCIES })
             return
           }
-          const messagingDefaults = await resolveMessagingDefaults()
+          const messagingDefaults = await (opts.resolveMessagingDefaults ?? resolveMessagingDefaults)()
           const result = await deliverParentRelayMessage({
             token: relayToken,
             payload: {
@@ -3207,6 +3213,8 @@ export async function startHttpServer(
             opts.listAgentAdapters,
             opts.deviceMirrorSync,
             opts.mcpObservations,
+            resolveCallerSessionId,
+            opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
           )
           if (handled) return
         }
@@ -6647,6 +6655,11 @@ async function handleSessions(
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
   mcpObservations?: McpObservationStore,
+  // The caller identity resolver `/mcp` uses (`?callerSessionId=` query,
+  // else the trusted `x-agentproto-caller-session-id` header). Absent ⇒
+  // the query only.
+  resolveCallerSessionIdFor?: (req: IncomingMessage) => string | undefined,
+  messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -7616,11 +7629,15 @@ code { color: #9ad; }
     return true
   }
   // ── Typed session messages (AIP-46 §Session messages) ─────────────
-  // POST /sessions/:id/messages — send a message TO :id. The sender is the
-  // human operator (relation `human`) unless the trusted loopback
-  // `?callerSessionId=<id>` names a session, in which case the tree ACL
-  // applies exactly as for the `message_send` tool. The body can never set
-  // the sender.
+  // POST /sessions/:id/messages: send a message TO :id. The sender is
+  // resolved exactly as on `/mcp`: the `?callerSessionId=<id>` query, else
+  // the trusted `x-agentproto-caller-session-id` header. A caller that
+  // names a session is held to the same ACL as the `message_send` tool
+  // (`decide()` in permissions.ts, honouring `allowSiblings` and
+  // `agentInterrupt`). A caller with NO session identity (the CLI, a local
+  // HTTP client, Claude Desktop / Cowork) is the operator (relation
+  // `human`) and may message, and interrupt, any session. The body can
+  // never set the sender.
   const messagesMatch = path.match(/^\/sessions\/([^/]+)\/messages$/)
   if (messagesMatch && req.method === "POST") {
     const id = messagesMatch[1]
@@ -7648,20 +7665,31 @@ code { color: #9ad; }
       return true
     }
     const reqUrl = req.url ?? ""
-    const callerId =
-      new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "").get(
-        "callerSessionId",
-      ) ?? undefined
+    const callerId = resolveCallerSessionIdFor
+      ? resolveCallerSessionIdFor(req)
+      : (new URLSearchParams(reqUrl.includes("?") ? reqUrl.slice(reqUrl.indexOf("?") + 1) : "").get(
+          "callerSessionId",
+        ) ?? undefined)
     const sender = callerId ? registry.get(callerId) : undefined
     if (callerId && !sender) {
       json(404, { error: "no_such_caller", callerSessionId: callerId })
       return true
     }
-    const relation = resolveRelation(sender, recipient)
-    if (!isMessageAllowed(relation)) {
-      json(403, { error: "forbidden_recipient", id, callerSessionId: callerId })
+    const messaging = await messagingDefaultsFor()
+    const policy: PermissionContext = {
+      messaging: { allowSiblings: messaging.allowSiblings, agentInterrupt: messaging.agentInterrupt },
+    }
+    const principal: Principal = sender
+      ? { kind: "session", session: sender }
+      : { kind: "operator", via: "anonymous-local" }
+    const resource = { kind: "session", session: recipient } as const
+    const decision = decide(principal, "session.message", resource, policy)
+    const relation = decision.relation
+    if (!decision.allow || !relation) {
+      json(403, { error: "forbidden_recipient", id, callerSessionId: callerId, rule: decision.rule, reason: decision.reason })
       return true
     }
+    const interruptDecision = decide(principal, "session.message.interrupt", resource, policy)
     let msg
     try {
       msg = createSessionMessage({
@@ -7683,9 +7711,11 @@ code { color: #9ad; }
       const r = await registry.sendMessage(msg, {
         source: sender ? provenance : "user",
         origin: provenance,
-        // A human operator keeps `interrupt` (AIP-46: hosts SHOULD NOT grant
+        decision,
+        // A human operator keeps `interrupt`; session senders follow
+        // `defaults.messaging.agentInterrupt` (AIP-46: hosts SHOULD NOT grant
         // it to session senders by default — they get `steer` instead).
-        ...(!sender ? { allowInterrupt: true } : {}),
+        ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
       })
       json(200, { ok: true, id, relation, ...r })
     } catch (err) {

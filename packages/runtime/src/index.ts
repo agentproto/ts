@@ -950,6 +950,21 @@ export {
 } from "./session-observer.js"
 export * from "./session-message.js"
 export {
+  decide as decidePermission,
+  collectMessageRelations,
+  assertDecisionAllows,
+  isPermissionAction,
+  PermissionDeniedError,
+  PERMISSION_ACTIONS,
+  PERMISSION_ACTION_INFO,
+  type Decision as PermissionDecision,
+  type DecisionBody as PermissionDecisionBody,
+  type PermissionAction,
+  type PermissionContext,
+  type PermissionResource,
+  type Principal as PermissionPrincipal,
+} from "./permissions.js"
+export {
   getMcpCredentialDeps,
   setMcpCredentialDeps,
   type McpCredentialDeps,

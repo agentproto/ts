@@ -212,6 +212,7 @@ import {
   type MessageUrgency,
   type SessionMessage,
 } from "./session-message.js"
+import { assertDecisionAllows, type Decision } from "./permissions.js"
 // Reused, not reimplemented — same parser `applyModelCommand`'s dedicated
 // control turn uses, branched onto the ORDINARY prompt flow below so a
 // `/model <id>` typed as a plain turn (never routed through
@@ -4334,6 +4335,13 @@ export interface SessionsRegistry {
       source?: string
       origin?: string
       allowInterrupt?: boolean
+      /** The `session.message` decision the entry point got from
+       *  `decide()` (permissions.ts). When present, the sink refuses the
+       *  message (`PermissionDeniedError`) unless it allows `msg.to`. The
+       *  session-to-session entry points (message tools, `message_parent`,
+       *  the HTTP route, the box relay) always pass one; daemon-internal
+       *  notices (sentinels, follows, supervisors) do not yet. */
+      decision?: Decision
       /** Coalescing key — carried through to `enqueuePrompt`'s queue arm
        *  (sentinel notices use this so a burst about one PR/commit becomes
        *  one queued item). */
@@ -12143,6 +12151,7 @@ export function createSessionsRegistry(opts?: {
     },
     sweepPendingPrompts,
     async sendMessage(msg, opts) {
+      if (opts?.decision) assertDecisionAllows(opts.decision, "session.message", msg.to)
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       expireExternalIfStale(rt)
