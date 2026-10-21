@@ -5369,7 +5369,7 @@ export interface SpawnAgentInput {
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
   parentSessionId?: string
-  /** A REMOTE parent (host relay) — recorded verbatim onto
+  /** A REMOTE parent (host relay): recorded verbatim onto
    *  {@link SessionDescriptor.remoteParent}. Set by the box-side spawn that
    *  received a forwarded `remoteParent` block from the host; see
    *  `parent-relay.ts`. */

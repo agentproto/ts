@@ -1,5 +1,5 @@
 /**
- * PARENT RELAY — reporting UP from inside a box (E2B / computer-use) to a
+ * PARENT RELAY: reporting UP from inside a box (E2B / computer-use) to a
  * parent session that lives in the HOST daemon's registry.
  *
  * The problem (see `docs/lineage-handover.md`, section "Known gap - sessions

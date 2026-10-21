@@ -1667,7 +1667,7 @@ export interface SpawnAgentSessionInput {
    *  flag. */
   notifyParentOnCrash?: boolean
   /** A REMOTE parent (host relay) forwarded by the host into a BOX daemon's
-   *  `agent_start` — the parent session lives in the HOST daemon's registry,
+   *  `agent_start`: the parent session lives in the HOST daemon's registry,
    *  so the box row records it as `remoteParent` instead of
    *  `parentSessionId` and `message_parent` relays the report to the host
    *  (see `parent-relay.ts` and `docs/lineage-handover.md`). Recorded
@@ -4714,7 +4714,7 @@ export async function spawnAgentSession(
         // so the box daemon enforces the executor/supervisor delegation rule
         // consistently (see `bootSandboxAgentSession`'s `role` opt).
         ...(input.sandbox !== undefined ? { role: role.name } : {}),
-        // PARENT RELAY — when this box session has a host-side parent, the
+        // PARENT RELAY: when this box session has a host-side parent, the
         // boot mints a relay token and forwards a REMOTE parent into the
         // box's own `agent_start` (the parent lives in the HOST registry).
         // No relay URL configured ⇒ nothing forwarded (the box keeps today's
@@ -5703,12 +5703,12 @@ export async function bootSandboxAgentSession(opts: {
    *  `/mcp/orchestrator` on ITS loopback (reachable by the adapter inside
    *  the box). Absent for every non-sandbox spawn. */
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
-  /** PARENT RELAY — the host's parent session id + the host-side box-session
+  /** PARENT RELAY: the host's parent session id + the host-side box-session
    *  row id, so the boot can mint a short-lived relay token and forward a
    *  REMOTE parent into the box's own `agent_start` (the parent lives in the
    *  HOST registry; the box row therefore has no local `parentSessionId`).
    *  The relay URL itself comes from the operator's configuration
-   *  (`AGENTPROTO_PARENT_RELAY_URL`) — without it no remote parent is
+   *  (`AGENTPROTO_PARENT_RELAY_URL`): without it no remote parent is
    *  forwarded and the box keeps today's clear "no recorded parent" error.
    *  Absent for every non-sandbox spawn. */
   parentRelay?: { parentSessionId: string; boxSessionId: string }
@@ -6292,11 +6292,11 @@ export async function bootSandboxAgentSession(opts: {
       : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
-  // PARENT RELAY — mint the short-lived, single-session-scoped relay token
+  // PARENT RELAY: mint the short-lived, single-session-scoped relay token
   // and forward the REMOTE parent into the box's own `agent_start` so a
   // session running INSIDE the box can report up to its host parent (the
   // parent lives in the HOST registry, so the box row has no local
-  // `parentSessionId` — see `docs/lineage-handover.md`). Only possible when
+  // `parentSessionId` (see `docs/lineage-handover.md`). Only possible when
   // the operator configured a relay URL reachable FROM the box; without one
   // nothing is forwarded and the box's `message_parent` keeps today's clear
   // "no recorded parent" error.
@@ -6352,7 +6352,7 @@ export async function bootSandboxAgentSession(opts: {
       // host would have, so an executor's role is enforced consistently
       // wherever the spawn runs — no re-resolution-from-nothing box-side.
       ...(opts.role !== undefined ? { role: opts.role } : {}),
-      // PARENT RELAY — the REMOTE parent (host relay) block; see the
+      // PARENT RELAY: the REMOTE parent (host relay) block; see the
       // `remoteParent` mint above.
       ...(remoteParent ? { remoteParent } : {}),
     }

@@ -883,11 +883,11 @@ export function registerAgentTools(
       if (!self) {
         return fail(`message_parent: calling session "${selfId}" is not in the registry.`)
       }
-      // PARENT RELAY — a session running INSIDE a box (E2B / computer) has
+      // PARENT RELAY: a session running INSIDE a box (E2B / computer) has
       // no local parent row: the parent lives in the HOST daemon's registry
       // (see `docs/lineage-handover.md`). When the host forwarded a remote
       // parent at spawn time, the report is RELAYED to the host's relay
-      // endpoint instead of being looked up locally — the host delivers it
+      // endpoint instead of being looked up locally: the host delivers it
       // to the parent as if it were local (kind/urgency preserved). A
       // session with a LOCAL parent always takes the local path.
       if (self.remoteParent && !self.parentSessionId) {
@@ -906,7 +906,7 @@ export function registerAgentTools(
         if (!relayed.ok) {
           return fail(
             `message_parent: could not relay the report to the host parent ` +
-              `session "${remote.sessionId}" — ${relayed.message}`,
+              `session "${remote.sessionId}": ${relayed.message}`,
           )
         }
         return {

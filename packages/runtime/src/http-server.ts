@@ -3058,7 +3058,7 @@ export async function startHttpServer(
           return
         }
 
-        // PARENT RELAY — a session running INSIDE a box (E2B / computer)
+        // PARENT RELAY: a session running INSIDE a box (E2B / computer)
         // reports UP to a parent session that lives in THIS daemon's
         // registry. The box POSTs the report here with the short-lived,
         // single-session-scoped token the host minted at spawn time; the

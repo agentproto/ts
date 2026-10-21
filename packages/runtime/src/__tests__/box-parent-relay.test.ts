@@ -1,11 +1,11 @@
 /**
- * PARENT RELAY — a session running INSIDE a box (E2B / computer) reporting
+ * PARENT RELAY: a session running INSIDE a box (E2B / computer) reporting
  * UP to a parent session that lives in the HOST daemon's registry.
  *
  * The design is `docs/lineage-handover.md`, section "Known gap - sessions
  * running INSIDE a box". The slice covered here:
  *
- *  1. HOST: the spawn config carries the relay info — the host mints a
+ *  1. HOST: the spawn config carries the relay info: the host mints a
  *     short-lived, single-session-scoped relay token and forwards a REMOTE
  *     parent into the box's own `agent_start` (the box row has no local
  *     `parentSessionId`).
@@ -16,7 +16,7 @@
  *     kind/urgency preserved, through the ordinary `sendMessage` path.
  *  4. NO RELAY: the current clear error is still what a caller sees.
  *
- * Everything is faked — no real box, no real HTTP.
+ * Everything is faked: no real box, no real HTTP.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
@@ -140,7 +140,7 @@ function isError(result: unknown): boolean {
   return (result as { isError?: boolean }).isError === true
 }
 
-describe("parent relay — the spawn config carries the relay info", () => {
+describe("parent relay: the spawn config carries the relay info", () => {
   let base: string
   const savedEnv = process.env.AGENTPROTO_PARENT_RELAY_URL
 
@@ -193,7 +193,7 @@ describe("parent relay — the spawn config carries the relay info", () => {
   })
 })
 
-describe("parent relay — the box forwards its report", () => {
+describe("parent relay: the box forwards its report", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -277,7 +277,7 @@ describe("parent relay — the box forwards its report", () => {
   })
 })
 
-describe("parent relay — the host delivers to the right parent", () => {
+describe("parent relay: the host delivers to the right parent", () => {
   it("resolves the recipient from the token (never the payload) and preserves kind/urgency", async () => {
     const sent: Array<{ to: string; from?: { sessionId?: string; relation?: string }; kind: string; urgency: string; text: string }> = []
     const fakeRegistry: ParentRelayRegistry = {
@@ -312,7 +312,7 @@ describe("parent relay — the host delivers to the right parent", () => {
     expect(sent[0]?.text).toBe("blocked on a flaky test")
   })
 
-  it("an unknown/expired token is refused — the payload cannot pick the recipient", async () => {
+  it("an unknown/expired token is refused: the payload cannot pick the recipient", async () => {
     const fakeRegistry: ParentRelayRegistry = {
       get: () => undefined,
       sendMessage: async () => {
@@ -362,7 +362,7 @@ describe("parent relay — the host delivers to the right parent", () => {
   })
 })
 
-describe("parent relay — no relay configured keeps today's error", () => {
+describe("parent relay: no relay configured keeps today's error", () => {
   it("a box session with no remote parent still gets the clear 'no recorded parent' error", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const boxSessionId = spawnNode(registry)
