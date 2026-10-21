@@ -2952,7 +2952,6 @@ function toSessionSummary(desc: SessionDescriptor): SessionSummary {
     ...(desc.lastError ? { lastError: desc.lastError.slice(0, 2000) } : {}),
     origin: desc.origin,
     parentSessionId: desc.parentSessionId,
-    ...(desc.remoteParent ? { remoteParent: desc.remoteParent } : {}),
     depth: desc.depth,
     priorCommandSessionId: desc.priorCommandSessionId,
     continuedFrom: desc.continuedFrom,

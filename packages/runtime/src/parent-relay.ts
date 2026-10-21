@@ -79,6 +79,10 @@ export const PARENT_RELAY_PATH = "/relay/parent-message"
 /** Default token lifetime: one hour (a box session's parent report window). */
 export const PARENT_RELAY_TTL_MS = 60 * 60 * 1000
 
+/** Default timeout for the box → host relay POST, so an unreachable host can
+ *  never block `message_parent` forever. */
+export const PARENT_RELAY_TIMEOUT_MS = 15_000
+
 /** Env var naming the host relay base URL (operator-provided reachability). */
 export const PARENT_RELAY_URL_ENV = "AGENTPROTO_PARENT_RELAY_URL"
 
@@ -191,7 +195,7 @@ export async function postParentRelayMessage(
         [PARENT_RELAY_TOKEN_HEADER]: remote.token,
       },
       body: JSON.stringify(payload),
-      ...(opts?.timeoutMs ? { signal: AbortSignal.timeout(opts.timeoutMs) } : {}),
+      signal: AbortSignal.timeout(opts?.timeoutMs ?? PARENT_RELAY_TIMEOUT_MS),
     })
     const body = (await res.json().catch(() => undefined)) as
       | {
