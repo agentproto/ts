@@ -2125,6 +2125,11 @@ export function registerSessionTools(
   ): { desc?: SessionDescriptor; error?: string } => {
     const desc = resolveSessionDesc(registry, input)
     if (desc) return { desc }
+    // A ref that was given but does not resolve is an error, never a silent
+    // fall back on the caller's own session (that would answer a question
+    // about another session with the caller's history).
+    const ref = sessionRefQuery(input)
+    if (ref) return { error: `no session "${ref}" found` }
     const fallback = callerSessionId
       ? registry.get(callerSessionId)
       : undefined
@@ -2210,22 +2215,29 @@ export function registerSessionTools(
       let spent = 0
       let truncated = false
       for (const node of nodes) {
-        if (hits.length >= maxResults) {
+        if (hits.length >= maxResults || spent >= totalChars) {
           truncated = true
           break
         }
-        const remaining = Math.max(200, totalChars - spent)
         const result = await searchTranscriptFile(node.path, node.sessionId, {
           query: input.query,
           maxResults: maxResults - hits.length,
           excerptChars,
-          totalChars: remaining,
+          totalChars: totalChars - spent,
         })
+        // The per-file reader floors its budget at 200 chars, so the total
+        // cap is enforced here too: a hit past it ends the walk.
+        let overBudget = false
         for (const hit of result.hits) {
+          if (spent + hit.excerpt.length > totalChars) {
+            overBudget = true
+            break
+          }
           spent += hit.excerpt.length
           hits.push(hit)
         }
-        if (result.truncated) truncated = true
+        if (result.truncated || overBudget) truncated = true
+        if (overBudget) break
       }
       return {
         content: [
@@ -2262,7 +2274,11 @@ export function registerSessionTools(
         .int()
         .min(0)
         .optional()
-        .describe("Only records with a sequence number above this cursor."),
+        .describe(
+          "Only records with a sequence number above this cursor, in the " +
+            "target session's own transcript (sequence numbers are per file; " +
+            "predecessors are read from their start).",
+        ),
       maxRecords: z
         .number()
         .int()
@@ -2310,23 +2326,32 @@ export function registerSessionTools(
       let spent = 0
       let truncated = false
       for (const node of nodes) {
-        if (excerpts.length >= maxRecords) {
+        if (excerpts.length >= maxRecords || spent >= totalChars) {
           truncated = true
           break
         }
-        const remaining = Math.max(200, totalChars - spent)
+        // `since` is a sequence cursor, and sequence numbers are per
+        // transcript file: it only means something for the target session's
+        // own transcript, never for a predecessor's.
+        const since = node.sessionId === target.desc.id ? input.since : undefined
         const result = await readTranscriptFile(node.path, node.sessionId, {
           ...(input.query !== undefined ? { query: input.query } : {}),
-          ...(input.since !== undefined ? { since: input.since } : {}),
+          ...(since !== undefined ? { since } : {}),
           maxRecords: maxRecords - excerpts.length,
           excerptChars,
-          totalChars: remaining,
+          totalChars: totalChars - spent,
         })
+        let overBudget = false
         for (const excerpt of result.excerpts) {
+          if (spent + excerpt.excerpt.length > totalChars) {
+            overBudget = true
+            break
+          }
           spent += excerpt.excerpt.length
           excerpts.push(excerpt)
         }
-        if (result.truncated) truncated = true
+        if (result.truncated || overBudget) truncated = true
+        if (overBudget) break
       }
       return {
         content: [
