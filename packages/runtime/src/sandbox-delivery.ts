@@ -237,6 +237,11 @@ export interface SandboxDeliveryRecord {
    *  deliveries and on a checkpoint taken without an
    *  {@link RunSandboxDeliveryInput.adapterStore} input. */
   adapterStore?: AdapterStoreRecord
+  /** Teardown-only: outcome of the `Agentproto-Session:` provenance stamp
+   *  on the work branch (see {@link buildProvenanceStampCommand}). Absent
+   *  when no stamp was attempted (no session id, checkpoint mode, nothing
+   *  ahead). Attribution only: never part of {@link isFullyDelivered}. */
+  provenanceStamp?: { status: "stamped" | "failed"; detail?: string }
   /** Turn count this checkpoint/delivery was taken after, when the caller
    *  knew one (`sandbox-agent-session-proxy.ts`'s `turnsSent`) — also baked
    *  into the snapshot commit message. Absent when no turn context was
@@ -409,6 +414,40 @@ export function buildProvenanceStampCommand(target: SandboxDeliveryTarget, sessi
     `{ old=$(git rev-parse "$ref") && new=$(git commit-tree "$ref^{tree}" -p "$old" -m ${message}) && ` +
     `git update-ref "$ref" "$new" "$old"; }; }`
   )
+}
+
+/** Attempts per {@link runProvenanceStamp} call. */
+const PROVENANCE_STAMP_ATTEMPTS = 2
+
+/**
+ * Run {@link buildProvenanceStampCommand}, retrying a failed attempt (a
+ * throw, a timeout or a non-zero exit). Never throws: the outcome is the
+ * record. The command is idempotent, so a retry after a partial success
+ * adds nothing.
+ */
+async function runProvenanceStamp(
+  exec: SandboxExec,
+  target: SandboxDeliveryTarget,
+  sessionId: string,
+  deadlineAt: number,
+  reserveMs: number,
+): Promise<NonNullable<SandboxDeliveryRecord["provenanceStamp"]>> {
+  let detail = "not attempted"
+  for (let attempt = 0; attempt < PROVENANCE_STAMP_ATTEMPTS; attempt++) {
+    try {
+      const result = await withinDeadline(
+        deadlineAt,
+        PROBE_TIMEOUT_MS,
+        (timeoutMs) => exec({ command: buildProvenanceStampCommand(target, sessionId), timeoutMs }),
+        reserveMs,
+      )
+      if (result.exitCode === 0) return { status: "stamped" }
+      detail = describeExecFailure(result)
+    } catch (err) {
+      detail = errorText(err)
+    }
+  }
+  return { status: "failed", detail }
 }
 
 /** Push only a branch that actually has commits to publish. */
@@ -666,18 +705,30 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
   } else {
     // Teardown only: carry the authoring-session trailer on the pushed work
     // branch (the checkpoint ref that also carries it is deleted below on a
-    // clean run). Best-effort - a failure only loses the attribution hint.
-    if (!checkpointMode && input.sessionId) {
-      try {
-        await withinDeadline(deadlineAt, PROBE_TIMEOUT_MS, (timeoutMs) =>
-          exec({ command: buildProvenanceStampCommand(target, input.sessionId!), timeoutMs }),
-          input.readFile ? bundleReserveMs : 0,
-        )
-      } catch {
-        // best-effort
+    // clean run). Best-effort - a failure only loses the attribution hint,
+    // never blocks the push. A failed attempt is retried, and the outcome is
+    // recorded so a stamp that never landed is visible, not swallowed.
+    const reserveMs = input.readFile ? bundleReserveMs : 0
+    const stamp = !checkpointMode && input.sessionId
+      ? () => runProvenanceStamp(exec, target, input.sessionId!, deadlineAt, reserveMs)
+      : undefined
+    if (stamp) record.provenanceStamp = await stamp()
+    record.push = await pushBranch(exec, target, deadlineAt, reserveMs)
+    // The push landed but the stamp did not: retry it once more and, when it
+    // lands now, push again so the remote branch carries the trailer too.
+    // Without this a failed stamp was never retried: nothing else re-runs
+    // the teardown delivery once its push succeeded.
+    if (stamp && record.provenanceStamp?.status === "failed" && record.push.status === "pushed") {
+      const retry = await stamp()
+      if (retry.status === "stamped") {
+        const again = await pushBranch(exec, target, deadlineAt, reserveMs)
+        record.provenanceStamp = again.status === "pushed"
+          ? retry
+          : { status: "failed", detail: `stamped but the re-push failed: ${again.detail ?? "unknown"}` }
+      } else {
+        record.provenanceStamp = retry
       }
     }
-    record.push = await pushBranch(exec, target, deadlineAt, input.readFile ? bundleReserveMs : 0)
   }
 
   if (probe.snapshot !== undefined) {

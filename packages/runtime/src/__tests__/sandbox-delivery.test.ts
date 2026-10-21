@@ -585,6 +585,68 @@ describe("work-branch provenance stamp", () => {
     expect(record.push.status).toBe("pushed")
   })
 
+  it("a stamp that fails once is retried before the push, and recorded as stamped", async () => {
+    for (const failure of ["throw", "exit"] as const) {
+      const commands: string[] = []
+      let stampCalls = 0
+      const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+        commands.push(o.command)
+        if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+        if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) {
+          stampCalls++
+          if (stampCalls === 1) {
+            if (failure === "throw") throw new Error("box hiccup")
+            return result(1, "", "cannot lock ref")
+          }
+          return result(0)
+        }
+        return result(0)
+      }
+      const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+      expect(stampCalls).toBe(2)
+      expect(record.provenanceStamp).toEqual({ status: "stamped" })
+      expect(record.push.status).toBe("pushed")
+      const lastStamp = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT)).lastIndexOf(true)
+      const firstPush = commands.findIndex(c => c.includes(" push ") && !c.includes("--delete"))
+      expect(lastStamp).toBeLessThan(firstPush)
+    }
+  })
+
+  it("a stamp still failing after the push is retried once more and the stamped tip re-pushed", async () => {
+    const commands: string[] = []
+    let stampCalls = 0
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) {
+        stampCalls++
+        return stampCalls <= 2 ? result(1, "", "cannot lock ref") : result(0)
+      }
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.provenanceStamp).toEqual({ status: "stamped" })
+    const lastStamp = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT)).lastIndexOf(true)
+    const pushes = commands
+      .map((c, i) => (c.includes(" push ") && !c.includes("--delete") ? i : -1))
+      .filter(i => i >= 0)
+    expect(pushes.length).toBe(2)
+    expect(pushes[1]).toBeGreaterThan(lastStamp)
+  })
+
+  it("a stamp that never lands is recorded as failed, never blocks the push nor counts against delivery", async () => {
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      if (o.command.includes("rev-list")) return result(0, `ahead=1\nuncommitted=0\nhead=${HEAD}\n`)
+      if (o.command.includes(PROVENANCE_COMMIT_SUBJECT)) return result(1, "", "cannot lock ref")
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.push.status).toBe("pushed")
+    expect(record.provenanceStamp?.status).toBe("failed")
+    expect(record.provenanceStamp?.detail).toContain("cannot lock ref")
+    expect(isFullyDelivered(record)).toBe(true)
+  })
+
   it("producer/consumer: the stamp command's commit is read back by the PR trailer reader, idempotently", () => {
     const git = (cwd: string, ...args: string[]) => {
       const r = spawnSync("git", args, { cwd, encoding: "utf8" })
