@@ -1,6 +1,6 @@
 /**
  * The CALLER IDENTITY of a daemon-spawned session must reach the daemon's
- * `/mcp` gateway — that identity is what makes `message_parent` able to
+ * `/mcp` gateway: that identity is what makes `message_parent` able to
  * report up (it refuses with "cannot identify the calling session" without
  * one) and what makes the spawns a session makes nest under it instead of
  * landing as depth-0 orphans (see `spawn-attach.ts`).
@@ -14,8 +14,8 @@
  * And the mount is recognized as "this daemon's own endpoint" by ORIGIN +
  * PATH, not by exact string equality: an ambient mount (a project
  * `.mcp.json`, an operator's global MCP config, a config a supervisor passed
- * down) spells the same endpoint differently — `localhost` vs `127.0.0.1`,
- * a trailing slash, a `?host=…` query — and every one of those spellings
+ * down) spells the same endpoint differently: `localhost` vs `127.0.0.1`,
+ * a trailing slash, a `?host=…` query, and every one of those spellings
  * used to FAIL the exact match, so the mount was never identity-stamped and
  * the session went anonymous to the gateway.
  */

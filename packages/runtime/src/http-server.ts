@@ -2015,19 +2015,19 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
-  /** The header twin of `parseCallerSessionIdQuery` — see
+  /** The header twin of `parseCallerSessionIdQuery`; see
    *  `CALLER_SESSION_ID_HEADER` (sessions.ts).
    *
    *  The query is the historical carrier of the caller's identity, but a URL
    *  query is fragile: a client (or an intermediary) that rebuilds the mount
-   *  URL drops it, and the session goes anonymous to the gateway — no
+   *  URL drops it, and the session goes anonymous to the gateway: no
    *  `message_parent` (it cannot identify its caller), and no auto-parent
    *  for the spawns it makes (they land as depth-0 orphans). The header
    *  travels with the request whatever the client does to the URL, so the
    *  identity is read from whichever carrier survived. The QUERY WINS when
    *  both are present (it is the form the trust checks already read), and
    *  the header is honoured on the same trust footing as a query claim
-   *  (loopback socket or a valid daemon bearer — see `externalClaimTrusted`).
+   *  (loopback socket or a valid daemon bearer; see `externalClaimTrusted`).
    */
   function parseCallerSessionIdHeader(req: IncomingMessage): string | undefined {
     const raw = req.headers[CALLER_SESSION_ID_HEADER]
@@ -2039,7 +2039,7 @@ export async function startHttpServer(
   }
 
   /** The caller's session id for this request: the trusted query claim, else
-   *  the identity header (same trust rules — see `externalClaimTrusted`). */
+   *  the identity header (same trust rules; see `externalClaimTrusted`). */
   function resolveCallerSessionId(req: IncomingMessage): string | undefined {
     const fromQuery = parseCallerSessionIdQuery(req.url ?? "")
     if (fromQuery) return fromQuery

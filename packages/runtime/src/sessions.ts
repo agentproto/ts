@@ -853,18 +853,18 @@ export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
  *  id from, as a fallback for the `?callerSessionId=` query.
  *
  *  Why both: the identity of a daemon-spawned session travels in the URL of
- *  the mount it was given (`?callerSessionId=<own id>` — see
+ *  the mount it was given (`?callerSessionId=<own id>`; see
  *  `buildDaemonSelfMountEntry`, session-spawn.ts). A URL query is the
  *  FRAGILE carrier: any client (or intermediary) that rebuilds, normalizes or
  *  re-roots the mount URL drops it, and the session silently becomes
- *  anonymous to the gateway — `message_parent` then answers "cannot identify
+ *  anonymous to the gateway: `message_parent` then answers "cannot identify
  *  the calling session" and every spawn it makes lands as a depth-0 orphan
- *  (no auto-parent to derive — see `spawn-attach.ts`). A header is the
+ *  (no auto-parent to derive; see `spawn-attach.ts`). A header is the
  *  carrier the ACP/MCP http transports carry verbatim, so the identity now
  *  travels BOTH ways: the query stays (back-compat, and the form the
  *  `?callerSessionId=` trust checks read), the header is the fallback.
  *
- *  Trust: identical to the query claim — honoured only for a loopback
+ *  Trust: identical to the query claim; honoured only for a loopback
  *  socket or a valid daemon bearer (see `externalClaimTrusted`,
  *  http-server.ts), and only when the query carries no id.
  */

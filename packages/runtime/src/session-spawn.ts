@@ -1048,7 +1048,7 @@ export function buildDaemonSelfMountEntry(
   ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
   // The identity travels BOTH ways: the query above (the historical carrier,
   // read by the `?callerSessionId=` trust checks) AND a dedicated header
-  // (the robust carrier — a client that rebuilds or normalizes the mount URL
+  // (the robust carrier: a client that rebuilds or normalizes the mount URL
   // drops the query, and an anonymous session means `message_parent` can
   // neither identify its caller nor report up, and every spawn it makes
   // lands as a depth-0 orphan). See `CALLER_SESSION_ID_HEADER`.
@@ -1066,8 +1066,8 @@ export function buildDaemonSelfMountEntry(
  *  `daemonMcpUrl` (plus a `?`-prefixed variant). That is too strict for the
  *  mounts that actually show up in the field: an ambient mount (a project
  *  `.mcp.json`, an operator's global MCP config, a config a supervisor
- *  passed down) spells the SAME endpoint differently — `localhost` instead
- *  of `127.0.0.1`, a trailing slash, a `?host=…` query — and every one of
+ *  passed down) spells the SAME endpoint differently: `localhost` instead
+ *  of `127.0.0.1`, a trailing slash, a `?host=…` query, and every one of
  *  those spellings FAILED the exact match, so the entry was never
  *  identity-stamped: the session reached the daemon anonymously and lost
  *  its lineage. The comparison is therefore by origin (host:port) and path,
