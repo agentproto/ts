@@ -219,6 +219,48 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     })
   })
 
+  it("an access-only restart keeps the session's posture (the wallet moves, the posture doesn't)", async () => {
+    const { resolver } = makeResolver(CLAUDE_CODE_DESC)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "claude-code",
+      posture: "plan",
+      auth: {
+        mode: "subscription",
+        fingerprint: "subscription · sk-ant-oat…OLD1",
+        provider: "anthropic",
+        credentialSource: "explicit-config",
+        setEnv: "CLAUDE_CODE_OAUTH_TOKEN",
+      },
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      // ONLY the wallet moves — the posture (what the agent may DO) is
+      // carried forward untouched, so switching profiles never silently
+      // changes the session's permission posture.
+      overrides: { access: { profileRef: "work-anthropic-key" } },
+      resolveAccessProfile: profileResolver({
+        "work-anthropic-key": {
+          profile: {
+            id: "work-anthropic-key",
+            endpoint: "anthropic",
+            method: "api-key",
+            credentialRef: "kc:work-anthropic-key",
+            label: "Work Anthropic key",
+          },
+          credential: "sk-ant-api03-REQUESTED4242",
+        },
+      }),
+    })
+
+    expect(restarted.desc.posture).toBe("plan")
+    expect(restarted.desc.accessProfile?.profileRef).toBe("work-anthropic-key")
+  })
+
   it("switching between two subscription-vendor profiles re-resolves the OAuth bearer for the new one", async () => {
     const { resolver, captured } = makeResolver(CLAUDE_CODE_DESC)
     const registry = createSessionsRegistry({ persist: false })

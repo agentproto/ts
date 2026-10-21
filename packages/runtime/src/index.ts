@@ -3804,6 +3804,9 @@ export async function createGateway(
       mcpObservations,
       workspace,
       mcpProxy,
+      // `session_restart` re-arms the cron jobs that targeted the restarted
+      // session (the restart continues the conversation under a NEW id).
+      cronScheduler,
       ptyEnabled: opts.spawnPty != null,
       // BOOTSTRAP P7b — read-time device-mirror sync (forwarded to
       // `registerAgentTools`; `agent_output` pulls the device session's

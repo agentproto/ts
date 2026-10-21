@@ -3207,6 +3207,7 @@ export async function startHttpServer(
             opts.listAgentAdapters,
             opts.deviceMirrorSync,
             opts.mcpObservations,
+            opts.cronScheduler,
           )
           if (handled) return
         }
@@ -6647,6 +6648,10 @@ async function handleSessions(
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
   mcpObservations?: McpObservationStore,
+  // The daemon's cron scheduler — `POST /sessions/:id/restart` re-arms the
+  // `prompt-session` jobs that targeted the restarted session (the restart
+  // continues the conversation under a NEW id). Absent ⇒ no re-arm.
+  cronScheduler?: import("./cron-scheduler.js").CronScheduler,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -8304,12 +8309,22 @@ code { color: #9ad; }
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(daemonMcpUrl ? { daemonMcpUrl } : {}),
       })
+      // Cron re-arm: the restart retired `prev` and continued the same
+      // conversation under `restarted.desc.id`. A `prompt-session` cron job
+      // that named the OLD id would fail its next tick with "session not
+      // found", so its target moves to the successor id (persisted with the
+      // job file). Agent-label targets are resolved at fire time and need
+      // no re-arm.
+      const rearmedCrons = cronScheduler
+        ? cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+        : []
       json(200, {
         ...sessionDescriptorForHttp(restarted.desc),
         resumedFrom: restarted.resumedFrom,
         resumeVia: restarted.resumeVia,
         ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
         ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
+        ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
       })
     } catch (err) {
       // A coded failure goes out as `{error:{code,reason,action,message},
