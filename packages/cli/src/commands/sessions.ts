@@ -304,6 +304,16 @@ Usage:
                               (read-only tail of the session's output — never
                                takes stdin; Ctrl-C exits without touching the
                                session)
+  agentproto sessions switch-profile --from <profileRef> --to <profileRef>
+                              [--json] [--dry-run]
+                              (move EVERY session that bills against the
+                               --from auth profile onto the --to one, in one
+                               command. Each session is restarted through the
+                               daemon's restart-with-override route, so the
+                               conversation is resumed under a new id, the
+                               session's posture is kept, and the cron jobs
+                               that targeted the old id are re-armed.
+                               --dry-run lists the sessions that WOULD move.)
 
 Discovers the daemon in this order — first live candidate wins:
   1. AGENTPROTO_DAEMON_URL env var (token from AGENTPROTO_DAEMON_TOKEN, or
@@ -496,6 +506,7 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   if (sub === "report") return runReport(args.slice(1))
   if (sub === "mirror") return runMirror(args.slice(1))
   if (sub === "restart") return runRestart(args.slice(1))
+  if (sub === "switch-profile") return runSwitchProfile(args.slice(1))
   if (sub === "wait") return runWait(args.slice(1))
   if (sub === "queue") return runQueue(args.slice(1))
   if (sub === "inbox") return runInbox(args.slice(1))
@@ -5337,6 +5348,192 @@ async function runRestart(args: readonly string[]): Promise<number> {
     })
   }
   return 0
+}
+
+/**
+ * A session a profile switch would move: it bills against the `from`
+ * profile and can carry a billing axis at all (an agent-cli session).
+ */
+export interface ProfileSwitchTarget {
+  id: string
+  /** Human label for the row (name/label, never key material). */
+  label: string
+  /** Why the session was NOT selected — present on the skipped rows. */
+  reason?: string
+}
+
+/**
+ * Which sessions a `--from` → `--to` profile switch moves.
+ *
+ * Only the sessions that actually bill against the `from` profile move
+ * (a session's `accessProfile.profileRef` is the wallet it is attached
+ * to). A session with no billing axis (a PTY/command session) can never
+ * carry a profile, so it is reported as skipped rather than restarted —
+ * the daemon would refuse it anyway.
+ */
+export function planProfileSwitch(
+  sessions: readonly SessionDescriptor[],
+  from: string,
+): { targets: ProfileSwitchTarget[]; skipped: ProfileSwitchTarget[] } {
+  const targets: ProfileSwitchTarget[] = []
+  const skipped: ProfileSwitchTarget[] = []
+  for (const session of sessions) {
+    const profileRef = session.accessProfile?.profileRef
+    if (!profileRef || profileRef !== from) continue
+    const label = session.name || session.label || session.id
+    if (session.kind !== "agent-cli") {
+      skipped.push({ id: session.id, label, reason: "not an agent session (no billing axis)" })
+      continue
+    }
+    targets.push({ id: session.id, label })
+  }
+  return { targets, skipped }
+}
+
+/**
+ * `agentproto sessions switch-profile --from <profileRef> --to <profileRef>`
+ * — move EVERY session that bills against one named auth profile onto
+ * another, in one command (the fleet-wide twin of the VS Code extension's
+ * per-session profile picker).
+ *
+ * Each session is moved through the daemon's restart-with-override route
+ * (`POST /sessions/:id/restart` with `access.profileRef`): the
+ * conversation is resumed under a NEW session id, the session's posture is
+ * carried forward untouched, and the daemon re-arms the cron jobs that
+ * targeted the old id.
+ */
+async function runSwitchProfile(args: readonly string[]): Promise<number> {
+  const { values } = parseArgs({
+    args: [...args],
+    allowPositionals: false,
+    strict: true,
+    options: {
+      from: { type: "string" },
+      to: { type: "string" },
+      json: { type: "boolean" },
+      "dry-run": { type: "boolean" },
+      "no-color": { type: "boolean" },
+    },
+  })
+  const from = values.from?.trim()
+  const to = values.to?.trim()
+  if (!from || !to) {
+    process.stderr.write(
+      "agentproto sessions switch-profile: both --from and --to are required.\n" +
+        "  Try: agentproto sessions switch-profile --from max-agentik --to max-fabrikapp\n",
+    )
+    return 2
+  }
+  if (from === to) {
+    process.stderr.write(
+      `agentproto sessions switch-profile: --from and --to are the same profile ("${from}").\n`,
+    )
+    return 2
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto sessions switch-profile")
+    return 2
+  }
+  const endpoint = report.found
+
+  let sessions: SessionDescriptor[]
+  try {
+    sessions = await fetchSessions(endpoint.url)
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sessions switch-profile: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 1
+  }
+
+  const { targets, skipped } = planProfileSwitch(sessions, from)
+
+  if (targets.length === 0) {
+    if (values.json) {
+      process.stdout.write(JSON.stringify({ from, to, moved: [], skipped }, null, 2) + "\n")
+    } else {
+      process.stdout.write(
+        `agentproto sessions switch-profile: no session bills against "${from}" — nothing to move.\n`,
+      )
+      for (const row of skipped) {
+        process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+      }
+    }
+    return 0
+  }
+
+  if (values["dry-run"]) {
+    if (values.json) {
+      process.stdout.write(
+        JSON.stringify({ from, to, dryRun: true, wouldMove: targets, skipped }, null, 2) + "\n",
+      )
+    } else {
+      process.stdout.write(
+        `agentproto sessions switch-profile: ${targets.length} session(s) on "${from}" would move to "${to}":\n`,
+      )
+      for (const row of targets) {
+        process.stdout.write(`  ${row.id} (${row.label})\n`)
+      }
+      for (const row of skipped) {
+        process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+      }
+    }
+    return 0
+  }
+
+  const moved: Array<{ id: string; from: string; to: string; rearmedCrons?: string[] }> = []
+  const failed: Array<{ id: string; error: string }> = []
+  for (const target of targets) {
+    try {
+      const next = await httpPostJson<{
+        id: string
+        rearmedCrons?: string[]
+      }>(
+        `${endpoint.url}/sessions/${encodeURIComponent(target.id)}/restart`,
+        { access: { profileRef: to } },
+        endpoint.token,
+      )
+      moved.push({
+        id: target.id,
+        from: target.id,
+        to: next?.id ?? target.id,
+        ...(next?.rearmedCrons && next.rearmedCrons.length > 0
+          ? { rearmedCrons: next.rearmedCrons }
+          : {}),
+      })
+    } catch (err) {
+      failed.push({
+        id: target.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  if (values.json) {
+    process.stdout.write(JSON.stringify({ from, to, moved, failed, skipped }, null, 2) + "\n")
+  } else {
+    for (const row of moved) {
+      process.stdout.write(
+        `agentproto sessions switch-profile: ${row.id} → ${row.to} (now on "${to}")\n`,
+      )
+      for (const jobId of row.rearmedCrons ?? []) {
+        process.stdout.write(`  re-armed cron job ${jobId}\n`)
+      }
+    }
+    for (const row of skipped) {
+      process.stdout.write(`  skipped ${row.id} (${row.label}) — ${row.reason}\n`)
+    }
+    for (const row of failed) {
+      process.stderr.write(`agentproto sessions switch-profile: ${row.id} — ${row.error}\n`)
+    }
+    process.stdout.write(
+      `agentproto sessions switch-profile: ${moved.length} session(s) moved from "${from}" to "${to}"` +
+        (failed.length > 0 ? `, ${failed.length} failed\n` : "\n"),
+    )
+  }
+  return failed.length > 0 ? 1 : 0
 }
 
 async function runMirror(args: readonly string[]): Promise<number> {
