@@ -670,6 +670,33 @@ describe("work-branch provenance stamp", () => {
     expect(record.push.status).toBe("pushed")
   })
 
+  it("a failed checkpoint push re-stamps the work branch so the trailer survives", async () => {
+    // The snapshot commit carries the session trailer and was the branch
+    // stamp's ONLY carrier — but its push FAILED, so NEITHER the remote
+    // checkpoint NOR a trailer on the work branch exists: attribution is
+    // lost exactly when the snapshot rescue failed. The recovery stamps
+    // the work branch after all and re-pushes it (the checkpoint is not
+    // the restore source in that case, so the sibling-of-snapshot hazard
+    // the normal skip guards against does not apply).
+    const commands: string[] = []
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return result(0, `ahead=1\nuncommitted=2\nhead=${HEAD}\nsnapshot=${"c".repeat(40)}\n`)
+      }
+      if (o.command.includes(" push ") && o.command.includes("agentproto-checkpoint/")) return result(1, "", "cannot lock ref")
+      if (o.command.includes(" push ")) return result(0)
+      return result(0)
+    }
+    const record = await runSandboxDelivery({ exec, target, outDir, sessionId: "sess_box1" })
+    expect(record.provenanceStamp?.status).toBe("stamped")
+    expect(record.checkpoint?.status).toBe("failed")
+    expect(record.push.status).toBe("pushed")
+    const stamps = commands.map(c => c.includes(PROVENANCE_COMMIT_SUBJECT))
+    const checkpointPushes = commands.map(c => c.includes(" push ") && c.includes("agentproto-checkpoint/"))
+    expect(stamps.lastIndexOf(true)).toBeGreaterThan(checkpointPushes.indexOf(true))
+  })
+
   it("producer/consumer: the stamp command's commit is read back by the PR trailer reader, idempotently", () => {
     const git = (cwd: string, ...args: string[]) => {
       const r = spawnSync("git", args, { cwd, encoding: "utf8" })

@@ -546,7 +546,7 @@ export function registerCommandTools(
 
   server.tool(
     "pr_open",
-    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. Gated like command_execute: `gh` must be allowlisted (with an argv that permits `gh pr create`) in `<workspace>/.agentproto/allowed-commands.json`, and a calling session may only open a PR for itself or a session it spawned (directly or transitively); the operator (no calling session) is not scoped. `gh` runs in the TARGET session's own workspace (its worktree, or for a sandbox session the host checkout of its workspace) and that workspace's allowlist applies, not the daemon's boot workspace's.",
+    "Open a pull request on behalf of a SANDBOX session — the host runs `gh pr create` (it holds the token; the box never does) against that session's pushed work branch, and the provenance footer credits the session(s) that actually authored the code, not whoever ran this call. Pass the authoring session ref plus PR title/body; the footer lists each authoring session with its own model, wallet, sandbox provider and cost, and the caller of this tool as 'Opened by'. a calling session may only open a PR for itself or a session it spawned (directly or transitively); the operator (no calling session) is not scoped. Every `gh` argv this runs — the create AND the footer stamp's own `gh pr view`/`gh pr edit`/checkpoint `gh api` reads — is checked against that workspace's allowlist, an argv the entry does not permit stops the run. `gh` runs in the TARGET session's own workspace (its worktree, or for a sandbox session the host checkout of its workspace) and that workspace's allowlist applies, not the daemon's boot workspace's.",
     {
       ...sessionRefSchema(z),
       title: z.string().min(1).describe("PR title."),
@@ -590,8 +590,10 @@ export function registerCommandTools(
       const where = resolvePrOpenWorkspace(target, workspaces)
       if ("error" in where) return refuse(`pr_open refused: ${where.error}`)
       // Same default-deny allowlist as command_execute: `pr_open` runs `gh`
-      // on the host, so `gh` (with an argv the allowlist permits) must be in
-      // the target workspace's allowed-commands.json.
+      // on the host, so `gh` must be in the target workspace's
+      // allowed-commands.json — and the "args" constraints for 'gh' gate the
+      // create AND every `gh` call the footer stamp makes (pr view / pr edit /
+      // the checkpoint `gh api` read), not just `gh pr create`.
       const allowlistEntries = await loadAllowlistEntries(where.allowlistRoot)
       const allowlistPath = join(where.allowlistRoot, ALLOWLIST_REL)
       if (!allowlistEntries.some(e => e.command === "gh")) {

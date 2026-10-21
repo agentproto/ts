@@ -783,6 +783,31 @@ export async function runSandboxDelivery(input: RunSandboxDeliveryInput): Promis
     } catch (err) {
       record.checkpoint = { status: "failed", ref, sha: probe.snapshot, detail: errorText(err) }
     }
+    // The snapshot was the trailer's only carrier and its push FAILED: stamp
+    // the work branch after all so the attribution survives. The skipped
+    // sibling-of-snapshot hazard only applies while the checkpoint is the
+    // restore source; with the checkpoint push failed the restore falls back
+    // to the work branch, which then carries the trailer. Best-effort, and
+    // the re-push is the same branch push that already succeeded.
+    if (
+      !checkpointMode &&
+      input.sessionId &&
+      record.provenanceStamp?.status === "skipped" &&
+      record.checkpoint.status !== "pushed"
+    ) {
+      const recovery = await runProvenanceStamp(
+        exec,
+        target,
+        input.sessionId!,
+        deadlineAt,
+        input.readFile ? bundleReserveMs : 0,
+      )
+      record.provenanceStamp = recovery
+      if (recovery.status === "stamped") {
+        const again = await pushBranch(exec, target, deadlineAt, input.readFile ? bundleReserveMs : 0)
+        record.push = again
+      }
+    }
   } else if (shouldCleanupCheckpoint(probe, record, checkpointMode, input.checkpointPushed)) {
     // Clean checkout with the work branch safe on the remote: a checkpoint
     // pushed earlier in the session is now stale — delete it.

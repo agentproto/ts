@@ -202,10 +202,23 @@ export async function stampFooterOnPr(input: {
    *  existing footer has no amount and the fresh one does; otherwise a no-op
    *  (`stamped: true, alreadyStamped: true, refreshed: false`). */
   refresh?: boolean
+  /** Gate every `gh` argv the stamp runs (`pr view`, `pr edit`, `gh api` on
+   *  the checkpoint ref) against a caller-provided check — the same
+   *  default-deny allowlist gate `pr_open` applies to `gh pr create`. A
+   *  returned string refuses that call and fails the stamp (best-effort:
+   *  the PR is still recorded, it just loses its footer). */
+  authorizeArgs?: (args: readonly string[]) => string | undefined
 }): Promise<StampOutcome> {
   try {
     const run = input.run ?? defaultGhRunner
-    const view = await run(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
+    const stampRun: GhRunner = input.authorizeArgs
+      ? async (args, cwd) => {
+          const refused = input.authorizeArgs?.([...args])
+          if (refused) throw new Error(refused)
+          return await run(args, cwd)
+        }
+      : run
+    const view = await stampRun(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
     if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
     const body = view.stdout.replace(/\n+$/, "")
 
@@ -219,7 +232,7 @@ export async function stampFooterOnPr(input: {
       // uncommitted work is still parked there). Read on every stamp, legacy
       // opener path included. Best-effort: a failed read only loses that source.
       const trailerIds = new Set<string>()
-      const commits = await run(
+      const commits = await stampRun(
         ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
         input.cwd,
       )
@@ -228,11 +241,11 @@ export async function stampFooterOnPr(input: {
       // actually carries - never the resolved session's own branch (a host
       // orchestrator has none; a different session may have another). The
       // session's branch is only the fallback when the head can't be read.
-      const headBranch = (await prHeadBranch(run, input.prUrl, input.cwd)) ?? input.session.sandboxDeliveryTarget?.branch
+      const headBranch = (await prHeadBranch(stampRun, input.prUrl, input.cwd)) ?? input.session.sandboxDeliveryTarget?.branch
       // The checkpoint ref namespace the session's delivery actually used:
       // its own per-spawn override wins over the daemon's global default.
       const refPrefix = checkpointRefPrefixForSession(input.session, input.checkpointRefPrefix)
-      for (const id of await checkpointTrailerIds(run, input.prUrl, input.cwd, headBranch, refPrefix)) {
+      for (const id of await checkpointTrailerIds(stampRun, input.prUrl, input.cwd, headBranch, refPrefix)) {
         trailerIds.add(id)
       }
       // ARCHIVED sessions are authors too: `list()` drops them by default,
@@ -299,14 +312,14 @@ export async function stampFooterOnPr(input: {
         return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
       }
       const refreshedBody = replaceProvenanceFooter(body, footer)
-      const edit = await run(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
+      const edit = await stampRun(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
       if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
     }
 
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
-      const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
+      const edit = await stampRun(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
       if (edit.exitCode !== 0) {
         return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       }

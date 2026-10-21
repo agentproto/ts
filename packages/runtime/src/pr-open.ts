@@ -59,9 +59,11 @@ export interface OpenPrForSessionInput {
    *  `checkpointRefPrefixForSession`), the stamper must read the checkpoint
    *  from the namespace the delivery actually pushed to. */
   checkpointRefPrefix?: string
-  /** Gate on the exact `gh` argv about to run (the MCP lane checks it
-   *  against the workspace's `allowed-commands.json`). A returned string
-   *  refuses the open with that reason; nothing has run yet. */
+  /** Gate every `gh` argv about to run (the MCP lane checks each one
+   *  against the workspace's `allowed-commands.json`): both the `gh pr
+   *  create` that opens the PR AND the footer stamp's own `gh` calls
+   *  (`pr view`, `pr edit`, the checkpoint `gh api` read). A returned string
+   *  refuses that call; nothing has run yet. */
   authorizeArgs?: (args: readonly string[]) => string | undefined
 }
 
@@ -205,6 +207,7 @@ export async function openPrForSession(input: OpenPrForSessionInput): Promise<Op
       cwd: input.workspacePath,
       ...(input.openedBy && input.openedBy !== desc.id ? { openedBy: input.openedBy } : {}),
       ...(input.run ? { run: input.run } : {}),
+      ...(input.authorizeArgs ? { authorizeArgs: input.authorizeArgs } : {}),
       ...(input.host ? { host: input.host } : {}),
       ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
       // The session the PR is opened FOR is an author, whatever the branch

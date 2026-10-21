@@ -401,4 +401,58 @@ describe("openPrForSession authorizeArgs", () => {
     expect(seen).toEqual([prCreateArgs("wt/feat", "T", "B")])
     expect(gh.calls).toEqual([])
   })
+
+  it("authorizes the footer stamp's own gh argv too (pr view / pr edit / gh api)", async () => {
+    const rows = [
+      row({ id: "sess_box1", sandboxDeliveryTarget: { branch: "wt/feat" }, parentSessionId: "orch" }),
+      row({ id: "orch" }),
+    ]
+    const registry = makeRegistry(rows)
+    const gh = fakeGh({ commitText: "checkpoint\n\nAgentproto-Session: sess_gone\n" })
+    const seen: Array<readonly string[]> = []
+    const outcome = await openPrForSession({
+      sessionId: "sess_box1",
+      registry,
+      workspacePath: "/tmp",
+      title: "T",
+      body: "B",
+      openedBy: "orch",
+      run: gh.run,
+      // An allowlist entry that permits ONLY `gh pr create` (common argv
+      // constraint) must also refuse the stamp's `pr view`/`pr edit`/`api`
+      // calls — every gh argv pr_open runs is audited, not just the create.
+      authorizeArgs: args => (args.slice(0, 2).join(" ") === "pr create" ? undefined : "argv not permitted"),
+    })
+    // The create ran, but the stamp was refused: the PR is still recorded
+    // (a created PR is never lost to a failed footer edit) and no stamping
+    // gh call ever ran.
+    expect(outcome).toMatchObject({ opened: true, stamped: false })
+    expect(gh.calls.some(c => c.args[1] !== "create")).toBe(false)
+    expect(gh.edits).toEqual([])
+    expect(registry.recorded).toEqual([expect.objectContaining({ sessionId: "sess_box1", number: 77 })])
+  })
+
+  it("passes the stamp's gh argv through authorizeArgs once granted", async () => {
+    const rows = [row({ id: "sess_box1", sandboxDeliveryTarget: { branch: "wt/feat" } })]
+    const registry = makeRegistry(rows)
+    const gh = fakeGh()
+    const seen: Array<readonly string[]> = []
+    const outcome = await openPrForSession({
+      sessionId: "sess_box1",
+      registry,
+      workspacePath: "/tmp",
+      title: "T",
+      body: "B",
+      run: gh.run,
+      authorizeArgs: args => {
+        seen.push(args)
+        return undefined
+      },
+    })
+    expect(outcome).toMatchObject({ opened: true, stamped: true })
+    expect(gh.edits.length).toBe(1)
+    expect(seen[0]).toEqual(prCreateArgs("wt/feat", "T", "B"))
+    expect(seen.map(a => a.slice(0, 2).join(" "))).toContain("pr view")
+    expect(seen.map(a => a.slice(0, 2).join(" "))).toContain("pr edit")
+  })
 })
