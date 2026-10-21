@@ -1,7 +1,12 @@
 import { mkdir, appendFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { normalizeHook, type AgentprotoConfig } from "./config.js"
-import { hookEnv, resolveWorktreesTurboCacheDir, type WorktreeEnvContext } from "./env.js"
+import {
+  hookEnv,
+  nonInteractiveEnv,
+  resolveWorktreesTurboCacheDir,
+  type WorktreeEnvContext,
+} from "./env.js"
 import { execShell, type ExecResult } from "./exec.js"
 import { ProvisionCancelledError } from "./provision-scheduler.js"
 
@@ -155,11 +160,28 @@ async function appendHookLog(
 export async function runSetup(
   config: AgentprotoConfig,
   ctx: WorktreeEnvContext,
-  opts: { logPath?: string; retryOnFailure?: boolean; signal?: AbortSignal } = {},
+  opts: {
+    logPath?: string
+    retryOnFailure?: boolean
+    signal?: AbortSignal
+    /** Extra env for the spawned hook, layered OVER the non-interactive
+     *  defaults (see {@link nonInteractiveEnv}). An explicit `CI` (or
+     *  `npm_config_confirm_modules_purge`) here wins over the default and
+     *  over the ambient environment: the escape hatch for a workspace that
+     *  really does want a different value. */
+    env?: Record<string, string>
+  } = {},
 ): Promise<HookRun[]> {
   const commands = normalizeHook(config.worktree?.setup)
   const runs: HookRun[] = []
-  const env = { ...hookEnv(ctx), TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir() }
+  // The hook runs WITHOUT a TTY, so its env must say so explicitly: see
+  // `nonInteractiveEnv`'s doc for the pnpm incident this closes.
+  const env = {
+    ...hookEnv(ctx),
+    ...nonInteractiveEnv(process.env, opts.env),
+    ...(opts.env ?? {}),
+    TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir(),
+  }
   const execOpts = { env, ...(opts.signal ? { signal: opts.signal } : {}) }
   for (const command of commands) {
     if (opts.signal?.aborted) throw new ProvisionCancelledError()
@@ -194,7 +216,8 @@ export async function runTeardown(
 ): Promise<HookRun[]> {
   const commands = normalizeHook(config.worktree?.teardown)
   const runs: HookRun[] = []
-  const env = hookEnv(ctx)
+  // Same non-interactive contract as `runSetup`; see `nonInteractiveEnv`.
+  const env = { ...hookEnv(ctx), ...nonInteractiveEnv(process.env) }
   for (const command of commands) {
     const result = await execShell(command, ctx.worktreePath, { env })
     runs.push({ command, result })

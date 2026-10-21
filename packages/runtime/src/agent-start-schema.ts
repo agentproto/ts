@@ -333,6 +333,22 @@ export const agentStartInputShape = {
     .describe(
       `For a \`sandbox\` spawn, FORWARDED to the box daemon (the sandboxed session orchestrates children ON THE SAME BOX through the box daemon's own loopback gateway); otherwise this host auto-mounts the scoped orchestrator gateway. ${help("orchestrator")}`
     ),
+  remoteParent: jsonTolerant(
+    opaque(
+      z.object({
+        sessionId: z.string().min(1),
+        url: z.string().min(1),
+        token: z.string().min(1),
+      }),
+    )
+  )
+    .optional()
+    .describe(
+      "A REMOTE parent (host relay): the parent session lives in the HOST daemon's registry, " +
+        "so `message_parent` relays the report to the host's relay endpoint instead of a local " +
+        "lookup. FORWARDED by the host into a sandbox box at spawn time - never set by hand " +
+        "(see parent-relay.ts).",
+    ),
   notifyUrl: z
     .string()
     .url()

@@ -59,7 +59,7 @@ import {
   parseSessionListFilterParams,
   sortNewestActivityFirst,
 } from "./session-list-filters.js"
-import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire } from "./sessions.js"
+import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -272,6 +272,8 @@ import { computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
+import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -1633,6 +1635,13 @@ export async function startHttpServer(
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
     if (method === "POST" && /^\/apps\/(.+)\/link-auth$/.test(path)) return true
+    // PARENT RELAY: the route authenticates itself with the per-session
+    // relay token (short-lived, single-session-scoped, minted by this
+    // daemon), exactly like `/inbound/:slug` authenticates with its own
+    // HMAC: a box that cannot carry the daemon bearer must still be able to
+    // report up to its host parent. POST-only, and the token gate inside
+    // the route refuses anything without a valid token.
+    if (method === "POST" && path === PARENT_RELAY_PATH) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -2015,6 +2024,38 @@ export async function startHttpServer(
     return raw && raw.length > 0 ? raw : undefined
   }
 
+  /** The header twin of `parseCallerSessionIdQuery`; see
+   *  `CALLER_SESSION_ID_HEADER` (sessions.ts).
+   *
+   *  The query is the historical carrier of the caller's identity, but a URL
+   *  query is fragile: a client (or an intermediary) that rebuilds the mount
+   *  URL drops it, and the session goes anonymous to the gateway: no
+   *  `message_parent` (it cannot identify its caller), and no auto-parent
+   *  for the spawns it makes (they land as depth-0 orphans). The header
+   *  travels with the request whatever the client does to the URL, so the
+   *  identity is read from whichever carrier survived. The QUERY WINS when
+   *  both are present (it is the form the trust checks already read), and
+   *  the header is honoured on the same trust footing as a query claim
+   *  (loopback socket or a valid daemon bearer; see `externalClaimTrusted`).
+   */
+  function parseCallerSessionIdHeader(req: IncomingMessage): string | undefined {
+    const raw = req.headers[CALLER_SESSION_ID_HEADER]
+    const value = Array.isArray(raw) ? raw[0] : raw
+    if (!value) return undefined
+    const trimmed = value.trim()
+    if (!trimmed || !/^[A-Za-z0-9._:-]{1,128}$/.test(trimmed)) return undefined
+    return trimmed
+  }
+
+  /** The caller's session id for this request: the trusted query claim, else
+   *  the identity header (same trust rules; see `externalClaimTrusted`). */
+  function resolveCallerSessionId(req: IncomingMessage): string | undefined {
+    const fromQuery = parseCallerSessionIdQuery(req.url ?? "")
+    if (fromQuery) return fromQuery
+    if (!externalClaimTrusted(req)) return undefined
+    return parseCallerSessionIdHeader(req)
+  }
+
   /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
    *  (#session-visibility) — the connecting client's source label
    *  (cowork/vscode/codex/cron). A non-session bridge client that omits a
@@ -2066,14 +2107,14 @@ export async function startHttpServer(
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
     {
-      const claimed = parseCallerSessionIdQuery(req.url ?? "")
+      const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
         opts.sessions.touchExternal({ id: claimed, host: parseHostQuery(req.url ?? "") })
       }
     }
     const denyTools = parseToolListQuery(req.url ?? "", "denyTools")
     const allowTools = parseToolListQuery(req.url ?? "", "allowTools")
-    const callerSessionId = parseCallerSessionIdQuery(req.url ?? "")
+    const callerSessionId = resolveCallerSessionId(req)
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
     const surface = parseSurfaceQuery(req.url ?? "")
@@ -3053,6 +3094,83 @@ export async function startHttpServer(
           } catch (err) {
             json(500, { error: "host_load_failed", message: err instanceof Error ? err.message : String(err) })
           }
+          return
+        }
+
+        // PARENT RELAY: a session running INSIDE a box (E2B / computer)
+        // reports UP to a parent session that lives in THIS daemon's
+        // registry. The box POSTs the report here with the short-lived,
+        // single-session-scoped token the host minted at spawn time; the
+        // token - never the payload - names the recipient, and the delivery
+        // goes through the ordinary `registry.sendMessage` path (so the
+        // parent sees a normal `session-message`, kind/urgency preserved).
+        // See `parent-relay.ts` and `docs/lineage-handover.md`.
+        if (path === PARENT_RELAY_PATH && req.method === "POST") {
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json" })
+            res.end(JSON.stringify(body))
+          }
+          if (!opts.sessions) {
+            json(501, { error: "no_registry" })
+            return
+          }
+          const token = req.headers[PARENT_RELAY_TOKEN_HEADER]
+          const relayToken = Array.isArray(token) ? token[0] : token
+          // The relay token IS this route's authentication (the route is
+          // exempt from the tunnel-bearer gate because a box carries only
+          // this token): refuse an absent or unknown token BEFORE any
+          // work, so a bad caller never reaches the body parser or the
+          // registry.
+          if (!relayToken) {
+            json(401, { error: "relay_token_missing", message: "no relay token presented" })
+            return
+          }
+          if (!resolveParentRelayGrant(relayToken)) {
+            json(401, { error: "relay_token_unknown", message: "the relay token is unknown or expired" })
+            return
+          }
+          const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+          if (typeof body.message !== "string" || body.message.length === 0) {
+            json(400, { error: "message_required" })
+            return
+          }
+          const kind = body.kind ?? "report"
+          if (!MESSAGE_KINDS.includes(kind as MessageKind)) {
+            json(400, { error: "invalid_kind", allowed: MESSAGE_KINDS })
+            return
+          }
+          const urgency = body.urgency ?? "next-turn"
+          if (!MESSAGE_URGENCIES.includes(urgency as MessageUrgency)) {
+            json(400, { error: "invalid_urgency", allowed: MESSAGE_URGENCIES })
+            return
+          }
+          const messagingDefaults = await resolveMessagingDefaults()
+          const result = await deliverParentRelayMessage({
+            token: relayToken,
+            payload: {
+              message: body.message,
+              kind: kind as MessageKind,
+              urgency: urgency as MessageUrgency,
+              ...(typeof body.replyTo === "string" ? { replyTo: body.replyTo } : {}),
+            },
+            registry: opts.sessions,
+            allowInterrupt: messagingDefaults.agentInterrupt === "allow",
+          })
+          if (!result.ok) {
+            // A token that went bad between the pre-check and the delivery
+            // (revoked when the box session ended, expired in between) is
+            // an AUTHENTICATION failure, not a bad request: answer 401, the
+            // same code the pre-check above uses.
+            const status = result.code === "relay_token_unknown" ? 401 : 400
+            json(status, { error: result.code, message: result.message })
+            return
+          }
+          json(200, {
+            ok: true,
+            messageId: result.messageId,
+            delivery: result.delivery,
+            urgencyApplied: result.urgencyApplied,
+          })
           return
         }
 

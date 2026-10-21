@@ -53,7 +53,11 @@ set up, torn down, and what dev services it runs:
 - **`worktree.setup` / `worktree.teardown`** — a single (multiline) shell
   string or an array of commands, run sequentially with the worktree as cwd.
   A failing setup command **fails provisioning** with its captured output; a
-  failing teardown command is logged but never blocks cleanup.
+  failing teardown command is logged but never blocks cleanup. Hooks run
+  WITHOUT a TTY, so their env is explicitly non-interactive: `CI=true` and
+  `npm_config_confirm_modules_purge=false` are set unless the environment
+  already defines them (so `pnpm`/`npm` never abort on a confirmation
+  prompt).
 - **`worktree.depsCmd` / `worktree.linkPaths`** — declarative defaults for
   `worktree.provision`'s own `depsCmd`/`linkPaths` inputs (see above): a
   caller that provisions a worktree WITHOUT passing those inputs explicitly —

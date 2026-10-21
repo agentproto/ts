@@ -625,6 +625,17 @@ compaction prompt attributed to a session (`agent_prompt`, `session_compact`,
 or the session itself) is refused; only an operator-originated prompt (HTTP,
 CLI, UI) can compact. Default off.
 
+`autoCompactAtTokens` is the ABSOLUTE counterpart of the percent thresholds
+above: when an idle session's context reaches this many tokens, the runtime
+compacts it at the turn boundary (checkpoint first, then `/compact`, the
+same path `session_compact` uses) and, when a mission is in progress, injects a
+short resume prompt that cites the path of the full transcript. It is
+window-independent: the percent ladder never fires on a 1M-token window (558k
+of 1M is "55% full", the warn band), so a long session grew without ever
+compacting. Default 150000, clamped to 200000 max, `0` disables. The
+continuity mode does not gate it (like the hard-stop floor, it is a safety
+guard, not a nudge).
+
 `compactHandoffTurn: true` has a `/compact` or `/compress` prompt ask the
 live session for a handoff turn (its own goal, decisions, risks) before the
 checkpoint is built, then the harness's native compaction runs on the same

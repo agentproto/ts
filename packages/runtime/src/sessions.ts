@@ -135,6 +135,11 @@ import {
 } from "./usage.js"
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
+import {
+  forgetRelayToken,
+  rememberRelayToken,
+  revokeParentRelayGrantsForBoxSession,
+} from "./parent-relay.js"
 import type { SessionAppServeInfo } from "./sandbox-app-serve.js"
 import type {
   WorktreeAutoReclaimer,
@@ -143,6 +148,11 @@ import type {
   SandboxCheckpointReclaimer,
 } from "./worktree-isolation.js"
 import type { AgentsMdMode } from "./agents-md.js"
+import {
+  createAutoCompactController,
+  type AutoCompactController,
+  type AutoCompactOutcome,
+} from "./auto-compact.js"
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
   computeContextContinuityStatus,
@@ -849,6 +859,26 @@ export function adapterConfigDirFor(sessionId: string): string {
 export const SESSION_ID_ENV = "AGENTPROTO_SESSION_ID"
 export const WORKSPACE_SLUG_ENV = "AGENTPROTO_WORKSPACE_SLUG"
 export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
+/** The HTTP header the daemon's own `/mcp` gateway reads the CALLER's session
+ *  id from, as a fallback for the `?callerSessionId=` query.
+ *
+ *  Why both: the identity of a daemon-spawned session travels in the URL of
+ *  the mount it was given (`?callerSessionId=<own id>`; see
+ *  `buildDaemonSelfMountEntry`, session-spawn.ts). A URL query is the
+ *  FRAGILE carrier: any client (or intermediary) that rebuilds, normalizes or
+ *  re-roots the mount URL drops it, and the session silently becomes
+ *  anonymous to the gateway: `message_parent` then answers "cannot identify
+ *  the calling session" and every spawn it makes lands as a depth-0 orphan
+ *  (no auto-parent to derive; see `spawn-attach.ts`). A header is the
+ *  carrier the ACP/MCP http transports carry verbatim, so the identity now
+ *  travels BOTH ways: the query stays (back-compat, and the form the
+ *  `?callerSessionId=` trust checks read), the header is the fallback.
+ *
+ *  Trust: identical to the query claim; honoured only for a loopback
+ *  socket or a valid daemon bearer (see `externalClaimTrusted`,
+ *  http-server.ts), and only when the query carries no id.
+ */
+export const CALLER_SESSION_ID_HEADER = "x-agentproto-caller-session-id"
 /** Set only for a spawn made on behalf of an installed `@agentproto/app-kit`
  *  app (`app_run` → `spawnAgentSession({appId})`) — the id a daemon-tool
  *  proxy (mastra-agent's `daemon-mcp-tools.ts`, P7) auto-injects into an
@@ -2351,6 +2381,22 @@ export interface SessionDescriptor {
    *  list/kill and the per-parent child quota (orchestrator WP4).
    *  Persisted so the tree survives a daemon restart. */
   parentSessionId?: string
+  /** A REMOTE parent: this session lives in a BOX daemon's registry while its
+   *  parent lives in the HOST daemon's registry (see
+   *  `docs/lineage-handover.md`, "Known gap - sessions running INSIDE a box"
+   *  and `parent-relay.ts`). The block is forwarded by the host at spawn
+   *  time; `message_parent` POSTs the report to the host's relay endpoint
+   *  instead of looking the parent up locally. Present ONLY on the box-side
+   *  row - the host's own row keeps its ordinary `parentSessionId`.
+   *
+   *  The relay TOKEN is deliberately NOT here: it is a secret, so it lives
+   *  in an in-memory map keyed by the session id (see `parent-relay.ts`'s
+   *  `rememberRelayToken`) and never reaches a descriptor - and therefore
+   *  never reaches disk. */
+  remoteParent?: {
+    sessionId: string
+    url: string
+  }
   /** Opt-in (default false/absent): when this session crashes
    *  (`markCrashed` → `session:exited` with `status:"error"`/
    *  `reason:"crashed"`), the supervisor-notify subscriber
@@ -2977,6 +3023,12 @@ interface SessionRuntime {
    *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
    *  stop). Prompts are held (queued / answered "retry") until it settles. */
   contextRescue?: Promise<void>
+  /** The autocompact controller for this session (absolute token
+   *  threshold). Created lazily on the first turn boundary that reaches it. */
+  autoCompact?: AutoCompactController
+  /** True while an autocompact check is scheduled but has not run yet. It
+   *  keeps a burst of turn boundaries from queueing several checks. */
+  autoCompactScheduled?: boolean
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
@@ -5356,6 +5408,13 @@ export interface SpawnAgentInput {
    *  through the scoped sub-gateway (orchestrator WP4). Recorded on the
    *  descriptor for subtree scoping + quota accounting. */
   parentSessionId?: string
+  /** A REMOTE parent (host relay): the descriptor records ONLY the
+   *  non-secret part ({@link SessionDescriptor.remoteParent}); the relay
+   *  TOKEN is kept in an in-memory map keyed by the session id (see
+   *  `parent-relay.ts`'s `rememberRelayToken`), never on a descriptor and
+   *  never on disk. Set by the box-side spawn that received a forwarded
+   *  `remoteParent` block from the host. */
+  remoteParent?: { sessionId: string; url: string; token: string }
   /** Source label for the new session (channel/harness). */
   origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
@@ -5736,6 +5795,20 @@ export function computePinnedOrder(
     })
   unlisted.forEach((s, i) => order.set(s.id, ids.length + i))
   return order
+}
+
+/** The descriptor fields for a REMOTE parent (host relay), plus the side
+ *  effect that keeps the relay TOKEN out of the descriptor entirely: the
+ *  token is a secret, so it goes into an in-memory map keyed by the session
+ *  id (see `parent-relay.ts`) and never onto a descriptor - and therefore
+ *  never onto disk. */
+function remoteParentFields(
+  remoteParent: { sessionId: string; url: string; token: string } | undefined,
+  sessionId: string,
+): { remoteParent?: { sessionId: string; url: string } } {
+  if (!remoteParent) return {}
+  rememberRelayToken(sessionId, remoteParent.token)
+  return { remoteParent: { sessionId: remoteParent.sessionId, url: remoteParent.url } }
 }
 
 export function createSessionsRegistry(opts?: {
@@ -6330,6 +6403,13 @@ export function createSessionsRegistry(opts?: {
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
   const emitExited = (rt: SessionRuntime): void => {
     if (rt.exitedEmitted) return
+    // PARENT RELAY: this session is over, so it must not be able to report
+    // up to its host parent any more. Revoke the grant the host minted for
+    // it (the grant names this row as its box session) and forget this row's
+    // own outgoing relay token. Runs from the ONE exit funnel every
+    // terminal path funnels through (clean exit, kill, crash, idle-reap).
+    revokeParentRelayGrantsForBoxSession(rt.desc.id)
+    forgetRelayToken(rt.desc.id)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
     // running for this row (its queue entry is dropped, its child tree
@@ -7005,7 +7085,11 @@ export function createSessionsRegistry(opts?: {
 
   /** Descriptors as they go to disk. Read-time projections are stripped so a
    *  restored descriptor is never seen with a stale value before the next
-   *  list()/get() recomputes it. */
+   *  list()/get() recomputes it.
+   *
+   *  The remote parent's relay TOKEN is stripped too (belt and braces: the
+   *  descriptor never carries it in the first place - see
+   *  `remoteParentFields`), so a secret can never reach `sessions.json`. */
   const snapshotRows = (): SessionDescriptor[] =>
     Array.from(sessions.values()).map(s => {
       const {
@@ -7019,6 +7103,14 @@ export function createSessionsRegistry(opts?: {
         spawnEnforcedPostures: _spawnEnforcedPostures,
         ...rest
       } = s.desc
+      if (rest.remoteParent) {
+        const { token: _token, ...remoteParent } = rest.remoteParent as {
+          sessionId: string
+          url: string
+          token?: string
+        }
+        rest.remoteParent = remoteParent
+      }
       // A live provider-box session keeps its re-attach record on disk, so a
       // daemon that dies without a graceful shutdown (crash, SIGKILL) still
       // leaves the next boot something to reattach with. The cursor can be
@@ -9084,8 +9176,102 @@ export function createSessionsRegistry(opts?: {
     }
   }
 
+  /**
+   * Ask the harness to compact the session's context, the same way the
+   * `session_compact` verb does (a `/compact` prompt; hermes gets
+   * `/compress`), and report whether a mission is in progress.
+   *
+   * "A mission is in progress" is decided HERE, by the continuity
+   * checkpoint written just before the compaction: a non-empty `goal`
+   * section means there is a goal to carry on with. A session with no goal
+   * still gets its context freed. It is just not told to resume, because
+   * there is nothing to resume.
+   */
+  async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+    let goal: string | undefined
+    try {
+      const checkpoint = await checkpointBeforeContextLoss(rt, "auto compaction", false)
+      goal = checkpoint.sections.goal
+    } catch (err) {
+      appendLine(
+        rt,
+        `[auto-compact] no checkpoint could be written: ${err instanceof Error ? err.message : String(err)}`,
+        "stderr",
+      )
+    }
+    const cmd = (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes")
+      ? "/compress"
+      : "/compact"
+    // The runtime's own compaction prompt: not attributed to a session
+    // (`agent:<id>`), so a policy that reserves compaction for the operator
+    // (`compactRequiresOperator`) still refuses session-initiated
+    // compactions while the runtime may rescue a session on its own.
+    await registry.sendPrompt(rt.desc.id, cmd, { source: "runtime:auto-compact" })
+    const missionInProgress = typeof goal === "string" && goal.trim() !== ""
+    return missionInProgress ? { missionInProgress: true, goal } : { missionInProgress: false }
+  }
+
+  /**
+   * Autocompact: the ABSOLUTE token threshold path.
+   *
+   * The percent ladder (`warnAtPct` / `compactAtPct` / …) cannot see a
+   * session whose window is huge: 558k tokens in a 1M window is "55%",
+   * the warn band, so nothing ever compacts and every call re-reads the
+   * whole context. An absolute count does not care how big the window is.
+   *
+   * Fires only on an idle session (turn ended, no background task), at
+   * most once per compaction, and injects a short resume prompt only when
+   * a mission is in progress.
+   */
+  async function maybeAutoCompact(rt: SessionRuntime): Promise<void> {
+    if (rt.desc.kind !== "agent-cli") return
+    if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
+    // A harness that does not advertise compact support would be sent
+    // `/compact` again on every growth re-arm — a repeated-prompt loop. Stay
+    // silent instead, like `attemptContextCompact` (which also gates on this).
+    if (!adapterSupportsCompact(rt.agentSession)) return
+    const controller = (rt.autoCompact ??= createAutoCompactController({
+      readTokens: () => rt.desc.contextUsed,
+      readThreshold: () =>
+        rt.desc.contextContinuity?.autoCompactAtTokens ??
+        CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens,
+      isIdle: () => rt.busy !== true,
+      hasBackgroundTask: () =>
+        (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
+      isCompacting: () => rt.contextRescue !== undefined,
+      requestCompact: () => requestAutoCompact(rt),
+      requestResume: async prompt => {
+        await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact-resume" })
+      },
+      transcriptPath: () => rt.desc.eventsPath ?? sessionEventsPath(rt.desc.id, transcriptBaseDir),
+      log: line => {
+        appendLine(rt, line, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      },
+    }))
+    await controller.maybeTrigger()
+  }
+
+  /**
+   * Schedule the autocompact check for the next tick: the check runs a
+   * compaction TURN, so it must not be re-entered from inside the turn
+   * that just ended.
+   */
+  function scheduleAutoCompact(rt: SessionRuntime): void {
+    if (rt.autoCompactScheduled) return
+    rt.autoCompactScheduled = true
+    setTimeout(() => {
+      rt.autoCompactScheduled = false
+      void maybeAutoCompact(rt).catch(() => undefined)
+    }, 0)
+  }
+
   async function evaluateContextContinuity(rt: SessionRuntime): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
+    // Autocompact is ABSOLUTE and window-independent: it must be evaluated
+    // even when the window size is unknown (the percent ladder cannot act
+    // without one, and that is exactly the 1M-context case).
+    scheduleAutoCompact(rt)
     const policy = rt.desc.contextContinuity
     if (!policy) return
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
@@ -10895,6 +11081,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        // The relay TOKEN stays in memory (see `remoteParentFields`) - the
+        // descriptor (and therefore the persisted row) carries only the
+        // parent session id and the relay URL.
+        ...remoteParentFields(input.remoteParent, id),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
@@ -11086,6 +11276,10 @@ export function createSessionsRegistry(opts?: {
         ...(input.parentSessionId
           ? { parentSessionId: input.parentSessionId }
           : {}),
+        // The relay TOKEN stays in memory (see `remoteParentFields`) - the
+        // descriptor (and therefore the persisted row) carries only the
+        // parent session id and the relay URL.
+        ...remoteParentFields(input.remoteParent, id),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),

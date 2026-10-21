@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto"
 import { existsSync } from "node:fs"
 import { loadAdapterSpawnSandboxConfig, type SandboxMode } from "@agentproto/command-sandbox"
 import { trackWorktreeProvision } from "./process-stats.js"
-import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
+import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, WORKSPACE_SLUG_ENV, PARENT_SESSION_ID_ENV, APP_ID_ENV, CALLER_SESSION_ID_HEADER, type AgentSessionLike, type SessionsRegistry, type SessionDescriptor, type RestartPolicy } from "./sessions.js"
 import {
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
@@ -26,6 +26,7 @@ import {
   type ResolvedCloudSpawn,
 } from "./cloud-vendors.js"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
+import { mintParentRelayGrant, parentRelayUrlFromEnv, revokeParentRelayGrant } from "./parent-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -1046,7 +1047,71 @@ export function buildDaemonSelfMountEntry(
     ref += `${ref.includes("?") ? "&" : "?"}deferred=${opts.deferredToolsOverride ? "1" : "0"}`
   }
   ref += `${ref.includes("?") ? "&" : "?"}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`
-  return { name: "agentproto", transport: "http", ref }
+  // The identity travels BOTH ways: the query above (the historical carrier,
+  // read by the `?callerSessionId=` trust checks) AND a dedicated header
+  // (the robust carrier: a client that rebuilds or normalizes the mount URL
+  // drops the query, and an anonymous session means `message_parent` can
+  // neither identify its caller nor report up, and every spawn it makes
+  // lands as a depth-0 orphan). See `CALLER_SESSION_ID_HEADER`.
+  return {
+    name: "agentproto",
+    transport: "http",
+    ref,
+    headers: { [CALLER_SESSION_ID_HEADER]: opts.callerSessionId },
+  }
+}
+
+/** Does `ref` point at THIS daemon's own `/mcp` gateway?
+ *
+ *  The historical check was an exact string comparison against
+ *  `daemonMcpUrl` (plus a `?`-prefixed variant). That is too strict for the
+ *  mounts that actually show up in the field: an ambient mount (a project
+ *  `.mcp.json`, an operator's global MCP config, a config a supervisor
+ *  passed down) spells the SAME endpoint differently: `localhost` instead
+ *  of `127.0.0.1`, a trailing slash, a `?host=…` query, and every one of
+ *  those spellings FAILED the exact match, so the entry was never
+ *  identity-stamped: the session reached the daemon anonymously and lost
+ *  its lineage. The comparison is therefore by origin (host:port) and path,
+ *  which is the same endpoint however it is spelled.
+ *
+ *  Deliberately NOT a match: a different port/host (another daemon), a
+ *  deeper path (the scoped `/mcp/orchestrator` sub-gateway, which attributes
+ *  through its own scope token), and a non-http transport.
+ */
+export function targetsDaemonGateway(ref: string, daemonMcpUrl: string): boolean {
+  if (ref === daemonMcpUrl) return true
+  let target: URL
+  let daemon: URL
+  try {
+    target = new URL(ref)
+    daemon = new URL(daemonMcpUrl)
+  } catch {
+    return false
+  }
+  if (target.protocol !== daemon.protocol) return false
+  // The daemon is loopback-bound, so a different SPELLING of the same
+  // loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same
+  // endpoint, not a different one. A non-loopback host must match exactly.
+  if (target.host !== daemon.host) {
+    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
+  }
+  if (effectivePort(target) !== effectivePort(daemon)) return false
+  const targetPath = target.pathname.replace(/\/+$/, "")
+  const daemonPath = daemon.pathname.replace(/\/+$/, "")
+  return targetPath === daemonPath
+}
+
+/** The port a URL actually talks to (empty ⇒ the protocol's default). */
+function effectivePort(url: URL): string {
+  if (url.port) return url.port
+  return url.protocol === "https:" ? "443" : "80"
+}
+
+/** Is this hostname a loopback name? (`localhost`, `127.0.0.1`, `::1`, …) */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, "")
+  if (host === "localhost" || host === "::1") return true
+  return /^127(?:\.\d{1,3}){3}$/.test(host)
 }
 
 /**
@@ -1076,17 +1141,30 @@ export function stampDaemonCallerSessionId(
   opts: { daemonMcpUrl: string; callerSessionId: string },
 ): AcpMcpServer[] | undefined {
   if (!mcpServers) return undefined
-  const daemonQ = `${opts.daemonMcpUrl}?`
   return mcpServers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
-    const targetsDaemon = entry.ref === opts.daemonMcpUrl || entry.ref.startsWith(daemonQ)
-    if (!targetsDaemon || entry.ref.includes("callerSessionId=")) return entry
+    if (!targetsDaemonGateway(entry.ref, opts.daemonMcpUrl)) return entry
+    // An entry that already carries a caller identity (an explicit pin, or
+    // one left over from a prior stamp) is respected and never overwritten.
+    if (entry.ref.includes("callerSessionId=")) return entry
+    if (hasCallerSessionIdHeader(entry.headers)) return entry
     const sep = entry.ref.includes("?") ? "&" : "?"
     return {
       ...entry,
       ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
+      headers: {
+        ...entry.headers,
+        [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+      },
     }
   })
+}
+
+/** Does this mount already carry the caller-identity header? Header names
+ *  are case-insensitive on the wire, so the comparison is too. */
+function hasCallerSessionIdHeader(headers: Record<string, string> | undefined): boolean {
+  if (!headers) return false
+  return Object.keys(headers).some(k => k.toLowerCase() === CALLER_SESSION_ID_HEADER)
 }
 
 /** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
@@ -1665,6 +1743,13 @@ export interface SpawnAgentSessionInput {
    *  external webhook path (`notifyUrl`) already fires regardless of this
    *  flag. */
   notifyParentOnCrash?: boolean
+  /** A REMOTE parent (host relay) forwarded by the host into a BOX daemon's
+   *  `agent_start`: the parent session lives in the HOST daemon's registry,
+   *  so the box row records it as `remoteParent` instead of
+   *  `parentSessionId` and `message_parent` relays the report to the host
+   *  (see `parent-relay.ts` and `docs/lineage-handover.md`). Recorded
+   *  verbatim onto {@link SessionDescriptor.remoteParent}. */
+  remoteParent?: { sessionId: string; url: string; token: string }
   /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4): `false`
    *  means a PR this session opens is never auto-watched, regardless of
    *  `config.sentinel.autoWatchPrs`. Recorded verbatim onto
@@ -4308,6 +4393,7 @@ export async function spawnAgentSession(
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         ...(input.boardId || input.workflowOwner
@@ -4705,6 +4791,12 @@ export async function spawnAgentSession(
         // so the box daemon enforces the executor/supervisor delegation rule
         // consistently (see `bootSandboxAgentSession`'s `role` opt).
         ...(input.sandbox !== undefined ? { role: role.name } : {}),
+        // PARENT RELAY: when this box session has a host-side parent, the
+        // boot mints a relay token and forwards a REMOTE parent into the
+        // box's own `agent_start` (the parent lives in the HOST registry).
+        // No relay URL configured ⇒ nothing forwarded (the box keeps today's
+        // clear "no recorded parent" error).
+        ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
       })
       if (!booted.ok) return booted
       agentSession = booted.agentSession
@@ -4985,6 +5077,7 @@ export async function spawnAgentSession(
       // the scope-derived depth for a scoped spawn, else the hint parent's
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
+      ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
       ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
       // descriptor — the task ledger's board resolution reads it BEFORE the
@@ -5687,6 +5780,15 @@ export async function bootSandboxAgentSession(opts: {
    *  `/mcp/orchestrator` on ITS loopback (reachable by the adapter inside
    *  the box). Absent for every non-sandbox spawn. */
   orchestrator?: boolean | { tools?: string[]; maxDepth?: number; maxChildren?: number }
+  /** PARENT RELAY: the host's parent session id + the host-side box-session
+   *  row id, so the boot can mint a short-lived relay token and forward a
+   *  REMOTE parent into the box's own `agent_start` (the parent lives in the
+   *  HOST registry; the box row therefore has no local `parentSessionId`).
+   *  The relay URL itself comes from the operator's configuration
+   *  (`AGENTPROTO_PARENT_RELAY_URL`): without it no remote parent is
+   *  forwarded and the box keeps today's clear "no recorded parent" error.
+   *  Absent for every non-sandbox spawn. */
+  parentRelay?: { parentSessionId: string; boxSessionId: string }
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -6267,6 +6369,23 @@ export async function bootSandboxAgentSession(opts: {
       : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
+  // PARENT RELAY: mint the short-lived, single-session-scoped relay token
+  // and forward the REMOTE parent into the box's own `agent_start` so a
+  // session running INSIDE the box can report up to its host parent (the
+  // parent lives in the HOST registry, so the box row has no local
+  // `parentSessionId` (see `docs/lineage-handover.md`). Only possible when
+  // the operator configured a relay URL reachable FROM the box; without one
+  // nothing is forwarded and the box's `message_parent` keeps today's clear
+  // "no recorded parent" error.
+  const parentRelayUrl = parentRelayUrlFromEnv()
+  const remoteParent =
+    opts.parentRelay && parentRelayUrl
+      ? mintParentRelayGrant({
+          parentSessionId: opts.parentRelay.parentSessionId,
+          boxSessionId: opts.parentRelay.boxSessionId,
+          url: parentRelayUrl,
+        })
+      : undefined
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   try {
@@ -6310,6 +6429,9 @@ export async function bootSandboxAgentSession(opts: {
       // host would have, so an executor's role is enforced consistently
       // wherever the spawn runs — no re-resolution-from-nothing box-side.
       ...(opts.role !== undefined ? { role: opts.role } : {}),
+      // PARENT RELAY: the REMOTE parent (host relay) block; see the
+      // `remoteParent` mint above.
+      ...(remoteParent ? { remoteParent } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
@@ -6330,6 +6452,10 @@ export async function bootSandboxAgentSession(opts: {
     // box (kill: it holds nothing of value) and mark the ledger so the
     // failure is never a silent orphan. AIP-36 shared-box: survivors keep
     // the box — detach only.
+    // PARENT RELAY: the boot never completed, so the relay grant minted
+    // above is dead on arrival - revoke it instead of leaving a live token
+    // behind for a box session that will never exist.
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
     if (!(await detachOnBootFailure())) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -6367,6 +6493,9 @@ export async function bootSandboxAgentSession(opts: {
       github: { resolveToken: resolveGithubWorkspaceTokenFromBroker },
     })
     if (!serve.ok) {
+      // PARENT RELAY: the boot failed after the grant was minted - revoke
+      // it (see the `agent_start` failure path above).
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
       if (!(await detachOnBootFailure())) {
         await host.stop().catch(() => undefined)
         recordSandboxState(host.sandboxId, "stopped")

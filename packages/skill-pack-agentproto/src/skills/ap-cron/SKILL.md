@@ -42,7 +42,7 @@ Three action kinds:
 ```
 
 - **agent** — spawn a brand-new session on each firing. Use for self-contained periodic work.
-- **prompt-session** — re-ping an EXISTING living session by id.
+- **prompt-session** — re-ping an EXISTING living session, by id or by agent label.
 
 ```json
 {
@@ -50,6 +50,38 @@ Three action kinds:
   "label": "mission-checkin",
   "action": { "kind": "prompt-session", "sessionId": "sess_abc123", "prompt": "Check-in: post progress, blockers, and next step." }
 }
+```
+
+#### Target an agent by label (survives a relaunch)
+
+A session id is a snapshot: when the agent is restarted or continued fresh it
+gets a NEW id, and a job pinned to the old id keeps hitting a dead row. Target
+the agent by its LABEL instead (`agent`, or the `agent:<label>` spelling in
+`sessionId`) and the daemon resolves the label to the live session **when the
+job fires**:
+
+```json
+{
+  "schedule": "0 8,14,20 * * *",
+  "label": "mission-checkin",
+  "action": { "kind": "prompt-session", "agent": "pm", "prompt": "Check-in: post progress, blockers, and next step." }
+}
+```
+
+- The label is matched exactly, case-insensitively, against the session's
+  spawn label (the same field the registry's dedupe-by-label check uses) or
+  its operator label. Give exactly one target: `sessionId` OR `agent`.
+- Resolution order at fire time: the newest LIVE session with that label →
+  a retired session's live successor → an ended session revived through the
+  usual restart path → otherwise the tick fails and the label is named in
+  `lastResult`.
+- The run result records the session id the label resolved to, so the ledger
+  and the UI can link to it.
+
+From the CLI the same target is `--target-session agent:pm`:
+
+```sh
+agentproto cron add --schedule "0 8,14,20 * * *" --target-session agent:pm --prompt "Check-in: post progress."
 ```
 
 ## Inspect, test, delete
@@ -69,7 +101,7 @@ Spawn the mission agent once (see ap-spawn-agent), then attach a `prompt-session
 ## Gotchas
 
 - Cron jobs are persistent HOST-level jobs that survive daemon restarts. One-shot jobs MUST set `recurring: false` or they fire forever.
-- `prompt-session` targets a session id, not a name — dead ids fail; check `lastResult` to see it.
+- `prompt-session` targets a session id, not a name — dead ids fail; check `lastResult` to see it. Use the `agent` label target when the target agent may be relaunched (a new id, same label) — a label target survives the relaunch, an id target does not.
 - The `command` kind is allowlist-gated by basename: the executable's basename must appear in `<workspace>/.agentproto/allowed-commands.json`, even when you pass an absolute path.
 - Schedules are local time, not UTC — `0 9 * * 1-5` means 9am wherever the daemon runs.
 - Deleting is permanent; there is no pause. To suspend a job, delete and recreate it with the same label.
@@ -77,7 +109,7 @@ Spawn the mission agent once (see ap-spawn-agent), then attach a `prompt-session
 ## Pointers
 
 - agentproto — daemon overview and where these tools live.
-- ap-spawn-agent — create the session a prompt-session cron re-pings.
+- ap-spawn-agent — create the session a prompt-session cron re-pings. Give it a `label` if the cron should target the agent by label (`agent:pm`) instead of by id.
 - ap-wait-durable — the waiting-side counterpart for durable supervision.
 - supervise-long-missions — the strategy this tool implements.
 - pb-boss-checkins — packaged check-in workflow.
