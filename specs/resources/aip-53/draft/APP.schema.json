@@ -344,7 +344,7 @@
         ],
         "additionalProperties": false,
         "oneOf": [
-          { "required": ["entry"], "not": { "required": ["args"] } },
+          { "required": ["entry"], "not": { "anyOf": [{ "required": ["command"] }, { "required": ["args"] }] } },
           { "required": ["command"], "not": { "required": ["entry"] } }
         ],
         "properties": {

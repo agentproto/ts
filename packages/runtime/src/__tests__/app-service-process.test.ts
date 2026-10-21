@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -23,6 +23,7 @@ import {
   DEFAULT_APP_SERVICE_RESTART_POLICY,
   readProcessStartTicks,
   assessRecordedServicePid,
+  cleanupLegacyServicePidFile,
 } from "../app-service-process.js"
 import { SESSION_ID_ENV, APP_ID_ENV, createSessionsRegistry } from "../sessions.js"
 import type { SessionsRegistry } from "../sessions.js"
@@ -382,5 +383,77 @@ describe("recorded-pid identity assessment (audit F-4)", () => {
     } finally {
       await handle.stop()
     }
+  })
+})
+
+describe("deliberate kill cancels supervision", () => {
+  it("registry.kill of the live attempt row never respawns", () => {
+    const { fx, start } = startFixture()
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    expect(fx.registry.kill(id, "SIGTERM", "operator-stopped")).toBe(true)
+    fx.exit(0, 143)
+    expect(fx.restarts).toEqual([])
+    expect(fx.spawned).toHaveLength(1)
+    expect(res.handle.disposed).toBe(true)
+  })
+
+  it("registry.kill during the restart-backoff gap never respawns", () => {
+    const { fx, start } = startFixture({
+      policy: { baseDelayMs: 100, factor: 2, maxAttempts: 5, windowMs: 60_000 },
+    })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    // The child dies, scheduling a restart; the row is already terminal.
+    fx.exit(0, 1)
+    expect(fx.restarts).toEqual([100])
+    expect(fx.registry.get(id)?.status).toBe("exited")
+    // An operator kill lands inside the backoff window — the row is retired,
+    // not resurrected by the timer.
+    expect(fx.registry.kill(id, "SIGTERM", "operator-stopped")).toBe(true)
+    fx.queue[0]?.fire()
+    expect(fx.spawned).toHaveLength(1)
+    expect(res.handle.disposed).toBe(true)
+    expect(fx.respawns.map(r => r.attempt)).toEqual([0])
+  })
+})
+
+describe("cleanupLegacyServicePidFile (pre-managed-process upgrade)", () => {
+  let dir: string
+  let child: ReturnType<typeof spawn> | undefined
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-service-legacy-"))
+    await mkdir(join(dir, "services"), { recursive: true })
+  })
+  afterEach(async () => {
+    child?.kill("SIGKILL")
+    child = undefined
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it.skipIf(process.platform !== "linux")("kills a verified matching legacy pid and removes the file", async () => {
+    child = spawn("sleep", ["30"], { stdio: "ignore" })
+    const file = join(dir, "services", "web.pid")
+    await writeFile(file, String(child.pid))
+    const result = await cleanupLegacyServicePidFile(dir, "web", "sleep")
+    expect(result).toMatchObject({ killed: true })
+    expect(existsSync(file)).toBe(false)
+    await new Promise<void>(resolve => {
+      if (child!.exitCode !== null) return resolve()
+      child!.once("exit", () => resolve())
+    })
+  })
+
+  it.skipIf(process.platform !== "linux")("keeps the file when a live pid does not match the entry", async () => {
+    child = spawn("sleep", ["30"], { stdio: "ignore" })
+    const file = join(dir, "services", "web.pid")
+    await writeFile(file, String(child.pid))
+    const result = await cleanupLegacyServicePidFile(dir, "web", "not-this-command-xyz")
+    expect(result).toMatchObject({ killed: false })
+    expect(result.reason).toContain("does not match")
+    expect(existsSync(file)).toBe(true)
+    expect(() => process.kill(child!.pid!, 0)).not.toThrow()
   })
 })

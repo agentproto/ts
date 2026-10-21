@@ -413,6 +413,24 @@ export function startAppServiceProcess(
       // The restart gap is over: the dead attempt is no longer "pending".
       restartPending.delete(diedId)
       if (disposed) return
+      // A deliberate kill can land DURING the backoff gap, when the row is
+      // already terminal (`exited`) and there is no live child to tag on
+      // `exit`. The operator kill retires the row (`retiredAt`) instead of
+      // flipping a live row to `killed`, so check both before respawning.
+      let rowStatus: string | undefined
+      let retired = false
+      try {
+        const row = deps.registry.get(diedId)
+        rowStatus = row?.status
+        retired = row?.retiredAt !== undefined
+      } catch {
+        // Registry unavailable — fall through to the normal restart path.
+      }
+      if (rowStatus === "killed" || retired) {
+        disposed = true
+        unregister()
+        return
+      }
       attempt += 1
       launchAttempt()
     }, delay)
