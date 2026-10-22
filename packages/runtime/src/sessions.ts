@@ -5483,7 +5483,7 @@ export interface SpawnAgentInput {
   /** Correlation key of the work this session does: the task the session was
    *  spawned FOR. Recorded on {@link SessionDescriptor.taskId} so a relaunch
    *  naming the same task id resumes THIS session's last checkpoint (crash
-   *  resume — see `checkpoint-resume.ts`). */
+   *  resume, see `checkpoint-resume.ts`). */
   taskId?: string
   /** Title to stamp on the descriptor up-front, BEFORE the `initialPrompt`
    *  turn runs. Set by the spawn path from the CALLER's ask (`input.prompt`),
@@ -11403,7 +11403,7 @@ export function createSessionsRegistry(opts?: {
           ? { modelDerivedApiKey: input.modelDerivedApiKey }
           : {}),
         ...(input.label ? { label: input.label } : {}),
-        // Correlation key of the work (crash resume) — same rule as
+        // Correlation key of the work (crash resume), same rule as
         // `spawnAgent`: a relaunch naming this task id resumes the session.
         ...(input.taskId ? { taskId: input.taskId } : {}),
         ...(input.title ? { title: input.title } : {}),

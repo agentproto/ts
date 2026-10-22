@@ -103,7 +103,7 @@ export interface CheckpointRefCarrier {
    *  `SessionDescriptor.taskId` - stamped on the session at spawn time when
    *  the caller names the task the session works on. */
   taskId?: string
-  /** Where the session's work branch lived in its box — reused by a
+  /** Where the session's work branch lived in its box, reused by a
    *  relaunch so the pushed commits come back as commits. */
   sandboxDeliveryTarget?: { branch?: string }
   /** The workspace the session worked in. */
