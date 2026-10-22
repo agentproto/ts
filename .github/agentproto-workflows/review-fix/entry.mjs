@@ -3,8 +3,8 @@
 // The auto-fix job used to drive `${ANTHROPIC_API_KEY}` through the
 // hand-rolled scripts/apply-review.mjs loop (or Claude Code Cloud). This
 // workflow replaces that with the same agentproto lane the reviewer uses:
-// an OpenCode Go subscription session (opencode-go/deepseek-v4.1-flash,
-// profile opencode-developerws003) spawned on the CI checkout.
+// a free OpenCode Zen session (opencode/deepseek-v4.1-flash-free) spawned on
+// the CI checkout.
 //
 // The session only writes the working tree. The calling job (`pr-fix` in
 // ci.yml) stages, commits and pushes, exactly as it did before.
@@ -47,7 +47,7 @@ export default {
   name: "Agentproto Review Fix",
   id: "agentproto-review-fix",
   description:
-    "Applies the latest CHANGES_REQUESTED review to the CI checkout on the OpenCode Go subscription. Writes the working tree only; the calling job commits and pushes.",
+    "Applies the latest CHANGES_REQUESTED review to the CI checkout on the free OpenCode Zen route. Writes the working tree only; the calling job commits and pushes.",
   version: "0.1.0",
   inputs: {
     prNumber: { type: "number", description: "Pull request number to fix.", default: 0 },

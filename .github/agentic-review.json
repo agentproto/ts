@@ -1,6 +1,6 @@
 {
   "blocking": true,
-  "model": "opencode-go/deepseek-v4.1-flash",
+  "model": "opencode/deepseek-v4.1-flash-free",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
@@ -90,7 +90,7 @@
     "opencode-go-deepseek-flash": {
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
-      "reviewerModel": "opencode-go/deepseek-v4.1-flash",
+  "reviewerModel": "opencode/mimo-v2.6-flash-free",
       "reviewerSandbox": {
         "provider": "e2b",
         "lifecycle": {
@@ -107,7 +107,6 @@
     "review": {
       "env": "AGENT_REVIEW_PRESETS",
       "presets": [
-        "opencode-go-deepseek-flash",
         "opencode-deepseek-free",
         "opencode-mimo-free"
       ]
@@ -180,7 +179,7 @@
         "aip-conventions"
       ],
       "fixDelivery": "pr",
-      "reviewerModel": "opencode-go/deepseek-v4.1-flash"
+      "reviewerModel": "opencode/deepseek-v4.1-flash-free"
     },
     "pr": {
       "skills": [

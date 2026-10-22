@@ -3,8 +3,8 @@ name: Agentproto Review Fix
 id: agentproto-review-fix
 description: >
   Applies the latest CHANGES_REQUESTED review on a PR to the CI checkout, using
-  the OpenCode Go subscription model. Writes the working tree only; the calling
-  job commits and pushes. No Anthropic API key is involved.
+  the free OpenCode Zen model. Writes the working tree only; the calling job
+  commits and pushes. No Anthropic key and no Go subscription key are involved.
 version: 0.1.0
 entry: ./entry.mjs
 inputs:

@@ -1020,7 +1020,7 @@ jobs:
         id: config
         if: steps.prstate.outputs.skip != 'true'
         env:
-          AGENT_REVIEW_PRESETS: opencode-go-deepseek-flash,opencode-deepseek-free,opencode-mimo-free
+          AGENT_REVIEW_PRESETS: opencode-deepseek-free,opencode-mimo-free
         run: |
           if [ -f .github/agentic-review.json ]; then
             CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
@@ -1036,29 +1036,15 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
-        env:
-          KEY_GO_WS03: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
-          KEY_WS02: ${{ secrets.OPENCODE_API_KEY_WS02 }}
-          KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
-          KEY_GO: ${{ secrets.OPENCODE_GO_API_KEY }}
-          KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
-          CONFIG: ${{ steps.config.outputs.json }}
         run: |
-          PRIMARY_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
-          # The primary preset is the OpenCode Go subscription route
-          # (opencode-go/deepseek-v4.1-flash). It MUST use the DeveloperWs003
-          # (ws03) key: a missing key is a hard failure, not a silent downgrade
-          # to a free Zen id or another Go account.
-          if [[ "$PRIMARY_MODEL" == opencode-go/* ]] && [ -z "$KEY_GO_WS03" ]; then
-            echo "::error::Primary review model '$PRIMARY_MODEL' requires secrets.OPENCODE_GO_API_KEY_WS03 (opencode-developerws003 Go subscription key). Refusing to run."
-            exit 1
-          fi
-          if [ -n "$KEY_GO_WS03" ] || [ -n "$KEY_WS03" ] || [ -n "$KEY_WS02" ] || [ -n "$KEY_GO" ] || [ -n "$KEY_DEFAULT" ]; then
+          # The automatic reviewer runs on OpenCode's hosted free Zen routes.
+          # This step only checks the credential needed by that free lane.
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_GO_API_KEY }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane (primary: $PRIMARY_MODEL)"
+            echo "Using agentproto lane (OpenCode free model)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No OpenCode credential (OPENCODE_GO_API_KEY_WS03/OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
+            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1273,13 +1259,12 @@ jobs:
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # The key authenticates OpenCode. It is selected by the resolved
-          # model's route: opencode-go/* -> the ws03 Go subscription key
-          # (OPENCODE_GO_API_KEY_WS03, profile opencode-developerws003),
-          # opencode/* -> a Zen key. The mode step above refuses to run a Go
-          # model without that exact secret.
+          # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a
+          # Zen key). The resolver step above fails closed unless the model is
+          # a zero-priced free id OR an owner-sanctioned metered id.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
@@ -1689,8 +1674,8 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
@@ -2398,24 +2383,29 @@ jobs:
       # the review→fix→re-review cycle stays tight. Stacked-PR delivery is an
       # on-demand choice via `/fix --pr` (config.fixDelivery sets that default).
       #
-      # Single backend: the OpenCode Go subscription
-      # (opencode-go/deepseek-v4.1-flash, profile opencode-developerws003). It
-      # runs on the CI checkout through the same agentproto lane as the
-      # reviewer, in the host (no e2b) so the model can write the files the job
-      # commits. No Anthropic API key and no Claude Code Cloud session is used.
+      # Single backend: the free OpenCode Zen route
+      # (opencode/deepseek-v4.1-flash-free). It runs on the CI checkout through
+      # the same agentproto lane as the reviewer, in the host (no e2b) so the
+      # model can write the files the job commits. No Anthropic API key, no
+      # Claude Code Cloud session, and no Go subscription key is used.
       - name: Resolve fixer model
         id: fixcfg
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
           steps.budget.outputs.exhausted != 'true'
         env:
-          KEY_GO_WS03: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+          KEY_ZEN: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
         run: |
-          MODEL=$(jq -r '.commands.fix.reviewerModel // .reviewerModel // "opencode-go/deepseek-v4.1-flash"' .github/agentic-review.json)
+          MODEL=$(jq -r '.commands.fix.reviewerModel // .reviewerModel // "opencode/deepseek-v4.1-flash-free"' .github/agentic-review.json)
           echo "model=$MODEL" >> "$GITHUB_OUTPUT"
-          # Fail closed: the fixer must run on the ws03 Go subscription key.
-          if [[ "$MODEL" == opencode-go/* ]] && [ -z "$KEY_GO_WS03" ]; then
-            echo "::error::Auto-fix model '$MODEL' requires secrets.OPENCODE_GO_API_KEY_WS03 (opencode-developerws003 Go subscription key). Refusing to run."
+          # The fixer is free by default; a Go model would need a Go-credit key,
+          # which this lane deliberately does not use.
+          if [[ "$MODEL" == opencode-go/* ]]; then
+            echo "::error::Auto-fix model '$MODEL' is a Go route; the auto-fix lane only runs free Zen ids."
+            exit 1
+          fi
+          if [ -z "$KEY_ZEN" ]; then
+            echo "::error::No OpenCode Zen credential (OPENCODE_API_KEY_WS02/_WS03/OPENCODE_API_KEY) - the auto-fix cannot authenticate."
             exit 1
           fi
           echo "Auto-fix model: $MODEL"
@@ -2433,7 +2423,7 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
 
-      - name: Apply review fixes (OpenCode Go, ws03)
+      - name: Apply review fixes (OpenCode free)
         id: fixer-lane
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
@@ -2447,9 +2437,9 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          # ws03 Go subscription key. Never a Zen key, never another Go org.
-          api-key: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
-          provider-key: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+          # Free Zen key. The fixer never uses a Go subscription key.
+          api-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.fixcfg.outputs.model }}
           workflow-path: .github/agentproto-workflows/review-fix/WORKFLOW.md
