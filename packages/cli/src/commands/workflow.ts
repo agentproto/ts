@@ -45,6 +45,7 @@ import {
   httpPostJson,
 } from "./_daemon-helpers.js"
 import type { DaemonEndpoint } from "./_daemon-helpers.js"
+import { heavyWorkflowBlockReason, readGuardState } from "./host-guard.js"
 
 const USAGE = `agentproto workflow — start, inspect and cancel workflow runs
 
@@ -53,10 +54,11 @@ Usage:
                             [--cwd <dir>] [--workspace-slug <slug>]
                             [--notify-url <url>] [--cache-key <key>]
                             [--app-id <appId>] [--app-run-id <appRunId>]
-                            [--item <item>] [--json]
+                            [--item <item>] [--force] [--json]
   agentproto workflow run-file <path>
                             [--input-json <json|@file>] [--cwd <dir>]
-                            [--workspace-slug <slug>] [--cache-key <key>] [--json]
+                            [--workspace-slug <slug>] [--cache-key <key>]
+                            [--force] [--json]
   agentproto workflow status <runId> [--json]
   agentproto workflow list [--json]
   agentproto workflow cancel <runId> [--json]
@@ -80,6 +82,8 @@ start:
   suspend / script kinds).
   Rides the daemon's /mcp gateway as the \`workflow_start\` tool (REST
   /workflows cannot carry cacheKey/appId/appRunId/item).
+  Refused while a fresh \`agentproto host guard\` CRIT marker is armed;
+  \`--force\` overrides a CRIT verdict deliberately.
 
 run-file:
   Load an AIP-15 WORKFLOW.md (+ optional entry.mjs) and run it through the
@@ -161,6 +165,16 @@ async function readJsonArg(
       `invalid ${flagLabel}: ${err instanceof Error ? err.message : String(err)}`,
     )
   }
+}
+
+/** Refuse a heavyweight workflow launch while a fresh `host guard` CRIT marker
+ *  is armed. The marker is written only by `agentproto host guard` on CRIT and
+ *  expires after one missed 20-min tick, so this is a no-op on a healthy host
+ *  and in every environment where the guard is not installed. */
+async function hostGuardBlock(verb: string, force: boolean): Promise<string | null> {
+  if (force) return null
+  const reason = heavyWorkflowBlockReason(await readGuardState(), Date.now())
+  return reason ? `${verb}: refused — ${reason}` : null
 }
 
 // ── MCP-over-HTTP helper ─────────────────────────────────────────────
@@ -259,12 +273,18 @@ async function runStart(args: readonly string[]): Promise<number> {
       "app-id": { type: "string" },
       "app-run-id": { type: "string" },
       item: { type: "string" },
+      force: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
   })
   const fail = (msg: string): number => {
     process.stderr.write(`agentproto workflow start: ${msg}\n`)
     return 2
+  }
+  const blocked = await hostGuardBlock("agentproto workflow start", values.force === true)
+  if (blocked) {
+    process.stderr.write(blocked + "\n")
+    return 1
   }
   if (!values["workflow-id"]) return fail("missing --workflow-id <id>")
   if (!values["stages-json"]) {
@@ -325,9 +345,15 @@ async function runRunFile(args: readonly string[]): Promise<number> {
       cwd: { type: "string" },
       "workspace-slug": { type: "string" },
       "cache-key": { type: "string" },
+      force: { type: "boolean", default: false },
       json: { type: "boolean", default: false },
     },
   })
+  const blocked = await hostGuardBlock("agentproto workflow run-file", values.force === true)
+  if (blocked) {
+    process.stderr.write(blocked + "\n")
+    return 1
+  }
   const path = positionals[0]
   if (!path) {
     process.stderr.write(

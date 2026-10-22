@@ -39,6 +39,7 @@ export const HOST_USAGE = `Usage:
                          [--fresh] [--local] [--no-color]
   agentproto host health [--json] [--watch <seconds>] [--budget <ms>] [--local]
                          [--no-color] [--warn-load <x>] [--crit-load <x>] [...]
+  agentproto host guard  [--dry-run] [--json] [--agent <slug>] [--notify-session <id>] [...]
 
 host load: one-screen host load report: load average vs core count, CPU
 user/sys/idle, RAM (used/wired/compressor/free) and swap, per-disk transfers/s +
@@ -340,7 +341,7 @@ async function probeSessionsDisk(): Promise<DiskProbe> {
   }
 }
 
-async function gatherHealthInput(o: { local: boolean; budgetMs?: number }): Promise<HostHealthInput> {
+export async function gatherHealthInput(o: { local: boolean; budgetMs?: number }): Promise<HostHealthInput> {
   const opts = { mode: "full" as const, fresh: true, ...(o.budgetMs !== undefined ? { budgetMs: o.budgetMs } : {}) }
   const disk = probeSessionsDisk().catch((err): DiskProbe => ({ path: "sessions dir", error: errText(err) }))
 
@@ -467,6 +468,10 @@ export async function runHost(args: readonly string[]): Promise<number> {
   }
   const sub = args[0]
   if (sub === "health") return runHealth(args.slice(1))
+  if (sub === "guard") {
+    const { runHostGuard } = await import("./host-guard.js")
+    return runHostGuard(args.slice(1))
+  }
   if (sub !== "load") {
     process.stderr.write(`agentproto host: unknown subcommand "${sub}"\n\n${HOST_USAGE}`)
     return 2
