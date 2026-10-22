@@ -121,13 +121,14 @@ graceful restart does not cover a crash.
 - The restore is a best effort step, never fatal: a missing ref, a dirty
   tree or a fetch failure leaves the session where it is, with a notice.
 - The restore brings back the paths the snapshot contains, not the whole
-  tree: `git restore --source=<ref> --staged --worktree -- .` only updates
-  the files present in the snapshot, so a file added AFTER the checkpoint
-  stays in the checkout (it is not deleted), and the staged/unstaged split
-  is not preserved either (the restored paths are staged and in the
-  worktree at once). The uncommitted work comes back as uncommitted
-  changes (like the existing branch-derived restore), and the pushed
-  commits come back as commits when the work branch is reused.
+  tree: `git restore --source=<ref> --staged --worktree -- .` resets every
+  path under `.` to the snapshot's state. A tracked path present in the
+  current index/HEAD but absent from the snapshot is therefore REMOVED from
+  the index and the worktree (as a staged deletion), not kept. The
+  staged/unstaged split is not preserved either (the restored paths are
+  staged and present in the worktree at once). Uncommitted work comes back
+  as uncommitted changes (like the existing branch-derived restore), and
+  pushed commits come back as commits when the work branch is reused.
 - Only a checkpoint that reached the remote is restorable. A checkpoint
   that only exists as a host-side bundle is not silently faked.
 

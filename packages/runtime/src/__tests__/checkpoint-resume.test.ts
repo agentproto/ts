@@ -294,6 +294,44 @@ describe("checkpoint resume", () => {
       }
     })
 
+    it("removes a tracked path added after the checkpoint (documented behaviour)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-extra-"))
+      try {
+        sh("git init -q . && git config user.email a@b.c && git config user.name t", dir)
+        writeFileSync(join(dir, "a.txt"), "v1\n")
+        sh("git add -A && git commit -qm init", dir)
+
+        const snap = sh(
+          "idx=$(mktemp -u) && { cp \"$(git rev-parse --git-path index)\" \"$idx\" 2>/dev/null || true; } && " +
+            'GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ' +
+            'snap=$(git commit-tree "$tree" -p HEAD -m "agentproto checkpoint") && ' +
+            "git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 \"$snap\" && echo \"$snap\"",
+          dir,
+        ).trim()
+
+        // A later commit (after the checkpoint) adds a tracked path that the
+        // snapshot does not contain.
+        writeFileSync(join(dir, "after.txt"), "later\n")
+        sh("git add -A && git commit -qm later", dir)
+        expect(existsSync(join(dir, "after.txt"))).toBe(true)
+
+        // The restore resets every path under `.` to the snapshot: the path
+        // absent from the snapshot is removed, not kept.
+        sh(
+          buildCheckpointRestoreCommand({
+            checkoutDir: dir,
+            ref: "agentproto-checkpoint/wt/abc123",
+            sha: snap,
+          }),
+          dir,
+        )
+        expect(existsSync(join(dir, "after.txt"))).toBe(false)
+        expect(sh("git status --porcelain", dir)).toContain("D  after.txt")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
     it("leaves the checkout alone when the checkpoint is not the recorded one", () => {
       const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-sha-"))
       try {
