@@ -1,5 +1,17 @@
 # @agentproto/app-kit
 
+## 2.3.0
+
+### Minor Changes
+
+- d732326: App services run as deterministic managed processes: replace the LLM-prompted owner session with a detached, non-PTY child process spawned and supervised by the daemon (sessions-registry registration, structured `cwd/command/args` service declarations with legacy `entry` compatibility, restart backoff + rolling-window cap, group-kill cleanup gated by PID-identity checks, per-app serialization, own `daemon.resumeServicesOnBoot` knob defaulting on, and full reconcile purging services removed from a manifest).
+
+### Patch Changes
+
+- Updated dependencies [733a92a]
+  - @agentproto/workspace@1.0.2
+  - @agentproto/mastra@0.2.20
+
 ## 2.2.0
 
 ### Minor Changes

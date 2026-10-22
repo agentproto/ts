@@ -1,5 +1,125 @@
 # @agentproto/cli
 
+## 1.30.0
+
+### Minor Changes
+
+- d732326: App services run as deterministic managed processes: replace the LLM-prompted owner session with a detached, non-PTY child process spawned and supervised by the daemon (sessions-registry registration, structured `cwd/command/args` service declarations with legacy `entry` compatibility, restart backoff + rolling-window cap, group-kill cleanup gated by PID-identity checks, per-app serialization, own `daemon.resumeServicesOnBoot` knob defaulting on, and full reconcile purging services removed from a manifest).
+- a3075d4: Auth-profile switching: pick an existing profile for a session, and move every session off a profile in one command.
+
+  The VS Code extension's session "Auth profile" picker only offered "+ add profile": the existing profiles in `~/.agentproto/auth-profiles.json` were never listed, because the picker showed only the profiles the CATALOG marked eligible for the session's route, and that set is empty whenever the route lookup misses. The picker now lists the profiles the daemon knows (name/label only, never key material) and, when one is picked, restarts the session onto it via `POST /sessions/:id/restart` with `access.profileRef`.
+
+  The new `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` does the same for a whole fleet: every session currently billing against the `from` profile is restarted onto the `to` profile in one command. Live sessions are restarted too (any in-flight turn is interrupted); use `--dry-run` to preview.
+
+  - The restart keeps the session's POSTURE: switching the wallet never silently changes what the agent may do.
+  - A restart continues the conversation under a NEW session id, so the cron jobs that targeted the old id are RE-ARMED: their target moves to the successor id (persisted with the job file), instead of failing the next tick with "session not found". Agent-label targets are resolved at fire time and need no re-arm.
+
+- 07f5b70: Autocompact: an ABSOLUTE token threshold that compacts an idle session's context, plus the resume prompt that follows it.
+
+  The context-continuity policy was percent-only (`warnAtPct` / `compactAtPct` / `continueFreshAtPct` / `hardStopAtPct`), which cannot fire on a large window: 558k tokens in a 1M-token context is "55% full", the warn band, so nothing ever compacted while every call re-read the whole context. The new `contextContinuity.autoCompactAtTokens` is a token COUNT, not a percentage, so it behaves the same on a 200k and on a 1M window.
+
+  - Threshold: default 150000 tokens, clamped into `[1000, 200000]` (a value above the maximum is clamped down, never rejected), `0` disables. Configurable per session (`agent_start` → `contextContinuity.autoCompactAtTokens`), per agent/adapter default (`defaults.contextContinuity` / `defaults.adapters.<slug>.contextContinuity` in the daemon config) and from the CLI (`agentproto sessions restart --auto-compact-at-tokens <n>`, which also carries the policy across the restart).
+  - Behaviour: fires at a turn boundary only on an IDLE session (turn ended, no background task outstanding), never twice while a compaction is in flight, and compacts through the same `/compact` path as the `session_compact` verb (a checkpoint is written first).
+  - Resume: after the compaction a short resume prompt is injected ONLY when a mission is in progress (a non-empty `goal` section in the continuity checkpoint written just before the compaction). The prompt cites the path of the full transcript, so the session can look up anything the summary dropped.
+  - `session_context_status` now reports `autoCompactAtTokens` and `autoCompactAboveThreshold`.
+
+  Conversation resumption: two new MCP tools, `transcript_search` and `transcript_read`, that look back along a session's LINEAGE.
+
+  After a restart (or a continue-fresh handoff) the history a session is carrying on lives in its predecessors' transcripts, not in its own: the new row starts with an empty `events.jsonl`. The two tools walk that lineage (the restart link `resumedFrom`, the continue-fresh link `continuedFrom` and the handover link `succeeds`) and return DATED EXCERPTS, never a whole transcript: a per-excerpt cap, a total character cap and a result cap, with the transcript streamed (never slurped).
+
+  The shared logic lives in the runtime package (`transcript-search.ts`, internal: used by the MCP tools and not a public subpath export of `@agentproto/runtime`), not in the vscode package: the vscode extension's `searchTranscripts` command is a UI over the daemon's brain query (`GET /brain/query`), which needs an ingested corpus, while these tools read the transcripts directly and need none.
+
+- c9553f7: Let a `prompt-session` cron job target an AGENT LABEL instead of a session id: `action.agent` (or the `agent:<label>` spelling in `sessionId`, from `cron_create` or `agentproto cron add --target-session agent:<label>`). The label is resolved when the job FIRES, not when it is created, so the job survives the target agent being relaunched under a new id (a restart or continue-fresh keeps the label, the id changes). Resolution picks the newest live session with that label (exact, case-insensitive), follows a retired session's successor chain, revives an ended session through the usual restart path, and otherwise fails the tick naming the label; the run result records the session id the label resolved to. Jobs that carry a plain `sessionId` keep working unchanged.
+- 5af6f44: `agentproto host guard`: deterministic periodic host watchdog. On `host health` WARN it closes the oldest already-idle sessions (never busy, keepAlive, pinned, waiting, watched, or ancestor of a live session), just enough to fall back under the sessions threshold; on CRIT it sweeps harder, writes a marker that makes `agentproto workflow start|run-file` refuse to start workflows (override with `--force`) until the host recovers, and — after the cleanup pass, never before — escalates to a brain session or a fresh agent. Includes `--dry-run`, JSONL logging, and a bootstrap `scripts/host-guard.mjs` for cron use.
+- a3075d4: Auth-profile switching across the fleet and in the VS Code extension.
+
+  `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` moves every session billing against one profile onto another through the daemon's restart-with-override route, with `--dry-run` and `--json` output.
+
+  The runtime re-arms `prompt-session` cron jobs on a session restart: when the conversation continues under a new session id, jobs that named the retired id are re-pointed at the successor (persisted with the job file) instead of failing their next tick. Agent-label targets are resolved at fire time and are left alone.
+
+  `agentproto-vscode`'s session auth-profile picker now lists every profile the daemon knows (eligible ones first, the rest flagged), and applies the pick via `restartSessionWithOverride`, so a session whose route the catalog does not know no longer offers only "+ add profile".
+
+- 4191fe7: Finish cold-start install and provider auth in one command: share the `config.json` helpers, pin global npm installs to the CLI's prefix, enroll adapters from `agentproto install`, write adapter `api-key` defaults from `auth provider set`, and hot-reload stored provider keys in a running daemon via `POST /providers/reload`.
+- fb025f0: Provider-control-plane orphan GC: `agentproto sandbox gc` and the new `sandbox_gc` MCP tool sweep a provider for boxes it still holds (and still charges RAM for) that the daemon's sandbox registry never knew and that no live session references, listing them (state, age, memory) and deleting them with `remove(..., { force: true })` only under `--apply` (dry run by default).
+
+  A candidate must be PAST A 15-MINUTE GRACE WINDOW (`ORPHAN_GRACE_MS`) and carry NO attached session (`sessions === 0`); the new `--include-attached` CLI flag (and the MCP tool's `includeAttached`) lifts the attached-session check explicitly. A box the provider does not date can never be proven stale and is never proposed. The shared gone-detection of the ledger gc (`GONE_RE`/`isGoneError`) now also decides "already disappeared" on the provider sweep, and a sweep that never ran (no daemon, no provider configured, no `listBoxes`) is reported as `not scanned` instead of "no orphan found".
+
+  Adds `SandboxProvider.listBoxes`/`SandboxProviderBox`, the computer provider's `GET /v1/computers` listing (`ComputerControllerClient.listComputers`), the `computerListEntrySchema`/`computerListResponseSchema` contract, and the `--provider` / `--include-attached` CLI flags. A box held by a live session is never a candidate and a failing provider is reported without stopping the sweep of the others.
+
+- 4191fe7: Finish cold-start install and provider auth setup in one command, and let a
+  hot reload rotate or retract keys the store injected earlier.
+
+### Patch Changes
+
+- 8f1c7e0: fix(cli): stop `agentproto mcp-bridge` from outliving its stdio host
+
+  The bridge parked forever and ignored stdin EOF, so a killed host left one orphaned bridge per session (ppid 1, ~35 MB each) until the machine swapped (45 orphans / ~4 GB observed). It now exits when stdin closes, when the stdio transport closes, or, on POSIX, when it is reparented because its parent died — even when the stdio pipe stays open.
+
+- a63eafb: fix(sandbox): never lose work to a box that outlives its welcome — bounded pre-deadline checkpoints, host-side rescue push on a wedged low-disk session, release dead-session boxes, capacity-free teardown
+
+  - A session's end-of-turn checkpoint raced the provider's reaper: the box
+    hit its E2B lifetime mid-turn ("sandbox not found") and the periodic
+    checkpoint had pushed nothing. The deadline-near checkpoint is now
+    BOUNDED to the remaining lifetime minus a safety margin (it never runs
+    past the deadline), and a renewal while a turn is in flight is retried
+    instead of falling through to the checkpoint branch after one failure.
+  - Low disk + a wedged session (ENOSPC never settles after interrupt):
+    when a forced low-disk checkpoint does not secure the box's work, the
+    proxy runs a HOST-side rescue push — `git add -A` + `commit
+--no-verify` + force-push to a `rescue/<session>` branch, executed via
+    `sandbox exec`, and emits the rescue outcome as an agent warning.
+  - A session that DIED (crashed / killed / errored) used to leave its box
+    paused and RAM-held (the computer provider kept answering "capacity
+    exhausted (available 511)"). The watchdog-driven death now ends with
+    `close({ deathRelease: true })`: checkpoint → notify → REALLY release
+    the box (kill/stop, never a memory-holding pause).
+  - Teardown and `sandbox rm --box` never need capacity: `SandboxProvider`
+    gains an optional `remove(sandboxId)` that destroys the box on the
+    control plane WITHOUT connecting to it (which used to RESUME a
+    suspended computer just to delete it, needing free RAM first).
+    `sandbox gc` / reaping prefers `remove`; a periodic automatic
+    `sandbox gc` runs on the daemon (1 h cadence,
+    `AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides / disables) reaping
+    boxes whose origin session is dead.
+
+- Updated dependencies [d732326]
+- Updated dependencies [9bf6d95]
+- Updated dependencies [c66d8bf]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [a33bdeb]
+- Updated dependencies [1b79127]
+- Updated dependencies [d1e8263]
+- Updated dependencies [e613028]
+- Updated dependencies [42f8b1c]
+- Updated dependencies [e4d1185]
+- Updated dependencies [e613028]
+- Updated dependencies [1b79127]
+- Updated dependencies [ab53381]
+- Updated dependencies [733a92a]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [9bf6d95]
+- Updated dependencies [e489439]
+- Updated dependencies [d1e8263]
+- Updated dependencies [c14b061]
+- Updated dependencies [ab53381]
+- Updated dependencies [e4d1185]
+- Updated dependencies [fb025f0]
+- Updated dependencies [a63eafb]
+- Updated dependencies [60b0d56]
+  - @agentproto/app-kit@2.3.0
+  - @agentproto/model-catalog@0.13.2
+  - @agentproto/apps@0.24.1
+  - @agentproto/sandbox-computer@0.4.0
+  - @agentproto/app-client@0.4.3
+  - @agentproto/worktree@0.19.0
+  - @agentproto/workspace@1.0.2
+  - @agentproto/driver-agent-cli@2.15.0
+  - @agentproto/sandbox-e2b@0.9.1
+  - @agentproto/sandbox-box@0.2.36
+  - @agentproto/sandbox-instabox@0.2.3
+  - create-agentproto-app@0.3.8
+  - @agentproto/llm-endpoint@0.11.15
+
 ## 1.29.0
 
 ### Minor Changes

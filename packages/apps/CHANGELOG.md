@@ -1,5 +1,22 @@
 # @agentproto/apps
 
+## 0.24.1
+
+### Patch Changes
+
+- c66d8bf: `@agentproto/app-config`: restore the executable bit on `bin/app-config.mjs` so the declared package.json `bin` entry is actually runnable, matching its sibling `packages/secrets/bin/agentproto-secrets.mjs`.
+
+  `@agentproto/apps`: add `session-steward/scripts/sessions-digest.sh`, a companion to `sessions-snapshot.sh` that summarizes the last N hours of daemon sessions into attention/in-progress/closed/dead buckets.
+
+- 1b79127: Bind routine workflow targets to their own workspace root
+- 42f8b1c: Documentation sync for already-shipped features. The CLI references now document the `capabilities.deferredToolDiscovery` gate on the daemon self-mount (a harness that cannot call a tool omitted from its last `tools/list` gets an eager `?deferred=0` mount), the `sandbox_checkpoint_gc` plan/apply steps in the `maintain` workflow (with `safe`/`keep`/`unknown` classification and `--apply-merged` gating), and the corrected conditional requirement for `transmit_message.sessionId` (required with the default `bind: true`, optional with `bind: false`). No runtime behavior changes.
+- 1b79127: Bind AIP-41 routine `target.workflow` targets to the routine's own workspace: relative `file` paths resolve against the workspace root, the dispatched `workflow_run_file` call runs with `cwd` set to it, and `input.repoRoot` defaults to it (an explicit `repoRoot` still wins). Adds an exported `RoutineTargetOptions` type and an optional third parameter to `routineTargetToToolCall`; documents the behavior in the routine README and the repo-maintenance ROUTINE manifests.
+- e489439: Page the session-steward `session_list` scan under the MCP result cap (50 rows per page across 16 pages) and fail loudly on a truncation hint instead of reading it as an empty result. The runtime change is regression-test coverage only (bytes-capped `session_list` fixture plus pagination/workflow tests).
+- Updated dependencies [d732326]
+- Updated dependencies [a33bdeb]
+  - @agentproto/app-kit@2.3.0
+  - @agentproto/app-client@0.4.3
+
 ## 0.24.0
 
 ### Minor Changes

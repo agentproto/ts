@@ -1,5 +1,308 @@
 # @agentproto/runtime
 
+## 5.29.0
+
+### Minor Changes
+
+- d732326: App services run as deterministic managed processes: replace the LLM-prompted owner session with a detached, non-PTY child process spawned and supervised by the daemon (sessions-registry registration, structured `cwd/command/args` service declarations with legacy `entry` compatibility, restart backoff + rolling-window cap, group-kill cleanup gated by PID-identity checks, per-app serialization, own `daemon.resumeServicesOnBoot` knob defaulting on, and full reconcile purging services removed from a manifest).
+- a3075d4: Auth-profile switching: pick an existing profile for a session, and move every session off a profile in one command.
+
+  The VS Code extension's session "Auth profile" picker only offered "+ add profile": the existing profiles in `~/.agentproto/auth-profiles.json` were never listed, because the picker showed only the profiles the CATALOG marked eligible for the session's route, and that set is empty whenever the route lookup misses. The picker now lists the profiles the daemon knows (name/label only, never key material) and, when one is picked, restarts the session onto it via `POST /sessions/:id/restart` with `access.profileRef`.
+
+  The new `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` does the same for a whole fleet: every session currently billing against the `from` profile is restarted onto the `to` profile in one command. Live sessions are restarted too (any in-flight turn is interrupted); use `--dry-run` to preview.
+
+  - The restart keeps the session's POSTURE: switching the wallet never silently changes what the agent may do.
+  - A restart continues the conversation under a NEW session id, so the cron jobs that targeted the old id are RE-ARMED: their target moves to the successor id (persisted with the job file), instead of failing the next tick with "session not found". Agent-label targets are resolved at fire time and need no re-arm.
+
+- 07f5b70: Autocompact: an ABSOLUTE token threshold that compacts an idle session's context, plus the resume prompt that follows it.
+
+  The context-continuity policy was percent-only (`warnAtPct` / `compactAtPct` / `continueFreshAtPct` / `hardStopAtPct`), which cannot fire on a large window: 558k tokens in a 1M-token context is "55% full", the warn band, so nothing ever compacted while every call re-read the whole context. The new `contextContinuity.autoCompactAtTokens` is a token COUNT, not a percentage, so it behaves the same on a 200k and on a 1M window.
+
+  - Threshold: default 150000 tokens, clamped into `[1000, 200000]` (a value above the maximum is clamped down, never rejected), `0` disables. Configurable per session (`agent_start` → `contextContinuity.autoCompactAtTokens`), per agent/adapter default (`defaults.contextContinuity` / `defaults.adapters.<slug>.contextContinuity` in the daemon config) and from the CLI (`agentproto sessions restart --auto-compact-at-tokens <n>`, which also carries the policy across the restart).
+  - Behaviour: fires at a turn boundary only on an IDLE session (turn ended, no background task outstanding), never twice while a compaction is in flight, and compacts through the same `/compact` path as the `session_compact` verb (a checkpoint is written first).
+  - Resume: after the compaction a short resume prompt is injected ONLY when a mission is in progress (a non-empty `goal` section in the continuity checkpoint written just before the compaction). The prompt cites the path of the full transcript, so the session can look up anything the summary dropped.
+  - `session_context_status` now reports `autoCompactAtTokens` and `autoCompactAboveThreshold`.
+
+  Conversation resumption: two new MCP tools, `transcript_search` and `transcript_read`, that look back along a session's LINEAGE.
+
+  After a restart (or a continue-fresh handoff) the history a session is carrying on lives in its predecessors' transcripts, not in its own: the new row starts with an empty `events.jsonl`. The two tools walk that lineage (the restart link `resumedFrom`, the continue-fresh link `continuedFrom` and the handover link `succeeds`) and return DATED EXCERPTS, never a whole transcript: a per-excerpt cap, a total character cap and a result cap, with the transcript streamed (never slurped).
+
+  The shared logic lives in the runtime package (`transcript-search.ts`, internal: used by the MCP tools and not a public subpath export of `@agentproto/runtime`), not in the vscode package: the vscode extension's `searchTranscripts` command is a UI over the daemon's brain query (`GET /brain/query`), which needs an ingested corpus, while these tools read the transcripts directly and need none.
+
+- 379eb05: Resume the last checkpoint of a session that died, instead of starting over
+  from the base branch.
+
+  The daemon already snapshots a sandbox session's uncommitted work and
+  force-pushes it to `agentproto-checkpoint/<worktree>` on the workspace
+  remote, but that ref is named after the WORK TREE, which is minted per spawn:
+  nothing told a relaunch which snapshot belonged to the session that died, so
+  every relaunch started from `main` again.
+
+  The session now keeps the link to its own last checkpoint
+  (`SessionDescriptor.lastCheckpoint`: ref, sha, branch, session id), written by
+  the same code path that creates the checkpoint, so it cannot drift from the
+  checkpoint itself. A relaunch resolves that link:
+
+  - `session_restart` of a dead box restores the recorded ref with
+    `git restore --source=<ref>` instead of guessing from the branch name;
+  - a new `agent_start` linked to a dead session through the new `resumeFrom`
+    argument (`{ sessionId }`, or a `{ label }` / `{ taskId }` correlation
+    against the dead sessions) restores the same recorded ref and reuses the
+    dead session's work branch, so its pushed commits come back as commits;
+  - a LIVE session is never resumed - its work is still in its box.
+
+  The correlation keys travel with the resumed session: the task id and the
+  label are inherited from the resolved source, so the NEXT relaunch finds the
+  session that resumed (not the one it continued). A correlation key always
+  resolves to the MOST RECENT checkpoint of the matching dead sessions.
+
+  The restore is a best-effort setup step, never fatal: a missing ref, a
+  dirty checkout or a failed fetch leaves the session where it is and says so.
+  Only a checkpoint that actually reached the remote is restorable.
+
+- 486339e: AIP-68 clerk hook: a daemon subscriber (`clerk-turn-end`) that runs ONE clerk pass (steward/secretary) after a session's turn ends. The pass is debounced on the session's idle time (10 minutes by default, AIP-68 §3.6), single-flight per session (never two passes on one session at once) and fire-and-forget (the turn is never blocked or slowed). The hook is DISABLED by default and ignores its own sessions, empty turns, interrupted turns and excluded sessions.
+
+  Configuration has three levels, most specific wins (merged per field): the daemon default (`~/.agentproto/config.json` → `daemon.clerk`, disabled), the workspace (`.agentproto/hooks.json` → `hooks.clerk`, the PR #2142 `hooks.enabled` / `on: "turn_end"` vocabulary), and the agent (its manifest's `metadata.hooks.clerk`, or an `agent_start` option's `hooks.clerk`). Fields: `enabled`, `on`, `debounceMs`, `run` (a routine id or a shell command) and `exclude`.
+
+  The `run` arms (`routine` / `command`) are mutually exclusive across levels: the most specific level that names an arm replaces the other one. The command arm is default-deny behind the same allowlist as `command_execute`, supports `$SESSION_ID` in its args, and anchors `run.cwd` under the session's cwd. Sessions spawned by the clerk's own routine are ignored, and `session_continue_fresh` keeps the agent-level hook config.
+
+- 8954bba: Claude Code cloud sessions can now run on a workspace's declared remote (`workspaces.json` → `remote`, set with `agentproto workspace remote set`), the same way a sandbox spawn gets its checkout. You no longer need a local clean, pushed clone.
+
+  `@agentproto/runtime`: a `cloud` spawn (and its restart) on a workspace with a declared `remote` passes the url, branch and a checkout dir inside the session's isolated config dir to the relay. A `credentialRef` is resolved from the keychain into `AGENTPROTO_GIT_TOKEN`; a ref that resolves to nothing refuses the spawn (`cloud_spawn_refused`, field `workspace.remote.credentialRef`). New `cloudRepoSpawnEnv` / `cloudRepoCheckoutDir` helpers.
+
+  `@agentproto/adapter-claude-code-cloud`: new `materializeRepoCheckout`. With `AGENTPROTO_CLOUD_REPO_URL` + `AGENTPROTO_CLOUD_REPO_DIR` set, `session/new` and `session/load` shallow-clone `origin/<branch>`, or fetch and hard-reset an existing checkout. That checkout must pass the usual AIP-66 §3 validation, and `claude --cloud` then runs from it. The git token is only ever read by a per-command credential helper and is removed from the vendor CLI's env.
+
+- a544d88: Continue-fresh no longer renames the session: the new session keeps EXACTLY the previous label and title (like a session that compacts in place), and the continuation lineage is shown separately via a new `continuationGeneration` descriptor field (previous generation + 1, starting at 1; exposed in the session list/show/tree/evidence projections). Sessions still carrying a legacy ` (continued)` / ` (continued N)` suffix get their clean name back on their next continuation (`stripContinuedSuffix`). VS Code session rows show a `↻ N` badge with a "Continued N times — previous: <prev>" tooltip and an action to open the previous session in the chain.
+- c9553f7: Let a `prompt-session` cron job target an AGENT LABEL instead of a session id: `action.agent` (or the `agent:<label>` spelling in `sessionId`, from `cron_create` or `agentproto cron add --target-session agent:<label>`). The label is resolved when the job FIRES, not when it is created, so the job survives the target agent being relaunched under a new id (a restart or continue-fresh keeps the label, the id changes). Resolution picks the newest live session with that label (exact, case-insensitive), follows a retired session's successor chain, revives an ended session through the usual restart path, and otherwise fails the tick naming the label; the run result records the session id the label resolved to. Jobs that carry a plain `sessionId` keep working unchanged.
+- 46faeb4: Session-follow digests now have a deterministic **triage** stage: every event is classified `wake` / `fyi` / `drop` BEFORE a digest is allowed to wake the follower, so an orchestrator that follows many sessions is no longer woken by dozens of digests an hour that ask for nothing. No LLM is involved, and the whole stage is **disabled by default** - a follow without `triage.enabled` behaves exactly as before.
+
+  The rules, each independently switchable: a `task-changed` the follower made itself is `drop`ped; an `exited` with reason `operator-stopped` / `operator-completed` is `fyi`; an `exited` whose cron run finished OK is `drop`ped; a `turn-end` from a session that reported up to the follower in the last `reportWindowMs` (60s) is `drop`ped (the report already arrived); an empty/cancelled `turn-end` that a new turn superseded is `fyi`; a `pr-opened` / `pr-merged` authored by another live session of the follower is `fyi`. Always wake: `awaiting-input`, `crashed`, and a turn-end carrying a question.
+
+  A digest whose events are all `fyi`/`drop` never wakes - it is parked in the follower's inbox as `fyi`. One `wake` is enough to wake, and the digest then carries only the `wake` events plus a `[session-follow] N other event(s) in info` counter. Every triaged event is appended to `~/.agentproto/follow-triage.jsonl` (`{ ts, follower, event, sessionId, decision, rule }`) as training data.
+
+  Configured per follow (`session_follow`'s `triage: { enabled, rules, reportWindowMs? }`) and daemon-wide (`~/.agentproto/config.json` -> `follow.triage`); the follow's own block wins, per field (a rule set `false` on a follow switches it off; among follows sharing a digest, ON wins). The `classifier` block, daemon config only (it runs a command / HTTP call on the host, so `session_follow` rejects it), is the documented extension point for a future LLM classifier (Jev): it receives the event as JSON and answers `wake`/`fyi`/`drop`; on timeout, error, or an unparsable answer the deterministic rules decide instead.
+
+- a33bdeb: **Output change (backwards-compatible shape, different default fields):** `adapter_list`'s COMPACT default projection no longer includes the `models` id array — it now emits `installed` (package presence: only status `supported` reports false; `available` and `unresolvable` still count as installed) and `modelCount` instead, because the model arrays pushed the whole listing past the daemon's 100 KB MCP result cap and produced a `{ truncated: true }` stub callers misread as an empty list. Consumers needing model ids must pass `full: true` (page it with `limit`/`cursor`). `AdapterListEntry` gains the optional `status` the merged listing already carries.
+
+  `@agentproto/app-client`'s runner picker walks `limit`/`cursor` pages of the compact rows (no `fields` filter — that bypasses the compact projection and would re-ship the unbounded model arrays), filters not-installed catalog rows out of the dropdown, and surfaces a truncated stub as an error instead of an empty list.
+
+  `agentproto-vscode`'s `DaemonClient.listAdapters()` page-walks full detail with `limit`/`cursor` (typed `McpInvalidParamsError` fallback for daemons predating the pagination params, `McpResultTruncatedError` instead of an empty list); `sessionConfig`, the harnesses tree, the Harnesses webview, the auth/model mind map, the auth explorer and the Configuration Lab surface a failed listing as an error instead of "no adapters installed".
+
+- 1b79127: Bind routine workflow targets to their own workspace root
+- 7066458: Compact agent_start answers by default and add session_commands tool
+- fb8341d: Add the generic **lineage handover** mechanism: a successor session can take over a replaced session's children, so a persistent orchestrator (the "brain") that is replaced by a NEW session (restart, wallet change, continue-fresh) leaves its supervisors/executors reachable.
+
+  - `agent_start.succeeds: "<sessionId>"` declares the new session the successor of another one. Only the human operator, the replaced session itself, or the session that owns it may declare it. On declaration the replaced row's LIVE children are re-parented onto the new session (its `parentSessionId` moves), which is what makes the successor their OWNER for the drive tools (`agent_prompt` / `agent_interrupt` / `agent_kill` / `session_restart` - the session-owner gate keys on `parentSessionId`) and what routes their `message_parent` reports to the successor instead of the dead row. The successor also inherits the replaced row's place in the spawn tree.
+  - `session_continue_fresh` does the same automatically: the fresh continuation takes over the retired row's children, so the continued "brain" can still drive them and they can still report up.
+  - New MCP verb `session_adopt { childIds, from }` moves named children of a row onto its DECLARED successor. Only the human operator or that declared successor may run it.
+  - Every handover records the succession on both descriptors (`succeededBy` / `succeeds`, persisted) and emits a `session:lineage-handover` event on the session event bus (from, successor, adopted/skipped children, reason, actor).
+
+- 39d69ba: Live model switch: the daemon now publishes the harness's OWN model vocabulary on the session descriptor.
+
+  A mid-session model switch sent the CATALOG model id straight to the agent's ACP `model` config option, and a live agent only accepts the values IT advertises: picking `claude-sonnet-5-5` on a claude-code session answered "Invalid value for config option model: claude-sonnet-5-5" and switched nothing.
+
+  - `SessionDescriptor.configOptions` -- a read-time projection (never persisted, like `availableModes`) of the live harness's advertised ACP config options (`session/new` / `session/load_session`), stamped at `list()`/`get()` so `GET /sessions` and `GET /sessions/:id` carry it. The `model` entry is the vocabulary the running agent validates against.
+  - `POST /sessions/:id/model` (and `agent_set_model`) now sends a value the agent ADVERTISED verbatim, skipping the catalog wire normalization (vendor-prefix stripping) that would otherwise rewrite an already-advertised value into a string the agent does not accept. A value the agent did NOT advertise is normalized exactly as before.
+
+- d1e8263: Add session_transcript tool and cap turbo concurrency in worktrees
+- 1620b03: `message_send` / `message_reply` can now reach any session of the SAME workspace, even without a tree edge. Two permanent agents of one workspace (a marketing officer consulting a PM, a PM agent asking a supervisor session) were refused before because the messaging ACL only knows tree neighbours - parent, direct children, and, with `defaults.messaging.allowSiblings`, siblings. The new allowance is a new config key, `defaults.messaging.allowSameWorkspace` (default `true`), hot-applied like the other `defaults.messaging.*` knobs; set it to `false` to restore the tree-only rule. The message the recipient sees carries the new relation `peer`.
+
+  The allowance is narrow on purpose: it needs the same non-empty `workspaceSlug` on both descriptors. A different workspace, or a session with no workspace slug, is refused exactly as before, and the tree rules are untouched - a parent and a direct child always pass, and a sibling passes with `allowSiblings` (the one exception is a sibling pair linked by a peer group, see below). Two siblings of the same workspace are still gated by `allowSiblings`.
+
+  Same-workspace is not always enough: a deployment may run related agents in DIFFERENT workspaces (a Pygmalion brain and its copywriter in `app-agentik-pygmalion`, the PMs and the OVH supervisor in `agentik-studio`). The new config key `defaults.messaging.peerGroups` (default `[]`) lists groups of workspace slugs, e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`: two sessions may message each other without a tree edge when both workspace slugs sit in the SAME group. The key is hot-applied like the other `defaults.messaging.*` knobs, is validated as an array of arrays of non-empty strings, and applies INDEPENDENTLY of `allowSameWorkspace` - a group link holds even when the same-workspace rule is off. The default stays empty, so a deployment that configures no group behaves exactly as before, and a pair outside every group keeps today's refusal. A session without a workspace slug is never linked.
+
+- 74e8a71: Give the parent-relay token (box `message_parent` relayed to the host parent,
+  configured with `AGENTPROTO_PARENT_RELAY_URL`) a full lifecycle.
+
+  The host keeps only the token's SHA-256 hash, persisted (0600) in
+  `parent-relay-grants.json` next to the sessions state and reloaded at boot, so
+  a host daemon restart keeps live relays. A grant slides on every successful
+  use and is renewed by a periodic sweep while both its box session and its
+  parent are live; it is revoked when either session ends, is archived or
+  forgotten, when the box boot fails, and by the sweep once either session is
+  dead; expired grants are pruned. Restarting the box session (live-box
+  re-attach or fresh box) re-mints the grant and forwards the remote parent
+  again. The box keeps the raw token in memory only. `remoteParent` on
+  `agent_start` is daemon-internal: a session caller that supplies it is
+  refused, and cron/routine agent jobs strip it.
+
+- 92e4e99: Add one permission decision point, `decide(principal, action, resource, context)` (exported as `decidePermission`), with the v1 action vocabulary (`session.message`, `session.message.interrupt`, `session.drive`, `session.spawn`, `command.exec`, and the rest as declared, not yet routed actions), and a read-only `permissions_explain` MCP tool that answers with the same function.
+
+  The messaging ACL is now one predicate for every entry point: `message_send` / `message_reply`, `message_parent`, `POST /sessions/:id/messages` and the box parent relay all call `decide()`, and `registry.sendMessage` refuses a message whose attached decision does not allow it. The HTTP route now resolves the caller like `/mcp` does (the `?callerSessionId=` query, else the trusted `x-agentproto-caller-session-id` header), honours `defaults.messaging.allowSiblings`, and grants interrupt to a session sender only under `defaults.messaging.agentInterrupt: "allow"`, matching the MCP tool. A caller with no session identity keeps operator rights: it can still message and interrupt any session.
+
+- 1b79127: Bind AIP-41 routine `target.workflow` targets to the routine's own workspace: relative `file` paths resolve against the workspace root, the dispatched `workflow_run_file` call runs with `cwd` set to it, and `input.repoRoot` defaults to it (an explicit `repoRoot` still wins). Adds an exported `RoutineTargetOptions` type and an optional third parameter to `routineTargetToToolCall`; documents the behavior in the routine README and the repo-maintenance ROUTINE manifests.
+- 7686e56: Sandbox sessions gain a periodic in-turn checkpoint on its own `on: ["interval"]` trigger, configurable via `sandbox.checkpoint.intervalMs` (default every 10 minutes), so a turn running longer than the box lifetime is checkpointed mid-flight instead of being lost with the box. The periodic tick also guards the box's free disk: under 10% free it emits a warning and forces a checkpoint even when the tree looks unchanged, while `turn-end` now only wires the per-turn hook (explicit `on: ["turn-end"]` configs no longer imply the periodic timer).
+- f8a0013: The runtime adds a pageable `adapter_models` MCP tool and an `adapter` filter on `adapter_list`, and its compact `adapter_list` projection now surfaces each adapter's exact `status`, picker `hint`, and `modes` (id/status/status_note) so list-only clients can render readiness without a `full` round-trip; `AdapterListEntry` is typed with the optional `modelDetails` rows.
+
+  `agentproto-vscode` consumes those compact rows in the Harnesses tree, pages per-adapter model detail, and narrows the legacy-daemon fallback to genuine unknown-tool/method errors so a tool-level "adapter … was not found" is no longer misread as a missing tool.
+
+- 62f0ec1: Surfaces a session's daemon-reported `awaitingQuestion` as answerable UI. The runtime adds an optional `SessionAwaitingQuestion.recommended` field (set by the context-continuity ask to `continue-fresh`) so clients can mark the daemon's own recommendation, and the VS Code extension gains a new `agentproto.answerSessionQuestion` command that quick-picks the enumerated options and sends the chosen one verbatim through the normal prompt path. Tree rows, tooltips, webview rows, and the transcript pause card lead with the question text and its options, while an `awaitingInput` session without a question now reads as the calm `idle-awaiting` / "idle, waiting for next prompt" parked state.
+- 471c1da: PR provenance is fixed to the sessions that actually wrote the code, not the session that ran `gh pr create`.
+
+  - The footer renders an "Authored by" entry per session that committed to the PR's head branch — each with its own adapter, auth profile, model, sandbox provider and per-session cost — plus an "Opened by" entry for the session that opened the PR. The opener's cumulative cost/tokens are suppressed when authorship is attributed.
+  - Authorship is collected per branch from sandbox delivery targets, `Agentproto-Session:` trailers on the PR's commits, and the checkpoint-branch tip (through the configured `refPrefix`), so a branch stays attributable after the registry forgets the box session.
+  - The teardown delivery stamps the authoring-session trailer onto the pushed work branch itself via an idempotent `commit-tree` + guarded `update-ref`, so it survives checkpoint deletion.
+  - New daemon `pr_open` tool: the host runs `gh pr create` against a named authoring session's pushed branch, stamps the authorship-aware footer, and records the PR against that session; `OpenPrForSessionInput` now keys checkpoint reads off the PR's actual `headRefName`.
+  - `openPrForSession` is exported from `@agentproto/runtime` so CLI/HTTP lanes can open PRs on behalf of a box session.
+
+- 486339e: Add the AIP-68 clerk turn-end hook: a debounced, single-flight, fire-and-forget daemon subscriber that runs one clerk pass after a session's turn ends, a three-level (daemon/workspace/agent) configuration resolver, and a routine/command pass runner, wired into `createGateway`. Adds the `agent_start.hooks` field and records the agent-level config on the session descriptor.
+- fb8341d: Add a generic lineage-handover mechanism: a successor session takes over a replaced session's position in the spawn tree by re-parenting its live children. New exported helpers (`handoverLineage`, `checkSuccessorDeclaration`, `checkAdoptAuthority`), `succeeds`/`succeededBy` descriptor fields, the `agent_start.succeeds` option, and the `session_adopt` MCP verb.
+- 8954bba: Cloud sessions can run on a workspace's declared remote instead of requiring a local clean clone. The runtime passes the remote URL, branch and an isolated checkout dir (plus a keychain-resolved git token when a `credentialRef` is set) to the relay; the adapter materializes a clean `origin/<branch>` checkout and validates it under AIP-66 §3 before running the vendor CLI.
+- 1620b03: Messaging can now cross workspace boundaries: `defaults.messaging.peerGroups` links groups of workspace slugs so `message_send` / `message_reply` (and the HTTP typed-message route) may reach a session in a peer workspace without a tree edge, independent of `defaults.messaging.allowSameWorkspace`. The ACL decision is centralized in `resolveMessageAcl` and shared by both the MCP tools and `POST /sessions/:id/messages`; `transcript-fixtures` now accepts the `peer` relation in raw session-message envelopes.
+- 92e4e99: Expose the unified permission decision point: `decide(principal, action, resource, context)` (exported as `decidePermission`) with the v1 action vocabulary and the read-only `permissions_explain` MCP tool, and route `message_send` / `message_reply`, `message_parent`, `POST /sessions/:id/messages` and the box parent relay through the same messaging ACL, enforced again at `registry.sendMessage` via the attached `Decision`.
+- a3075d4: Auth-profile switching across the fleet and in the VS Code extension.
+
+  `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` moves every session billing against one profile onto another through the daemon's restart-with-override route, with `--dry-run` and `--json` output.
+
+  The runtime re-arms `prompt-session` cron jobs on a session restart: when the conversation continues under a new session id, jobs that named the retired id are re-pointed at the successor (persisted with the job file) instead of failing their next tick. Agent-label targets are resolved at fire time and are left alone.
+
+  `agentproto-vscode`'s session auth-profile picker now lists every profile the daemon knows (eligible ones first, the rest flagged), and applies the pick via `restartSessionWithOverride`, so a session whose route the catalog does not know no longer offers only "+ add profile".
+
+- 39d69ba: Live model switch now uses the running agent's own vocabulary instead of the catalog id.
+
+  `SessionDescriptor.configOptions` (runtime) is a read-time projection of the live harness's advertised ACP `configOptions` (stamped at `list()`/`get()`, never persisted), and `POST /sessions/:id/model` sends an advertised value verbatim rather than catalog wire-normalizing it. The VS Code model picker (`changeModel` / `sessionConfig`) re-reads the live session, offers the agent's accepted values as extra rows, and flags catalog ids the agent would reject as restart-only.
+
+- 379eb05: Resume a crashed sandbox session from its last checkpoint instead of the base branch. Sessions record `lastCheckpoint` when a checkpoint reaches the workspace remote, `session_restart` restores that ref, and the new `agent_start.resumeFrom` (`{ sessionId }`, `{ label }` or `{ taskId }`) links a fresh spawn to a dead session, restoring its checkpoint and reusing its work branch. A live session is never resumed.
+- d1e8263: Add the `session_transcript` MCP tool for reading a session's normalised conversation from the daemon's events transcript (with an optional tail `limit`), and add `resolveWorktreesTurboConcurrency` / `WORKTREES_TURBO_CONCURRENCY_ENV` so provisioned worktree setup hooks run turbo with a bounded concurrency.
+- 7066458: `agent_start` now answers with a compact descriptor by default (identity/routing fields plus counters), with `full: true` restoring the raw descriptor and `fields: [...]` selecting an explicit allowlist. The harness slash-command list moves to the new paginated `session_commands` tool, referenced from `agent_start` via `commandsRef`.
+- 4191fe7: Finish cold-start install and provider auth in one command: share the `config.json` helpers, pin global npm installs to the CLI's prefix, enroll adapters from `agentproto install`, write adapter `api-key` defaults from `auth provider set`, and hot-reload stored provider keys in a running daemon via `POST /providers/reload`.
+- 471c1da: PR provenance is fixed to the sessions that actually wrote the code, not the session that ran `gh pr create`. Box sessions (E2B, computer) push their work branch but have no `gh`, so the host's orchestrator session used to open the PR and every PR was credited to the orchestrator: its model, its wallet, its cumulative ledger.
+
+  - The footer now renders an "Authored by" entry per session that committed to the branch — each with its own adapter, auth-profile (wallet), model, sandbox provider and per-session cost — plus an "Opened by" for the session that opened the PR. When authorship is attributed, the opener's cumulative cost/tokens are suppressed, so a PR never shows a $469 ledger that belongs to the orchestrator.
+  - Authorship is tracked per branch from complementary sources, all keyed off the PR's head branch: sandboxed sessions' `sandboxDeliveryTarget.branch` (checkpoint/delivery/rescue pushes), `Agentproto-Session: <id>` trailers on the PR's commits, and the trailer on the tip of the branch's checkpoint ref (read through the configured `refPrefix`) — `collectBranchAuthors`, `sessionIdsFromTrailers`. Trailers keep a branch attributable after the registry stops knowing the box session.
+  - New daemon-side `pr_open` MCP tool: the host runs `gh pr create` (it holds the token; boxes never do) against a named authoring session's pushed branch, stamps the authorship-aware footer, and records the PR against that session. The caller of `pr_open` renders as "Opened by". It is gated like `command_execute`: `gh` runs in the TARGET session's own workspace (its worktree, or for a sandbox session the host checkout of its registered workspace), never the daemon's boot workspace, and `gh` must be in THAT workspace's `.agentproto/allowed-commands.json` (with an argv that permits `gh pr create`). A calling session may only open a PR for itself or a session it spawned (directly or transitively); the operator lane is not scoped. Anything else is refused with an explicit error.
+  - `openPrForSession` is exported from `@agentproto/runtime` so CLI/HTTP lanes can open PRs on behalf of a box session too.
+
+  - Review follow-ups on the authorship lane: an ARCHIVED session is credited with its model, wallet and cost (the registry resolves it even though `list()` hides it), branch-based matches are scoped to the PR's own workspace (branch names are repo-local, another workspace's `wt/feat` no longer leaks into the PR), a footer that gains an author (or a richer rendering of one) is re-rendered instead of keeping the opener's ledger, and the "Opened by" entry survives a cost refresh. The checkpoint namespace the stamper reads is the one the delivery actually pushed to (the session's per-spawn `refPrefix` wins over the daemon's global default), the work branch is not stamped when the uncommitted-work snapshot already carries the session trailer (that stamp made the checkpoint unrestorable), and a restarted session's live-box delivery now carries the restarted session id, so its authorship survives in the trailers.
+
+  - Review follow-ups on the `pr_open` gate: the footer stamp's own `gh` calls (`gh pr view`, `gh pr edit`, and the checkpoint `gh api` read) now go through the same `authorizeArgs` gate as the `gh pr create` itself, an allowlist entry that does not permit those argv stops them instead of running them unaudited (the PR still opens and is recorded, it just loses its footer); and when the uncommitted-work snapshot exists but its checkpoint push FAILED, the work branch is stamped and re-pushed as a recovery so attribution does not die with the failed rescue.
+
+- fb025f0: Provider-control-plane orphan GC: `agentproto sandbox gc` and the new `sandbox_gc` MCP tool sweep a provider for boxes it still holds (and still charges RAM for) that the daemon's sandbox registry never knew and that no live session references, listing them (state, age, memory) and deleting them with `remove(..., { force: true })` only under `--apply` (dry run by default).
+
+  A candidate must be PAST A 15-MINUTE GRACE WINDOW (`ORPHAN_GRACE_MS`) and carry NO attached session (`sessions === 0`); the new `--include-attached` CLI flag (and the MCP tool's `includeAttached`) lifts the attached-session check explicitly. A box the provider does not date can never be proven stale and is never proposed. The shared gone-detection of the ledger gc (`GONE_RE`/`isGoneError`) now also decides "already disappeared" on the provider sweep, and a sweep that never ran (no daemon, no provider configured, no `listBoxes`) is reported as `not scanned` instead of "no orphan found".
+
+  Adds `SandboxProvider.listBoxes`/`SandboxProviderBox`, the computer provider's `GET /v1/computers` listing (`ComputerControllerClient.listComputers`), the `computerListEntrySchema`/`computerListResponseSchema` contract, and the `--provider` / `--include-attached` CLI flags. A box held by a live session is never a candidate and a failing provider is reported without stopping the sweep of the others.
+
+- 7686e56: Sandbox sessions gain a periodic in-turn checkpoint on its own `on: ["interval"]` trigger (configurable via `sandbox.checkpoint.intervalMs`, default every 10 minutes), so a turn running longer than the box lifetime is checkpointed mid-flight and not lost with the box. `"turn-end"` keeps wiring the timer as before, so an explicit `["turn-end", "teardown"]` config needs no migration. The periodic tick now also guards the box's free disk: under 10% it forces a checkpoint (bypassing the unchanged-since-last skip, but never running concurrently with another checkpoint) and emits a one-time warning into the session's transcript. New exported surface: `DISK_GUARD_MIN_FREE_FRACTION`, `buildDiskFreeCommand`/`parseDiskFree`/`diskFreeFraction`, and the proxy's `onWarning` callback.
+- 4191fe7: Finish cold-start install and provider auth setup in one command, and let a
+  hot reload rotate or retract keys the store injected earlier.
+- 9309cd5: The prompt-cache split (`cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`) now survives the durable usage path. `usage_rollup` buckets sum it as a window delta, a sandboxed session's usage read-back forwards it from the box's `session_usage` answer (new exported `projectRemoteUsage`), and the direct-child rows of `session_usage` with `includeSubtree` carry their own split, with `reasoningTokens` rolled into the subtree totals. A field that no session reports stays absent and never reads as a measured 0.
+- f8a0013: Keep the VS Code harness surfaces under the daemon's MCP result cap after the `adapter_list` compact change. `agentproto-vscode`'s `DaemonClient.listAdapters()` now pages the COMPACT rows (no `full`) and exposes `getAdapter(slug)` / `listAdapterModels(slug)` for one adapter's detail; the harnesses tree, auth/model map, auth explorer, Configuration Lab, spawn wizard, change-model and session-config pickers load detail per adapter only when they need it. The runtime adds an `adapter` filter to `adapter_list` and a NEW pageable `adapter_models` tool so even a runaway model list (opencode is ~700 ids) can be fetched one page at a time. The runtime's compact `adapter_list` projection now also surfaces each adapter's exact `status`, picker `hint`, and `modes` (id/status) — enough for list-only UI clients to render without a `full` round-trip — and `AdapterListEntry` is typed with the optional `modelDetails` rows `adapter_models` serves.
+- 62f0ec1: A session parked on the daemon's `awaitingQuestion` is now answerable in one click from the VS Code session list and the transcript panel. The tree row and webview list lead with the question text ("Context is at 69%. Continue fresh to avoid losing continuity?" with its `continue-fresh` / `handoff:*` / `keep-going` options), the tooltip carries the full option list with the daemon-recommended one check-marked (NEW `SessionAwaitingQuestion.recommended`, set by the runtime's context-continuity ask to `continue-fresh`), and a new `agentproto.answerSessionQuestion` command quick-picks those options and sends the chosen one verbatim through the normal prompt path. A session flagged `awaitingInput` WITHOUT a question no longer alarms: it reads "idle, waiting for next prompt" with the calm quiet dot (tree icon `iconForSession`, webview list `idle-awaiting` row status, transcript tab `titleStatusState` refinement). The transcript pause card renders the question text, heuristic-source hint, and the same option buttons — each sending the exact option string via the normal composer send path.
+- b58e083: Restore wallet (auth-profile) choice in the VS Code launch and change-wallet pickers after the catalog went compact. The runtime's `catalog_models` COMPACT rows now carry the cheap presence ids — `eligibleProfiles`, `adapters`, `adapterModes` — so a client paging COMPACT rows can resolve "which wallet can bill this route" without a `full: true` round trip that overruns the MCP result cap and truncates to a stub the client misreads as an empty catalog. `agentproto-vscode`'s `DaemonClient.catalogModels()` now pages that tool with `limit`/`cursor` (falling back to one unpaged full call on pre-pagination daemons) instead of asking for the whole full catalog in a single result — the truncated full response used to leave the spawn wizard on the manifest fallback (no route, so only the daemon's default wallet ever attached) and the change-wallet access chip offering only "Add a new wallet". It also accepts an optional adapter slug, and every adapter-scoped picker (spawn wizard, change-model, session config/access, transcript route chip, Configuration Lab) now asks with it: the unscoped route unions every curating adapter's auth surface, so its eligibleProfiles could name wallets that adapter's spawn then refuses with `access_profile_ineligible` (the reported `moonshot-api` / `claude-sdk` 400). Also fixed: the wizard no longer fetches the whole catalog up front, only the picked harness's slice.
+
+### Patch Changes
+
+- d03ca33: Autocompact: the resume prompt now fires only when there is real work in progress, and the full transcript pointer survives the compaction.
+
+  Two fixes to the autocompact path (`contextContinuity.autoCompactAtTokens`):
+
+  - Resume: the short resume prompt is injected after an automatic compaction ONLY when the session really had work in progress at the moment of the compaction, read from the runtime state captured BEFORE the `/compact` prompt went out: a background task outstanding, a tool call still unanswered (or a parked permission request), or a last turn that ended on an error or an interruption. A user stop (`cancelled`) and a session parked on an unanswered question are NOT work in progress: resuming would restart what the user stopped, or drop the pending question. The session title and the checkpoint's goal are NEVER the trigger. The checkpoint's goal section falls back to the session title, so the goal-based rule fired on essentially every session and spent a turn (and a model call) to wake an idle agent that had nothing to resume. The goal survives only as optional text inside the resume prompt.
+  - Transcript lookup: the compaction always carries the path of the full transcript and a reminder that `transcript_search` / `transcript_read` exist, so the session can recover whatever the summary dropped. A harness whose compact command takes an argument (claude-code: `/compact <instructions>`) gets it on the command itself; for every other harness the same one-line reminder rides along with the NEXT prompt the session receives, exactly once, and never as a turn of its own. The resume prompt cites the path and the two tools too.
+
+- e4ca9cc: Relay `message_parent` from inside a box (E2B / computer) to its host parent.
+
+  A session running inside a box has no local parent row (the parent lives in
+  the HOST daemon's registry), so `message_parent` failed with "no recorded
+  parent". The host now forwards a remote parent (parent session id + relay URL
+  - a short-lived, single-session-scoped token) into the box's own
+    `agent_start`; the box's `message_parent` relays the report to the host's
+    relay endpoint, which resolves the recipient from the token and delivers it
+    to the parent through the ordinary message path (kind/urgency preserved).
+    Without a configured relay URL the behaviour is unchanged (the current clear
+    error).
+
+  The relay token is treated as a secret: it never lands on a session
+  descriptor nor on disk (the persisted row carries only the parent session id
+  and the relay URL), so a box daemon that restarts fails `message_parent` with
+  a clear "relay token lost after restart" instead of sending an
+  unauthenticated report. The grant slides its expiry on every successful
+  relay use, is revoked when the host-side box session ends (or when the box
+  boot fails), and expired grants are pruned.
+
+- a884e9d: Carry the CALLER SESSION IDENTITY of a daemon-spawned session on its `/mcp` mount in a header as well as in the URL query, and recognize the daemon's own endpoint by origin + path instead of by exact string.
+
+  A session that reaches the daemon anonymously is a session the daemon cannot reason about: `message_parent` answers "cannot identify the calling session", and every spawn that session makes lands as a depth-0 orphan with no parent (the auto-parent has no identity to derive - see `spawn-attach.ts`).
+
+  - The identity now travels two ways on a daemon mount: the `?callerSessionId=` query (unchanged, still the form the trust checks read) and a new `x-agentproto-caller-session-id` header. A URL query is the fragile carrier - a client or an intermediary that rebuilds the mount URL drops it - while the header travels with the request whatever the client does to the URL. The gateway reads whichever carrier survived (the query wins when both are present), and the header is honoured on the same trust footing as a query claim (loopback socket or a valid daemon bearer).
+  - A mount is recognized as "this daemon's own `/mcp` endpoint" by origin (host:port) and path, not by exact string equality. An ambient mount (a project `.mcp.json`, an operator's global MCP config, a config a supervisor passed down) spells the same endpoint differently - `localhost` vs `127.0.0.1`, a trailing slash, a `?host=...` query - and every one of those spellings used to fail the exact match, so the mount was never identity-stamped. A foreign endpoint, and the scoped `/mcp/orchestrator` sub-gateway (which attributes through its own scope token), are still left untouched.
+  - A restart or a continue-fresh strips the retired session's own identity header alongside its own query stamp, so a fresh session never keeps speaking to the daemon under the dead session's id.
+
+- 43e1fbc: Detach and tear down computer boxes on session kill, crash, and shared-box survivor teardown.
+- 42f8b1c: Documentation sync for already-shipped features. The CLI references now document the `capabilities.deferredToolDiscovery` gate on the daemon self-mount (a harness that cannot call a tool omitted from its last `tools/list` gets an eager `?deferred=0` mount), the `sandbox_checkpoint_gc` plan/apply steps in the `maintain` workflow (with `safe`/`keep`/`unknown` classification and `--apply-merged` gating), and the corrected conditional requirement for `transmit_message.sessionId` (required with the default `bind: true`, optional with `bind: false`). No runtime behavior changes.
+- e4d1185: Run `sandbox_exec` against an existing computer box without consuming a session slot or disturbing the in-box daemon: adds an optional `SandboxProvider.connectForExec` exec-only attach path and has `sandbox_exec` prefer it, falling back to `connect()` for providers that don't implement it. Note: the PR already carries an equivalent changeset (`.changeset/sandbox-exec-no-session-slot.md`); this file is only a reviewer handoff and may be dropped if the existing one is kept.
+- 43e1fbc: Detach and tear down computer boxes on session kill, crash, and shared-box survivor teardown. A killed session on a shared box now releases its provider/controller slot without stopping the box under the survivors, an operator kill on an already-ended (crashed-adapter) sandbox row retries box teardown, and the computer provider's holder-scoped detach is idempotent. Adds an optional `detach()` seam to `BootedSandbox`/`SandboxAgentSessionHost`. Note: the PR already carries an equivalent changeset (`.changeset/computer-box-detach-leaks.md`); this file is only a reviewer handoff.
+- d03ca33: Autocompact only injects the resume prompt when the session really had work in progress at compaction time, and the full-transcript pointer (`transcript_search` / `transcript_read`) is carried both on the compaction command for harnesses that accept instructions and as a one-shot note on the next prompt for the rest.
+- e489439: Page the session-steward `session_list` scan under the MCP result cap (50 rows per page across 16 pages) and fail loudly on a truncation hint instead of reading it as an empty result. The runtime change is regression-test coverage only (bytes-capped `session_list` fixture plus pagination/workflow tests).
+- 36ac93e: Pick the most recent checkpoint when a relaunch correlates a dead session by task id, matching the existing most-recent rule for labels, and add regression coverage for inherited correlation keys and non-`wt/` delivery branches.
+- 9705c46: Forward the agent-level `hooks` object (including `hooks.clerk`) from `POST /sessions/agent` and `POST /sessions/chat` to the shared spawn core, so an HTTP spawn no longer silently drops a manifest's `metadata.hooks.clerk` and behaves like the MCP `agent_start` path.
+- 36ac93e: Inherit resume correlation keys and pick the most recent checkpoint
+- e4d1185: Run sandbox_exec on a busy computer box without taking a session slot or disturbing its daemon.
+- a63eafb: fix(sandbox): never lose work to a box that outlives its welcome — bounded pre-deadline checkpoints, host-side rescue push on a wedged low-disk session, release dead-session boxes, capacity-free teardown
+
+  - A session's end-of-turn checkpoint raced the provider's reaper: the box
+    hit its E2B lifetime mid-turn ("sandbox not found") and the periodic
+    checkpoint had pushed nothing. The deadline-near checkpoint is now
+    BOUNDED to the remaining lifetime minus a safety margin (it never runs
+    past the deadline), and a renewal while a turn is in flight is retried
+    instead of falling through to the checkpoint branch after one failure.
+  - Low disk + a wedged session (ENOSPC never settles after interrupt):
+    when a forced low-disk checkpoint does not secure the box's work, the
+    proxy runs a HOST-side rescue push — `git add -A` + `commit
+--no-verify` + force-push to a `rescue/<session>` branch, executed via
+    `sandbox exec`, and emits the rescue outcome as an agent warning.
+  - A session that DIED (crashed / killed / errored) used to leave its box
+    paused and RAM-held (the computer provider kept answering "capacity
+    exhausted (available 511)"). The watchdog-driven death now ends with
+    `close({ deathRelease: true })`: checkpoint → notify → REALLY release
+    the box (kill/stop, never a memory-holding pause).
+  - Teardown and `sandbox rm --box` never need capacity: `SandboxProvider`
+    gains an optional `remove(sandboxId)` that destroys the box on the
+    control plane WITHOUT connecting to it (which used to RESUME a
+    suspended computer just to delete it, needing free RAM first).
+    `sandbox gc` / reaping prefers `remove`; a periodic automatic
+    `sandbox gc` runs on the daemon (1 h cadence,
+    `AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides / disables) reaping
+    boxes whose origin session is dead.
+
+- 6a2542f: Fix role/orchestrator propagation through the sandbox start path: a sandbox spawn with `role: "supervisor"` + `orchestrator: true` no longer receives the executor disposition in the inner prompt, and role-defaulted sandbox orchestrator spawns resolve supervisor (the delegation surface exists inside the box). An executor stays a leaf: no orchestrator scope is ever forwarded for a delegation-denied role.
+- Updated dependencies [d732326]
+- Updated dependencies [9bf6d95]
+- Updated dependencies [c66d8bf]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [a33bdeb]
+- Updated dependencies [1b79127]
+- Updated dependencies [e613028]
+- Updated dependencies [42f8b1c]
+- Updated dependencies [e4d1185]
+- Updated dependencies [e613028]
+- Updated dependencies [1b79127]
+- Updated dependencies [ab53381]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [9bf6d95]
+- Updated dependencies [e489439]
+- Updated dependencies [c14b061]
+- Updated dependencies [ab53381]
+- Updated dependencies [e4d1185]
+- Updated dependencies [fb025f0]
+- Updated dependencies [a63eafb]
+- Updated dependencies [4191fe7]
+  - @agentproto/app-kit@2.3.0
+  - @agentproto/model-catalog@0.13.2
+  - @agentproto/apps@0.24.1
+  - @agentproto/sandbox@0.13.0
+  - @agentproto/app-client@0.4.3
+  - @agentproto/routine@0.3.3
+  - @agentproto/driver-agent-cli@2.15.0
+  - @agentproto/providers-store@0.4.0
+  - @agentproto/mcp-server@0.7.1
+  - @agentproto/llm-endpoint@0.11.15
+  - @agentproto/workflow-runtime@0.20.1
+  - @agentproto/workspace-brain@0.5.4
+  - @agentproto/review@0.6.2
+  - @agentproto/eval-reporters@0.2.28
+  - @agentproto/telemetry-langfuse@0.2.26
+
 ## 5.28.0
 
 ### Minor Changes

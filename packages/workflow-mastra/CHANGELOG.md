@@ -1,5 +1,11 @@
 # @agentproto/workflow-mastra
 
+## 0.2.12
+
+### Patch Changes
+
+- @agentproto/workflow-runtime@0.20.1
+
 ## 0.2.11
 
 ### Patch Changes

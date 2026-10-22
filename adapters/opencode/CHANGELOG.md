@@ -1,5 +1,18 @@
 # @agentproto/adapter-opencode
 
+## 1.9.3
+
+### Patch Changes
+
+- c14b061: Grant opencode read access to its global config under an app-boundary sandbox, and include the spawned child's stderr tail in agent spawn failures.
+- Updated dependencies [9bf6d95]
+- Updated dependencies [e613028]
+- Updated dependencies [e613028]
+- Updated dependencies [9bf6d95]
+- Updated dependencies [c14b061]
+  - @agentproto/model-catalog@0.13.2
+  - @agentproto/driver-agent-cli@2.15.0
+
 ## 1.9.2
 
 ### Patch Changes

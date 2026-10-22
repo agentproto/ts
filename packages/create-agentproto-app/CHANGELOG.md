@@ -1,5 +1,12 @@
 # create-agentproto-app
 
+## 0.3.8
+
+### Patch Changes
+
+- Updated dependencies [a33bdeb]
+  - @agentproto/app-client@0.4.3
+
 ## 0.3.7
 
 ### Patch Changes

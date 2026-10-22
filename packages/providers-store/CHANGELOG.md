@@ -1,5 +1,20 @@
 # @agentproto/providers-store
 
+## 0.4.0
+
+### Minor Changes
+
+- 4191fe7: Finish cold-start install and provider auth setup in one command, and let a
+  hot reload rotate or retract keys the store injected earlier.
+
+### Patch Changes
+
+- Updated dependencies [9bf6d95]
+- Updated dependencies [e613028]
+- Updated dependencies [e613028]
+- Updated dependencies [9bf6d95]
+  - @agentproto/model-catalog@0.13.2
+
 ## 0.3.32
 
 ### Patch Changes
