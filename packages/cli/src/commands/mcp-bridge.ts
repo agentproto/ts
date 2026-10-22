@@ -38,7 +38,11 @@ import {
   ListResourceTemplatesRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js"
 import { loadConfig } from "@agentproto/runtime/config"
-import { stampOrigin } from "./mcp-bridge.logic.js"
+import {
+  exitOnStdinClose,
+  stampOrigin,
+  watchParentExit,
+} from "./mcp-bridge.logic.js"
 
 export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   const url = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
@@ -113,6 +117,22 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   )
 
   const stdioTransport = new StdioServerTransport()
+
+  // A stdio MCP server lives exactly as long as its stdio peer. The host
+  // holds our stdin open; when it exits (cleanly or killed) that pipe closes
+  // and stdin hits EOF. Exit on it — otherwise the parked promise below and
+  // the keep-alive HTTP client transport outlive the parent, leaving one
+  // orphaned bridge per session (ppid 1, ~35 MB each) until the host swaps.
+  const shutdown = (code: number): never => {
+    void client.close().catch(() => {})
+    process.exit(code)
+  }
+  exitOnStdinClose(process.stdin, shutdown)
+  // Also covers a transport-level close (e.g. an stdin read error) and a
+  // parent that dies without closing an inherited stdin (POSIX reparenting).
+  stdioTransport.onclose = () => shutdown(0)
+  watchParentExit(shutdown)
+
   await server.connect(stdioTransport)
 
   process.stderr.write(
@@ -120,8 +140,8 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
       `proxying ${toolCount} tool(s) over stdio\n`
   )
 
-  // Park forever — StdioServerTransport stays alive until stdin closes
-  // or the process is killed.
+  // Park forever — the lifecycle hooks above stop the process when the stdio
+  // peer disappears, so this promise is no longer what decides the lifetime.
   await new Promise<never>(() => {})
   // Unreachable — satisfies TS strict return check (Promise<never> never resolves).
   return 0
