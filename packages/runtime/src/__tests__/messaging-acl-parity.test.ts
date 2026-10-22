@@ -123,9 +123,9 @@ describe("messaging ACL parity across every entry point", () => {
     tmp = mkdtempSync(join(tmpdir(), "acl-parity-"))
     registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     policy = { ...DEFAULT_MESSAGING_DEFAULTS }
-    const spawn = (label: string, parentSessionId?: string) =>
+    const spawn = (label: string, parentSessionId?: string, workspaceSlug = "w") =>
       registry.spawnAgent({
-        workspaceSlug: "w",
+        workspaceSlug,
         cwd: "/tmp",
         agentSession: idle(label),
         adapterSlug: "fake",
@@ -138,7 +138,9 @@ describe("messaging ACL parity across every entry point", () => {
     const A = spawn("A", P.id)
     const B = spawn("B", P.id)
     const G = spawn("G", A.id)
-    const S = spawn("S")
+    // A stranger in ANOTHER workspace: same-workspace would otherwise grant
+    // the peer relation (defaults.messaging.allowSameWorkspace).
+    const S = spawn("S", undefined, "other")
     nodes = { P, A, B, G, S }
     const port = await freePort()
     http = await startHttpServer({

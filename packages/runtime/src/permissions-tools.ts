@@ -26,6 +26,10 @@ export interface RegisterPermissionsToolsOptions {
   callerSessionId?: string
   /** `defaults.messaging.allowSiblings`, resolved for this request. */
   allowSiblings?: boolean
+  /** `defaults.messaging.allowSameWorkspace`, resolved for this request. */
+  allowSameWorkspace?: boolean
+  /** `defaults.messaging.peerGroups`, resolved for this request. */
+  peerGroups?: readonly (readonly string[])[]
   /** `defaults.messaging.agentInterrupt === "allow"`, resolved for this request. */
   allowInterrupt?: boolean
 }
@@ -38,7 +42,8 @@ const text = (body: Record<string, unknown>, isError = false): ToolResult => ({
 })
 
 export function registerPermissionsTools(server: McpServer, opts: RegisterPermissionsToolsOptions): void {
-  const { registry, callerScope, callerSessionId, allowSiblings, allowInterrupt } = opts
+  const { registry, callerScope, callerSessionId, allowSiblings, allowSameWorkspace, peerGroups, allowInterrupt } =
+    opts
 
   server.tool(
     "permissions_explain",
@@ -110,7 +115,12 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         resource = { kind: "session", session: target }
       }
       const decision = decide(principal, input.action, resource, {
-        messaging: { allowSiblings: allowSiblings === true, agentInterrupt: allowInterrupt ? "allow" : "deny" },
+        messaging: {
+          allowSiblings: allowSiblings === true,
+          ...(allowSameWorkspace !== undefined ? { allowSameWorkspace } : {}),
+          ...(peerGroups ? { peerGroups } : {}),
+          agentInterrupt: allowInterrupt ? "allow" : "deny",
+        },
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })

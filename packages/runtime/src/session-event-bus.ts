@@ -638,7 +638,7 @@ export interface SessionMessageEvent {
   sessionId: string
   messageId: string
   fromSessionId?: string
-  relation: "child" | "parent" | "sibling" | "human" | "system"
+  relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"
   delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }

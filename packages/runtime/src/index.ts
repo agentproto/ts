@@ -3889,6 +3889,8 @@ export async function createGateway(
       // for message_send/message_reply's sibling/interrupt gates.
       defaultAgentPromptInterrupt: messagingDefaults.agentPromptInterrupt,
       messagingAllowSiblings: messagingDefaults.allowSiblings,
+      messagingAllowSameWorkspace: messagingDefaults.allowSameWorkspace,
+      messagingPeerGroups: messagingDefaults.peerGroups,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter

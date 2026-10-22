@@ -9,6 +9,7 @@ import {
   messageFrom,
   renderSessionMessage,
   renderSessionMessages,
+  resolveEffectiveRelation,
   resolveRelation,
   sanitizeLabel,
   type SessionMessage,
@@ -130,6 +131,31 @@ describe("resolveRelation + isMessageAllowed (ACL table)", () => {
   it("siblings only when explicitly allowed; system always", () => {
     expect(isMessageAllowed("sibling", { allowSiblings: true })).toBe(true)
     expect(isMessageAllowed("system")).toBe(true)
+  })
+
+  it("a same-workspace peer is allowed by default, and refused when the allowance is off", () => {
+    expect(isMessageAllowed("peer")).toBe(true)
+    expect(isMessageAllowed("peer", { allowSameWorkspace: true })).toBe(true)
+    expect(isMessageAllowed("peer", { allowSameWorkspace: false })).toBe(false)
+  })
+
+  it("resolveEffectiveRelation: peer only inside one workspace", () => {
+    const sameWs = { id: "x", workspaceSlug: "ws" }
+    const otherWs = { id: "y", workspaceSlug: "other" }
+    const noWs = { id: "z" }
+    expect(resolveEffectiveRelation(sameWs, { id: "w", workspaceSlug: "ws" })).toBe("peer")
+    expect(resolveEffectiveRelation(sameWs, { id: "w", workspaceSlug: "other" })).toBeUndefined()
+    expect(resolveEffectiveRelation(sameWs, { id: "w" })).toBeUndefined()
+    expect(resolveEffectiveRelation(sameWs, sameWs)).toBeUndefined()
+    // A tree edge still wins over the workspace relation.
+    expect(
+      resolveEffectiveRelation(
+        { id: "p", workspaceSlug: "ws" },
+        { id: "c", parentSessionId: "p", workspaceSlug: "ws" },
+      ),
+    ).toBe("parent")
+    expect(otherWs.id).toBe("y")
+    expect(noWs.id).toBe("z")
   })
 })
 

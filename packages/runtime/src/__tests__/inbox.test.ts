@@ -99,12 +99,12 @@ describe("inbox + inbox_wait", () => {
     rmSync(tmp, { recursive: true, force: true })
   })
 
-  const tree = () => {
+  const tree = (workspaceSlug = "w") => {
     const parentAgent = controllable("acp-p")
-    const parent = registry.spawnAgent({ workspaceSlug: "w", cwd: "/tmp", agentSession: parentAgent.session, adapterSlug: "mock" })
-    const kid = (label: string, parentSessionId = parent.id) =>
+    const parent = registry.spawnAgent({ workspaceSlug, cwd: "/tmp", agentSession: parentAgent.session, adapterSlug: "mock" })
+    const kid = (label: string, parentSessionId = parent.id, ws = workspaceSlug) =>
       registry.spawnAgent({
-        workspaceSlug: "w",
+        workspaceSlug: ws,
         cwd: "/tmp",
         agentSession: controllable(`acp-${label}`).session,
         adapterSlug: "mock",
@@ -231,15 +231,26 @@ describe("inbox + inbox_wait", () => {
     await c.close()
   })
 
-  it("ACL: a child can't message a cousin or a grandparent; parent → child works; siblings only when allowed", async () => {
-    const { parent, kid } = tree()
-    const a = kid("a")
-    const b = kid("b")
-    const a1 = kid("a1", a.id)
-    const b1 = kid("b1", b.id)
+  it("ACL: a child can't message a cousin or a grandparent of ANOTHER workspace; a same-workspace peer can; parent → child works; siblings only when allowed", async () => {
+    // The root lives in "w2", its children in "w": the tree's grandparent is
+    // a session of ANOTHER workspace, so the tree rules stay observable (a
+    // same-workspace session with no tree edge IS allowed - the
+    // `defaults.messaging.allowSameWorkspace` allowance).
+    const { parent, kid } = tree("w2")
+    const a = kid("a", parent.id, "w")
+    const b = kid("b", parent.id, "w")
+    const a1 = kid("a1", a.id, "w")
+    const b1 = kid("b1", parent.id, "w2")
     const asA1 = await toolsAs(registry, a1.id)
+    // Another workspace: refused, exactly as before.
     expect(await asA1.call("message_send", { to: b1.id, text: "hi" })).toMatchObject({ isError: true, error: "forbidden_recipient" })
+    // The grandparent is in another workspace: refused, exactly as before.
     expect(await asA1.call("message_send", { to: parent.id, text: "hi" })).toMatchObject({ isError: true, error: "forbidden_recipient" })
+    // The direct parent: allowed (tree rule).
+    expect(await asA1.call("message_send", { to: a.id, text: "hi" })).toMatchObject({ ok: true, relation: "child" })
+    // A session of the SAME workspace with no tree edge: allowed (relation
+    // `peer`).
+    expect(await asA1.call("message_send", { to: b.id, text: "hi" })).toMatchObject({ ok: true, relation: "peer" })
     const asA = await toolsAs(registry, a.id)
     expect(await asA.call("message_send", { to: b.id, text: "hi" })).toMatchObject({ isError: true, error: "forbidden_recipient" })
     expect(await asA.call("message_send", { to: a1.id, text: "do x", urgency: "fyi" })).toMatchObject({ ok: true, relation: "parent" })

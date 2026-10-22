@@ -70,6 +70,8 @@ import {
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
+import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
@@ -271,8 +273,6 @@ import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-co
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
-import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
-import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -7685,9 +7685,16 @@ code { color: #9ad; }
       json(404, { error: "no_such_caller", callerSessionId: callerId })
       return true
     }
+    // Same ACL decision as the `message_send` tool (siblings,
+    // same-workspace, peer groups) - read fresh from config per request.
     const messaging = await messagingDefaultsFor()
     const policy: PermissionContext = {
-      messaging: { allowSiblings: messaging.allowSiblings, agentInterrupt: messaging.agentInterrupt },
+      messaging: {
+        allowSiblings: messaging.allowSiblings,
+        allowSameWorkspace: messaging.allowSameWorkspace,
+        peerGroups: messaging.peerGroups,
+        agentInterrupt: messaging.agentInterrupt,
+      },
     }
     const principal: Principal = sender
       ? { kind: "session", session: sender }

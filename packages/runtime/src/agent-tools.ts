@@ -318,9 +318,18 @@ export interface RegisterAgentToolsOptions {
    *  binds to the legacy `ui://agentproto_session_chat/view`, today's
    *  behaviour. */
   isSessionChatInstalled?: () => boolean
-  /** config.json `defaults.messaging.allowSiblings` — lets `message_send` /
+  /** config.json `defaults.messaging.allowSiblings` - lets `message_send` /
    *  `message_reply` reach a sibling (same parent). Default false. */
   messagingAllowSiblings?: boolean
+  /** config.json `defaults.messaging.allowSameWorkspace` - lets
+   *  `message_send` / `message_reply` reach any session of the SAME
+   *  workspace, even without a tree edge. Default true. */
+  messagingAllowSameWorkspace?: boolean
+  /** config.json `defaults.messaging.peerGroups` - groups of workspace
+   *  slugs. Lets `message_send` / `message_reply` reach a session whose
+   *  workspace slug sits in the same group, even without a tree edge.
+   *  Default [] (no cross-workspace link). */
+  messagingPeerGroups?: string[][]
   /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
    *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
@@ -353,6 +362,8 @@ export function registerAgentTools(
     defaultAgentPromptInterrupt,
     isSessionChatInstalled,
     messagingAllowSiblings,
+    messagingAllowSameWorkspace,
+    messagingPeerGroups,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
@@ -992,7 +1003,12 @@ export function registerAgentTools(
       const principal = { kind: "session", session: self } as const
       const resource = { kind: "session", session: parent } as const
       const messagingPolicy = {
-        messaging: { allowSiblings: messagingAllowSiblings === true, agentInterrupt: messagingAgentInterrupt ?? "deny" },
+        messaging: {
+          allowSiblings: messagingAllowSiblings === true,
+          ...(messagingAllowSameWorkspace !== undefined ? { allowSameWorkspace: messagingAllowSameWorkspace } : {}),
+          ...(messagingPeerGroups ? { peerGroups: messagingPeerGroups } : {}),
+          agentInterrupt: messagingAgentInterrupt ?? "deny",
+        },
       }
       const decision = decide(principal, "session.message", resource, messagingPolicy)
       if (!decision.allow || !decision.relation) {
@@ -1081,6 +1097,10 @@ export function registerAgentTools(
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAllowSameWorkspace === false ? { allowSameWorkspace: false } : {}),
+    ...(messagingPeerGroups && messagingPeerGroups.length > 0
+      ? { peerGroups: messagingPeerGroups }
+      : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
@@ -1089,6 +1109,12 @@ export function registerAgentTools(
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAllowSameWorkspace !== undefined
+      ? { allowSameWorkspace: messagingAllowSameWorkspace }
+      : {}),
+    ...(messagingPeerGroups && messagingPeerGroups.length > 0
+      ? { peerGroups: messagingPeerGroups }
+      : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 

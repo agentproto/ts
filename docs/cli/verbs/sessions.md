@@ -1174,7 +1174,30 @@ it can't forge a header. The recipient's transcript records a
 `session-message` record, never a `user-prompt`.
 
 Who may message whom: child → parent, parent → direct child, human/daemon
-→ anyone. Siblings only with `defaults.messaging.allowSiblings: true`.
+→ anyone. Siblings only with `defaults.messaging.allowSiblings: true`. Any
+session of the **same workspace** may also message any other session of that
+workspace, even without a tree edge (relation `peer`) - that allowance is on
+by default and is turned off with `defaults.messaging.allowSameWorkspace:
+false`.
+
+Workspaces that belong together can be linked with
+`defaults.messaging.peerGroups`, a list of groups of workspace slugs, e.g.
+`[["agentik-studio", "app-agentik-pygmalion"]]`: two sessions may message
+each other without a tree edge when both workspace slugs sit in the **same**
+group. The group allowance is independent of `allowSameWorkspace` (a group
+link holds even when the same-workspace rule is off) and it is narrow: a
+session without a workspace slug is never linked, and a pair whose slugs only
+appear in different groups keeps today's refusal. The default is no group at
+all, so a deployment that never configures one behaves exactly as before.
+
+Precedence: a tree edge decides first. A parent and a direct child always
+pass; a sibling passes only with `allowSiblings` - **except** that a sibling
+pair whose workspaces are linked by a peer group is allowed even without
+`allowSiblings` (the operator explicitly grouped those workspaces, and agents
+spawned under one orchestrator are always siblings); the message then carries
+relation `peer`. Two siblings of the SAME workspace are still gated by
+`allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
+and a peer-group link always passes.
 
 ### Tools (MCP)
 

@@ -157,7 +157,7 @@ export interface AgentprotoRawSessionMessageEnvelope {
     label?: string
     role?: string
     adapter?: string
-    relation: "child" | "parent" | "sibling" | "human" | "system"
+    relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
   }
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"
