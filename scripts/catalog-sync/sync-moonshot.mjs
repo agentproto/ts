@@ -9,24 +9,28 @@
  * from the committed snapshot packages/catalog-sync/snapshots/llm-moonshot.json
  * (Moonshot's own /v1/models), then from OpenRouter as a last resort.
  *
- * PRICES come first from Moonshot's own pricing page
- * (platform.kimi.ai/docs/pricing/chat.md, no key needed), parsed by
- * packages/catalog-sync/src/sources/kimi-pricing-page.mjs. OpenRouter's
- * `moonshotai/*` price is the price of whichever host OpenRouter routes to,
- * not Moonshot's — 2026-10-08 it had kimi-k3 at $0.62 / $12.30 against
- * Moonshot's $3.00 / $15.00 — so it is only the per-row fallback for an id
- * the page doesn't list, and the whole-file fallback when the page is
- * unreachable or unparseable. Ids the page prices are added to the id list
- * (the page is first-party). Each row records its `priceSource`.
+ * PRICES come from first-party sources, in order:
+ *   1. Moonshot's own pricing page (platform.kimi.ai/docs/pricing/chat.md,
+ *      no key needed), parsed by
+ *      packages/catalog-sync/src/sources/kimi-pricing-page.mjs;
+ *   2. models.dev's `moonshotai` provider (keyless JSON), which carries the
+ *      same first-party rates when the page's markup breaks;
+ *   3. rows already committed under `priceSource: "moonshot"` are KEPT, not
+ *      re-priced from OpenRouter, when both first-party sources are unusable.
+ * OpenRouter's `moonshotai/*` price is the price of whichever host OpenRouter
+ * routes to, not Moonshot's — 2026-10-08 it had kimi-k3 at $0.62 / $12.30
+ * against Moonshot's $3.00 / $15.00 — so it is only the per-row fallback for
+ * an id no first-party source prices. Each row records its `priceSource`.
  */
 
-import { readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import {
   checkKimiPricingUsable,
   parseKimiPricingPage,
 } from "../../packages/catalog-sync/src/sources/kimi-pricing-page.mjs"
+import { parseModelsDevProviderPricing } from "../../packages/catalog-sync/src/sources/models-dev-pricing.mjs"
 
 // Moonshot's own /v1/models, pinned by `catalog-sync generate --refresh`.
 const SNAPSHOT_PATH = resolve(
@@ -45,6 +49,7 @@ function readSnapshotIds() {
 }
 
 const KIMI_PRICING_URL = "https://platform.kimi.ai/docs/pricing/chat.md"
+const MODELS_DEV_URL = "https://models.dev/api.json"
 
 /** Moonshot's own prices — `{ prices, reason }`, `prices` null if unusable. */
 async function fetchKimiPricing() {
@@ -58,6 +63,24 @@ async function fetchKimiPricing() {
     return problem ? { prices: null, reason: problem } : { prices, reason: null }
   } catch (err) {
     return { prices: null, reason: `pricing page fetch failed: ${err.message}` }
+  }
+}
+
+/**
+ * Secondary first-party source: models.dev's `moonshotai` provider carries
+ * Moonshot's own per-1M rates. Used when the pricing page's markup breaks
+ * (2026-10-21: its `.md` rendering went to empty table shells, so kimi-k3
+ * silently got OpenRouter's price). `{ prices, reason }` like above.
+ */
+async function fetchModelsDevPricing() {
+  try {
+    const res = await fetch(MODELS_DEV_URL, { headers: { Accept: "application/json" } })
+    if (!res.ok) return { prices: null, reason: `models.dev returned ${res.status} ${res.statusText}` }
+    const prices = parseModelsDevProviderPricing(await res.json(), "moonshotai")
+    const problem = checkKimiPricingUsable(prices)
+    return problem ? { prices: null, reason: problem } : { prices, reason: null }
+  } catch (err) {
+    return { prices: null, reason: `models.dev fetch failed: ${err.message}` }
   }
 }
 
@@ -122,6 +145,22 @@ function findPricing(id, openRouterMap) {
   }
 
   return null
+}
+
+/**
+ * Rows already committed under `priceSource: "moonshot"`, as raw lines keyed
+ * by id. When both first-party sources are unusable they must be preserved:
+ * re-pricing a bare id from OpenRouter would swap the route underneath it
+ * (and, for kimi-k3, cut the price from $3 / $15 to $0.239 / $11.936).
+ */
+function readCommittedFirstPartyRows() {
+  const rows = new Map()
+  if (!existsSync(OUTPUT_PATH)) return rows
+  for (const line of readFileSync(OUTPUT_PATH, "utf-8").split("\n")) {
+    const m = line.match(/^  ("[^"]+"): \{.*priceSource: "moonshot"/)
+    if (m) rows.set(JSON.parse(m[1]), line)
+  }
+  return rows
 }
 
 async function main() {
@@ -193,16 +232,36 @@ async function main() {
   console.log(`  ${Object.keys(openRouterMap).length} Moonshot models with pricing found`)
 
   console.log("→ Fetching Moonshot's own pricing page…")
-  const { prices: officialPrices, reason: officialProblem } = await fetchKimiPricing()
+  const page = await fetchKimiPricing()
+  let officialPrices = page.prices
+  let officialProblem = page.reason
+  let officialSource = "platform.kimi.ai pricing page"
+
+  if (!officialPrices) {
+    console.warn(`  ⚠ Kimi pricing page unusable (${officialProblem}) — trying models.dev (moonshotai)`)
+    const fallback = await fetchModelsDevPricing()
+    if (fallback.prices) {
+      officialPrices = fallback.prices
+      officialProblem = null
+      officialSource = "models.dev moonshotai (Moonshot's own rates)"
+    } else {
+      officialProblem = `${officialProblem}; models.dev: ${fallback.reason}`
+    }
+  }
+
   if (officialPrices) {
-    console.log(`  ${officialPrices.size} priced rows parsed`)
+    console.log(`  ${officialPrices.size} priced rows parsed (${officialSource})`)
     const known = new Set(moonshotModels.map((m) => m.id))
     for (const id of officialPrices.keys()) {
       if (!known.has(id)) moonshotModels.push({ id })
     }
   } else {
-    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — every price from OpenRouter`)
+    console.warn(`  ⚠ official pricing unusable (${officialProblem}) — committed first-party rows kept, the rest from OpenRouter`)
   }
+
+  // Only needed for the whole-file failure path: keeps bare ids that already
+  // carry Moonshot's own rate off OpenRouter's host rate.
+  const committed = officialPrices ? new Map() : readCommittedFirstPartyRows()
 
   const entries = []
   for (const model of moonshotModels) {
@@ -210,6 +269,11 @@ async function main() {
     const official = officialPrices?.get(model.id)
     if (official) {
       entries.push({ id: model.id, ...official, priceSource: "moonshot" })
+      continue
+    }
+    if (committed.has(model.id)) {
+      entries.push({ id: model.id, raw: committed.get(model.id) })
+      console.warn(`  ⚠ ${model.id}: committed first-party row kept (official pricing unusable)`)
       continue
     }
     const pricing = findPricing(model.id, openRouterMap)
@@ -231,12 +295,13 @@ async function main() {
 
   const date = new Date().toISOString()
   const priceSourceLabel = officialPrices
-    ? "platform.kimi.ai pricing page, OpenRouter fallback per row"
-    : `OpenRouter pricing — Moonshot pricing page unusable: ${officialProblem}`
+    ? `${officialSource}, OpenRouter fallback per row`
+    : `committed first-party rows + OpenRouter pricing — Moonshot pricing page unusable: ${officialProblem}`
   const banner = `// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-moonshot.mjs (data: ${idSource} + ${priceSourceLabel}, synced ${date})\n\n`
 
   const body = entries
     .map((e) => {
+      if (e.raw) return e.raw
       const cacheParts = []
       if (e.cacheReadMultiplier !== undefined) cacheParts.push(`cacheReadMultiplier: ${e.cacheReadMultiplier}`)
       if (e.cacheWriteMultiplier !== undefined) cacheParts.push(`cacheWriteMultiplier: ${e.cacheWriteMultiplier}`)
