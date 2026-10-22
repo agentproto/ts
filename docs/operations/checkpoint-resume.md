@@ -120,8 +120,14 @@ graceful restart does not cover a crash.
 
 - The restore is a best effort step, never fatal: a missing ref, a dirty
   tree or a fetch failure leaves the session where it is, with a notice.
-- The restored tree is the snapshot's tree: the uncommitted work comes back
-  as uncommitted changes (like the existing branch-derived restore), and the
+- The restore brings back the paths the snapshot contains, not the whole
+  tree: `git restore --source=<ref> --staged --worktree -- .` resets every
+  path under `.` to the snapshot's state. A tracked path present in the
+  current index/HEAD but absent from the snapshot is therefore REMOVED from
+  the index and the worktree (as a staged deletion), not kept. The
+  staged/unstaged split is not preserved either (the restored paths are
+  staged and present in the worktree at once). Uncommitted work comes back
+  as uncommitted changes (like the existing branch-derived restore), and
   pushed commits come back as commits when the work branch is reused.
 - Only a checkpoint that reached the remote is restorable. A checkpoint
   that only exists as a host-side bundle is not silently faked.
@@ -145,5 +151,10 @@ small, or on the retry policy.
 - a relaunch linked to a dead session resolves that session's checkpoint
   (explicit id, label correlation and task id correlation), and a live
   session is never resumed;
+- a correlation key is INHERITED by the resumed session, and the next
+  relaunch by that key finds the resumed session (its most recent
+  checkpoint), not the session it continued;
+- a dead session whose work branch is not a `wt/<slug>` branch falls back
+  to a fresh branch instead of a sliced slug;
 - a relaunch that matches no dead session starts from the base branch (no
   restore step at all).

@@ -171,18 +171,25 @@ export function resolveResumeSource(req: ResumeSourceRequest): ResumeSource | un
     return found ? withCheckpoint(found) : undefined
   }
   const candidates = req.sessions.filter(isDeadSession)
+  // Correlation keys pick the MOST RECENT checkpoint, not the first row in
+  // registry order: a session that resumed another one carries the SAME
+  // correlation key (the key is inherited), so the registry holds several
+  // rows with it - the older source and the newer resumed one. The
+  // checkpoint carries its own instant, so the recency is read from it.
+  const mostRecent = (hits: ResumeSource[]): ResumeSource | undefined => {
+    const sorted = [...hits].sort((a, b) =>
+      a.checkpoint.at < b.checkpoint.at ? 1 : a.checkpoint.at > b.checkpoint.at ? -1 : 0,
+    )
+    return sorted[0]
+  }
   if (req.taskId) {
     const byTask = candidates.filter(s => s.taskId === req.taskId)
-    const hit = byTask.map(withCheckpoint).find((r): r is ResumeSource => r !== undefined)
+    const hit = mostRecent(byTask.map(withCheckpoint).filter((r): r is ResumeSource => r !== undefined))
     if (hit) return hit
   }
   if (req.label) {
     const byLabel = candidates.filter(s => s.label === req.label)
-    // Most recent checkpoint wins: the rows are ordered by the caller, and
-    // the checkpoint carries its own instant.
-    const hits = byLabel.map(withCheckpoint).filter((r): r is ResumeSource => r !== undefined)
-    hits.sort((a, b) => (a.checkpoint.at < b.checkpoint.at ? 1 : a.checkpoint.at > b.checkpoint.at ? -1 : 0))
-    const hit = hits[0]
+    const hit = mostRecent(byLabel.map(withCheckpoint).filter((r): r is ResumeSource => r !== undefined))
     if (hit) return hit
   }
   return undefined
