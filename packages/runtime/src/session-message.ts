@@ -90,6 +90,10 @@ export function resolveRelation(
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
  * only when `allowSiblings` (config-gated, default off). Anything else — a
  * cousin, a stranger, yourself — is refused.
+ *
+ * Kept for back-compat. Enforcement now goes through `decide(principal,
+ * "session.message", …)` in permissions.ts, which a test pins to this
+ * function's outcomes for every tree pair.
  */
 export function isMessageAllowed(
   relation: MessageRelation | undefined,

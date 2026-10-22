@@ -42,6 +42,7 @@
 import { homedir } from "node:os"
 import type { SessionEventBus } from "./session-event-bus.js"
 import { stampFooterOnPr, type GhRunner } from "./pr-provenance-stamp.js"
+import { checkpointRefPrefixForSession } from "./sandbox-delivery.js"
 import type { FooterSession } from "./pr-provenance.js"
 import { readToolCallRecords } from "./tool-call-log.js"
 import type { ToolCallRecord } from "./tool-call-record.js"
@@ -128,6 +129,11 @@ export function createPrProvenanceReconciler(opts: {
    *  `gh` call runs there. Absent / unresolvable ⇒ lane B is skipped for the
    *  session and the url-addressed `gh` calls run from the home dir. */
   localRepoCwdFor?: (session: ReconcilerSession) => Promise<string | undefined>
+  /** The daemon's GLOBAL checkpoint ref namespace
+   *  (`defaults.sandbox.checkpoint.refPrefix`). The session's own per-spawn
+   *  override wins over it, the checkpoint the delivery pushed lives under
+   *  the session's namespace, not the global one. */
+  checkpointRefPrefix?: string
 }): PrProvenanceReconciler {
   // PR urls already stamped this daemon run — the dedupe is per-PR, not per
   // session, so a session that opens several PRs stamps each one once. Also
@@ -208,6 +214,7 @@ export function createPrProvenanceReconciler(opts: {
         cwd,
         ...(opts.run ? { run: opts.run } : {}),
         ...(opts.host ? { host: opts.host } : {}),
+        checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
       })
       // Record this PR as stamped only on a real stamp (or an already-stamped
       // body). A transient `gh` failure leaves it unstamped so a later event
@@ -312,6 +319,7 @@ export function createPrProvenanceReconciler(opts: {
         refresh: true,
         ...(opts.run ? { run: opts.run } : {}),
         ...(opts.host ? { host: opts.host } : {}),
+        checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
       })
       // Settled either way (re-rendered, or already carried a cost); a
       // failed gh call is retried at the next turn-end.

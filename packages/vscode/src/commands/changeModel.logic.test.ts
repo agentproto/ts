@@ -1,17 +1,40 @@
 import { describe, expect, it } from "vitest"
 
-import type { SessionDescriptor } from "../client/types.js"
+import type { SessionConfigOptionRow, SessionDescriptor } from "../client/types.js"
 import type { SpawnAdapterInfo } from "./spawn.logic.js"
-import { buildChangeModelPlaceHolder, makeChangeRouteItem, mapChangeModelQuickPickItems } from "./changeModel.logic.js"
+import {
+  buildChangeModelPlaceHolder,
+  liveModelValues,
+  makeChangeRouteItem,
+  mapChangeModelQuickPickItems,
+} from "./changeModel.logic.js"
 
 function adapter(overrides: Partial<SpawnAdapterInfo> = {}): SpawnAdapterInfo {
   return { slug: "claude-code", ...overrides }
 }
 
 function session(
-  overrides: Partial<Pick<SessionDescriptor, "model" | "mode" | "route">> = {},
-): Pick<SessionDescriptor, "model" | "mode" | "route"> {
+  overrides: Partial<
+    Pick<SessionDescriptor, "model" | "activeModel" | "mode" | "route"> & {
+      configOptions?: readonly SessionConfigOptionRow[]
+    }
+  > = {},
+): Pick<SessionDescriptor, "model" | "activeModel" | "mode" | "route"> & {
+  configOptions?: readonly SessionConfigOptionRow[]
+} {
   return { ...overrides }
+}
+
+/** The live agent's advertised model vocabulary (the ACP `model` config
+ *  option) -- the values the running agent actually accepts. */
+function liveModelOption(values: Array<{ value: string; name?: string }>): SessionConfigOptionRow {
+  return {
+    id: "model",
+    category: "model",
+    name: "Model",
+    type: "select",
+    options: values.map(v => ({ value: v.value, ...(v.name ? { name: v.name } : {}) })),
+  }
 }
 
 describe("mapChangeModelQuickPickItems", () => {
@@ -218,6 +241,90 @@ describe("mapChangeModelQuickPickItems", () => {
     )
     expect(items.map(i => i.label)).toEqual(["claude-code", "opus-5", "sonnet-5"])
     expect(items.find(i => i.model === "opus-5")?.current).toBe(true)
+  })
+})
+
+describe("liveModelValues", () => {
+  it("reads the model option's advertised values", () => {
+    const values = liveModelValues([
+      liveModelOption([{ value: "claude-sonnet-5-5", name: "Sonnet 5.5" }]),
+    ])
+    expect(values).toEqual([{ value: "claude-sonnet-5-5", name: "Sonnet 5.5" }])
+  })
+
+  it("flattens a GROUPED option list", () => {
+    const values = liveModelValues([
+      {
+        id: "model",
+        type: "select",
+        options: [
+          { group: "anthropic", name: "Anthropic", options: [{ value: "claude-sonnet-5-5" }] },
+          { value: "claude-opus-5-5" },
+        ],
+      },
+    ])
+    expect(values.map(v => v.value)).toEqual(["claude-sonnet-5-5", "claude-opus-5-5"])
+    expect(values[0]?.group).toBe("Anthropic")
+  })
+
+  it("returns nothing when the session advertises no model option", () => {
+    expect(liveModelValues(undefined)).toEqual([])
+    expect(liveModelValues([{ id: "mode", type: "select", options: [{ value: "plan" }] }])).toEqual([])
+  })
+})
+
+describe("mapChangeModelQuickPickItems -- the live agent's own model vocabulary", () => {
+  it("offers the agent's OWN values as live-switchable rows", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ modelDetails: [{ id: "claude-sonnet-5-5", provider: "anthropic" }] }),
+      session({
+        model: "claude-sonnet-5-5",
+        configOptions: [
+          liveModelOption([
+            { value: "claude-sonnet-5-5", name: "Sonnet 5.5" },
+            { value: "claude-opus-5-5", name: "Opus 5.5" },
+          ]),
+        ],
+      }),
+    )
+    const opus = items.find(i => i.model === "claude-opus-5-5")
+    expect(opus?.restartRequired).toBeUndefined()
+    expect(opus?.description).toBe("Opus 5.5")
+  })
+
+  it("flags a CATALOG id the agent does not accept as restart-only (never a failing live switch)", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ modelDetails: [{ id: "claude-sonnet-5-5", provider: "anthropic" }] }),
+      session({
+        model: "claude-sonnet-5-5",
+        configOptions: [liveModelOption([{ value: "claude-sonnet-5" }])],
+      }),
+    )
+    const row = items.find(i => i.model === "claude-sonnet-5-5")
+    expect(row?.restartRequired).toBe(true)
+    expect(row?.description).toBe("restart required · not accepted live")
+  })
+
+  it("keeps the catalog-only behaviour when the session advertises no model vocabulary", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ modelDetails: [{ id: "claude-sonnet-5-5", provider: "anthropic" }] }),
+      session({ model: "claude-sonnet-5-5" }),
+    )
+    const row = items.find(i => i.model === "claude-sonnet-5-5")
+    expect(row?.restartRequired).toBeUndefined()
+    expect(row?.description).toBe("current")
+  })
+
+  it("marks the live value matching the session's ACTIVE model as current", () => {
+    const items = mapChangeModelQuickPickItems(
+      adapter({ modelDetails: [{ id: "claude-sonnet-5-5", provider: "anthropic" }] }),
+      session({
+        model: "claude-sonnet-5-5",
+        activeModel: "claude-opus-5-5",
+        configOptions: [liveModelOption([{ value: "claude-opus-5-5" }])],
+      }),
+    )
+    expect(items.find(i => i.model === "claude-opus-5-5")?.current).toBe(true)
   })
 })
 

@@ -23,16 +23,21 @@
  */
 
 import { hostname } from "node:os"
+import { checkpointBranchOf, checkpointRefPrefixForSession } from "./sandbox-delivery.js"
 import {
   appendFooterOnce,
   buildSessionPrFooter,
   hasProvenanceFooter,
   footerHasCost,
+  footerOpenedBy,
   footerSessionId,
   footerIsRicherThan,
+  collectBranchAuthors,
+  sessionIdsFromTrailers,
   replaceProvenanceFooter,
   parseGhPrCreate,
   pickExecutorSession,
+  type FooterAuthor,
   type FooterSession,
 } from "./pr-provenance.js"
 
@@ -46,7 +51,10 @@ export type GhRunner = (
 /** The slice of `SessionsRegistry` this stamper touches — kept structural so
  *  the module doesn't drag the full registry type (and its imports) in. */
 export interface StampRegistry {
-  list(): readonly FooterSession[]
+  /** The registered sessions. `includeArchived` returns ARCHIVED sessions
+   *  too, they are omitted by default, and an archived author must still be
+   *  credited with its model/wallet/cost, not reduced to a bare id. */
+  list(opts?: { includeArchived?: boolean }): readonly FooterSession[]
   get(id: string): FooterSession | undefined
   recordOpenedPr(sessionId: string, input: { adapter: string; number: number; url: string }): unknown
 }
@@ -71,6 +79,10 @@ export interface StampPrInput {
   run?: GhRunner
   /** Host label for the footer; defaults to `os.hostname()`. */
   host?: string
+  /** The daemon's GLOBAL checkpoint ref namespace
+   *  (`defaults.sandbox.checkpoint.refPrefix`). The session's own per-spawn
+   *  override wins over it (see `checkpointRefPrefixForSession`). */
+  checkpointRefPrefix?: string
 }
 
 export type StampOutcome =
@@ -122,6 +134,7 @@ export async function stampPrProvenance(input: StampPrInput): Promise<StampOutco
       cwd: input.cwd,
       ...(input.run ? { run: input.run } : {}),
       ...(input.host ? { host: input.host } : {}),
+      ...(input.checkpointRefPrefix ? { checkpointRefPrefix: input.checkpointRefPrefix } : {}),
     })
   } catch (err) {
     return { stamped: false, reason: err instanceof Error ? err.message : String(err) }
@@ -166,24 +179,108 @@ export async function stampFooterOnPr(input: {
   cwd: string
   run?: GhRunner
   host?: string
+  /** The branch's authoring sessions, rendered as "Authored by" entries with
+   *  each one's model/wallet/provider + cost (the opener's cumulative ledger
+   *  is then suppressed). Defaults to the branch's registered sandboxed
+   *  sessions when absent — pass `[]` to skip authorship. */
+  authors?: readonly FooterAuthor[]
+  /** The session that opened the PR, when it isn't `session` itself (a
+   *  daemon `pr_open` on behalf of a box session). */
+  openedBy?: string
+  /** The configured checkpoint ref namespace (`defaults.sandbox.checkpoint.
+   *  refPrefix`) the trailer read goes through; defaults to the legacy
+   *  `agentproto-checkpoint/` (see `checkpointBranchOf`). When the stamped
+   *  session carries its own per-spawn override, that one wins, it is the
+   *  namespace its delivery actually pushed to. */
+  checkpointRefPrefix?: string
+  /** Sessions credited as authors whatever the branch/workspace match says
+   *  (the session a PR is opened FOR). */
+  extraAuthorSessionIds?: readonly string[]
   /** Re-render an ALREADY-stamped footer when the session has learned its
    *  spend since the first stamp (the first stamp lands mid-turn, before a
    *  claude-code/claude-sdk session reports any cost). Only edits when the
    *  existing footer has no amount and the fresh one does; otherwise a no-op
    *  (`stamped: true, alreadyStamped: true, refreshed: false`). */
   refresh?: boolean
+  /** Gate every `gh` argv the stamp runs (`pr view`, `pr edit`, `gh api` on
+   *  the checkpoint ref) against a caller-provided check — the same
+   *  default-deny allowlist gate `pr_open` applies to `gh pr create`. A
+   *  returned string refuses that call and fails the stamp (best-effort:
+   *  the PR is still recorded, it just loses its footer). */
+  authorizeArgs?: (args: readonly string[]) => string | undefined
 }): Promise<StampOutcome> {
   try {
+    const run = input.run ?? defaultGhRunner
+    const stampRun: GhRunner = input.authorizeArgs
+      ? async (args, cwd) => {
+          const refused = input.authorizeArgs?.([...args])
+          if (refused) throw new Error(refused)
+          return await run(args, cwd)
+        }
+      : run
+    const view = await stampRun(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
+    if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
+    const body = view.stdout.replace(/\n+$/, "")
+
+    let authors = input.authors
+    if (!authors) {
+      // `Agentproto-Session:` trailers keep a box branch attributable after
+      // the registry forgot its session. Two sources: the PR's own commits
+      // (teardown delivery appends a trailer-bearing provenance commit to the
+      // pushed work branch - `buildProvenanceStampCommand`), and the tip of the
+      // `agentproto-checkpoint/<branch>` snapshot (carries the trailer while
+      // uncommitted work is still parked there). Read on every stamp, legacy
+      // opener path included. Best-effort: a failed read only loses that source.
+      const trailerIds = new Set<string>()
+      const commits = await stampRun(
+        ["pr", "view", input.prUrl, "--json", "commits", "--jq", '.commits[] | .messageHeadline + "\\n" + .messageBody'],
+        input.cwd,
+      )
+      if (commits.exitCode === 0) for (const id of sessionIdsFromTrailers(commits.stdout)) trailerIds.add(id)
+      // Key everything off the PR's HEAD branch - the branch whose work the PR
+      // actually carries - never the resolved session's own branch (a host
+      // orchestrator has none; a different session may have another). The
+      // session's branch is only the fallback when the head can't be read.
+      const headBranch = (await prHeadBranch(stampRun, input.prUrl, input.cwd)) ?? input.session.sandboxDeliveryTarget?.branch
+      // The checkpoint ref namespace the session's delivery actually used:
+      // its own per-spawn override wins over the daemon's global default.
+      const refPrefix = checkpointRefPrefixForSession(input.session, input.checkpointRefPrefix)
+      for (const id of await checkpointTrailerIds(stampRun, input.prUrl, input.cwd, headBranch, refPrefix)) {
+        trailerIds.add(id)
+      }
+      // ARCHIVED sessions are authors too: `list()` drops them by default,
+      // while `get()` still resolves them, so the registry side asks for
+      // them explicitly and the trailer side resolves through `get()`, which
+      // is what keeps an archived author's model/wallet/cost on the footer
+      // instead of a bare id.
+      const registrySessions = input.registry.list({ includeArchived: true })
+      const trailerSessions = [...trailerIds]
+        .map(id => input.registry.get(id))
+        .filter((s): s is FooterSession => s !== undefined)
+      const extraSessions = (input.extraAuthorSessionIds ?? [])
+        .map(id => input.registry.get(id))
+        .filter((s): s is FooterSession => s !== undefined)
+      const sessions = [...registrySessions, ...trailerSessions, ...extraSessions]
+      authors = collectBranchAuthors(sessions, headBranch ?? "", [...trailerIds], {
+        // Branch names are repo-local: scope the registry side to the PR's
+        // own workspace so another workspace's same-named branch doesn't
+        // contribute its session (and its cost) to this PR.
+        ...(input.session.workspaceSlug ? { workspaceSlug: input.session.workspaceSlug } : {}),
+        ...(input.extraAuthorSessionIds?.length ? { extraSessionIds: input.extraAuthorSessionIds } : {}),
+      })
+    }
+    // The opener survives a re-render: the refresh pass (the reconciler's
+    // cost refresh) knows the session, not who opened the PR, so the
+    // existing footer's "Opened by" is carried over instead of being
+    // dropped from the PR.
+    const openedBy = input.openedBy ?? footerOpenedBy(body)
     const footer = buildSessionPrFooter(input.session, {
       supervisor: input.supervisor,
       host: input.host ?? hostname(),
       sha: undefined,
+      ...(authors.length ? { authors } : {}),
+      ...(openedBy ? { openedBy } : {}),
     })
-
-    const run = input.run ?? defaultGhRunner
-    const view = await run(["pr", "view", input.prUrl, "--json", "body", "--jq", ".body"], input.cwd)
-    if (view.exitCode !== 0) return { stamped: false, reason: `gh pr view exit ${view.exitCode}` }
-    const body = view.stdout.replace(/\n+$/, "")
 
     const alreadyStamped = hasProvenanceFooter(body)
     const ownFooter = alreadyStamped && footerSessionId(body) === input.session.id
@@ -215,14 +312,14 @@ export async function stampFooterOnPr(input: {
         return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: false }
       }
       const refreshedBody = replaceProvenanceFooter(body, footer)
-      const edit = await run(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
+      const edit = await stampRun(["pr", "edit", input.prUrl, "--body", refreshedBody], input.cwd)
       if (edit.exitCode !== 0) return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       return { stamped: true, url: input.prUrl, number: input.prNumber, sessionId: input.session.id, alreadyStamped, refreshed: true }
     }
 
     if (!alreadyStamped) {
       const newBody = appendFooterOnce(body, footer)
-      const edit = await run(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
+      const edit = await stampRun(["pr", "edit", input.prUrl, "--body", newBody], input.cwd)
       if (edit.exitCode !== 0) {
         return { stamped: false, reason: `gh pr edit exit ${edit.exitCode}` }
       }
@@ -250,8 +347,42 @@ export async function stampFooterOnPr(input: {
   }
 }
 
+/** The PR's head branch (`headRefName`), or undefined when it can't be read. */
+async function prHeadBranch(run: GhRunner, prUrl: string, cwd: string): Promise<string | undefined> {
+  try {
+    const head = await run(["pr", "view", prUrl, "--json", "headRefName", "--jq", ".headRefName"], cwd)
+    if (head.exitCode !== 0) return undefined
+    return head.stdout.trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Session ids from the `Agentproto-Session:` trailer on the tip of the PR
+ *  branch's checkpoint snapshot (`agentproto-checkpoint/<branch>`). Every
+ *  failure (no checkpoint, no `gh api`, unparsable url) yields `[]`. */
+async function checkpointTrailerIds(
+  run: GhRunner,
+  prUrl: string,
+  cwd: string,
+  branch: string | undefined,
+  refPrefix: string | undefined,
+): Promise<string[]> {
+  try {
+    const repo = /^https?:\/\/[^/]+\/([^/]+\/[^/]+)\/pull\/\d+/.exec(prUrl)?.[1]
+    if (!repo || !branch) return []
+    const tip = await run(
+      ["api", `repos/${repo}/commits/${checkpointBranchOf(branch, refPrefix)}`, "--jq", ".commit.message"],
+      cwd,
+    )
+    return tip.exitCode === 0 ? sessionIdsFromTrailers(tip.stdout) : []
+  } catch {
+    return []
+  }
+}
+
 /** Real `gh` runner — spawns `gh` with the given argv, capturing stdout. */
-const defaultGhRunner: GhRunner = async (args, cwd) => {
+export const defaultGhRunner: GhRunner = async (args, cwd) => {
   const { spawn } = await import("node:child_process")
   return await new Promise(resolve => {
     let stdout = ""

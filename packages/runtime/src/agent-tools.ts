@@ -89,6 +89,8 @@ import {
   type MessageUrgency,
 } from "./session-message.js"
 import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
+import { registerPermissionsTools } from "./permissions-tools.js"
+import { decide } from "./permissions.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
@@ -426,6 +428,25 @@ export function registerAgentTools(
       },
     },
     async input => {
+      // PARENT RELAY: `remoteParent` is DAEMON-INTERNAL. The host daemon
+      // sets it on the box daemon's `agent_start` when it boots a box
+      // session - a ROOT-gateway call (no caller session, no orchestrator
+      // scope). Any session caller (scoped sub-gateway or the self-ref
+      // `?callerSessionId=` query) is refused: a remote parent names the
+      // relay URL the session's reports (and its relay token) are sent to.
+      if (input.remoteParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                "agent_start: `remoteParent` is daemon-internal (the host daemon forwards it into a box " +
+                "at spawn time) and cannot be supplied by a session caller.",
+            },
+          ],
+          isError: true,
+        }
+      }
       if (!resolveAgentAdapter) {
         return {
           content: [
@@ -965,9 +986,22 @@ export function registerAgentTools(
       const urgency: MessageUrgency = effectiveInterrupt
         ? "interrupt"
         : (input.urgency ?? defaultUrgencyForKind(kind))
+      // Same ACL as every other messaging entry point (permissions.ts):
+      // the caller's own recorded parent always holds the `child` relation,
+      // so this never refuses today; it is routed for one predicate.
+      const principal = { kind: "session", session: self } as const
+      const resource = { kind: "session", session: parent } as const
+      const messagingPolicy = {
+        messaging: { allowSiblings: messagingAllowSiblings === true, agentInterrupt: messagingAgentInterrupt ?? "deny" },
+      }
+      const decision = decide(principal, "session.message", resource, messagingPolicy)
+      if (!decision.allow || !decision.relation) {
+        return fail(`message_parent: ${decision.reason}`)
+      }
+      const interruptDecision = decide(principal, "session.message.interrupt", resource, messagingPolicy)
       const envelope = createSessionMessage({
         to: parentId,
-        from: messageFrom(self, "child"),
+        from: messageFrom(self, decision.relation),
         text: input.message,
         kind,
         urgency,
@@ -1004,7 +1038,8 @@ export function registerAgentTools(
         result = await registry.sendMessage(envelope, {
           source: provenance,
           origin: provenance,
-          allowInterrupt: messagingAgentInterrupt === "allow",
+          decision,
+          allowInterrupt: interruptDecision.allow,
         })
       } catch (err) {
         return fail(
@@ -1042,6 +1077,14 @@ export function registerAgentTools(
 
   // ── message_send / message_reply / inbox_* ─────────
   registerMessageTools(server, {
+    registry,
+    ...(callerScope ? { callerScope } : {}),
+    ...(callerSessionId ? { callerSessionId } : {}),
+    ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
+    ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+  })
+  // ── permissions_explain (read-only twin of decide()) ─────────
+  registerPermissionsTools(server, {
     registry,
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),

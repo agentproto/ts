@@ -70,6 +70,9 @@ function makeFakeCronScheduler(): CronScheduler {
     get(id) {
       return jobs.get(id)
     },
+    rearmSessionTarget() {
+      return []
+    },
     async update(id, patch) {
       const job = jobs.get(id)
       if (!job) throw new Error(`cron job not found: ${id}`)

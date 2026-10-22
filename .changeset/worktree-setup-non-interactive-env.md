@@ -1,8 +1,8 @@
 ---
-"@agentproto/worktree": patch
+"@agentproto/worktree": minor
 ---
 
-Make daemon-spawned worktree setup hooks non-interactive: `worktree.setup` and
+Add `nonInteractiveEnv` and `NON_INTERACTIVE_ENV_DEFAULTS` exports. Make daemon-spawned worktree setup hooks non-interactive: `worktree.setup` and
 `depsCmd` now run with `CI=true` and
 `npm_config_confirm_modules_purge=false` (unless the caller already set
 them), and with stdin closed instead of a pipe. Fixes
