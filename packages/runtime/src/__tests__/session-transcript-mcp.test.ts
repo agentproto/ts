@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { chmodSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -147,5 +147,26 @@ describe("session_transcript (MCP)", () => {
     const body = parseToolJson(res)
     expect(body.count).toBe(0)
     expect(body.messages).toEqual([])
+  })
+
+  it("surfaces a real read failure as isError instead of an empty transcript", async () => {
+    if (typeof process.getuid === "function" && process.getuid() === 0) return
+    const desc = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: { sessionId: "x", async *send() {}, async cancel() {}, async close() {} } as never,
+      adapterSlug: "opencode",
+      model: "opencode/go/hy3",
+    })
+    writeEvents(desc.id, [{ kind: "user-prompt", text: "unreadable" }])
+    // A permission error is not "no transcript": the tool must report it.
+    chmodSync(join(transcriptDir, desc.id, "events.jsonl"), 0o000)
+
+    const client = await connectTools()
+    const res = await client.callTool({ name: "session_transcript", arguments: { idOrName: desc.id } })
+    const body = parseToolJson(res) as { error?: string; count?: number }
+    expect((res as { isError?: boolean }).isError).toBe(true)
+    expect(body.error).toMatch(/failed to read transcript/)
+    expect(body.count).toBeUndefined()
   })
 })
