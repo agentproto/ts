@@ -73,6 +73,26 @@ Each rung has exactly one owner — don't reach into the next one.
     over `pnpm test` to avoid saturating the machine with 24+ concurrent vitest processes.
     Running a single package's tests is fast and isolates issues.
 
+    **`check-types` is the heavier, uncapped half, scope it the same way.**
+    `pnpm -r check-types` fans out one `tsc --noEmit` per package with **no**
+    worker cap (unlike `test`, which each package bounds via `VITEST_MAX_WORKERS`),
+    and `turbo.json` declares `check-types` with `outputs: []`, so it produces
+    nothing cacheable to gate the fan-out. On a small sandbox box (e2b/computer
+    microVMs are ~4 vCPU) this oversubscribes instantly, a live 4-core e2b box
+    was measured pinning 313% CPU on just two `tsc` workers. So during iteration
+    prefer `pnpm --filter @agentproto/<pkg> check-types` over the repo-wide run,
+    and never run the full `pnpm check-types` on a box smaller than your code's
+    blast radius. Provisioned worktrees inject `TURBO_CONCURRENCY` and
+    `npm_config_workspace_concurrency` (capped at `2` by default, override via
+    `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`) into the **setup hooks only**
+    (the `pnpm install` / `pnpm build` they run); this does NOT reach commands
+    you run later in your own shell. For those, pass
+    `--workspace-concurrency=2` to `pnpm -r` (or export
+    `npm_config_workspace_concurrency` / `TURBO_CONCURRENCY` yourself); pnpm
+    ignores `TURBO_CONCURRENCY`. An operator exporting `TURBO_CONCURRENCY` (or
+    `TURBO_CACHE_DIR`) is respected. Raise the cap only on boxes with enough
+    cores to use it.
+
     Same trap for a backgrounded gate: the harness reports the exit code of
    the whole compound command, so end it with the real status
    (`echo "EXIT=$?"`) rather than trusting the completion notification.
@@ -273,6 +293,22 @@ real surface, not a placeholder for something else.
   returns in seconds) and wait on completion separately — `agentproto sessions
   wait <id> --until turn-end` as a detached/background process, or a
   completion policy via `policy_attach`.
+
+- **Reading a session's actual conversation.** `session_list` /
+  `session_context_status` only tell you a session *exists* (status, tokens,
+  cwd), they do not serve its messages. `summarize_session` returns a single
+  last-output line. To read the real transcript of any session (local **or**
+  sandbox, the daemon records `events.jsonl` for all of them), use one of:
+  - the MCP tool **`session_transcript`** (by id/name, optional `limit` for a
+    tail window), same normalised read path as the CLI/HTTP export;
+  - the CLI **`agentproto sessions export <id>`** (`--json` / `-o file`),
+    served over HTTP at `GET /sessions/:id/export`;
+  - `agentproto brain query "<text>"` for keyword/semantic search across every
+    workspace's transcript corpus. Use `session_transcript` when you need the
+    literal turns of one known session, `brain` when you're hunting across
+    many. Note: `sandbox_exec` reads a sandbox box's *process tree* (what an
+    agent is running), not its conversation, for the conversation, use
+    `session_transcript` against that session's id.
 
 <!-- BEGIN:turborepo-agent-rules -->
 
