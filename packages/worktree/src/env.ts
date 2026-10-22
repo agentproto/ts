@@ -197,37 +197,62 @@ export const WORKTREES_TURBO_CONCURRENCY_ENV =
 
 /**
  * Resolve the turbo/pnpm task-concurrency cap `runSetup` points every
- * provisioned worktree's setup hooks at (`TURBO_CONCURRENCY`, turbo reads it
- * for its own `--concurrency`, and pnpm's `-r` honours `TURBO_CONCURRENCY`
- * too). Why: a sandbox box is small (e2b/computer microVMs are ~4 vCPU), but
- * `pnpm -r check-types` / `pnpm -r test` fan out one task per package with no
- * cap, on a 4-core box that launches dozens of `tsc`/`vitest` processes at
- * once, oversubscribing to 300%+ and thrashing (seen live: 2 `tsc --noEmit`
- * workers alone pinned 313% CPU on a 4-core e2b box). Capping concurrency to
- * the box keeps the gate fast instead of swap-bound.
+ * provisioned worktree's setup hooks at (`TURBO_CONCURRENCY`, which turbo
+ * reads for its own `--concurrency`). Why: a sandbox box is small (e2b/computer
+ * microVMs are ~4 vCPU), but turbo tasks and `pnpm -r` fan out one task per
+ * package with no cap, on a 4-core box that launches dozens of
+ * `tsc`/`vitest` processes at once, oversubscribing to 300%+ and thrashing
+ * (seen live: 2 `tsc --noEmit` workers alone pinned 313% CPU on a 4-core e2b
+ * box).
  *
- * `check-types` is the worst offender: it has `outputs: []` in `turbo.json`
- * (no cacheable artifact) and depends on `^build`, so every package's
- * `tsc --noEmit` runs in parallel with nothing to gate it. `test` is partly
- * protected by each package's `VITEST_MAX_WORKERS`, but the *package-level*
- * fan-out (`pnpm -r`) is not, this cap covers that fan-out for both.
+ * NOTE: pnpm does NOT read `TURBO_CONCURRENCY`; its recursive workspace
+ * fan-out is capped by `npm_config_workspace_concurrency` /
+ * `--workspace-concurrency`. {@link worktreesConcurrencyEnv} therefore sets
+ * both from this one resolved number. The env only reaches the setup-hook
+ * child process (e.g. a `pnpm install` / `pnpm build` it runs), NOT commands
+ * an agent runs later in its own shell.
  *
  * Default is deliberately low (2): it is safe on the smallest boxes and still
  * saturates a 4-core one without oversubscription. Precedence:
  *   1. `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`, explicit override.
- *   2. a bare `TURBO_CONCURRENCY` already in this process's env, respected.
+ *   2. a bare `TURBO_CONCURRENCY` already in `base`, respected.
  *   3. `2`, a real, single default (today's behaviour is uncapped).
+ *
+ * Values must be strict positive integers (`"3abc"` is rejected, not
+ * truncated to `3`). `base` defaults to `process.env`.
  */
-export function resolveWorktreesTurboConcurrency(): number {
-  const pinned = process.env[WORKTREES_TURBO_CONCURRENCY_ENV]
-  if (pinned) {
-    const n = Number.parseInt(pinned, 10)
-    if (Number.isInteger(n) && n >= 1) return n
+export function resolveWorktreesTurboConcurrency(
+  base: NodeJS.ProcessEnv = process.env,
+): number {
+  return (
+    parsePositiveInt(base[WORKTREES_TURBO_CONCURRENCY_ENV]) ??
+    parsePositiveInt(base.TURBO_CONCURRENCY) ??
+    2
+  )
+}
+
+/** Strict positive-integer parse: digits only, `>= 1`; otherwise `undefined`. */
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const n = Number(trimmed)
+  return Number.isSafeInteger(n) && n >= 1 ? n : undefined
+}
+
+/**
+ * The concurrency env a setup hook runs with: `TURBO_CONCURRENCY` (turbo) and
+ * `npm_config_workspace_concurrency` (pnpm's `-r` fan-out), both set to the
+ * {@link resolveWorktreesTurboConcurrency} result. An already-set valid
+ * `npm_config_workspace_concurrency` in `base` is respected.
+ */
+export function worktreesConcurrencyEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const n = String(resolveWorktreesTurboConcurrency(base))
+  const pnpm = parsePositiveInt(base.npm_config_workspace_concurrency)
+  return {
+    TURBO_CONCURRENCY: n,
+    npm_config_workspace_concurrency: pnpm !== undefined ? String(pnpm) : n,
   }
-  const ambient = process.env.TURBO_CONCURRENCY
-  if (ambient) {
-    const n = Number.parseInt(ambient, 10)
-    if (Number.isInteger(n) && n >= 1) return n
-  }
-  return 2
 }

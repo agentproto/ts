@@ -82,11 +82,16 @@ Each rung has exactly one owner — don't reach into the next one.
     was measured pinning 313% CPU on just two `tsc` workers. So during iteration
     prefer `pnpm --filter @agentproto/<pkg> check-types` over the repo-wide run,
     and never run the full `pnpm check-types` on a box smaller than your code's
-    blast radius. Provisioned worktrees already inject `TURBO_CONCURRENCY` (capped
-    at `2` by default, override via `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`) to
-    bound the *package-level* fan-out for both `test` and `check-types`; an
-    operator exporting `TURBO_CONCURRENCY` (or `TURBO_CACHE_DIR`) is respected.
-    Raise the cap only on boxes with enough cores to use it.
+    blast radius. Provisioned worktrees inject `TURBO_CONCURRENCY` and
+    `npm_config_workspace_concurrency` (capped at `2` by default, override via
+    `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`) into the **setup hooks only**
+    (the `pnpm install` / `pnpm build` they run); this does NOT reach commands
+    you run later in your own shell. For those, pass
+    `--workspace-concurrency=2` to `pnpm -r` (or export
+    `npm_config_workspace_concurrency` / `TURBO_CONCURRENCY` yourself); pnpm
+    ignores `TURBO_CONCURRENCY`. An operator exporting `TURBO_CONCURRENCY` (or
+    `TURBO_CACHE_DIR`) is respected. Raise the cap only on boxes with enough
+    cores to use it.
 
     Same trap for a backgrounded gate: the harness reports the exit code of
    the whole compound command, so end it with the real status

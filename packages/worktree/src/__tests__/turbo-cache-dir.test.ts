@@ -11,6 +11,7 @@ import {
   resolveWorktreesTurboConcurrency,
   WORKTREES_TURBO_CACHE_DIR_ENV,
   WORKTREES_TURBO_CONCURRENCY_ENV,
+  worktreesConcurrencyEnv,
 } from "../env.js"
 
 const ORIGINAL_PINNED = process.env[WORKTREES_TURBO_CACHE_DIR_ENV]
@@ -83,5 +84,33 @@ describe("resolveWorktreesTurboConcurrency", () => {
     expect(resolveWorktreesTurboConcurrency()).toBe(4)
     process.env[WORKTREES_TURBO_CONCURRENCY_ENV] = "garbage"
     expect(resolveWorktreesTurboConcurrency()).toBe(4)
+  })
+
+  it("rejects partially-numeric strings instead of truncating them", () => {
+    process.env[WORKTREES_TURBO_CONCURRENCY_ENV] = "3abc"
+    process.env.TURBO_CONCURRENCY = "4"
+    expect(resolveWorktreesTurboConcurrency()).toBe(4)
+    process.env.TURBO_CONCURRENCY = "2.5"
+    expect(resolveWorktreesTurboConcurrency()).toBe(2)
+  })
+
+  it("resolves from an explicit base env instead of process.env", () => {
+    process.env.TURBO_CONCURRENCY = "8"
+    expect(resolveWorktreesTurboConcurrency({ TURBO_CONCURRENCY: "5" })).toBe(5)
+  })
+})
+
+describe("worktreesConcurrencyEnv", () => {
+  it("sets both TURBO_CONCURRENCY and pnpm's npm_config_workspace_concurrency", () => {
+    expect(worktreesConcurrencyEnv({})).toEqual({
+      TURBO_CONCURRENCY: "2",
+      npm_config_workspace_concurrency: "2",
+    })
+  })
+
+  it("respects an already-set npm_config_workspace_concurrency", () => {
+    expect(
+      worktreesConcurrencyEnv({ TURBO_CONCURRENCY: "6", npm_config_workspace_concurrency: "3" }),
+    ).toEqual({ TURBO_CONCURRENCY: "6", npm_config_workspace_concurrency: "3" })
   })
 })

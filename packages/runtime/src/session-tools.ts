@@ -2060,7 +2060,7 @@ export function registerSessionTools(
       "`agentproto sessions export` / the `/sessions/:id/export` route, so the " +
       "shape matches. Reads from disk (never mutates anything); returns an " +
       "empty `messages` array when no transcript exists. `limit` keeps at most " +
-      "N messages from the end (the most recent exchange survives). Same lookup " +
+      "N messages from the end, still in chronological order (the most recent exchange survives). Same lookup " +
       "+ owner scope as `session_usage` / `session_restart` (by id or name).",
     {
       ...sessionRefSchema(z),
@@ -2071,7 +2071,7 @@ export function registerSessionTools(
         .optional()
         .describe(
           "Keep at most N messages, taken from the END of the transcript " +
-            "(most recent first). Omit for the whole conversation.",
+            "(the most recent N, returned in chronological order). Omit for the whole conversation.",
         ),
     },
     async input => {
@@ -2114,8 +2114,27 @@ export function registerSessionTools(
       let session
       try {
         session = await exportDaemonEventsSession(desc.id, desc)
-      } catch {
-        session = { messages: [] as unknown[] }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        // Only "no events.jsonl" (the exporter's ENOENT case) is a genuinely
+        // empty transcript; anything else (permissions, wrong dir, ...) is a
+        // real failure and must not masquerade as an empty session.
+        if (/no events\.jsonl for session/.test(message)) {
+          session = { messages: [] as unknown[] }
+        } else {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: `session_transcript: failed to read transcript for "${desc.id}": ${message}`,
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
       }
       const messages = input.limit && input.limit > 0 && session.messages.length > input.limit
         ? session.messages.slice(-input.limit)

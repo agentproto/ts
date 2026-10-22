@@ -258,6 +258,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "session_set_keepalive",
   "session_set_pinned",
   "session_stats",
+  "session_transcript",
   "session_tree",
   "session_unarchive",
   "session_unfollow",
