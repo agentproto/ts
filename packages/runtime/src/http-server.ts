@@ -284,6 +284,7 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
+import { clerkHooksInputSchema } from "./clerk-hook-config.js"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import {
   deleteUserPreset,
@@ -5719,6 +5720,13 @@ export function buildSpawnSessionHttpArgs(
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
       : undefined
   const deferredTools = parseBooleanField(b.deferredTools)
+  // Agent-level clerk hook — the HTTP twin of `agent_start.hooks`. Without
+  // this mapping a Pygmalion spawn through `POST /sessions/agent` silently
+  // dropped the manifest's `metadata.hooks.clerk` (the MCP path forwarded it).
+  const hooks =
+    b.hooks !== undefined
+      ? parseWithJsonTolerance(clerkHooksInputSchema, b.hooks)
+      : undefined
   const attach =
     b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
@@ -5731,6 +5739,7 @@ export function buildSpawnSessionHttpArgs(
     | "daemonMount"
     | "contextContinuity"
     | "deferredTools"
+    | "hooks"
     | "attach"
     | "notifyUrl"
     | "notifySecret"
@@ -5741,6 +5750,7 @@ export function buildSpawnSessionHttpArgs(
     ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
+    ...(hooks !== undefined ? { hooks } : {}),
     ...(attach !== undefined ? { attach } : {}),
     ...(notifyUrl !== undefined ? { notifyUrl } : {}),
     ...(notifySecret !== undefined ? { notifySecret } : {}),
