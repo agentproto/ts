@@ -270,10 +270,20 @@ export interface AppDevDefinition {
 export interface AppService {
   /** Service identifier — kebab-case, unique across the array. */
   readonly name: string
-  /** Non-empty shell command line that starts the service, e.g.
-   *  `"pnpm --filter x start"` or `"node dist/server.js"`. Carried verbatim;
-   *  app-kit never runs it. */
-  readonly entry: string
+  /** Legacy shell command line that starts the service, e.g.
+   *  `"pnpm --filter x start"` or `"node dist/server.js"`. Exactly one of
+   *  `entry`/`command` must be present. Carried verbatim; app-kit never
+   *  runs it. */
+  readonly entry?: string
+  /** Structured command form (preferred): the binary (or script) to run.
+   *  Never shell-interpreted — the runner passes it as `argv[0]`. */
+  readonly command?: string
+  /** Structured command form: argv after `command`, passed verbatim. */
+  readonly args?: readonly string[]
+  /** Structured + legacy: working directory the runner starts the service
+   *  in. Relative paths are resolved against the app's installed dir by the
+   *  host, not by app-kit. */
+  readonly cwd?: string
   /** Optional TCP port the service listens on (1..65535). Omitted = a
    *  service that does not listen (no port). */
   readonly port?: number

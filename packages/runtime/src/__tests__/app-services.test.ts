@@ -7,21 +7,18 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdirSync, writeFileSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
-  buildServiceOwnerPrompt,
   createAppServiceStore,
   ensureAppServiceOwners,
   killServicePid,
   parseAppServices,
-  readServicePidFile,
   reensureAppServiceOwners,
   removeAppServiceOwners,
+  serviceDisplayEntry,
   serviceOwnerLabel,
-  servicePidFilePath,
   type AppServiceOwner,
 } from "../app-services.js"
 
@@ -106,6 +103,30 @@ describe("parseAppServices (frozen semantics)", () => {
     const { errors } = parseAppServices([{ name: "web", entry: "a", extra: 1 } as unknown as object])
     expect(errors).toHaveLength(1)
     expect(errors[0]).toContain("not a supported service field")
+  })
+
+  it("accepts the structured { command, args, cwd } form (preferred) and keeps legacy entry", () => {
+    const { services, errors } = parseAppServices([
+      { name: "web", command: "node", args: ["server.js"], cwd: "server", port: 4321 },
+      { name: "legacy", entry: "node server.js" },
+    ])
+    expect(errors).toEqual([])
+    expect(services).toEqual([
+      { name: "web", command: "node", args: ["server.js"], cwd: "server", port: 4321 },
+      { name: "legacy", entry: "node server.js" },
+    ])
+  })
+
+  it("rejects entry + command together, and either field missing", () => {
+    expect(parseAppServices([{ name: "web", entry: "a", command: "b" }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web" }]).errors).toHaveLength(1)
+  })
+
+  it("rejects args without command, and a bad args/cwd shape", () => {
+    expect(parseAppServices([{ name: "web", entry: "a", args: ["x"] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", args: [] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", args: [1] }]).errors).toHaveLength(1)
+    expect(parseAppServices([{ name: "web", command: "node", cwd: "" }]).errors).toHaveLength(1)
   })
 
   it("fails fast on the first bad entry — does not accumulate every entry's error", () => {
@@ -329,38 +350,209 @@ describe("killServicePid", () => {
   })
 })
 
-describe("readServicePidFile", () => {
+describe("store persistence is shared per path (audit F-6)", () => {
   let base: string
+  const mkOwner = (appId: string, name: string, pid: number): AppServiceOwner => ({
+    appId,
+    name,
+    entry: `run ${name}`,
+    sessionId: `sess_${name}`,
+    pid,
+    startedAt: "2026-01-01T00:00:00.000Z",
+  })
   beforeEach(async () => {
-    base = await mkdtemp(join(tmpdir(), "app-services-pidfile-"))
+    base = await mkdtemp(join(tmpdir(), "app-services-store-memo-"))
   })
   afterEach(async () => {
     await rm(base, { recursive: true, force: true })
   })
 
-  it("reads a written pid; undefined for a missing, malformed or non-positive file", () => {
-    const file = join(base, "services", "web.pid")
-    expect(readServicePidFile(file)).toBeUndefined()
-    mkdirSync(join(base, "services"), { recursive: true })
-    writeFileSync(file, "4242\n")
-    expect(readServicePidFile(file)).toBe(4242)
-    writeFileSync(file, "  not-a-pid  ")
-    expect(readServicePidFile(file)).toBeUndefined()
-    // A trailing-garbage pid must read as absent, not as the leading digits
-    // (`Number.parseInt("42junk")` is 42 — strict digits-only guards this).
-    writeFileSync(file, "42junk")
-    expect(readServicePidFile(file)).toBeUndefined()
-    writeFileSync(file, "0")
-    expect(readServicePidFile(file)).toBeUndefined()
-    writeFileSync(file, "-3")
-    expect(readServicePidFile(file)).toBeUndefined()
+  it("two persisting stores on the same path share state — no lost updates", () => {
+    // The lost-update repro: two instances over ONE file, interleaved writes.
+    // Without the persist-path memo, store A's upsert would rewrite the whole
+    // file from its stale snapshot and erase store B's record.
+    const path = join(base, "app-services.json")
+    const a = createAppServiceStore({ persistPath: path })
+    const b = createAppServiceStore({ persistPath: path })
+    a.upsert(mkOwner("@a/app", "web", 1))
+    b.upsert(mkOwner("@a/app", "worker", 2))
+    expect(a.listForApp("@a/app").map(o => o.name).sort()).toEqual(["web", "worker"])
+    const reloaded = createAppServiceStore({ persistPath: path })
+    expect(reloaded.listForApp("@a/app")).toHaveLength(2)
+  })
+
+  it("a non-persisting store never joins the memo (isolated)", () => {
+    const path = join(base, "isolated.json")
+    const demo = createAppServiceStore({ persistPath: path })
+    demo.upsert(mkOwner("@a/app", "web", 1))
+    const isolated = createAppServiceStore({ persist: false })
+    isolated.upsert(mkOwner("@zz/test", "ghost", 9))
+    expect(demo.listForApp("@zz/test")).toEqual([])
+    expect(createAppServiceStore({ persistPath: path }).listForApp("@zz/test")).toEqual([])
+  })
+})
+
+describe("ensureAppServiceOwners reconciles the manifest (audit F-7)", () => {
+  const svc = (name: string) => ({ name, entry: `run ${name}` })
+  let base: string
+  beforeEach(async () => {
+    base = await mkdtemp(join(tmpdir(), "app-services-reconcile-"))
+  })
+  afterEach(async () => {
+    await rm(base, { recursive: true, force: true })
+  })
+
+  it("purges owners whose service is no longer declared — kills + drops them", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const orphan: AppServiceOwner = {
+      appId: "@a/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_worker",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    }
+    store.upsert(orphan)
+    // Persist a manifest WITHOUT "worker" (reinstall dropped the service).
+    const result = await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true as const, sessionId: "sess_web", pid: 6 }),
+      killOwner: vi.fn(),
+    })
+    expect(result.removed).toEqual(["worker"])
+    expect(store.listForApp("@a/app").map(o => o.name)).toEqual(["web"])
+  })
+
+  it("purging kills the orphan even when its owner still looks alive", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const live: AppServiceOwner = {
+      appId: "@a/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_worker",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    }
+    store.upsert(live)
+    const killOwner = vi.fn()
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [], // manifest no longer declares ANY service
+      isOwnerAlive: () => true, // worker still looks alive
+      spawn: vi.fn(),
+      killOwner,
+    })
+    expect(killOwner).toHaveBeenCalledWith(live)
+    expect(store.listForApp("@a/app")).toEqual([])
+  })
+
+  it("warehouses other apps' owners untouched while reconciling", async () => {
+    const store = createAppServiceStore({ persist: false })
+    store.upsert({
+      appId: "@other/app",
+      name: "worker",
+      entry: "run worker",
+      sessionId: "sess_other",
+      pid: 5,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    })
+    const killOwner = vi.fn()
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true as const, sessionId: "sess_web", pid: 6 }),
+      killOwner,
+    })
+    expect(killOwner).not.toHaveBeenCalled()
+    expect(store.listForApp("@other/app")).toHaveLength(1)
+  })
+
+  it("serializes concurrent ensures for the same app — exactly one spawn", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const spawnCalls: string[] = []
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const spawn = vi.fn(async (service: { name: string }) => {
+      spawnCalls.push(service.name)
+      if (spawnCalls.length === 1) await gate
+      return { ok: true as const, sessionId: `sess_${service.name}`, pid: spawnCalls.length }
+    })
+    // Two ensures for the SAME app invoked concurrently: the second must not
+    // read the store before the first finished mutating it (would
+    // double-spawn "web" — the exact lost-update double-spawn of F-5).
+    const p1 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    const p2 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: owner => owner.sessionId === "sess_web",
+      spawn,
+      killOwner: () => {},
+    })
+    await new Promise(r => setTimeout(r, 10))
+    expect(spawnCalls).toEqual(["web"]) // p2 has NOT spawned while p1 hangs
+    release()
+    const [r1, r2] = await Promise.all([p1, p2])
+    expect(spawnCalls).toEqual(["web"]) // exactly ONE spawn across both calls
+    expect(r1.spawned).toHaveLength(1)
+    expect(r2.kept).toHaveLength(1) // the second call KEPT p1's owner
+    expect(r2.spawned).toEqual([])
+    expect(r2.removed).toEqual([])
+    expect(store.listForApp("@a/app")).toHaveLength(1)
+  })
+
+  it("does not serialize across DIFFERENT apps", async () => {
+    const store = createAppServiceStore({ persist: false })
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const spawn = vi.fn(async () => {
+      await gate
+      return { ok: true as const, sessionId: "sess_x", pid: 1 }
+    })
+    const p1 = ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    const p2 = ensureAppServiceOwners({
+      store,
+      appId: "@b/app",
+      services: [svc("web")],
+      isOwnerAlive: () => false,
+      spawn,
+      killOwner: () => {},
+    })
+    await new Promise(r => setTimeout(r, 10))
+    expect(spawn).toHaveBeenCalledTimes(2) // b did NOT wait on a's lock
+    release()
+    await Promise.all([p1, p2])
   })
 })
 
 describe("reensureAppServiceOwners (boot)", () => {
   const svc = (name: string) => ({ name, entry: `run ${name}` })
 
-  it("signals each pid-file pid, then force-replaces every owner (never keeps a live one)", async () => {
+  it("force-replaces every owner (never keeps a live one)", async () => {
     const store = createAppServiceStore({ persist: false })
     store.upsert({
       appId: "@a/app",
@@ -370,7 +562,6 @@ describe("reensureAppServiceOwners (boot)", () => {
       pid: 9,
       startedAt: "2026-01-01T00:00:00.000Z",
     })
-    const killedPids: (number | undefined)[] = []
     const killOwner = vi.fn()
     const spawn = vi.fn(async (s: { name: string }) => ({
       ok: true as const,
@@ -381,16 +572,9 @@ describe("reensureAppServiceOwners (boot)", () => {
       store,
       appId: "@a/app",
       services: [svc("web"), svc("worker")],
-      stateDir: "/state/app",
       spawn,
       killOwner,
-      readPidFile: pidFile => (pidFile.endsWith("web.pid") ? 777 : undefined),
-      killPid: pid => {
-        killedPids.push(pid)
-      },
     })
-    // The pid-file pid of `web` is signalled; `worker` had left none.
-    expect(killedPids).toEqual([777, undefined])
     // The pre-boot owner is killed even though a liveness check might call it
     // alive — force never keeps.
     expect(killOwner).toHaveBeenCalledWith(
@@ -403,16 +587,12 @@ describe("reensureAppServiceOwners (boot)", () => {
   })
 })
 
-describe("service-owner prompt / paths", () => {
-  it("names the entry and the pid file, and forbids extra processes", () => {
-    const pidFile = servicePidFilePath("/state/app", "web")
-    expect(pidFile).toBe("/state/app/services/web.pid")
-    const prompt = buildServiceOwnerPrompt({ name: "web", entry: "node server.js", port: 4321 }, pidFile)
-    expect(prompt).toContain('service owner for "web"')
-    expect(prompt).toContain("node server.js")
-    expect(prompt).toContain(pidFile)
-    expect(prompt).toContain("port 4321")
-    expect(prompt).toContain("Do not spawn any additional long-running processes")
+describe("serviceDisplayEntry / label", () => {
+  it("joins the structured command argv; passes legacy entry through", () => {
+    expect(serviceDisplayEntry({ name: "web", command: "node", args: ["server.js", "--port", "4321"] })).toBe(
+      "node server.js --port 4321",
+    )
+    expect(serviceDisplayEntry({ name: "web", entry: "node server.js" })).toBe("node server.js")
   })
 
   it("label encodes the app id and service name", () => {

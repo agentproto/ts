@@ -62,6 +62,7 @@ import {
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
+import { injectProviderKeysIntoEnv } from "./providers-store.js"
 import {
   createSessionMessage,
   messageFrom,
@@ -70,6 +71,8 @@ import {
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
+import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
@@ -271,8 +274,6 @@ import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-co
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
-import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
-import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -283,6 +284,7 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
+import { clerkHooksInputSchema } from "./clerk-hook-config.js"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import {
   deleteUserPreset,
@@ -1420,6 +1422,10 @@ export interface RuntimeHttpServerOptions {
      *  with the `daemon_health` MCP tool's field of the same name. */
     resumeSessionsOnBoot?: boolean
     bootResumePolicy?: "all" | "keepalive"
+    /** Effective `daemon.resumeServicesOnBoot` knob — app-service boot
+     *  re-ensure, default ON. Kept in sync with the `daemon_health` MCP
+     *  tool's field of the same name. */
+    resumeServicesOnBoot?: boolean
     /** Effective `daemon.continueInterruptedOnBoot` knob. Kept in sync with
      *  the `daemon_health` MCP tool's field of the same name. */
     continueInterruptedOnBoot?: boolean
@@ -2372,6 +2378,7 @@ export async function startHttpServer(
         resumeSessionsOnBoot: opts.meta.resumeSessionsOnBoot === true,
         memory: process.memoryUsage(),
         bootResumePolicy: opts.meta.bootResumePolicy ?? "all",
+        resumeServicesOnBoot: opts.meta.resumeServicesOnBoot !== false,
         continueInterruptedOnBoot: opts.meta.continueInterruptedOnBoot === true,
         idleReapAfterMs: opts.meta.idleReapAfterMs ?? 0,
         sandboxIdleReapAfterMs: opts.meta.sandboxIdleReapAfterMs ?? 0,
@@ -3213,6 +3220,7 @@ export async function startHttpServer(
             opts.listAgentAdapters,
             opts.deviceMirrorSync,
             opts.mcpObservations,
+            opts.cronScheduler,
             resolveCallerSessionId,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
           )
@@ -4026,6 +4034,33 @@ export async function startHttpServer(
           }
           res.writeHead(200, { "content-type": "application/json" })
           res.end(JSON.stringify(result))
+          return
+        }
+
+        // Hot-reload `providers.json` into the daemon's own env after
+        // `agentproto auth provider set`. A restart would pick the key up
+        // too, but it would also kill every live session — this mutates
+        // only env vars that are not already set (explicit env wins, same
+        // rule as boot) and never returns key material.
+        if (path === "/providers/reload" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          try {
+            const providers = await injectProviderKeysIntoEnv(process.env)
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ ok: true, providers }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "providers_reload_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
           return
         }
 
@@ -5685,6 +5720,13 @@ export function buildSpawnSessionHttpArgs(
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
       : undefined
   const deferredTools = parseBooleanField(b.deferredTools)
+  // Agent-level clerk hook — the HTTP twin of `agent_start.hooks`. Without
+  // this mapping a Pygmalion spawn through `POST /sessions/agent` silently
+  // dropped the manifest's `metadata.hooks.clerk` (the MCP path forwarded it).
+  const hooks =
+    b.hooks !== undefined
+      ? parseWithJsonTolerance(clerkHooksInputSchema, b.hooks)
+      : undefined
   const attach =
     b.attach !== undefined ? parseWithJsonTolerance(attachFieldSchema, b.attach) : undefined
   const notifyUrl = parseNotifyUrlField(b.notifyUrl)
@@ -5697,6 +5739,7 @@ export function buildSpawnSessionHttpArgs(
     | "daemonMount"
     | "contextContinuity"
     | "deferredTools"
+    | "hooks"
     | "attach"
     | "notifyUrl"
     | "notifySecret"
@@ -5707,6 +5750,7 @@ export function buildSpawnSessionHttpArgs(
     ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
+    ...(hooks !== undefined ? { hooks } : {}),
     ...(attach !== undefined ? { attach } : {}),
     ...(notifyUrl !== undefined ? { notifyUrl } : {}),
     ...(notifySecret !== undefined ? { notifySecret } : {}),
@@ -6655,6 +6699,10 @@ async function handleSessions(
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
   mcpObservations?: McpObservationStore,
+  // The daemon's cron scheduler: `POST /sessions/:id/restart` re-arms the
+  // `prompt-session` jobs that targeted the restarted session (the restart
+  // continues the conversation under a NEW id). Absent ⇒ no re-arm.
+  cronScheduler?: import("./cron-scheduler.js").CronScheduler,
   // The caller identity resolver `/mcp` uses (`?callerSessionId=` query,
   // else the trusted `x-agentproto-caller-session-id` header). Absent ⇒
   // the query only.
@@ -7675,9 +7723,16 @@ code { color: #9ad; }
       json(404, { error: "no_such_caller", callerSessionId: callerId })
       return true
     }
+    // Same ACL decision as the `message_send` tool (siblings,
+    // same-workspace, peer groups) - read fresh from config per request.
     const messaging = await messagingDefaultsFor()
     const policy: PermissionContext = {
-      messaging: { allowSiblings: messaging.allowSiblings, agentInterrupt: messaging.agentInterrupt },
+      messaging: {
+        allowSiblings: messaging.allowSiblings,
+        allowSameWorkspace: messaging.allowSameWorkspace,
+        peerGroups: messaging.peerGroups,
+        agentInterrupt: messaging.agentInterrupt,
+      },
     }
     const principal: Principal = sender
       ? { kind: "session", session: sender }
@@ -8334,12 +8389,22 @@ code { color: #9ad; }
         ...(listCatalogModels ? { listCatalogModels } : {}),
         ...(daemonMcpUrl ? { daemonMcpUrl } : {}),
       })
+      // Cron re-arm: the restart retired `prev` and continued the same
+      // conversation under `restarted.desc.id`. A `prompt-session` cron job
+      // that named the OLD id would fail its next tick with "session not
+      // found", so its target moves to the successor id (persisted with the
+      // job file). Agent-label targets are resolved at fire time and need
+      // no re-arm.
+      const rearmedCrons = cronScheduler
+        ? cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+        : []
       json(200, {
         ...sessionDescriptorForHttp(restarted.desc),
         resumedFrom: restarted.resumedFrom,
         resumeVia: restarted.resumeVia,
         ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
         ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
+        ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
       })
     } catch (err) {
       // A coded failure goes out as `{error:{code,reason,action,message},

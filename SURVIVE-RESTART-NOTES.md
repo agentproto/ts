@@ -129,3 +129,32 @@ Verified 2026-10-18: renewal is ALREADY in place, no change needed.
 
 Integration proof of the whole restart chain on the fake provider lives in
 `packages/runtime/src/__tests__/sandbox-restart-integration.test.ts`.
+
+## App services: boot re-ensure own knob (`daemon.resumeServicesOnBoot`)
+
+The boot re-ensure of app-service owners (`gateway.reensureAppServicesOnBoot()`)
+was initially gated behind `daemon.resumeSessionsOnBoot` — the wrong knob:
+that one is opt-in (default OFF) because eagerly re-spawning every agent
+adapter after a restart is a cost/spawn-storm tradeoff (`"Opt-in vs
+automatic"`, §5 PR-4). App services are deterministic processes (no agent
+CLI, no credential re-resolution, no per-token cost), so a daemon restart
+silently leaving an installed app's services down was the outcome whenever
+the (unrelated) sessions knob stayed off.
+
+Decoupled: the re-ensure now has its OWN knob.
+
+- `daemon.resumeServicesOnBoot` — **default ON**. Only an explicit `false`
+  disables the boot pass (via `agentproto config set daemon.resumeServicesOnBoot false`).
+  The `resumeSessionsOnBoot`/`continueInterruptedOnBoot` knobs keep their
+  meaning and their default-off untouched.
+- `reensureAppServicesOnBoot()` short-circuits to `{ enabled: false, ... }`
+  when the knob is explicitly false; otherwise it force-replaces every
+  recorded owner (previous daemon's children are dead), unconditionally —
+  liveness is not consulted for the boot pass.
+- serve.ts calls it strictly AFTER the resume/sandbox passes so it never
+  races them for an owner session id; best-effort, never gates boot-up.
+- Effective value surfaced in `daemon_health` / `GET /health` as
+  `resumeServicesOnBoot`.
+- Tests: `packages/runtime/src/__tests__/app-services-boot-gate.test.ts`
+  (on by default, off with explicit false, off-value does not disable the
+  eager resume pass; the knob does not disable it).

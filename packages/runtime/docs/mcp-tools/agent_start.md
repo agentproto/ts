@@ -628,8 +628,19 @@ CLI, UI) can compact. Default off.
 `autoCompactAtTokens` is the ABSOLUTE counterpart of the percent thresholds
 above: when an idle session's context reaches this many tokens, the runtime
 compacts it at the turn boundary (checkpoint first, then `/compact`, the
-same path `session_compact` uses) and, when a mission is in progress, injects a
-short resume prompt that cites the path of the full transcript. It is
+same path `session_compact` uses). A short resume prompt follows ONLY when
+the session really had work in progress when it was compacted (a background
+task outstanding, a tool call still unanswered or a parked permission
+request, an unanswered prompt, or a last turn that ended on an error, a
+cancellation or an interruption); an idle session that was simply done gets
+its context freed and nothing else. The session title and the checkpoint's
+goal are never the trigger (the goal falls back to the title, so a
+goal-based rule fired on essentially every session). The compaction carries
+the path of the full transcript and a reminder that `transcript_search` /
+`transcript_read` exist, so the session can look up anything the summary
+dropped: on the compact command itself for a harness whose command takes an
+argument (claude-code), otherwise as a one-line note riding along with the
+next prompt the session receives (never a turn of its own). It is
 window-independent: the percent ladder never fires on a 1M-token window (558k
 of 1M is "55% full", the warn band), so a long session grew without ever
 compacting. Default 150000, clamped to 200000 max, `0` disables. The
@@ -703,9 +714,13 @@ Resolution order (first with an opinion wins): this field > the mount's own
 `?deferred=1|0` (caller-supplied `mcpServers` entries) > a harness that
 defers MCP tools natively (manifest `capabilities.nativeToolSearch`, today
 claude-code ⇒ eager, so the daemon doesn't stack a second deferral layer on
-top of the harness's own `ToolSearch`) > the resolved role's default
-('executor' defaults ON, 'supervisor' has no opinion) > the daemon's
-boot-time `defaults.mcp.deferredTools` config.
+top of the harness's own `ToolSearch`) > a harness that cannot drive
+deferred discovery (manifest `capabilities.deferredToolDiscovery`
+absent/false — every adapter today ⇒ eager: it validates tool calls
+against its own last `tools/list`, so a hidden tool is rejected
+client-side before the call reaches the gateway) > the resolved role's
+default ('executor' defaults ON, 'supervisor' has no opinion) > the
+daemon's boot-time `defaults.mcp.deferredTools` config.
 
 ## browser
 
@@ -875,3 +890,38 @@ changing this only affects a FUTURE checkpoint), `minIntervalMs` /
 `intervalMs` (periodic checkpoint spacing — `intervalMs` wins when both
 are set; `0` disables the timer AND the turn-end hook even when
 `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs` (per-checkpoint wall-clock budget).
+
+## full
+
+Response-shape switch, it changes NOTHING about the spawn, only about what
+the answer carries.
+
+By DEFAULT `agent_start` answers with the COMPACT projection: the session's
+identity/routing fields (id, slug/name/label, status, cwd, adapter, model,
+mode, posture, parent, depth, timestamps…) plus COUNTERS for the bulky
+fields (`availableCommandsCount`, `availableModesCount`,
+`configOptionsCount`, `mcpServerCount`, `skillsCount`) and a
+`commandsRef` pointing at the `session_commands` tool that serves the
+slash-command list page by page.
+
+`full: true` restores the RAW descriptor, every field, byte for byte the
+pre-projection answer, including the heavy ones (`availableCommands`,
+`availableModes`, `configOptions`, the full `mcpServers` specs and
+`appendSystemPrompt`, i.e. the AGENTS.md body). Use it when you really need
+one of those fields; the answer is then as big as it always was (~29 KB on
+a session with 60 commands and an AGENTS.md).
+
+The same precedent as `session_list` / `adapter_list`: the list surfaces
+are compact by default with a `full:true` escape hatch.
+
+## fields
+
+Response-shape switch, an explicit allowlist of the fields the answer
+carries (`["id", "model", …]`). `id` is always kept, whatever the list says.
+
+The named fields are served from the RAW descriptor, so asking for a heavy
+field on purpose (`fields: ["availableCommands"]`) works; the compact
+counters stay available too. Every other field is dropped from the answer.
+
+Same convention as `?fields=` on the HTTP session routes
+(`GET /sessions/:id`).

@@ -4,9 +4,9 @@
  * (force-replacing owners) is covered at the lower layers
  * (app-services.test.ts's `reensureAppServiceOwners`,
  * app-services-launcher.test.ts's `reensureInstalledAppServicesOnBoot`); this
- * file is only about the wrapper's own `daemon.resumeSessionsOnBoot` gate —
- * the same opt-in knob `resumeSessionsOnBoot()` / `continueInterruptedOnBoot()`
- * short-circuit on.
+ * file is only about the wrapper's own `daemon.resumeServicesOnBoot` gate —
+ * its OWN knob, default ON (audit F-11: decoupled from the unrelated
+ * `daemon.resumeSessionsOnBoot` opt-in, which governs agent adapters).
  */
 
 import { describe, it, expect, afterEach } from "vitest"
@@ -29,7 +29,7 @@ async function freePort(): Promise<number> {
   })
 }
 
-describe("GatewayHandle.reensureAppServicesOnBoot — resumeSessionsOnBoot gate", () => {
+describe("GatewayHandle.reensureAppServicesOnBoot — resumeServicesOnBoot gate", () => {
   const dirs: string[] = []
   const gateways: GatewayHandle[] = []
 
@@ -38,7 +38,7 @@ describe("GatewayHandle.reensureAppServicesOnBoot — resumeSessionsOnBoot gate"
     for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true })
   })
 
-  async function bootGateway(resumeSessionsOnBoot: boolean): Promise<GatewayHandle> {
+  async function bootGateway(opts: { resumeSessionsOnBoot?: boolean; resumeServicesOnBoot?: boolean }): Promise<GatewayHandle> {
     const workspace = await mkdtemp(join(tmpdir(), "agentproto-app-services-boot-gate-ws-"))
     const home = await mkdtemp(join(tmpdir(), "agentproto-app-services-boot-gate-home-"))
     dirs.push(workspace, home)
@@ -49,14 +49,29 @@ describe("GatewayHandle.reensureAppServicesOnBoot — resumeSessionsOnBoot gate"
       boot: false,
       persist: false,
       persistPath: join(home, "sessions.json"),
-      resumeSessionsOnBoot,
+      ...opts,
     })
     gateways.push(gateway)
     return gateway
   }
 
-  it("daemon.resumeSessionsOnBoot off — short-circuits to enabled:false, no app scan", async () => {
-    const gateway = await bootGateway(false)
+  it("default — enabled: services re-ensure WITHOUT any resumeSessionsOnBoot opt-in", async () => {
+    const gateway = await bootGateway({})
+    expect(await gateway.reensureAppServicesOnBoot()).toEqual({
+      enabled: true,
+      apps: 0,
+      spawned: 0,
+      errors: [],
+    })
+    // The decoupling is the point: the resume passes stay OFF (their own
+    // default) while services re-ensure regardless.
+    expect(await gateway.resumeSessionsOnBoot()).toEqual(
+      expect.objectContaining({ enabled: false }),
+    )
+  })
+
+  it("resumeServicesOnBoot off — short-circuits to enabled:false, no app scan", async () => {
+    const gateway = await bootGateway({ resumeServicesOnBoot: false })
     expect(await gateway.reensureAppServicesOnBoot()).toEqual({
       enabled: false,
       apps: 0,
@@ -65,13 +80,20 @@ describe("GatewayHandle.reensureAppServicesOnBoot — resumeSessionsOnBoot gate"
     })
   })
 
-  it("daemon.resumeSessionsOnBoot on, no installed apps — enabled:true, nothing to re-ensure", async () => {
-    const gateway = await bootGateway(true)
-    expect(await gateway.reensureAppServicesOnBoot()).toEqual({
-      enabled: true,
-      apps: 0,
-      spawned: 0,
-      errors: [],
-    })
+  it("resumeServicesOnBoot off while resumeSessionsOnBoot on — both knobs respected", async () => {
+    const gateway = await bootGateway({ resumeSessionsOnBoot: true, resumeServicesOnBoot: false })
+    expect(await gateway.reensureAppServicesOnBoot()).toEqual(
+      expect.objectContaining({ enabled: false }),
+    )
+    expect(await gateway.resumeSessionsOnBoot()).toEqual(
+      expect.objectContaining({ enabled: true }),
+    )
+  })
+
+  it("resumeSessionsOnBoot off does NOT disable services (the decoupling)", async () => {
+    const gateway = await bootGateway({ resumeSessionsOnBoot: false })
+    expect(await gateway.reensureAppServicesOnBoot()).toEqual(
+      expect.objectContaining({ enabled: true }),
+    )
   })
 })

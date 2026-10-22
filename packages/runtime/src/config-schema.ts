@@ -166,6 +166,8 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     messaging: z
       .object({
         allowSiblings: z.boolean().optional(),
+        allowSameWorkspace: z.boolean().optional(),
+        peerGroups: z.array(z.array(z.string().min(1))).optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
       })
@@ -188,6 +190,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     authToken: z.string().optional(),
     resumeSessionsOnBoot: z.boolean().optional(),
     bootResumePolicy: z.enum(["all", "keepalive"]).optional(),
+    resumeServicesOnBoot: z.boolean().optional(),
     continueInterruptedOnBoot: z.boolean().optional(),
     idleReapAfterMs: z.number().optional(),
     sandboxIdleReapAfterMs: z.number().optional(),
@@ -485,6 +488,10 @@ const bool = z.boolean()
 const str = z.string()
 const num = z.number()
 const strArray = z.array(z.string())
+/** `defaults.messaging.peerGroups` - groups of workspace slugs. Every slug
+ *  must be a non-empty string (an empty slug would never match a session's
+ *  workspace and only widens the config's surface). */
+const peerGroupsSchema = z.array(z.array(z.string().min(1)))
 
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   // ── daemon ──
@@ -594,6 +601,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Boot resume policy",
     help: "When resumeSessionsOnBoot is enabled, restore all eligible sessions or only sessions with keepAlive set. Other sessions remain resumable on their next prompt.",
     default: "all",
+  },
+  {
+    path: "daemon.resumeServicesOnBoot",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Re-ensure app services on boot",
+    help: "Re-ensure every installed app's service owners when the daemon restarts. Default ON (services are deterministic processes). Set false to keep services down until the next reinstall or prompt.",
+    default: true,
   },
   {
     path: "daemon.continueInterruptedOnBoot",
@@ -1201,6 +1218,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Allow sibling messaging",
     help: "Let message_send/message_reply reach a sibling session (same parent). Takes effect on the next call.",
     default: false,
+  },
+  {
+    path: "defaults.messaging.allowSameWorkspace",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Allow same-workspace messaging",
+    help: "Let message_send/message_reply reach any session of the same workspace, even without a tree edge. Takes effect on the next call.",
+    default: true,
+  },
+  {
+    path: "defaults.messaging.peerGroups",
+    schema: peerGroupsSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Messaging peer groups",
+    help: "Groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the same group (e.g. [[\"agentik-studio\",\"app-agentik-pygmalion\"]]). Empty (the default) = no cross-workspace link. Independent of allowSameWorkspace. Takes effect on the next call.",
+    default: [],
   },
   {
     path: "defaults.messaging.agentInterrupt",

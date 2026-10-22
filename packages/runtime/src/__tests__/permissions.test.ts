@@ -220,7 +220,9 @@ describe("the sendMessage sink checks the decision it is handed", () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     try {
       const p = registry.spawnAgent({ workspaceSlug: "w", cwd: "/tmp", agentSession: idle("p"), adapterSlug: "fake" })
-      const s = registry.spawnAgent({ workspaceSlug: "w", cwd: "/tmp", agentSession: idle("s"), adapterSlug: "fake" })
+      // Another workspace: same-workspace peers are allowed by default, and
+      // this test needs a decision that is genuinely denied.
+      const s = registry.spawnAgent({ workspaceSlug: "other", cwd: "/tmp", agentSession: idle("s"), adapterSlug: "fake" })
       const msg = createSessionMessage({ to: p.id, from: { relation: "human" }, text: "x", urgency: "fyi" })
 
       const deny = decide(as(s), "session.message", to(p))

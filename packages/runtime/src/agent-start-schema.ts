@@ -478,6 +478,24 @@ export const agentStartInputShape = {
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
     .describe(`Per-spawn sandbox checkpoint override: false disables, or an object. ${help("sandboxCheckpoint")}`),
+  resumeFrom: jsonTolerant(
+    opaque(
+      z
+        .object({
+          sessionId: z.string().min(1).optional(),
+          label: z.string().min(1).optional(),
+          taskId: z.string().min(1).optional(),
+        })
+        .strict(),
+    ),
+  )
+    .optional()
+    .describe(
+      `Resume the work of a DEAD session: its last checkpoint is restored onto this spawn's checkout ` +
+        `(\`git restore --source=<ref>\`) and its work branch is reused. \`sessionId\` names the session ` +
+        `explicitly, \`label\`/\`taskId\` correlate with the dead sessions carrying that label. A live session ` +
+        `is never resumed.`,
+    ),
   cloud: z
     .string()
     .min(1)
@@ -554,6 +572,28 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       "Internal: reattach to a prior adapter conversation. Not for tool callers."
+    ),
+  // ── RESPONSE-SHAPE switches (they change NOTHING about the spawn) ──
+  // `agent_start` answers with the session's descriptor. By DEFAULT it
+  // answers with the COMPACT projection (identity/routing + counters) -
+  // the bulky fields (availableCommands, availableModes, configOptions,
+  // mcpServers, appendSystemPrompt, …) stay behind `full: true`. Same
+  // precedent as `session_list` / `adapter_list`.
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      `Return the FULL raw descriptor instead of the compact projection, ` +
+        `every field, including the bulky ones (availableCommands, ` +
+        `availableModes, configOptions, mcpServers, appendSystemPrompt). ` +
+        `${help("full")}`
+    ),
+  fields: z
+    .array(z.string())
+    .optional()
+    .describe(
+      `Keep only these fields in the response (allowlist); \`id\` is always kept. ` +
+        `Overrides the default projection for the named fields. ${help("fields")}`
     ),
 }
 

@@ -94,6 +94,13 @@ import {
   hasProviderCatalog,
   refreshProviderCatalog,
 } from "../provider-catalog.js"
+import { resolveAdapter } from "../registry/resolve.js"
+import { CATALOG } from "../registry/catalog.js"
+import {
+  loadAgentprotoConfig,
+  setAdapterAuthMode,
+} from "../util/agentproto-config.js"
+import { discoverDaemon } from "./_daemon-helpers.js"
 
 export async function runAuth(args: readonly string[]): Promise<number> {
   const sub = args[0]
@@ -185,6 +192,7 @@ Examples:
 
   agentproto auth provider set anthropic sk-ant-…
   agentproto auth provider set openrouter sk-or-… --base-url https://…
+  agentproto auth provider set anthropic sk-ant-… --adapter claude-code
   agentproto auth provider list [--json]
   agentproto auth provider rm openai
 
@@ -207,8 +215,15 @@ reach the provider. Explicit env (FOO_API_KEY=… serve) always wins.
 
 Usage:
   agentproto auth provider set <provider> <api-key> [--base-url <url>]
+                             [--adapter <slug>...]
   agentproto auth provider list [--json]
   agentproto auth provider rm  <provider>
+
+\`set\` also opts the matching adapter(s) into api-key billing (writes
+\`defaults.adapters.<slug>.auth.mode\`) and asks a running daemon to reload the
+provider store, so no manual JSON edit or daemon restart is required. Without
+--adapter, enabled adapters whose declared provider matches are updated, plus
+the canonical adapter for anthropic/openai/google/xai.
 
 Known providers (env var): ${Object.entries(PROVIDER_ENV_VARS)
   .map(([p, e]) => {
@@ -254,7 +269,10 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     args: [...args],
     strict: true,
     allowPositionals: true,
-    options: { "base-url": { type: "string" } },
+    options: {
+      "base-url": { type: "string" },
+      adapter: { type: "string", multiple: true },
+    },
   })
   const [provider, apiKey] = positionals
   if (!provider || !apiKey) {
@@ -270,9 +288,46 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
       (aliases.length
         ? `  also injected as ${aliases.join(", ")} (alias some consumers read)\n`
         : "") +
-      `  saved to ${providersPath()} (mode 0600)\n` +
-      `  the daemon injects it at \`serve\` boot; restart a running daemon to pick it up.\n`,
+      `  saved to ${providersPath()} (mode 0600)\n`,
   )
+
+  const explicit = [
+    ...new Set(
+      (values.adapter ?? [])
+        .flatMap(value => value.split(","))
+        .map(value => value.trim())
+        .filter(Boolean)
+        .map(value => catalogSlugForAdapterId(value) ?? value),
+    ),
+  ]
+  const slugs = await adapterSlugsForProvider(provider, explicit)
+  if (slugs.length > 0) {
+    const changed: string[] = []
+    const kept: string[] = []
+    for (const slug of slugs) {
+      // Only fill a MISSING block: an explicit subscription choice must
+      // never be silently flipped to api-key (money-safety — same rule the
+      // runtime's auth resolver enforces).
+      if (await setAdapterAuthMode(slug, "api-key", { onlyIfMissing: true })) {
+        changed.push(slug)
+      } else {
+        kept.push(slug)
+      }
+    }
+    if (changed.length > 0) {
+      process.stdout.write(
+        `  ✓ api-key auth enabled for ${changed.join(", ")} ` +
+          `(defaults.adapters.<slug>.auth.mode)\n`,
+      )
+    }
+    if (kept.length > 0) {
+      process.stdout.write(
+        `  kept the existing auth mode for ${kept.join(", ")} ` +
+          `(delete its defaults.adapters.<slug>.auth block to switch)\n`,
+      )
+    }
+  }
+  await reportDaemonReload("the key is stored and loads at next `serve`")
 
   // Eager live-on-setup catalog fetch: if this provider exposes an
   // account-specific catalog (voices), pull it now so the overlay is ready at
@@ -300,6 +355,127 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
     }
   }
   return 0
+}
+
+/** Canonical adapter(s) for a provider when nothing is enabled yet. Kept
+ *  deliberately small: only adapters whose provider is FIXED (not a
+ *  by-model router, where guessing would pick the wrong wallet). */
+const PROVIDER_DEFAULT_ADAPTERS: Readonly<Record<string, readonly string[]>> =
+  {
+    anthropic: ["claude-code"],
+    openai: ["codex"],
+    google: ["gemini"],
+    xai: ["grok-cli"],
+  }
+
+/** `@agentproto/adapter-<slug>`, a bare slug, or a catalog package id →
+ *  slug. A scoped `@agentproto/adapter-<slug>` id maps to its `<slug>`; any
+ *  other scoped/path-like id returns undefined (never a guessed slug). */
+function catalogSlugForAdapterId(id: string): string | undefined {
+  const entry = CATALOG.find(e => e.packageName === id)
+  if (entry) return entry.slug
+  const scoped = /^@agentproto\/adapter-(.+)$/.exec(id)
+  if (scoped?.[1]) return scoped[1]
+  if (!id.startsWith("@") && !id.includes("/")) return id
+  return undefined
+}
+
+/**
+ * Which adapters should receive the api-key auth block.
+ *
+ * Explicit `--adapter` slugs are always honored. Otherwise we look at the
+ * adapters already enabled in config, resolve each, and keep the ones whose
+ * declared `provider` matches. If that yields nothing (fresh machine, auth
+ * before install), fall back to the canonical adapter map above.
+ */
+async function adapterSlugsForProvider(
+  provider: string,
+  explicit: readonly string[],
+): Promise<string[]> {
+  const explicitSet = new Set(explicit)
+  const candidates = new Set(explicitSet)
+  const cfg = await loadAgentprotoConfig()
+  for (const id of cfg.adapters ?? []) {
+    const slug = catalogSlugForAdapterId(id)
+    if (slug) candidates.add(slug)
+  }
+
+  const matched: string[] = []
+  for (const slug of candidates) {
+    if (explicitSet.has(slug)) {
+      matched.push(slug)
+      continue
+    }
+    try {
+      const adapter = await resolveAdapter(slug)
+      if (adapter.handle.provider === provider) matched.push(slug)
+    } catch {
+      // Not installed / no manifest yet — the config entry alone is not
+      // enough evidence to write an auth block for it.
+    }
+  }
+  if (matched.length === 0 && explicitSet.size === 0) {
+    matched.push(...(PROVIDER_DEFAULT_ADAPTERS[provider] ?? []))
+  }
+  return matched
+}
+
+/** Reload the running daemon's provider env and print the outcome. */
+async function reportDaemonReload(fallback: string): Promise<void> {
+  const reload = await reloadDaemonProviders()
+  if (reload.status === "reloaded") {
+    process.stdout.write(
+      `  ✓ daemon reloaded — ${reload.providers.length} provider key(s) live\n`,
+    )
+  } else if (reload.status === "failed") {
+    process.stdout.write(
+      `  ⚠ daemon reload failed (${reload.detail}); ${fallback}.\n`,
+    )
+  } else {
+    process.stdout.write(`  daemon not running — ${fallback}.\n`)
+  }
+}
+
+type ProviderReloadResult =
+  | { status: "reloaded"; providers: string[] }
+  | { status: "not-running" }
+  | { status: "failed"; detail: string }
+
+/** Ask the running daemon to re-run `injectProviderKeysIntoEnv` in its own
+ *  process. A hot reload, not a restart: live sessions are untouched. */
+async function reloadDaemonProviders(): Promise<ProviderReloadResult> {
+  let endpoint
+  try {
+    endpoint = (await discoverDaemon()).found
+  } catch (err) {
+    return {
+      status: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
+  if (!endpoint) return { status: "not-running" }
+  const headers: Record<string, string> = {}
+  if (endpoint.token) headers.authorization = `Bearer ${endpoint.token}`
+  try {
+    const res = await fetch(`${endpoint.url}/providers/reload`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(2000),
+    })
+    if (!res.ok) return { status: "failed", detail: `HTTP ${res.status}` }
+    const body = (await res.json().catch(() => ({}))) as { providers?: unknown }
+    return {
+      status: "reloaded",
+      providers: Array.isArray(body.providers)
+        ? body.providers.filter((p): p is string => typeof p === "string")
+        : [],
+    }
+  } catch (err) {
+    return {
+      status: "failed",
+      detail: err instanceof Error ? err.message : String(err),
+    }
+  }
 }
 
 async function runProviderList(args: readonly string[]): Promise<number> {
@@ -361,6 +537,9 @@ async function runProviderRm(args: readonly string[]): Promise<number> {
       ? `agentproto auth: ✓ removed ${provider} key\n`
       : `agentproto auth: no stored key for ${provider}\n`,
   )
+  if (existed) {
+    await reportDaemonReload("the removal takes effect at next `serve`")
+  }
   return 0
 }
 

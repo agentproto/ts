@@ -29,6 +29,8 @@
  */
 
 import {
+  samePeerGroup,
+  sameWorkspace,
   type MessageRelation,
   type MessageTreeNode,
 } from "./session-message.js"
@@ -197,6 +199,12 @@ export interface PermissionContext {
   /** `defaults.messaging.*`, resolved per call (messaging-defaults.ts). */
   messaging?: {
     allowSiblings?: boolean
+    /** `defaults.messaging.allowSameWorkspace` (default ON): two sessions of
+     *  the same workspace may message each other without a tree edge. */
+    allowSameWorkspace?: boolean
+    /** `defaults.messaging.peerGroups`: workspace families linked regardless
+     *  of `allowSameWorkspace`. */
+    peerGroups?: readonly (readonly string[])[]
     agentInterrupt?: "allow" | "deny"
   }
   /** Registry lookups for the drive gate's ancestor and `label:` rules. */
@@ -237,7 +245,7 @@ function mint(body: DecisionBody): Decision {
 // ── Messaging relations ────────────────────────────────────────────────
 
 /** Strongest first. Also the order `resolveRelation` used to test them. */
-const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "human", "system"]
+const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "peer", "human", "system"]
 
 /**
  * Every relation that holds between the principal (as a sender) and the
@@ -248,6 +256,7 @@ const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibli
 export function collectMessageRelations(
   principal: Principal,
   recipient: MessageTreeNode,
+  ctx: PermissionContext = {},
 ): MessageRelation[] {
   switch (principal.kind) {
     case "operator":
@@ -262,8 +271,20 @@ export function collectMessageRelations(
       const out: MessageRelation[] = []
       if (recipient.parentSessionId === sender.id) out.push("parent")
       if (sender.parentSessionId === recipient.id) out.push("child")
-      if (sender.parentSessionId && sender.parentSessionId === recipient.parentSessionId) {
-        out.push("sibling")
+      const sibling =
+        !!sender.parentSessionId && sender.parentSessionId === recipient.parentSessionId
+      if (sibling) out.push("sibling")
+      // No tree edge: same-workspace (unless turned off) or a peer group.
+      // A DENIED sibling edge may still be overridden by an explicit peer
+      // group, but never by the same-workspace convenience — the tree edge
+      // decides first (see `resolveMessageAcl` in session-message.ts).
+      const peerGroup = samePeerGroup(sender, recipient, ctx.messaging?.peerGroups)
+      if (out.length === 0) {
+        if (peerGroup || (sameWorkspace(sender, recipient) && ctx.messaging?.allowSameWorkspace !== false)) {
+          out.push("peer")
+        }
+      } else if (sibling && peerGroup) {
+        out.push("peer")
       }
       return out
     }
@@ -290,6 +311,11 @@ function relationGrant(
       return { allow: true, rule: "system" }
     case "sibling":
       return { allow: ctx.messaging?.allowSiblings === true, rule: "messaging.allowSiblings" }
+    case "peer":
+      // `collectMessageRelations` only reports `peer` when the link is
+      // allowed (same workspace with the allowance on, or a peer group), so
+      // the grant is already established.
+      return { allow: true, rule: "messaging.peer" }
   }
 }
 
@@ -298,7 +324,7 @@ function decideMessage(
   recipient: MessageTreeNode,
   ctx: PermissionContext,
 ): Decision {
-  const relations = collectMessageRelations(principal, recipient)
+  const relations = collectMessageRelations(principal, recipient, ctx)
   const base = { action: "session.message" as const, authoritative: true, resourceId: recipient.id, relations }
   if (principal.kind === "session" && principal.session.id === recipient.id) {
     return mint({ ...base, allow: false, rule: "self", reason: "a session cannot message itself" })
@@ -328,7 +354,9 @@ function decideMessage(
             ? principal.kind === "operator" && principal.via === "anonymous-local"
               ? "a local caller with no session identity acts as the operator"
               : "the operator may message any session"
-            : `sender is the recipient's ${hit.r}`,
+            : hit.r === "peer"
+              ? "sender shares the recipient's workspace or peer group"
+              : `sender is the recipient's ${hit.r}`,
     })
   }
   const held = strongest(relations)

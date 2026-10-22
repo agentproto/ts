@@ -246,6 +246,26 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("buildSpawnSessionHttpArgs forwards `hooks` (agent-level clerk hook) exactly like agent_start", () => {
+    const hooks = {
+      clerk: {
+        enabled: true,
+        on: "turn_end",
+        debounceMs: 30_000,
+        run: {
+          command: "node",
+          args: ["projects/pygmalion/scripts/clerk-task-secretary.mjs", "--board", "ws:simone"],
+        },
+      },
+    }
+    expect(buildSpawnSessionHttpArgs({ hooks }, "mock").hooks).toEqual(hooks)
+    // A JSON-stringified body field (form-ish callers) is tolerated too.
+    expect(buildSpawnSessionHttpArgs({ hooks: JSON.stringify(hooks) }, "mock").hooks).toEqual(hooks)
+    // Malformed hooks are dropped, never half-applied.
+    expect(buildSpawnSessionHttpArgs({ hooks: { clerk: { on: "not-an-event" } } }, "mock")).not.toHaveProperty("hooks")
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("hooks")
+  })
+
   it("buildSpawnSessionHttpArgs forwards `browser` (true is sugar for headless; junk dropped)", () => {
     expect(buildSpawnSessionHttpArgs({ browser: "headless" }, "mock").browser).toBe("headless")
     expect(buildSpawnSessionHttpArgs({ browser: true }, "mock").browser).toBe("headless")
@@ -296,6 +316,50 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
       const lastArg = spawnSpy.mock.calls[spawnSpy.mock.calls.length - 1]?.[0]
       expect(lastArg).toBeDefined()
       expect("trace" in (lastArg as object)).toBe(false)
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("POST /sessions/agent forwards hooks (the clerk hook) to the spawned session", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const spawnSpy = vi.spyOn(registry, "spawnAgent")
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const hooks = {
+        clerk: {
+          enabled: true,
+          on: "turn_end",
+          debounceMs: 30_000,
+          run: { command: "node", args: ["secretary.mjs", "--board", "ws:simone"] },
+        },
+      }
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", hooks }),
+      })
+      expect(res.status).toBe(201)
+      expect(spawnSpy).toHaveBeenLastCalledWith(
+        expect.objectContaining({ clerkHook: hooks.clerk }),
+      )
     } finally {
       await http.stop()
     }

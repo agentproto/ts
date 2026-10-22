@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { checkAnthropicPricingUsable, parseAnthropicPricingPage } from "../sources/anthropic-pricing-page.mjs"
 import { checkKimiPricingUsable, parseKimiPricingPage } from "../sources/kimi-pricing-page.mjs"
 import { checkMiniMaxPricingUsable, parseMiniMaxPricingPage } from "../sources/minimax-pricing-page.mjs"
+import { parseModelsDevProviderPricing } from "../sources/models-dev-pricing.mjs"
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures")
 // Verbatim `.md` renderings fetched 2026-10-08 (Anthropic: the page head
@@ -130,5 +131,36 @@ describe("parseMiniMaxPricingPage (legacy page with cache-write column)", () => 
 
   it("rejects a page without an LLM table", () => {
     expect(checkMiniMaxPricingUsable(parseMiniMaxPricingPage("# Pay as You Go\n\n## Audio"))).toMatch(/no priced rows/)
+  })
+})
+
+describe("parseModelsDevProviderPricing", () => {
+  const payload = {
+    moonshotai: {
+      models: {
+        "kimi-k3": { cost: { input: 3, output: 15, cache_read: 0.3, cache_write: 3 } },
+        "kimi-k2.7-code": { cost: { input: 0.95, output: 4, cache_read: 0.19 } },
+        "no-cost": { name: "No cost published" },
+      },
+    },
+    openrouter: { models: { "kimi-k3": { cost: { input: 0.239, output: 11.936 } } } },
+  }
+
+  it("reads the named provider's own rates with cache ratios", () => {
+    const prices = parseModelsDevProviderPricing(payload, "moonshotai")
+    expect(prices.get("kimi-k3")).toEqual({
+      inputPer1M: 3,
+      outputPer1M: 15,
+      cacheReadMultiplier: 0.1,
+      cacheWriteMultiplier: 1,
+    })
+    expect(prices.get("kimi-k2.7-code")).toEqual({ inputPer1M: 0.95, outputPer1M: 4, cacheReadMultiplier: 0.2 })
+    expect(prices.has("no-cost")).toBe(false)
+    expect(checkKimiPricingUsable(prices)).toBeNull()
+  })
+
+  it("never borrows another provider's rows", () => {
+    expect([...parseModelsDevProviderPricing(payload, "openrouter").keys()]).toEqual(["kimi-k3"])
+    expect(parseModelsDevProviderPricing(payload, "missing").size).toBe(0)
   })
 })

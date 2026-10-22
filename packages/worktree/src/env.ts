@@ -188,3 +188,71 @@ export function resolveWorktreesTurboCacheDir(): string {
   if (ambient) return ambient
   return join(homedir(), ".agentproto", "turbo-cache")
 }
+
+/** Explicit override for {@link resolveWorktreesTurboConcurrency}, a
+ *  daemon-level pin, same naming shape as `AGENTPROTO_WORKTREES_TURBO_CACHE_DIR`
+ *  above. */
+export const WORKTREES_TURBO_CONCURRENCY_ENV =
+  "AGENTPROTO_WORKTREES_TURBO_CONCURRENCY"
+
+/**
+ * Resolve the turbo/pnpm task-concurrency cap `runSetup` points every
+ * provisioned worktree's setup hooks at (`TURBO_CONCURRENCY`, which turbo
+ * reads for its own `--concurrency`). Why: a sandbox box is small (e2b/computer
+ * microVMs are ~4 vCPU), but turbo tasks and `pnpm -r` fan out one task per
+ * package with no cap, on a 4-core box that launches dozens of
+ * `tsc`/`vitest` processes at once, oversubscribing to 300%+ and thrashing
+ * (seen live: 2 `tsc --noEmit` workers alone pinned 313% CPU on a 4-core e2b
+ * box).
+ *
+ * NOTE: pnpm does NOT read `TURBO_CONCURRENCY`; its recursive workspace
+ * fan-out is capped by `npm_config_workspace_concurrency` /
+ * `--workspace-concurrency`. {@link worktreesConcurrencyEnv} therefore sets
+ * both from this one resolved number. The env only reaches the setup-hook
+ * child process (e.g. a `pnpm install` / `pnpm build` it runs), NOT commands
+ * an agent runs later in its own shell.
+ *
+ * Default is deliberately low (2): it is safe on the smallest boxes and still
+ * saturates a 4-core one without oversubscription. Precedence:
+ *   1. `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`, explicit override.
+ *   2. a bare `TURBO_CONCURRENCY` already in `base`, respected.
+ *   3. `2`, a real, single default (today's behaviour is uncapped).
+ *
+ * Values must be strict positive integers (`"3abc"` is rejected, not
+ * truncated to `3`). `base` defaults to `process.env`.
+ */
+export function resolveWorktreesTurboConcurrency(
+  base: NodeJS.ProcessEnv = process.env,
+): number {
+  return (
+    parsePositiveInt(base[WORKTREES_TURBO_CONCURRENCY_ENV]) ??
+    parsePositiveInt(base.TURBO_CONCURRENCY) ??
+    2
+  )
+}
+
+/** Strict positive-integer parse: digits only, `>= 1`; otherwise `undefined`. */
+function parsePositiveInt(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const n = Number(trimmed)
+  return Number.isSafeInteger(n) && n >= 1 ? n : undefined
+}
+
+/**
+ * The concurrency env a setup hook runs with: `TURBO_CONCURRENCY` (turbo) and
+ * `npm_config_workspace_concurrency` (pnpm's `-r` fan-out), both set to the
+ * {@link resolveWorktreesTurboConcurrency} result. An already-set valid
+ * `npm_config_workspace_concurrency` in `base` is respected.
+ */
+export function worktreesConcurrencyEnv(
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  const n = String(resolveWorktreesTurboConcurrency(base))
+  const pnpm = parsePositiveInt(base.npm_config_workspace_concurrency)
+  return {
+    TURBO_CONCURRENCY: n,
+    npm_config_workspace_concurrency: pnpm !== undefined ? String(pnpm) : n,
+  }
+}

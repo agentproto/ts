@@ -151,6 +151,7 @@ import {
   type SandboxDeliveryTarget,
 } from "./sandbox-delivery.js"
 import { savedAdapterStoreArchive } from "./sandbox-adapter-store.js"
+import { latestCheckpointRef } from "./checkpoint-resume.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import { resolveSandboxWorkspaceSource } from "./sandbox-workspace-derive-remote.js"
 import {
@@ -1990,6 +1991,11 @@ export async function restartAgentSession(
     const target = prev.sandboxDeliveryTarget
     const prevDir = sessionTranscriptDir(prev.id)
     const resumeBranch = target?.branch.startsWith(SANDBOX_BRANCH_PREFIX) ? target.branch : undefined
+    // CRASH RESUME - the checkpoint this session took before it died, as
+    // recorded on its own row (`lastCheckpoint`). The fresh box restores
+    // THAT ref with `git restore --source=<ref>` instead of guessing from
+    // the branch name: the session -> checkpoint link survives the crash.
+    const resumeCheckpoint = latestCheckpointRef(prev)
     const noBranchNote = resumeBranch ? "" : " and the session recorded no work branch to resume from"
     const tarTarget = target ? undefined : await readTarTarget(prevDir)
     const adapterStoreArchive = savedAdapterStoreArchive(prevDir)
@@ -2053,6 +2059,15 @@ export async function restartAgentSession(
       sandbox: providerSlug,
       resolveSandboxProvider: opts.resolveSandboxProvider,
       checkpointConfig,
+      // CRASH RESUME - restore the checkpoint the dead session recorded.
+      ...(resumeCheckpoint
+        ? {
+            checkpointResume: {
+              ref: resumeCheckpoint.ref,
+              ...(resumeCheckpoint.sha ? { sha: resumeCheckpoint.sha } : {}),
+            },
+          }
+        : {}),
       adapter: adapterSlug,
       sessionHolder: restartedSessionId,
       // Replaced by the fresh checkout's path (`explicitCwd: false`).

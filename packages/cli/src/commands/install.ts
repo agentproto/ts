@@ -49,6 +49,11 @@ import { runInstallProfile } from "./install-profile.js"
 import { runInstallSkill } from "./install-skill.js"
 import { binOnPath } from "../registry/acp-generic.js"
 import {
+  addAdapterToConfig,
+  setAdapterAuthMode,
+} from "../util/agentproto-config.js"
+import { getProviderKey } from "@agentproto/runtime/providers-store"
+import {
   parseNpmPackageFromHint,
   parseShellHint,
   commandOnPath,
@@ -217,6 +222,7 @@ export async function runInstall(args: readonly string[]): Promise<number> {
   }
   const installSteps: AgentCliInstallMethod[] = adapter.handle.install ?? []
   if (installSteps.length === 0) {
+    await enableAdapter(adapter, slug, values["dry-run"] === true)
     process.stderr.write(
       `agentproto install: adapter '${slug}' declares no install steps.\n`
     )
@@ -284,6 +290,12 @@ export async function runInstall(args: readonly string[]): Promise<number> {
     process.stdout.write(`agentproto: '${slug}' installed.\n`)
   }
 
+  // `install` and `adapters install` must leave the SAME state: both add the
+  // adapter to `config.json#adapters[]`. Before this, `install <slug>` could
+  // print "installed" while `agentproto adapters list` still said "no
+  // adapters enabled" — the cold-start confusion reported in field testing.
+  await enableAdapter(adapter, slug, values["dry-run"] === true)
+
   // Run the AIP-29 § Setup pipeline (post-install configuration). Skipped
   // when --skip-setup is passed or the manifest declares no setup. The
   // setup engine is idempotent — already-satisfied steps short-circuit
@@ -300,6 +312,57 @@ export async function runInstall(args: readonly string[]): Promise<number> {
   }
 
   return 0
+}
+
+/**
+ * Persist the adapter in `config.json#adapters[]` (the same list
+ * `agentproto adapters install` maintains) and, when a matching provider key
+ * is already stored, opt the adapter into api-key billing. This makes both
+ * install orders work:
+ *
+ *   install <slug>  ->  auth provider set <provider>   (auth writes the block)
+ *   auth provider set <provider>  ->  install <slug>   (install writes it here)
+ *
+ * Only a MISSING auth block is filled in — an explicit subscription choice
+ * is never overwritten.
+ */
+async function enableAdapter(
+  adapter: Awaited<ReturnType<typeof resolveAdapter>>,
+  slug: string,
+  dryRun: boolean,
+): Promise<void> {
+  // Generic ACP agents (`acp-config` / `acp-catalog`) have no importable
+  // adapter package: `config.adapters[]` entries are fed to `import(id)`, so
+  // persisting a guessed `@agentproto/adapter-<slug>` would register a phantom
+  // module. They are resolved from config/catalog by slug and need no entry.
+  const enrollable =
+    adapter.source === "npm" ||
+    adapter.source === "file" ||
+    adapter.source === "bundled"
+  const pkg = enrollable
+    ? (adapter.packageName ?? `@agentproto/adapter-${slug}`)
+    : undefined
+  if (dryRun) {
+    if (pkg) process.stdout.write(`agentproto: would enable '${pkg}'.\n`)
+    return
+  }
+  if (pkg) await addAdapterToConfig(pkg)
+  const provider = adapter.handle.provider
+  if (provider) {
+    const stored = await getProviderKey(provider)
+    if (stored) {
+      const changed = await setAdapterAuthMode(slug, "api-key", {
+        onlyIfMissing: true,
+      })
+      if (changed) {
+        process.stdout.write(
+          `agentproto: enabled api-key auth for '${slug}' ` +
+            `(stored ${provider} key found).\n`
+        )
+      }
+    }
+  }
+  if (pkg) process.stdout.write(`agentproto: enabled '${pkg}'.\n`)
 }
 
 /**

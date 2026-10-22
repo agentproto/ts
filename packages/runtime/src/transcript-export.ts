@@ -45,7 +45,7 @@ export interface ExportedMessage {
   from?: {
     sessionId?: string
     label?: string
-    relation: "child" | "parent" | "sibling" | "human" | "system"
+    relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
     kind: string
     messageId: string
   }

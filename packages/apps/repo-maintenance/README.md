@@ -12,7 +12,10 @@ that requires the `entry:` loader path.
 
 The `maintain` workflow, one run:
 
-1. `worktree_gc` + `branch_gc` plan (dry run — nothing is touched).
+1. `worktree_gc` + `branch_gc` + `sandbox_checkpoint_gc` plan (dry run —
+   nothing is touched; the checkpoint plan classifies the stale
+   `agentproto-checkpoint/*` refs a dead sandbox left on the remote as
+   safe / keep / unknown).
 2. Fans the `@agentproto/repo-maintenance-reviewer` agent out over the
    unmerged branch candidates with no stored verdict yet — at most
    `maxReviews` (default 40) per run, newest tip first, then the larger
@@ -37,12 +40,16 @@ The `maintain` workflow, one run:
    reports any gap, the verdict tally, and the `salvage` branches by name.
 4. If `applyMerged` is true: `worktree_gc` applies first (`salvageDirty:
    false`) — removing a merged worktree frees its branch — then `branch_gc`
-   applies. By default `includeReviewed` is false, so only reclaim-class refs
+   applies, then `sandbox_checkpoint_gc` deletes the stale checkpoint refs
+   classified safe (the engine re-plans and re-classifies every ref
+   immediately before deleting it, so a stale plan never deletes changed
+   work). By default `includeReviewed` is false, so only reclaim-class refs
    (merged / squash-merged / patch-merged / content-merged) are touched. With
    `applyReviewed: true` (only meaningful together with `applyMerged: true`)
    it also reclaims `review`-class branches whose stored verdict agreed for
    the same tip — subject to `branch_gc`'s deterministic line-coverage guard
-   (default 95%), which refuses an approval below the threshold.
+   (default 95%), which refuses an approval below the threshold. Without
+   `applyMerged` the checkpoint apply is another dry-run plan.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a
    reclaimable ref or a review candidate) sends it through the daemon's
    provider-agnostic outbound primitive, `transmit_message` (`bind: false`,
@@ -87,7 +94,8 @@ despite the guard, and the plan entry shows
 `verdictGuard: "bypassed by operator <by>..."` with who approved. Apply still
 writes the restore log before deleting. These verdicts are shared with any
 other `includeReviewed`-enabled run (for example the weekly routine); this
-workflow's own apply step stays `includeReviewed: false`.
+workflow's own apply step runs `includeReviewed: $input.applyReviewed`, so it
+stays false unless the run opts in with `applyReviewed: true`.
 
 Verdict recording is safe under concurrency: an in-process mutex plus an OS
 lock file serialise writers, the file is re-read under the lock, and each

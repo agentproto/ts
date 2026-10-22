@@ -256,7 +256,7 @@ instead of loading all ~190 upfront. Measured on a real daemon boot: 191
 tools / ~238 KB / ~60K tokens (chars/4) eager vs. 18 tools / ~58 KB / ~14K
 tokens deferred — a ~76% smaller `tools/list` payload.
 
-Four knobs decide it, checked in this order (first one that has an opinion
+Six knobs decide it, checked in this order (first one that has an opinion
 wins):
 
 1. **Per-spawn** — `agent_start`'s `deferredTools: true|false`.
@@ -272,10 +272,20 @@ wins):
    already defers MCP tools behind its own search, and a second layer would
    hide tools from that search (a tool the daemon keeps out of `tools/list`
    is invisible to the harness's native search).
-4. **Role default** — the built-in `executor` role defaults it ON (it can't
+4. **Harness that cannot drive deferred discovery** — when the adapter's
+   manifest omits `capabilities.deferredToolDiscovery` (every adapter today;
+   only a harness able to look up a hidden tool's schema via `tool_search`
+   and then still call it may declare it), the self-mount is **eager**
+   (`?deferred=0`): that harness validates tool calls against its own last
+   `tools/list`, so a tool the daemon hid is rejected client-side before
+   the call reaches the gateway (`tool_search` returning the schema is not
+   enough — opencode live: "Model tried to call unavailable tool
+   'branch_gc_verdict'"). Knobs 5 and 6 are only reached by a harness that
+   declares the capability.
+5. **Role default** — the built-in `executor` role defaults it ON (it can't
    delegate anyway, so the daemon's full surface is mostly dead weight);
    `supervisor` has no opinion.
-5. **Daemon-wide default** — `~/.agentproto/config.json`'s
+6. **Daemon-wide default** — `~/.agentproto/config.json`'s
    `defaults.mcp.deferredTools` (`false` | `true` | `{ "alwaysOn": [...] }`).
    Read once at boot; **off by default**.
 
@@ -290,7 +300,10 @@ stay reachable exactly as before (mounted natively via `bundles`, or through
 
 Verdicts were established against the versions installed on the dev host
 (2026-10-02). Only a verified, default-on native deferral is declared in the
-manifest; everything else keeps the role/daemon default.
+manifest; a harness that declares neither `nativeToolSearch` nor
+`deferredToolDiscovery` gets the eager self-mount (`?deferred=0`) regardless
+of the role/daemon default — knobs 5/6 only reach a discovery-capable
+harness.
 
 | Harness | `nativeToolSearch` | Verdict and source |
 |---|---|---|

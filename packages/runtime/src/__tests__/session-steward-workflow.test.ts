@@ -123,6 +123,10 @@ function fakeTools(opts: {
   jev?: (inputs: Record<string, unknown>) => Promise<unknown>
   /** Extra `session_list` rows (busy sessions for the loop/stall scan). */
   liveExtra?: Array<Record<string, unknown>>
+  /** Byte ceiling the fake `session_list` enforces like the MCP contract
+   *  layer (`MCP_RESULT_MAX_BYTES`); over it the page becomes the
+   *  `{truncated:true,…}` marker. */
+  maxResultBytes?: number
   /** `tool_calls_list` records per session id (loop scan). */
   toolCalls?: Record<string, unknown[]>
   /** Prior verdict-memory events returned by `app_state_list`. */
@@ -170,7 +174,7 @@ function fakeTools(opts: {
         ...(e.startedAt ? { startedAt: e.startedAt } : {}),
         lastActivityAt: new Date(Date.now() - e.idleMinutes * 60_000).toISOString(),
       }))
-      return mcpResult(emulateSessionList([...rows, ...(opts.liveExtra ?? [])], inputs))
+      return mcpResult(emulateSessionList([...rows, ...(opts.liveExtra ?? [])], inputs, Date.now(), { maxBytes: opts.maxResultBytes }))
     }
     if (name === "tool_calls_list") {
       return mcpResult({ records: opts.toolCalls?.[inputs.sessionId as string] ?? [] })
@@ -324,11 +328,63 @@ describe("session-steward workflow — shape", () => {
       "liveSessionsPage2:map",
       "liveSessionsCursor3:transform",
       "liveSessionsPage3:map",
+      "liveSessionsCursor4:transform",
+      "liveSessionsPage4:map",
+      "liveSessionsCursor5:transform",
+      "liveSessionsPage5:map",
+      "liveSessionsCursor6:transform",
+      "liveSessionsPage6:map",
+      "liveSessionsCursor7:transform",
+      "liveSessionsPage7:map",
+      "liveSessionsCursor8:transform",
+      "liveSessionsPage8:map",
+      "liveSessionsCursor9:transform",
+      "liveSessionsPage9:map",
+      "liveSessionsCursor10:transform",
+      "liveSessionsPage10:map",
+      "liveSessionsCursor11:transform",
+      "liveSessionsPage11:map",
+      "liveSessionsCursor12:transform",
+      "liveSessionsPage12:map",
+      "liveSessionsCursor13:transform",
+      "liveSessionsPage13:map",
+      "liveSessionsCursor14:transform",
+      "liveSessionsPage14:map",
+      "liveSessionsCursor15:transform",
+      "liveSessionsPage15:map",
+      "liveSessionsCursor16:transform",
+      "liveSessionsPage16:map",
       "endedSessions:tool",
       "endedSessionsCursor2:transform",
       "endedSessionsPage2:map",
       "endedSessionsCursor3:transform",
       "endedSessionsPage3:map",
+      "endedSessionsCursor4:transform",
+      "endedSessionsPage4:map",
+      "endedSessionsCursor5:transform",
+      "endedSessionsPage5:map",
+      "endedSessionsCursor6:transform",
+      "endedSessionsPage6:map",
+      "endedSessionsCursor7:transform",
+      "endedSessionsPage7:map",
+      "endedSessionsCursor8:transform",
+      "endedSessionsPage8:map",
+      "endedSessionsCursor9:transform",
+      "endedSessionsPage9:map",
+      "endedSessionsCursor10:transform",
+      "endedSessionsPage10:map",
+      "endedSessionsCursor11:transform",
+      "endedSessionsPage11:map",
+      "endedSessionsCursor12:transform",
+      "endedSessionsPage12:map",
+      "endedSessionsCursor13:transform",
+      "endedSessionsPage13:map",
+      "endedSessionsCursor14:transform",
+      "endedSessionsPage14:map",
+      "endedSessionsCursor15:transform",
+      "endedSessionsPage15:map",
+      "endedSessionsCursor16:transform",
+      "endedSessionsPage16:map",
       "scan:transform",
       "candidatesPlus:transform",
       "ruleApplyQueue:transform",
@@ -1340,5 +1396,65 @@ describe("session-steward workflow — footprint (no whole-registry step output)
     }
     expect(biggest).toBeLessThan(200_000)
     expect(bytes).toBeLessThan(400_000)
+  })
+})
+
+describe("session-steward workflow — over-cap session_list pages", () => {
+  /** Terminal rows shaped like a real 72 h window: the `outcome` object alone
+   *  is ~600 B, so 200 rows × these fields runs well past the 100 KB MCP cap
+   *  (the exact production regression: 538 terminal sessions, scan saw 0-2). */
+  const terminalRows = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `term_${i}`,
+      label: `term-${i}`,
+      status: "exited",
+      origin: "cron:fixture",
+      lastActivityAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+      endedAt: new Date(Date.now() - 90 * 60_000).toISOString(),
+      outcome: { verdict: "done", detail: "x".repeat(400) },
+    }))
+
+  it("walks every page and counts all terminal sessions instead of reading a truncation hint as empty", async () => {
+    const rows = terminalRows(568)
+    const { dispatchTool, calls } = fakeTools({ entries: [], liveExtra: rows, maxResultBytes: 100_000 })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let scan: { counts: { terminal: number; listed: number; listTruncated: boolean } } | undefined
+    await runWorkflow({
+      workflow: compiled,
+      agents: judgeHost({}).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (id: string, out: unknown) => {
+        if (id === "scan") scan = out as typeof scan
+      },
+    })
+    const endPages = calls.filter(c => c.name === "session_list" && c.inputs.updatedSince !== undefined)
+    // The old 200-row page was over the cap; every page the fix sends must fit.
+    expect(endPages.length).toBeGreaterThan(1)
+    expect(endPages.every(c => Number(c.inputs.limit) <= 50)).toBe(true)
+    expect(scan?.counts.terminal).toBe(568)
+    expect(scan?.counts.listed).toBe(568)
+    expect(scan?.counts.listTruncated).toBe(false)
+  })
+
+  it("surfaces a page-budget truncation in the report instead of scanning a partial fleet silently", async () => {
+    const rows = terminalRows(900)
+    const { dispatchTool } = fakeTools({ entries: [], liveExtra: rows, maxResultBytes: 100_000 })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let scan: { counts: { terminal: number; listTruncated: boolean } } | undefined
+    let report: unknown
+    await runWorkflow({
+      workflow: compiled,
+      agents: judgeHost({}).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (id: string, out: unknown) => {
+        if (id === "scan") scan = out as typeof scan
+        if (id === "report") report = out
+      },
+    })
+    expect(scan?.counts.listTruncated).toBe(true)
+    expect(scan?.counts.terminal).toBe(800)
+    expect(String(report)).toContain("TRUNCATED at 800 rows per query")
   })
 })

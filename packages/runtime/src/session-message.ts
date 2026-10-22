@@ -14,8 +14,9 @@
 
 import { randomUUID } from "node:crypto"
 
-/** Sender's position in the tree, relative to the recipient. */
-export type MessageRelation = "child" | "parent" | "sibling" | "human" | "system"
+/** Sender's position in the tree, relative to the recipient. `peer` = no tree
+ *  edge, but the same workspace (the `allowSameWorkspace` allowance). */
+export type MessageRelation = "child" | "parent" | "sibling" | "peer" | "human" | "system"
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
@@ -90,6 +91,10 @@ export interface MessageTreeNode {
   label?: string
   role?: string
   adapterSlug?: string
+  /** The workspace the session belongs to. Two sessions of the SAME
+   *  workspace may message each other even without a tree edge - see
+   *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
+  workspaceSlug?: string
 }
 
 /**
@@ -113,9 +118,89 @@ export function resolveRelation(
 }
 
 /**
+ * Do two sessions belong to the SAME workspace? Both must carry a non-empty
+ * `workspaceSlug` and the slugs must match. A missing/blank slug on either
+ * side is never the same workspace (an unset workspace must not widen the
+ * ACL).
+ *
+ * NOTE: `workspaceSlug` is recorded at spawn time from the spawn input; it is
+ * a routing label, NOT an authenticated security boundary. The same-workspace
+ * and peer-group allowances are conveniences for cooperating sessions of one
+ * operator, not isolation between mutually untrusted ones.
+ */
+export function sameWorkspace(
+  a: MessageTreeNode | undefined,
+  b: MessageTreeNode | undefined,
+): boolean {
+  const slugA = a?.workspaceSlug?.trim()
+  const slugB = b?.workspaceSlug?.trim()
+  if (!slugA || !slugB) return false
+  return slugA === slugB
+}
+
+/**
+ * Do two sessions belong to the same PEER GROUP? `peerGroups` is the
+ * operator's list of workspace families (`defaults.messaging.peerGroups`,
+ * e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`): two sessions are
+ * peers when both workspace slugs appear in the SAME group.
+ *
+ * The rules: a missing/blank slug on either side is never a peer (an unset
+ * workspace must not widen the ACL), and a slug listed in two groups links
+ * within EACH of them - two sessions whose slugs only share different
+ * groups are NOT linked.
+ */
+export function samePeerGroup(
+  a: MessageTreeNode | undefined,
+  b: MessageTreeNode | undefined,
+  peerGroups: readonly (readonly string[])[] | undefined,
+): boolean {
+  if (!Array.isArray(peerGroups) || peerGroups.length === 0) return false
+  const slugA = a?.workspaceSlug?.trim()
+  const slugB = b?.workspaceSlug?.trim()
+  if (!slugA || !slugB) return false
+  for (const group of peerGroups) {
+    // Config can be hand-edited: tolerate a non-array group / non-string slug.
+    if (!Array.isArray(group) || group.length === 0) continue
+    let inA = false
+    let inB = false
+    for (const raw of group as readonly unknown[]) {
+      const slug = typeof raw === "string" ? raw.trim() : undefined
+      if (!slug) continue
+      if (slug === slugA) inA = true
+      if (slug === slugB) inB = true
+    }
+    if (inA && inB) return true
+  }
+  return false
+}
+
+/**
+ * The relation the messaging ACL is evaluated against: the tree relation
+ * when there IS a tree edge, else `peer` for two sessions of the same
+ * workspace (the `allowSameWorkspace` allowance) OR of the same peer group
+ * (the `peerGroups` allowance), else `undefined` (a refusal - a different
+ * workspace, or a session messaging itself).
+ */
+export function resolveEffectiveRelation(
+  sender: MessageTreeNode | undefined,
+  recipient: MessageTreeNode,
+  peerGroups?: readonly (readonly string[])[],
+): MessageRelation | undefined {
+  const relation = resolveRelation(sender, recipient)
+  if (relation) return relation
+  if (!sender || sender.id === recipient.id) return undefined
+  if (sameWorkspace(sender, recipient)) return "peer"
+  return samePeerGroup(sender, recipient, peerGroups) ? "peer" : undefined
+}
+
+/**
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
- * only when `allowSiblings` (config-gated, default off). Anything else — a
- * cousin, a stranger, yourself — is refused.
+ * only when `allowSiblings` (config-gated, default off). A `peer` - two
+ * sessions of the same workspace with no tree edge - is allowed when
+ * `allowSameWorkspace` (config-gated, default ON); a `peer` linked by a PEER
+ * GROUP (`peerGroup: true`) is allowed whatever `allowSameWorkspace` says -
+ * the group list is an independent operator decision. Anything else - a
+ * cousin of another workspace, a stranger, yourself - is refused.
  *
  * Kept for back-compat. Enforcement now goes through `decide(principal,
  * "session.message", …)` in permissions.ts, which a test pins to this
@@ -123,7 +208,7 @@ export function resolveRelation(
  */
 export function isMessageAllowed(
   relation: MessageRelation | undefined,
-  opts?: { allowSiblings?: boolean },
+  opts?: { allowSiblings?: boolean; allowSameWorkspace?: boolean; peerGroup?: boolean },
 ): relation is MessageRelation {
   switch (relation) {
     case "child":
@@ -133,9 +218,54 @@ export function isMessageAllowed(
       return true
     case "sibling":
       return opts?.allowSiblings === true
+    case "peer":
+      return opts?.peerGroup === true || opts?.allowSameWorkspace !== false
     default:
       return false
   }
+}
+
+export interface MessageAclOptions {
+  allowSiblings?: boolean
+  allowSameWorkspace?: boolean
+  peerGroups?: readonly (readonly string[])[]
+}
+
+export interface MessageAclDecision {
+  /** The relation the message is sent under (`undefined` = no link at all). */
+  relation: MessageRelation | undefined
+  /** Whether the ACL lets the message through. */
+  allowed: boolean
+  /** Whether sender and recipient are linked by a peer group. */
+  peerGroup: boolean
+}
+
+/**
+ * The ONE messaging ACL decision, shared by the `message_send` /
+ * `message_reply` tools and `POST /sessions/:id/messages`.
+ *
+ * Precedence: a tree edge decides first (parent/child/human always pass;
+ * `sibling` passes only with `allowSiblings`) - EXCEPT that a denied sibling
+ * edge is overridden by a peer-group link (the operator explicitly grouped
+ * those two workspaces, and two agents spawned under one orchestrator are
+ * always siblings). With no tree edge, same-workspace needs
+ * `allowSameWorkspace` (default on) and a peer-group link always passes.
+ */
+export function resolveMessageAcl(
+  sender: MessageTreeNode | undefined,
+  recipient: MessageTreeNode,
+  opts: MessageAclOptions = {},
+): MessageAclDecision {
+  const peerGroup =
+    !!sender && sender.id !== recipient.id && samePeerGroup(sender, recipient, opts.peerGroups)
+  let relation = resolveEffectiveRelation(sender, recipient, opts.peerGroups)
+  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "peer"
+  const allowed = isMessageAllowed(relation, {
+    allowSiblings: opts.allowSiblings,
+    allowSameWorkspace: opts.allowSameWorkspace,
+    peerGroup,
+  })
+  return { relation, allowed, peerGroup }
 }
 
 /** Build a `from` block from the verified sender + the resolved relation. */

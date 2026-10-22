@@ -55,6 +55,7 @@ import {
   sessionRestartErrorStatus,
   type RestartOverrides,
 } from "./session-restart-core.js"
+import type { CronScheduler } from "./cron-scheduler.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -666,9 +667,14 @@ export interface RegisterSessionToolsOptions {
    *  …) through the daemon as a single MCP entry point. */
   mcpProxy?: McpProxyRegistry
   /** Forwarded to `registerAgentTools` — see
-   *  `RegisterAgentToolsOptions.deviceMirrorSync` (BOOTSTRAP P7b: the
-   *  device-mirror read-sync hook, called before `agent_output` tails). */
+   *  `RegisterAgentToolsOptions.deviceMirrorSync`. */
   deviceMirrorSync?: RegisterAgentToolsOptions["deviceMirrorSync"]
+  /** Optional cron scheduler: used by `session_restart` to RE-ARM the
+   *  cron jobs that targeted the restarted session: a restart continues the
+   *  conversation under a NEW id, so a `prompt-session` job naming the old
+   *  id would fail its next tick. Omitted → no re-arm (the restart still
+   *  works; only the cron target goes stale). */
+  cronScheduler?: CronScheduler
   /** Whether the registry was constructed with a PTY factory — when
    *  true, expose the four terminal session tools. When false, the
    *  tools return a clear "not configured" error. */
@@ -746,6 +752,12 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.allowSiblings`. */
   messagingAllowSiblings?: RegisterAgentToolsOptions["messagingAllowSiblings"]
+  /** `defaults.messaging.allowSameWorkspace` - forwarded to
+   *  `registerAgentTools`. */
+  messagingAllowSameWorkspace?: RegisterAgentToolsOptions["messagingAllowSameWorkspace"]
+  /** `defaults.messaging.peerGroups` - forwarded to
+   *  `registerAgentTools`. */
+  messagingPeerGroups?: RegisterAgentToolsOptions["messagingPeerGroups"]
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
@@ -1007,6 +1019,46 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   // UI can show "host: <id>" straight off the list.
   ...(s.hostSessionId ? { hostSessionId: s.hostSessionId } : {}),
   ...(s.hostFingerprint ? { hostFingerprint: s.hostFingerprint } : {}),
+})
+
+// ── session_commands rows ────────────────────────────────────────────────
+// One slash-command entry, served page by page by the `session_commands`
+// tool. The COMPACT row (name/description/hint/scope) is exactly what the
+// VS Code transcript panel reads; the harness' own `input` / `_meta` blobs
+// stay behind `full: true`.
+
+/** The raw command entry, as mirrored from the harness' ACP
+ *  `available-commands` event onto the session descriptor. */
+type RawSessionCommand = NonNullable<SessionDescriptor["availableCommands"]>[number]
+
+/** One `session_commands` row, the FLATTENED command entry: the harness'
+ *  nested `input.hint` / `_meta.scope` become top-level `hint` / `scope`, and
+ *  the original blobs are kept alongside for `full: true`. */
+export interface SessionCommandItem {
+  name: string
+  description?: string
+  hint?: string
+  scope?: string
+  input?: { hint?: string } | null
+  _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+}
+
+/** Flatten one raw command entry into a `session_commands` row. */
+export const sessionCommandItem = (c: RawSessionCommand): SessionCommandItem => ({
+  name: c.name,
+  ...(c.description ? { description: c.description } : {}),
+  ...(c.input?.hint ? { hint: c.input.hint } : {}),
+  ...(c._meta?.scope ? { scope: c._meta.scope } : {}),
+  ...(c.input !== undefined ? { input: c.input } : {}),
+  ...(c._meta !== undefined ? { _meta: c._meta } : {}),
+})
+
+/** The default (`compact`) row: identity + human-readable text only. */
+export const compactSessionCommandItem = (c: SessionCommandItem): SessionCommandItem => ({
+  name: c.name,
+  ...(c.description ? { description: c.description } : {}),
+  ...(c.hint ? { hint: c.hint } : {}),
+  ...(c.scope ? { scope: c.scope } : {}),
 })
 
 // ── batch compact projections (tool-transformer migration) ───────────────
@@ -1405,6 +1457,8 @@ export function registerSessionTools(
     itemKey: string
     /** Row cap for a call with no `limit`/`cursor` (default: unbounded). */
     defaultLimit?: number
+    /** Add `total` to the no-`limit`/`cursor` wrapper too (default off). */
+    includeTotal?: boolean
   }): void => {
     registerBuiltinTool<TInput, TItem[]>(server, {
       id: args.id,
@@ -1419,6 +1473,7 @@ export function registerSessionTools(
           maxLimit: 200,
           itemKey: args.itemKey,
           ...(args.defaultLimit !== undefined ? { defaultLimit: args.defaultLimit } : {}),
+          ...(args.includeTotal ? { includeTotal: true } : {}),
         }),
       ],
     })
@@ -2042,6 +2097,108 @@ export function registerSessionTools(
     },
   )
 
+  // ── session_transcript ──────────────────────────────────────────
+  server.tool(
+    "session_transcript",
+    "Return one session's conversation transcript, the actual messages the " +
+      "daemon records for every session (local or sandbox). Unlike " +
+      "`session_list` / `session_context_status` (which only know a session " +
+      "exists) or `summarize_session` (one last line), this serves the turns: " +
+      "each message carries `role` (user / assistant / system / tool), `text`, " +
+      "and `toolCalls` (where present). Uses the SAME normalised read path as " +
+      "`agentproto sessions export` / the `/sessions/:id/export` route, so the " +
+      "shape matches. Reads from disk (never mutates anything); returns an " +
+      "empty `messages` array when no transcript exists. `limit` keeps at most " +
+      "N messages from the end, still in chronological order (the most recent exchange survives). Same lookup " +
+      "+ owner scope as `session_usage` / `session_restart` (by id or name).",
+    {
+      ...sessionRefSchema(z),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Keep at most N messages, taken from the END of the transcript " +
+            "(the most recent N, returned in chronological order). Omit for the whole conversation.",
+        ),
+    },
+    async input => {
+      const desc = resolveSessionDesc(registry, input)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_transcript: session "${desc.id}" is not in your subtree, ` +
+                    "a scoped orchestrator can only inspect sessions it (transitively) spawned.",
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const { exportDaemonEventsSession } = await import("./transcript-export.js")
+      let session
+      try {
+        session = await exportDaemonEventsSession(desc.id, desc)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        // Only "no events.jsonl" (the exporter's ENOENT case) is a genuinely
+        // empty transcript; anything else (permissions, wrong dir, ...) is a
+        // real failure and must not masquerade as an empty session.
+        if (/no events\.jsonl for session/.test(message)) {
+          session = { messages: [] as unknown[] }
+        } else {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: `session_transcript: failed to read transcript for "${desc.id}": ${message}`,
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const messages = input.limit && input.limit > 0 && session.messages.length > input.limit
+        ? session.messages.slice(-input.limit)
+        : session.messages
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ sessionId: desc.id, count: messages.length, messages }),
+          },
+        ],
+      }
+    },
+  )
+
   // ── session_context_status ───────────────────────────────────────
   server.tool(
     "session_context_status",
@@ -2418,6 +2575,75 @@ export function registerSessionTools(
       }
     },
   )
+
+  // ── session_commands ───────────────────────────────────────────
+  // The harness's slash-command list, PAGE BY PAGE. `agent_start`'s compact
+  // answer carries only `availableCommandsCount` + a `commandsRef` pointing
+  // here; the raw list (60+ entries on a skill-heavy harness) never travels
+  // inside a spawn answer again.
+  //
+  // Rows are COMPACT by default (`name`/`description`/`hint`/`scope`, the
+  // exact fields the VS Code transcript panel reads); `full: true` adds the
+  // harness' own `input` / `_meta` blobs back. `keyOf` is the command NAME,
+  // so the cursor stays stable across calls.
+  const sessionCommandsSchema = z.object({
+    ...sessionRefSchema(z),
+    name: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Keep only the commands whose name starts with this prefix (e.g. \"/sk\").",
+      ),
+    scope: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Keep only the commands with this exact scope (the harness' own " +
+          "scope label, \"user\", \"project\", …).",
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof sessionCommandsSchema>, SessionCommandItem>({
+    id: "session_commands",
+    description:
+      "List the slash-commands a session's harness advertises, page by page " +
+      "(limit/cursor). Rows are COMPACT by default (name/description/hint/" +
+      "scope); `full: true` adds the harness' own input/_meta blobs. Filter " +
+      "with `name` (prefix) and `scope`. `agent_start` returns the count " +
+      "(`availableCommandsCount`) and a `commandsRef` pointing here.",
+    schema: sessionCommandsSchema,
+    body: async input => {
+      const desc = resolveSessionDesc(registry, input)
+      if (!desc) {
+        throw new Error(`no session "${sessionRefQuery(input)}" found`)
+      }
+      // Subtree scoping (WP4/WP5): same gate as session_capabilities /
+      // session_queue_list, a scoped orchestrator only sees its own subtree.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          throw new Error(`session "${desc.id}" is outside the caller's subtree`)
+        }
+      }
+      // `get()` freshens the live read-surface stamps (availableCommands is
+      // mirrored onto the descriptor by the ACP `available-commands` event).
+      const fresh = registry.get(desc.id) ?? desc
+      const prefix = input.name
+      return (fresh.availableCommands ?? [])
+        .filter(c => (prefix ? c.name.startsWith(prefix) : true))
+        .filter(c => (input.scope ? c._meta?.scope === input.scope : true))
+        .map(c => sessionCommandItem(c))
+    },
+    project: compactSessionCommandItem,
+    keyOf: c => c.name,
+    itemKey: "commands",
+    defaultLimit: 50,
+    includeTotal: true,
+  })
 
   // ── session_checkpoint ───────────────────────────────────────────
   server.tool(
@@ -5449,6 +5675,12 @@ export function registerSessionTools(
             ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
             ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
           })
+          // Cron re-arm: same rule as the plain restart below: the old row
+          // is retired, the conversation continues under the NEW id, so a
+          // `prompt-session` cron job naming the old id is re-pointed.
+          const rearmedCrons = opts.cronScheduler
+            ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+            : []
           return {
             content: [
               {
@@ -5460,6 +5692,7 @@ export function registerSessionTools(
                     resumeVia: restarted.resumeVia,
                     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                     ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
+                    ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                   },
                   null,
                   2
@@ -5764,6 +5997,13 @@ export function registerSessionTools(
           ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         })
+        // Cron re-arm: the restart retired `prev` and continued the same
+        // conversation under `restarted.desc.id`, so a `prompt-session` cron
+        // job naming the OLD id would fail its next tick. Its target moves
+        // to the successor id (persisted with the job file).
+        const rearmedCrons = opts.cronScheduler
+          ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+          : []
         return {
           content: [
             {
@@ -5776,6 +6016,7 @@ export function registerSessionTools(
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                   ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
                   ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
+                  ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                 },
                 null,
                 2

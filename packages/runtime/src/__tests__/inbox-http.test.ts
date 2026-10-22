@@ -68,7 +68,9 @@ describe("typed-message HTTP routes", () => {
       parentSessionId: parent.id,
       depth: 1,
     })
-    const stranger = registry.spawnAgent({ workspaceSlug: "w", cwd: "/tmp", agentSession: idle("s"), adapterSlug: "fake" })
+    // A DIFFERENT workspace: a same-workspace session is allowed by default
+    // (`defaults.messaging.allowSameWorkspace`), exactly as for `message_send`.
+    const stranger = registry.spawnAgent({ workspaceSlug: "other", cwd: "/tmp", agentSession: idle("s"), adapterSlug: "fake" })
     const resolveAgentAdapter: AgentAdapterResolver = async () => ({ startSession: vi.fn(), commandPreview: "x" })
     const port = await freePort()
     const http = await startHttpServer({

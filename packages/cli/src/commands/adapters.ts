@@ -20,9 +20,6 @@
  */
 
 import { spawn } from "node:child_process"
-import { mkdir, readFile, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
-import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
 import {
   MAX_HERMES_SYSTEM_PROMPT_CHARS,
@@ -35,6 +32,12 @@ import type {
   AdapterManifest,
   SubstrateEntry,
 } from "../registry/manifest.js"
+import {
+  addAdapterToConfig,
+  loadAgentprotoConfig,
+  removeAdapterFromConfig,
+} from "../util/agentproto-config.js"
+import { withNpmGlobalPrefix } from "../util/npm-prefix.js"
 
 const USAGE = `agentproto adapters — manage runtime adapters
 
@@ -108,7 +111,7 @@ async function runList(args: readonly string[]): Promise<number> {
     options: { json: { type: "boolean" } },
     strict: true,
   })
-  const cfg = await loadConfig()
+  const cfg = await loadAgentprotoConfig()
   const adapters = cfg.adapters ?? []
   if (adapters.length === 0) {
     if (values.json) process.stdout.write("[]\n")
@@ -331,11 +334,12 @@ async function runInstall(args: readonly string[]): Promise<number> {
   }
 
   if (!values["skip-npm"]) {
-    const code = await spawnInherit("npm", [
-      "install",
-      values.local ? "" : "-g",
-      pkg,
-    ].filter(Boolean))
+    const code = await spawnInherit(
+      "npm",
+      withNpmGlobalPrefix(
+        ["install", values.local ? "" : "-g", pkg].filter(Boolean),
+      ),
+    )
     if (code !== 0) {
       process.stderr.write(
         `agentproto adapters install: npm failed with exit ${code}; config not modified.\n`
@@ -344,7 +348,7 @@ async function runInstall(args: readonly string[]): Promise<number> {
     }
   }
 
-  await addToConfig(pkg)
+  await addAdapterToConfig(pkg)
   process.stdout.write(`agentproto adapters: enabled '${pkg}'.\n`)
   return 0
 }
@@ -365,14 +369,15 @@ async function runUninstall(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  await removeFromConfig(pkg)
+  await removeAdapterFromConfig(pkg)
 
   if (!values["skip-npm"]) {
-    const code = await spawnInherit("npm", [
-      "uninstall",
-      values.local ? "" : "-g",
-      pkg,
-    ].filter(Boolean))
+    const code = await spawnInherit(
+      "npm",
+      withNpmGlobalPrefix(
+        ["uninstall", values.local ? "" : "-g", pkg].filter(Boolean),
+      ),
+    )
     if (code !== 0) {
       process.stderr.write(
         `agentproto adapters uninstall: removed from config but npm uninstall failed with exit ${code}.\n`
@@ -391,7 +396,7 @@ async function runEnable(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto adapters enable: missing <pkg>.\n")
     return 2
   }
-  await addToConfig(pkg)
+  await addAdapterToConfig(pkg)
   process.stdout.write(`agentproto adapters: enabled '${pkg}'.\n`)
   return 0
 }
@@ -402,7 +407,7 @@ async function runDisable(args: readonly string[]): Promise<number> {
     process.stderr.write("agentproto adapters disable: missing <pkg>.\n")
     return 2
   }
-  await removeFromConfig(pkg)
+  await removeAdapterFromConfig(pkg)
   process.stdout.write(`agentproto adapters: disabled '${pkg}'.\n`)
   return 0
 }
@@ -519,48 +524,6 @@ async function runHermesPluginInstall(args: readonly string[]): Promise<number> 
     return result.enable.exitCode ?? 1
   }
   return 0
-}
-
-// ── config helpers ────────────────────────────────────────────────────
-
-interface AgentprotoConfig {
-  adapters?: string[]
-  [key: string]: unknown
-}
-
-function configPath(): string {
-  const base = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
-  return join(base, "config.json")
-}
-
-async function loadConfig(): Promise<AgentprotoConfig> {
-  try {
-    const raw = await readFile(configPath(), "utf8")
-    return JSON.parse(raw) as AgentprotoConfig
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {}
-    throw err
-  }
-}
-
-async function saveConfig(cfg: AgentprotoConfig): Promise<void> {
-  const path = configPath()
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(cfg, null, 2)}\n`)
-}
-
-async function addToConfig(pkg: string): Promise<void> {
-  const cfg = await loadConfig()
-  const adapters = cfg.adapters ?? []
-  if (!adapters.includes(pkg)) adapters.push(pkg)
-  cfg.adapters = adapters
-  await saveConfig(cfg)
-}
-
-async function removeFromConfig(pkg: string): Promise<void> {
-  const cfg = await loadConfig()
-  cfg.adapters = (cfg.adapters ?? []).filter((p) => p !== pkg)
-  await saveConfig(cfg)
 }
 
 function spawnInherit(cmd: string, argv: string[]): Promise<number> {

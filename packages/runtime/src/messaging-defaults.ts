@@ -1,7 +1,8 @@
 /**
- * Per-call resolver for the three `config.json` `defaults` knobs that gate
+ * Per-call resolver for the `config.json` `defaults` knobs that gate
  * inter-session messaging: `defaults.agentPromptInterrupt`,
- * `defaults.messaging.allowSiblings`, `defaults.messaging.agentInterrupt`.
+ * `defaults.messaging.allowSiblings`, `defaults.messaging.allowSameWorkspace`,
+ * `defaults.messaging.peerGroups`, `defaults.messaging.agentInterrupt`.
  *
  * These used to be read ONCE at gateway boot (`index.ts`'s `configDefaults`,
  * captured before the `/mcp` and `/mcp/orchestrator` server factories were
@@ -28,9 +29,18 @@ export interface ResolvedMessagingDefaults {
   /** `defaults.agentPromptInterrupt` — the unset-default for `interrupt` on
    *  `agent_prompt` / `message_parent`. Default false. */
   agentPromptInterrupt: boolean
-  /** `defaults.messaging.allowSiblings` — lets `message_send` /
+  /** `defaults.messaging.allowSiblings` - lets `message_send` /
    *  `message_reply` reach a sibling (same parent). Default false. */
   allowSiblings: boolean
+  /** `defaults.messaging.allowSameWorkspace` - lets `message_send` /
+   *  `message_reply` reach any session of the SAME workspace, even without
+   *  a tree edge. Default true. */
+  allowSameWorkspace: boolean
+  /** `defaults.messaging.peerGroups` - groups of workspace slugs. Two
+   *  sessions may message each other without a tree edge when both
+   *  workspace slugs sit in the SAME group. Default [] (no
+   *  cross-workspace link). Independent of `allowSameWorkspace`. */
+  peerGroups: string[][]
   /** `defaults.messaging.agentInterrupt` — whether a SESSION sender's
    *  `interrupt` may cancel the recipient's turn. Default "deny". */
   agentInterrupt: "allow" | "deny"
@@ -45,6 +55,8 @@ export interface ResolvedMessagingDefaults {
 export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   agentPromptInterrupt: false,
   allowSiblings: false,
+  allowSameWorkspace: true,
+  peerGroups: [],
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
 }
@@ -57,6 +69,9 @@ export async function resolveMessagingDefaults(
     return {
       agentPromptInterrupt: d?.agentPromptInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentPromptInterrupt,
       allowSiblings: d?.messaging?.allowSiblings ?? DEFAULT_MESSAGING_DEFAULTS.allowSiblings,
+      allowSameWorkspace:
+        d?.messaging?.allowSameWorkspace ?? DEFAULT_MESSAGING_DEFAULTS.allowSameWorkspace,
+      peerGroups: d?.messaging?.peerGroups ?? DEFAULT_MESSAGING_DEFAULTS.peerGroups,
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
       pendingPromptStaleMinutes:
         d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,

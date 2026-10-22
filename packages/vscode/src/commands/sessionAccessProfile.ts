@@ -20,8 +20,12 @@ import type { AuthProfilesTreeProvider } from "../views/authProfilesTree.js"
 import { runCreateAuthProfileFlow } from "./authProfiles.js"
 import { resolveSessionArg } from "./sessionActions.js"
 import { describeSession, isLiveSession } from "./sessionActions.logic.js"
-import { accessRowsForSession, planAccessChange } from "./sessionAccessProfile.logic.js"
-import { describeRestart, parseRestartResult } from "./sessionRestart.logic.js"
+import {
+  accessRowsForSession,
+  applyAccessProfile,
+  planAccessChange,
+} from "./sessionAccessProfile.logic.js"
+import { describeRestart } from "./sessionRestart.logic.js"
 
 /** Access is a restart-with-override, which only applies to agent-cli sessions
  *  (a PTY/command session has no billing axis) — mirror the daemon's own guard. */
@@ -79,13 +83,23 @@ async function setSessionAccessProfileCommand(
   }
 
   const pick = await vscode.window.showQuickPick(
-    rows.map(row => ({
-      label: row.label,
-      ...(row.description ? { description: row.description } : {}),
-      ...(currentProfileRef && row.value === currentProfileRef ? { picked: true, description: `${row.description ?? ""} (current)`.trim() } : {}),
-      value: row.value,
-      addProfile: row.addProfile,
-    })),
+    rows.map(row => {
+      const isCurrent = Boolean(currentProfileRef && row.value === currentProfileRef)
+      const description = [
+        row.description,
+        isCurrent ? "(current)" : undefined,
+        row.eligible === false ? "not eligible for this route" : undefined,
+      ]
+        .filter(Boolean)
+        .join(" ")
+      return {
+        label: row.label,
+        ...(description ? { description } : {}),
+        ...(isCurrent ? { picked: true } : {}),
+        value: row.value,
+        addProfile: row.addProfile,
+      }
+    }),
     {
       title: `Auth profile — ${describeSession(session)}`,
       placeHolder: "Pick the wallet this session bills against",
@@ -129,34 +143,61 @@ async function setSessionAccessProfileCommand(
     }
   }
 
-  try {
-    const raw = await client.mcpCall("session_restart", {
-      idOrName: session.id,
-      access: { profileRef: plan.profileRef },
-    })
-    const result = parseRestartResult(raw)
-    await store.refreshAll()
-    if (!result) {
-      vscode.window.showErrorMessage(
-        `agentproto: could not attach \"${plan.profileRef}\" — ${daemonErrorText(raw)}`,
-      )
-      return
-    }
-    vscode.window.showInformationMessage(
-      `${describeRestart(session, result)} — now on profile \"${plan.profileRef}\".`,
-    )
-    await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
-  } catch (err) {
+  // The daemon's restart-with-override route (`POST /sessions/:id/restart`)
+  // with the picked profile as the ACCESS override: the session keeps its
+  // posture, the conversation is resumed under a new id, and the daemon
+  // re-arms the cron jobs that targeted the old id.
+  const applied = await applyAccessProfile({
+    applier: client,
+    sessionId: session.id,
+    profileRef: plan.profileRef,
+  })
+  await store.refreshAll()
+  if (!applied.ok) {
     vscode.window.showErrorMessage(
-      `agentproto: attach failed — ${err instanceof Error ? err.message : String(err)}`,
+      `agentproto: could not attach \"${plan.profileRef}\": ${daemonErrorText(applied.error)}`,
     )
+    return
   }
+  const result = applied.restart
+  if (!result) {
+    vscode.window.showErrorMessage(
+      `agentproto: could not attach \"${plan.profileRef}\": the daemon returned an unrecognised result`,
+    )
+    return
+  }
+  vscode.window.showInformationMessage(
+    `${describeRestart(session, result)}: now on profile \"${plan.profileRef}\".`,
+  )
+  await vscode.commands.executeCommand("agentproto.openTranscript", result.id)
 }
 
 /** Pull the daemon's own reason out of a non-restart result (e.g. a 400 for an
  *  ineligible profile: `{ error, message, status }`), falling back to a compact
  *  JSON dump so the user never sees a bare "unrecognised result". */
 function daemonErrorText(raw: unknown): string {
+  if (typeof raw === "string") {
+    const text = raw.trim()
+    if (!text) return "the daemon returned an unrecognised result"
+    // The client wraps a failed request as "POST … failed: HTTP 400 {json}";
+    // the daemon's own reason is inside that JSON: show it, not the wrapper.
+    const start = text.indexOf("{")
+    if (start >= 0) {
+      try {
+        const parsed = JSON.parse(text.slice(start)) as Record<string, unknown>
+        const nested =
+          parsed.error && typeof parsed.error === "object"
+            ? (parsed.error as Record<string, unknown>)
+            : undefined
+        const message =
+          nested?.message ?? nested?.reason ?? parsed.message ?? parsed.error
+        if (typeof message === "string" && message.length > 0) return message
+      } catch {
+        // not JSON: fall through to the raw text
+      }
+    }
+    return text
+  }
   if (raw && typeof raw === "object") {
     const obj = raw as Record<string, unknown>
     if (typeof obj.message === "string") return obj.message

@@ -1,5 +1,62 @@
 # @agentproto/sandbox
 
+## 0.13.0
+
+### Minor Changes
+
+- ab53381: Add AIP-36 v1.3 egress IP selection and typed capacity errors to the computer sandbox provider: `config.egressIp` / spec-level `network.egressIp` (`"shared"`, `"auto"`, `"dedicated"`, or a pool slot id) is validated and forwarded at create when not shared, `BootedSandbox.egressIp` reports the controller's `{id, publicIp} | null` on boot and connect, and controller failures map to typed `ComputerSandboxError` codes including `sandbox_capacity` with `resource`/`requested`/`available`/`retryAfterMs`.
+
+  The provider validates the controller's `egressIp` field with the typed `@agentproto/computer-api` contract, so a malformed `egressIp` in a controller response fails the call instead of being ignored.
+
+- ab53381: Add AIP-36 v1.3 egress IP selection and capacity errors to the computer sandbox provider: `config.egressIp` / spec-level `network.egressIp` (`"shared"`, `"auto"`, `"dedicated"`, or a pool slot id) is validated and forwarded at create when not shared, `BootedSandbox.egressIp` reports the controller's `{id, publicIp} | null` on boot and connect, and controller failures map to typed `ComputerSandboxError` codes including `sandbox_capacity` with `resource`/`requested`/`available`/`retryAfterMs`.
+
+  The provider validates the controller's `egressIp` field with the typed `@agentproto/computer-api` contract, so a malformed `egressIp` in a controller response fails the call instead of being ignored.
+
+- fb025f0: Provider-control-plane orphan GC: `agentproto sandbox gc` and the new `sandbox_gc` MCP tool sweep a provider for boxes it still holds (and still charges RAM for) that the daemon's sandbox registry never knew and that no live session references, listing them (state, age, memory) and deleting them with `remove(..., { force: true })` only under `--apply` (dry run by default).
+
+  A candidate must be PAST A 15-MINUTE GRACE WINDOW (`ORPHAN_GRACE_MS`) and carry NO attached session (`sessions === 0`); the new `--include-attached` CLI flag (and the MCP tool's `includeAttached`) lifts the attached-session check explicitly. A box the provider does not date can never be proven stale and is never proposed. The shared gone-detection of the ledger gc (`GONE_RE`/`isGoneError`) now also decides "already disappeared" on the provider sweep, and a sweep that never ran (no daemon, no provider configured, no `listBoxes`) is reported as `not scanned` instead of "no orphan found".
+
+  Adds `SandboxProvider.listBoxes`/`SandboxProviderBox`, the computer provider's `GET /v1/computers` listing (`ComputerControllerClient.listComputers`), the `computerListEntrySchema`/`computerListResponseSchema` contract, and the `--provider` / `--include-attached` CLI flags. A box held by a live session is never a candidate and a failing provider is reported without stopping the sweep of the others.
+
+### Patch Changes
+
+- 43e1fbc: Detach and tear down computer boxes on session kill, crash, and shared-box survivor teardown.
+- e4d1185: Run `sandbox_exec` against an existing computer box without consuming a session slot or disturbing the in-box daemon: adds an optional `SandboxProvider.connectForExec` exec-only attach path and has `sandbox_exec` prefer it, falling back to `connect()` for providers that don't implement it. Note: the PR already carries an equivalent changeset (`.changeset/sandbox-exec-no-session-slot.md`); this file is only a reviewer handoff and may be dropped if the existing one is kept.
+- 43e1fbc: Detach and tear down computer boxes on session kill, crash, and shared-box survivor teardown. A killed session on a shared box now releases its provider/controller slot without stopping the box under the survivors, an operator kill on an already-ended (crashed-adapter) sandbox row retries box teardown, and the computer provider's holder-scoped detach is idempotent. Adds an optional `detach()` seam to `BootedSandbox`/`SandboxAgentSessionHost`. Note: the PR already carries an equivalent changeset (`.changeset/computer-box-detach-leaks.md`); this file is only a reviewer handoff.
+- e4d1185: Run sandbox_exec on a busy computer box without taking a session slot or disturbing its daemon.
+- a63eafb: fix(sandbox): never lose work to a box that outlives its welcome — bounded pre-deadline checkpoints, host-side rescue push on a wedged low-disk session, release dead-session boxes, capacity-free teardown
+
+  - A session's end-of-turn checkpoint raced the provider's reaper: the box
+    hit its E2B lifetime mid-turn ("sandbox not found") and the periodic
+    checkpoint had pushed nothing. The deadline-near checkpoint is now
+    BOUNDED to the remaining lifetime minus a safety margin (it never runs
+    past the deadline), and a renewal while a turn is in flight is retried
+    instead of falling through to the checkpoint branch after one failure.
+  - Low disk + a wedged session (ENOSPC never settles after interrupt):
+    when a forced low-disk checkpoint does not secure the box's work, the
+    proxy runs a HOST-side rescue push — `git add -A` + `commit
+--no-verify` + force-push to a `rescue/<session>` branch, executed via
+    `sandbox exec`, and emits the rescue outcome as an agent warning.
+  - A session that DIED (crashed / killed / errored) used to leave its box
+    paused and RAM-held (the computer provider kept answering "capacity
+    exhausted (available 511)"). The watchdog-driven death now ends with
+    `close({ deathRelease: true })`: checkpoint → notify → REALLY release
+    the box (kill/stop, never a memory-holding pause).
+  - Teardown and `sandbox rm --box` never need capacity: `SandboxProvider`
+    gains an optional `remove(sandboxId)` that destroys the box on the
+    control plane WITHOUT connecting to it (which used to RESUME a
+    suspended computer just to delete it, needing free RAM first).
+    `sandbox gc` / reaping prefers `remove`; a periodic automatic
+    `sandbox gc` runs on the daemon (1 h cadence,
+    `AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides / disables) reaping
+    boxes whose origin session is dead.
+
+- Updated dependencies [d1e8263]
+- Updated dependencies [d1e8263]
+- Updated dependencies [60b0d56]
+  - @agentproto/worktree@0.19.0
+  - @agentproto/workflow-runtime@0.20.1
+
 ## 0.12.2
 
 ### Patch Changes

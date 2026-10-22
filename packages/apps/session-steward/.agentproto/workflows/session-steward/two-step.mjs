@@ -8,7 +8,7 @@
 // in a step output. Listing goes through `live-list.mjs` (projected, filtered,
 // paged, merged only inside a compute); the act step looks sessions up by id.
 
-import { LIVE_FIELDS, liveListSteps, scannedRows } from "./live-list.mjs"
+import { LIST_PAGE_BUDGET, LIVE_FIELDS, liveListSteps, scannedRows } from "./live-list.mjs"
 import {
   applyRelabelEvidence,
   buildRelabelEvidenceQueue,
@@ -517,7 +517,7 @@ export function classifyReport(b) {
     notes.push(`- ${snap.scan.jevUnavailable} candidate(s) were not judged (Jev unavailable: no JEV_API_KEY, or the call failed) — the rules classified what they could; run \`steward analyze\` for the rest.`)
   }
   if (snap.scan.judgeOverflow) notes.push(`- ${snap.scan.judgeOverflow} judge-class candidate(s) over maxJudged ${s.maxJudged} were not classified this pass.`)
-  if (snap.scan.truncated) notes.push("- the session listing was truncated at 600 rows per query — older sessions are not in this snapshot.")
+  if (snap.scan.truncated) notes.push(`- the session listing was truncated at ${LIST_PAGE_BUDGET} rows per query — older sessions are not in this snapshot.`)
   if (snap.scan.heldOmitted || snap.scan.archiveOmitted) notes.push(`- omitted from the snapshot: ${snap.scan.heldOmitted} held, ${snap.scan.archiveOmitted} archivable (caps maxHeld ${s.maxHeld}, maxArchive ${s.maxArchive}).`)
   const p = persistedOf(b)
   notes.push(p.ok ? `- snapshot saved: ${p.paths.join(", ")} (app ${p.appId})` : `- ${p.note ?? `snapshot NOT saved: ${p.errors.join("; ")}`}`)
