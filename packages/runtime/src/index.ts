@@ -2015,6 +2015,7 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "agent_output",
   "agent_kill",
   "session_list",
+  "session_commands",
   "session_monitor",
   "session_events_poll",
   "session_context_status",

@@ -1457,6 +1457,8 @@ export function registerSessionTools(
     itemKey: string
     /** Row cap for a call with no `limit`/`cursor` (default: unbounded). */
     defaultLimit?: number
+    /** Add `total` to the no-`limit`/`cursor` wrapper too (default off). */
+    includeTotal?: boolean
   }): void => {
     registerBuiltinTool<TInput, TItem[]>(server, {
       id: args.id,
@@ -1471,6 +1473,7 @@ export function registerSessionTools(
           maxLimit: 200,
           itemKey: args.itemKey,
           ...(args.defaultLimit !== undefined ? { defaultLimit: args.defaultLimit } : {}),
+          ...(args.includeTotal ? { includeTotal: true } : {}),
         }),
       ],
     })
@@ -2638,6 +2641,8 @@ export function registerSessionTools(
     project: compactSessionCommandItem,
     keyOf: c => c.name,
     itemKey: "commands",
+    defaultLimit: 50,
+    includeTotal: true,
   })
 
   // ── session_checkpoint ───────────────────────────────────────────

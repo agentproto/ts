@@ -16,8 +16,12 @@ session-addressing tool takes.
 
 ## limit / cursor
 
-`limit` (1..200, default 50) and `cursor` (the `nextCursor` of the previous
-page) walk the list. The page envelope is `{ items, nextCursor?, total }`.
+`limit` (1..200) and `cursor` (the `nextCursor` of the previous page) walk
+the list. The page envelope is `{ items, nextCursor?, total }`.
+
+A call with neither `limit` nor `cursor` is capped at 50 rows (the default
+limit): the answer is `{ commands, total }`, plus `truncated: true` and
+`nextCursor` when the list is longer than 50 — pass that cursor to read on.
 Walking with a small `limit` until `nextCursor` is absent covers the whole
 list exactly once — the cursor is keyed on the command NAME, so it stays
 stable across calls.
