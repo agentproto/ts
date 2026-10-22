@@ -12,6 +12,9 @@
  *   - `./setup.js` → `runSetup` (no-op; we don't exercise the setup pipeline)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const { resolveAdapterMock, spawnMock, runSetupMock, binOnPathMock, commandOnPathMock } =
   vi.hoisted(() => ({
@@ -437,6 +440,87 @@ describe("agentproto install — version_check presence gating", () => {
     expect(code).toBe(0)
     expect(spawnMock.mock.calls.find(([c]) => c === "npm")).toBeUndefined()
     expect(io.out.join("")).toMatch(/already installed \(version 0\.75\.1\)/)
+    io.restore()
+  })
+})
+
+describe("agentproto install — enables the adapter (install == adapters install)", () => {
+  let home: string
+  let prevHome: string | undefined
+  let prevAgentprotoHome: string | undefined
+
+  beforeEach(() => {
+    prevHome = process.env.HOME
+    prevAgentprotoHome = process.env.AGENTPROTO_HOME
+    home = mkdtempSync(join(tmpdir(), "agentproto-install-enable-"))
+    process.env.HOME = home
+    process.env.AGENTPROTO_HOME = join(home, ".agentproto")
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (prevAgentprotoHome === undefined) delete process.env.AGENTPROTO_HOME
+    else process.env.AGENTPROTO_HOME = prevAgentprotoHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function readConfig(): { adapters?: string[]; defaults?: { adapters?: Record<string, { auth?: { mode?: string } }> } } {
+    return JSON.parse(
+      readFileSync(join(home, ".agentproto", "config.json"), "utf8"),
+    )
+  }
+
+  it("adds the adapter package to config.adapters after a successful install", async () => {
+    resolveAdapterMock.mockResolvedValue(fakeHandle("claude-code"))
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    expect(readConfig().adapters).toEqual(["@agentproto/adapter-claude-code"])
+    expect(io.out.join("")).toMatch(/enabled '@agentproto\/adapter-claude-code'/)
+    io.restore()
+  })
+
+  it("writes api-key auth when a matching provider key is already stored", async () => {
+    resolveAdapterMock.mockResolvedValue({
+      ...fakeHandle("claude-code"),
+      handle: {
+        ...fakeHandle("claude-code").handle,
+        provider: "anthropic",
+      },
+    })
+    mkdirSync(join(home, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(home, ".agentproto", "providers.json"),
+      JSON.stringify({
+        version: 1,
+        providers: {
+          anthropic: { apiKey: "sk-ant-test", updatedAt: new Date().toISOString() },
+        },
+      }),
+    )
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    expect(readConfig().defaults?.adapters?.["claude-code"]?.auth?.mode).toBe(
+      "api-key",
+    )
+    io.restore()
+  })
+
+  it("does not touch config on --dry-run", async () => {
+    resolveAdapterMock.mockResolvedValue(fakeHandle("claude-code"))
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code", "--dry-run"])
+
+    expect(code).toBe(0)
+    expect(() => readConfig()).toThrow()
+    expect(io.out.join("")).toMatch(/would enable '@agentproto\/adapter-claude-code'/)
     io.restore()
   })
 })
