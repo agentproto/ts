@@ -628,8 +628,19 @@ CLI, UI) can compact. Default off.
 `autoCompactAtTokens` is the ABSOLUTE counterpart of the percent thresholds
 above: when an idle session's context reaches this many tokens, the runtime
 compacts it at the turn boundary (checkpoint first, then `/compact`, the
-same path `session_compact` uses) and, when a mission is in progress, injects a
-short resume prompt that cites the path of the full transcript. It is
+same path `session_compact` uses). A short resume prompt follows ONLY when
+the session really had work in progress when it was compacted (a background
+task outstanding, a tool call still unanswered or a parked permission
+request, an unanswered prompt, or a last turn that ended on an error, a
+cancellation or an interruption); an idle session that was simply done gets
+its context freed and nothing else. The session title and the checkpoint's
+goal are never the trigger (the goal falls back to the title, so a
+goal-based rule fired on essentially every session). The compaction carries
+the path of the full transcript and a reminder that `transcript_search` /
+`transcript_read` exist, so the session can look up anything the summary
+dropped: on the compact command itself for a harness whose command takes an
+argument (claude-code), otherwise as a one-line note riding along with the
+next prompt the session receives (never a turn of its own). It is
 window-independent: the percent ladder never fires on a 1M-token window (558k
 of 1M is "55% full", the warn band), so a long session grew without ever
 compacting. Default 150000, clamped to 200000 max, `0` disables. The
