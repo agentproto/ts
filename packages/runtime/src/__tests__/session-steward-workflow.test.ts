@@ -1436,4 +1436,25 @@ describe("session-steward workflow — over-cap session_list pages", () => {
     expect(scan?.counts.listed).toBe(568)
     expect(scan?.counts.listTruncated).toBe(false)
   })
+
+  it("surfaces a page-budget truncation in the report instead of scanning a partial fleet silently", async () => {
+    const rows = terminalRows(900)
+    const { dispatchTool } = fakeTools({ entries: [], liveExtra: rows, maxResultBytes: 100_000 })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, { ...createDaemonToolRegistry(handle, dispatchTool), agentRefs: { [JUDGE_REF]: { adapter: "mock-agent" } } })
+    let scan: { counts: { terminal: number; listTruncated: boolean } } | undefined
+    let report: unknown
+    await runWorkflow({
+      workflow: compiled,
+      agents: judgeHost({}).host,
+      input: { callerSessionId: SELF },
+      onStepComplete: (id: string, out: unknown) => {
+        if (id === "scan") scan = out as typeof scan
+        if (id === "report") report = out
+      },
+    })
+    expect(scan?.counts.listTruncated).toBe(true)
+    expect(scan?.counts.terminal).toBe(800)
+    expect(String(report)).toContain("TRUNCATED at 800 rows per query")
+  })
 })

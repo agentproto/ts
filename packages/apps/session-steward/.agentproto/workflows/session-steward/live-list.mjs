@@ -57,6 +57,8 @@ export const LIST_PAGE_LIMIT = 50
  *  The 72 h ended-window is ~570 rows today, and a page past the end costs
  *  only an empty transform (no tool call), so the extra steps are free. */
 export const LIST_EXTRA_PAGES = 15
+/** Rows one query can hold across all pages (the report quotes this). */
+export const LIST_PAGE_BUDGET = LIST_PAGE_LIMIT * (LIST_EXTRA_PAGES + 1)
 
 const pageSuffix = n => `Page${n}`
 const cursorId = (id, n) => `${id}Cursor${n}`

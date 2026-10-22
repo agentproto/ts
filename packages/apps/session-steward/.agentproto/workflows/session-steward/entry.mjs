@@ -30,7 +30,7 @@
 // fold. This file wires them over `session_list` / `tool_calls_list` /
 // `host_load` / `app_state`.
 
-import { LIST_EXTRA_PAGES, LIST_PAGE_LIMIT, liveListSteps, scannedRows } from "./live-list.mjs"
+import { LIST_PAGE_BUDGET, liveListSteps, scannedRows } from "./live-list.mjs"
 import {
   classifyOrigin,
   decideAction,
@@ -720,14 +720,16 @@ export function buildReport(b) {
   lines.push(`- RAM freed (closed sessions): ${fmtMB(freed)}`)
   lines.push(`- RAM still held by idle sessions: ${fmtMB(held)}`)
 
-  // Explicit "0 candidates" explanation (mission item 8) — say WHY, instead
-  // of leaving an empty table to interpret.
+  // A page-budget truncation is a partial fleet, not a quiet small one — say
+  // so, the same way the classify report does, so `terminal`/archive counts
+  // are never read as complete when they are not.
   const scan = b.steps.scan
   if (scan?.counts?.listTruncated) {
-    lines.push(
-      `- WARNING: the session listing was truncated at ${LIST_PAGE_LIMIT * (LIST_EXTRA_PAGES + 1)} rows per query — older sessions were not scanned, so the counts above under-report the fleet.`,
-    )
+    lines.push(`- session listing TRUNCATED at ${LIST_PAGE_BUDGET} rows per query — older sessions are NOT in this scan; terminal/archive counts below are a lower bound.`)
   }
+
+  // Explicit "0 candidates" explanation (mission item 8) — say WHY, instead
+  // of leaving an empty table to interpret.
   if (scan && c.close.length === 0 && c.stuck.length === 0 && verdicts.length === 0) {
     lines.push(`- ${explainZeroCandidates(scan.counts)}`)
   }
