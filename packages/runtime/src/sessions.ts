@@ -201,6 +201,7 @@ import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
 import type { SandboxCheckpointConfig, SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
+import { checkpointRefFromRecord, type SessionCheckpointRef } from "./checkpoint-resume.js"
 import {
   createSessionMessage,
   escapeHumanPrompt,
@@ -1845,6 +1846,11 @@ export interface SessionDescriptor {
   /** Free-text label the spawner can attach (e.g. conversation id,
    *  operator name) so the UI can group/filter. */
   label?: string
+  /** Correlation key of the work this session does: the task the session was
+   *  spawned FOR. A relaunch links itself to the dead session carrying the
+   *  same task id (see `checkpoint-resume.ts`) and restores that session's
+   *  last checkpoint. Absent on sessions spawned without a task id. */
+  taskId?: string
   /** Derived from the session's FIRST prompt — what this conversation is
    *  about, for a UI that would otherwise show the adapter's argv. Distinct
    *  from `label`, which the spawner supplies. A derived `title` now OUTRANKS
@@ -2731,6 +2737,13 @@ export interface SessionDescriptor {
    *  `agentproto-checkpoint/<branch>`, bundle fallback). What survives a box
    *  that dies outside `close()`. */
   sandboxCheckpoint?: SandboxDeliveryRecord
+  /** The LAST checkpoint of this session, as a link the session owns: the ref
+   *  of the snapshot on the workspace remote, its sha, the work branch it
+   *  belongs to. Written by the daemon when it creates the checkpoint
+   *  (`registry.recordSandboxCheckpoint`), so a relaunch can restore THAT
+   *  snapshot instead of guessing from the branch name. Absent when no
+   *  checkpoint ever reached the remote. */
+  lastCheckpoint?: SessionCheckpointRef
   /** Where the session's work branch lives inside its box (checkout dir, branch,
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
@@ -5474,6 +5487,11 @@ export interface SpawnAgentInput {
    *  user text (no synthesized preamble, e.g. a human reprompt). */
   initialPromptSystem?: string
   label?: string
+  /** Correlation key of the work this session does: the task the session was
+   *  spawned FOR. Recorded on {@link SessionDescriptor.taskId} so a relaunch
+   *  naming the same task id resumes THIS session's last checkpoint (crash
+   *  resume, see `checkpoint-resume.ts`). */
+  taskId?: string
   /** Title to stamp on the descriptor up-front, BEFORE the `initialPrompt`
    *  turn runs. Set by the spawn path from the CALLER's ask (`input.prompt`),
    *  so the self-heal in `runAgentTurn` never derives a title from the
@@ -11193,6 +11211,9 @@ export function createSessionsRegistry(opts?: {
         // conversation rather than starting blank.
         adapterSessionId: input.agentSession.sessionId,
         ...(input.label ? { label: input.label } : {}),
+        // Correlation key of the work (crash resume): a relaunch naming the
+        // same task id resumes THIS session's checkpoint.
+        ...(input.taskId ? { taskId: input.taskId } : {}),
         // Stamp the caller-derived title BEFORE `runAgentTurn` fires below, so
         // the self-heal there never claims the title from the composed prompt.
         ...(input.title ? { title: input.title } : {}),
@@ -11408,6 +11429,9 @@ export function createSessionsRegistry(opts?: {
           ? { modelDerivedApiKey: input.modelDerivedApiKey }
           : {}),
         ...(input.label ? { label: input.label } : {}),
+        // Correlation key of the work (crash resume), same rule as
+        // `spawnAgent`: a relaunch naming this task id resumes the session.
+        ...(input.taskId ? { taskId: input.taskId } : {}),
         ...(input.title ? { title: input.title } : {}),
         ...(input.label ? { renamedByUser: false } : {}),
         ...(input.mcpServers ? { mcpServers: input.mcpServers } : {}),
@@ -13540,6 +13564,15 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt || rt.desc.kind !== "agent-cli") return false
       rt.desc.sandboxDelivery = record
+      // The teardown delivery can be the LAST checkpoint of the session (it
+      // snapshots the uncommitted work too): the session keeps the link to
+      // it, exactly like the periodic checkpoint above.
+      const deliveryCheckpoint = checkpointRefFromRecord(record, {
+        sessionId: id,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ...(rt.desc.taskId ? { taskId: rt.desc.taskId } : {}),
+      })
+      if (deliveryCheckpoint) rt.desc.lastCheckpoint = deliveryCheckpoint
       appendLine(rt, notice, "stdout")
       transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: notice })
       // Delivery runs during teardown, after kill() already closed the writer,
@@ -13573,6 +13606,17 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt || rt.desc.kind !== "agent-cli") return false
       rt.desc.sandboxCheckpoint = record
+      // CRASH RESUME - the session remembers the checkpoint it just took:
+      // the ref of the snapshot on the remote, so a relaunch (a restart or a
+      // new spawn linked to this session) restores THAT snapshot instead of
+      // starting from main. Written here, where the checkpoint is created,
+      // so the link can never drift from the checkpoint itself.
+      const checkpointRef = checkpointRefFromRecord(record, {
+        sessionId: id,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ...(rt.desc.taskId ? { taskId: rt.desc.taskId } : {}),
+      })
+      if (checkpointRef) rt.desc.lastCheckpoint = checkpointRef
       const touchedRemote =
         record.push.status !== "skipped" ||
         record.checkpoint !== undefined ||
