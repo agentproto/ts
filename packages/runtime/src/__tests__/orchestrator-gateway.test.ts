@@ -198,7 +198,7 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
 
     const result = await client.callTool({
       name: "agent_start",
-      // `full: true` — the raw descriptor: `mcpServers` is one of the
+      // `full: true`, the raw descriptor: `mcpServers` is one of the
       // bulky fields the default (compact) answer does not carry.
       arguments: { adapter: "hermes", cwd: process.cwd(), full: true },
     })
@@ -256,7 +256,7 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
 
     const result = await client.callTool({
       name: "agent_start",
-      // `full: true` — the raw descriptor: `mcpServers` is one of the
+      // `full: true`, the raw descriptor: `mcpServers` is one of the
       // bulky fields the default (compact) answer does not carry.
       arguments: { adapter: "hermes", cwd: process.cwd(), role: "supervisor", full: true },
     })

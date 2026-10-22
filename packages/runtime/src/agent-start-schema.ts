@@ -575,7 +575,7 @@ export const agentStartInputShape = {
     ),
   // ── RESPONSE-SHAPE switches (they change NOTHING about the spawn) ──
   // `agent_start` answers with the session's descriptor. By DEFAULT it
-  // answers with the COMPACT projection (identity/routing + counters) —
+  // answers with the COMPACT projection (identity/routing + counters) -
   // the bulky fields (availableCommands, availableModes, configOptions,
   // mcpServers, appendSystemPrompt, …) stay behind `full: true`. Same
   // precedent as `session_list` / `adapter_list`.
@@ -583,7 +583,7 @@ export const agentStartInputShape = {
     .boolean()
     .optional()
     .describe(
-      `Return the FULL raw descriptor instead of the compact projection — ` +
+      `Return the FULL raw descriptor instead of the compact projection, ` +
         `every field, including the bulky ones (availableCommands, ` +
         `availableModes, configOptions, mcpServers, appendSystemPrompt). ` +
         `${help("full")}`

@@ -1,7 +1,7 @@
 # session_commands
 
-List the slash-commands a session's harness advertises — the `/…` commands
-and skills the agent answers to — PAGE BY PAGE.
+List the slash-commands a session's harness advertises, the `/…` commands
+and skills the agent answers to, PAGE BY PAGE.
 
 The list used to travel inside every `agent_start` answer (60 entries weigh
 ~10 KB, and the answer also carried the AGENTS.md body). `agent_start` now
@@ -11,7 +11,7 @@ itself is read here, one page at a time.
 
 ## Addressing
 
-`sessionId` (canonical), `idOrName` or `slug` — the same three handles every
+`sessionId` (canonical), `idOrName` or `slug`, the same three handles every
 session-addressing tool takes.
 
 ## limit / cursor
@@ -21,20 +21,20 @@ the list. The page envelope is `{ items, nextCursor?, total }`.
 
 A call with neither `limit` nor `cursor` is capped at 50 rows (the default
 limit): the answer is `{ commands, total }`, plus `truncated: true` and
-`nextCursor` when the list is longer than 50 — pass that cursor to read on.
+`nextCursor` when the list is longer than 50, pass that cursor to read on.
 Walking with a small `limit` until `nextCursor` is absent covers the whole
-list exactly once — the cursor is keyed on the command NAME, so it stays
+list exactly once, the cursor is keyed on the command NAME, so it stays
 stable across calls.
 
 ## name
 
-Keep only the commands whose name starts with this prefix — `"/sk"` for the
+Keep only the commands whose name starts with this prefix, `"/sk"` for the
 `/skill-*` family. Applied BEFORE the pagination, so `total` reflects the
 filtered list.
 
 ## scope
 
-Keep only the commands with this exact scope — the harness' own scope label
+Keep only the commands with this exact scope, the harness' own scope label
 (`"user"`, `"project"`, …). Applied before the pagination too.
 
 ## fields
@@ -46,7 +46,7 @@ Per-row allowlist: keep only the named keys of each row. The row keys are
 
 `full: true` adds the harness' own `input` and `_meta` blobs back to every
 row (the raw ACP command entry); the default rows are compact
-(`name`/`description`/`hint`/`scope` — the fields the UI reads).
+(`name`/`description`/`hint`/`scope`, the fields the UI reads).
 
 ## Row shape
 

@@ -893,7 +893,7 @@ are set; `0` disables the timer AND the turn-end hook even when
 
 ## full
 
-Response-shape switch — it changes NOTHING about the spawn, only about what
+Response-shape switch, it changes NOTHING about the spawn, only about what
 the answer carries.
 
 By DEFAULT `agent_start` answers with the COMPACT projection: the session's
@@ -904,7 +904,7 @@ fields (`availableCommandsCount`, `availableModesCount`,
 `commandsRef` pointing at the `session_commands` tool that serves the
 slash-command list page by page.
 
-`full: true` restores the RAW descriptor — every field, byte for byte the
+`full: true` restores the RAW descriptor, every field, byte for byte the
 pre-projection answer, including the heavy ones (`availableCommands`,
 `availableModes`, `configOptions`, the full `mcpServers` specs and
 `appendSystemPrompt`, i.e. the AGENTS.md body). Use it when you really need
@@ -916,7 +916,7 @@ are compact by default with a `full:true` escape hatch.
 
 ## fields
 
-Response-shape switch — an explicit allowlist of the fields the answer
+Response-shape switch, an explicit allowlist of the fields the answer
 carries (`["id", "model", …]`). `id` is always kept, whatever the list says.
 
 The named fields are served from the RAW descriptor, so asking for a heavy

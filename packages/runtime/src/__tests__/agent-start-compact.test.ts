@@ -1,5 +1,5 @@
 /**
- * `agent_start`'s response projection — the COMPACT descriptor by default,
+ * `agent_start`'s response projection, the COMPACT descriptor by default,
  * `full:true` for the raw one, `fields:[...]` for an explicit allowlist.
  *
  * The heavy fields (the harness' whole slash-command list, the AGENTS.md
@@ -29,7 +29,7 @@ const MODES = [
 ]
 const CONFIG_OPTIONS = [{ id: "model", name: "model", type: "select" }]
 const MCP_SERVERS = [{ name: "daemon", transport: "http" as const, ref: "http://127.0.0.1:18790/mcp" }]
-const SYSTEM_PROMPT = "AGENTS.md body — ".repeat(500)
+const SYSTEM_PROMPT = "AGENTS.md body, ".repeat(500)
 
 function parseToolJson(result: unknown): Record<string, any> {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content
@@ -80,7 +80,7 @@ async function setup(): Promise<{
   return { client, lastDescriptor: () => descriptor }
 }
 
-describe("agent_start — compact descriptor by default", () => {
+describe("agent_start, compact descriptor by default", () => {
   it("drops the heavy fields and keeps the counters", async () => {
     const { client } = await setup()
     const body = parseToolJson(
@@ -124,7 +124,7 @@ describe("agent_start — compact descriptor by default", () => {
   })
 })
 
-describe("agent_start — full:true restores the raw descriptor", () => {
+describe("agent_start, full:true restores the raw descriptor", () => {
   it("returns the current form, field by field", async () => {
     const { client, lastDescriptor } = await setup()
     const raw = parseToolJson(
@@ -149,7 +149,7 @@ describe("agent_start — full:true restores the raw descriptor", () => {
   })
 })
 
-describe("agent_start — fields allowlist", () => {
+describe("agent_start, fields allowlist", () => {
   it("keeps only the named fields (plus id)", async () => {
     const { client } = await setup()
     const body = parseToolJson(
