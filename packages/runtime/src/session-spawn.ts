@@ -5133,7 +5133,7 @@ export async function spawnAgentSession(
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(input.wait && effectivePrompt ? {} : effectivePrompt ? { initialPrompt: effectivePrompt } : {}),
       ...(initialSystemPrompt ? { initialPromptSystem: initialSystemPrompt } : {}),
-      ...(input.label ? { label: input.label } : {}),
+      ...(resumeLabel ? { label: resumeLabel } : {}),
       // CRASH RESUME - the task this session works on: the correlation key a
       // later relaunch names to resume THIS session's checkpoint.
       ...(resumeTaskId ? { taskId: resumeTaskId } : {}),

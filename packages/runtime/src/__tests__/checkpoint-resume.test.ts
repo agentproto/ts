@@ -425,6 +425,40 @@ describe("checkpoint resume", () => {
       registry.shutdown()
     })
 
+    it("carries the label across a resume by session id, so the next relaunch can find it by label", async () => {
+      box.commands.length = 0
+      const registry = createSessionsRegistry({ persist: false })
+      const dead = deadSession(registry)
+
+      // Hop 1: resume by session id - the relaunch passes no label of its own.
+      const first = await relaunch(registry, { sessionId: dead.id })
+      expect(first.ok).toBe(true)
+      if (!first.ok) return
+      // The relaunch inherits both correlation keys from the dead session.
+      expect(first.descriptor.label).toBe("t18")
+      expect(first.descriptor.taskId).toBe("task-42")
+
+      // Hop 2: the relaunch crashes after checkpointing; relaunch by label.
+      registry.recordSandboxCheckpoint(
+        first.descriptor.id,
+        checkpointRecord({
+          branch: "wt/newer",
+          checkpoint: { status: "pushed", ref: "agentproto-checkpoint/wt/newer", sha: "d".repeat(40) },
+        }),
+        "checkpointed",
+      )
+      registry.kill(first.descriptor.id, "SIGKILL", "crashed")
+
+      box.commands.length = 0
+      const second = await relaunch(registry, { label: "t18" })
+      expect(second.ok).toBe(true)
+      // The NEWEST checkpoint wins, not the original dead row's.
+      const restore = box.commands.filter(c => c.includes("git restore --source="))
+      expect(restore).toHaveLength(1)
+      expect(restore[0]).toContain("refs/remotes/origin/agentproto-checkpoint/wt/newer")
+      registry.shutdown()
+    })
+
     it("starts from the base branch when nothing is resumed", async () => {
       box.commands.length = 0
       const registry = createSessionsRegistry({ persist: false })
