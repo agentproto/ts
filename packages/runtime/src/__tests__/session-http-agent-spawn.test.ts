@@ -246,6 +246,26 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("buildSpawnSessionHttpArgs forwards `hooks` (agent-level clerk hook) exactly like agent_start", () => {
+    const hooks = {
+      clerk: {
+        enabled: true,
+        on: "turn_end",
+        debounceMs: 30_000,
+        run: {
+          command: "node",
+          args: ["projects/pygmalion/scripts/clerk-task-secretary.mjs", "--board", "ws:simone"],
+        },
+      },
+    }
+    expect(buildSpawnSessionHttpArgs({ hooks }, "mock").hooks).toEqual(hooks)
+    // A JSON-stringified body field (form-ish callers) is tolerated too.
+    expect(buildSpawnSessionHttpArgs({ hooks: JSON.stringify(hooks) }, "mock").hooks).toEqual(hooks)
+    // Malformed hooks are dropped, never half-applied.
+    expect(buildSpawnSessionHttpArgs({ hooks: { clerk: { on: "not-an-event" } } }, "mock")).not.toHaveProperty("hooks")
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("hooks")
+  })
+
   it("buildSpawnSessionHttpArgs forwards `browser` (true is sugar for headless; junk dropped)", () => {
     expect(buildSpawnSessionHttpArgs({ browser: "headless" }, "mock").browser).toBe("headless")
     expect(buildSpawnSessionHttpArgs({ browser: true }, "mock").browser).toBe("headless")
