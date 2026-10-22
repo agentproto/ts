@@ -1,8 +1,11 @@
 # Agent harness
 
 The repo ships an AI agent that reviews PRs, fixes review comments, opens PRs,
-and answers questions — driven by GitHub Actions + the Claude API. Two entry
-surfaces share one core.
+and answers questions. Driven by GitHub Actions + agentproto's agent lanes.
+The automatic review and auto-fix run on the free OpenCode Zen routes
+(`opencode/deepseek-v4.1-flash-free` primary, `opencode/mimo-v2.6-flash-free`
+fallback): free by default, with no Anthropic key and no paid Go subscription
+key. Two entry surfaces share one core.
 
 ## Surfaces
 
@@ -15,6 +18,8 @@ surfaces share one core.
    structured review (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`).
 5. `pr-fix` — if the review requested changes, the agent applies them and pushes
    to the PR branch. Bounded by `maxFixIterations`, then escalates to a human.
+   Runs on the same free OpenCode Zen model through
+   `.github/agentproto-workflows/review-fix/WORKFLOW.md`, on the CI checkout.
 
 ### Automatic (on issue open) — `.github/workflows/issue-triage.yml`
 When an issue is opened/reopened, the agent reads it, applies existing labels,
@@ -50,7 +55,7 @@ The bot reacts 👀 on the triggering comment, then ✅ / ❌ when done.
 ```jsonc
 {
   "blocking": true,                 // CHANGES_REQUESTED fails the merge gate
-  "model": "claude-sonnet-5-5",     // model for all flows
+  "model": "opencode/deepseek-v4.1-flash-free", // model for all flows
   "fixDelivery": "commit",          // default for on-demand /fix: "commit" | "pr"
   "botMention": "@agentproto-bot",  // literal trigger word — see note below
   "maxFixIterations": 3,            // auto-fix loop bound
@@ -137,8 +142,14 @@ A flow = a system prompt + a `buildToolset([...])` selection + a skill set. Add
 a capability by adding a tool in `tools.mjs` and referencing it (or a `@group`)
 from a flow.
 
-## Secrets / vars (already configured)
-- `secrets.ANTHROPIC_API_KEY` — Claude API.
+## Secrets / vars (configure these)
+- `secrets.OPENCODE_API_KEY`, `secrets.OPENCODE_API_KEY_WS02`,
+  `secrets.OPENCODE_API_KEY_WS03`: Zen keys for the free review and auto-fix
+  lanes. Any one of them funds the default free route; no Go key is required.
+- `secrets.OPENCODE_GO_API_KEY`: Go subscription key used by the other agent
+  workflows (release notes, docs check, manual review). Not read by pr-review
+  or pr-fix. The `opencode-developerws003` (ws03) profile is not used by CI.
+- `secrets.ANTHROPIC_API_KEY`: legacy; no longer used by pr-review / pr-fix.
 - `vars.BOT_APP_ID` + `secrets.BOT_APP_PRIVATE_KEY` — GitHub App; mints a token
   so the bot acts under its own identity with `contents`/`pull-requests` write.
   Falls back to `secrets.GITHUB_TOKEN` when absent.
