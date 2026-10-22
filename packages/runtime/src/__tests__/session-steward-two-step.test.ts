@@ -650,3 +650,34 @@ describe("footprint — no whole-registry step output", () => {
     expect(JSON.stringify(output).length).toBeLessThan(60_000)
   })
 })
+
+describe("classify report — page-budget truncation note", () => {
+  const TWO_STEP_PATH = join(WORKFLOWS, "session-steward", "two-step.mjs")
+
+  it("quotes the real row budget (LIST_PAGE_BUDGET), not the old hardcoded 600", async () => {
+    const { classifyReport, twoStepSettings } = (await import(TWO_STEP_PATH)) as {
+      classifyReport: (b: Record<string, unknown>) => string
+      twoStepSettings: (input: Record<string, unknown>, modelRoles: unknown, opts?: { planning?: boolean }) => Record<string, unknown>
+    }
+    const settings = twoStepSettings({ persist: false }, null)
+    const report = classifyReport({
+      input: {},
+      steps: {
+        settings,
+        snapshot: {
+          id: "snap_budget",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          sessions: [],
+          settings,
+          rules: { source: "default", count: 0 },
+          counts: {},
+          scan: { truncated: true, jevUnavailable: 0, judgeOverflow: 0, heldOmitted: 0, archiveOmitted: 0 },
+        },
+        rules: { ok: true, source: "default" },
+        hostLoad: null,
+      },
+    })
+    expect(report).toContain("truncated at 800 rows per query")
+    expect(report).not.toContain("600 rows per query")
+  })
+})
