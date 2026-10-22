@@ -46,17 +46,48 @@ export const LIVE_FIELDS = [
   "worktree",
 ]
 
-export const LIST_PAGE_LIMIT = 200
-/** Pages fetched after the first one (so 3 × 200 = 600 rows per query max). */
-export const LIST_EXTRA_PAGES = 2
+/** Rows per page. The MCP contract layer replaces any result over 100 000
+ *  bytes with a `{truncated:true,…}` marker (`MCP_RESULT_MAX_BYTES`,
+ *  `packages/mcp-server/src/to-mcp-tool.ts`). These 32 projected fields run
+ *  ~1.3 KB/row on a real registry, so the old 200-row page serialized to
+ *  ~256 KB and ALWAYS came back as that marker. 50 rows (~62 KB) leaves a
+ *  wide margin even after a field grows. */
+export const LIST_PAGE_LIMIT = 50
+/** Pages fetched after the first one (so 16 × 50 = 800 rows per query max).
+ *  The 72 h ended-window is ~570 rows today, and a page past the end costs
+ *  only an empty transform (no tool call), so the extra steps are free. */
+export const LIST_EXTRA_PAGES = 15
 
 const pageSuffix = n => `Page${n}`
 const cursorId = (id, n) => `${id}Cursor${n}`
 
-/** The page envelope out of a page-1 tool output or a map-collect output. */
-function pageOf(out) {
+const DEFAULT_TRUNCATED_HINT = "use limit/cursor/fields"
+
+/** The daemon's over-cap marker, if `v` is one. */
+function truncatedMarkerOf(v) {
+  if (!v || typeof v !== "object" || v.truncated !== true) return null
+  return {
+    totalBytes: typeof v.totalBytes === "number" ? v.totalBytes : 0,
+    hint: typeof v.hint === "string" && v.hint ? v.hint : DEFAULT_TRUNCATED_HINT,
+  }
+}
+
+/** The page envelope out of a page-1 tool output or a map-collect output.
+ *
+ *  A page replaced by the daemon's truncation marker is NOT an empty page.
+ *  Treating one as "no rows" is what made the steward scan 0-2 of 538
+ *  terminal sessions (`terminal: 0`, no archive proposed) — but `truncated`
+ *  is only ever a hint to re-page, never a result. Throw so the run fails
+ *  visibly instead of silently classifying an empty fleet. */
+function pageOf(out, what = "session_list") {
   if (Array.isArray(out?.items)) return out
   const v = out?.results?.[0]?.value
+  const marker = truncatedMarkerOf(out) ?? truncatedMarkerOf(v)
+  if (marker) {
+    throw new Error(
+      `${what} page was truncated by the MCP result cap (${marker.totalBytes} bytes; hint: ${marker.hint}) — refusing to treat it as an empty page`,
+    )
+  }
   return Array.isArray(v?.items) ? v : null
 }
 
@@ -82,7 +113,7 @@ export function pagedListSteps(id, filter) {
       id: cursorId(id, n),
       kind: "transform",
       compute: b => {
-        const cursor = pageOf(b.steps[from])?.nextCursor
+        const cursor = pageOf(b.steps[from], from)?.nextCursor
         return cursor ? [{ cursor }] : []
       },
     })
@@ -107,12 +138,12 @@ export function pagedRows(steps, id) {
   const ids = [id]
   for (let n = 2; n <= LIST_EXTRA_PAGES + 1; n++) ids.push(`${id}${pageSuffix(n)}`)
   for (const key of ids) {
-    const page = pageOf(steps?.[key])
+    const page = pageOf(steps?.[key], key)
     if (!page) continue
     rows.push(...page.items)
     last = page
   }
-  return { rows, truncated: Boolean(last?.nextCursor), total: pageOf(steps?.[id])?.total ?? rows.length }
+  return { rows, truncated: Boolean(last?.nextCursor), total: pageOf(steps?.[id], id)?.total ?? rows.length }
 }
 
 /** Rows of several queries, de-duplicated by id (first query wins). */

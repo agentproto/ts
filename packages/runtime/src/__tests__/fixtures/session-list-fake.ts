@@ -21,7 +21,12 @@ const activityMs = (r: Row, nowMs: number): number => {
   return Number.isNaN(ms) ? nowMs : ms
 }
 
-export function emulateSessionList(all: readonly Row[], inputs: Record<string, unknown>, nowMs = Date.now()): Record<string, unknown> {
+export function emulateSessionList(
+  all: readonly Row[],
+  inputs: Record<string, unknown>,
+  nowMs = Date.now(),
+  opts: { maxBytes?: number } = {},
+): Record<string, unknown> {
   let rows = all.filter(r => r.archived !== true || inputs.includeArchived === true)
   if (typeof inputs.status === "string") rows = rows.filter(r => r.status === inputs.status)
   else if (inputs.onlyAlive === true) rows = rows.filter(r => r.status === "running" || r.status === "starting")
@@ -37,14 +42,23 @@ export function emulateSessionList(all: readonly Row[], inputs: Record<string, u
   const fields = Array.isArray(inputs.fields) ? (inputs.fields as string[]) : undefined
   const render = (list: readonly Row[]): Row[] =>
     fields ? list.map(r => Object.fromEntries(Object.entries(r).filter(([k]) => fields.includes(k)))) : [...list]
-  if (inputs.limit === undefined && inputs.cursor === undefined) return { sessions: render(rows), total: rows.length }
+  if (inputs.limit === undefined && inputs.cursor === undefined) return cap({ sessions: render(rows), total: rows.length })
   const limit = Math.min(Number(inputs.limit ?? 50), 200)
   const start = typeof inputs.cursor === "string" ? Number(Buffer.from(inputs.cursor, "base64").toString("utf8")) : 0
   const page = rows.slice(start, start + limit)
   const next = start + limit
-  return {
+  return cap({
     items: render(page),
     ...(next < rows.length ? { nextCursor: Buffer.from(String(next)).toString("base64") } : {}),
     total: rows.length,
+  })
+
+  /** Mirror the MCP contract layer: an over-budget result is replaced WHOLE by
+   *  `{truncated:true,totalBytes,hint}` — the rows are gone, not empty. */
+  function cap(result: Record<string, unknown>): Record<string, unknown> {
+    if (opts.maxBytes === undefined) return result
+    const totalBytes = Buffer.byteLength(JSON.stringify(result), "utf8")
+    if (totalBytes <= opts.maxBytes) return result
+    return { truncated: true, totalBytes, hint: "use limit/cursor/fields" }
   }
 }

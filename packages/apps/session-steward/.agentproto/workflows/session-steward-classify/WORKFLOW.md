@@ -66,7 +66,7 @@ steps:
     kind: tool
     name: "Live sessions (projected, paged)"
     tool: session_list
-    inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200}
+    inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50}
 
   - id: liveSessionsCursor2
     kind: transform
@@ -84,7 +84,7 @@ steps:
         kind: tool
         name: "live sessions page2 fetch"
         tool: session_list
-        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200,"cursor":"$item.cursor"}
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
 
   - id: liveSessionsCursor3
     kind: transform
@@ -102,13 +102,247 @@ steps:
         kind: tool
         name: "live sessions page3 fetch"
         tool: session_list
-        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200,"cursor":"$item.cursor"}
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor4
+    kind: transform
+    name: "live sessions cursor4"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage4
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor4"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage4Fetch
+        kind: tool
+        name: "live sessions page4 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor5
+    kind: transform
+    name: "live sessions cursor5"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage5
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor5"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage5Fetch
+        kind: tool
+        name: "live sessions page5 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor6
+    kind: transform
+    name: "live sessions cursor6"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage6
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor6"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage6Fetch
+        kind: tool
+        name: "live sessions page6 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor7
+    kind: transform
+    name: "live sessions cursor7"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage7
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor7"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage7Fetch
+        kind: tool
+        name: "live sessions page7 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor8
+    kind: transform
+    name: "live sessions cursor8"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage8
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor8"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage8Fetch
+        kind: tool
+        name: "live sessions page8 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor9
+    kind: transform
+    name: "live sessions cursor9"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage9
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor9"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage9Fetch
+        kind: tool
+        name: "live sessions page9 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor10
+    kind: transform
+    name: "live sessions cursor10"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage10
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor10"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage10Fetch
+        kind: tool
+        name: "live sessions page10 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor11
+    kind: transform
+    name: "live sessions cursor11"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage11
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor11"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage11Fetch
+        kind: tool
+        name: "live sessions page11 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor12
+    kind: transform
+    name: "live sessions cursor12"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage12
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor12"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage12Fetch
+        kind: tool
+        name: "live sessions page12 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor13
+    kind: transform
+    name: "live sessions cursor13"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage13
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor13"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage13Fetch
+        kind: tool
+        name: "live sessions page13 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor14
+    kind: transform
+    name: "live sessions cursor14"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage14
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor14"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage14Fetch
+        kind: tool
+        name: "live sessions page14 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor15
+    kind: transform
+    name: "live sessions cursor15"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage15
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor15"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage15Fetch
+        kind: tool
+        name: "live sessions page15 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: liveSessionsCursor16
+    kind: transform
+    name: "live sessions cursor16"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: liveSessionsPage16
+    kind: map
+    name: "Live sessions (projected, paged)"
+    over: "$steps.liveSessionsCursor16"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: liveSessionsPage16Fetch
+        kind: tool
+        name: "live sessions page16 fetch"
+        tool: session_list
+        inputs: {"onlyAlive":true,"fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
 
   - id: endedSessions
     kind: tool
     name: "Recently active sessions (projected, paged)"
     tool: session_list
-    inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200}
+    inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50}
 
   - id: endedSessionsCursor2
     kind: transform
@@ -126,7 +360,7 @@ steps:
         kind: tool
         name: "ended sessions page2 fetch"
         tool: session_list
-        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200,"cursor":"$item.cursor"}
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
 
   - id: endedSessionsCursor3
     kind: transform
@@ -144,7 +378,241 @@ steps:
         kind: tool
         name: "ended sessions page3 fetch"
         tool: session_list
-        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":200,"cursor":"$item.cursor"}
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor4
+    kind: transform
+    name: "ended sessions cursor4"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage4
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor4"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage4Fetch
+        kind: tool
+        name: "ended sessions page4 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor5
+    kind: transform
+    name: "ended sessions cursor5"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage5
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor5"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage5Fetch
+        kind: tool
+        name: "ended sessions page5 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor6
+    kind: transform
+    name: "ended sessions cursor6"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage6
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor6"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage6Fetch
+        kind: tool
+        name: "ended sessions page6 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor7
+    kind: transform
+    name: "ended sessions cursor7"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage7
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor7"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage7Fetch
+        kind: tool
+        name: "ended sessions page7 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor8
+    kind: transform
+    name: "ended sessions cursor8"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage8
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor8"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage8Fetch
+        kind: tool
+        name: "ended sessions page8 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor9
+    kind: transform
+    name: "ended sessions cursor9"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage9
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor9"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage9Fetch
+        kind: tool
+        name: "ended sessions page9 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor10
+    kind: transform
+    name: "ended sessions cursor10"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage10
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor10"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage10Fetch
+        kind: tool
+        name: "ended sessions page10 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor11
+    kind: transform
+    name: "ended sessions cursor11"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage11
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor11"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage11Fetch
+        kind: tool
+        name: "ended sessions page11 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor12
+    kind: transform
+    name: "ended sessions cursor12"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage12
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor12"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage12Fetch
+        kind: tool
+        name: "ended sessions page12 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor13
+    kind: transform
+    name: "ended sessions cursor13"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage13
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor13"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage13Fetch
+        kind: tool
+        name: "ended sessions page13 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor14
+    kind: transform
+    name: "ended sessions cursor14"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage14
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor14"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage14Fetch
+        kind: tool
+        name: "ended sessions page14 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor15
+    kind: transform
+    name: "ended sessions cursor15"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage15
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor15"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage15Fetch
+        kind: tool
+        name: "ended sessions page15 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
+
+  - id: endedSessionsCursor16
+    kind: transform
+    name: "ended sessions cursor16"
+    description: "Entry-based — see entry.mjs / two-step.mjs."
+
+  - id: endedSessionsPage16
+    kind: map
+    name: "Recently active sessions (projected, paged)"
+    over: "$steps.endedSessionsCursor16"
+    parallelism: 1
+    onError: collect
+    steps:
+      - id: endedSessionsPage16Fetch
+        kind: tool
+        name: "ended sessions page16 fetch"
+        tool: session_list
+        inputs: {"updatedSince":"$steps.listWindow.updatedSince","fields":["id","name","label","status","origin","parentSessionId","cwd","model","accessProfile","startedAt","lastActivityAt","endedAt","lastTurnErroredAt","lastTurnErrorMessage","lastError","lastTurnReason","turnsCompleted","tokensIn","tokensOut","costUsd","contextUsed","busy","pty","pinned","keepAlive","archived","provisioning","pendingPrompts","outcome","wrapupFlag","openedPrs","worktree"],"limit":50,"cursor":"$item.cursor"}
 
   - id: scan
     kind: transform
