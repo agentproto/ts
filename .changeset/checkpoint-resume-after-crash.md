@@ -24,6 +24,11 @@ checkpoint itself. A relaunch resolves that link:
   dead session's work branch, so its pushed commits come back as commits;
 - a LIVE session is never resumed - its work is still in its box.
 
+The correlation keys travel with the resumed session: the task id and the
+label are inherited from the resolved source, so the NEXT relaunch finds the
+session that resumed (not the one it continued). A correlation key always
+resolves to the MOST RECENT checkpoint of the matching dead sessions.
+
 The restore is a best-effort setup step, never fatal: a missing ref, a
 dirty checkout or a failed fetch leaves the session where it is and says so.
 Only a checkpoint that actually reached the remote is restorable.
