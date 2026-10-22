@@ -171,6 +171,36 @@ describe("providers store", () => {
     expect(injected).toEqual(["opencode-go"])
   })
 
+  it("re-injecting rotates a key it injected earlier, but never an explicit one", async () => {
+    await setProviderKey("anthropic", "sk-old")
+    const env: NodeJS.ProcessEnv = {}
+    await injectProviderKeysIntoEnv(env)
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-old")
+
+    await setProviderKey("anthropic", "sk-new")
+    const injected = await injectProviderKeysIntoEnv(env)
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-new")
+    expect(injected).toEqual(["anthropic"])
+
+    // Operator overrides the var themselves → store no longer wins.
+    env.ANTHROPIC_API_KEY = "sk-explicit"
+    await setProviderKey("anthropic", "sk-newer")
+    await injectProviderKeysIntoEnv(env)
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-explicit")
+  })
+
+  it("re-injecting retracts a removed key it injected earlier", async () => {
+    await setProviderKey("openrouter", "sk-or", "https://proxy.example/v1")
+    const env: NodeJS.ProcessEnv = {}
+    await injectProviderKeysIntoEnv(env)
+    expect(env.OPENROUTER_API_KEY).toBe("sk-or")
+
+    await removeProviderKey("openrouter")
+    await injectProviderKeysIntoEnv(env)
+    expect(env.OPENROUTER_API_KEY).toBeUndefined()
+    expect(env.OPENROUTER_BASE_URL).toBeUndefined()
+  })
+
   it("skips a provider whose canonical AND every alias are already set", async () => {
     await setProviderKey("google", "sk-goog-from-store")
     const env: NodeJS.ProcessEnv = {

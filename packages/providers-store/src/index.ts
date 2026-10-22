@@ -209,6 +209,16 @@ export async function injectProviderKeysIntoEnv(
 ): Promise<string[]> {
   const file = await loadProviders()
   const injected: string[] = []
+  // Env names (and values) THIS function set on `env` in an earlier call. A
+  // var holding exactly that value was never explicit, so a later call (the
+  // daemon's hot reload) may rotate or remove it; any other value is explicit
+  // env and keeps winning.
+  let tracked = injectedValues.get(env)
+  if (!tracked) {
+    tracked = new Map<string, string>()
+    injectedValues.set(env, tracked)
+  }
+  const claimed = new Set<string>()
   for (const provider of Object.keys(file.providers).sort()) {
     const entry = file.providers[provider]
     if (!entry?.apiKey) continue
@@ -217,13 +227,34 @@ export async function injectProviderKeysIntoEnv(
     const names = new Set([providerEnvVar(provider), ...providerEnvAliases(provider)])
     let didInject = false
     for (const name of names) {
-      if (env[name]) continue // explicit env wins — evaluated per env name
+      if (claimed.has(name)) continue // an earlier (sorted) provider owns it
+      const current = env[name]
+      // explicit env wins — evaluated per env name
+      if (current && current !== tracked.get(name)) continue
       env[name] = entry.apiKey
+      tracked.set(name, entry.apiKey)
+      claimed.add(name)
       didInject = true
     }
     if (!didInject) continue // every name for this provider is already set
-    if (entry.baseUrl) env[`${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_BASE_URL`] = entry.baseUrl
+    const baseVar = `${provider.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}_BASE_URL`
+    if (entry.baseUrl) {
+      env[baseVar] = entry.baseUrl
+      tracked.set(baseVar, entry.baseUrl)
+      claimed.add(baseVar)
+    }
     injected.push(provider)
+  }
+  // Retract anything we injected earlier that the store no longer supplies
+  // (a removed key, or a dropped base URL) — unless the operator has since
+  // overwritten it with their own value.
+  for (const [name, value] of [...tracked]) {
+    if (claimed.has(name)) continue
+    if (env[name] === value) delete env[name]
+    tracked.delete(name)
   }
   return injected
 }
+
+/** Per-env record of the values {@link injectProviderKeysIntoEnv} injected. */
+const injectedValues = new WeakMap<NodeJS.ProcessEnv, Map<string, string>>()

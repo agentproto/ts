@@ -62,6 +62,7 @@ import {
 import { SessionNotAliveError, SessionRetiredError, applyBracketedPasteWrap, retiredErrorWire, CALLER_SESSION_ID_HEADER } from "./sessions.js"
 import { retireSession } from "./session-retirement.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
+import { injectProviderKeysIntoEnv } from "./providers-store.js"
 import {
   createSessionMessage,
   messageFrom,
@@ -4032,6 +4033,33 @@ export async function startHttpServer(
           }
           res.writeHead(200, { "content-type": "application/json" })
           res.end(JSON.stringify(result))
+          return
+        }
+
+        // Hot-reload `providers.json` into the daemon's own env after
+        // `agentproto auth provider set`. A restart would pick the key up
+        // too, but it would also kill every live session — this mutates
+        // only env vars that are not already set (explicit env wins, same
+        // rule as boot) and never returns key material.
+        if (path === "/providers/reload" && req.method === "POST") {
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          try {
+            const providers = await injectProviderKeysIntoEnv(process.env)
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify({ ok: true, providers }))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "providers_reload_failed",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+          }
           return
         }
 

@@ -36,6 +36,7 @@ import type { ResolvedAdapter } from "./resolve.js"
 import { resolveAdapter } from "./resolve.js"
 import { CATALOG } from "./catalog.js"
 import { spawn } from "node:child_process"
+import { withNpmGlobalPrefix } from "../util/npm-prefix.js"
 
 /** True when `err` is resolveAdapter's "the adapter package is not
  *  installed" failure shape — the only shape the bootstrap may answer.
@@ -91,7 +92,12 @@ export async function spawnNpmInherit(
   args: readonly string[],
   npmSpawn?: (args: readonly string[]) => Promise<number>
 ): Promise<number> {
-  if (npmSpawn) return npmSpawn(args)
+  // A `-g` install must land in the SAME prefix as the CLI — otherwise a
+  // CLI installed with `npm i -g --prefix <dir>` (the no-sudo Linux path)
+  // cannot resolve the adapter it just installed. npmSpawn receives the
+  // pinned argv too, so tests and custom spawners see the real command.
+  const argv = withNpmGlobalPrefix(args)
+  if (npmSpawn) return npmSpawn(argv)
   return new Promise<number>((resolve) => {
     let child: ReturnType<typeof spawn>
     if (process.platform === "win32") {
@@ -100,11 +106,11 @@ export async function spawnNpmInherit(
       // refuses a literal `.cmd` without `shell: true` — go through cmd.exe.
       child = spawn(
         process.env["ComSpec"] ?? "cmd.exe",
-        ["/d", "/s", "/c", `npm ${args.join(" ")}`],
+        ["/d", "/s", "/c", `npm ${argv.join(" ")}`],
         { stdio: "inherit" }
       )
     } else {
-      child = spawn("npm", [...args], { stdio: "inherit" })
+      child = spawn("npm", [...argv], { stdio: "inherit" })
     }
     child.once("error", () => resolve(127))
     child.once("exit", (code) => resolve(code ?? 0))

@@ -12,6 +12,9 @@
  *   - `./setup.js` → `runSetup` (no-op; we don't exercise the setup pipeline)
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 const { resolveAdapterMock, spawnMock, runSetupMock, binOnPathMock, commandOnPathMock } =
   vi.hoisted(() => ({
@@ -121,7 +124,19 @@ function spawnExits(code: number) {
   })
 }
 
+// A successful install now enrolls the adapter in `config.json`, so every
+// suite pins AGENTPROTO_HOME (and HOME) to a throwaway dir — never the
+// developer's real ~/.agentproto.
+let suiteHome: string
+let suitePrevAgentprotoHome: string | undefined
+let suitePrevHome: string | undefined
+
 beforeEach(() => {
+  suiteHome = mkdtempSync(join(tmpdir(), "agp-install-suite-"))
+  suitePrevAgentprotoHome = process.env.AGENTPROTO_HOME
+  suitePrevHome = process.env.HOME
+  process.env.HOME = suiteHome
+  process.env.AGENTPROTO_HOME = join(suiteHome, ".agentproto")
   resolveAdapterMock.mockReset()
   spawnMock.mockReset()
   runSetupMock.mockReset()
@@ -133,6 +148,11 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.restoreAllMocks()
+  if (suitePrevAgentprotoHome === undefined) delete process.env.AGENTPROTO_HOME
+  else process.env.AGENTPROTO_HOME = suitePrevAgentprotoHome
+  if (suitePrevHome === undefined) delete process.env.HOME
+  else process.env.HOME = suitePrevHome
+  rmSync(suiteHome, { recursive: true, force: true })
 })
 
 describe("agentproto install — adapter package bootstrap", () => {
@@ -282,6 +302,29 @@ describe("agentproto install — vendored (generic ACP) step", () => {
     expect(cmd).toBe("uv")
     expect(argv).toEqual(["tool", "install", "mistral-vibe"])
     io.restore()
+  })
+
+  it("does not persist a phantom @agentproto/adapter-<slug> id for a generic ACP agent", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("mistral-vibe", "vibe-acp", "uv tool install mistral-vibe")
+    )
+    binOnPathMock.mockResolvedValue(true)
+    const io = captureStdio()
+
+    const code = await runInstall(["mistral-vibe"])
+    io.restore()
+
+    expect(code).toBe(0)
+    let adapters: string[] = []
+    try {
+      const cfg = JSON.parse(
+        readFileSync(join(process.env.AGENTPROTO_HOME!, "config.json"), "utf8")
+      ) as { adapters?: string[] }
+      adapters = cfg.adapters ?? []
+    } catch {
+      // no config written at all — also correct
+    }
+    expect(adapters).not.toContain("@agentproto/adapter-mistral-vibe")
   })
 
   it("not on PATH ⇒ npm-hint runs `npm install -g`", async () => {
@@ -437,6 +480,87 @@ describe("agentproto install — version_check presence gating", () => {
     expect(code).toBe(0)
     expect(spawnMock.mock.calls.find(([c]) => c === "npm")).toBeUndefined()
     expect(io.out.join("")).toMatch(/already installed \(version 0\.75\.1\)/)
+    io.restore()
+  })
+})
+
+describe("agentproto install — enables the adapter (install == adapters install)", () => {
+  let home: string
+  let prevHome: string | undefined
+  let prevAgentprotoHome: string | undefined
+
+  beforeEach(() => {
+    prevHome = process.env.HOME
+    prevAgentprotoHome = process.env.AGENTPROTO_HOME
+    home = mkdtempSync(join(tmpdir(), "agentproto-install-enable-"))
+    process.env.HOME = home
+    process.env.AGENTPROTO_HOME = join(home, ".agentproto")
+  })
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (prevAgentprotoHome === undefined) delete process.env.AGENTPROTO_HOME
+    else process.env.AGENTPROTO_HOME = prevAgentprotoHome
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  function readConfig(): { adapters?: string[]; defaults?: { adapters?: Record<string, { auth?: { mode?: string } }> } } {
+    return JSON.parse(
+      readFileSync(join(home, ".agentproto", "config.json"), "utf8"),
+    )
+  }
+
+  it("adds the adapter package to config.adapters after a successful install", async () => {
+    resolveAdapterMock.mockResolvedValue(fakeHandle("claude-code"))
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    expect(readConfig().adapters).toEqual(["@agentproto/adapter-claude-code"])
+    expect(io.out.join("")).toMatch(/enabled '@agentproto\/adapter-claude-code'/)
+    io.restore()
+  })
+
+  it("writes api-key auth when a matching provider key is already stored", async () => {
+    resolveAdapterMock.mockResolvedValue({
+      ...fakeHandle("claude-code"),
+      handle: {
+        ...fakeHandle("claude-code").handle,
+        provider: "anthropic",
+      },
+    })
+    mkdirSync(join(home, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(home, ".agentproto", "providers.json"),
+      JSON.stringify({
+        version: 1,
+        providers: {
+          anthropic: { apiKey: "sk-ant-test", updatedAt: new Date().toISOString() },
+        },
+      }),
+    )
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code"])
+
+    expect(code).toBe(0)
+    expect(readConfig().defaults?.adapters?.["claude-code"]?.auth?.mode).toBe(
+      "api-key",
+    )
+    io.restore()
+  })
+
+  it("does not touch config on --dry-run", async () => {
+    resolveAdapterMock.mockResolvedValue(fakeHandle("claude-code"))
+    const io = captureStdio()
+
+    const code = await runInstall(["claude-code", "--dry-run"])
+
+    expect(code).toBe(0)
+    expect(() => readConfig()).toThrow()
+    expect(io.out.join("")).toMatch(/would enable '@agentproto\/adapter-claude-code'/)
     io.restore()
   })
 })
