@@ -221,6 +221,27 @@ describe("session_commands", () => {
     }
   })
 
+  it("caps a call with no limit at 50 rows and hands back a cursor", async () => {
+    const { client, sessionId, close, registry } = await buildHarness()
+    try {
+      const body = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "session_commands",
+            arguments: { sessionId },
+          }),
+        ),
+      ) as { commands: CommandRow[]; total?: number; truncated?: boolean; nextCursor?: string }
+      expect(body.commands).toHaveLength(50)
+      expect(body.total).toBe(60)
+      expect(body.truncated).toBe(true)
+      expect(body.nextCursor).toBeTruthy()
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
   it("keeps one page of 200 commands under 25 KB", async () => {
     const { client, sessionId, close, registry } = await buildHarness()
     try {
