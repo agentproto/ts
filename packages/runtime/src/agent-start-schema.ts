@@ -555,6 +555,28 @@ export const agentStartInputShape = {
     .describe(
       "Internal: reattach to a prior adapter conversation. Not for tool callers."
     ),
+  // ── RESPONSE-SHAPE switches (they change NOTHING about the spawn) ──
+  // `agent_start` answers with the session's descriptor. By DEFAULT it
+  // answers with the COMPACT projection (identity/routing + counters) —
+  // the bulky fields (availableCommands, availableModes, configOptions,
+  // mcpServers, appendSystemPrompt, …) stay behind `full: true`. Same
+  // precedent as `session_list` / `adapter_list`.
+  full: z
+    .boolean()
+    .optional()
+    .describe(
+      `Return the FULL raw descriptor instead of the compact projection — ` +
+        `every field, including the bulky ones (availableCommands, ` +
+        `availableModes, configOptions, mcpServers, appendSystemPrompt). ` +
+        `${help("full")}`
+    ),
+  fields: z
+    .array(z.string())
+    .optional()
+    .describe(
+      `Keep only these fields in the response (allowlist); \`id\` is always kept. ` +
+        `Overrides the default projection for the named fields. ${help("fields")}`
+    ),
 }
 
 export const agentStartInputSchema = z.object(agentStartInputShape)

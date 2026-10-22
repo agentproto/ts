@@ -875,3 +875,38 @@ changing this only affects a FUTURE checkpoint), `minIntervalMs` /
 `intervalMs` (periodic checkpoint spacing — `intervalMs` wins when both
 are set; `0` disables the timer AND the turn-end hook even when
 `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs` (per-checkpoint wall-clock budget).
+
+## full
+
+Response-shape switch — it changes NOTHING about the spawn, only about what
+the answer carries.
+
+By DEFAULT `agent_start` answers with the COMPACT projection: the session's
+identity/routing fields (id, slug/name/label, status, cwd, adapter, model,
+mode, posture, parent, depth, timestamps…) plus COUNTERS for the bulky
+fields (`availableCommandsCount`, `availableModesCount`,
+`configOptionsCount`, `mcpServerCount`, `skillsCount`) and a
+`commandsRef` pointing at the `session_commands` tool that serves the
+slash-command list page by page.
+
+`full: true` restores the RAW descriptor — every field, byte for byte the
+pre-projection answer, including the heavy ones (`availableCommands`,
+`availableModes`, `configOptions`, the full `mcpServers` specs and
+`appendSystemPrompt`, i.e. the AGENTS.md body). Use it when you really need
+one of those fields; the answer is then as big as it always was (~29 KB on
+a session with 60 commands and an AGENTS.md).
+
+The same precedent as `session_list` / `adapter_list`: the list surfaces
+are compact by default with a `full:true` escape hatch.
+
+## fields
+
+Response-shape switch — an explicit allowlist of the fields the answer
+carries (`["id", "model", …]`). `id` is always kept, whatever the list says.
+
+The named fields are served from the RAW descriptor, so asking for a heavy
+field on purpose (`fields: ["availableCommands"]`) works; the compact
+counters stay available too. Every other field is dropped from the answer.
+
+Same convention as `?fields=` on the HTTP session routes
+(`GET /sessions/:id`).
