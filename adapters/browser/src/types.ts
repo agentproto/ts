@@ -241,6 +241,21 @@ export interface BrowserAdapterInstance {
   ): Promise<{ value: T | undefined; truncated: boolean }>
   /** Optional scroll on a provider-owned target (chrome-live): a CSS selector into view, or the window to an absolute `{x, y}`. */
   scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
+  /** Optional key press (Enter, Tab, arrows, …) on a provider-owned target (chrome-live), via trusted CDP input. */
+  pressKey?(
+    options: { key: string; selector?: string; count?: number; modifiers?: readonly ("Alt" | "Control" | "Meta" | "Shift")[] },
+    tabId?: string
+  ): Promise<{ targetId: string; key: string }>
+  /** Optional `<select>` option selection on a provider-owned target (chrome-live) by value, label or index. */
+  selectOption?(
+    options: { selector: string; value?: string; label?: string; index?: number },
+    tabId?: string
+  ): Promise<{ targetId: string; value: string; label: string; index: number }>
+  /** Optional wait for a provider-owned target's element state/text (chrome-live). */
+  waitFor?(
+    options: { selector?: string; state?: "attached" | "visible" | "enabled" | "text"; text?: string; timeoutMs?: number; pollMs?: number },
+    tabId?: string
+  ): Promise<{ targetId: string; state: "attached" | "visible" | "enabled" | "text"; matched: true; elapsedMs: number }>
   /** Optional attach of local files to one `<input type=file>` on a provider-owned target (chrome-live, CDP DOM.setFileInputFiles; paths absolute). */
   uploadFileOntoFileInput?(
     options: { selector: string; paths: readonly string[] },

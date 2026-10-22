@@ -19,6 +19,9 @@
  *   browser_fill            chrome-live only: fill a CSS selector on an owned tab
  *   browser_evaluate        chrome-live only: run JS in an owned tab, return the value
  *   browser_scroll          chrome-live only: scroll an owned tab (selector into view, or x/y)
+ *   browser_press_key       chrome-live only: press Enter/Tab/arrows/… on an owned tab
+ *   browser_select          chrome-live only: choose an option in a <select> on an owned tab
+ *   browser_wait_for        chrome-live only: wait for an element to be visible/enabled, or for text
  *   browser_screencast_*    chrome-live only: live view + mp4 recording of an owned tab (start/frame/stop)
  *
  * ONE model for chrome-live: every one of these addresses the agent's OWN
@@ -82,6 +85,21 @@ interface BrowserInstanceLike {
     tabId?: string
   ): Promise<{ value: T | undefined; truncated: boolean }>
   scroll?(options: { selector?: string; x?: number; y?: number }, tabId?: string): Promise<{ targetId: string }>
+  /** Press one key via trusted CDP input, optionally focusing a selector first (chrome-live). */
+  pressKey?(
+    options: { key: string; selector?: string; count?: number; modifiers?: readonly ("Alt" | "Control" | "Meta" | "Shift")[] },
+    tabId?: string
+  ): Promise<{ targetId: string; key: string }>
+  /** Select a `<select>` option by value, label or index (chrome-live). */
+  selectOption?(
+    options: { selector: string; value?: string; label?: string; index?: number },
+    tabId?: string
+  ): Promise<{ targetId: string; value: string; label: string; index: number }>
+  /** Wait for an element to be attached/visible/enabled, or for text (chrome-live). */
+  waitFor?(
+    options: { selector?: string; state?: "attached" | "visible" | "enabled" | "text"; text?: string; timeoutMs?: number; pollMs?: number },
+    tabId?: string
+  ): Promise<{ targetId: string; state: "attached" | "visible" | "enabled" | "text"; matched: true; elapsedMs: number }>
   /** Attach local files to one `<input type=file>` on an owned tab (CDP DOM.setFileInputFiles; paths absolute). */
   uploadFileOntoFileInput?(
     options: { selector: string; paths: readonly string[] },
@@ -1254,6 +1272,159 @@ export function registerBrowserTools(
         )
       } catch (err) {
         return errResult(`browser_scroll: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_press_key ──────────────────────────────────────────────────────────
+  server.tool(
+    "browser_press_key",
+    "chrome-live only. Press one key on the agent-OWNED tab via trusted CDP input — " +
+      "Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, " +
+      "PageUp/PageDown, Space, or a single printable character. Optionally focus a " +
+      "`selector` first, repeat with `count`, and hold `modifiers`. Same ownership " +
+      "rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      key: z.string().min(1).describe("Key name (Enter, Tab, Escape, ArrowDown, …) or one printable character."),
+      selector: z.string().optional().describe("CSS selector to focus before pressing. Default: whatever has focus."),
+      count: z.number().int().min(1).max(100).optional().describe("How many times to press. Default 1."),
+      modifiers: z
+        .array(z.enum(["Alt", "Control", "Meta", "Shift"]))
+        .optional()
+        .describe("Modifier keys held for this press."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_press_key: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_press_key: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_press_key: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.pressKey)
+        return errResult("browser_press_key: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(
+          await liveInstance.pressKey(
+            {
+              key: input.key,
+              ...(input.selector !== undefined ? { selector: input.selector } : {}),
+              ...(input.count !== undefined ? { count: input.count } : {}),
+              ...(input.modifiers !== undefined ? { modifiers: input.modifiers } : {}),
+            },
+            input.tabId
+          )
+        )
+      } catch (err) {
+        return errResult(`browser_press_key: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_select ─────────────────────────────────────────────────────────────
+  server.tool(
+    "browser_select",
+    "chrome-live only. Choose an option in a `<select>` on the agent-OWNED tab by " +
+      "`value`, visible `label`, or zero-based `index` (exactly one). Sets the value " +
+      "and dispatches input/change so framework-bound forms update. Same ownership " +
+      "rule as `browser_screenshot` — call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().min(1).describe("CSS selector of the `<select>` element."),
+      value: z.string().optional().describe("Option value to select."),
+      label: z.string().optional().describe("Option visible label/text to select."),
+      index: z.number().int().min(0).optional().describe("Zero-based option index to select."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_select: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_select: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_select: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const given = [input.value !== undefined, input.label !== undefined, input.index !== undefined].filter(Boolean).length
+      if (given !== 1) return errResult("browser_select: pass exactly one of value, label or index.")
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.selectOption)
+        return errResult("browser_select: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(
+          await liveInstance.selectOption(
+            {
+              selector: input.selector,
+              ...(input.value !== undefined ? { value: input.value } : {}),
+              ...(input.label !== undefined ? { label: input.label } : {}),
+              ...(input.index !== undefined ? { index: input.index } : {}),
+            },
+            input.tabId
+          )
+        )
+      } catch (err) {
+        return errResult(`browser_select: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  )
+
+  // ── browser_wait_for ───────────────────────────────────────────────────────────
+  server.tool(
+    "browser_wait_for",
+    "chrome-live only. Wait on the agent-OWNED tab until an element is attached, " +
+      "visible or enabled, or until text appears (element text when `selector` is set, " +
+      "otherwise page text). Polls and returns { targetId, state, matched, elapsedMs }; " +
+      "times out with a clear error. Same ownership rule as `browser_screenshot` — " +
+      "call `browser_navigate` first.",
+    {
+      sessionId: z
+        .string()
+        .min(1)
+        .describe("Browser session id returned by `start_browser` (adapter `chrome-live`)."),
+      tabId: z.string().optional().describe("Provider-owned target id (default: the first active agent tab)."),
+      selector: z.string().optional().describe("CSS selector to wait for. Required unless state is 'text'."),
+      state: z
+        .enum(["attached", "visible", "enabled", "text"])
+        .optional()
+        .describe("Condition to wait for. Default 'visible' (or 'text' when `text` is given)."),
+      text: z.string().optional().describe("Text that must be present. Required for state 'text'."),
+      timeoutMs: z.number().int().min(0).optional().describe("Give up after this many ms. Default 10000."),
+      pollMs: z.number().int().min(1).optional().describe("Poll interval in ms. Default 100."),
+    },
+    async input => {
+      const desc = registry.get(input.sessionId)
+      if (!desc) return errResult(`browser_wait_for: session "${input.sessionId}" not found.`)
+      if (desc.kind !== "browser")
+        return errResult(`browser_wait_for: session "${input.sessionId}" is not a browser session (kind=${desc.kind}).`)
+      const adapterId = desc.browserAdapterId ?? ""
+      if (adapterId !== "chrome-live")
+        return errResult(`browser_wait_for: adapter "${adapterId}" is not supported; only chrome-live does.`)
+      const liveInstance = liveInstances.get(desc.id)
+      if (!liveInstance?.waitFor)
+        return errResult("browser_wait_for: chrome-live provider instance is unavailable; start the browser again to reconnect")
+      try {
+        return okResult(
+          await liveInstance.waitFor(
+            {
+              ...(input.selector !== undefined ? { selector: input.selector } : {}),
+              ...(input.state !== undefined ? { state: input.state } : {}),
+              ...(input.text !== undefined ? { text: input.text } : {}),
+              ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+              ...(input.pollMs !== undefined ? { pollMs: input.pollMs } : {}),
+            },
+            input.tabId
+          )
+        )
+      } catch (err) {
+        return errResult(`browser_wait_for: ${err instanceof Error ? err.message : String(err)}`)
       }
     }
   )

@@ -41,9 +41,10 @@ import { CHROME_LIVE_LAUNCH_PROFILE, launchDetachedChrome, type LaunchedChrome, 
  * even dialed. Attaching to the user's own Chrome only happens on an EXPLICIT
  * ask: a pinned endpoint (launch `wsUrl`/`port`, provider config, or
  * `CHROME_LIVE_*` env), or `opts.attachIntent: true` (a caller that
- * specifically wants the user's real, logged-in profile). In that attach path,
- * a consent timeout or nothing listening still falls back to the dedicated
- * Chrome, same as before (see `wantsAttachFirst`). The child this provider
+ * specifically wants the user's real, logged-in profile). An attach failure
+ * (nothing listening, or no consent) is always surfaced with an actionable
+ * message; silently falling back to a blank dedicated Chrome would mislead an
+ * agent into believing it drove the user's real one. The child this provider
  * launches is recorded and only THAT pid is ever killed by `stop()` — the
  * user's own Chrome is never signalled.
  *
@@ -83,7 +84,9 @@ export class ChromeRemoteDebuggingOffError extends ToolError {
   constructor(wsUrl: string, cause?: unknown) {
     super({
       code: BROWSER_REMOTE_DEBUGGING_OFF_CODE,
-      message: `[chrome-live] nothing answers at ${wsUrl}. Enable remote debugging at ${CHROME_REMOTE_DEBUGGING_PAGE}`,
+      message:
+        `[chrome-live] nothing answers at ${wsUrl}. Enable remote debugging at ${CHROME_REMOTE_DEBUGGING_PAGE} ` +
+        `and click "Allow" in the dialog Chrome shows, then retry. No dedicated browser was started.`,
       retryable: false,
       cause,
     })
@@ -98,7 +101,10 @@ export class ChromeConsentTimeoutError extends ToolError {
   constructor(wsUrl: string, detail: string, cause?: unknown) {
     super({
       code: BROWSER_CONSENT_TIMEOUT_CODE,
-      message: `[chrome-live] Chrome did not accept the debugging connection at ${wsUrl} (${detail}). Click "Allow" in the dialog Chrome shows, then retry`,
+      message:
+        `[chrome-live] Chrome did not accept the debugging connection at ${wsUrl} (${detail}). ` +
+        `Enable remote debugging at ${CHROME_REMOTE_DEBUGGING_PAGE}, click "Allow" in the dialog Chrome shows, then retry. ` +
+        `No dedicated browser was started.`,
       retryable: true,
       cause,
     })
@@ -152,22 +158,28 @@ export interface ChromeLiveProviderConfig {
   port?: number
   /** How long to wait for the user to click "Allow". Default 60s. */
   consentTimeoutMs?: number
-  /** Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first. Default false: the toggle answers /json/* empty, so the fixed URL is used directly. */
+  /**
+   * Read `GET /json/version` and connect to the advertised
+   * `webSocketDebuggerUrl` (Chrome 155+ exposes a per-launch browser UUID:
+   * `ws://127.0.0.1:9222/devtools/browser/<uuid>`; the id-less URL answers
+   * 404). Default true. `false` is a legacy escape hatch that connects to the
+   * fixed id-less URL, only useful for a Chrome whose `/json/version` is
+   * unreachable but whose fixed endpoint still answers (pre-155 toggles).
+   */
   discover?: boolean
   /** Env read for `CHROME_LIVE_*`. Default `process.env`; `launch({ env })` is merged over it. */
   env?: Readonly<Record<string, string | undefined>>
   /**
-   * May this provider ever launch a dedicated Chrome at all — as the default
-   * primary path, or as the attach path's fallback. Default `true`. `false`
-   * means attach is the ONLY path: the default-dedicated-first preference
-   * below is moot (there is nothing to prefer), and an attach failure never
-   * falls back.
+   * May this provider ever launch a dedicated Chrome at all. Default `true`.
+   * `false` means attach is the ONLY path: the default-dedicated-first
+   * preference below is moot (there is nothing to prefer), and an attach
+   * failure is surfaced as-is. It was never a fallback for attach failures.
    */
   autoLaunch?: boolean
   /**
    * `false` restores the OLD global default (attach preferred, dedicated only
-   * as its fallback) for every call this provider instance makes, without
-   * touching call sites. Default `true` (unset counts as `true`): a bare
+   * when no attach is attempted) for every call this provider instance makes,
+   * without touching call sites. Default `true` (unset counts as `true`): a bare
    * `launch({})` goes straight to the dedicated Chrome, no attach attempt.
    * A pinned endpoint or `opts.attachIntent` still forces attach-first
    * regardless of this flag (see `wantsAttachFirst`).
@@ -190,16 +202,17 @@ export interface ChromeLiveLaunchOptions extends BrowserLaunchOptions {
   /** Full browser websocket URL for this launch. */
   wsUrl?: string
   /**
-   * Test/dev seam: force the auto-launch fallback even when an explicit
-   * endpoint was given, so the fallback path can be exercised deterministically.
+   * Test/dev seam: explicitly ask for the dedicated Chrome even when an
+   * endpoint is pinned. This is an intentional dedicated launch, never a
+   * reaction to an attach failure.
    */
   forceAutoLaunch?: boolean
   /**
    * Explicit ask: prefer attaching to the user's own Chrome (the remote
    * debugging toggle) over the dedicated-first default, for THIS call — for a
    * caller that specifically needs the user's real, logged-in profile. A
-   * consent timeout or nothing listening still falls back to the dedicated
-   * Chrome (gated by `autoLaunch`, same as a pinned endpoint's fallback).
+   * consent timeout or nothing listening surfaces an actionable error; it does
+   * NOT silently fall back to the dedicated Chrome.
    */
   attachIntent?: boolean
   /**
@@ -245,7 +258,9 @@ export function pinnedEndpoint(config: ChromeLiveProviderConfig, opts: ChromeLiv
  *
  * Otherwise (the common case: nothing pinned, no explicit ask) the dedicated,
  * zero-consent Chrome comes first — `launch()` never dials the user's Chrome
- * at all.
+ * at all. If an explicit attach is requested and fails, the error is surfaced
+ * with an actionable message; there is NO silent fallback to the dedicated
+ * Chrome.
  */
 export function wantsAttachFirst(config: ChromeLiveProviderConfig, opts: ChromeLiveLaunchOptions): boolean {
   if (config.autoLaunch === false) return true
@@ -282,6 +297,12 @@ export interface ChromeLiveInstance extends BrowserInstance {
   evaluateOwnedTarget<T = unknown>(options: EvaluateOptions, targetId?: string): Promise<EvaluateResult<T>>
   /** Scroll one OWNED agent tab: a CSS selector into view, or the window to an absolute `{x, y}`. */
   scrollOwnedTarget(options: ChromeLiveScrollOptions, targetId?: string): Promise<{ targetId: string }>
+  /** Press one key (Enter, Tab, Escape, arrows, …) on one OWNED agent tab via trusted CDP input. */
+  pressKeyOwnedTarget(options: ChromeLivePressKeyOptions, targetId?: string): Promise<{ targetId: string; key: string }>
+  /** Select an option in a `<select>` by value, label or index on one OWNED agent tab. */
+  selectOptionOwnedTarget(options: ChromeLiveSelectOptionOptions, targetId?: string): Promise<{ targetId: string; value: string; label: string; index: number }>
+  /** Poll one OWNED agent tab until an element is attached/visible/enabled or its text appears. */
+  waitForOwnedTarget(options: ChromeLiveWaitForOptions, targetId?: string): Promise<ChromeLiveWaitResult>
   /** Attach local files to one `<input type=file>` on an OWNED agent tab (CDP DOM.setFileInputFiles). */
   uploadFileOwnedTarget(options: ChromeLiveUploadFileOptions, targetId?: string): Promise<{ targetId: string; files: readonly string[] }>
   /** Open a FRESH tab in the agent's own window (never reusing an existing one) and navigate it to `url`. */
@@ -305,6 +326,118 @@ export interface ChromeLiveScrollOptions {
   /** Absolute vertical scroll position in CSS px, when no `selector` is given. Default 0. */
   y?: number
 }
+
+/** Modifier keys accepted by `pressKeyOwnedTarget` (CDP `modifiers` bit flags). */
+export type ChromeLiveKeyModifier = "Alt" | "Control" | "Meta" | "Shift"
+
+/** `pressKeyOwnedTarget` options: one key (optionally focused on a selector first). */
+export interface ChromeLivePressKeyOptions {
+  /** Key name: `Enter`, `Tab`, `Escape`, `Backspace`, `Delete`, `ArrowUp`/`ArrowDown`/`ArrowLeft`/`ArrowRight`, `Home`, `End`, `PageUp`, `PageDown`, `Space`, or a single printable character. */
+  key: string
+  /** CSS selector to focus before pressing. Omit to press on whatever has focus. */
+  selector?: string
+  /** How many times to press it. Default 1. */
+  count?: number
+  /** Held modifier keys for this press. */
+  modifiers?: readonly ChromeLiveKeyModifier[]
+}
+
+/** `selectOptionOwnedTarget` options: exactly one of `value`, `label` or `index`. */
+export interface ChromeLiveSelectOptionOptions {
+  /** CSS selector of the `<select>` element. */
+  selector: string
+  /** Match an option by its `value`. */
+  value?: string
+  /** Match an option by its visible label/text. */
+  label?: string
+  /** Match an option by its zero-based index. */
+  index?: number
+}
+
+/** What `waitForOwnedTarget` polls for. */
+export type ChromeLiveWaitState = "attached" | "visible" | "enabled" | "text"
+
+/** `waitForOwnedTarget` options: a selector and/or text, a state, and a deadline. */
+export interface ChromeLiveWaitForOptions {
+  /** CSS selector of the element to wait for. Required unless `state` is `text` (page-wide text). */
+  selector?: string
+  /** Condition to wait for. Default `visible` when a selector is given, else `text`. */
+  state?: ChromeLiveWaitState
+  /** Text that must be present (element text when `selector` is set, page text otherwise). Required for `state: "text"`. */
+  text?: string
+  /** Give up after this many ms. Default 10_000. */
+  timeoutMs?: number
+  /** Poll interval in ms. Default 100. */
+  pollMs?: number
+}
+
+/** Result of `waitForOwnedTarget`: matched condition + how long it took. */
+export interface ChromeLiveWaitResult {
+  targetId: string
+  state: ChromeLiveWaitState
+  matched: true
+  elapsedMs: number
+}
+
+/** CDP key metadata for `pressKeyOwnedTarget`, keyed by canonical name. */
+const KEY_TABLE: Record<string, { key: string; code: string; vk: number; text?: string }> = {
+  Enter: { key: "Enter", code: "Enter", vk: 13, text: "\r" },
+  Tab: { key: "Tab", code: "Tab", vk: 9 },
+  Escape: { key: "Escape", code: "Escape", vk: 27 },
+  Backspace: { key: "Backspace", code: "Backspace", vk: 8 },
+  Delete: { key: "Delete", code: "Delete", vk: 46 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", vk: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", vk: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", vk: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", vk: 39 },
+  Home: { key: "Home", code: "Home", vk: 36 },
+  End: { key: "End", code: "End", vk: 35 },
+  PageUp: { key: "PageUp", code: "PageUp", vk: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", vk: 34 },
+  Space: { key: " ", code: "Space", vk: 32, text: " " },
+}
+
+const KEY_ALIASES: Record<string, string> = {
+  Return: "Enter",
+  Esc: "Escape",
+  Up: "ArrowUp",
+  Down: "ArrowDown",
+  Left: "ArrowLeft",
+  Right: "ArrowRight",
+  " ": "Space",
+}
+
+const MODIFIER_BITS: Record<ChromeLiveKeyModifier, number> = { Alt: 1, Control: 2, Meta: 4, Shift: 8 }
+
+function keyInfoOf(name: string): { key: string; code: string; vk: number; text?: string } | undefined {
+  const canonical = KEY_ALIASES[name] ?? name
+  const known = KEY_TABLE[canonical]
+  if (known) return known
+  if ([...canonical].length === 1) {
+    const ch = canonical
+    const upper = ch.toUpperCase()
+    const vk = /^[a-z]$/i.test(ch) ? upper.charCodeAt(0) : ch.charCodeAt(0)
+    return { key: ch, code: /^[a-z]$/i.test(ch) ? `Key${upper}` : ch === " " ? "Space" : ch, vk, text: ch }
+  }
+  return undefined
+}
+
+/** Key presses with a held modifier never carry `text` (Chrome would insert a literal character). */
+function keyEventParams(info: { key: string; code: string; vk: number; text?: string }, type: "keyDown" | "keyUp", modifiers: number): Record<string, unknown> {
+  return {
+    type,
+    key: info.key,
+    code: info.code,
+    windowsVirtualKeyCode: info.vk,
+    nativeVirtualKeyCode: info.vk,
+    ...(modifiers ? { modifiers } : {}),
+    ...(type === "keyDown" && info.text !== undefined && modifiers === 0
+      ? { text: info.text, unmodifiedText: info.text }
+      : {}),
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** Parameters of `Page.startScreencast` the provider exposes. */
 export interface ChromeLiveScreencastOptions {
@@ -700,24 +833,9 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     return { port: CHROME_LIVE_DEFAULT_PORT }
   }
 
-  /** True when an endpoint was pinned (launch opts, provider config, or env) — the fallback never runs then, and attach is tried first regardless of `preferDedicated`. */
-  function explicitEndpoint(opts: ChromeLiveLaunchOptions): boolean {
-    return pinnedEndpoint(config, opts)
-  }
-
-  function autoLaunchEnabled(opts: ChromeLiveLaunchOptions): boolean {
-    if (config.autoLaunch === false) return false
-    return opts.forceAutoLaunch === true || !explicitEndpoint(opts)
-  }
-
-  /** Attach was impossible (nothing listening, or no consent): the fallback's trigger conditions. */
-  function isAttachUnavailable(err: unknown): boolean {
-    return err instanceof ChromeRemoteDebuggingOffError || err instanceof ChromeConsentTimeoutError
-  }
-
   async function discover(port: number): Promise<string> {
     const fixed = chromeLiveWsUrl(port)
-    if (config.discover !== true) return fixed
+    if (config.discover === false) return fixed
     try {
       const res = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS) })
       const text = res.ok ? await res.text() : ""
@@ -725,7 +843,8 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       return typeof found === "string" && /^wss?:\/\//.test(found) ? found : fixed
     } catch (err) {
       if (errnoCode(err) === "ECONNREFUSED") throw new ChromeRemoteDebuggingOffError(fixed, err)
-      // The toggle answers HTTP with nothing; the fixed browser URL is the documented endpoint.
+      // A pre-155 toggle answers /json/* empty (or non-JSON); its fixed browser
+      // URL is still the documented endpoint, so keep it as the fallback.
       return fixed
     }
   }
@@ -973,6 +1092,124 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         return { targetId: driver.target.id }
       },
 
+      async pressKeyOwnedTarget(options: ChromeLivePressKeyOptions, targetId?: string): Promise<{ targetId: string; key: string }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const driver = requireOwnedDriver(targetId, "press a key on")
+        const info = keyInfoOf(options.key)
+        if (!info) {
+          throw new Error(
+            `[chrome-live] unsupported key "${options.key}"; use Enter, Tab, Escape, Backspace, Delete, an Arrow key, Home, End, PageUp/PageDown, Space, or one printable character`,
+          )
+        }
+        if (options.selector) {
+          const focused = await driver.evaluate<boolean>({
+            expression: `(() => { const el = document.querySelector(${JSON.stringify(options.selector)}); if (!el) return false; el.focus(); return true })() /* __chromeLiveFocus */`,
+            awaitPromise: false,
+            returnByValue: true,
+            maxResultBytes: 1_000,
+          })
+          if (focused.value !== true) throw new Error(`[chrome-live] no element matches selector ${options.selector}`)
+        }
+        const count = options.count ?? 1
+        if (!Number.isInteger(count) || count < 1) throw new Error("[chrome-live] count must be a positive integer")
+        const modifiers = (options.modifiers ?? []).reduce((bits, m) => bits | (MODIFIER_BITS[m] ?? 0), 0)
+        for (let i = 0; i < count; i++) {
+          await driver.send({ method: "Input.dispatchKeyEvent", params: keyEventParams(info, "keyDown", modifiers) })
+          await driver.send({ method: "Input.dispatchKeyEvent", params: keyEventParams(info, "keyUp", modifiers) })
+        }
+        return { targetId: driver.target.id, key: info.key }
+      },
+
+      async selectOptionOwnedTarget(options: ChromeLiveSelectOptionOptions, targetId?: string): Promise<{ targetId: string; value: string; label: string; index: number }> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const driver = requireOwnedDriver(targetId, "select an option on")
+        const given = [options.value !== undefined, options.label !== undefined, options.index !== undefined].filter(Boolean).length
+        if (given !== 1) throw new Error("[chrome-live] browser_select needs exactly one of value, label or index")
+        const matcher =
+          options.value !== undefined
+            ? `o.value === ${JSON.stringify(options.value)}`
+            : options.label !== undefined
+              ? `(o.label ?? o.text) === ${JSON.stringify(options.label)}`
+              : `i === ${Number(options.index)}`
+        const expression = `(() => {
+          const el = document.querySelector(${JSON.stringify(options.selector)})
+          if (!el) return { ok: false, reason: "no-selector" }
+          if (el.tagName !== "SELECT") return { ok: false, reason: "not-select" }
+          const options = Array.from(el.options)
+          const index = options.findIndex((o, i) => ${matcher})
+          if (index < 0) return { ok: false, reason: "no-option", options: options.map(o => ({ value: o.value, label: o.label ?? o.text })) }
+          el.selectedIndex = index
+          el.dispatchEvent(new Event("input", { bubbles: true }))
+          el.dispatchEvent(new Event("change", { bubbles: true }))
+          const chosen = options[index]
+          return { ok: true, value: el.value, label: chosen.label ?? chosen.text, index }
+        })() /* __chromeLiveSelect */`
+        const result = await driver.evaluate<{
+          ok: boolean
+          reason?: string
+          value?: string
+          label?: string
+          index?: number
+          options?: Array<{ value: string; label: string }>
+        }>({ expression, awaitPromise: false, returnByValue: true, maxResultBytes: 32_000 })
+        const value = result.value
+        if (!value) throw new Error(`[chrome-live] no element matches selector ${options.selector}`)
+        if (!value.ok) {
+          if (value.reason === "no-selector") throw new Error(`[chrome-live] no element matches selector ${options.selector}`)
+          if (value.reason === "not-select") throw new Error(`[chrome-live] ${options.selector} is not a <select> element`)
+          const wanted =
+            options.value !== undefined ? `value "${options.value}"` : options.label !== undefined ? `label "${options.label}"` : `index ${options.index}`
+          const available = (value.options ?? []).map((o) => `${o.value}=${o.label}`).join(", ")
+          throw new Error(`[chrome-live] no option matching ${wanted} in ${options.selector}${available ? ` (available: ${available})` : ""}`)
+        }
+        return { targetId: driver.target.id, value: value.value ?? "", label: value.label ?? "", index: value.index ?? -1 }
+      },
+
+      async waitForOwnedTarget(options: ChromeLiveWaitForOptions, targetId?: string): Promise<ChromeLiveWaitResult> {
+        if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
+        const driver = requireOwnedDriver(targetId, "wait on")
+        const state: ChromeLiveWaitState = options.state ?? (options.text !== undefined ? "text" : "visible")
+        if (state !== "text" && !options.selector) throw new Error("[chrome-live] browser_wait_for needs a selector unless state is \"text\"")
+        if (state === "text" && (options.text === undefined || options.text === "")) {
+          throw new Error("[chrome-live] browser_wait_for with state \"text\" needs the text to look for")
+        }
+        const timeoutMs = options.timeoutMs ?? 10_000
+        if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error("[chrome-live] timeoutMs must be a non-negative number")
+        const pollMs = Math.max(1, options.pollMs ?? 100)
+        const selectorExpr = options.selector ? `document.querySelector(${JSON.stringify(options.selector)})` : "null"
+        const textExpr = JSON.stringify(options.text ?? "")
+        const check = `(() => {
+          const el = ${selectorExpr}
+          if (el === null) return { ok: false, reason: "no-selector" }
+          if (${JSON.stringify(state)} === "text") {
+            const haystack = el ? (el.textContent ?? "") : (document.body?.innerText ?? "")
+            return { ok: haystack.includes(${textExpr}) }
+          }
+          if (${JSON.stringify(state)} === "attached") return { ok: true }
+          if (${JSON.stringify(state)} === "enabled") return { ok: !el.disabled }
+          const rects = el.getClientRects()
+          const style = getComputedStyle(el)
+          return { ok: rects.length > 0 && style.visibility !== "hidden" && style.display !== "none" }
+        })() /* __chromeLiveWait */`
+        const started = Date.now()
+        const deadline = started + timeoutMs
+        for (;;) {
+          const result = await driver.evaluate<{ ok: boolean }>({
+            expression: check,
+            awaitPromise: false,
+            returnByValue: true,
+            maxResultBytes: 4_000,
+          })
+          if (result.value?.ok === true) return { targetId: driver.target.id, state, matched: true, elapsedMs: Date.now() - started }
+          const remaining = deadline - Date.now()
+          if (remaining <= 0) {
+            const label = state === "text" ? `text ${JSON.stringify(options.text)} to appear` : `${options.selector} to become ${state}`
+            throw new Error(`[chrome-live] timed out after ${timeoutMs}ms waiting for ${label}`)
+          }
+          await sleep(Math.min(pollMs, remaining))
+        }
+      },
+
       async uploadFileOwnedTarget(options: ChromeLiveUploadFileOptions, targetId?: string): Promise<{ targetId: string; files: readonly string[] }> {
         if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
         const driver = requireOwnedDriver(targetId, "attach a file to")
@@ -1200,15 +1437,14 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   }
 
   async function launch(opts: ChromeLiveLaunchOptions, ctx: BrowserHostContext): Promise<ChromeLiveInstance> {
+    // `forceAutoLaunch` is an explicit test/dev ask for the dedicated Chrome,
+    // never a reaction to an attach failure.
+    if (config.autoLaunch !== false && opts.forceAutoLaunch === true) return await launchDedicated(ctx, opts)
     if (!wantsAttachFirst(config, opts)) return await launchDedicated(ctx, opts)
-    try {
-      return await connectEntry(await resolveUrl(opts), ctx)
-    } catch (err) {
-      if (!autoLaunchEnabled(opts) || !isAttachUnavailable(err)) throw err
-      // The toggle is not attachable: fall back to the dedicated Chrome.
-      ctx.log?.(`[chrome-live] no attachable Chrome at the configured endpoint: auto-launching a dedicated instance`)
-      return await launchDedicated(ctx, opts)
-    }
+    // Attach-only from here. A failure surfaces the typed error with an
+    // actionable message; it NEVER silently switches to a blank dedicated
+    // browser (that made an agent believe it drove the user's real Chrome).
+    return await connectEntry(await resolveUrl(opts), ctx)
   }
 
   return defineBrowser({

@@ -1,5 +1,7 @@
 // An in-process stand-in for a user's running Chrome with the remote debugging toggle on:
-// only the id-less browser websocket answers, HTTP /json/* answers empty, and it already has user tabs.
+// by default only the id-less browser websocket answers and HTTP /json/* answers empty
+// (pre-155). Set `browserId` to emulate Chrome 155+: /json/version advertises a
+// `/devtools/browser/<uuid>` URL and the id-less path answers 404.
 import { createServer, type Server } from "node:http"
 import type { AddressInfo, Socket } from "node:net"
 import { WebSocketServer, type WebSocket } from "ws"
@@ -25,6 +27,14 @@ export interface FakeChromeOptions {
   fileInputMissing?: boolean
   /** `Runtime.evaluate("document.location.href")` answers with this (simulating a committed URL that differs from the requested one, e.g. a redirect). Unset: falls through to the generic unmatched-expression default. */
   locationHref?: string
+  /** Chrome 155+ browser UUID: /json/version advertises `/devtools/browser/<id>` and the id-less path answers 404. */
+  browserId?: string
+  /** `browser_wait_for` polling: number of false answers before the condition matches. Default 0 (matches at once); use a large number to exercise a timeout. */
+  waitMisses?: number
+  /** Simulated `<select>` options for `browser_select`. */
+  selectOptions?: Array<{ value: string; label: string }>
+  /** Simulated current `<select>` value; defaults to the first option. */
+  selectValue?: string
 }
 
 export interface FakeChrome {
@@ -44,6 +54,8 @@ export interface FakeChrome {
   targets: Map<string, { windowId: number; url: string; created: boolean }>
   /** Files passed to every DOM.setFileInputFiles, per selector (the fake records instead of touching a real input). */
   filesAttached: Map<string, string[]>
+  /** Key presses (Input.dispatchKeyEvent) seen, in order. */
+  keyEvents: Array<Record<string, unknown>>
   options: FakeChromeOptions
   /** Emit a Page.screencastFrame event into an open flat session (test hook). */
   emitScreencastFrame(
@@ -59,8 +71,14 @@ export interface FakeChrome {
 const USER_WINDOW = 1
 export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<FakeChrome> {
   const server: Server = createServer((_req, res) => {
-    // The toggle answers HTTP with an empty body.
     fake.httpRequests++
+    // Pre-155: the toggle answers HTTP with an empty body. 155+: /json/version
+    // advertises the per-launch browser UUID.
+    if (fake.options.browserId) {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ Browser: "Chrome/155.0.0.0", webSocketDebuggerUrl: fake.wsUrl }))
+      return
+    }
     res.writeHead(200).end()
   })
   const sockets = new Set<WebSocket>()
@@ -96,6 +114,7 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
       ["user-tab-2", { windowId: USER_WINDOW, url: "https://bank.example/", created: false }],
     ]),
     filesAttached: new Map(),
+    keyEvents: [],
     options,
     emitScreencastFrame(cdpSessionId, frame) {
       for (const send of senders) {
@@ -131,15 +150,24 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
     },
   }
 
+  const browserPath = fake.options.browserId ? `/devtools/browser/${fake.options.browserId}` : "/devtools/browser"
   const wss = new WebSocketServer({
     server,
-    path: "/devtools/browser",
+    path: browserPath,
     verifyClient: (_info, cb) => {
       const mode = fake.options.consent ?? "allow"
       if (mode === "hold") return
       if (mode === "reject") return cb(false, 403, "Forbidden")
       cb(true)
     },
+  })
+
+  // Chrome 155 answers 404 for the id-less browser URL: only the UUID path exists.
+  server.on("upgrade", (req, socket) => {
+    if (req.url !== browserPath) {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n")
+      socket.destroy()
+    }
   })
 
   wss.on("connection", (ws) => {
@@ -215,6 +243,36 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
                 : { type: "object", value: { x: 10, y: 20 } },
             })
           }
+          // pressKey's focus-first helper.
+          if (expression.includes("__chromeLiveFocus")) {
+            return reply(msg.id, msg.sessionId, { result: { type: "boolean", value: !fake.options.selectorMissing } })
+          }
+          // select's generated expression.
+          if (expression.includes("__chromeLiveSelect")) {
+            if (fake.options.selectorMissing) {
+              return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: false, reason: "no-selector" } } })
+            }
+            const options = fake.options.selectOptions ?? [{ value: "a", label: "Alpha" }, { value: "b", label: "Bravo" }]
+            const wanted = fake.options.selectValue ?? options[0]?.value ?? ""
+            const index = options.findIndex((o) => o.value === wanted)
+            return reply(msg.id, msg.sessionId, {
+              result: {
+                type: "object",
+                value: index >= 0
+                  ? { ok: true, value: wanted, label: options[index]?.label, index }
+                  : { ok: false, reason: "no-option", options },
+              },
+            })
+          }
+          // waitFor's generated polling expression.
+          if (expression.includes("__chromeLiveWait")) {
+            const misses = fake.options.waitMisses ?? 0
+            if (misses > 0) {
+              fake.options.waitMisses = misses - 1
+              return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: false } } })
+            }
+            return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: true, state: "visible" } } })
+          }
           // fill's focus-and-select, and scroll's scrollIntoView: both are
           // IIFEs that return false when the selector matches nothing.
           if (expression.includes("el.focus()") || expression.includes("scrollIntoView")) {
@@ -247,6 +305,9 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
           )
           return reply(msg.id, msg.sessionId, {})
         }
+        case "Input.dispatchKeyEvent":
+          fake.keyEvents.push((msg.params ?? {}) as Record<string, unknown>)
+          return reply(msg.id, msg.sessionId, {})
         case "Page.getLayoutMetrics":
           return reply(msg.id, msg.sessionId, { cssVisualViewport: { clientWidth: 1, clientHeight: 1 } })
         case "Page.captureScreenshot":
@@ -271,6 +332,6 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
 
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
   fake.port = (server.address() as AddressInfo).port
-  fake.wsUrl = `ws://127.0.0.1:${fake.port}/devtools/browser`
+  fake.wsUrl = `ws://127.0.0.1:${fake.port}${browserPath}`
   return fake
 }

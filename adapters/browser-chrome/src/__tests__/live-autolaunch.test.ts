@@ -93,9 +93,11 @@ describe("chrome-live: auto-launch fallback", () => {
     expect(f.commands.map((c) => c.method)).not.toContain("Browser.close")
   })
 
-  it("falls back on the default endpoint when the consent click never comes (browser:consent-timeout)", async () => {
+  it("NEVER silently falls back to a dedicated Chrome when attaching fails", async () => {
+    // Before this fix the provider launched a dedicated Chrome after a consent
+    // timeout/locked port, so the agent believed it was driving the user's
+    // Chrome while it was driving a blank one. It must fail loudly instead.
     const holding = await fake({ consent: "hold" })
-    const launched = await fake()
     const child = stubChild(5151)
     let spawns = 0
     const provider = createChromeLiveProvider({
@@ -104,20 +106,43 @@ describe("chrome-live: auto-launch fallback", () => {
       launchDeps: {
         dataDir: tmpDir(),
         executablePath: "/fake/chrome",
-        findFreePort: async () => launched.port,
+        findFreePort: async () => 1,
         spawn: () => {
           spawns++
           return child.process
         },
-        fetchJsonVersion: async () => ({ webSocketDebuggerUrl: launched.wsUrl }),
+        fetchJsonVersion: async () => undefined,
       },
     })
-    const instance = await provider.launch({ port: holding.port, forceAutoLaunch: true }, {})
-    expect(spawns).toBe(1)
-    expect(instance.pid).toBe(5151)
-    expect(instance.endpoints.cdp).toBe(launched.wsUrl)
-    await instance.stop()
-    expect(child.signal()).toBe("SIGTERM")
+    const err = await provider.launch({ port: holding.port }, {}).then(
+      () => { throw new Error("expected a rejection") },
+      (e: unknown) => e as Error,
+    )
+    expect(err.message).toMatch(/browser:consent-timeout|did not accept the debugging connection/)
+    expect(err.message).toMatch(/No dedicated browser was started/)
+    expect(err.message).toMatch(/chrome:\/\/inspect/)
+    expect(spawns).toBe(0)
+  })
+
+  it("a closed debugging port fails with an actionable error and no fallback", async () => {
+    const child = stubChild()
+    let spawns = 0
+    const provider = createChromeLiveProvider({
+      consentTimeoutMs: 300,
+      env: {},
+      launchDeps: {
+        dataDir: tmpDir(),
+        executablePath: "/fake/chrome",
+        findFreePort: async () => 1,
+        spawn: () => {
+          spawns++
+          return child.process
+        },
+        fetchJsonVersion: async () => undefined,
+      },
+    })
+    await expect(provider.launch({ port: await closedPort() }, {})).rejects.toThrow(/No dedicated browser was started/)
+    expect(spawns).toBe(0)
   })
 
   it("does not auto-launch when an explicit endpoint is pinned (attach-only failure surfaces)", async () => {

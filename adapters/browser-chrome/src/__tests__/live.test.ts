@@ -144,7 +144,7 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     await expect(instance.screenshotOwnedTarget("user-tab-1")).rejects.toThrow(/not owned/)
     expect(await instance.screenshotOwnedTarget(driver.target.id)).toEqual({ base64: "AAAA", format: "png", width: 1, height: 1 })
     expect(f.connections).toBe(1)
-    expect(f.httpRequests).toBe(0)
+    expect(f.httpRequests).toBe(1)
     expect(f.violations).toEqual([])
     await instance.stop()
   })
@@ -287,24 +287,34 @@ describe("chrome-live: typed errors", () => {
 })
 
 describe("chrome-live: config", () => {
-  it("connects straight to the fixed browser URL by default, with no /json/* request", async () => {
-    const f = await fake()
+  it("reads the per-launch browser UUID from /json/version (Chrome 155+) and connects to it, not the id-less URL", async () => {
+    // Chrome 155 answers 404 on ws://…/devtools/browser (no UUID); only the
+    // advertised ws://…/devtools/browser/<uuid> exists.
+    const f = await fake({ browserId: "c4b215ec-401f-4b3d-b277-29d5e2289fa4" })
     const instance = await provider(f).launch({}, {})
-    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser`)
-    expect(f.httpRequests).toBe(0)
+    expect(f.httpRequests).toBe(1)
+    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser/c4b215ec-401f-4b3d-b277-29d5e2289fa4`)
     expect(f.connections).toBe(1)
     await instance.stop()
   })
 
-  it("discover: true is opt-in: one /json/version probe, then the fixed URL when it answers empty", async () => {
+  it("falls back to the id-less URL only when /json/version advertises none (pre-155 toggle)", async () => {
     const f = await fake()
-    const p = provider(f, { discover: true })
+    const p = provider(f)
     const instance = await p.launch({}, {})
     expect(f.httpRequests).toBe(1)
-    expect(instance.endpoints.cdp).toBe(f.wsUrl)
+    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser`)
     await p.launch({}, {})
     expect(f.httpRequests).toBe(1)
     expect(f.connections).toBe(1)
+    await instance.stop()
+  })
+
+  it("discover: false restores the legacy direct fixed-URL connect", async () => {
+    const f = await fake()
+    const instance = await provider(f, { discover: false }).launch({}, {})
+    expect(f.httpRequests).toBe(0)
+    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser`)
     await instance.stop()
   })
 

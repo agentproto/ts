@@ -109,6 +109,9 @@ async function ensureChromeLive(provider: ChromeLiveProvider, opts: BrowserAdapt
         tabId
       ),
     scroll: (options, tabId) => instance.scrollOwnedTarget(options, tabId),
+    pressKey: (options, tabId) => instance.pressKeyOwnedTarget(options, tabId),
+    selectOption: (options, tabId) => instance.selectOptionOwnedTarget(options, tabId),
+    waitFor: (options, tabId) => instance.waitForOwnedTarget(options, tabId),
     // Upload (CDP DOM.setFileInputFiles onto the agent-owned tab) — the runtime
     // `browser_upload_file` tool looks this name up structurally.
     uploadFileOntoFileInput: (options, tabId) => instance.uploadFileOwnedTarget({ selector: options.selector, paths: options.paths }, tabId),
