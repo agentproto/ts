@@ -24,7 +24,7 @@ stable across calls.
 
 A call with NO `limit`/`cursor` answers the first 50 rows under the legacy
 `{ commands: [...] }` wrapper, plus `{ total, truncated, nextCursor }` when
-the list is longer — so a harness advertising hundreds of commands never
+the list is longer, so a harness advertising hundreds of commands never
 answers with an unbounded list.
 
 ## name

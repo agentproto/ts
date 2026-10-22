@@ -2639,7 +2639,7 @@ export function registerSessionTools(
     keyOf: c => c.name,
     itemKey: "commands",
     // A call with no `limit`/`cursor` answers the FIRST 50 rows plus
-    // `{ total, truncated, nextCursor }` — the same cap the paginated path
+    // `{ total, truncated, nextCursor }`, the same cap the paginated path
     // uses by default, so a harness that advertises hundreds of commands
     // never answers with an unbounded list.
     defaultLimit: 50,
