@@ -2065,7 +2065,16 @@ export async function spawnAgentSession(
       })
     : undefined
   const resumeCheckpoint = checkpointResumeSource?.checkpoint
-  const resumeBranch = checkpointResumeSource?.session.sandboxDeliveryTarget?.branch
+  // Only a `wt/<slug>` branch can be reused as a work tree: any other branch
+  // (e.g. `main`) would slice to a bogus slug, so it falls back to a fresh
+  // branch instead (same guard as `session-restart-core.ts`).
+  const resumeSourceBranch = checkpointResumeSource?.session.sandboxDeliveryTarget?.branch
+  const resumeBranch = resumeSourceBranch?.startsWith(SANDBOX_BRANCH_PREFIX) ? resumeSourceBranch : undefined
+  // The correlation keys are INHERITED from the resolved source, so a second
+  // crash of the resumed session is still found by the same task id / label
+  // (and not shadowed by the older session's checkpoint).
+  const resumeTaskId = input.resumeFrom?.taskId ?? checkpointResumeSource?.session.taskId
+  const resumeLabel = input.label ?? checkpointResumeSource?.session.label
   const resumeWorkspaceSlug = checkpointResumeSource?.session.workspaceSlug
   if (resumeWorkspaceSlug && input.workspaceSlug === undefined) {
     input = { ...input, workspaceSlug: resumeWorkspaceSlug }
@@ -4443,10 +4452,10 @@ export async function spawnAgentSession(
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
-        ...(input.label ? { label: input.label } : {}),
+        ...(resumeLabel ? { label: resumeLabel } : {}),
         // CRASH RESUME - the task this session works on: the correlation key
         // a later relaunch names to resume THIS session's checkpoint.
-        ...(input.resumeFrom?.taskId ? { taskId: input.resumeFrom.taskId } : {}),
+        ...(resumeTaskId ? { taskId: resumeTaskId } : {}),
         ...(initialTitle ? { title: initialTitle } : {}),
         ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
@@ -5127,7 +5136,7 @@ export async function spawnAgentSession(
       ...(input.label ? { label: input.label } : {}),
       // CRASH RESUME - the task this session works on: the correlation key a
       // later relaunch names to resume THIS session's checkpoint.
-      ...(input.resumeFrom?.taskId ? { taskId: input.resumeFrom.taskId } : {}),
+      ...(resumeTaskId ? { taskId: resumeTaskId } : {}),
       // Hand the caller-derived title to `spawnAgent` so it lands on the
       // descriptor BEFORE the `initialPrompt` (the ROLE-PREFIXED composed
       // prompt) is dispatched — otherwise `runAgentTurn`'s self-heal derives
