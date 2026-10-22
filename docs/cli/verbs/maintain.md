@@ -12,7 +12,10 @@ review step spawns real agent sessions.
 
 One run:
 
-1. Plans `worktree_gc` and `branch_gc` (dry run — nothing is touched).
+1. Plans `worktree_gc`, `branch_gc`, and `sandbox_checkpoint_gc` (dry run —
+   nothing is touched; the checkpoint plan classifies the stale
+   `agentproto-checkpoint/*` refs a dead sandbox left on the remote as
+   safe / keep / unknown).
 2. Fans a reviewer agent out over the unmerged branch candidates with no
    stored verdict yet — at most `maxReviews` (default 40) per run, newest
    tip first, so daily runs walk a large backlog — one turn per unique tip
@@ -34,7 +37,9 @@ One run:
 3. Re-plans `branch_gc` to confirm every candidate got a verdict, and
    reports any gap, the verdict tally, and the `salvage` branches by name.
 4. With `--apply-merged`: applies `branch_gc` (reclaim-class only by
-   default) and `worktree_gc`. Adding `--apply-reviewed` runs the branch apply
+   default), `worktree_gc`, and `sandbox_checkpoint_gc` (stale checkpoint
+   refs; the engine re-plans and re-classifies every ref immediately before
+   deleting it). Adding `--apply-reviewed` runs the branch apply
    with `includeReviewed: true`, so a `review`-class branch whose stored
    verdict agreed for the same tip is reclaimed too. `branch_gc` still
    enforces its deterministic line-coverage guard (default 95%): an approval
@@ -48,8 +53,10 @@ Verdicts are recorded with `branch_gc_verdict`, which also accepts an
 guard is refused by `branch_gc`; an operator approval for the same tip sha is
 the human exit from that queue and lets `includeReviewed` reclaim it despite
 the guard (the plan shows `verdictGuard: bypassed by operator <by>`). The
-maintain workflow itself applies with `includeReviewed: false`, so it records
-and reports verdicts but never deletes a `review`-class branch.
+maintain workflow applies with `includeReviewed: $input.applyReviewed` —
+false unless `--apply-reviewed` is passed (with `--apply-merged`), so by
+default it records and reports verdicts but never deletes a `review`-class
+branch.
 
 | Flag | Default | Description |
 |------|---------|-------------|
