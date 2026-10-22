@@ -88,6 +88,8 @@ export {
   WORKTREES_TURBO_CACHE_DIR_ENV,
   nonInteractiveEnv,
   NON_INTERACTIVE_ENV_DEFAULTS,
+  resolveWorktreesTurboConcurrency,
+  WORKTREES_TURBO_CONCURRENCY_ENV,
   type WorktreeEnvContext,
   type PeerService,
 } from "./env.js"

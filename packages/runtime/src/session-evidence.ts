@@ -243,8 +243,8 @@ export function readRecentToolCallRecordsSync(
 }
 
 /** The verbatim signature of one tool-call record (tool + command + args),
- *  the same "même commande relancée verbatim" signal the steward's loop rule
- *  uses. Kept local so the runtime does not import the app bundle. */
+  *  the same "même commande relancée verbatim" signal the steward's loop rule
+  *  uses. Kept local so the runtime does not import the app bundle. */
 export function toolCallSignature(record: { tool?: unknown; command?: unknown; args?: unknown }): string {
   const tool = typeof record?.tool === "string" && record.tool.trim() ? record.tool.trim() : "unknown"
   const command = typeof record?.command === "string" ? record.command.trim() : ""

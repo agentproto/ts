@@ -2048,6 +2048,89 @@ export function registerSessionTools(
     },
   )
 
+  // ── session_transcript ──────────────────────────────────────────
+  server.tool(
+    "session_transcript",
+    "Return one session's conversation transcript — the actual messages the " +
+      "daemon records for every session (local or sandbox). Unlike " +
+      "`session_list` / `session_context_status` (which only know a session " +
+      "exists) or `summarize_session` (one last line), this serves the turns: " +
+      "each message carries `role` (user / assistant / system / tool), `text`, " +
+      "and `toolCalls` (where present). Uses the SAME normalised read path as " +
+      "`agentproto sessions export` / the `/sessions/:id/export` route, so the " +
+      "shape matches. Reads from disk (never mutates anything); returns an " +
+      "empty `messages` array when no transcript exists. `limit` keeps at most " +
+      "N messages from the end (the most recent exchange survives). Same lookup " +
+      "+ owner scope as `session_usage` / `session_restart` (by id or name).",
+    {
+      ...sessionRefSchema(z),
+      limit: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .describe(
+          "Keep at most N messages, taken from the END of the transcript " +
+            "(most recent first). Omit for the whole conversation.",
+        ),
+    },
+    async input => {
+      const desc = resolveSessionDesc(registry, input)
+      if (!desc) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: `no session "${sessionRefQuery(input)}" found` }),
+            },
+          ],
+          isError: true,
+        }
+      }
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify({
+                  error: "orchestrator_session_out_of_scope",
+                  message:
+                    `session_transcript: session "${desc.id}" is not in your subtree — ` +
+                    "a scoped orchestrator can only inspect sessions it (transitively) spawned.",
+                  sessionId: desc.id,
+                }),
+              },
+            ],
+            isError: true,
+          }
+        }
+      }
+      const { exportDaemonEventsSession } = await import("./transcript-export.js")
+      let session
+      try {
+        session = await exportDaemonEventsSession(desc.id, desc)
+      } catch {
+        session = { messages: [] as unknown[] }
+      }
+      const messages = input.limit && input.limit > 0 && session.messages.length > input.limit
+        ? session.messages.slice(-input.limit)
+        : session.messages
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ sessionId: desc.id, count: messages.length, messages }),
+          },
+        ],
+      }
+    },
+  )
+
   // ── session_context_status ───────────────────────────────────────
   server.tool(
     "session_context_status",

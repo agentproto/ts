@@ -5,6 +5,7 @@ import {
   hookEnv,
   nonInteractiveEnv,
   resolveWorktreesTurboCacheDir,
+  resolveWorktreesTurboConcurrency,
   type WorktreeEnvContext,
 } from "./env.js"
 import { execShell, type ExecResult } from "./exec.js"
@@ -128,7 +129,11 @@ async function appendHookLog(
  * {@link resolveWorktreesTurboCacheDir}), so a `pnpm build` (or any other
  * turbo-driven build) run BY a setup hook restores from cache instead of
  * paying a full cold build every single time a worktree is provisioned. A
- * setup hook that doesn't use turbo simply never reads the var. The first
+ * setup hook that doesn't use turbo simply never reads the var. The same env
+ * also carries `TURBO_CONCURRENCY` (see {@link resolveWorktreesTurboConcurrency}),
+ * capped low so a small sandbox box (4 vCPU e2b/computer microVM) doesn't
+ * oversubscribe when `pnpm -r check-types`/`test` fans out per-package tasks.
+ * The first
  * non-zero exit throws {@link HookError} (setup failure must fail
  * provisioning). No-op when the repo declares no setup.
  *
@@ -181,6 +186,7 @@ export async function runSetup(
     ...nonInteractiveEnv(process.env, opts.env),
     ...(opts.env ?? {}),
     TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir(),
+    TURBO_CONCURRENCY: String(resolveWorktreesTurboConcurrency()),
   }
   const execOpts = { env, ...(opts.signal ? { signal: opts.signal } : {}) }
   for (const command of commands) {
