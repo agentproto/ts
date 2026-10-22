@@ -273,7 +273,6 @@ import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-co
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
-import { resolveMessagingDefaults } from "./messaging-defaults.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
 import { stripAnsi } from "./agent-tools.js"
 import {
