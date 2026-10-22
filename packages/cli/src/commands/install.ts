@@ -331,12 +331,22 @@ async function enableAdapter(
   slug: string,
   dryRun: boolean,
 ): Promise<void> {
-  const pkg = adapter.packageName ?? `@agentproto/adapter-${slug}`
+  // Generic ACP agents (`acp-config` / `acp-catalog`) have no importable
+  // adapter package: `config.adapters[]` entries are fed to `import(id)`, so
+  // persisting a guessed `@agentproto/adapter-<slug>` would register a phantom
+  // module. They are resolved from config/catalog by slug and need no entry.
+  const enrollable =
+    adapter.source === "npm" ||
+    adapter.source === "file" ||
+    adapter.source === "bundled"
+  const pkg = enrollable
+    ? (adapter.packageName ?? `@agentproto/adapter-${slug}`)
+    : undefined
   if (dryRun) {
-    process.stdout.write(`agentproto: would enable '${pkg}'.\n`)
+    if (pkg) process.stdout.write(`agentproto: would enable '${pkg}'.\n`)
     return
   }
-  await addAdapterToConfig(pkg)
+  if (pkg) await addAdapterToConfig(pkg)
   const provider = adapter.handle.provider
   if (provider) {
     const stored = await getProviderKey(provider)
@@ -352,7 +362,7 @@ async function enableAdapter(
       }
     }
   }
-  process.stdout.write(`agentproto: enabled '${pkg}'.\n`)
+  if (pkg) process.stdout.write(`agentproto: enabled '${pkg}'.\n`)
 }
 
 /**

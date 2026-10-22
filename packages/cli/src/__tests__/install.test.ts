@@ -124,7 +124,19 @@ function spawnExits(code: number) {
   })
 }
 
+// A successful install now enrolls the adapter in `config.json`, so every
+// suite pins AGENTPROTO_HOME (and HOME) to a throwaway dir — never the
+// developer's real ~/.agentproto.
+let suiteHome: string
+let suitePrevAgentprotoHome: string | undefined
+let suitePrevHome: string | undefined
+
 beforeEach(() => {
+  suiteHome = mkdtempSync(join(tmpdir(), "agp-install-suite-"))
+  suitePrevAgentprotoHome = process.env.AGENTPROTO_HOME
+  suitePrevHome = process.env.HOME
+  process.env.HOME = suiteHome
+  process.env.AGENTPROTO_HOME = join(suiteHome, ".agentproto")
   resolveAdapterMock.mockReset()
   spawnMock.mockReset()
   runSetupMock.mockReset()
@@ -136,6 +148,11 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.restoreAllMocks()
+  if (suitePrevAgentprotoHome === undefined) delete process.env.AGENTPROTO_HOME
+  else process.env.AGENTPROTO_HOME = suitePrevAgentprotoHome
+  if (suitePrevHome === undefined) delete process.env.HOME
+  else process.env.HOME = suitePrevHome
+  rmSync(suiteHome, { recursive: true, force: true })
 })
 
 describe("agentproto install — adapter package bootstrap", () => {
@@ -285,6 +302,29 @@ describe("agentproto install — vendored (generic ACP) step", () => {
     expect(cmd).toBe("uv")
     expect(argv).toEqual(["tool", "install", "mistral-vibe"])
     io.restore()
+  })
+
+  it("does not persist a phantom @agentproto/adapter-<slug> id for a generic ACP agent", async () => {
+    resolveAdapterMock.mockResolvedValue(
+      fakeGenericAcpHandle("mistral-vibe", "vibe-acp", "uv tool install mistral-vibe")
+    )
+    binOnPathMock.mockResolvedValue(true)
+    const io = captureStdio()
+
+    const code = await runInstall(["mistral-vibe"])
+    io.restore()
+
+    expect(code).toBe(0)
+    let adapters: string[] = []
+    try {
+      const cfg = JSON.parse(
+        readFileSync(join(process.env.AGENTPROTO_HOME!, "config.json"), "utf8")
+      ) as { adapters?: string[] }
+      adapters = cfg.adapters ?? []
+    } catch {
+      // no config written at all — also correct
+    }
+    expect(adapters).not.toContain("@agentproto/adapter-mistral-vibe")
   })
 
   it("not on PATH ⇒ npm-hint runs `npm install -g`", async () => {

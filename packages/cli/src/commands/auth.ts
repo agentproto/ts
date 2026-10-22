@@ -291,10 +291,15 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
       `  saved to ${providersPath()} (mode 0600)\n`,
   )
 
-  const explicit = (values.adapter ?? [])
-    .flatMap(value => value.split(","))
-    .map(value => value.trim())
-    .filter(Boolean)
+  const explicit = [
+    ...new Set(
+      (values.adapter ?? [])
+        .flatMap(value => value.split(","))
+        .map(value => value.trim())
+        .filter(Boolean)
+        .map(value => catalogSlugForAdapterId(value) ?? value),
+    ),
+  ]
   const slugs = await adapterSlugsForProvider(provider, explicit)
   if (slugs.length > 0) {
     const changed: string[] = []
@@ -322,20 +327,7 @@ async function runProviderSet(args: readonly string[]): Promise<number> {
       )
     }
   }
-  const reload = await reloadDaemonProviders()
-  if (reload.status === "reloaded") {
-    process.stdout.write(
-      `  ✓ daemon reloaded — ${reload.providers.length} provider key(s) live\n`,
-    )
-  } else if (reload.status === "failed") {
-    process.stdout.write(
-      `  ⚠ daemon reload failed (${reload.detail}); the key is stored and loads at next \`serve\`.\n`,
-    )
-  } else {
-    process.stdout.write(
-      `  daemon not running — the key loads at next \`serve\`.\n`,
-    )
-  }
+  await reportDaemonReload("the key is stored and loads at next `serve`")
 
   // Eager live-on-setup catalog fetch: if this provider exposes an
   // account-specific catalog (voices), pull it now so the overlay is ready at
@@ -377,7 +369,8 @@ const PROVIDER_DEFAULT_ADAPTERS: Readonly<Record<string, readonly string[]>> =
   }
 
 /** `@agentproto/adapter-<slug>`, a bare slug, or a catalog package id →
- *  slug. Unknown scoped packages return undefined (never a guessed slug). */
+ *  slug. A scoped `@agentproto/adapter-<slug>` id maps to its `<slug>`; any
+ *  other scoped/path-like id returns undefined (never a guessed slug). */
 function catalogSlugForAdapterId(id: string): string | undefined {
   const entry = CATALOG.find(e => e.packageName === id)
   if (entry) return entry.slug
@@ -425,6 +418,22 @@ async function adapterSlugsForProvider(
     matched.push(...(PROVIDER_DEFAULT_ADAPTERS[provider] ?? []))
   }
   return matched
+}
+
+/** Reload the running daemon's provider env and print the outcome. */
+async function reportDaemonReload(fallback: string): Promise<void> {
+  const reload = await reloadDaemonProviders()
+  if (reload.status === "reloaded") {
+    process.stdout.write(
+      `  ✓ daemon reloaded — ${reload.providers.length} provider key(s) live\n`,
+    )
+  } else if (reload.status === "failed") {
+    process.stdout.write(
+      `  ⚠ daemon reload failed (${reload.detail}); ${fallback}.\n`,
+    )
+  } else {
+    process.stdout.write(`  daemon not running — ${fallback}.\n`)
+  }
 }
 
 type ProviderReloadResult =
@@ -528,6 +537,9 @@ async function runProviderRm(args: readonly string[]): Promise<number> {
       ? `agentproto auth: ✓ removed ${provider} key\n`
       : `agentproto auth: no stored key for ${provider}\n`,
   )
+  if (existed) {
+    await reportDaemonReload("the removal takes effect at next `serve`")
+  }
   return 0
 }
 

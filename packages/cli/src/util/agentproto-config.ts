@@ -31,7 +31,9 @@ export interface AgentprotoConfig {
   [key: string]: unknown
 }
 
-/** `$AGENTPROTO_HOME/config.json`, falling back to `~/.agentproto`. */
+/** `$AGENTPROTO_HOME/config.json`, falling back to `~/.agentproto`.
+ *  Note: `AGENTPROTO_HOME` is honored by the CLI only; the runtime's
+ *  `loadConfig` and `providers-store` read `homedir()` directly. */
 export function configPath(): string {
   const base = process.env["AGENTPROTO_HOME"] ?? join(homedir(), ".agentproto")
   return join(base, "config.json")
@@ -52,7 +54,8 @@ export async function loadAgentprotoConfig(): Promise<AgentprotoConfig> {
 }
 
 /** Atomic write (tmp + rename) so a concurrent `config edit` cannot observe
- *  a half-written file. */
+ *  a half-written file. The tmp name is fixed, so this protects readers, not
+ *  two concurrent writers. */
 export async function saveAgentprotoConfig(
   cfg: AgentprotoConfig,
 ): Promise<void> {
