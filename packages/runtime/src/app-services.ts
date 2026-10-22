@@ -9,18 +9,19 @@
  *       entry: node server.js   # the shell command to run
  *       port: 4321          # optional 1..65535 bookkeeping/health touchpoint
  *
- * One owner SESSION per entry (the SAME spawn infra as agents — see
- * `registerAppTools`'s wiring in app-tools.ts) runs `entry` as a detached
- * child and supervises it: it restarts the child when it dies, and the owner
- * session itself is spawned with `keepAlive` + a `restartPolicy` so the daemon
- * revives it if the owner crashes. There is deliberately NO scheduler here —
- * no cron, no k8s, no queue: just one owner session per declared service.
+ * One managed process per entry (see `app-service-process.ts` — a
+ * deterministic, non-PTY child spawned detached and adopted into the
+ * `sessions` REGISTRY, no LLM adapter involved) with its ownership
+ * bookkeeping (label, origin, store record) here. The runner restarts the
+ * child with backoff on an unexpected exit, capped; there is deliberately
+ * NO scheduler here — no cron, no k8s, no queue.
  *
- * Ownership is persisted (appId + name + entry + owner `sessionId` + the
- * child/session `pid`, in a JSON store next to the installed-app registry) so
- * `app_uninstall` can (a) kill every owner session and (b) kill the recorded
- * process — otherwise a reinstall spawns a second owner for a service still
- * running from the old install ("double-cerveau à la réinstall").
+ * Ownership is persisted (appId + name + entry + the live process's
+ * `sessionId` + its process-group-leader `pid`, in a JSON store next to the
+ * installed-app registry) so `app_uninstall` can kill the recorded process
+ * group and its registry row — otherwise a reinstall spawns a second owner
+ * for a service still running from the old install
+ * ("double-cerveau à la réinstall").
  *
  * Scope note: this module is the whole SERVICE-LAUNCHER behaviour, lifted out
  * of app-tools.ts so it is unit-testable without an MCP server or a real
@@ -60,17 +61,24 @@ export function parseAppServices(raw: unknown): AppServiceValidation {
 }
 
 /** One service owner: the persisted ownership record — `appId` + the service
- *  `name`/`entry` + the owner session id and the recorded process `pid`, so
- *  uninstall can find and kill both. */
+ *  `name`/`entry` + the registry row id and process-group-leader `pid` of the
+ *  currently-live attempt, so uninstall can kill both. */
 export interface AppServiceOwner {
   appId: string
   name: string
   entry: string
-  /** The spawned owner session id (`app_uninstall` kills it). */
+  /** Registry row id of the live attempt's process (`app_uninstall` kills
+   *  the row + the process group). Updated on every respawn. */
   sessionId: string
-  /** The owner/session process id, when the spawn surfaced one — the primary
-   *  pid-bookkeeping handle `app_uninstall` signals. */
+  /** Process-group-leader pid of the live attempt (`app_uninstall` signals
+   *  `-pid`), when the spawn surfaced one. Updated on every respawn. */
   pid?: number
+  /** `/proc/<pid>/stat` start ticks of the recorded pid, captured at spawn
+   *  time — the identity token a later boot reconcile verifies BEFORE
+   *  signalling the recorded pid (a recycled pid has different ticks; see
+   *  `assessRecordedServicePid`). Never signal a bare recorded pid without
+   *  this check. */
+  startTicks?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
   startedAt: string
@@ -82,37 +90,28 @@ export function serviceOwnerLabel(appId: string, name: string): string {
 }
 
 /**
- * The owner session's job, spelled out as its first prompt: run `entry` as a
- * detached child, write the child pid to `pidFile`, and restart the child when
- * it dies. The daemon does NOT loop this itself — the owner is the supervisor
- * (the simplest path the repo already has: one agent session, `keepAlive` +
- * `restartPolicy` at the daemon level, a shell supervision loop inside).
+ * The owner record's persisted `entry` — a display string regardless of
+ * whether the manifest used the legacy `entry` shell line or the structured
+ * `{ command, args }` form (joined argv, no shell interpretation shown).
+ * Uninstall bookkeeping keys off this only for humans; the real kill path
+ * signals the recorded pid's process group (see `app-service-process.ts`).
  */
-export function buildServiceOwnerPrompt(service: AppService, pidFile: string): string {
-  const portNote =
-    service.port !== undefined ? ` It is expected to listen on port ${service.port}.` : ""
-  return [
-    `You are the service owner for "${service.name}".`,
-    `Run this command as a detached background child and keep it alive, restarting it whenever it exits:`,
-    "",
-    `    ${service.entry}`,
-    "",
-    `Write the child's PID to ${pidFile} immediately after launching it, and treat that pid file as the daemon's handle to this service.${portNote}`,
-    "Use a small supervision loop (relaunch on exit) rather than exiting; this session stays alive for the lifetime of the service and is killed by `app_uninstall`.",
-    "Do not spawn any additional long-running processes beyond this one service.",
-  ].join("\n")
-}
-
-/** Absolute path of the pid file an owner writes for its service (kept beside
- *  the app's daemon-owned state so no path is caller-supplied). */
-export function servicePidFilePath(stateDir: string, name: string): string {
-  return join(stateDir, "services", `${name}.pid`)
+export function serviceDisplayEntry(service: AppService): string {
+  if (service.command !== undefined) {
+    return [service.command, ...(service.args ?? [])].join(" ")
+  }
+  return service.entry ?? ""
 }
 
 /**
  * SIGTERM a recorded pid, swallowing the two benign failures: `ESRCH` (the
  * process already exited) and `EPERM` (not ours to signal). Never throws — a
  * cleanup path must not fail on a stale pid.
+ *
+ * @deprecated Signals a bare pid with no identity check and not its process
+ * group. Service cleanup now goes through `killServiceProcess` /
+ * `assessRecordedServicePid` (see `app-service-process.ts`). Kept only for
+ * backward compatibility; it will be removed in a future major.
  */
 export function killServicePid(pid: number | undefined, signal: NodeJS.Signals = "SIGTERM"): void {
   if (pid === undefined || !Number.isInteger(pid) || pid <= 0) return
@@ -120,27 +119,6 @@ export function killServicePid(pid: number | undefined, signal: NodeJS.Signals =
     process.kill(pid, signal)
   } catch {
     // ESRCH (gone) / EPERM (not ours) — best-effort cleanup.
-  }
-}
-
-/**
- * Read the pid an owner wrote to its pid file (`servicePidFilePath`), or
- * `undefined` when the file is absent or malformed. This is the ONLY handle to
- * the `entry` CHILD process: the owner record's own `pid` is the owner
- * session's, and the owner session is gone by the time the boot re-ensure runs
- * (`reensureAppServiceOwners`) — so a child that outlived the daemon would
- * otherwise hold its port against the replacement.
- */
-export function readServicePidFile(pidFile: string): number | undefined {
-  try {
-    const raw = readFileSync(pidFile, "utf8").trim()
-    // Strict digits-only: `Number.parseInt` alone would read "42junk" as 42
-    // and signal it — a malformed file must read as absent, not as a pid.
-    if (!/^\d+$/.test(raw)) return undefined
-    const pid = Number.parseInt(raw, 10)
-    return pid > 0 ? pid : undefined
-  } catch {
-    return undefined
   }
 }
 
@@ -188,17 +166,31 @@ function saveServiceState(state: AppServiceStoreState, persistPath: string): voi
   }
 }
 
+/**
+ * Memo of persisting stores per resolved path (audit F-6): each
+ * `registerAppTools` call and the daemon boot pass each build a store for the
+ * SAME persist file; without the memo, instance A's `upsert` rewrites the
+ * whole file from ITS in-memory snapshot and silently erases instance B's
+ * later write. One path ⇒ one shared state. Stores created with an explicit
+ * `persist: false` NEVER join the memo (tests rely on isolated instances).
+ */
+const persistedServiceStores = new Map<string, AppServiceStore>()
+
 export function createAppServiceStore(opts?: {
   persistPath?: string
   persist?: boolean
 }): AppServiceStore {
   const persistPath = opts?.persistPath ?? DEFAULT_SERVICE_STORE_PATH()
   const shouldPersist = opts?.persist ?? opts?.persistPath !== undefined
+  if (shouldPersist) {
+    const memo = persistedServiceStores.get(persistPath)
+    if (memo !== undefined) return memo
+  }
   const state = shouldPersist ? loadServiceState(persistPath) : { version: 1 as const, owners: [] as AppServiceOwner[] }
   const persist = (): void => {
     if (shouldPersist) saveServiceState(state, persistPath)
   }
-  return {
+  const store: AppServiceStore = {
     list() {
       return [...state.owners]
     },
@@ -227,13 +219,41 @@ export function createAppServiceStore(opts?: {
       return removed
     },
   }
+  if (shouldPersist) persistedServiceStores.set(persistPath, store)
+  return store
 }
 
 // ── orchestration ───────────────────────────────────────────────────────────
 
+/**
+ * Per-app transition locks (audit F-5): every ensure/reensure/remove for an
+ * appId is serialized through this in-flight promise chain, so a concurrent
+ * `app_install` racing the boot reconcile (or two MCP clients) can never
+ * read-modify-write the same owner set at once — no double-spawns, no
+ * clobbered records. Module-level: it spans every store instance and every
+ * handle creation inside one daemon process.
+ */
+const appServiceLocks = new Map<string, Promise<unknown>>()
+
+export async function withAppServiceLock<T>(appId: string, fn: () => Promise<T>): Promise<T> {
+  const prev = appServiceLocks.get(appId) ?? Promise.resolve()
+  const run = prev.then(fn, fn)
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  appServiceLocks.set(appId, tail)
+  // Drop the entry once this call is the settled tail — otherwise the map
+  // would keep one promise chain per app id for the daemon lifetime.
+  void tail.then(() => {
+    if (appServiceLocks.get(appId) === tail) appServiceLocks.delete(appId)
+  })
+  return run
+}
+
 /** The outcome of spawning one owner session. */
 export type SpawnServiceOwnerResult =
-  | { ok: true; sessionId: string; pid?: number }
+  | { ok: true; sessionId: string; pid?: number; startTicks?: number }
   | { ok: false; error: string }
 
 /** Spawn seam for one service owner — injectable so unit tests never spawn a
@@ -271,11 +291,17 @@ export interface EnsureAppServiceOwnersResult {
   /** Per-service spawn failures — surfaced, never thrown (a failed service
    *  must not fail the install that succeeded). */
   errors: Array<{ name: string; error: string }>
+  /** Owners of services the manifest NO LONGER declares — killed and
+   *  dropped by THIS call (full reconciliation; audit F-7: a purged
+   *  manifest entry must not keep a live process across a reinstall). */
+  removed: string[]
 }
 
 /**
  * Ensure exactly one live owner per declared service (idempotent, "ensure"
- * semantics — mirroring `ensureAppWorkspace`):
+ * semantics — mirroring `ensureAppWorkspace`), AND a full reconciliation of
+ * the store against the declared set: every owner of an app whose service
+ * was removed from the manifest is killed + dropped (`removed`).
  *
  *   - a service whose recorded owner is still alive is KEPT (no duplicate
  *     owner on reinstall / repeated `app_install`);
@@ -283,71 +309,88 @@ export interface EnsureAppServiceOwnersResult {
  *     killed + dropped, a fresh one is spawned;
  *   - a service with no record is spawned.
  *
+ * The whole reconcile runs under the per-app lock (`withAppServiceLock`) —
+ * a concurrent call waits its turn and re-reads the store, so it sees this
+ * call's writes (no double-spawns).
  * Spawn failures are collected in `errors` and never abort the loop.
  */
 export async function ensureAppServiceOwners(
   deps: EnsureAppServiceOwnersDeps,
 ): Promise<EnsureAppServiceOwnersResult> {
-  const now = deps.now ?? (() => new Date())
-  const existing = deps.store.listForApp(deps.appId)
-  const byName = new Map(existing.map(o => [o.name, o]))
-  const spawned: AppServiceOwner[] = []
-  const kept: AppServiceOwner[] = []
-  const errors: Array<{ name: string; error: string }> = []
+  return withAppServiceLock(deps.appId, async () => {
+    const now = deps.now ?? (() => new Date())
+    const existing = deps.store.listForApp(deps.appId)
+    const byName = new Map(existing.map(o => [o.name, o]))
+    const spawned: AppServiceOwner[] = []
+    const kept: AppServiceOwner[] = []
+    const errors: Array<{ name: string; error: string }> = []
+    const removed: string[] = []
 
-  for (const service of deps.services) {
-    const prev = byName.get(service.name)
-    if (prev !== undefined && deps.isOwnerAlive(prev)) {
-      kept.push(prev)
-      continue
-    }
-    if (prev !== undefined) {
-      try {
-        await deps.killOwner(prev)
-      } catch {
-        // A failed kill of a dead owner must not block the replacement.
+    for (const service of deps.services) {
+      const prev = byName.get(service.name)
+      if (prev !== undefined && deps.isOwnerAlive(prev)) {
+        kept.push(prev)
+        continue
       }
-      deps.store.remove(deps.appId, service.name)
+      if (prev !== undefined) {
+        try {
+          await deps.killOwner(prev)
+        } catch {
+          // A failed kill of a dead owner must not block the replacement.
+        }
+        deps.store.remove(deps.appId, service.name)
+      }
+      const res = await deps.spawn(service)
+      if (!res.ok) {
+        errors.push({ name: service.name, error: res.error })
+        continue
+      }
+      const owner: AppServiceOwner = {
+        appId: deps.appId,
+        name: service.name,
+        entry: serviceDisplayEntry(service),
+        sessionId: res.sessionId,
+        ...(res.pid !== undefined ? { pid: res.pid } : {}),
+        ...(res.startTicks !== undefined ? { startTicks: res.startTicks } : {}),
+        ...(service.port !== undefined ? { port: service.port } : {}),
+        startedAt: now().toISOString(),
+      }
+      deps.store.upsert(owner)
+      spawned.push(owner)
     }
-    const res = await deps.spawn(service)
-    if (!res.ok) {
-      errors.push({ name: service.name, error: res.error })
-      continue
-    }
-    const owner: AppServiceOwner = {
-      appId: deps.appId,
-      name: service.name,
-      entry: service.entry,
-      sessionId: res.sessionId,
-      ...(res.pid !== undefined ? { pid: res.pid } : {}),
-      ...(service.port !== undefined ? { port: service.port } : {}),
-      startedAt: now().toISOString(),
-    }
-    deps.store.upsert(owner)
-    spawned.push(owner)
-  }
 
-  return { spawned, kept, errors }
+    // Full reconciliation (F-7): every recorded owner the manifest no longer
+    // declares is stopped and dropped.
+    const declared = new Set(deps.services.map(s => s.name))
+    for (const orphan of deps.store.listForApp(deps.appId)) {
+      if (declared.has(orphan.name)) continue
+      try {
+        await deps.killOwner(orphan)
+      } catch {
+        // Best-effort — still drop the record.
+      }
+      deps.store.remove(deps.appId, orphan.name)
+      removed.push(orphan.name)
+    }
+
+    return { spawned, kept, errors, removed }
+  })
 }
 
 /**
  * Boot counterpart of `ensureAppServiceOwners` (Pygmalion phase 1b item 2):
- * the previous daemon's owner sessions are gone by definition, so every
- * recorded owner is treated as stale and replaced — liveness is NOT consulted.
- * That is the whole point: a rehydrated (or eagerly re-resumed) owner session
- * reports `running` while its `entry` child is dead, the exact state an
- * `isOwnerAlive`-gated re-ensure would KEEP and never fix. Before spawning,
- * signal the pid the owner left in its pid file, so a child that outlived the
+ * the previous daemon's owner rows are gone by definition, so every recorded
+ * owner is treated as stale and replaced — liveness is NOT consulted (a
+ * rehydrated registry row reports `running` while its process may be dead —
+ * the exact state an `isOwnerAlive`-gated re-ensure would KEEP and never
+ * fix). Leftover children from the previous daemon are killed through the
+ * replacement path itself: `killOwner` (see `killServiceProcess`) signals the
+ * RECORDED pid's process group, so a detached child that outlived the
  * daemon does not hold its port against the fresh owner.
  */
 export async function reensureAppServiceOwners(
   deps: ReensureAppServiceOwnersDeps,
 ): Promise<EnsureAppServiceOwnersResult> {
-  const readPid = deps.readPidFile ?? readServicePidFile
-  const killPid = deps.killPid ?? killServicePid
-  for (const service of deps.services) {
-    killPid(readPid(servicePidFilePath(deps.stateDir, service.name)))
-  }
   return ensureAppServiceOwners({
     store: deps.store,
     appId: deps.appId,
@@ -359,14 +402,7 @@ export async function reensureAppServiceOwners(
   })
 }
 
-export interface ReensureAppServiceOwnersDeps extends Omit<EnsureAppServiceOwnersDeps, "isOwnerAlive"> {
-  /** Per-app state dir the owner writes its `<name>.pid` under (the same dir
-   *  `ensureServices` derives: `stateDir ?? dataDir ?? dir`). */
-  stateDir: string
-  /** Test seams — default to the real pid-file read + `killServicePid`. */
-  readPidFile?: (pidFile: string) => number | undefined
-  killPid?: (pid: number | undefined) => void
-}
+export interface ReensureAppServiceOwnersDeps extends Omit<EnsureAppServiceOwnersDeps, "isOwnerAlive"> {}
 
 /**
  * Remove + kill every owner of an app — the `app_uninstall` cleanup. Kills
@@ -379,16 +415,18 @@ export async function removeAppServiceOwners(deps: {
   appId: string
   killOwner: (owner: AppServiceOwner) => void | Promise<void>
 }): Promise<string[]> {
-  const owners = deps.store.listForApp(deps.appId)
-  const removed: string[] = []
-  for (const owner of owners) {
-    try {
-      await deps.killOwner(owner)
-    } catch {
-      // Best-effort — still drop the record.
+  return withAppServiceLock(deps.appId, async () => {
+    const owners = deps.store.listForApp(deps.appId)
+    const removed: string[] = []
+    for (const owner of owners) {
+      try {
+        await deps.killOwner(owner)
+      } catch {
+        // Best-effort — still drop the record.
+      }
+      deps.store.remove(deps.appId, owner.name)
+      removed.push(owner.name)
     }
-    deps.store.remove(deps.appId, owner.name)
-    removed.push(owner.name)
-  }
-  return removed
+    return removed
+  })
 }

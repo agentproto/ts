@@ -37,19 +37,26 @@ import type { ToolHandle } from "@agentproto/tool"
 import { runTool } from "@agentproto/driver"
 import { createDaemonToolRegistry, type AppToolRegistry } from "./workflow-tool-registry.js"
 import { spawnAgentSession } from "./session-spawn.js"
+import {
+  killServiceProcess,
+  startAppServiceProcess,
+  stopAppServiceSupervisor,
+  cleanupLegacyServicePidFile,
+  appServiceLogPath,
+  assessRecordedServicePid,
+  isAppServicePendingRestart,
+} from "./app-service-process.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
 import {
-  buildServiceOwnerPrompt,
   createAppServiceStore,
   ensureAppServiceOwners,
-  killServicePid,
   parseAppServices,
   reensureAppServiceOwners,
   removeAppServiceOwners,
+  serviceDisplayEntry,
   serviceOwnerLabel,
-  servicePidFilePath,
   type AppService,
   type EnsureAppServiceOwnersResult,
   type AppServiceOwner,
@@ -141,6 +148,10 @@ const DEFAULT_AGENT_ADAPTER = "mastra-agent"
  *  sessions.ts): clean exit, operator kill, or a crash/error. Any of these
  *  means the session is no longer running and a sequential run can advance. */
 const TERMINAL_SESSION_STATUSES = new Set(["exited", "killed", "error"])
+
+/** The `serviceAdapter` deprecation warning fires once per process, not on
+ *  every `registerAppTools` call. */
+let serviceAdapterWarned = false
 
 function isSessionTerminal(status: string | undefined): boolean {
   return status === undefined || TERMINAL_SESSION_STATUSES.has(status)
@@ -1196,15 +1207,17 @@ export interface RegisterAppToolsOptions {
   /** Overrides the service-owner store's persistence path (ignored when
    *  `serviceStore` is supplied). */
   serviceStorePath?: string
-  /** Spawn seam for a service owner. Defaults to `spawnAgentSession` with
-   *  `keepAlive` + `restartPolicy` (see `defaultSpawnServiceOwner` inside
-   *  `registerAppTools`); tests inject a stub. */
+  /** Spawn seam for a service owner. Defaults to the deterministic managed
+   *  process (`startAppServiceProcess` — no adapter, no PTY, no prompt, see
+   *  `defaultSpawnServiceOwner` inside `buildAppServiceEnsurer`); tests
+   *  inject a stub. */
   spawnServiceOwner?: SpawnServiceOwner
-  /** Adapter slug a service owner spawns under. Defaults to `"pi"` — the same
-   *  adapter `agent_start` defaults to when the caller names none. */
+  /** Legacy adapter slug for a service owner (unused by the deterministic
+   *  process spawn; accepted for compatibility). */
   serviceAdapter?: string
   /** Kill seam for an uninstalled/replaced service owner. Defaults to
-   *  `registry.kill(sessionId)` + `killServicePid(pid)`; tests inject a spy. */
+   *  `killServiceProcess(pid)` (process group) + `registry.kill(sessionId)`;
+   *  tests inject a spy. */
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
   /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
    *  Defaults to `apps/` next to `persistPath` (the daemon state dir). */
@@ -1647,12 +1660,53 @@ export interface AppServiceBootReensureResult {
 export interface AppServiceEnsurerDeps {
   registry: SessionsRegistry
   serviceStore: AppServiceStore
+  /** Unused by the deterministic process spawn (kept for interface
+   *  compatibility with other call sites). */
   resolveAgentAdapter?: AgentAdapterResolver
   daemonMcpUrl?: string
+  /** Unused by the deterministic process spawn (kept for compatibility). */
   serviceAdapter?: string
   workspacesConfigPath?: string
   spawnServiceOwner?: SpawnServiceOwner
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+}
+
+/**
+ * Kill seam for one service owner. FIRST disposes the in-daemon supervisor
+ * for `<appId>:<name>` (cancels the restart loop, kills the live process
+ * group, flips the row) — otherwise the runner would see the child exit and
+ * respawn it, re-creating the owner record we are about to drop. A custom
+ * `killServiceOwner` (tests/embedders) still runs after the supervisor is
+ * stopped. With no live supervisor (an owner recorded by a PREVIOUS daemon),
+ * the recorded process group is signalled — IDENTITY-GATED (audit F-4): a
+ * recorded pid may name an unrelated process by now (recycling), so it is
+ * only signalled when the recorded start ticks still match.
+ */
+function createServiceOwnerKiller(
+  registry: SessionsRegistry,
+  custom?: (owner: AppServiceOwner) => void | Promise<void>,
+): (owner: AppServiceOwner) => Promise<void> {
+  return async owner => {
+    const stopped = await stopAppServiceSupervisor(owner.appId, owner.name)
+    if (custom !== undefined) {
+      await custom(owner)
+      return
+    }
+    if (!stopped) {
+      const verdict = assessRecordedServicePid(owner.pid, owner.startTicks)
+      if (owner.pid !== undefined && !verdict.kill) {
+        console.warn(
+          `[app-services] recorded pid ${owner.pid} for "${owner.appId}:${owner.name}" NOT signalled: ${verdict.reason}`,
+        )
+      }
+      await killServiceProcess(verdict.kill ? owner.pid : undefined)
+    }
+    try {
+      registry.kill(owner.sessionId)
+    } catch {
+      // Row already gone — same best-effort cleanup contract.
+    }
+  }
 }
 
 /**
@@ -1665,12 +1719,19 @@ export interface AppServiceEnsurerDeps {
 export function buildAppServiceEnsurer(
   deps: AppServiceEnsurerDeps,
 ): NonNullable<PerformInstallOptions["ensureServices"]> {
-  const serviceAdapter = deps.serviceAdapter ?? "pi"
-
-  /** The default spawn: the SAME infra as agents (`spawnAgentSession`), with
-   *  `keepAlive` (exempt from the idle-reaper) + a `restartPolicy` (the daemon
-   *  revives the owner if the adapter process crashes). The owner's own prompt
-   *  supervises the `entry` child — there is no scheduler. */
+  if (deps.serviceAdapter !== undefined && !serviceAdapterWarned) {
+    serviceAdapterWarned = true
+    console.warn(
+      `[app-services] "serviceAdapter" (${deps.serviceAdapter}) is deprecated and ignored: ` +
+        "app services now run as deterministic managed processes, not LLM-prompted owner sessions.",
+    )
+  }
+  /** The default spawn: a DETERMINISTIC managed process (no PTY, no adapter,
+   *  no LLM prompt) — `startAppServiceProcess` spawns the declared command
+   *  detached, adopts it in the registry (`origin`/`label` kept identical to
+   *  the old owner session's), and supervises restarts with backoff. Each
+   *  respawn updates the persisted owner record so uninstall kills the live
+   *  process group, not a dead ancestor attempt. */
   const defaultSpawnServiceOwner = async (input: {
     appId: string
     dir: string
@@ -1678,52 +1739,43 @@ export function buildAppServiceEnsurer(
     workspaceSlug?: string
     stateDir: string
   }): Promise<SpawnServiceOwnerResult> => {
-    const resolveAgentAdapter = deps.resolveAgentAdapter
-    if (!resolveAgentAdapter) {
-      return { ok: false, error: "no adapter resolver is wired — cannot spawn a service owner" }
-    }
-    const result = await spawnAgentSession(
-      {
-        registry: deps.registry,
-        resolveAgentAdapter,
-        ...(deps.daemonMcpUrl !== undefined ? { daemonMcpUrl: deps.daemonMcpUrl } : {}),
-      },
-      {
-        adapter: serviceAdapter,
-        cwd: input.dir,
-        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
-        prompt: buildServiceOwnerPrompt(input.service, servicePidFilePath(input.stateDir, input.service.name)),
-        label: serviceOwnerLabel(input.appId, input.service.name),
-        // Service owners are app-managed roots, not human-launched sessions.
-        // Lifecycle policy must be able to tell the two apart without
-        // inferring ownership from a mutable display label.
-        origin: `app-service:${input.appId}`,
-        appId: input.appId,
-        keepAlive: true,
-        restartPolicy: {
-          on: ["crashed", "error"],
-          maxRetries: 5,
-          windowMs: 10 * 60 * 1000,
-          baseDelayMs: 5_000,
-          factor: 2,
-          maxDelayMs: 60_000,
-        },
-      },
+    // Upgrade path: reap a service child orphaned by the previous
+    // (owner-session) model before spawning its replacement.
+    const legacy = await cleanupLegacyServicePidFile(
+      input.stateDir,
+      input.service.name,
+      serviceDisplayEntry(input.service),
     )
-    if (!result.ok) return { ok: false, error: result.message }
+    if (legacy.killed) console.warn(`[app-services] ${input.appId}:${input.service.name}: ${legacy.reason}`)
+    const result = startAppServiceProcess({
+      registry: deps.registry,
+      appId: input.appId,
+      dir: input.dir,
+      service: input.service,
+      ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+      logFile: appServiceLogPath(input.stateDir, input.service.name),
+      onRespawn: (_attempt, info) => {
+        deps.serviceStore.upsert({
+          appId: input.appId,
+          name: input.service.name,
+          entry: serviceDisplayEntry(input.service),
+          sessionId: info.sessionId,
+          ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
+          ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
+          ...(input.service.port !== undefined ? { port: input.service.port } : {}),
+          startedAt: new Date().toISOString(),
+        })
+      },
+    })
+    if (!result.ok) return { ok: false, error: result.error }
+    const { handle } = result
+    if (!handle.sessionId) return { ok: false, error: "spawn produced no registry row" }
     return {
       ok: true,
-      sessionId: result.descriptor.id,
-      ...(result.descriptor.pid !== null && result.descriptor.pid !== undefined
-        ? { pid: result.descriptor.pid }
-        : {}),
+      sessionId: handle.sessionId,
+      ...(handle.pid !== undefined ? { pid: handle.pid } : {}),
+      ...(handle.startTicks !== undefined ? { startTicks: handle.startTicks } : {}),
     }
-  }
-
-  /** Kill seam: the owner SESSION + the recorded process pid. */
-  const killServiceOwner = (owner: AppServiceOwner): void => {
-    deps.registry.kill(owner.sessionId)
-    killServicePid(owner.pid)
   }
 
   return async ({ app, dir, services, force }) => {
@@ -1742,14 +1794,13 @@ export function buildAppServiceEnsurer(
         service,
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
       })
-    const killOwner = deps.killServiceOwner ?? killServiceOwner
+    const killOwner = createServiceOwnerKiller(deps.registry, deps.killServiceOwner)
     const result =
       force === true
         ? await reensureAppServiceOwners({
             store: deps.serviceStore,
             appId: app.appId,
             services,
-            stateDir,
             spawn,
             killOwner,
           })
@@ -1758,6 +1809,10 @@ export function buildAppServiceEnsurer(
             appId: app.appId,
             services,
             isOwnerAlive: owner => {
+              // Dead-but-restarting (backoff timer in flight): still
+              // supervised — a concurrent install in the restart gap must
+              // KEEP the record instead of double-spawning (F-5).
+              if (isAppServicePendingRestart(owner.sessionId)) return true
               const desc = deps.registry.get(owner.sessionId)
               return desc !== undefined && !isSessionTerminal(desc.status)
             },
@@ -1872,14 +1927,6 @@ export function registerAppTools(
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
   })
-
-  /** Kill seam for `app_uninstall` below: the owner SESSION + the recorded
-   *  process pid. Mirrors `buildAppServiceEnsurer`'s own default (same logic,
-   *  just closed over this function's `registry` instead of `deps.registry`). */
-  const killServiceOwner = (owner: AppServiceOwner): void => {
-    registry.kill(owner.sessionId)
-    killServicePid(owner.pid)
-  }
 
   interface RemoteCatalogEntryRef {
     entry: AppCatalogEntry
@@ -3135,7 +3182,7 @@ export function registerAppTools(
       const killedServices = await removeAppServiceOwners({
         store: serviceStore,
         appId: removed.appId,
-        killOwner: opts.killServiceOwner ?? killServiceOwner,
+        killOwner: createServiceOwnerKiller(registry, opts.killServiceOwner),
       })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
       return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })

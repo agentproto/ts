@@ -5411,6 +5411,13 @@ export interface RegisterSessionInput {
   command: string
   kind?: SessionKind
   label?: string
+  /** Provenance stamped on the descriptor (lifecycle filters, `session_list`
+   *  grouping) — `app-service:<appId>` for an adopted app-service process. */
+  origin?: string
+  /** Full argv of the adopted child — recorded verbatim on the descriptor. */
+  argv?: string[]
+  /** Working directory the child was spawned in — recorded on the descriptor. */
+  cwd?: string
 }
 
 export interface SpawnAgentInput {
@@ -5706,6 +5713,19 @@ export interface SpawnSessionInput {
    *  bidirectional IO should opt in via `keepStdin: true` and the
    *  caller is then responsible for writing to `child.stdin`. */
   keepStdin?: boolean
+  /** Detach the child into its own process group (node `spawn`'s
+   *  `detached: true`). The child's pid is then the group's pgid, so a
+   *  caller cleaning up a whole service tree can signal `-pid` — the
+   *  app-service runner's kill primitive. Default false (same group as the
+   *  daemon, as for every other registry spawn). */
+  detached?: boolean
+  /** Provenance stamped on the descriptor — lifecycle policy filters read
+   *  this (`app-service:<appId>` for managed app-service processes). */
+  origin?: string
+  /** Exempt this session from the idle-reaper. Only load-bearing for
+   *  `kind: "agent-cli"` rows (the reaper never reaps other kinds) but
+   *  stamped verbatim for symmetric bookkeeping. */
+  keepAlive?: boolean
 }
 
 export interface SpawnPtyInput {
@@ -11005,6 +11025,7 @@ export function createSessionsRegistry(opts?: {
       const child = spawn(bin, args, {
         cwd: input.cwd,
         env: env as NodeJS.ProcessEnv,
+        ...(input.detached ? { detached: true } : {}),
         stdio: [stdinMode, "pipe", "pipe"],
       })
       const desc: SessionDescriptor = {
@@ -11019,6 +11040,8 @@ export function createSessionsRegistry(opts?: {
         cwd: input.cwd,
         ...worktreeFields(input.cwd),
         ...(input.label ? { label: input.label } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.keepAlive ? { keepAlive: true } : {}),
       }
       const rt: SessionRuntime = {
         desc,
@@ -11082,6 +11105,9 @@ export function createSessionsRegistry(opts?: {
         status: input.child.killed ? "killed" : "running",
         startedAt: new Date().toISOString(),
         ...(input.label ? { label: input.label } : {}),
+        ...(input.origin ? { origin: input.origin } : {}),
+        ...(input.argv ? { argv: input.argv } : {}),
+        ...(input.cwd ? { cwd: input.cwd, ...worktreeFields(input.cwd) } : {}),
       }
       const rt: SessionRuntime = {
         desc,

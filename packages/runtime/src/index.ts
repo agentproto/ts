@@ -1626,6 +1626,13 @@ export interface CreateGatewayOptions {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Boot re-ensure of app-service owners. Mirrors the
+   *  `daemon.resumeServicesOnBoot` config knob; DEFAULT ON (services are
+   *  deterministic processes, so the agent-adapter spawn-storm concerns
+   *  behind `resumeSessionsOnBoot`'s default-off do not apply). When
+   *  explicitly false, `reensureAppServicesOnBoot()` short-circuits to an
+   *  `enabled: false` summary. Surfaced in `daemon_health` / `GET /health`. */
+  resumeServicesOnBoot?: boolean
   /** Opt-in continue-on-boot. Mirrors the `daemon.continueInterruptedOnBoot`
    *  config knob; when true, the `continueInterruptedOnBoot()` handle method
    *  runs the boot continue pass (see `continue-interrupted.ts`); when
@@ -2090,11 +2097,14 @@ export interface GatewayHandle {
   }): Promise<ContinueOnBootSummary>
   /** Boot re-ensure of app-service owners (Pygmalion phase 1b item 2).
    *  `app_install`'s `ensureServices` runs only on the install path, so a
-   *  service whose owner died with the previous daemon stays down until the
-   *  next reinstall; this force-replaces every recorded owner at boot. Gated by
-   *  the same `resumeSessionsOnBoot` knob (a no-op returning
-   *  `{ enabled: false, ... }` when it is off). serve.ts calls this AFTER the
-   *  resume/sandbox passes so it never races them for an owner session id. */
+    *  service whose owner died with the previous daemon stays down until the
+    *  next reinstall; this force-replaces every recorded owner at boot. Gated
+    *  by its OWN `resumeServicesOnBoot` knob (default ON — services are
+    *  deterministic processes, so the agent-adapter spawn-storm concerns
+    *  behind resumeSessionsOnBoot's default-off don't apply); a no-op
+    *  returning `{ enabled: false, ... }` when it is disabled. serve.ts calls
+    *  this AFTER the resume/sandbox passes so it never races them for an owner
+    *  session id. */
   reensureAppServicesOnBoot(): Promise<{
     enabled: boolean
     apps: number
@@ -3727,6 +3737,7 @@ export async function createGateway(
       startedAt,
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       bootResumePolicy: opts.bootResumePolicy,
+      resumeServicesOnBoot: opts.resumeServicesOnBoot !== false,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       sandboxIdleReapAfterMs,
@@ -4591,6 +4602,7 @@ export async function createGateway(
       ...(opts.build ? { build: opts.build } : {}),
       resumeSessionsOnBoot: opts.resumeSessionsOnBoot === true,
       bootResumePolicy: opts.bootResumePolicy,
+      resumeServicesOnBoot: opts.resumeServicesOnBoot !== false,
       continueInterruptedOnBoot: opts.continueInterruptedOnBoot === true,
       idleReapAfterMs,
       sandboxIdleReapAfterMs,
@@ -4967,11 +4979,13 @@ export async function createGateway(
       })
     },
     async reensureAppServicesOnBoot() {
-      // Same boot-automation gate as the resume passes: when the operator has
-      // turned boot automation off, nothing auto-starts at boot — including
-      // app services. Runs AFTER the resume passes in serve.ts, so it never
-      // races them for an owner session id (it force-replaces every owner).
-      if (!opts.resumeSessionsOnBoot) {
+      // Own knob, DEFAULT ON (audit F-11): app-service boot recovery is part
+      // of the service contract (an installed app's services should be up
+      // after a daemon restart) and must not ride the unrelated
+      // `daemon.resumeSessionsOnBoot` opt-in (spawn-storm/cost concerns for
+      // agent adapters don't apply — services are deterministic processes).
+      // Operators can opt out via `daemon.resumeServicesOnBoot: false`.
+      if (opts.resumeServicesOnBoot === false) {
         return { enabled: false, apps: 0, spawned: 0, errors: [] as string[] }
       }
       const result = await reensureInstalledAppServicesOnBoot({

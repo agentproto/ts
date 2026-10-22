@@ -153,9 +153,11 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
     if (!isRecord(entry)) {
       throw new Error(`'${path}' must be an object { name, entry, port? }.`)
     }
-    const extra = Object.keys(entry).filter(k => k !== "name" && k !== "entry" && k !== "port")
+    const extra = Object.keys(entry).filter(
+      k => k !== "name" && k !== "entry" && k !== "command" && k !== "args" && k !== "cwd" && k !== "port",
+    )
     if (extra.length > 0) {
-      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, port).`)
+      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port).`)
     }
     const name = entry.name
     if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
@@ -167,9 +169,38 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
       throw new Error(`two services named '${name}' — service names must be unique.`)
     }
     seen.add(name)
+    const hasEntry = entry.entry !== undefined
+    const hasCommand = entry.command !== undefined
+    if (hasEntry && hasCommand) {
+      throw new Error(`'${path}' must declare exactly one of 'entry' (legacy shell string) / 'command' (structured argv).`)
+    }
+    if (!hasEntry && !hasCommand) {
+      throw new Error(`'${path}' must declare exactly one of 'entry' (legacy shell string) / 'command' (structured argv).`)
+    }
     const command = entry.entry
-    if (typeof command !== "string" || command.trim() === "") {
+    if (hasEntry && (typeof command !== "string" || command.trim() === "")) {
       throw new Error(`'${path}.entry' must be a non-empty shell command string.`)
+    }
+    const structuredCommand = entry.command
+    if (hasCommand && (typeof structuredCommand !== "string" || structuredCommand.trim() === "")) {
+      throw new Error(`'${path}.command' must be a non-empty command string.`)
+    }
+    const args = entry.args
+    if (args !== undefined) {
+      if (
+        !Array.isArray(args) ||
+        args.length === 0 ||
+        !args.every((a): a is string => typeof a === "string")
+      ) {
+        throw new Error(`'${path}.args' must be a non-empty array of strings.`)
+      }
+      if (hasEntry) {
+        throw new Error(`'${path}.args' requires a structured 'command' — not valid alongside legacy 'entry'.`)
+      }
+    }
+    const cwd = entry.cwd
+    if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim() === "")) {
+      throw new Error(`'${path}.cwd' must be a non-empty directory path string.`)
     }
     const port = entry.port
     if (port !== undefined) {
@@ -177,11 +208,20 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
         throw new Error(`'${path}.port' must be an integer between 1 and 65535.`)
       }
     }
-    return {
-      name,
-      entry: command,
-      ...(port !== undefined ? { port } : {}),
-    }
+    return hasCommand
+      ? {
+          name,
+          command: structuredCommand as string,
+          ...(args !== undefined ? { args } : {}),
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(port !== undefined ? { port } : {}),
+        }
+      : {
+          name,
+          entry: command as string,
+          ...(cwd !== undefined ? { cwd } : {}),
+          ...(port !== undefined ? { port } : {}),
+        }
   })
 }
 

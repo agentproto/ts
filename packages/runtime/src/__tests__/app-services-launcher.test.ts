@@ -3,12 +3,15 @@
  * (frozen `services:` semantics, Pygmalion phase 1b item 2). A real
  * `McpServer` + InMemoryTransport over a real `createSessionsRegistry`, with a
  * fake `AgentAdapterResolver` (mirrors app-tools.test.ts). Two seams are
- * exercised: the REAL default spawn (`spawnAgentSession`, asserted via the
- * registry descriptor: label + keepAlive + restartPolicy) and an injected
- * spawn/kill stub (asserted for pid bookkeeping + uninstall cleanup).
+ * exercised: the REAL default spawn (now the DETERMINISTIC managed process of
+ * app-service-process.ts — asserted via the registry descriptor: label +
+ * origin + a live `kind:"command"` row, and asserted to engage NO LLM
+ * adapter) and an injected spawn/kill stub (asserted for pid bookkeeping +
+ * uninstall cleanup).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { spawn } from "node:child_process"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -21,6 +24,7 @@ import { defineAgent } from "@agentproto/agent"
 import { registerAppTools, reensureInstalledAppServicesOnBoot } from "../app-tools.js"
 import { createAppRegistry } from "../app-registry.js"
 import { createSessionsRegistry } from "../sessions.js"
+import { readProcessStartTicks } from "../app-service-process.js"
 import { createAppServiceStore, type AppServiceOwner, type SpawnServiceOwner } from "../app-services.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
@@ -116,35 +120,46 @@ describe("service-owner launcher via app_install", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it("spawns one owner session per service, keepAlive + restartPolicy, and is idempotent on reinstall", async () => {
+  it("spawns one managed process per service (no LLM adapter), labels + origin recorded, idempotent on reinstall", async () => {
+    const LONG = `node -e "setInterval(()=>{},60000)"`
     await buildServiceApp(dir, [
-      { name: "web", entry: "node server.js", port: 4321 },
-      { name: "worker", entry: "node worker.js" },
+      { name: "web", entry: LONG, port: 4321 },
+      { name: "legacy", entry: LONG },
     ])
     const { client, registry, serviceStore, startSession } = await setup()
 
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
-    expect(startSession).toHaveBeenCalledTimes(2)
+    // The deterministic spawn engages NO LLM adapter session.
+    expect(startSession).not.toHaveBeenCalled()
 
     const owners = serviceStore.listForApp(APP_ID)
-    expect(owners.map(o => o.name).sort()).toEqual(["web", "worker"])
+    expect(owners.map(o => o.name).sort()).toEqual(["legacy", "web"])
     const web = owners.find(o => o.name === "web")!
-    expect(web.entry).toBe("node server.js")
     expect(web.port).toBe(4321)
     expect(web.sessionId).toMatch(/^sess_/)
+    expect(web.pid).toBeGreaterThan(0)
     expect(web.startedAt).toBeTruthy()
 
     const desc = registry.get(web.sessionId)!
-    expect(desc.keepAlive).toBe(true)
+    expect(desc.kind).toBe("command")
+    expect(desc.pty).toBeUndefined()
     expect(desc.label).toBe(`app:${APP_ID}:service:web`)
     expect(desc.origin).toBe(`app-service:${APP_ID}`)
-    expect(desc.restartPolicy?.on).toEqual(["crashed", "error"])
     expect(desc.status).toBe("running")
+    // The process is registered in the session list.
+    expect(registry.list()).toContainEqual(expect.objectContaining({ id: web.sessionId }))
 
     // Reinstall over the live owners: no duplicate spawn, same records kept.
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
-    expect(startSession).toHaveBeenCalledTimes(2)
+    expect(startSession).not.toHaveBeenCalled()
     expect(serviceStore.listForApp(APP_ID)).toHaveLength(2)
+
+    // Cleanup: uninstall kills the recorded process groups so no test leak.
+    const uninstalled = parseToolJson(
+      await client.callTool({ name: "app_uninstall", arguments: { appId: APP_ID } }),
+    )
+    expect(uninstalled.services.sort()).toEqual(["legacy", "web"])
+    expect(serviceStore.listForApp(APP_ID)).toEqual([])
   })
 
   it("is a no-op for an app that declares no services", async () => {
@@ -265,5 +280,70 @@ describe("app-service boot re-ensure (reensureAppServicesOnBoot)", () => {
     })
     expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
     expect(await reensureServicesOnBoot()).toEqual({ apps: 0, spawned: 0, errors: [] })
+  })
+
+  // ── identity-gated group kill (audit F-4) ──────────────────────────────────
+
+  it("boot re-ensure does NOT signal a recorded pid whose start ticks mismatch (recycled pid)", async () => {
+    // REPRO: the owner record names the pid of an UNRELATED process with a
+    // WRONG startTicks stamp — exactly the footprint of a recycled pid. The
+    // re-ensure replaces the owner, but must never signal the stranger.
+    await buildServiceApp(dir, [{ name: "web", entry: "node server.js", port: 4321 }])
+    const stranger = spawn("sleep", ["30"], { stdio: "ignore" })
+    const strangerPid = stranger.pid!
+    expect(strangerPid).toBeGreaterThan(0)
+    const truth = readProcessStartTicks(strangerPid)
+    expect(truth).toBeDefined()
+    try {
+      const spawnServiceOwner = vi.fn(async () => ({
+        ok: true as const,
+        sessionId: "owner_sess_1",
+        pid: strangerPid,
+        // A bogus stamp ⇒ identity verdict "recycled" ⇒ skip the signal.
+        startTicks: truth! + 123_456,
+      }))
+      const { client, serviceStore, reensureServicesOnBoot } = await setup({
+        spawnServiceOwner,
+        workspacesConfigPath: join(dir, "workspaces.json"),
+      })
+      expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+      const owner = serviceStore.listForApp(APP_ID)[0]
+      expect(owner?.pid).toBe(strangerPid)
+      const result = await reensureServicesOnBoot()
+      expect(result.spawned).toBe(1)
+      // The stranger STILL ALIVE — old code would have SIGTERM+SIGKILL'd it.
+      expect(() => process.kill(strangerPid, 0)).not.toThrow()
+      expect(readProcessStartTicks(strangerPid)).toBe(truth)
+      // …and the stale record was replaced anyway.
+      expect(serviceStore.listForApp(APP_ID)[0]?.sessionId).toBe("owner_sess_1")
+    } finally {
+      stranger.kill("SIGKILL")
+    }
+  })
+
+  it("boot re-ensure DOES kill the recorded pid when its start ticks match", async () => {
+    await buildServiceApp(dir, [{ name: "web", entry: "node server.js", port: 4321 }])
+    const victim = spawn("sleep", ["30"], { stdio: "ignore" })
+    const victimPid = victim.pid!
+    const truth = readProcessStartTicks(victimPid)
+    expect(truth).toBeDefined()
+    try {
+      const spawnServiceOwner = vi.fn(async () => ({
+        ok: true as const,
+        sessionId: "owner_sess_1",
+        pid: victimPid,
+        startTicks: truth!,
+      }))
+      const { client, serviceStore, reensureServicesOnBoot } = await setup({
+        spawnServiceOwner,
+        workspacesConfigPath: join(dir, "workspaces.json"),
+      })
+      expect(isError(await client.callTool({ name: "app_install", arguments: { dir } }))).toBe(false)
+      await reensureServicesOnBoot()
+      // Identity proven → the group signal went through.
+      await vi.waitFor(() => expect(() => process.kill(victimPid, 0)).toThrow())
+    } finally {
+      victim.kill("SIGKILL")
+    }
   })
 })
