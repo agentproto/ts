@@ -22,6 +22,11 @@ Walking with a small `limit` until `nextCursor` is absent covers the whole
 list exactly once — the cursor is keyed on the command NAME, so it stays
 stable across calls.
 
+A call with NO `limit`/`cursor` answers the first 50 rows under the legacy
+`{ commands: [...] }` wrapper, plus `{ total, truncated, nextCursor }` when
+the list is longer — so a harness advertising hundreds of commands never
+answers with an unbounded list.
+
 ## name
 
 Keep only the commands whose name starts with this prefix — `"/sk"` for the
