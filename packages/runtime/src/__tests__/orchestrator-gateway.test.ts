@@ -198,7 +198,9 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
 
     const result = await client.callTool({
       name: "agent_start",
-      arguments: { adapter: "hermes", cwd: process.cwd() },
+      // `full: true` — the raw descriptor: `mcpServers` is one of the
+      // bulky fields the default (compact) answer does not carry.
+      arguments: { adapter: "hermes", cwd: process.cwd(), full: true },
     })
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
     const desc = JSON.parse(text) as {
@@ -254,7 +256,9 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
 
     const result = await client.callTool({
       name: "agent_start",
-      arguments: { adapter: "hermes", cwd: process.cwd(), role: "supervisor" },
+      // `full: true` — the raw descriptor: `mcpServers` is one of the
+      // bulky fields the default (compact) answer does not carry.
+      arguments: { adapter: "hermes", cwd: process.cwd(), role: "supervisor", full: true },
     })
     const text = (result.content as Array<{ type: string; text: string }>)[0]?.text ?? ""
     const desc = JSON.parse(text) as {
