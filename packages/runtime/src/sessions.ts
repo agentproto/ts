@@ -1223,6 +1223,9 @@ export const LEGACY_CHILD_NOTICE_SOURCE = "child:legacy"
 
 /** Bound on `SessionDescriptor.inbox` (un-consumed messages). */
 export const INBOX_CAP = 200
+/** Absolute ceiling for the inbox when every entry is a protected
+ *  (blocker/question) message — the soft cap may be exceeded up to here. */
+export const INBOX_HARD_CAP = INBOX_CAP * 2
 
 /** R3 — a burst of `steer` messages must not thrash a recipient: at most
  *  one steer per recipient per this window; the excess is delivered as
@@ -1244,6 +1247,10 @@ export interface SendMessageResult {
   delivered: { via: MessageDeliveryVia } | null
   queued: boolean
   urgencyApplied: MessageUrgency
+  /** Set when the message was REFUSED and went nowhere (`delivered` is
+   *  `null`, `queued` is `false`): the recipient's inbox is entirely
+   *  un-consumed blocker/question messages and this one is noise. */
+  refused?: "inbox-full"
 }
 
 export interface WaitForMessagesResult {
@@ -9512,10 +9519,14 @@ export function createSessionsRegistry(opts?: {
     rt.desc.inbox = next
     schedulePersist()
   }
-  const addToInbox = (rt: SessionRuntime, msg: SessionMessage): void => {
+  /** Add `msg` to the inbox, evicting per policy. Returns `false` when the
+   *  message was REFUSED (inbox entirely blocker/question and `msg` is noise)
+   *  — the caller must not ack it as delivered. */
+  const addToInbox = (rt: SessionRuntime, msg: SessionMessage): boolean => {
     let next = [...(rt.desc.inbox ?? []).filter(m => m.id !== msg.id), msg]
     const dropped: SessionMessage[] = []
     const incomingProtected = isProtectedMessage(msg)
+    let accepted = true
     while (next.length > INBOX_CAP) {
       // Evict noise first: an explicit fyi or a notice. Never a blocker or
       // a question while it is still un-consumed.
@@ -9534,17 +9545,31 @@ export function createSessionsRegistry(opts?: {
         // The inbox is entirely blocker/question. Refuse the new noisy entry
         // instead of throwing away an important message.
         next = next.filter(m => m.id !== msg.id)
+        accepted = false
         appendLine(rt, `[inbox] refused ${msg.id} (inbox full of blocker/question, cap ${INBOX_CAP})`, "stderr")
         break
       }
       // The incoming message is protected too: keep everything rather than
-      // dropping a blocker/question. The cap is a soft bound in this case.
+      // dropping a blocker/question. The cap is a soft bound up to the hard
+      // ceiling below.
+      if (next.length > INBOX_HARD_CAP) {
+        // Hard ceiling: a blocker storm must not grow the persisted inbox
+        // without bound — evict the oldest protected entry.
+        dropped.push(...next.splice(0, 1))
+        continue
+      }
+      appendLine(
+        rt,
+        `[inbox] soft cap exceeded (${next.length}/${INBOX_CAP}, all blocker/question; hard cap ${INBOX_HARD_CAP})`,
+        "stderr",
+      )
       break
     }
     for (const d of dropped) {
       appendLine(rt, `[inbox] dropped ${d.id} (inbox full, cap ${INBOX_CAP})`, "stderr")
     }
     setInbox(rt, next)
+    return accepted
   }
   const rememberReceived = (rt: SessionRuntime, msgs: readonly SessionMessage[]): void => {
     if (!msgs.length) return
@@ -12322,8 +12347,17 @@ export function createSessionsRegistry(opts?: {
       // lands in its inbox (the hook / `inbox_list` pulls it from there).
       if (msg.urgency === "fyi" || rt.desc.kind === "external") {
         const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
+        if (!addToInbox(rt, parked)) {
+          // Refused: don't ack a delivery that never happened, don't emit.
+          return {
+            messageId: msg.id,
+            delivered: null,
+            queued: false,
+            urgencyApplied: msg.urgency,
+            refused: "inbox-full",
+          }
+        }
         recordSent(parked)
-        addToInbox(rt, parked)
         emitSessionMessage(parked)
         return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: msg.urgency }
       }
