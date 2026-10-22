@@ -7,7 +7,11 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createSentinelStore, SentinelTargetNotImplementedError } from "../sentinel-store.js"
+import {
+  createSentinelStore,
+  DEFAULT_SENTINEL_TTL_MS,
+  SentinelTargetNotImplementedError,
+} from "../sentinel-store.js"
 import { singleMatch, type SentinelSpec } from "../sentinel-providers/types.js"
 
 const testSpec: SentinelSpec = {
@@ -30,6 +34,20 @@ describe("SentinelStore", () => {
     expect(sentinel.seen).toEqual([])
     expect(sentinel.terminalSubjects).toEqual([])
     expect(store.get(sentinel.id)).toEqual(sentinel)
+  })
+
+  it("gives a session-target sentinel an expiresAt backstop; an explicit value wins", () => {
+    const now = Date.parse("2026-01-01T00:00:00.000Z")
+    const store = createSentinelStore({ persist: false, nowMs: () => now })
+    const automatic = store.create({ provider: "fake", handle: { provider: "fake" }, spec: testSpec })
+    expect(automatic.expiresAt).toBe(new Date(now + DEFAULT_SENTINEL_TTL_MS).toISOString())
+    const explicit = store.create({
+      provider: "fake",
+      handle: { provider: "fake" },
+      spec: testSpec,
+      expiresAt: "2027-01-01T00:00:00.000Z",
+    })
+    expect(explicit.expiresAt).toBe("2027-01-01T00:00:00.000Z")
   })
 
   it("rejects a routine target at create time (still frozen, not implemented)", () => {

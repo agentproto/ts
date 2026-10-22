@@ -37,7 +37,7 @@ import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionFollowStore } from "../session-follow-store.js"
 import { createSentinelStore } from "../sentinel-store.js"
-import { wireRetirementCleanup } from "../retirement-cleanup.js"
+import { wireRetirementCleanup, sweepWiringLifecycle } from "../retirement-cleanup.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
 type Row = Partial<SessionDescriptor> & { id: string }
@@ -672,7 +672,7 @@ describe("wireRetirementCleanup", () => {
     expect(target.kind === "session" && target.sessionId).toBe(fresh.id)
   })
 
-  it("archiving a session with no successor leaves its follows and sentinels alone (archive stays reversible)", () => {
+  it("archiving a session with no successor leaves its follows and sentinels alone (the sweep later retires them)", () => {
     const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup([{ id: "old" }])
     const [oldId] = ids as [string]
     followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
@@ -747,7 +747,7 @@ describe("wireRetirementCleanup", () => {
     expect(reg.get(oldId)?.retiredAt).toEqual(expect.any(String))
   })
 
-  it("retireSession without a successor stamps retirement but leaves wiring untouched", () => {
+  it("retireSession without a successor stamps retirement; the sweep removes the wiring", () => {
     const { reg, followStore, ids } = setup([{ id: "old" }])
     const [oldId] = ids as [string]
     followStore.upsert({ follower: oldId, selector: { all: true }, batchMs: 0 })
@@ -775,6 +775,101 @@ describe("wireRetirementCleanup", () => {
     reg.kill(oldId, undefined, "operator-stopped")
     expect(followStore.list()).toHaveLength(1)
     expect(cancelSentinel).not.toHaveBeenCalled()
+  })
+})
+
+describe("sweepWiringLifecycle", () => {
+  function setup(labels: string[]) {
+    const reg = createSessionsRegistry({ persist: false })
+    const followStore = createSessionFollowStore({ persist: false })
+    const sentinelStore = createSentinelStore({ persist: false })
+    const cancelSentinel = vi.fn(async (id: string) => {
+      sentinelStore.remove(id)
+    })
+    const ids = labels.map(label =>
+      reg.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        adapterSlug: "fake",
+        label,
+        agentSession: { sessionId: `acp_${label}`, async *send() {}, async cancel() {}, async close() {} },
+      }).id,
+    )
+    return { reg, followStore, sentinelStore, cancelSentinel, ids }
+  }
+
+  const watch = (store: ReturnType<typeof createSentinelStore>, sessionId: string) =>
+    store.create({
+      provider: "fake",
+      handle: { provider: "fake", remoteId: "fake:w", cursor: "0" },
+      spec: {
+        match: [{ subject: "fake:w", types: ["*"] }],
+        until: { kind: "never" },
+        target: { kind: "session", sessionId, urgency: "fyi" },
+      },
+    } as never)
+
+  it("removes expired and orphaned follows/sentinels, keeps the rest", async () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup(["old"])
+    const [oldId] = ids as [string]
+
+    const keepFollow = followStore.upsert({ follower: oldId, selector: { all: true } }).follow
+    const expiredFollow = followStore.upsert({
+      follower: oldId,
+      selector: { all: true },
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    }).follow
+    const orphanFollow = followStore.upsert({ follower: "sess_missing", selector: { all: true } }).follow
+
+    const keepSentinel = watch(sentinelStore, oldId)
+    const expiredSentinel = watch(sentinelStore, oldId)
+    sentinelStore.update(expiredSentinel.id, { expiresAt: "2000-01-01T00:00:00.000Z" } as never)
+    const orphanSentinel = watch(sentinelStore, "sess_missing")
+
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.followsRemoved).toBe(2)
+    expect(result.sentinelsCancelled).toBe(2)
+    expect(followStore.get(keepFollow.id)).toBeDefined()
+    expect(followStore.get(expiredFollow.id)).toBeUndefined()
+    expect(followStore.get(orphanFollow.id)).toBeUndefined()
+    expect(sentinelStore.get(keepSentinel.id)).toBeDefined()
+    expect(sentinelStore.get(expiredSentinel.id)).toBeUndefined()
+    expect(sentinelStore.get(orphanSentinel.id)).toBeUndefined()
+    expect(cancelSentinel).toHaveBeenCalledWith(expiredSentinel.id)
+    expect(cancelSentinel).toHaveBeenCalledWith(orphanSentinel.id)
+  })
+
+  it("removes wiring whose recipient is retired with no live successor", async () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup(["old"])
+    const [oldId] = ids as [string]
+    const follow = followStore.upsert({ follower: oldId, selector: { all: true } }).follow
+    const sentinel = watch(sentinelStore, oldId)
+
+    reg.kill(oldId)
+    reg.archiveSession(oldId)
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.followsRemoved).toBe(1)
+    expect(result.sentinelsCancelled).toBe(1)
+    expect(followStore.get(follow.id)).toBeUndefined()
+    expect(sentinelStore.get(sentinel.id)).toBeUndefined()
+  })
+
+  it("relinks wiring to a live successor instead of removing it", async () => {
+    const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup(["old", "new"])
+    const [oldId, newId] = ids as [string, string]
+    const follow = followStore.upsert({ follower: oldId, selector: { all: true } }).follow
+    const sentinel = watch(sentinelStore, oldId)
+
+    reg.markRetired(oldId, { continuedTo: newId, cause: "continued" })
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.followsRemoved).toBe(0)
+    expect(result.sentinelsCancelled).toBe(0)
+    expect(followStore.get(follow.id)?.follower).toBe(newId)
+    const target = sentinelStore.get(sentinel.id)!.spec.target
+    expect(target.kind === "session" && target.sessionId).toBe(newId)
   })
 })
 

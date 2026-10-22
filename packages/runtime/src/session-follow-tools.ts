@@ -102,6 +102,7 @@ export const followInputSchema = z.object({
   excludeFollowerChildren: z.boolean().optional(),
   urgency: z.enum(FOLLOW_URGENCIES).optional(),
   triage: followTriageSchema.optional(),
+  expiresAt: z.string().min(1).optional(),
 })
 
 export type FollowInputBody = z.infer<typeof followInputSchema>
@@ -173,6 +174,7 @@ export function upsertSessionFollow(deps: SessionFollowDeps, raw: unknown): Upse
       : {}),
     ...(body.urgency ? { urgency: body.urgency } : {}),
     ...(body.triage ? { triage: body.triage } : {}),
+    ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
   }
   const { follow, created } = deps.store.upsert(input)
   return { ok: true, follow, created }
@@ -257,6 +259,10 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
           "A digest whose events are all fyi/drop lands in your inbox as fyi and never " +
           "starts a turn.",
       ),
+      expiresAt: z
+        .string()
+        .optional()
+        .describe("ISO timestamp after which the follow is removed. Defaulted to 7 days from creation."),
     },
     async (input: Record<string, unknown>) => {
       const result = upsertSessionFollow(

@@ -124,13 +124,13 @@ describe("sendMessage tier routing", () => {
       expect(steer).not.toHaveBeenCalled()
     })
 
-    it("fyi never wakes it", async () => {
+    it("a blocker sent as fyi is upgraded to next-turn and wakes it", async () => {
       const { parent, parentAgent, msg } = setup()
       const r = await registry.sendMessage(msg("fyi"))
-      expect(r).toMatchObject({ delivered: { via: "inbox" }, urgencyApplied: "fyi" })
-      await new Promise(r => setTimeout(r, 30))
-      expect(parentAgent.sent).toEqual([])
-      expect(registry.listInbox(parent.id)).toHaveLength(1)
+      expect(r).toMatchObject({ delivered: { via: "turn" }, urgencyApplied: "next-turn" })
+      await until(() => parentAgent.sent.length === 1)
+      expect(parentAgent.sent[0]).toContain(`kind="blocker"`)
+      expect(registry.listInbox(parent.id)).toEqual([])
     })
   })
 

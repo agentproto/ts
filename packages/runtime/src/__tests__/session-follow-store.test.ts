@@ -6,6 +6,7 @@ import { join } from "node:path"
 import {
   createSessionFollowStore,
   DEFAULT_FOLLOW_BATCH_MS,
+  DEFAULT_FOLLOW_TTL_MS,
   FOLLOW_EVENTS,
 } from "../session-follow-store.js"
 
@@ -31,6 +32,26 @@ describe("session-follow-store", () => {
     expect(follow.urgency).toBe("next-turn")
     expect(follow.selector.rootOnly).toBe(true) // all => rootOnly
     expect(Number.isNaN(Date.parse(follow.createdAt))).toBe(false)
+  })
+
+  it("gives a follow an expiresAt backstop, and an explicit value wins", () => {
+    const now = Date.parse("2026-01-01T00:00:00.000Z")
+    const store = createSessionFollowStore({ persist: false, nowMs: () => now })
+    const automatic = store.upsert({ follower: "c", selector: { all: true } }).follow
+    expect(automatic.expiresAt).toBe(new Date(now + DEFAULT_FOLLOW_TTL_MS).toISOString())
+    const explicit = store.upsert({
+      follower: "c",
+      selector: { all: true },
+      expiresAt: "2027-01-01T00:00:00.000Z",
+    }).follow
+    expect(explicit.expiresAt).toBe("2027-01-01T00:00:00.000Z")
+  })
+
+  it("keeps an existing expiry when an upsert by key omits it", () => {
+    const store = createSessionFollowStore({ persist: false })
+    const a = store.upsert({ key: "k", follower: "c", selector: { all: true } }).follow
+    const b = store.upsert({ key: "k", follower: "c", selector: { all: true }, batchMs: 100 }).follow
+    expect(b.expiresAt).toBe(a.expiresAt)
   })
 
   it("rootOnly defaults to false without `all`, and an explicit value wins", () => {

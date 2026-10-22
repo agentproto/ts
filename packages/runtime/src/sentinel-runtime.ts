@@ -302,6 +302,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   /** Pure `until` consultation — never mutates. Sweep callers flip status. */
   function isExpiredSpec(sentinel: Sentinel): boolean {
+    // The record's own hard cap (the wiring sweep also removes it): a
+    // persisted `expiresAt` gates delivery exactly like `until.at`.
+    if (sentinel.expiresAt !== undefined && Date.parse(sentinel.expiresAt) <= nowMs()) return true
     return sentinel.spec.until.kind === "at" && nowMs() >= sentinel.spec.until.ms
   }
 

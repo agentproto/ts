@@ -41,6 +41,11 @@ export const DEFAULT_FOLLOW_URGENCY: FollowUrgency = "next-turn"
 export const DEFAULT_FOLLOW_BATCH_MS = 15_000
 export const MAX_FOLLOW_BATCH_MS = 10 * 60_000
 
+/** Default hard cap on a follow's life. Mirrors the cron scheduler's owned-job
+ *  backstop: the follower-retirement sweep is what normally removes a follow
+ *  when its recipient dies, and this only bounds one whose row lingers. */
+export const DEFAULT_FOLLOW_TTL_MS = 7 * 24 * 60 * 60_000
+
 export interface FollowSelector {
   /** Explicit session ids to follow (always match, regardless of `rootOnly`). */
   sessionIds?: string[]
@@ -93,6 +98,10 @@ export interface SessionFollow {
    *  the digest is allowed to wake the follower. Unset ⇒ the daemon default
    *  (`config.follow.triage`) applies; triage is OFF by default. */
   triage?: FollowTriageFollowInput
+  /** ISO timestamp after which the wiring sweep removes the follow. Defaults
+   *  to `createdAt + DEFAULT_FOLLOW_TTL_MS`; a follower that is gone/retired
+   *  is removed sooner by the same sweep. */
+  expiresAt?: string
 }
 
 /** Fully-resolved input for {@link SessionFollowStore.upsert}. */
@@ -107,6 +116,7 @@ export interface SessionFollowInput {
   excludeFollowerChildren?: boolean
   urgency?: FollowUrgency
   triage?: FollowTriageFollowInput
+  expiresAt?: string
 }
 
 export interface SessionFollowStore {
@@ -163,6 +173,7 @@ export function resolveFollowDefaults(input: SessionFollowInput): Omit<SessionFo
     excludeFollowerChildren: input.excludeFollowerChildren ?? true,
     urgency: input.urgency ?? DEFAULT_FOLLOW_URGENCY,
     ...(input.triage ? { triage: input.triage } : {}),
+    ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
   }
 }
 
@@ -283,13 +294,28 @@ export function createSessionFollowStore(opts?: SessionFollowStoreOptions): Sess
       const resolved = resolveFollowDefaults(input)
       const existing = input.key ? findByKey(input.key) : undefined
       if (existing) {
-        const next: SessionFollow = { id: existing.id, createdAt: existing.createdAt, ...resolved }
+        const next: SessionFollow = {
+          id: existing.id,
+          createdAt: existing.createdAt,
+          ...resolved,
+          // An upsert-by-key that omits `expiresAt` keeps the existing cap.
+          ...(resolved.expiresAt ? {} : existing.expiresAt ? { expiresAt: existing.expiresAt } : {}),
+        }
         follows.set(existing.id, next)
         schedulePersist()
         return { follow: next, created: false }
       }
       const now = nowMs()
-      const follow: SessionFollow = { id: mintFollowId(now), createdAt: new Date(now).toISOString(), ...resolved }
+      const follow: SessionFollow = {
+        id: mintFollowId(now),
+        createdAt: new Date(now).toISOString(),
+        ...resolved,
+        // Same backstop as an owned cron job: the follower-retirement sweep is
+        // the primary lifecycle, this bounds a row that lingers.
+        ...(resolved.expiresAt
+          ? {}
+          : { expiresAt: new Date(now + DEFAULT_FOLLOW_TTL_MS).toISOString() }),
+      }
       follows.set(follow.id, follow)
       schedulePersist()
       return { follow, created: true }

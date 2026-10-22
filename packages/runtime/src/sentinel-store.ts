@@ -64,6 +64,11 @@ export interface Sentinel {
    *  is parked instead of delivered. Independent of `spec.until`. Absent on
    *  sentinels persisted before this field existed. */
   closedSubjects?: string[]
+  /** ISO timestamp after which the wiring sweep cancels and removes the
+   *  sentinel. Defaulted for session-target sentinels (see
+   *  {@link DEFAULT_SENTINEL_TTL_MS}); webhook targets have no owning session,
+   *  so they only expire when one is given explicitly. */
+  expiresAt?: string
 }
 
 export interface SentinelCreateInput {
@@ -74,12 +79,14 @@ export interface SentinelCreateInput {
   provider: string
   handle: SentinelHandle
   status?: SentinelStatus
+  /** ISO expiry. Defaulted for session-target sentinels. */
+  expiresAt?: string
 }
 
 export type SentinelUpdatePatch = Partial<
   Pick<
     Sentinel,
-    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects"
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "expiresAt"
   >
 >
 
@@ -198,6 +205,11 @@ export const sentinelsSecretsFileFor = (filePath: string): string =>
 export const WEBHOOK_SECRET_ROTATION_WINDOW_MS = 10 * 60 * 1000
 
 const PERSIST_DEBOUNCE_MS = 1_500
+
+/** Default hard cap on a session-target sentinel's life, mirroring the cron
+ *  scheduler's owned-job backstop. The wiring sweep is the primary lifecycle:
+ *  a sentinel whose target session is gone/retired is cancelled sooner. */
+export const DEFAULT_SENTINEL_TTL_MS = 7 * 24 * 60 * 60_000
 
 /** Per-sentinel cap for the persisted dedup window (design §2). */
 const SEEN_CAP = 1_000
@@ -433,17 +445,23 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       assertTargetImplemented(input.spec.target)
       const spec = denatureWebhookTarget(input.spec)
       const id = input.id ?? mintSentinelId(nowMs())
+      const createdTs = nowMs()
       const sentinel: Sentinel = {
         id,
         spec,
         provider: input.provider,
         handle: input.handle,
         status: input.status ?? "active",
-        createdTs: nowMs(),
+        createdTs,
         eventCount: 0,
         seen: [],
         terminalSubjects: [],
         closedSubjects: [],
+        ...(input.expiresAt
+          ? { expiresAt: input.expiresAt }
+          : spec.target.kind === "session"
+            ? { expiresAt: new Date(createdTs + DEFAULT_SENTINEL_TTL_MS).toISOString() }
+            : {}),
       }
       sentinels.set(id, sentinel)
       schedulePersist()

@@ -203,7 +203,10 @@ import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
 import type { SandboxCheckpointConfig, SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
 import {
   createSessionMessage,
+  effectiveMessageUrgency,
   escapeHumanPrompt,
+  isNoiseMessage,
+  isProtectedMessage,
   matchesMessageFilter,
   MESSAGE_PREAMBLE,
   renderInboxDigest,
@@ -9511,10 +9514,35 @@ export function createSessionsRegistry(opts?: {
   }
   const addToInbox = (rt: SessionRuntime, msg: SessionMessage): void => {
     let next = [...(rt.desc.inbox ?? []).filter(m => m.id !== msg.id), msg]
+    const dropped: SessionMessage[] = []
+    const incomingProtected = isProtectedMessage(msg)
     while (next.length > INBOX_CAP) {
-      const [dropped, ...rest] = next
-      next = rest
-      appendLine(rt, `[inbox] dropped ${dropped!.id} (inbox full, cap ${INBOX_CAP})`, "stderr")
+      // Evict noise first: an explicit fyi or a notice. Never a blocker or
+      // a question while it is still un-consumed.
+      const noiseIndex = next.findIndex(isNoiseMessage)
+      if (noiseIndex >= 0) {
+        dropped.push(...next.splice(noiseIndex, 1))
+        continue
+      }
+      // No noise left: a report/done is next, but protected kinds stay.
+      const evictableIndex = next.findIndex(m => !isProtectedMessage(m))
+      if (evictableIndex >= 0) {
+        dropped.push(...next.splice(evictableIndex, 1))
+        continue
+      }
+      if (!incomingProtected) {
+        // The inbox is entirely blocker/question. Refuse the new noisy entry
+        // instead of throwing away an important message.
+        next = next.filter(m => m.id !== msg.id)
+        appendLine(rt, `[inbox] refused ${msg.id} (inbox full of blocker/question, cap ${INBOX_CAP})`, "stderr")
+        break
+      }
+      // The incoming message is protected too: keep everything rather than
+      // dropping a blocker/question. The cap is a soft bound in this case.
+      break
+    }
+    for (const d of dropped) {
+      appendLine(rt, `[inbox] dropped ${d.id} (inbox full, cap ${INBOX_CAP})`, "stderr")
     }
     setInbox(rt, next)
   }
@@ -12273,6 +12301,10 @@ export function createSessionsRegistry(opts?: {
         }
         throw new SessionNotAliveError(msg.to, rt.desc.status, "sendMessage")
       }
+      // A blocker/question is never downgraded to fyi — it either wakes the
+      // recipient or parks with the inbox's non-loss guarantee.
+      const appliedUrgency = effectiveMessageUrgency(msg.kind, msg.urgency)
+      if (appliedUrgency !== msg.urgency) msg = { ...msg, urgency: appliedUrgency }
       // Waiter first — the recipient is parked in `inbox_wait` for exactly
       // this: hand it over as the tool's result, never also as a turn.
       const waiters = inboxWaiters.get(msg.to)
@@ -12293,7 +12325,7 @@ export function createSessionsRegistry(opts?: {
         recordSent(parked)
         addToInbox(rt, parked)
         emitSessionMessage(parked)
-        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: "fyi" }
+        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: msg.urgency }
       }
       // An un-granted interrupt never cuts a turn: the fastest thing short
       // of that is steering it in.

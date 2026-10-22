@@ -290,6 +290,59 @@ describe("inbox + inbox_wait", () => {
     expect(registry.findReceivedMessage(parent.id, msg.id)).toMatchObject({ id: msg.id, from: { sessionId: a.id } })
   })
 
+  it("never parks a blocker or a question as fyi — it wakes an idle recipient", async () => {
+    for (const kind of ["blocker", "question"] as const) {
+      const { parent, parentAgent, kid } = tree()
+      const a = kid("a")
+      const result = await registry.sendMessage(
+        createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: `${kind} now`, kind, urgency: "fyi" }),
+      )
+      expect(result.urgencyApplied).not.toBe("fyi")
+      await until(() => parentAgent.sent.length === 1)
+      expect(parentAgent.sent[0]).toContain(`${kind} now`)
+      expect(registry.listInbox(parent.id)).toEqual([])
+      parentAgent.finishTurn()
+      await until(() => registry.get(parent.id)?.busy === false)
+    }
+  })
+
+  it("never evicts an un-consumed blocker/question to make room for noise", async () => {
+    const { parent, kid } = tree()
+    await registry.enqueuePrompt(parent.id, "busy work", {})
+    await until(() => registry.get(parent.id)?.busy === true)
+    const a = kid("a")
+    await registry.sendMessage(
+      createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: "critical blocker", kind: "blocker", urgency: "fyi" }),
+    )
+    for (let i = 0; i < INBOX_CAP + 5; i++) {
+      await registry.sendMessage(
+        createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: `noise ${i}`, kind: "notice", urgency: "fyi" }),
+      )
+    }
+    const inbox = registry.listInbox(parent.id)!
+    expect(inbox).toHaveLength(INBOX_CAP)
+    expect(inbox.some(m => m.kind === "blocker" && m.text === "critical blocker")).toBe(true)
+  })
+
+  it("refuses a noisy incoming message when the inbox is full of protected ones", async () => {
+    const { parent, kid } = tree()
+    await registry.enqueuePrompt(parent.id, "busy work", {})
+    await until(() => registry.get(parent.id)?.busy === true)
+    const a = kid("a")
+    for (let i = 0; i < INBOX_CAP; i++) {
+      await registry.sendMessage(
+        createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: `blocker ${i}`, kind: "blocker" }),
+      )
+    }
+    await registry.sendMessage(
+      createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: "late noise", kind: "notice", urgency: "fyi" }),
+    )
+    const inbox = registry.listInbox(parent.id)!
+    expect(inbox).toHaveLength(INBOX_CAP)
+    expect(inbox.every(m => m.kind === "blocker")).toBe(true)
+    expect(inbox.some(m => m.text === "late noise")).toBe(false)
+  })
+
   it("caps the inbox at INBOX_CAP, dropping the oldest", async () => {
     const { parent, kid } = tree()
     const a = kid("a")

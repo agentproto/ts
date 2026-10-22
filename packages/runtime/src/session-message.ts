@@ -57,6 +57,32 @@ export interface SessionMessage {
 
 export const MAX_MESSAGE_DATA_BYTES = 16 * 1024
 
+/** A blocker or a question is a message the recipient must not miss. It is
+ *  never downgraded to `fyi` and is never evicted from the inbox while
+ *  un-consumed. */
+export const PROTECTED_MESSAGE_KINDS: readonly MessageKind[] = ["blocker", "question"]
+
+export function isProtectedMessage(msg: Pick<SessionMessage, "kind">): boolean {
+  return PROTECTED_MESSAGE_KINDS.includes(msg.kind)
+}
+
+/** "Noise" is everything a full inbox may evict first: an explicit `fyi`
+ *  (unless the kind is protected) or a `notice`. */
+export function isNoiseMessage(msg: Pick<SessionMessage, "kind" | "urgency">): boolean {
+  if (isProtectedMessage(msg)) return false
+  return msg.kind === "notice" || msg.urgency === "fyi"
+}
+
+/** `blocker`/`question` never travel as `fyi`: the delivery tier may be
+ *  upgraded, never silently downgraded. */
+export function effectiveMessageUrgency(
+  kind: MessageKind,
+  urgency: MessageUrgency,
+): MessageUrgency {
+  if (urgency === "fyi" && (kind === "blocker" || kind === "question")) return "next-turn"
+  return urgency
+}
+
 /** The slice of a session descriptor relation/ACL resolution needs. */
 export interface MessageTreeNode {
   id: string

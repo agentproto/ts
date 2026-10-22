@@ -143,7 +143,7 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
-import { wireRetirementCleanup } from "./retirement-cleanup.js"
+import { sweepWiringLifecycle, wireRetirementCleanup } from "./retirement-cleanup.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import {
   DEFAULT_REATTACH_TIMEOUT_MS,
@@ -3465,12 +3465,14 @@ export async function createGateway(
   })
 
   // Retirement cleanup — re-point follows/sentinels of a superseded session
-  // at its successor; drop those of an archived/forgotten one.
-  wireRetirementCleanup({
+  // at its successor; drop those of an archived/forgotten one. A periodic
+  // sweep (below) handles orphans from an older daemon and the `expiresAt`
+  // backstop, mirroring the cron scheduler's owner lifecycle.
+  const wiringCleanupDeps = {
     registry: sessions,
     followStore: sessionFollowStore,
     sentinelStore,
-    cancelSentinel: id =>
+    cancelSentinel: (id: string) =>
       cancelSentinelWatch(
         {
           store: sentinelStore,
@@ -3479,7 +3481,18 @@ export async function createGateway(
         },
         id,
       ),
-  })
+  }
+  wireRetirementCleanup(wiringCleanupDeps)
+
+  let wiringSweepTimer: ReturnType<typeof setInterval> | null = null
+  const sweepWiring = (): void => {
+    void sweepWiringLifecycle(wiringCleanupDeps).catch(err => {
+      console.warn(`[retirement-cleanup] wiring sweep failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+  }
+  sweepWiring()
+  wiringSweepTimer = setInterval(sweepWiring, 60_000)
+  wiringSweepTimer.unref?.()
 
   // Inbound watcher — polls an agentpush source on a timer and spawns
   // one agent per new contact_ref (mode "spawn", default), or routes
@@ -5015,6 +5028,7 @@ export async function createGateway(
       // Stop the restart-sweep tick before sessions shut down (restart-scheduler PR-2).
       if (restartSweepTimer) clearInterval(restartSweepTimer)
       if (pendingPromptTimer) clearInterval(pendingPromptTimer)
+      if (wiringSweepTimer) clearInterval(wiringSweepTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
       // Detach the restart-scheduler's session:exited subscription.
