@@ -15,10 +15,10 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
+import { decide, type PermissionContext } from "./permissions.js"
 import {
   createSessionMessage,
   messageFrom,
-  resolveMessageAcl,
   MESSAGE_KINDS,
   MESSAGE_URGENCIES,
   type MessageFilter,
@@ -114,6 +114,14 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.peerGroups` - the operator's workspace families.
    *  Empty (the default) = no cross-workspace link. */
   const peerGroups = opts.peerGroups ?? []
+  const policy: PermissionContext = {
+    messaging: {
+      allowSiblings: allowSiblings === true,
+      allowSameWorkspace,
+      peerGroups,
+      agentInterrupt: allowInterrupt ? "allow" : "deny",
+    },
+  }
 
   /** The verified caller, or a tool error explaining why there's none. */
   const resolveCaller = (tool: string): SessionDescriptor | ToolResult => {
@@ -153,9 +161,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const recipient = registry.get(toId)
     if (!recipient) return fail("no_such_session", `${tool}: session "${toId}" does not exist.`)
-    const acl = resolveMessageAcl(self, recipient, { allowSiblings, allowSameWorkspace, peerGroups })
-    const relation = acl.relation
-    if (!acl.allowed || !relation) {
+    // One ACL for every messaging entry point (permissions.ts).
+    const principal = { kind: "session", session: self } as const
+    const resource = { kind: "session", session: recipient } as const
+    const decision = decide(principal, "session.message", resource, policy)
+    const relation = decision.relation
+    if (!decision.allow || !relation) {
       return fail(
         "forbidden_recipient",
         `${tool}: "${toId}" is not a tree neighbour you may message ` +
@@ -189,10 +200,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     }
     const provenance = `${relation}:${self.id}`
     try {
+      const interrupt = decide(principal, "session.message.interrupt", resource, policy)
       const r = await registry.sendMessage(msg, {
         source: provenance,
         origin: provenance,
-        ...(allowInterrupt ? { allowInterrupt: true } : {}),
+        decision,
+        ...(interrupt.allow ? { allowInterrupt: true } : {}),
       })
       return ok({
         messageId: r.messageId,

@@ -737,6 +737,7 @@ describe("runSandboxReattachPass", () => {
       sandboxId?: string
       provider?: string
       sandboxConfig?: Record<string, unknown>
+      sandboxDeliveryTarget?: Record<string, unknown>
     }>,
   ): void {
     writeFileSync(
@@ -759,6 +760,7 @@ describe("runSandboxReattachPass", () => {
           sandboxId: r.sandboxId ?? "sbx_1",
           sandboxProvider: r.provider ?? "e2b",
           ...(r.sandboxConfig ? { sandboxConfig: r.sandboxConfig } : {}),
+          ...(r.sandboxDeliveryTarget ? { sandboxDeliveryTarget: r.sandboxDeliveryTarget } : {}),
           hostDetached: true,
           sandboxReattach: {
             remoteSessionId: "remote_1",
@@ -909,6 +911,41 @@ describe("runSandboxReattachPass", () => {
     expect(host.pause).toBeUndefined()
     const row = readSandboxLedger().find(e => e.sandboxId === "sbx_1")!
     expect(row).toMatchObject({ state: "connected", attachedSessions: ["survivor"] })
+    registry.shutdown()
+  })
+
+  it("a re-attached session's teardown delivery still stamps its own Agentproto-Session trailer", async () => {
+    seedDetached([
+      {
+        id: "s1",
+        sandboxDeliveryTarget: { checkoutDir: "/workspace/repo", branch: "wt/x", baseSha: "a".repeat(40) },
+      },
+    ])
+    const commands: string[] = []
+    const exec: NonNullable<FakeHost["exec"]> = async o => {
+      commands.push(o.command)
+      if (o.command.includes("rev-list")) {
+        return { exitCode: 0, stdout: `ahead=1\nuncommitted=0\nhead=${"b".repeat(40)}\n`, stderr: "", durationMs: 1 }
+      }
+      return { exitCode: 0, stdout: "", stderr: "", durationMs: 1 }
+    }
+    const host = makeHost({ exec })
+    providerMock.create.mockResolvedValue(host)
+    stubBox({ session: () => json({ busy: false, status: "running" }) })
+    const registry = newRegistry()
+
+    const summary = await runSandboxReattachPass({
+      registry,
+      resolveSandboxProvider: resolver,
+      loadDefaultsConfig: async () => undefined,
+    })
+    expect(summary).toMatchObject({ candidates: 1, reattached: 1 })
+
+    expect(registry.reapIdle("s1", 100)).toBe(true)
+    await vi.waitFor(() => expect(commands.some(c => c.includes(" push "))).toBe(true))
+    const stamp = commands.find(c => c.includes("agentproto: delivered work"))
+    expect(stamp).toBeDefined()
+    expect(stamp).toContain("Agentproto-Session: s1")
     registry.shutdown()
   })
 

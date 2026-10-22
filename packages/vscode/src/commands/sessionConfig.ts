@@ -161,16 +161,29 @@ async function runSessionConfigFlow(
     return
   }
 
-  const chips = buildSessionConfigChips(session, {
+  // The LIVE session's own model vocabulary -- the values the running agent
+  // accepts for its model config option (the daemon stamps them onto the
+  // descriptor at read time). The store's copy can predate them, so re-read
+  // the session: without this the model chip offers CATALOG ids the agent
+  // rejects outright ("Invalid value for config option model").
+  const live = await client.getSession(session.id).catch(() => undefined)
+  const liveSession: SessionDescriptor = live?.configOptions
+    ? { ...session, configOptions: live.configOptions }
+    : session
+
+  const chips = buildSessionConfigChips(liveSession, {
     adapter,
-    ...(session.model ? { model: session.model } : {}),
+    ...(liveSession.model ? { model: liveSession.model } : {}),
     ...(catalog ? { catalog } : {}),
     profiles,
-    ...(session.availableModes ? { availableModes: session.availableModes } : {}),
+    ...(liveSession.availableModes ? { availableModes: liveSession.availableModes } : {}),
     // The live session's report wins; the adapter listing covers a daemon
     // that stamps it per adapter but not (yet) on this session.
-    ...((session.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures)
-      ? { spawnEnforcedPostures: session.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures }
+    ...((liveSession.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures)
+      ? {
+          spawnEnforcedPostures:
+            liveSession.spawnEnforcedPostures ?? adapter.spawnEnforcedPostures,
+        }
       : {}),
   })
   if (chips.length === 0) {

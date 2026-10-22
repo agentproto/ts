@@ -438,6 +438,22 @@ export interface CronScheduler {
 
   list(): CronJob[]
   get(id: string): CronJob | undefined
+
+  /**
+   * Re-point every `prompt-session` job that named `fromSessionId` at
+   * `toSessionId`: the cron RE-ARM a session restart needs. A restart
+   * retires the old row and continues the same conversation under a NEW id,
+   * so a job still naming the old id would fail its next tick with "session
+   * not found" instead of following the conversation.
+   *
+   * Agent-LABEL targets (`action.agent`) are left alone on purpose: they
+   * are resolved at FIRE time against whichever live session carries the
+   * label, so they already survive a restart.
+   *
+   * Returns the ids of the jobs that were re-armed (empty when none
+   * matched). The change is persisted with the rest of the job file.
+   */
+  rearmSessionTarget(fromSessionId: string, toSessionId: string): string[]
   update(id: string, patch: CronUpdate): Promise<CronJob>
   runs(input?: { jobId?: string; limit?: number; cursor?: string }): CronRunsPage
 
@@ -1331,6 +1347,22 @@ export function createCronScheduler(opts: {
 
     get(id) {
       return jobs.get(id)?.job
+    },
+
+    rearmSessionTarget(fromSessionId, toSessionId) {
+      if (!fromSessionId || !toSessionId || fromSessionId === toSessionId) return []
+      const rearmed: string[] = []
+      for (const [id, state] of jobs) {
+        const action = state.job.action
+        if (!action || action.kind !== "prompt-session") continue
+        // A label target rides along with the label, not with an id.
+        if (action.agent) continue
+        if (action.sessionId !== fromSessionId) continue
+        state.job.action = { ...action, sessionId: toSessionId }
+        rearmed.push(id)
+      }
+      if (rearmed.length > 0) persistNow()
+      return rearmed
     },
 
     async update(id, patch) {

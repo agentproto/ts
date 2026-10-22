@@ -286,6 +286,26 @@ export interface SandboxProbeResult {
 }
 
 /**
+ * One box as the PROVIDER's control plane reports it - the shape
+ * `SandboxProvider.listBoxes` returns. It is deliberately thin: the gc only
+ * needs the identity, the state, how many session slots the provider still
+ * counts for the box, and (when the provider knows it) the memory the box
+ * holds and when it was created.
+ */
+export interface SandboxProviderBox {
+  /** Provider-assigned box id - the same id `boot()` returned. */
+  id: string
+  /** Provider-reported state ("running", "stopped", …), when available. */
+  state?: string
+  /** Session slots the provider still counts for this box. */
+  sessions?: number
+  /** Memory the box holds, in MiB - when the provider reports it. */
+  memoryMiB?: number
+  /** Creation timestamp (ISO-8601) - when the provider reports it. */
+  createdAt?: string
+}
+
+/**
  * Backend-agnostic sandbox lifecycle. Concrete implementations (e2b, modal,
  * daytona, blaxel, …) live in their own packages so this one stays free of
  * vendor SDK dependencies — see `@agentproto/sandbox-e2b`.
@@ -340,6 +360,15 @@ export interface SandboxProvider {
    * route omit it; callers fall back to `connect()` + `stop()`.
    */
   remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
+  /**
+   * List the boxes this provider's control plane still holds - the surface
+   * the orphan-box gc reads. A box the provider still lists (and still
+   * charges RAM for) that no live agentproto session references is an
+   * ORPHAN: the provider keeps it (and its memory) while nobody can use it.
+   * Optional: providers whose control plane cannot enumerate their boxes
+   * omit it, and the gc simply has no candidate for that provider.
+   */
+  listBoxes?(): Promise<SandboxProviderBox[]>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */

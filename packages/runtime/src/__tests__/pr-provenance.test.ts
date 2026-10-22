@@ -17,14 +17,19 @@ import {
   appendFooterOnce,
   buildFooter,
   buildSessionPrFooter,
+  commitMessageWithSessionTrailer,
+  collectBranchAuthors,
   MARKER,
   parseGhPrCreate,
   detectShellPrCreate,
   hasProvenanceFooter,
   footerSessionId,
+  footerAuthors,
+  footerOpenedBy,
   footerIsRicherThan,
   pickExecutorSession,
   sessionFooterProvenance,
+  sessionIdsFromTrailers,
   type FooterSession,
 } from "../pr-provenance.js"
 
@@ -429,5 +434,258 @@ describe("footerIsRicherThan", () => {
   it("a footer that only reformats without adding cost/auth-profile/tokens is not richer", () => {
     const fresh = render({ sessionId: "sess_exec", adapter: "opencode", model: "openrouter/z-ai/glm-5.3-flash", host: "different-host", cwd: "e2b-template-baked" })
     expect(footerIsRicherThan(fresh, thinShimFooter("sess_exec"))).toBe(false)
+  })
+})
+
+describe("buildFooter — authorship (Authored by / Opened by)", () => {
+  const authors = [
+    {
+      sessionId: "sess_box1",
+      adapter: "codex",
+      model: "free-model",
+      authProfile: "openrouter-free",
+      sandboxProvider: "e2b",
+      costUsd: 0.0031,
+    },
+    {
+      sessionId: "sess_box2",
+      adapter: "opencode",
+      sandboxProvider: "computer",
+      costUsd: 0.0125,
+    },
+  ]
+
+  it("renders 'Opened by' and hides the opener's ledger even with no authors", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_box1", costUsd: 469, tokensIn: 10, tokensOut: 20, openedBy: "sess_orchestrator" },
+      kind: "PR",
+    })
+    expect(footer).toContain("Opened by `sess_orchestrator`")
+    expect(footer).not.toContain("$469")
+    expect(footer).not.toContain("10 in")
+  })
+
+  it("renders one 'Authored by' entry per author, with its own cost", () => {
+    const footer = buildFooter({
+      prov: {
+        sessionId: "sess_orchestrator",
+        model: "expensive-orchestrator",
+        costUsd: 469,
+        authors,
+        openedBy: "sess_orchestrator",
+      },
+      kind: "PR",
+    })
+    expect(footer).toContain("Authored by `sess_box1` (codex · auth-profile `openrouter-free` · model `free-model` · e2b · $0.0031)")
+    expect(footer).toContain("Authored by `sess_box2` (opencode · computer · $0.0125)")
+    expect(footer).toContain("Opened by `sess_orchestrator`")
+  })
+
+  it("suppresses the opener's cumulative cost/tokens when authors are attributed", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_orchestrator", costUsd: 469, tokensIn: 99999, tokensOut: 888, authors },
+      kind: "PR",
+    })
+    expect(footer).not.toContain("$469")
+    expect(footer).not.toContain("99.9k in / 888 out")
+  })
+
+  it("keeps the cumulative cost when no authors are attributed (back-compat)", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_solo", costUsd: 0.5, source: "daemon" },
+      kind: "PR",
+    })
+    expect(footer).toContain("$0.5000")
+    expect(footer).not.toContain("Authored by")
+    expect(footer).not.toContain("Opened by")
+  })
+
+  it("sessionFooterProvenance threads authors + openedBy into the footer", () => {
+    const session: FooterSession = { id: "sess_opener", kind: "agent-cli" }
+    const { prov } = sessionFooterProvenance(session, { authors, openedBy: "sess_opener" })
+    expect(prov.authors?.map(a => a.sessionId)).toEqual(["sess_box1", "sess_box2"])
+    expect(prov.openedBy).toBe("sess_opener")
+  })
+})
+
+describe("Agentproto-Session commit trailer", () => {
+  it("appends the trailer to a plain message once, idempotently", () => {
+    const stamped = commitMessageWithSessionTrailer("agentproto checkpoint: work on wt/x", "sess_box1")
+    expect(stamped.split("\n\n").at(-1)).toBe("Agentproto-Session: sess_box1")
+    expect(commitMessageWithSessionTrailer(stamped, "sess_box2")).toBe(stamped)
+  })
+
+  it("parses trailer ids out of one or many commit bodies", () => {
+    const body = "agentproto checkpoint: uncommitted work on wt/x turn 3\n\nAgentproto-Session: sess_box1"
+    expect(sessionIdsFromTrailers(body)).toEqual(["sess_box1"])
+    expect(
+      sessionIdsFromTrailers(`${body}\n${body.replace("sess_box1", "sess_box2")}`),
+    ).toEqual(["sess_box1", "sess_box2"])
+    expect(sessionIdsFromTrailers("no trailer here")).toEqual([])
+  })
+})
+
+describe("collectBranchAuthors", () => {
+  const sess = (over: Partial<FooterSession> & { id: string }): FooterSession => ({
+    kind: "agent-cli",
+    ...over,
+  })
+
+  it("matches sessions by sandboxDeliveryTarget.branch and enriches from the registry", () => {
+    const sessions: FooterSession[] = [
+      sess({
+        id: "sess_box1",
+        startedAt: "2026-10-20T10:00:00Z",
+        harness: "codex",
+        model: "free-model",
+        sandboxProvider: "e2b",
+        costUsd: 0.0031,
+        sandboxDeliveryTarget: { branch: "wt/feat" },
+      }),
+      sess({ id: "sess_other", sandboxDeliveryTarget: { branch: "wt/other" } }),
+    ]
+    const trailers = sessionIdsFromTrailers(
+      "agentproto checkpoint: work\n\nAgentproto-Session: sess_box2",
+    )
+    const authors = collectBranchAuthors(sessions, "wt/feat", trailers)
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box1", "sess_box2"])
+    expect(authors[0]).toMatchObject({ adapter: "codex", model: "free-model", sandboxProvider: "e2b" })
+    // Unknown trailer id survives as an id-only entry — the author is named
+    // even when its descriptor is gone.
+    expect(authors[1]).toEqual({ sessionId: "sess_box2" })
+  })
+
+  it("dedupes ids named by both sources and never matches a different branch", () => {
+    const sessions: FooterSession[] = [
+      sess({ id: "sess_box1", sandboxDeliveryTarget: { branch: "wt/feat" } }),
+    ]
+    const trailers = ["sess_box1"]
+    expect(collectBranchAuthors(sessions, "wt/feat", trailers).map(a => a.sessionId)).toEqual(["sess_box1"])
+    expect(collectBranchAuthors(sessions, "wt/main", trailers)).toEqual([{ sessionId: "sess_box1" }])
+  })
+})
+
+describe("collectBranchAuthors : workspace scoping (branch names are repo-local)", () => {
+  const sess = (over: Partial<FooterSession> & { id: string }): FooterSession => ({
+    kind: "agent-cli",
+    ...over,
+  })
+
+  it("credits only the PR's own workspace, even when another workspace used the same branch name", () => {
+    const sessions: FooterSession[] = [
+      sess({
+        id: "sess_box_here",
+        workspaceSlug: "ts",
+        startedAt: "2026-10-20T10:00:00Z",
+        harness: "codex",
+        costUsd: 0.0031,
+        sandboxDeliveryTarget: { branch: "wt/feat" },
+      }),
+      sess({
+        id: "sess_box_elsewhere",
+        workspaceSlug: "other",
+        startedAt: "2026-10-20T11:00:00Z",
+        harness: "claude-code",
+        costUsd: 42,
+        sandboxDeliveryTarget: { branch: "wt/feat" },
+      }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", [], { workspaceSlug: "ts" })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here"])
+    // Without a scope (no workspace known) the legacy behaviour stands.
+    expect(collectBranchAuthors(sessions, "wt/feat").map(a => a.sessionId)).toEqual([
+      "sess_box_here",
+      "sess_box_elsewhere",
+    ])
+  })
+
+  it("still resolves an explicit trailer id globally, whatever its workspace", () => {
+    const sessions: FooterSession[] = [
+      sess({ id: "sess_box_here", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/feat" } }),
+      sess({ id: "sess_rescued", workspaceSlug: "other" }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", ["sess_rescued"], { workspaceSlug: "ts" })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here", "sess_rescued"])
+  })
+
+  it("credits the session a PR is opened FOR, whatever its branch", () => {
+    const sessions: FooterSession[] = [
+      sess({ id: "sess_box_here", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/feat" } }),
+      sess({ id: "sess_target", workspaceSlug: "ts", sandboxDeliveryTarget: { branch: "wt/other" } }),
+    ]
+    const authors = collectBranchAuthors(sessions, "wt/feat", [], {
+      workspaceSlug: "ts",
+      extraSessionIds: ["sess_target"],
+    })
+    expect(authors.map(a => a.sessionId)).toEqual(["sess_box_here", "sess_target"])
+  })
+})
+
+describe("footer authorship comparison", () => {
+  const withAuthors = (body: string) => body
+
+  it("reads the 'Authored by' entries, with their details", () => {
+    const footer = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [
+          { sessionId: "sess_box1", adapter: "codex", model: "free-model", costUsd: 0.0031 },
+          { sessionId: "sess_gone" },
+        ],
+      },
+      kind: "PR",
+    })
+    expect(footerAuthors(footer)).toEqual([
+      { sessionId: "sess_box1", details: "codex · model `free-model` · $0.0031" },
+      { sessionId: "sess_gone", details: "" },
+    ])
+    expect(withAuthors(footer)).toContain("Authored by")
+  })
+
+  it("reads the 'Opened by' entry", () => {
+    const footer = buildFooter({ prov: { sessionId: "sess_exec", openedBy: "sess_orch" }, kind: "PR" })
+    expect(footerOpenedBy(footer)).toBe("sess_orch")
+    expect(footerOpenedBy(buildFooter({ prov: { sessionId: "sess_exec" }, kind: "PR" }))).toBeUndefined()
+  })
+
+  it("a new author, or a richer rendering of a known one, counts as richer", () => {
+    const posted = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1", adapter: "codex" }] },
+      kind: "PR",
+    })
+    const rescued = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [
+          { sessionId: "sess_box1", adapter: "codex" },
+          { sessionId: "sess_rescue", adapter: "codex" },
+        ],
+      },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(rescued, posted)).toBe(true)
+
+    const idOnly = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1" }] },
+      kind: "PR",
+    })
+    const enriched = buildFooter({
+      prov: {
+        sessionId: "sess_exec",
+        authors: [{ sessionId: "sess_box1", adapter: "codex", model: "free-model", costUsd: 0.0031 }],
+      },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(enriched, idOnly)).toBe(true)
+    // …and the other way round never "upgrades".
+    expect(footerIsRicherThan(idOnly, enriched)).toBe(false)
+  })
+
+  it("an unchanged authorship is not richer (no-op guard)", () => {
+    const footer = buildFooter({
+      prov: { sessionId: "sess_exec", authors: [{ sessionId: "sess_box1", adapter: "codex" }] },
+      kind: "PR",
+    })
+    expect(footerIsRicherThan(footer, footer)).toBe(false)
   })
 })

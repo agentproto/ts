@@ -346,8 +346,9 @@ export const agentStartInputShape = {
     .describe(
       "A REMOTE parent (host relay): the parent session lives in the HOST daemon's registry, " +
         "so `message_parent` relays the report to the host's relay endpoint instead of a local " +
-        "lookup. FORWARDED by the host into a sandbox box at spawn time - never set by hand " +
-        "(see parent-relay.ts).",
+        "lookup. DAEMON-INTERNAL: only the host daemon's own spawn path sets it when it boots a " +
+        "box (a root-gateway call into the box daemon); a session caller that supplies it is " +
+        "refused (see parent-relay.ts).",
     ),
   notifyUrl: z
     .string()
@@ -566,7 +567,13 @@ export type AgentStartInput = z.infer<typeof agentStartInputSchema>
  * or routine has no caller to block on, so `wait` is dropped). This is what a
  * cron `kind:"agent"` action and a routine `target.agent` accept.
  */
-export const detachedAgentStartSchema = agentStartInputSchema.omit({ wait: true })
+export const detachedAgentStartSchema = agentStartInputSchema.omit({
+  wait: true,
+  // Daemon-internal (see `remoteParent` above): a cron job / routine fires
+  // later as a root call, so accepting it here would launder a session's
+  // hand-made remote parent past the agent_start caller check.
+  remoteParent: true,
+})
 
 export type DetachedAgentStartInput = z.infer<typeof detachedAgentStartSchema>
 

@@ -55,6 +55,7 @@ import {
   sessionRestartErrorStatus,
   type RestartOverrides,
 } from "./session-restart-core.js"
+import type { CronScheduler } from "./cron-scheduler.js"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -96,6 +97,10 @@ import { buildContextCheckpoint, persistCheckpoint, renderCheckpointPrompt } fro
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
+import { readSandboxLedger } from "./sandbox-ledger.js"
+import { liveSessionBoxIds, runSandboxOrphanGcPass } from "./sandbox-orphan-gc.js"
+import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
+import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -662,9 +667,14 @@ export interface RegisterSessionToolsOptions {
    *  …) through the daemon as a single MCP entry point. */
   mcpProxy?: McpProxyRegistry
   /** Forwarded to `registerAgentTools` — see
-   *  `RegisterAgentToolsOptions.deviceMirrorSync` (BOOTSTRAP P7b: the
-   *  device-mirror read-sync hook, called before `agent_output` tails). */
+   *  `RegisterAgentToolsOptions.deviceMirrorSync`. */
   deviceMirrorSync?: RegisterAgentToolsOptions["deviceMirrorSync"]
+  /** Optional cron scheduler: used by `session_restart` to RE-ARM the
+   *  cron jobs that targeted the restarted session: a restart continues the
+   *  conversation under a NEW id, so a `prompt-session` job naming the old
+   *  id would fail its next tick. Omitted → no re-arm (the restart still
+   *  works; only the cron target goes stale). */
+  cronScheduler?: CronScheduler
   /** Whether the registry was constructed with a PTY factory — when
    *  true, expose the four terminal session tools. When false, the
    *  tools return a clear "not configured" error. */
@@ -4909,6 +4919,91 @@ export function registerSessionTools(
     },
   )
 
+  server.tool(
+    "sandbox_gc",
+    "Reap ORPHAN sandbox boxes: boxes a PROVIDER's control plane still " +
+      "holds (and still charges RAM for) that the daemon's sandbox registry " +
+      "never knew and that no LIVE session references. The computer " +
+      "controller is the case that matters: a stale box keeps its memory " +
+      "(and its session slots) pinned on the host, and every later launch " +
+      "then fails with \"host capacity\". A box held by a live session is " +
+      "NEVER a candidate, and neither is a box that is younger than the " +
+      "15-minute grace window or that the provider still counts a session " +
+      "on (`includeAttached` lifts that last check). DEFAULTS TO A DRY " +
+      "RUN: it lists the orphan boxes " +
+      "with their state, age (when known) and the RAM they hold (when the " +
+      "provider reports it). `apply: true` deletes them on the provider, " +
+      "forced, because a stale provider-side session slot would otherwise " +
+      "make the provider refuse the destroy. One provider failing (a " +
+      "controller that is down) is reported as `providerErrors` and never " +
+      "stops the sweep of the others.",
+    {
+      apply: mcpBool
+        .optional()
+        .describe("When true, DELETE the orphan boxes on their provider (forced). Default false - a dry run."),
+      includeAttached: mcpBool
+        .optional()
+        .describe(
+          "When true, ALSO propose the boxes the provider still counts an " +
+            "attached session on (the default is to leave them alone: they may be in use).",
+        ),
+      providers: z
+        .array(z.string())
+        .optional()
+        .describe('Provider slugs to sweep. Default ["computer"].'),
+    },
+    async input => {
+      try {
+        const resolveProvider =
+          opts.resolveSandboxProvider ??
+          makeSandboxResolver(makeSandboxCredsStore())
+        const liveSessions = registry
+          .list({ includeArchived: false })
+          .map(s => ({
+            id: s.id,
+            status: s.status,
+            ...(s.sandboxId !== undefined ? { sandboxId: s.sandboxId } : {}),
+          }))
+        const pass = await runSandboxOrphanGcPass({
+          resolveProvider: async slug => {
+            const handle = await resolveProvider(slug)
+            if (!handle) return null
+            return handle as unknown as SandboxGcProviderHandle
+          },
+          providerSlugs:
+            input.providers && input.providers.length > 0 ? input.providers : ["computer"],
+          registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
+          liveBoxIds: liveSessionBoxIds(liveSessions),
+          includeAttached: input.includeAttached === true,
+          apply: input.apply === true,
+        })
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                applied: input.apply === true,
+                candidates: pass.candidates,
+                providerErrors: pass.providerErrors,
+                scanned: pass.scanned,
+                notScanned: pass.notScanned,
+                deleted: pass.deleted,
+                failed: pass.failed,
+              }),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `sandbox_gc failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
   const branchVerdictEnum = z.enum(["obsolete", "superseded", "salvage", "in-progress", "unclear"])
   server.tool(
     "branch_gc_verdict",
@@ -5366,6 +5461,12 @@ export function registerSessionTools(
             ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
             ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
           })
+          // Cron re-arm: same rule as the plain restart below: the old row
+          // is retired, the conversation continues under the NEW id, so a
+          // `prompt-session` cron job naming the old id is re-pointed.
+          const rearmedCrons = opts.cronScheduler
+            ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+            : []
           return {
             content: [
               {
@@ -5377,6 +5478,7 @@ export function registerSessionTools(
                     resumeVia: restarted.resumeVia,
                     ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                     ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
+                    ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                   },
                   null,
                   2
@@ -5681,6 +5783,13 @@ export function registerSessionTools(
           ...(opts.resolveSandboxProvider ? { resolveSandboxProvider: opts.resolveSandboxProvider } : {}),
           ...(opts.daemonMcpUrl ? { daemonMcpUrl: opts.daemonMcpUrl } : {}),
         })
+        // Cron re-arm: the restart retired `prev` and continued the same
+        // conversation under `restarted.desc.id`, so a `prompt-session` cron
+        // job naming the OLD id would fail its next tick. Its target moves
+        // to the successor id (persisted with the job file).
+        const rearmedCrons = opts.cronScheduler
+          ? opts.cronScheduler.rearmSessionTarget(prev.id, restarted.desc.id)
+          : []
         return {
           content: [
             {
@@ -5693,6 +5802,7 @@ export function registerSessionTools(
                   ...(restarted.resumeFallback ? { resumeFallback: true } : {}),
                   ...(restarted.handoff ? { handoff: restarted.handoff } : {}),
                   ...(nativeResumeDecline ? { nativeResumeDecline } : {}),
+                  ...(rearmedCrons.length > 0 ? { rearmedCrons } : {}),
                 },
                 null,
                 2

@@ -324,6 +324,9 @@ export async function runSandboxReattachPass(opts: {
               target: deliveryTarget,
               outDir: sessionTranscriptDir(desc.id),
               snapshotUncommitted: checkpointConfig.onTeardown,
+              // PR provenance: without it a re-attached session's teardown
+              // delivery skipped the `Agentproto-Session:` stamp entirely.
+              sessionId: desc.id,
               onDelivery: delivery => {
                 registry.recordSandboxDelivery(desc.id, delivery, formatDeliveryNotice(delivery))
               },
@@ -334,6 +337,8 @@ export async function runSandboxReattachPass(opts: {
                 ...(host.readFile ? { readFile: host.readFile } : {}),
                 target: deliveryTarget,
                 outDir: sessionTranscriptDir(desc.id),
+                // Same trailer on the re-attached session's checkpoint commits.
+                sessionId: desc.id,
                 onCheckpoint: record => {
                   registry.recordSandboxCheckpoint(desc.id, record, formatDeliveryNotice(record))
                 },

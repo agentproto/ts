@@ -128,9 +128,14 @@ The push channel of (1)–(3) is implemented (`packages/runtime/src/parent-relay
   `parentSessionId`. The TOKEN is a secret, so it never lands on the
   descriptor: the box keeps it in an in-memory map keyed by the session id
   (`parent-relay.ts`'s `rememberRelayToken`), and the persisted row carries
-  only `{ sessionId, url }`. A box daemon that restarts therefore loses the
-  token, and `message_parent` then fails with a clear "relay token lost
-  after restart" instead of posting an unauthenticated report.
+  only `{ sessionId, url }`. Nothing about the token is persisted on the
+  box: a box session does not outlive its box daemon, and a restarted box
+  session gets a FRESH token from the host's restart path (below). A box
+  row restored without one makes `message_parent` fail with a clear "relay
+  token lost after restart" instead of posting an unauthenticated report.
+  `remoteParent` is DAEMON-INTERNAL on `agent_start`: only a root-gateway
+  caller (the host daemon booting the box) may set it; a session caller is
+  refused, and a cron/routine `kind:"agent"` job strips it.
 - **Box → host.** `message_parent` (`agent-tools.ts`) sees the remote
   parent and POSTs the envelope to the host's relay endpoint
   (`POST /relay/parent-message`) instead of looking the parent up locally. The
@@ -142,15 +147,20 @@ The push channel of (1)–(3) is implemented (`packages/runtime/src/parent-relay
   normal `session-message` with the same urgency/steer semantics. The
   attested sender is the host-side proxy row of the box session.
 
-**Grant lifetime.** A grant lives for one hour (`PARENT_RELAY_TTL_MS`) and
-the window SLIDES: every successful relay use pushes the expiry out by one
-more TTL, so a box session that keeps reporting is never cut off at the
-original deadline, while a silent one still expires an hour after its last
-report. Expired grants are pruned (on every mint and on an unref'd sweep
-timer), and the grant for a box session is REVOKED when that session ends
-(`sessions.ts`'s exit funnel: clean exit, kill, crash, idle-reap) or when
-the box boot fails (`session-spawn.ts`'s boot failure path) - a session that
-is gone must never be able to report up again.
+**Grant lifetime.** The host keeps only the token's SHA-256 hash, in memory
+and in `parent-relay-grants.json` (mode 0600, next to the sessions
+registry's state), reloaded at boot so a host daemon restart does not turn a
+live (detached) box's relay into `relay_token_unknown`. A grant lives for one
+hour (`PARENT_RELAY_TTL_MS`) and the window SLIDES on every successful relay
+use; the unref'd sweep (`sweepParentRelayGrants`, every minute) also RENEWS a
+grant while both its box session and its parent are live, REVOKES it once
+either is a terminal row, and prunes expired grants. A grant is also REVOKED
+when its box session or its parent ends (`sessions.ts`'s exit funnel: clean
+exit, kill, crash, idle-reap, daemon shutdown), is archived or forgotten,
+and when the box boot fails (`session-spawn.ts`'s boot failure paths). A
+restart of the box session (`session-restart-core.ts`, both the live-box
+re-attach and the fresh-box path) mints a fresh grant for the restarted row
+under the same parent and forwards the remote parent again.
 
 The relay URL is operator-provided (`AGENTPROTO_PARENT_RELAY_URL`) and must be
 reachable FROM the box (item 4): without it nothing is forwarded and the

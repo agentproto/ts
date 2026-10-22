@@ -175,6 +175,10 @@ export function resolveEffectiveRelation(
  * GROUP (`peerGroup: true`) is allowed whatever `allowSameWorkspace` says -
  * the group list is an independent operator decision. Anything else - a
  * cousin of another workspace, a stranger, yourself - is refused.
+ *
+ * Kept for back-compat. Enforcement now goes through `decide(principal,
+ * "session.message", …)` in permissions.ts, which a test pins to this
+ * function's outcomes for every tree pair.
  */
 export function isMessageAllowed(
   relation: MessageRelation | undefined,

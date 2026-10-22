@@ -16,6 +16,7 @@
  * keeps it attachable for boxes you still want) and stamps the ledger.
  * Dry run by default.
  */
+import type { SandboxProviderBox } from "@agentproto/sandbox"
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { SandboxLedgerEntry, SandboxLedgerState } from "./sandbox-ledger.js"
 import { readSandboxLedger, recordSandboxState } from "./sandbox-ledger.js"
@@ -92,6 +93,10 @@ export interface SandboxGcProviderHandle {
      *  caller allowed to `force` past a shared-box 409. Optional: providers
      *  without it fall back to the connect path. */
     remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
+    /** Control-plane enumeration of the provider's boxes: the orphan-box
+     *  gc reads it to find boxes no live session holds (see
+     *  `sandbox-orphan-gc.ts`). */
+    listBoxes?(): Promise<SandboxProviderBox[]>
   }
 }
 
@@ -101,12 +106,12 @@ export interface SandboxGcProviderHandle {
  *  must never be stamped as a successful reap. Prefer the typed sentinel
  *  (`SandboxBoxGoneError`, via {@link isGoneError}); the message regex is
  *  the fallback for providers without one. */
-const GONE_RE =
+export const GONE_RE =
   /\b404\b|doesn't exist|does not exist|no such|box gone|(box|sandbox|computer)\s+not found/i
 
 /** Structural check — true when `err` means "the box is gone" (the typed
  *  sentinel or any Error carrying its name). */
-function isGoneError(err: unknown): boolean {
+export function isGoneError(err: unknown): boolean {
   return err instanceof Error && err.name === "SandboxBoxGoneError"
 }
 
