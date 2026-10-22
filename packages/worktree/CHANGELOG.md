@@ -1,5 +1,22 @@
 # @agentproto/worktree
 
+## 0.19.0
+
+### Minor Changes
+
+- d1e8263: Add session_transcript tool and cap turbo concurrency in worktrees
+- d1e8263: Add the `session_transcript` MCP tool for reading a session's normalised conversation from the daemon's events transcript (with an optional tail `limit`), and add `resolveWorktreesTurboConcurrency` / `WORKTREES_TURBO_CONCURRENCY_ENV` so provisioned worktree setup hooks run turbo with a bounded concurrency.
+- 60b0d56: Add `nonInteractiveEnv` and `NON_INTERACTIVE_ENV_DEFAULTS` exports. Make daemon-spawned worktree setup hooks non-interactive: `worktree.setup` and
+  `depsCmd` now run with `CI=true` and
+  `npm_config_confirm_modules_purge=false` (unless the caller already set
+  them), and with stdin closed instead of a pipe. Fixes
+  `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY` killing `agent_start`
+  worktree provisioning.
+
+### Patch Changes
+
+- @agentproto/workflow-runtime@0.20.1
+
 ## 0.18.0
 
 ### Minor Changes

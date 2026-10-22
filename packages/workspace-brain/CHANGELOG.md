@@ -1,5 +1,12 @@
 # @agentproto/workspace-brain
 
+## 0.5.4
+
+### Patch Changes
+
+- @agentproto/corpus@0.8.4
+- @agentproto/adapter-knowledge-files@0.3.4
+
 ## 0.5.3
 
 ### Patch Changes

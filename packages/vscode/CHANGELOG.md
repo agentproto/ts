@@ -1,5 +1,110 @@
 # agentproto-vscode
 
+## 0.25.0
+
+### Minor Changes
+
+- a3075d4: Auth-profile switching: pick an existing profile for a session, and move every session off a profile in one command.
+
+  The VS Code extension's session "Auth profile" picker only offered "+ add profile": the existing profiles in `~/.agentproto/auth-profiles.json` were never listed, because the picker showed only the profiles the CATALOG marked eligible for the session's route, and that set is empty whenever the route lookup misses. The picker now lists the profiles the daemon knows (name/label only, never key material) and, when one is picked, restarts the session onto it via `POST /sessions/:id/restart` with `access.profileRef`.
+
+  The new `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` does the same for a whole fleet: every session currently billing against the `from` profile is restarted onto the `to` profile in one command. Live sessions are restarted too (any in-flight turn is interrupted); use `--dry-run` to preview.
+
+  - The restart keeps the session's POSTURE: switching the wallet never silently changes what the agent may do.
+  - A restart continues the conversation under a NEW session id, so the cron jobs that targeted the old id are RE-ARMED: their target moves to the successor id (persisted with the job file), instead of failing the next tick with "session not found". Agent-label targets are resolved at fire time and need no re-arm.
+
+- a544d88: Continue-fresh no longer renames the session: the new session keeps EXACTLY the previous label and title (like a session that compacts in place), and the continuation lineage is shown separately via a new `continuationGeneration` descriptor field (previous generation + 1, starting at 1; exposed in the session list/show/tree/evidence projections). Sessions still carrying a legacy ` (continued)` / ` (continued N)` suffix get their clean name back on their next continuation (`stripContinuedSuffix`). VS Code session rows show a `↻ N` badge with a "Continued N times — previous: <prev>" tooltip and an action to open the previous session in the chain.
+- 62f0ec1: Surfaces a session's daemon-reported `awaitingQuestion` as answerable UI. The runtime adds an optional `SessionAwaitingQuestion.recommended` field (set by the context-continuity ask to `continue-fresh`) so clients can mark the daemon's own recommendation, and the VS Code extension gains a new `agentproto.answerSessionQuestion` command that quick-picks the enumerated options and sends the chosen one verbatim through the normal prompt path. Tree rows, tooltips, webview rows, and the transcript pause card lead with the question text and its options, while an `awaitingInput` session without a question now reads as the calm `idle-awaiting` / "idle, waiting for next prompt" parked state.
+- a3075d4: Auth-profile switching across the fleet and in the VS Code extension.
+
+  `agentproto sessions switch-profile --from <profileRef> --to <profileRef>` moves every session billing against one profile onto another through the daemon's restart-with-override route, with `--dry-run` and `--json` output.
+
+  The runtime re-arms `prompt-session` cron jobs on a session restart: when the conversation continues under a new session id, jobs that named the retired id are re-pointed at the successor (persisted with the job file) instead of failing their next tick. Agent-label targets are resolved at fire time and are left alone.
+
+  `agentproto-vscode`'s session auth-profile picker now lists every profile the daemon knows (eligible ones first, the rest flagged), and applies the pick via `restartSessionWithOverride`, so a session whose route the catalog does not know no longer offers only "+ add profile".
+
+- 39d69ba: Live model switch now uses the running agent's own vocabulary instead of the catalog id.
+
+  `SessionDescriptor.configOptions` (runtime) is a read-time projection of the live harness's advertised ACP `configOptions` (stamped at `list()`/`get()`, never persisted), and `POST /sessions/:id/model` sends an advertised value verbatim rather than catalog wire-normalizing it. The VS Code model picker (`changeModel` / `sessionConfig`) re-reads the live session, offers the agent's accepted values as extra rows, and flags catalog ids the agent would reject as restart-only.
+
+- 62f0ec1: A session parked on the daemon's `awaitingQuestion` is now answerable in one click from the VS Code session list and the transcript panel. The tree row and webview list lead with the question text ("Context is at 69%. Continue fresh to avoid losing continuity?" with its `continue-fresh` / `handoff:*` / `keep-going` options), the tooltip carries the full option list with the daemon-recommended one check-marked (NEW `SessionAwaitingQuestion.recommended`, set by the runtime's context-continuity ask to `continue-fresh`), and a new `agentproto.answerSessionQuestion` command quick-picks those options and sends the chosen one verbatim through the normal prompt path. A session flagged `awaitingInput` WITHOUT a question no longer alarms: it reads "idle, waiting for next prompt" with the calm quiet dot (tree icon `iconForSession`, webview list `idle-awaiting` row status, transcript tab `titleStatusState` refinement). The transcript pause card renders the question text, heuristic-source hint, and the same option buttons — each sending the exact option string via the normal composer send path.
+
+### Patch Changes
+
+- a33bdeb: **Output change (backwards-compatible shape, different default fields):** `adapter_list`'s COMPACT default projection no longer includes the `models` id array — it now emits `installed` (package presence: only status `supported` reports false; `available` and `unresolvable` still count as installed) and `modelCount` instead, because the model arrays pushed the whole listing past the daemon's 100 KB MCP result cap and produced a `{ truncated: true }` stub callers misread as an empty list. Consumers needing model ids must pass `full: true` (page it with `limit`/`cursor`). `AdapterListEntry` gains the optional `status` the merged listing already carries.
+
+  `@agentproto/app-client`'s runner picker walks `limit`/`cursor` pages of the compact rows (no `fields` filter — that bypasses the compact projection and would re-ship the unbounded model arrays), filters not-installed catalog rows out of the dropdown, and surfaces a truncated stub as an error instead of an empty list.
+
+  `agentproto-vscode`'s `DaemonClient.listAdapters()` page-walks full detail with `limit`/`cursor` (typed `McpInvalidParamsError` fallback for daemons predating the pagination params, `McpResultTruncatedError` instead of an empty list); `sessionConfig`, the harnesses tree, the Harnesses webview, the auth/model mind map, the auth explorer and the Configuration Lab surface a failed listing as an error instead of "no adapters installed".
+
+- f8a0013: The runtime adds a pageable `adapter_models` MCP tool and an `adapter` filter on `adapter_list`, and its compact `adapter_list` projection now surfaces each adapter's exact `status`, picker `hint`, and `modes` (id/status/status_note) so list-only clients can render readiness without a `full` round-trip; `AdapterListEntry` is typed with the optional `modelDetails` rows.
+
+  `agentproto-vscode` consumes those compact rows in the Harnesses tree, pages per-adapter model detail, and narrows the legacy-daemon fallback to genuine unknown-tool/method errors so a tool-level "adapter … was not found" is no longer misread as a missing tool.
+
+- f8a0013: Keep the VS Code harness surfaces under the daemon's MCP result cap after the `adapter_list` compact change. `agentproto-vscode`'s `DaemonClient.listAdapters()` now pages the COMPACT rows (no `full`) and exposes `getAdapter(slug)` / `listAdapterModels(slug)` for one adapter's detail; the harnesses tree, auth/model map, auth explorer, Configuration Lab, spawn wizard, change-model and session-config pickers load detail per adapter only when they need it. The runtime adds an `adapter` filter to `adapter_list` and a NEW pageable `adapter_models` tool so even a runaway model list (opencode is ~700 ids) can be fetched one page at a time. The runtime's compact `adapter_list` projection now also surfaces each adapter's exact `status`, picker `hint`, and `modes` (id/status) — enough for list-only UI clients to render without a `full` round-trip — and `AdapterListEntry` is typed with the optional `modelDetails` rows `adapter_models` serves.
+- b58e083: Restore wallet (auth-profile) choice in the VS Code launch and change-wallet pickers after the catalog went compact. The runtime's `catalog_models` COMPACT rows now carry the cheap presence ids — `eligibleProfiles`, `adapters`, `adapterModes` — so a client paging COMPACT rows can resolve "which wallet can bill this route" without a `full: true` round trip that overruns the MCP result cap and truncates to a stub the client misreads as an empty catalog. `agentproto-vscode`'s `DaemonClient.catalogModels()` now pages that tool with `limit`/`cursor` (falling back to one unpaged full call on pre-pagination daemons) instead of asking for the whole full catalog in a single result — the truncated full response used to leave the spawn wizard on the manifest fallback (no route, so only the daemon's default wallet ever attached) and the change-wallet access chip offering only "Add a new wallet". It also accepts an optional adapter slug, and every adapter-scoped picker (spawn wizard, change-model, session config/access, transcript route chip, Configuration Lab) now asks with it: the unscoped route unions every curating adapter's auth surface, so its eligibleProfiles could name wallets that adapter's spawn then refuses with `access_profile_ineligible` (the reported `moonshot-api` / `claude-sdk` 400). Also fixed: the wizard no longer fetches the whole catalog up front, only the picked harness's slice.
+- Updated dependencies [d732326]
+- Updated dependencies [a3075d4]
+- Updated dependencies [07f5b70]
+- Updated dependencies [d03ca33]
+- Updated dependencies [e4ca9cc]
+- Updated dependencies [a884e9d]
+- Updated dependencies [379eb05]
+- Updated dependencies [486339e]
+- Updated dependencies [8954bba]
+- Updated dependencies [c66d8bf]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [a544d88]
+- Updated dependencies [c9553f7]
+- Updated dependencies [46faeb4]
+- Updated dependencies [a33bdeb]
+- Updated dependencies [1b79127]
+- Updated dependencies [7066458]
+- Updated dependencies [fb8341d]
+- Updated dependencies [39d69ba]
+- Updated dependencies [d1e8263]
+- Updated dependencies [1620b03]
+- Updated dependencies [74e8a71]
+- Updated dependencies [92e4e99]
+- Updated dependencies [42f8b1c]
+- Updated dependencies [e4d1185]
+- Updated dependencies [1b79127]
+- Updated dependencies [43e1fbc]
+- Updated dependencies [7686e56]
+- Updated dependencies [f8a0013]
+- Updated dependencies [62f0ec1]
+- Updated dependencies [471c1da]
+- Updated dependencies [486339e]
+- Updated dependencies [fb8341d]
+- Updated dependencies [8954bba]
+- Updated dependencies [1620b03]
+- Updated dependencies [d03ca33]
+- Updated dependencies [92e4e99]
+- Updated dependencies [a3075d4]
+- Updated dependencies [39d69ba]
+- Updated dependencies [379eb05]
+- Updated dependencies [e489439]
+- Updated dependencies [d1e8263]
+- Updated dependencies [7066458]
+- Updated dependencies [36ac93e]
+- Updated dependencies [4191fe7]
+- Updated dependencies [9705c46]
+- Updated dependencies [471c1da]
+- Updated dependencies [36ac93e]
+- Updated dependencies [e4d1185]
+- Updated dependencies [fb025f0]
+- Updated dependencies [a63eafb]
+- Updated dependencies [7686e56]
+- Updated dependencies [6a2542f]
+- Updated dependencies [4191fe7]
+- Updated dependencies [9309cd5]
+- Updated dependencies [f8a0013]
+- Updated dependencies [62f0ec1]
+- Updated dependencies [b58e083]
+  - @agentproto/runtime@5.29.0
+  - @agentproto/apps@0.24.1
+  - @agentproto/mcp-app-host@0.1.4
+
 ## 0.24.3
 
 ### Patch Changes
