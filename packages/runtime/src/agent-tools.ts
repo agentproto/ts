@@ -125,6 +125,227 @@ export function stripAnsi(s: string): string {
 }
 
 
+// ── agent_start response projection ──────────────────────────────────────
+// `agent_start` answers with the spawned session's descriptor. The RAW
+// descriptor carries the heavy fields — `availableCommands` (the harness's
+// whole slash-command list), `appendSystemPrompt` (the AGENTS.md body),
+// `availableModes`, `configOptions`, the full `mcpServers` specs — which
+// together weigh ~29 KB on a realistic session (60 commands + AGENTS.md).
+// None of them is needed to route the caller to the new session.
+//
+// The default answer is therefore the COMPACT projection: identity/routing
+// fields + COUNTERS for the bulky ones, plus a `commandsRef` pointing at the
+// `session_commands` tool that serves the command list page by page.
+// `full: true` restores the raw descriptor byte for byte (the escape hatch,
+// same precedent as `session_list` / `adapter_list`); `fields: [...]` is an
+// explicit per-field allowlist (same precedent as `?fields=` on the HTTP
+// session routes).
+
+/** The compact `agent_start` answer — identity/routing + counters. */
+export interface AgentStartCompactDescriptor {
+  id: string
+  kind: SessionDescriptor["kind"]
+  slug?: string
+  name?: string
+  label?: string
+  title?: string
+  status: SessionDescriptor["status"]
+  alive?: boolean
+  busy?: boolean
+  awaitingInput?: boolean
+  blockedOn?: string
+  provisioning?: SessionDescriptor["provisioning"]
+  workspaceSlug: string
+  cwd?: string
+  command: string
+  pid: number | null
+  adapterSlug?: string
+  harness?: string
+  adapterProvider?: string
+  model?: string
+  activeModel?: string
+  mode?: string
+  effort?: SessionDescriptor["effort"]
+  posture?: SessionDescriptor["posture"]
+  contextProfile?: SessionDescriptor["contextProfile"]
+  route?: SessionDescriptor["route"]
+  routeSelection?: SessionDescriptor["routeSelection"]
+  accessProfile?: SessionDescriptor["accessProfile"]
+  auth?: SessionDescriptor["auth"]
+  capabilities?: SessionDescriptor["capabilities"]
+  /** The postures the adapter enforces natively (harness client reads it). */
+  spawnEnforcedPostures?: string[]
+  startedAt: string
+  endedAt?: string
+  lastActivityAt?: string
+  exitCode?: number
+  endedReason?: SessionDescriptor["endedReason"]
+  parentSessionId?: string
+  depth?: number
+  origin?: string
+  /** Spawn-time hints (e.g. `boardId`) — the caller reads them back off the
+   *  spawn answer. */
+  meta?: SessionDescriptor["meta"]
+  /** Lineage: the session this one continues / succeeds / was resumed from. */
+  continuedFrom?: string
+  succeeds?: string
+  succeededBy?: string
+  resumedFrom?: string
+  resumeVia?: string
+  /** Remote/sandbox routing: where the session actually runs. */
+  remote?: boolean
+  sandboxId?: string
+  sandboxProvider?: string
+  hostSessionId?: string
+  hostFingerprint?: string
+  externalHost?: string
+  browserAdapterId?: string
+  browserPort?: number
+  browserBaseUrl?: string
+  /** Worktree routing (the session's isolated checkout). */
+  worktreePath?: string
+  worktreeId?: string
+  mainRepoPath?: string
+  /** The AGENTS.md / RULES.md files the spawn resolved (paths, not bodies). */
+  agentsMd?: string
+  rulesMd?: string
+  /** Usage scalars (cheap, always useful to a caller). */
+  costUsd?: number
+  tokensIn?: number
+  tokensOut?: number
+  contextSize?: number
+  contextUsed?: number
+  /** How many slash-commands the harness advertised (the LIST itself lives
+   *  behind `session_commands`). */
+  availableCommandsCount: number
+  /** How many session modes the harness advertised. */
+  availableModesCount: number
+  /** How many live config options the harness advertised. */
+  configOptionsCount: number
+  /** How many MCP servers are mounted into the session. */
+  mcpServerCount: number
+  /** How many skills were resolved for the session. */
+  skillsCount: number
+  /** Where to read the command list: the `session_commands` tool, for THIS
+   *  session. The pointer travels with the descriptor so a client never has
+   *  to guess which tool serves the list. */
+  commandsRef: { tool: string; sessionId: string }
+}
+
+/** The MCP tool that serves a session's slash-command list, page by page. */
+export const SESSION_COMMANDS_TOOL = "session_commands"
+
+/**
+ * The default `agent_start` answer: the descriptor's identity/routing
+ * fields plus counters for everything that got dropped.
+ */
+export const compactAgentStartDescriptor = (
+  desc: SessionDescriptor,
+): AgentStartCompactDescriptor => ({
+  id: desc.id,
+  kind: desc.kind,
+  ...(desc.slug ? { slug: desc.slug } : {}),
+  ...(desc.name ? { name: desc.name } : {}),
+  ...(desc.label ? { label: desc.label } : {}),
+  ...(desc.title ? { title: desc.title } : {}),
+  status: desc.status,
+  ...(desc.alive !== undefined ? { alive: desc.alive } : {}),
+  ...(desc.busy !== undefined ? { busy: desc.busy } : {}),
+  ...(desc.awaitingInput !== undefined ? { awaitingInput: desc.awaitingInput } : {}),
+  ...(desc.blockedOn ? { blockedOn: desc.blockedOn } : {}),
+  ...(desc.provisioning ? { provisioning: desc.provisioning } : {}),
+  workspaceSlug: desc.workspaceSlug,
+  ...(desc.cwd ? { cwd: desc.cwd } : {}),
+  command: desc.command,
+  pid: desc.pid,
+  ...(desc.adapterSlug ? { adapterSlug: desc.adapterSlug } : {}),
+  ...(desc.harness ? { harness: desc.harness } : {}),
+  ...(desc.adapterProvider ? { adapterProvider: desc.adapterProvider } : {}),
+  ...(desc.model ? { model: desc.model } : {}),
+  ...(desc.activeModel ? { activeModel: desc.activeModel } : {}),
+  ...(desc.mode ? { mode: desc.mode } : {}),
+  ...(desc.effort ? { effort: desc.effort } : {}),
+  ...(desc.posture !== undefined ? { posture: desc.posture } : {}),
+  ...(desc.contextProfile ? { contextProfile: desc.contextProfile } : {}),
+  ...(desc.route ? { route: desc.route } : {}),
+  ...(desc.routeSelection ? { routeSelection: desc.routeSelection } : {}),
+  ...(desc.accessProfile ? { accessProfile: desc.accessProfile } : {}),
+  ...(desc.auth ? { auth: desc.auth } : {}),
+  ...(desc.capabilities ? { capabilities: desc.capabilities } : {}),
+  ...(desc.spawnEnforcedPostures ? { spawnEnforcedPostures: desc.spawnEnforcedPostures } : {}),
+  startedAt: desc.startedAt,
+  ...(desc.endedAt ? { endedAt: desc.endedAt } : {}),
+  ...(desc.lastActivityAt ? { lastActivityAt: desc.lastActivityAt } : {}),
+  ...(desc.exitCode !== undefined ? { exitCode: desc.exitCode } : {}),
+  ...(desc.endedReason ? { endedReason: desc.endedReason } : {}),
+  ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
+  ...(desc.depth !== undefined ? { depth: desc.depth } : {}),
+  ...(desc.origin ? { origin: desc.origin } : {}),
+  ...(desc.meta ? { meta: desc.meta } : {}),
+  ...(desc.continuedFrom ? { continuedFrom: desc.continuedFrom } : {}),
+  ...(desc.succeeds ? { succeeds: desc.succeeds } : {}),
+  ...(desc.succeededBy ? { succeededBy: desc.succeededBy } : {}),
+  ...(desc.resumedFrom ? { resumedFrom: desc.resumedFrom } : {}),
+  ...(desc.resumeVia ? { resumeVia: desc.resumeVia } : {}),
+  ...(desc.remote ? { remote: desc.remote } : {}),
+  ...(desc.sandboxId ? { sandboxId: desc.sandboxId } : {}),
+  ...(desc.sandboxProvider ? { sandboxProvider: desc.sandboxProvider } : {}),
+  ...(desc.hostSessionId ? { hostSessionId: desc.hostSessionId } : {}),
+  ...(desc.hostFingerprint ? { hostFingerprint: desc.hostFingerprint } : {}),
+  ...(desc.externalHost ? { externalHost: desc.externalHost } : {}),
+  ...(desc.browserAdapterId ? { browserAdapterId: desc.browserAdapterId } : {}),
+  ...(desc.browserPort !== undefined ? { browserPort: desc.browserPort } : {}),
+  ...(desc.browserBaseUrl ? { browserBaseUrl: desc.browserBaseUrl } : {}),
+  ...(desc.worktreePath ? { worktreePath: desc.worktreePath } : {}),
+  ...(desc.worktreeId ? { worktreeId: desc.worktreeId } : {}),
+  ...(desc.mainRepoPath ? { mainRepoPath: desc.mainRepoPath } : {}),
+  ...(desc.agentsMd ? { agentsMd: desc.agentsMd } : {}),
+  ...(desc.rulesMd ? { rulesMd: desc.rulesMd } : {}),
+  ...(desc.costUsd !== undefined ? { costUsd: desc.costUsd } : {}),
+  ...(desc.tokensIn !== undefined ? { tokensIn: desc.tokensIn } : {}),
+  ...(desc.tokensOut !== undefined ? { tokensOut: desc.tokensOut } : {}),
+  ...(desc.contextSize !== undefined ? { contextSize: desc.contextSize } : {}),
+  ...(desc.contextUsed !== undefined ? { contextUsed: desc.contextUsed } : {}),
+  availableCommandsCount: desc.availableCommands?.length ?? 0,
+  availableModesCount: desc.availableModes?.length ?? 0,
+  configOptionsCount: desc.configOptions?.length ?? 0,
+  mcpServerCount: desc.mcpServers?.length ?? 0,
+  skillsCount: desc.skills?.length ?? 0,
+  commandsRef: { tool: SESSION_COMMANDS_TOOL, sessionId: desc.id },
+})
+
+/**
+ * Build `agent_start`'s response body.
+ *
+ *  - default (`full` absent, `fields` absent) — the COMPACT projection.
+ *  - `full: true` — the RAW descriptor, byte for byte the pre-projection
+ *    answer (the escape hatch; no field is added, dropped or renamed).
+ *  - `fields: [...]` — an explicit allowlist over the answer; the named
+ *    fields are served from the raw descriptor (so a caller can ask for a
+ *    single heavy field on purpose), the compact counters stay available,
+ *    and `id` is always kept.
+ */
+export function buildAgentStartResponseBody(
+  descriptor: SessionDescriptor,
+  extras: Record<string, unknown> = {},
+  opts: { full?: boolean; fields?: readonly string[] } = {},
+): Record<string, unknown> {
+  const compact = compactAgentStartDescriptor(descriptor)
+  const raw = { ...descriptor } as Record<string, unknown>
+  const body: Record<string, unknown> = opts.fields
+    ? { ...raw, ...compact, ...extras }
+    : opts.full
+      ? { ...raw, ...extras }
+      : { ...compact, ...extras }
+  if (!opts.fields) return body
+  const allowed = new Set<string>([...opts.fields, "id"])
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(body)) {
+    if (allowed.has(key)) out[key] = body[key]
+  }
+  return out
+}
+
 // ── session-id argument aliasing ──────────────────────────────────────────
 // `agent_start` returns the session as `{ "id": "sess_…" }`, but the drive
 // tools (`agent_prompt` / `agent_output` / `agent_kill`) historically took
@@ -413,7 +634,10 @@ export function registerAgentTools(
       description:
         "Spawn a long-running agent CLI (claude-code, hermes, …) on the host; " +
       "the session stays alive across turns — call `agent_prompt` to continue. " +
-      'Returns the session id + descriptor. Field docs: tool_help {name:"agent_start", topic:"<field>"}',
+      "Returns the session id + a COMPACT descriptor (identity/routing + counters); " +
+      "`full:true` returns the whole descriptor, `fields:[...]` picks fields. The " +
+      "slash-command list is served page by page by `session_commands`. " +
+      'Field docs: tool_help {name:"agent_start", topic:"<field>"}',
       inputSchema: agentStartInputShape,
       // Session-chat widget: rendering agent_start's result auto-mounts the
       // session-chat launcher for the new session (ext-apps
@@ -498,7 +722,7 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, ...spawnInput } = input
+      const { presetId: _presetId, posture: rawPosture, succeeds: rawSucceeds, full: _full, fields: _fields, ...spawnInput } = input
       // Lineage handover (`agent_start.succeeds`): the caller declares that
       // THIS new session takes over another session's position in the spawn
       // tree. Authorized to the human operator, the replaced session itself
@@ -645,15 +869,21 @@ export function registerAgentTools(
         }
         // Built AFTER the handover so its failure warning rides back too.
         const warnings = [...(result.warnings ?? []), ...attachWarnings]
-        const body = {
-          ...result.descriptor,
-          ...(result.output ? { output: result.output } : {}),
-          ...(warnings.length > 0 ? { warnings } : {}),
-          ...(result.deduped ? { deduped: true } : {}),
-          ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
-          ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
-          ...(lineageHandover ? { lineageHandover } : {}),
-        }
+        const body = buildAgentStartResponseBody(
+          result.descriptor,
+          {
+            ...(result.output ? { output: result.output } : {}),
+            ...(warnings.length > 0 ? { warnings } : {}),
+            ...(result.deduped ? { deduped: true } : {}),
+            ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
+            ...(costBudgetPolicyId ? { costBudgetPolicyId } : {}),
+            ...(lineageHandover ? { lineageHandover } : {}),
+          },
+          {
+            ...(input.full ? { full: true } : {}),
+            ...(input.fields ? { fields: input.fields } : {}),
+          },
+        )
         return {
           content: [{ type: "text", text: JSON.stringify(body) }],
         }
