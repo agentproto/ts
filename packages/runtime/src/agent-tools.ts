@@ -127,9 +127,9 @@ export function stripAnsi(s: string): string {
 
 // ── agent_start response projection ──────────────────────────────────────
 // `agent_start` answers with the spawned session's descriptor. The RAW
-// descriptor carries the heavy fields — `availableCommands` (the harness's
+// descriptor carries the heavy fields, `availableCommands` (the harness's
 // whole slash-command list), `appendSystemPrompt` (the AGENTS.md body),
-// `availableModes`, `configOptions`, the full `mcpServers` specs — which
+// `availableModes`, `configOptions`, the full `mcpServers` specs, which
 // together weigh ~29 KB on a realistic session (60 commands + AGENTS.md).
 // None of them is needed to route the caller to the new session.
 //
@@ -141,7 +141,7 @@ export function stripAnsi(s: string): string {
 // explicit per-field allowlist (same precedent as `?fields=` on the HTTP
 // session routes).
 
-/** The compact `agent_start` answer — identity/routing + counters. */
+/** The compact `agent_start` answer, identity/routing + counters. */
 export interface AgentStartCompactDescriptor {
   id: string
   kind: SessionDescriptor["kind"]
@@ -183,7 +183,7 @@ export interface AgentStartCompactDescriptor {
   parentSessionId?: string
   depth?: number
   origin?: string
-  /** Spawn-time hints (e.g. `boardId`) — the caller reads them back off the
+  /** Spawn-time hints (e.g. `boardId`), the caller reads them back off the
    *  spawn answer. */
   meta?: SessionDescriptor["meta"]
   /** Lineage: the session this one continues / succeeds / was resumed from. */
@@ -317,10 +317,10 @@ export const compactAgentStartDescriptor = (
 /**
  * Build `agent_start`'s response body.
  *
- *  - default (`full` absent, `fields` absent) — the COMPACT projection.
- *  - `full: true` — the RAW descriptor, byte for byte the pre-projection
+ *  - default (`full` absent, `fields` absent), the COMPACT projection.
+ *  - `full: true`, the RAW descriptor, byte for byte the pre-projection
  *    answer (the escape hatch; no field is added, dropped or renamed).
- *  - `fields: [...]` — an explicit allowlist over the answer; the named
+ *  - `fields: [...]`, an explicit allowlist over the answer; the named
  *    fields are served from the raw descriptor (so a caller can ask for a
  *    single heavy field on purpose), the compact counters stay available,
  *    and `id` is always kept.

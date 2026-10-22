@@ -1031,7 +1031,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
  *  `available-commands` event onto the session descriptor. */
 type RawSessionCommand = NonNullable<SessionDescriptor["availableCommands"]>[number]
 
-/** One `session_commands` row — the FLATTENED command entry: the harness'
+/** One `session_commands` row, the FLATTENED command entry: the harness'
  *  nested `input.hint` / `_meta.scope` become top-level `hint` / `scope`, and
  *  the original blobs are kept alongside for `full: true`. */
 export interface SessionCommandItem {
@@ -2579,7 +2579,7 @@ export function registerSessionTools(
   // here; the raw list (60+ entries on a skill-heavy harness) never travels
   // inside a spawn answer again.
   //
-  // Rows are COMPACT by default (`name`/`description`/`hint`/`scope` — the
+  // Rows are COMPACT by default (`name`/`description`/`hint`/`scope`, the
   // exact fields the VS Code transcript panel reads); `full: true` adds the
   // harness' own `input` / `_meta` blobs back. `keyOf` is the command NAME,
   // so the cursor stays stable across calls.
@@ -2598,7 +2598,7 @@ export function registerSessionTools(
       .optional()
       .describe(
         "Keep only the commands with this exact scope (the harness' own " +
-          "scope label — \"user\", \"project\", …).",
+          "scope label, \"user\", \"project\", …).",
       ),
   })
   registerPaginatedListTool<z.infer<typeof sessionCommandsSchema>, SessionCommandItem>({
@@ -2616,7 +2616,7 @@ export function registerSessionTools(
         throw new Error(`no session "${sessionRefQuery(input)}" found`)
       }
       // Subtree scoping (WP4/WP5): same gate as session_capabilities /
-      // session_queue_list — a scoped orchestrator only sees its own subtree.
+      // session_queue_list, a scoped orchestrator only sees its own subtree.
       if (callerScope) {
         const subtree = collectSubtree(
           callerScope.ownerSessionId,

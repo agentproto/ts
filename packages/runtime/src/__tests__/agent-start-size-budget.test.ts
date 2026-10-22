@@ -4,7 +4,7 @@
  * The reference session is the realistic worst case: a harness that
  * advertises 60 slash-commands AND a spawn that carried the repo's
  * AGENTS.md body. On the pre-projection code that answer weighed 29 217
- * bytes (measured — see night-deliverables/descriptor-compact/PLAN.md §2.2);
+ * bytes (measured, see night-deliverables/descriptor-compact/PLAN.md §2.2);
  * the compact projection must keep it under 1 500.
  *
  * The budget is the point of the projection: it is the guard that fails if
@@ -23,13 +23,13 @@ import { registerAgentTools } from "../agent-tools.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
-/** The repo's own AGENTS.md — the spawn's system-prompt body. */
+/** The repo's own AGENTS.md, the spawn's system-prompt body. */
 const AGENTS_MD = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..", "AGENTS.md"),
   "utf8",
 )
 
-/** 60 slash-commands — a skill-heavy harness. */
+/** 60 slash-commands, a skill-heavy harness. */
 const COMMANDS = Array.from({ length: 60 }, (_, i) => ({
   name: `/skill-${i}`,
   description:
@@ -40,7 +40,7 @@ const COMMANDS = Array.from({ length: 60 }, (_, i) => ({
 /** The budget for the default (compact) answer. */
 const DEFAULT_BUDGET_BYTES = 1500
 
-/** The pre-projection answer for this reference — measured, not guessed. */
+/** The pre-projection answer for this reference, measured, not guessed. */
 const RAW_REFERENCE_BYTES = 29_217
 
 function textOf(result: unknown): string {
@@ -82,7 +82,7 @@ async function setup(): Promise<{ client: Client }> {
   return { client }
 }
 
-describe("agent_start — response size budget", () => {
+describe("agent_start, response size budget", () => {
   it("keeps the default answer under 1500 bytes (60 commands + AGENTS.md)", async () => {
     const { client } = await setup()
     const text = textOf(
@@ -98,7 +98,7 @@ describe("agent_start — response size budget", () => {
     ).toBeLessThanOrEqual(DEFAULT_BUDGET_BYTES)
   })
 
-  it("the reference IS heavy — the raw answer stays big (the escape hatch works)", async () => {
+  it("the reference IS heavy, the raw answer stays big (the escape hatch works)", async () => {
     const { client } = await setup()
     const text = textOf(
       await client.callTool({
