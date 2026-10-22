@@ -1,5 +1,5 @@
 /**
- * Coverage for the `session_transcript` MCP tool — the read-side of the
+ * Coverage for the `session_transcript` MCP tool, the read-side of the
  * transcript gap: `session_list` / `session_context_status` knew a session
  * existed but nothing served its actual conversation back. The tool reuses
  * the same normalised read path as `agentproto sessions export`, so the shape

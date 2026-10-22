@@ -2051,7 +2051,7 @@ export function registerSessionTools(
   // ── session_transcript ──────────────────────────────────────────
   server.tool(
     "session_transcript",
-    "Return one session's conversation transcript — the actual messages the " +
+    "Return one session's conversation transcript, the actual messages the " +
       "daemon records for every session (local or sandbox). Unlike " +
       "`session_list` / `session_context_status` (which only know a session " +
       "exists) or `summarize_session` (one last line), this serves the turns: " +
@@ -2100,7 +2100,7 @@ export function registerSessionTools(
                 text: JSON.stringify({
                   error: "orchestrator_session_out_of_scope",
                   message:
-                    `session_transcript: session "${desc.id}" is not in your subtree — ` +
+                    `session_transcript: session "${desc.id}" is not in your subtree, ` +
                     "a scoped orchestrator can only inspect sessions it (transitively) spawned.",
                   sessionId: desc.id,
                 }),

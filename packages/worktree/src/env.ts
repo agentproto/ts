@@ -189,7 +189,7 @@ export function resolveWorktreesTurboCacheDir(): string {
   return join(homedir(), ".agentproto", "turbo-cache")
 }
 
-/** Explicit override for {@link resolveWorktreesTurboConcurrency} — a
+/** Explicit override for {@link resolveWorktreesTurboConcurrency}, a
  *  daemon-level pin, same naming shape as `AGENTPROTO_WORKTREES_TURBO_CACHE_DIR`
  *  above. */
 export const WORKTREES_TURBO_CONCURRENCY_ENV =
@@ -197,11 +197,11 @@ export const WORKTREES_TURBO_CONCURRENCY_ENV =
 
 /**
  * Resolve the turbo/pnpm task-concurrency cap `runSetup` points every
- * provisioned worktree's setup hooks at (`TURBO_CONCURRENCY` — turbo reads it
+ * provisioned worktree's setup hooks at (`TURBO_CONCURRENCY`, turbo reads it
  * for its own `--concurrency`, and pnpm's `-r` honours `TURBO_CONCURRENCY`
  * too). Why: a sandbox box is small (e2b/computer microVMs are ~4 vCPU), but
  * `pnpm -r check-types` / `pnpm -r test` fan out one task per package with no
- * cap — on a 4-core box that launches dozens of `tsc`/`vitest` processes at
+ * cap, on a 4-core box that launches dozens of `tsc`/`vitest` processes at
  * once, oversubscribing to 300%+ and thrashing (seen live: 2 `tsc --noEmit`
  * workers alone pinned 313% CPU on a 4-core e2b box). Capping concurrency to
  * the box keeps the gate fast instead of swap-bound.
@@ -210,13 +210,13 @@ export const WORKTREES_TURBO_CONCURRENCY_ENV =
  * (no cacheable artifact) and depends on `^build`, so every package's
  * `tsc --noEmit` runs in parallel with nothing to gate it. `test` is partly
  * protected by each package's `VITEST_MAX_WORKERS`, but the *package-level*
- * fan-out (`pnpm -r`) is not — this cap covers that fan-out for both.
+ * fan-out (`pnpm -r`) is not, this cap covers that fan-out for both.
  *
  * Default is deliberately low (2): it is safe on the smallest boxes and still
  * saturates a 4-core one without oversubscription. Precedence:
- *   1. `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY` — explicit override.
- *   2. a bare `TURBO_CONCURRENCY` already in this process's env — respected.
- *   3. `2` — a real, single default (today's behaviour is uncapped).
+ *   1. `AGENTPROTO_WORKTREES_TURBO_CONCURRENCY`, explicit override.
+ *   2. a bare `TURBO_CONCURRENCY` already in this process's env, respected.
+ *   3. `2`, a real, single default (today's behaviour is uncapped).
  */
 export function resolveWorktreesTurboConcurrency(): number {
   const pinned = process.env[WORKTREES_TURBO_CONCURRENCY_ENV]

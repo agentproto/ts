@@ -73,12 +73,12 @@ Each rung has exactly one owner — don't reach into the next one.
     over `pnpm test` to avoid saturating the machine with 24+ concurrent vitest processes.
     Running a single package's tests is fast and isolates issues.
 
-    **`check-types` is the heavier, uncapped half — scope it the same way.**
+    **`check-types` is the heavier, uncapped half, scope it the same way.**
     `pnpm -r check-types` fans out one `tsc --noEmit` per package with **no**
     worker cap (unlike `test`, which each package bounds via `VITEST_MAX_WORKERS`),
     and `turbo.json` declares `check-types` with `outputs: []`, so it produces
     nothing cacheable to gate the fan-out. On a small sandbox box (e2b/computer
-    microVMs are ~4 vCPU) this oversubscribes instantly — a live 4-core e2b box
+    microVMs are ~4 vCPU) this oversubscribes instantly, a live 4-core e2b box
     was measured pinning 313% CPU on just two `tsc` workers. So during iteration
     prefer `pnpm --filter @agentproto/<pkg> check-types` over the repo-wide run,
     and never run the full `pnpm check-types` on a box smaller than your code's
@@ -291,18 +291,18 @@ real surface, not a placeholder for something else.
 
 - **Reading a session's actual conversation.** `session_list` /
   `session_context_status` only tell you a session *exists* (status, tokens,
-  cwd) — they do not serve its messages. `summarize_session` returns a single
+  cwd), they do not serve its messages. `summarize_session` returns a single
   last-output line. To read the real transcript of any session (local **or**
-  sandbox — the daemon records `events.jsonl` for all of them), use one of:
+  sandbox, the daemon records `events.jsonl` for all of them), use one of:
   - the MCP tool **`session_transcript`** (by id/name, optional `limit` for a
-    tail window) — same normalised read path as the CLI/HTTP export;
+    tail window), same normalised read path as the CLI/HTTP export;
   - the CLI **`agentproto sessions export <id>`** (`--json` / `-o file`),
     served over HTTP at `GET /sessions/:id/export`;
   - `agentproto brain query "<text>"` for keyword/semantic search across every
     workspace's transcript corpus. Use `session_transcript` when you need the
     literal turns of one known session, `brain` when you're hunting across
     many. Note: `sandbox_exec` reads a sandbox box's *process tree* (what an
-    agent is running), not its conversation — for the conversation, use
+    agent is running), not its conversation, for the conversation, use
     `session_transcript` against that session's id.
 
 <!-- BEGIN:turborepo-agent-rules -->
