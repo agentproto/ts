@@ -310,6 +310,18 @@ describe("chrome-live: config", () => {
     await instance.stop()
   })
 
+  it("rediscovers after a failed attach instead of reusing the cached browser UUID", async () => {
+    const f = await fake({ browserId: "uuid-before-restart", consent: "reject" })
+    const p = provider(f)
+    expect(await codeOf(p.launch({}, {}))).toBe(BROWSER_CONSENT_TIMEOUT_CODE)
+    expect(f.httpRequests).toBe(1)
+    f.options.consent = "allow"
+    const instance = await p.launch({}, {})
+    expect(f.httpRequests).toBe(2)
+    expect(instance.endpoints.cdp).toBe(`ws://127.0.0.1:${f.port}/devtools/browser/uuid-before-restart`)
+    await instance.stop()
+  })
+
   it("discover: false restores the legacy direct fixed-URL connect", async () => {
     const f = await fake()
     const instance = await provider(f, { discover: false }).launch({}, {})

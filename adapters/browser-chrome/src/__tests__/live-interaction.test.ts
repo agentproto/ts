@@ -32,6 +32,19 @@ describe("chrome-live: pressKeyOwnedTarget", () => {
     await instance.stop()
   })
 
+  it("maps digits and punctuation to their canonical DOM code", async () => {
+    const { f, instance } = await owned()
+    await instance.pressKeyOwnedTarget({ key: "1" })
+    await instance.pressKeyOwnedTarget({ key: "/" })
+    expect(f.keyEvents).toEqual([
+      expect.objectContaining({ type: "keyDown", key: "1", code: "Digit1" }),
+      expect.objectContaining({ type: "keyUp", key: "1", code: "Digit1" }),
+      expect.objectContaining({ type: "keyDown", key: "/", code: "Slash" }),
+      expect.objectContaining({ type: "keyUp", key: "/", code: "Slash" }),
+    ])
+    await instance.stop()
+  })
+
   it("supports navigation keys, repeats, modifiers and an optional focus selector", async () => {
     const { f, instance } = await owned()
     await instance.pressKeyOwnedTarget({ key: "ArrowDown", selector: "#list", count: 3, modifiers: ["Shift"] })
@@ -53,7 +66,6 @@ describe("chrome-live: selectOptionOwnedTarget", () => {
   it("selects by value and returns the committed value/label/index", async () => {
     const { f, instance } = await owned({
       selectOptions: [{ value: "fr", label: "France" }, { value: "de", label: "Allemagne" }],
-      selectValue: "de",
     })
     const result = await instance.selectOptionOwnedTarget({ selector: "#country", value: "de" })
     expect(result).toEqual({ targetId: expect.any(String), value: "de", label: "Allemagne", index: 1 })
@@ -65,8 +77,12 @@ describe("chrome-live: selectOptionOwnedTarget", () => {
     const { instance } = await owned({
       selectOptions: [{ value: "fr", label: "France" }, { value: "de", label: "Allemagne" }],
     })
-    await expect(instance.selectOptionOwnedTarget({ selector: "#country", label: "Allemagne" })).resolves.toMatchObject({ value: "fr" })
-    await expect(instance.selectOptionOwnedTarget({ selector: "#country", index: 1 })).resolves.toMatchObject({ value: "fr" })
+    await expect(instance.selectOptionOwnedTarget({ selector: "#country", label: "Allemagne" })).resolves.toMatchObject({
+      value: "de",
+      label: "Allemagne",
+      index: 1,
+    })
+    await expect(instance.selectOptionOwnedTarget({ selector: "#country", index: 1 })).resolves.toMatchObject({ value: "de", index: 1 })
     await instance.stop()
   })
 
@@ -80,7 +96,6 @@ describe("chrome-live: selectOptionOwnedTarget", () => {
   it("reports the available options when the value is missing, and errors on an unknown selector", async () => {
     const { instance } = await owned({
       selectOptions: [{ value: "fr", label: "France" }],
-      selectValue: "zz",
     })
     await expect(instance.selectOptionOwnedTarget({ selector: "#country", value: "zz" })).rejects.toThrow(/no option matching.*fr/)
     await instance.stop()
@@ -105,6 +120,14 @@ describe("chrome-live: waitForOwnedTarget", () => {
     await expect(
       instance.waitForOwnedTarget({ selector: "#never", state: "visible", timeoutMs: 50, pollMs: 5 }),
     ).rejects.toThrow(/timed out after 50ms waiting for #never to become visible/)
+    await instance.stop()
+  })
+
+  it("waits for page-wide text with no selector", async () => {
+    const { f, instance } = await owned({ waitMisses: 2, pageText: "All systems ready" })
+    const result = await instance.waitForOwnedTarget({ state: "text", text: "systems ready", timeoutMs: 1_000, pollMs: 5 })
+    expect(result).toMatchObject({ targetId: expect.any(String), state: "text", matched: true })
+    expect(f.commands.filter((c) => c.method === "Runtime.evaluate" && String(c.params?.expression).includes("__chromeLiveWait")).length).toBe(3)
     await instance.stop()
   })
 

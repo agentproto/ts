@@ -31,10 +31,10 @@ export interface FakeChromeOptions {
   browserId?: string
   /** `browser_wait_for` polling: number of false answers before the condition matches. Default 0 (matches at once); use a large number to exercise a timeout. */
   waitMisses?: number
+  /** Page-wide text (`document.body.innerText`) a selector-less `state: "text"` wait sees. Default "". */
+  pageText?: string
   /** Simulated `<select>` options for `browser_select`. */
   selectOptions?: Array<{ value: string; label: string }>
-  /** Simulated current `<select>` value; defaults to the first option. */
-  selectValue?: string
 }
 
 export interface FakeChrome {
@@ -253,13 +253,26 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
               return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: false, reason: "no-selector" } } })
             }
             const options = fake.options.selectOptions ?? [{ value: "a", label: "Alpha" }, { value: "b", label: "Bravo" }]
-            const wanted = fake.options.selectValue ?? options[0]?.value ?? ""
-            const index = options.findIndex((o) => o.value === wanted)
+            // Evaluate the matcher the generated expression asked for, so a
+            // wrong label/index matcher cannot be masked by a preset value.
+            const valueMatch = expression.match(/o\.value === ("(?:[^"\\]|\\.)*")/)
+            const labelMatch = expression.match(/\(o\.label \?\? o\.text\) === ("(?:[^"\\]|\\.)*")/)
+            const indexMatch = expression.match(/i === (-?\d+)/)
+            let index = -1
+            if (valueMatch) {
+              const wanted = JSON.parse(valueMatch[1] as string) as string
+              index = options.findIndex((o) => o.value === wanted)
+            } else if (labelMatch) {
+              const wanted = JSON.parse(labelMatch[1] as string) as string
+              index = options.findIndex((o) => o.label === wanted)
+            } else if (indexMatch) {
+              index = Number(indexMatch[1])
+            }
             return reply(msg.id, msg.sessionId, {
               result: {
                 type: "object",
-                value: index >= 0
-                  ? { ok: true, value: wanted, label: options[index]?.label, index }
+                value: index >= 0 && index < options.length
+                  ? { ok: true, value: options[index]?.value, label: options[index]?.label, index }
                   : { ok: false, reason: "no-option", options },
               },
             })
@@ -270,6 +283,14 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
             if (misses > 0) {
               fake.options.waitMisses = misses - 1
               return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: false } } })
+            }
+            // The selector-less branch reads document.body.innerText: answer
+            // from the simulated page text rather than blanket-matching.
+            if (expression.includes("document.body?.innerText")) {
+              const textMatch = expression.match(/\.includes\(("(?:[^"\\]|\\.)*")\)/)
+              const wanted = textMatch ? (JSON.parse(textMatch[1] as string) as string) : ""
+              const ok = wanted !== "" && (fake.options.pageText ?? "").includes(wanted)
+              return reply(msg.id, msg.sessionId, { result: { type: "object", value: ok ? { ok: true, state: "text" } : { ok: false } } })
             }
             return reply(msg.id, msg.sessionId, { result: { type: "object", value: { ok: true, state: "visible" } } })
           }

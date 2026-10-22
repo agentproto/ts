@@ -1395,7 +1395,7 @@ export function registerBrowserTools(
         .enum(["attached", "visible", "enabled", "text"])
         .optional()
         .describe("Condition to wait for. Default 'visible' (or 'text' when `text` is given)."),
-      text: z.string().optional().describe("Text that must be present. Required for state 'text'."),
+      text: z.string().min(1).optional().describe("Text that must be present. Required for state 'text'."),
       timeoutMs: z.number().int().min(0).optional().describe("Give up after this many ms. Default 10000."),
       pollMs: z.number().int().min(1).optional().describe("Poll interval in ms. Default 100."),
     },

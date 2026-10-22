@@ -409,6 +409,49 @@ const KEY_ALIASES: Record<string, string> = {
 
 const MODIFIER_BITS: Record<ChromeLiveKeyModifier, number> = { Alt: 1, Control: 2, Meta: 4, Shift: 8 }
 
+/** DOM `KeyboardEvent.code` for printable non-letter characters (shifted forms map to their base key). */
+const PRINTABLE_CODES: Record<string, string> = {
+  "`": "Backquote",
+  "~": "Backquote",
+  "-": "Minus",
+  "_": "Minus",
+  "=": "Equal",
+  "+": "Equal",
+  "[": "BracketLeft",
+  "{": "BracketLeft",
+  "]": "BracketRight",
+  "}": "BracketRight",
+  "\\": "Backslash",
+  "|": "Backslash",
+  ";": "Semicolon",
+  ":": "Semicolon",
+  "'": "Quote",
+  '"': "Quote",
+  ",": "Comma",
+  "<": "Comma",
+  ".": "Period",
+  ">": "Period",
+  "/": "Slash",
+  "?": "Slash",
+  "!": "Digit1",
+  "@": "Digit2",
+  "#": "Digit3",
+  $: "Digit4",
+  "%": "Digit5",
+  "^": "Digit6",
+  "&": "Digit7",
+  "*": "Digit8",
+  "(": "Digit9",
+  ")": "Digit0",
+}
+
+function codeForPrintable(ch: string): string {
+  if (/^[a-z]$/i.test(ch)) return `Key${ch.toUpperCase()}`
+  if (/^[0-9]$/.test(ch)) return `Digit${ch}`
+  if (ch === " ") return "Space"
+  return PRINTABLE_CODES[ch] ?? ch
+}
+
 function keyInfoOf(name: string): { key: string; code: string; vk: number; text?: string } | undefined {
   const canonical = KEY_ALIASES[name] ?? name
   const known = KEY_TABLE[canonical]
@@ -417,7 +460,7 @@ function keyInfoOf(name: string): { key: string; code: string; vk: number; text?
     const ch = canonical
     const upper = ch.toUpperCase()
     const vk = /^[a-z]$/i.test(ch) ? upper.charCodeAt(0) : ch.charCodeAt(0)
-    return { key: ch, code: /^[a-z]$/i.test(ch) ? `Key${upper}` : ch === " " ? "Space" : ch, vk, text: ch }
+    return { key: ch, code: codeForPrintable(ch), vk, text: ch }
   }
   return undefined
 }
@@ -1176,37 +1219,51 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         const timeoutMs = options.timeoutMs ?? 10_000
         if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new Error("[chrome-live] timeoutMs must be a non-negative number")
         const pollMs = Math.max(1, options.pollMs ?? 100)
-        const selectorExpr = options.selector ? `document.querySelector(${JSON.stringify(options.selector)})` : "null"
+        const stateExpr = JSON.stringify(state)
         const textExpr = JSON.stringify(options.text ?? "")
-        const check = `(() => {
-          const el = ${selectorExpr}
+        // A text wait without a selector is a PAGE-WIDE wait: read
+        // document.body.innerText instead of short-circuiting on a missing
+        // element. Everything else needs the selected element.
+        const check = options.selector
+          ? `(() => {
+          const el = document.querySelector(${JSON.stringify(options.selector)})
           if (el === null) return { ok: false, reason: "no-selector" }
-          if (${JSON.stringify(state)} === "text") {
-            const haystack = el ? (el.textContent ?? "") : (document.body?.innerText ?? "")
+          if (${stateExpr} === "text") {
+            const haystack = el.textContent ?? ""
             return { ok: haystack.includes(${textExpr}) }
           }
-          if (${JSON.stringify(state)} === "attached") return { ok: true }
-          if (${JSON.stringify(state)} === "enabled") return { ok: !el.disabled }
+          if (${stateExpr} === "attached") return { ok: true }
+          if (${stateExpr} === "enabled") return { ok: !el.disabled }
           const rects = el.getClientRects()
           const style = getComputedStyle(el)
           return { ok: rects.length > 0 && style.visibility !== "hidden" && style.display !== "none" }
         })() /* __chromeLiveWait */`
+          : `(() => {
+          if (${stateExpr} !== "text") return { ok: false, reason: "no-selector" }
+          return { ok: (document.body?.innerText ?? "").includes(${textExpr}) }
+        })() /* __chromeLiveWait */`
         const started = Date.now()
         const deadline = started + timeoutMs
+        const label = state === "text" ? `text ${JSON.stringify(options.text)} to appear` : `${options.selector} to become ${state}`
         for (;;) {
-          const result = await driver.evaluate<{ ok: boolean }>({
-            expression: check,
-            awaitPromise: false,
-            returnByValue: true,
-            maxResultBytes: 4_000,
-          })
-          if (result.value?.ok === true) return { targetId: driver.target.id, state, matched: true, elapsedMs: Date.now() - started }
           const remaining = deadline - Date.now()
-          if (remaining <= 0) {
-            const label = state === "text" ? `text ${JSON.stringify(options.text)} to appear` : `${options.selector} to become ${state}`
-            throw new Error(`[chrome-live] timed out after ${timeoutMs}ms waiting for ${label}`)
-          }
-          await sleep(Math.min(pollMs, remaining))
+          if (remaining <= 0) throw new Error(`[chrome-live] timed out after ${timeoutMs}ms waiting for ${label}`)
+          // Bound each evaluation by the remaining deadline so a hung
+          // renderer cannot push the wait past `timeoutMs`.
+          const result = await withTimeout(
+            driver.evaluate<{ ok: boolean }>({
+              expression: check,
+              awaitPromise: false,
+              returnByValue: true,
+              maxResultBytes: 4_000,
+            }),
+            Math.max(1, remaining),
+            () => new Error(`[chrome-live] timed out after ${timeoutMs}ms waiting for ${label}`),
+          )
+          if (result.value?.ok === true) return { targetId: driver.target.id, state, matched: true, elapsedMs: Date.now() - started }
+          const left = deadline - Date.now()
+          if (left <= 0) throw new Error(`[chrome-live] timed out after ${timeoutMs}ms waiting for ${label}`)
+          await sleep(Math.min(pollMs, left))
         }
       },
 
@@ -1444,7 +1501,16 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
     // Attach-only from here. A failure surfaces the typed error with an
     // actionable message; it NEVER silently switches to a blank dedicated
     // browser (that made an agent believe it drove the user's real Chrome).
-    return await connectEntry(await resolveUrl(opts), ctx)
+    try {
+      return await connectEntry(await resolveUrl(opts), ctx)
+    } catch (err) {
+      // The discovered URL now carries a per-launch browser UUID. If the
+      // attach/connect fails (e.g. Chrome restarted before any onClose), drop
+      // the cached value so the next launch rediscovers instead of dialing a
+      // dead endpoint forever.
+      discovering.delete(endpoint(opts).port)
+      throw err
+    }
   }
 
   return defineBrowser({
