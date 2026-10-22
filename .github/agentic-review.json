@@ -1,6 +1,6 @@
 {
   "blocking": true,
-  "model": "opencode/deepseek-v4.1-flash-free",
+  "model": "opencode-go/deepseek-v4.1-flash",
   "fixDelivery": "commit",
   "botMention": "@agentproto-bot",
   "maxFixIterations": 3,
@@ -107,12 +107,9 @@
     "review": {
       "env": "AGENT_REVIEW_PRESETS",
       "presets": [
-        "opencode-deepseek-free",
-        "opencode-mimo-free",
-        "opencode-go-longcat-free",
-        "opencode-step5-free",
         "opencode-go-deepseek-flash",
-        "claude-cloud"
+        "opencode-deepseek-free",
+        "opencode-mimo-free"
       ]
     },
     "release-notes": {
@@ -132,7 +129,7 @@
   },
   "reviewerAdapter": "opencode",
   "reviewerAuthMode": "api-key",
-  "reviewerModel": "opencode/mimo-v2.6-flash-free",
+  "reviewerModel": "opencode-go/deepseek-v4.1-flash",
   "reviewerSandbox": {
     "provider": "e2b",
     "lifecycle": {
@@ -182,7 +179,8 @@
       "skills": [
         "aip-conventions"
       ],
-      "fixDelivery": "pr"
+      "fixDelivery": "pr",
+      "reviewerModel": "opencode-go/deepseek-v4.1-flash"
     },
     "pr": {
       "skills": [

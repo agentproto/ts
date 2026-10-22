@@ -1020,7 +1020,7 @@ jobs:
         id: config
         if: steps.prstate.outputs.skip != 'true'
         env:
-          AGENT_REVIEW_PRESETS: ${{ vars.AGENT_REVIEW_PRESETS }}
+          AGENT_REVIEW_PRESETS: opencode-go-deepseek-flash,opencode-deepseek-free,opencode-mimo-free
         run: |
           if [ -f .github/agentic-review.json ]; then
             CONFIG=$(node scripts/resolve-agent-action.mjs review --review-config)
@@ -1036,16 +1036,29 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true'
+        env:
+          KEY_GO_WS03: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+          KEY_WS02: ${{ secrets.OPENCODE_API_KEY_WS02 }}
+          KEY_WS03: ${{ secrets.OPENCODE_API_KEY_WS03 }}
+          KEY_GO: ${{ secrets.OPENCODE_GO_API_KEY }}
+          KEY_DEFAULT: ${{ secrets.OPENCODE_API_KEY }}
+          CONFIG: ${{ steps.config.outputs.json }}
         run: |
-          # The default preset uses OpenCode's hosted free routes. The preset
-          # remains configurable; this step only checks the credential needed
-          # by the currently selected automatic lane.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_GO_API_KEY }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          PRIMARY_MODEL=$(printf '%s' "$CONFIG" | jq -r '.reviewerModel // ""')
+          # The primary preset is the OpenCode Go subscription route
+          # (opencode-go/deepseek-v4.1-flash). It MUST use the DeveloperWs003
+          # (ws03) key: a missing key is a hard failure, not a silent downgrade
+          # to a free Zen id or another Go account.
+          if [[ "$PRIMARY_MODEL" == opencode-go/* ]] && [ -z "$KEY_GO_WS03" ]; then
+            echo "::error::Primary review model '$PRIMARY_MODEL' requires secrets.OPENCODE_GO_API_KEY_WS03 (opencode-developerws003 Go subscription key). Refusing to run."
+            exit 1
+          fi
+          if [ -n "$KEY_GO_WS03" ] || [ -n "$KEY_WS03" ] || [ -n "$KEY_WS02" ] || [ -n "$KEY_GO" ] || [ -n "$KEY_DEFAULT" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
-            echo "Using agentproto lane (OpenCode free model)"
+            echo "Using agentproto lane (primary: $PRIMARY_MODEL)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
+            echo "::error::No OpenCode credential (OPENCODE_GO_API_KEY_WS03/OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -1260,12 +1273,13 @@ jobs:
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # The key authenticates OpenCode. It is selected by the resolved
-          # model's route (opencode-go/* -> a Go-credit key, opencode/* -> a Zen
-          # key). The resolver step above fails closed unless the model is a
-          # zero-priced free id OR an owner-sanctioned metered id.
+          # model's route: opencode-go/* -> the ws03 Go subscription key
+          # (OPENCODE_GO_API_KEY_WS03, profile opencode-developerws003),
+          # opencode/* -> a Zen key. The mode step above refuses to run a Go
+          # model without that exact secret.
           auth-mode: ${{ steps.cliver.outputs.auth-mode }}
-          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
           # e2b microVM sandbox for the reviewer session (reviewerSandbox in
@@ -1675,8 +1689,8 @@ jobs:
         with:
           adapter: opencode
           auth-mode: api-key
-          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
-          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          api-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
+          provider-key: ${{ (startsWith(steps.cliver.outputs.fallback-model, 'opencode-go/') && secrets.OPENCODE_GO_API_KEY_WS03) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
@@ -2359,42 +2373,57 @@ jobs:
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
 
+      # Bound the loop exactly as scripts/apply-review.mjs used to: count the
+      # auto-fix commits already on the branch and, at the budget, escalate to
+      # a human instead of spending another model turn.
+      - name: Check fix iteration budget
+        id: budget
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          MAX_ITER=$(jq -r '.commands.fix.maxFixIterations // .maxFixIterations // 3' .github/agentic-review.json)
+          ITER=$(git log --oneline --grep="auto-fix from review" origin/main..HEAD | wc -l | tr -d ' ')
+          echo "exhausted=false" >> "$GITHUB_OUTPUT"
+          echo "Fix iterations already on branch: $ITER / $MAX_ITER"
+          if [ "$ITER" -ge "$MAX_ITER" ] 2>/dev/null; then
+            echo "exhausted=true" >> "$GITHUB_OUTPUT"
+            BODY="**Auto-fix loop exhausted** after $MAX_ITER iterations without approval. A human must now address the remaining comments (admins: gh pr merge --admin $PR_NUMBER)."
+            gh pr comment "$PR_NUMBER" --body "$BODY" || true
+            echo "::warning::Auto-fix loop exhausted ($ITER >= $MAX_ITER) - escalated to a human."
+          fi
+
       # The auto-fix loop is pinned to commit-mode (push onto the PR branch) so
       # the review→fix→re-review cycle stays tight. Stacked-PR delivery is an
       # on-demand choice via `/fix --pr` (config.fixDelivery sets that default).
       #
-      # Two backends. Preferred is a managed Claude Code Cloud session (runs on
-      # the Claude subscription, not the metered ANTHROPIC_API_KEY) — the cloud
-      # box cannot write our tree, so it returns the fixes as a unified diff
-      # (scripts/apply-review-cloud.mjs) which is validated and applied locally.
-      # Fallback is the direct Anthropic Messages API tool-loop
-      # (scripts/apply-review.mjs), which needs a real Anthropic `fixModel` —
-      # never the reviewer's preset-driven OpenCode model.
-      - name: Choose review fixer backend
-        id: fixer
-        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
-        env:
-          HAS_DEV_API_KEY: ${{ secrets.DEV_ANTHROPIC_API_KEY != '' }}
-          HAS_CLOUD_TOKENS: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN != '' && secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
-        run: |
-          # DEV_ANTHROPIC_API_KEY set = use the API fixer for now (the cloud
-          # OAuth login returns 403 on session create). Delete that secret to
-          # go back to the Claude Code Cloud backend.
-          if [ "$HAS_DEV_API_KEY" = "true" ]; then
-            echo "has-cloud=false" >> "$GITHUB_OUTPUT"
-            echo "DEV_ANTHROPIC_API_KEY set — using the Anthropic API fixer."
-          elif [ "$HAS_CLOUD_TOKENS" = "true" ]; then
-            echo "has-cloud=true" >> "$GITHUB_OUTPUT"
-            echo "Cloud fixer backend selected (Claude Code Cloud)."
-          else
-            echo "has-cloud=false" >> "$GITHUB_OUTPUT"
-            echo "No Claude Cloud credentials — using the Anthropic API fixer."
-          fi
-
-      - name: Build the agentproto CLI for the cloud fixer
+      # Single backend: the OpenCode Go subscription
+      # (opencode-go/deepseek-v4.1-flash, profile opencode-developerws003). It
+      # runs on the CI checkout through the same agentproto lane as the
+      # reviewer, in the host (no e2b) so the model can write the files the job
+      # commits. No Anthropic API key and no Claude Code Cloud session is used.
+      - name: Resolve fixer model
+        id: fixcfg
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.fixer.outputs.has-cloud == 'true'
+          steps.budget.outputs.exhausted != 'true'
+        env:
+          KEY_GO_WS03: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+        run: |
+          MODEL=$(jq -r '.commands.fix.reviewerModel // .reviewerModel // "opencode-go/deepseek-v4.1-flash"' .github/agentic-review.json)
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          # Fail closed: the fixer must run on the ws03 Go subscription key.
+          if [[ "$MODEL" == opencode-go/* ]] && [ -z "$KEY_GO_WS03" ]; then
+            echo "::error::Auto-fix model '$MODEL' requires secrets.OPENCODE_GO_API_KEY_WS03 (opencode-developerws003 Go subscription key). Refusing to run."
+            exit 1
+          fi
+          echo "Auto-fix model: $MODEL"
+
+      - name: Build the agentproto CLI + OpenCode adapter for the fixer
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.budget.outputs.exhausted != 'true'
         env:
           TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
           TURBO_TEAM: agentproto-ts
@@ -2402,37 +2431,42 @@ jobs:
           TURBO_SCM_BASE: origin/main
         run: |
           pnpm install --frozen-lockfile
-          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...
-          npm install --global @anthropic-ai/claude-code@2.1.300
+          pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
 
-      - name: Apply review fixes (Claude Cloud)
+      - name: Apply review fixes (OpenCode Go, ws03)
+        id: fixer-lane
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.fixer.outputs.has-cloud == 'true'
+          steps.budget.outputs.exhausted != 'true'
+        uses: ./.github/actions/agentproto-run
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_OAUTH_TOKEN: ${{ secrets.CLAUDE_CLOUD_OAUTH_TOKEN }}
-          CLAUDE_CLOUD_ORG_UUID: ${{ secrets.CLAUDE_CLOUD_ORG_UUID }}
-          # App token so the fixer can read the review + diff via the GitHub API.
+          # The daemon spawns the adapter with this env inherited, so the host
+          # session's gh CLI can read the PR and its reviews.
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           GH_TOKEN: ${{ steps.setup.outputs.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: node scripts/apply-review-cloud.mjs --delivery commit
-
-      - name: Apply review fixes (Anthropic API)
-        if: |
-          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.fixer.outputs.has-cloud != 'true'
-        run: node scripts/apply-review.mjs --delivery commit
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.DEV_ANTHROPIC_API_KEY || secrets.ANTHROPIC_API_KEY }}
-          # App token so any escalation comment is authored by the bot identity.
-          GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+        with:
+          adapter: opencode
+          auth-mode: api-key
+          # ws03 Go subscription key. Never a Zen key, never another Go org.
+          api-key: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+          provider-key: ${{ secrets.OPENCODE_GO_API_KEY_WS03 }}
+          provider-key-env: OPENCODE_API_KEY
+          model: ${{ steps.fixcfg.outputs.model }}
+          workflow-path: .github/agentproto-workflows/review-fix/WORKFLOW.md
+          cli-source: workspace
+          cli-version: 0.8.0
+          workflow-input: |
+            {
+              "prNumber": ${{ github.event.pull_request.number }},
+              "baseRef": "${{ github.base_ref }}",
+              "repo": "${{ github.repository }}"
+            }
+          timeout-minutes: 45
 
       - name: Commit and push fixes
-        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        if: |
+          steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
+          steps.budget.outputs.exhausted != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
