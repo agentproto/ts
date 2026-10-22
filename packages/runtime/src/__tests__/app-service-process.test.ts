@@ -440,10 +440,17 @@ describe("cleanupLegacyServicePidFile (pre-managed-process upgrade)", () => {
     const result = await cleanupLegacyServicePidFile(dir, "web", "sleep")
     expect(result).toMatchObject({ killed: true })
     expect(existsSync(file)).toBe(false)
-    await new Promise<void>(resolve => {
-      if (child!.exitCode !== null) return resolve()
-      child!.once("exit", () => resolve())
-    })
+    // Poll for the signal to land — don't race the child's own `exit` event.
+    let alive = true
+    for (let i = 0; i < 100 && alive; i++) {
+      try {
+        process.kill(child!.pid!, 0)
+        await new Promise(r => setTimeout(r, 20))
+      } catch {
+        alive = false
+      }
+    }
+    expect(alive).toBe(false)
   })
 
   it.skipIf(process.platform !== "linux")("keeps the file when a live pid does not match the entry", async () => {
