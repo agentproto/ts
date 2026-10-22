@@ -127,7 +127,6 @@ describe("decideAutoCompact", () => {
 const idleSnapshot: WorkInProgressSnapshot = {
   backgroundTaskOutstanding: false,
   pendingToolCall: false,
-  awaitingInput: false,
   lastTurnOutcome: "completed",
 }
 
@@ -135,7 +134,6 @@ const idleSnapshot: WorkInProgressSnapshot = {
 const workingSnapshot: WorkInProgressSnapshot = {
   backgroundTaskOutstanding: false,
   pendingToolCall: false,
-  awaitingInput: false,
   lastTurnOutcome: "error",
 }
 
