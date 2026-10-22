@@ -1,7 +1,7 @@
 # Agent harness
 
 The repo ships an AI agent that reviews PRs, fixes review comments, opens PRs,
-and answers questions — driven by GitHub Actions + agentproto's agent lanes.
+and answers questions. Driven by GitHub Actions + agentproto's agent lanes.
 The automatic review and auto-fix run on the OpenCode Go subscription
 (`opencode-go/deepseek-v4.1-flash`, profile `opencode-developerws003`, ws03).
 Two entry surfaces share one core.
