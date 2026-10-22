@@ -50,6 +50,20 @@ describe("SentinelStore", () => {
     expect(explicit.expiresAt).toBe("2027-01-01T00:00:00.000Z")
   })
 
+  it("falls back to the default TTL when expiresAt is unparseable", () => {
+    const now = Date.parse("2026-01-01T00:00:00.000Z")
+    const store = createSentinelStore({ persist: false, nowMs: () => now })
+    const sentinel = store.create({
+      provider: "fake",
+      handle: { provider: "fake" },
+      spec: testSpec,
+      expiresAt: "not-a-date",
+    })
+    expect(sentinel.expiresAt).toBe(
+      new Date(now + DEFAULT_SENTINEL_TTL_MS).toISOString(),
+    )
+  })
+
   it("rejects a routine target at create time (still frozen, not implemented)", () => {
     const store = createSentinelStore({ persist: false })
     expect(() =>

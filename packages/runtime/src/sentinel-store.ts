@@ -447,6 +447,12 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       const spec = denatureWebhookTarget(input.spec)
       const id = input.id ?? mintSentinelId(nowMs())
       const createdTs = nowMs()
+      const normalizedExpiresAt = normalizeExpiresAt(input.expiresAt)
+      if (input.expiresAt !== undefined && normalizedExpiresAt === undefined) {
+        console.warn(
+          `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(input.expiresAt)}; using the default TTL`,
+        )
+      }
       const sentinel: Sentinel = {
         id,
         spec,
@@ -460,8 +466,8 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
         closedSubjects: [],
         // An unparseable `expiresAt` falls through to the default TTL rather
         // than making the sentinel immortal.
-        ...(normalizeExpiresAt(input.expiresAt)
-          ? { expiresAt: input.expiresAt }
+        ...(normalizedExpiresAt
+          ? { expiresAt: normalizedExpiresAt }
           : spec.target.kind === "session"
             ? { expiresAt: new Date(createdTs + DEFAULT_SENTINEL_TTL_MS).toISOString() }
             : {}),
@@ -476,9 +482,21 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       if (!existing) return undefined
       // A patch that swaps in a webhook target carrying raw secret material
       // goes through the same sidecar denaturing as create (rotation path).
+      const nextPatch: SentinelUpdatePatch = { ...patch }
+      if (patch.expiresAt !== undefined) {
+        const normalized = normalizeExpiresAt(patch.expiresAt)
+        if (normalized === undefined) {
+          console.warn(
+            `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(patch.expiresAt)}; keeping the existing expiry`,
+          )
+          delete nextPatch.expiresAt
+        } else {
+          nextPatch.expiresAt = normalized
+        }
+      }
       const next: Sentinel = {
         ...existing,
-        ...patch,
+        ...nextPatch,
         ...(patch.spec !== undefined ? { spec: denatureWebhookTarget(patch.spec) } : {}),
       }
       sentinels.set(id, next)

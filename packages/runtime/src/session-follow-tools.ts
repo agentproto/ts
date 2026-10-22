@@ -262,7 +262,7 @@ export function registerSessionFollowTools(server: McpServer, opts: RegisterSess
       expiresAt: z
         .string()
         .optional()
-        .describe("ISO timestamp after which the follow is removed. Defaulted to 7 days from creation."),
+        .describe("ISO timestamp after which the follow is removed. Defaulted to 7 days from creation; an unparseable value falls back to that default. An upsert-by-key that omits it keeps the existing expiry (no implicit renewal)."),
     },
     async (input: Record<string, unknown>) => {
       const result = upsertSessionFollow(

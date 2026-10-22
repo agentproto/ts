@@ -47,6 +47,19 @@ describe("session-follow-store", () => {
     expect(explicit.expiresAt).toBe("2027-01-01T00:00:00.000Z")
   })
 
+  it("falls back to the default TTL when expiresAt is unparseable", () => {
+    const now = Date.parse("2026-01-01T00:00:00.000Z")
+    const store = createSessionFollowStore({ persist: false, nowMs: () => now })
+    const follow = store.upsert({
+      follower: "c",
+      selector: { all: true },
+      expiresAt: "not-a-date",
+    }).follow
+    expect(follow.expiresAt).toBe(
+      new Date(now + DEFAULT_FOLLOW_TTL_MS).toISOString(),
+    )
+  })
+
   it("keeps an existing expiry when an upsert by key omits it", () => {
     const store = createSessionFollowStore({ persist: false })
     const a = store.upsert({ key: "k", follower: "c", selector: { all: true } }).follow

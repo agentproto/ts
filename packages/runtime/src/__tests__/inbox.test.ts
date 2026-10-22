@@ -15,7 +15,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerAgentTools } from "../agent-tools.js"
-import { createSessionsRegistry, INBOX_CAP, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, INBOX_CAP, INBOX_HARD_CAP, type AgentSessionLike, type SessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionMessage, messageFrom } from "../session-message.js"
 import { sessionEventsPath } from "../transcript-writer.js"
@@ -334,13 +334,38 @@ describe("inbox + inbox_wait", () => {
         createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: `blocker ${i}`, kind: "blocker" }),
       )
     }
-    await registry.sendMessage(
+    const refused = await registry.sendMessage(
       createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: "late noise", kind: "notice", urgency: "fyi" }),
     )
     const inbox = registry.listInbox(parent.id)!
     expect(inbox).toHaveLength(INBOX_CAP)
     expect(inbox.every(m => m.kind === "blocker")).toBe(true)
     expect(inbox.some(m => m.text === "late noise")).toBe(false)
+    // The refusal must be visible to the sender: a false success ack is the
+    // exact loss this PR exists to prevent.
+    expect(refused).toMatchObject({
+      delivered: null,
+      queued: false,
+      refused: "inbox-full",
+    })
+  })
+
+  it("bounds a blocker storm at the hard cap, evicting the oldest protected entry", async () => {
+    const { parent, kid } = tree()
+    await registry.enqueuePrompt(parent.id, "busy work", {})
+    await until(() => registry.get(parent.id)?.busy === true)
+    const a = kid("a")
+    const total = INBOX_HARD_CAP + 5
+    for (let i = 0; i < total; i++) {
+      await registry.sendMessage(
+        createSessionMessage({ to: parent.id, from: messageFrom(a, "child"), text: `blocker ${i}`, kind: "blocker" }),
+      )
+    }
+    const inbox = registry.listInbox(parent.id)!
+    expect(inbox).toHaveLength(INBOX_HARD_CAP)
+    expect(inbox[0]!.text).toBe(`blocker ${total - INBOX_HARD_CAP}`)
+    expect(inbox.at(-1)!.text).toBe(`blocker ${total - 1}`)
+    expect(inbox.every(m => m.kind === "blocker")).toBe(true)
   })
 
   it("caps the inbox at INBOX_CAP, dropping the oldest", async () => {

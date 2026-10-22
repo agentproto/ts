@@ -9532,7 +9532,17 @@ export function createSessionsRegistry(opts?: {
       // a question while it is still un-consumed.
       const noiseIndex = next.findIndex(isNoiseMessage)
       if (noiseIndex >= 0) {
-        dropped.push(...next.splice(noiseIndex, 1))
+        const [removed] = next.splice(noiseIndex, 1)
+        if (removed?.id === msg.id) {
+          // The incoming message IS the only noise: the inbox is full of
+          // protected entries, so the new noise is the one to refuse. This
+          // must report a refusal — silently dropping it here is exactly the
+          // false "delivered: inbox" ack this PR removes.
+          accepted = false
+          appendLine(rt, `[inbox] refused ${msg.id} (inbox full of blocker/question, cap ${INBOX_CAP})`, "stderr")
+        } else if (removed) {
+          dropped.push(removed)
+        }
         continue
       }
       // No noise left: a report/done is next, but protected kinds stay.
@@ -9554,8 +9564,14 @@ export function createSessionsRegistry(opts?: {
       // ceiling below.
       if (next.length > INBOX_HARD_CAP) {
         // Hard ceiling: a blocker storm must not grow the persisted inbox
-        // without bound — evict the oldest protected entry.
-        dropped.push(...next.splice(0, 1))
+        // without bound — evict the oldest protected entry. Log distinctly
+        // from the soft-cap/noise evictions above: this one drops a blocker.
+        const [evicted] = next.splice(0, 1)
+        appendLine(
+          rt,
+          `[inbox] dropped ${evicted?.id ?? "?"} (hard cap ${INBOX_HARD_CAP}, all blocker/question)`,
+          "stderr",
+        )
         continue
       }
       appendLine(

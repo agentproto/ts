@@ -163,6 +163,15 @@ export function resolveFollowDefaults(input: SessionFollowInput): Omit<SessionFo
           ...(input.exclude.labels?.length ? { labels: [...new Set(input.exclude.labels)] } : {}),
         }
       : undefined
+  // An unparseable `expiresAt` is dropped so the default TTL applies instead
+  // of the follow becoming immortal. Warn so a caller who sent a malformed
+  // timestamp is not silently given a 7-day default.
+  const expiresAt = normalizeExpiresAt(input.expiresAt)
+  if (input.expiresAt !== undefined && expiresAt === undefined) {
+    console.warn(
+      `[session-follow-store] ignoring unparseable expiresAt ${JSON.stringify(input.expiresAt)}; using the default TTL`,
+    )
+  }
   return {
     ...(input.key ? { key: input.key } : {}),
     follower: input.follower,
@@ -174,9 +183,7 @@ export function resolveFollowDefaults(input: SessionFollowInput): Omit<SessionFo
     excludeFollowerChildren: input.excludeFollowerChildren ?? true,
     urgency: input.urgency ?? DEFAULT_FOLLOW_URGENCY,
     ...(input.triage ? { triage: input.triage } : {}),
-    // An unparseable `expiresAt` is dropped so the default TTL applies
-    // instead of the follow becoming immortal.
-    ...(normalizeExpiresAt(input.expiresAt) ? { expiresAt: input.expiresAt } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
   }
 }
 
