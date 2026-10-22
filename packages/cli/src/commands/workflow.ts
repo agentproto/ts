@@ -167,7 +167,7 @@ async function readJsonArg(
   }
 }
 
-/** Refuse a heavyweight workflow launch while a fresh `host guard` CRIT marker
+/** Refuse a workflow launch (`start` / `run-file`, any weight) while a fresh `host guard` CRIT marker
  *  is armed. The marker is written only by `agentproto host guard` on CRIT and
  *  expires after one missed 20-min tick, so this is a no-op on a healthy host
  *  and in every environment where the guard is not installed. */

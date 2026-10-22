@@ -38,6 +38,14 @@
  * selected sessions through `POST /sessions/:id/kill` (the same route
  * `agentproto sessions stop --reason` calls), writes the CRIT marker that
  * `agentproto workflow start|run-file` consults, and escalates once.
+ *
+ * Just before each kill the session is re-fetched and re-validated
+ * (`recheckGuardCandidate`), because the kill route does not check `busy`
+ * and a turn may have started since the snapshot.
+ *
+ * Exit status: 0 whenever the guard ran successfully (regardless of the
+ * host verdict — read the verdict from the log/`--json`), 2 when the daemon
+ * or health sample is unavailable, 64 on bad usage.
  */
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -58,7 +66,7 @@ export const GUARD_ESCALATION_LABEL = "host-guard-escalation"
 export const DEFAULT_GUARD_LOG_PATH = join(homedir(), ".agentproto", "host-guard.log")
 export const DEFAULT_GUARD_STATE_PATH = join(homedir(), ".agentproto", "host-guard", "state.json")
 
-/** How long a CRIT marker blocks heavyweight workflow starts. The guard runs
+/** How long a CRIT marker blocks workflow starts. The guard runs
  *  every 20 min, so 25 min keeps a fresh CRIT verdict live across one missed
  *  tick without leaving the block armed after the guard stops running. */
 export const GUARD_STATE_TTL_MS = 25 * 60_000
@@ -179,6 +187,9 @@ export interface GuardSelectionInput {
 }
 
 const ALIVE_STATUSES = new Set(["running", "starting"])
+
+/** Upper bound for `idleSec` (one year) so unknown idle time stays finite. */
+const MAX_IDLE_SEC = 365 * 24 * 3600
 
 export function isAliveSession(s: GuardSession): boolean {
   return s.alive ?? (s.status !== undefined && ALIVE_STATUSES.has(s.status))
@@ -307,7 +318,8 @@ export function selectGuardSessions(input: GuardSelectionInput): GuardSelection 
       label: sessionLabel(s),
       startedAt: s.startedAt ?? null,
       lastActivityAt: s.lastActivityAt ?? null,
-      idleSec: Math.floor(idleMsOf(s, nowMs) / 1000),
+      // Clamp "unknown" (Infinity) so JSON logs stay numeric.
+      idleSec: Math.min(Math.floor(idleMsOf(s, nowMs) / 1000), MAX_IDLE_SEC),
     })
   }
   counts.eligible = candidates.length
@@ -371,6 +383,36 @@ export function selectGuardSessions(input: GuardSelectionInput): GuardSelection 
   }
 }
 
+/**
+ * Re-validate one selected candidate against a FRESH session list taken
+ * immediately before its kill. The kill route is unconditional (it does not
+ * check `busy`), so a session that started a turn after the initial snapshot
+ * must be caught here. Returns the skip reason, or null when it is still
+ * safe to close. A session missing from the fresh list is `not-alive`.
+ */
+export function recheckGuardCandidate(
+  id: string,
+  fresh: readonly GuardSession[],
+  opts: {
+    verdict: HealthVerdict
+    nowMs: number
+    policy?: Partial<GuardPolicy>
+    protectedSessionIds?: readonly string[]
+  },
+): GuardSkipReason | null {
+  const policy = resolvePolicy(opts.policy)
+  const session = fresh.find(s => s.id === id)
+  if (!session) return "not-alive"
+  const explicit = new Set(opts.protectedSessionIds ?? [])
+  const minIdleSec = opts.verdict === "CRIT" ? policy.critMinIdleSec : policy.warnMinIdleSec
+  return ineligibility(session, {
+    nowMs: opts.nowMs,
+    minIdleMs: minIdleSec * 1000,
+    ancestors: protectedAncestors(fresh, explicit),
+    protectedIds: explicit,
+  })
+}
+
 /** The CRIT marker consumed by the workflow launch gate. */
 export interface GuardState {
   verdict: "CRIT"
@@ -381,8 +423,9 @@ export interface GuardState {
   remaining: { alive: number; busy: number; keepAlive: number }
 }
 
-/** Why a heavyweight workflow start must be refused, or null when allowed.
- *  Pure, so the gate's expiry/verdict rules are testable. */
+/** Why a workflow start (`workflow start|run-file`, of any weight) must be
+ *  refused, or null when allowed. Pure, so the gate's expiry/verdict rules
+ *  are testable. */
 export function heavyWorkflowBlockReason(
   state: GuardState | null | undefined,
   nowMs: number,
@@ -390,7 +433,7 @@ export function heavyWorkflowBlockReason(
   if (!state || state.verdict !== "CRIT") return null
   const expires = Date.parse(state.expiresAt)
   if (!Number.isFinite(expires) || expires <= nowMs) return null
-  return `host is CRIT (${state.reasons.join("; ") || "no reasons recorded"}); host-guard has blocked heavy workflow starts until ${state.expiresAt}. Free the host (or pass --force to override) and re-run \`agentproto host health\`.`
+  return `host is CRIT (${state.reasons.join("; ") || "no reasons recorded"}); host-guard has blocked workflow starts until ${state.expiresAt}. Free the host (or pass --force to override) and re-run \`agentproto host health\`.`
 }
 
 /** Best-effort read of the marker. Never throws: an unreadable marker means
@@ -566,6 +609,18 @@ async function fetchSessions(url: string): Promise<SessionDescriptor[]> {
   return Array.isArray(body?.sessions) ? body.sessions : []
 }
 
+function summarizeRemaining(sessions: readonly GuardSession[]): {
+  alive: number
+  busy: number
+  keepAlive: number
+} {
+  return {
+    alive: sessions.filter(isAliveSession).length,
+    busy: sessions.filter(s => isAliveSession(s) && s.busy === true).length,
+    keepAlive: sessions.filter(s => isAliveSession(s) && s.keepAlive === true).length,
+  }
+}
+
 /** The guard's own session id, when the CLI runs inside an agent session. */
 function selfSessionIds(): string[] {
   const out: string[] = []
@@ -698,6 +753,20 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
         `host-guard ${health.verdict}: ${health.reasons.join("; ") || "idle session cleanup"}; ` +
         `session idle ${Math.round(candidate.idleSec / 60)} min, last turn finished`
       try {
+        // The kill route is unconditional, so re-validate against a fresh
+        // list right before each kill (a turn may have started since the
+        // initial snapshot).
+        const fresh = await fetchSessions(found.url)
+        const changed = recheckGuardCandidate(candidate.id, fresh, {
+          verdict: health.verdict,
+          nowMs: Date.now(),
+          ...(Object.keys(flags.policy).length > 0 ? { policy: flags.policy } : {}),
+          protectedSessionIds: selfSessionIds(),
+        })
+        if (changed) {
+          failed.push({ id: candidate.id, error: `skipped: session changed before kill (${changed})` })
+          continue
+        }
         await stopSession(found.url, found.token, candidate.id, reason)
         closed.push(candidate)
       } catch (err) {
@@ -712,6 +781,19 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     alive: selection.counts.alive,
     busy: selection.counts.busy,
     keepAlive: selection.counts.keepAlive,
+  }
+  if (!flags.dryRun && closed.length > 0) {
+    // Report post-cleanup numbers in the marker, not the pre-cleanup snapshot.
+    try {
+      sessions = await fetchSessions(found.url)
+      remaining = summarizeRemaining(sessions)
+    } catch {
+      remaining = {
+        alive: Math.max(0, selection.counts.alive - closed.length),
+        busy: selection.counts.busy,
+        keepAlive: selection.counts.keepAlive,
+      }
+    }
   }
 
   if (!flags.dryRun && health.verdict === "CRIT" && flags.state) {
@@ -748,11 +830,7 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
       const post = computeHostHealth(input, DEFAULT_HEALTH_THRESHOLDS)
       after = { verdict: post.verdict, reasons: post.reasons }
       sessions = await fetchSessions(found.url)
-      remaining = {
-        alive: sessions.filter(isAliveSession).length,
-        busy: sessions.filter(s => isAliveSession(s) && s.busy === true).length,
-        keepAlive: sessions.filter(s => isAliveSession(s) && s.keepAlive === true).length,
-      }
+      remaining = summarizeRemaining(sessions)
       if (post.verdict !== "CRIT" && flags.state) await clearGuardState(flags.state)
     } catch (err) {
       after = { verdict: "CRIT", reasons: [`re-check failed: ${errText(err)}`] }

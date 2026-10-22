@@ -261,7 +261,7 @@ export function select(healthReport, all, now, policy, protectedSessionIds) {
       label: labelOf(s),
       startedAt: s.startedAt ?? null,
       lastActivityAt: s.lastActivityAt ?? null,
-      idleSec: Math.floor(idleMs(s, now) / 1000),
+      idleSec: Math.min(Math.floor(idleMs(s, now) / 1000), 365 * 24 * 3600),
     })
   }
   counts.eligible = candidates.length
@@ -308,6 +308,21 @@ export function select(healthReport, all, now, policy, protectedSessionIds) {
     skipped,
     policy,
   }
+}
+
+/** Re-validate one candidate against a FRESH session list right before its
+ *  kill (the kill route does not check `busy`). Returns the skip reason or
+ *  null when still safe to close. */
+export function recheck(id, fresh, verdict, now, policy, protectedSessionIds) {
+  const s = fresh.find(x => x.id === id)
+  if (!s) return "not-alive"
+  const minIdleSec = verdict === "CRIT" ? policy.critMinIdleSec : policy.warnMinIdleSec
+  return ineligible(s, {
+    now,
+    minIdleMs: minIdleSec * 1000,
+    ancestors: protectedAncestors(fresh, protectedSessionIds),
+    protectedIds: new Set(protectedSessionIds),
+  })
 }
 
 function selfSessionIds() {
@@ -383,6 +398,16 @@ async function main() {
   if (!flags.dryRun) {
     for (const c of selection.close) {
       const reason = `host-guard ${before.verdict}: ${(before.reasons ?? []).join("; ") || "idle session cleanup"}; session idle ${Math.round(c.idleSec / 60)} min, last turn finished`
+      try {
+        const changed = recheck(c.id, sessions(), before.verdict, Date.now(), policy, selfSessionIds())
+        if (changed) {
+          failed.push({ id: c.id, error: `skipped: session changed before kill (${changed})` })
+          continue
+        }
+      } catch (err) {
+        failed.push({ id: c.id, error: `skipped: re-check failed: ${err.message}` })
+        continue
+      }
       const res = runAgentproto(["sessions", "stop", c.id, "--reason", reason, "--json"], { json: false })
       if (res.status === 0) closed.push(c)
       else failed.push({ id: c.id, error: (res.stderr || res.stdout || `exit ${res.status}`).trim() })
@@ -392,6 +417,19 @@ async function main() {
   let after = null
   let remaining = { alive: selection.counts.alive, busy: selection.counts.busy, keepAlive: selection.counts.keepAlive }
   let escalation = "none"
+  if (!flags.dryRun && closed.length > 0) {
+    // Marker reports post-cleanup numbers, not the pre-cleanup snapshot.
+    try {
+      all = sessions()
+      remaining = {
+        alive: all.filter(isAlive).length,
+        busy: all.filter(s => isAlive(s) && s.busy === true).length,
+        keepAlive: all.filter(s => isAlive(s) && s.keepAlive === true).length,
+      }
+    } catch {
+      remaining = { ...remaining, alive: Math.max(0, remaining.alive - closed.length) }
+    }
+  }
 
   if (!flags.dryRun && before.verdict === "CRIT" && flags.state) {
     const state = {

@@ -4,16 +4,67 @@
  * CRIT marker that gates heavyweight workflow launches.
  */
 
-import { describe, it, expect } from "vitest"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest"
 import {
   DEFAULT_GUARD_POLICY,
   GUARD_STATE_TTL_MS,
   heavyWorkflowBlockReason,
+  readGuardState,
+  recheckGuardCandidate,
+  runHostGuard,
   selectGuardSessions,
   type GuardSession,
   type GuardState,
 } from "../commands/host-guard.js"
 import type { HealthVerdict } from "../commands/host-health.js"
+
+// ── I/O mocks for the runner tests ──────────────────────────────────
+const io = vi.hoisted(() => ({
+  verdict: "OK" as "OK" | "WARN" | "CRIT",
+  sessions: [] as unknown[],
+  /** Called before each kill so a test can mutate the live list. */
+  onBeforeKill: undefined as undefined | ((id: string) => void),
+  kills: [] as string[],
+  killFails: new Set<string>(),
+}))
+
+vi.mock("../commands/_daemon-helpers.js", () => ({
+  discoverDaemon: async () => ({ found: { url: "http://daemon.test", token: "t" } }),
+  printNoDaemonError: () => undefined,
+  httpGetJson: async () => ({ sessions: io.sessions }),
+  httpPostJson: async (url: string) => {
+    const m = /\/sessions\/([^/]+)\/kill$/.exec(url)
+    if (!m) return {}
+    const id = decodeURIComponent(m[1] as string)
+    io.onBeforeKill?.(id)
+    if (io.killFails.has(id)) throw new Error("HTTP 500")
+    io.kills.push(id)
+    io.sessions = (io.sessions as { id: string }[]).map(s =>
+      s.id === id ? { ...s, status: "killed", alive: false } : s,
+    )
+    return {}
+  },
+}))
+
+vi.mock("../commands/host.js", () => ({
+  gatherHealthInput: async () => ({}),
+}))
+
+vi.mock("../commands/host-health.js", async importOriginal => {
+  const orig = await importOriginal<typeof import("../commands/host-health.js")>()
+  return {
+    ...orig,
+    computeHostHealth: () => ({
+      verdict: io.verdict,
+      reasons: io.verdict === "OK" ? [] : ["load high"],
+      checks: [{ id: "sessions", status: "OK", value: 5 }],
+      thresholds: { warnSessions: 30 },
+    }),
+  }
+})
 
 const NOW = Date.parse("2026-10-22T12:00:00.000Z")
 const MIN = 60_000
@@ -241,6 +292,155 @@ describe("selectGuardSessions — idempotence", () => {
     const again = selectGuardSessions({ health: health("WARN"), sessions, nowMs: NOW })
     expect(ids(again.close)).toEqual(ids(first.close))
     expect(new Set(ids(again.close)).size).toBe(again.close.length)
+  })
+})
+
+describe("selectGuardSessions — unknown idle time", () => {
+  it("clamps idleSec to a finite number when a session has no timestamps", () => {
+    const s = session({ startedAt: undefined, lastActivityAt: undefined })
+    const sel = selectGuardSessions({ health: health("WARN"), sessions: [s], nowMs: NOW })
+    expect(Number.isFinite(sel.candidates[0]?.idleSec)).toBe(true)
+    expect(JSON.parse(JSON.stringify(sel.candidates[0])).idleSec).not.toBeNull()
+  })
+})
+
+describe("recheckGuardCandidate", () => {
+  const opts = { verdict: "CRIT" as HealthVerdict, nowMs: NOW }
+
+  it("allows a session that is still idle", () => {
+    const s = session()
+    expect(recheckGuardCandidate(s.id, [s], opts)).toBeNull()
+  })
+
+  it("refuses a session that started a turn after the snapshot", () => {
+    const s = session()
+    expect(recheckGuardCandidate(s.id, [{ ...s, busy: true }], opts)).toBe("busy")
+    expect(recheckGuardCandidate(s.id, [{ ...s, queuedPrompts: 1 }], opts)).toBe("queued-prompts")
+    expect(recheckGuardCandidate(s.id, [{ ...s, watchers: 1 }], opts)).toBe("watched")
+    expect(recheckGuardCandidate(s.id, [{ ...s, lastActivityAt: at(0) }], opts)).toBe("too-recent")
+  })
+
+  it("refuses a session that vanished or is no longer alive", () => {
+    const s = session()
+    expect(recheckGuardCandidate(s.id, [], opts)).toBe("not-alive")
+    expect(recheckGuardCandidate(s.id, [{ ...s, alive: false, status: "killed" }], opts)).toBe("not-alive")
+  })
+
+  it("refuses a session that became an ancestor of a live session", () => {
+    const parent = session({ id: "p" })
+    const child = session({ id: "c", parentSessionId: "p" })
+    expect(recheckGuardCandidate("p", [parent, child], opts)).toBe("ancestor-of-live")
+  })
+})
+
+describe("runHostGuard — I/O runner", () => {
+  let dir: string
+  let statePath: string
+  let out = ""
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "host-guard-test-"))
+    statePath = join(dir, "state.json")
+    io.verdict = "OK"
+    io.sessions = []
+    io.onBeforeKill = undefined
+    io.kills = []
+    io.killFails = new Set()
+    out = ""
+    vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
+      out += String(chunk)
+      return true
+    }) as typeof process.stdout.write)
+    vi.spyOn(process.stderr, "write").mockImplementation((() => true) as typeof process.stderr.write)
+  })
+
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  const run = (extra: string[] = []) =>
+    runHostGuard(["--json", "--no-log", "--settle", "0", "--no-escalate", "--state", statePath, ...extra])
+
+  // Real wall-clock "now" is used by the runner, so build rows relative to it.
+  const idleRow = (id: string, over: Partial<GuardSession> = {}): GuardSession => ({
+    id,
+    kind: "agent-cli",
+    status: "running",
+    alive: true,
+    busy: false,
+    startedAt: new Date(Date.now() - 600 * MIN).toISOString(),
+    lastActivityAt: new Date(Date.now() - 300 * MIN).toISOString(),
+    ...over,
+  })
+
+  it("OK: closes nothing and leaves no marker", async () => {
+    io.sessions = [idleRow("a")]
+    expect(await run()).toBe(0)
+    expect(io.kills).toEqual([])
+    expect(await readGuardState(statePath)).toBeNull()
+  })
+
+  it("WARN: closes oldest idle sessions via the kill route", async () => {
+    io.verdict = "WARN"
+    io.sessions = [
+      idleRow("new", { lastActivityAt: new Date(Date.now() - 10 * MIN).toISOString() }),
+      idleRow("old"),
+    ]
+    await run()
+    expect(io.kills).toEqual(["old", "new"])
+  })
+
+  it("dry-run: decides but kills nothing and writes no marker", async () => {
+    io.verdict = "CRIT"
+    io.sessions = [idleRow("a")]
+    await run(["--dry-run"])
+    expect(io.kills).toEqual([])
+    expect(await readGuardState(statePath)).toBeNull()
+    expect(JSON.parse(out).selection.close).toHaveLength(1)
+  })
+
+  it("never kills a session that became busy between snapshot and kill", async () => {
+    io.verdict = "WARN"
+    io.sessions = [idleRow("a"), idleRow("b", { lastActivityAt: new Date(Date.now() - 200 * MIN).toISOString() })]
+    // Right after the first re-validation passes, "b" is not yet touched; flip
+    // "b" to busy before its own re-check by mutating when "a" is killed.
+    io.onBeforeKill = id => {
+      if (id === "a") {
+        io.sessions = (io.sessions as GuardSession[]).map(s => (s.id === "b" ? { ...s, busy: true } : s))
+      }
+    }
+    await run()
+    expect(io.kills).toEqual(["a"])
+    const report = JSON.parse(out)
+    expect(report.closed.map((c: { id: string }) => c.id)).toEqual(["a"])
+    expect(report.failed[0].id).toBe("b")
+    expect(report.failed[0].error).toContain("busy")
+  })
+
+  it("records a failed kill and keeps going", async () => {
+    io.verdict = "WARN"
+    io.sessions = [idleRow("a"), idleRow("b", { lastActivityAt: new Date(Date.now() - 200 * MIN).toISOString() })]
+    io.killFails.add("b")
+    await run()
+    expect(io.kills).toEqual(["a"])
+    const report = JSON.parse(out)
+    expect(report.failed.map((f: { id: string }) => f.id)).toEqual(["b"])
+  })
+
+  it("CRIT: arms the marker with post-cleanup remaining counts; later OK clears it", async () => {
+    io.verdict = "CRIT"
+    io.sessions = [idleRow("a"), idleRow("b", { busy: true })]
+    await run()
+    expect(io.kills).toEqual(["a"])
+    const state = await readGuardState(statePath)
+    expect(state?.verdict).toBe("CRIT")
+    expect(state?.closed.map(c => c.id)).toEqual(["a"])
+    expect(state?.remaining).toEqual({ alive: 1, busy: 1, keepAlive: 0 })
+
+    io.verdict = "OK"
+    await run()
+    expect(await readGuardState(statePath)).toBeNull()
   })
 })
 
