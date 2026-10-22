@@ -1,5 +1,21 @@
 # @agentproto/catalog-sync
 
+## 0.8.10
+
+### Patch Changes
+
+- d863977: Fall back to models.dev first-party pricing before OpenRouter rates
+- 9bf6d95: Sync generated catalog data from the pinned provider sources.
+- e613028: Add MiniMax-M3.1-Flash pricing; keep first-party MiniMax rows (cache-write included) when a retired model leaves MiniMax's pricing page, or when the page is unreachable, instead of re-pricing them from OpenRouter.
+- e613028: Add MiniMax-M3.1-Flash pricing and keep committed first-party MiniMax rows (including their cache-write multipliers) when a retired model leaves MiniMax's pricing page instead of re-pricing it from OpenRouter. Updates the MiniMax pricing fixtures/tests to cover the new page shape.
+- 9bf6d95: Sync generated catalog data from the pinned provider sources (LLM route and pricing refreshes, image/voice snapshot updates) and record the resulting catalog changelog entries.
+- d863977: Fall back to models.dev's first-party Moonshot rates when the vendor pricing page is unparseable, and keep already-committed first-party prices instead of re-pricing them from OpenRouter.
+- Updated dependencies [9bf6d95]
+- Updated dependencies [e613028]
+- Updated dependencies [e613028]
+- Updated dependencies [9bf6d95]
+  - @agentproto/model-catalog@0.13.2
+
 ## 0.8.9
 
 ### Patch Changes

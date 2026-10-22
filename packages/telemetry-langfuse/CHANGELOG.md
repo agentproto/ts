@@ -1,5 +1,11 @@
 # @agentproto/telemetry-langfuse
 
+## 0.2.26
+
+### Patch Changes
+
+- @agentproto/eval@0.3.14
+
 ## 0.2.25
 
 ### Patch Changes

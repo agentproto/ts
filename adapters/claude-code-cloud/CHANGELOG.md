@@ -1,5 +1,23 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.3.0
+
+### Minor Changes
+
+- 8954bba: Claude Code cloud sessions can now run on a workspace's declared remote (`workspaces.json` → `remote`, set with `agentproto workspace remote set`), the same way a sandbox spawn gets its checkout. You no longer need a local clean, pushed clone.
+
+  `@agentproto/runtime`: a `cloud` spawn (and its restart) on a workspace with a declared `remote` passes the url, branch and a checkout dir inside the session's isolated config dir to the relay. A `credentialRef` is resolved from the keychain into `AGENTPROTO_GIT_TOKEN`; a ref that resolves to nothing refuses the spawn (`cloud_spawn_refused`, field `workspace.remote.credentialRef`). New `cloudRepoSpawnEnv` / `cloudRepoCheckoutDir` helpers.
+
+  `@agentproto/adapter-claude-code-cloud`: new `materializeRepoCheckout`. With `AGENTPROTO_CLOUD_REPO_URL` + `AGENTPROTO_CLOUD_REPO_DIR` set, `session/new` and `session/load` shallow-clone `origin/<branch>`, or fetch and hard-reset an existing checkout. That checkout must pass the usual AIP-66 §3 validation, and `claude --cloud` then runs from it. The git token is only ever read by a per-command credential helper and is removed from the vendor CLI's env.
+
+- 8954bba: Cloud sessions can run on a workspace's declared remote instead of requiring a local clean clone. The runtime passes the remote URL, branch and an isolated checkout dir (plus a keychain-resolved git token when a `credentialRef` is set) to the relay; the adapter materializes a clean `origin/<branch>` checkout and validates it under AIP-66 §3 before running the vendor CLI.
+
+### Patch Changes
+
+- Updated dependencies [c14b061]
+  - @agentproto/driver-agent-cli@2.15.0
+  - @agentproto/adapter-claude-sdk@0.7.30
+
 ## 0.2.5
 
 ### Patch Changes

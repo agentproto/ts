@@ -1,5 +1,14 @@
 # @agentproto/model-catalog
 
+## 0.13.2
+
+### Patch Changes
+
+- 9bf6d95: Sync generated catalog data from the pinned provider sources.
+- e613028: Add MiniMax-M3.1-Flash pricing; keep first-party MiniMax rows (cache-write included) when a retired model leaves MiniMax's pricing page, or when the page is unreachable, instead of re-pricing them from OpenRouter.
+- e613028: Add MiniMax-M3.1-Flash pricing and keep committed first-party MiniMax rows (including their cache-write multipliers) when a retired model leaves MiniMax's pricing page instead of re-pricing it from OpenRouter. Updates the MiniMax pricing fixtures/tests to cover the new page shape.
+- 9bf6d95: Sync generated catalog data from the pinned provider sources (LLM route and pricing refreshes, image/voice snapshot updates) and record the resulting catalog changelog entries.
+
 ## 0.13.1
 
 ### Patch Changes

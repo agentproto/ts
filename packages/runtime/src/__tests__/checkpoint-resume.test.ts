@@ -205,6 +205,26 @@ describe("checkpoint resume", () => {
       expect(resolveResumeSource({ sessions: [byTask], taskId: "task-99" })).toBeUndefined()
     })
 
+    it("picks the MOST RECENT checkpoint of a task id, not the first row", () => {
+      // Two dead sessions carry the same task id (the resumed one INHERITED
+      // the key from the session it continued). The registry order is not
+      // the recency order, so the checkpoint's own instant decides.
+      const older = {
+        ...dead,
+        id: "sess_older",
+        taskId: "task-42",
+        lastCheckpoint: { ...dead.lastCheckpoint, at: "2026-10-20T09:00:00.000Z" },
+      }
+      const newer = {
+        ...dead,
+        id: "sess_newer",
+        taskId: "task-42",
+        lastCheckpoint: { ...dead.lastCheckpoint, at: "2026-10-20T11:00:00.000Z" },
+      }
+      const found = resolveResumeSource({ sessions: [older, newer], taskId: "task-42" })
+      expect(found?.session.id).toBe("sess_newer")
+    })
+
     it("never resumes a LIVE session", () => {
       const live = { ...dead, status: "running" }
       expect(resolveResumeSource({ sessions: [live], sessionId: "sess_dead" })).toBeUndefined()
@@ -269,6 +289,44 @@ describe("checkpoint resume", () => {
         // The file the crashed session was writing is back, byte for byte.
         expect(readFileSync(join(dir, "a.txt"), "utf8")).toBe("v2\n")
         expect(readFileSync(join(dir, "b.txt"), "utf8")).toBe("new\n")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("removes a tracked path added after the checkpoint (documented behaviour)", () => {
+      const dir = mkdtempSync(join(tmpdir(), "checkpoint-resume-extra-"))
+      try {
+        sh("git init -q . && git config user.email a@b.c && git config user.name t", dir)
+        writeFileSync(join(dir, "a.txt"), "v1\n")
+        sh("git add -A && git commit -qm init", dir)
+
+        const snap = sh(
+          "idx=$(mktemp -u) && { cp \"$(git rev-parse --git-path index)\" \"$idx\" 2>/dev/null || true; } && " +
+            'GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ' +
+            'snap=$(git commit-tree "$tree" -p HEAD -m "agentproto checkpoint") && ' +
+            "git update-ref refs/remotes/origin/agentproto-checkpoint/wt/abc123 \"$snap\" && echo \"$snap\"",
+          dir,
+        ).trim()
+
+        // A later commit (after the checkpoint) adds a tracked path that the
+        // snapshot does not contain.
+        writeFileSync(join(dir, "after.txt"), "later\n")
+        sh("git add -A && git commit -qm later", dir)
+        expect(existsSync(join(dir, "after.txt"))).toBe(true)
+
+        // The restore resets every path under `.` to the snapshot: the path
+        // absent from the snapshot is removed, not kept.
+        sh(
+          buildCheckpointRestoreCommand({
+            checkoutDir: dir,
+            ref: "agentproto-checkpoint/wt/abc123",
+            sha: snap,
+          }),
+          dir,
+        )
+        expect(existsSync(join(dir, "after.txt"))).toBe(false)
+        expect(sh("git status --porcelain", dir)).toContain("D  after.txt")
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
@@ -469,6 +527,95 @@ describe("checkpoint resume", () => {
       expect(result.ok).toBe(true)
       // No dead session matched: no checkpoint restore at all.
       expect(box.commands.filter(c => c.includes("git restore --source="))).toHaveLength(0)
+      registry.shutdown()
+    })
+
+    it("carries the correlation keys of the session it resumes", async () => {
+      box.commands.length = 0
+      const registry = createSessionsRegistry({ persist: false })
+      const dead = deadSession(registry)
+
+      // The relaunch names the session by id and NO task id: the correlation
+      // keys are INHERITED from the resolved source, so the NEXT relaunch
+      // finds THIS session (and not the older one) by task id / label.
+      const result = await relaunch(registry, { sessionId: dead.id })
+
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.descriptor.taskId).toBe("task-42")
+        expect(result.descriptor.label).toBe("t18")
+      }
+      registry.shutdown()
+    })
+
+    it("resumes the checkpoint of the RESUMED session on the next relaunch by task id", async () => {
+      box.commands.length = 0
+      const registry = createSessionsRegistry({ persist: false })
+      const dead = deadSession(registry)
+
+      // A resumes... no: the FIRST session (task-42) dies, a second one
+      // resumes it BY SESSION ID (no task id given), then it dies too after
+      // taking its own (later) checkpoint.
+      const second = await relaunch(registry, { sessionId: dead.id })
+      expect(second.ok).toBe(true)
+      const secondId = second.ok ? second.descriptor.id : ""
+      expect(secondId).not.toBe("")
+      registry.recordSandboxCheckpoint(
+        secondId,
+        checkpointRecord({
+          at: "2026-10-20T12:00:00.000Z",
+          branch: "wt/def456",
+          checkpoint: { status: "pushed", ref: "agentproto-checkpoint/wt/def456", sha: "d".repeat(40) },
+        }),
+        "checkpointed",
+      )
+      registry.kill(secondId, "SIGKILL", "crashed")
+
+      // The next relaunch names the TASK id: it must find the SECOND
+      // session (the one that inherited the key), and restore ITS
+      // checkpoint - not the older session's stale one.
+      box.commands.length = 0
+      const third = await relaunch(registry, { taskId: "task-42" })
+
+      expect(third.ok).toBe(true)
+      const restore = box.commands.filter(c => c.includes("git restore --source="))
+      expect(restore).toHaveLength(1)
+      expect(restore[0]).toContain("refs/remotes/origin/agentproto-checkpoint/wt/def456")
+      expect(restore[0]).not.toContain("agentproto-checkpoint/wt/abc123")
+
+      // The same holds for the LABEL the resumed session inherited: the
+      // most recent checkpoint of the matching dead sessions wins.
+      box.commands.length = 0
+      const fourth = await relaunch(registry, { label: "t18" })
+
+      expect(fourth.ok).toBe(true)
+      const restoreByLabel = box.commands.filter(c => c.includes("git restore --source="))
+      expect(restoreByLabel).toHaveLength(1)
+      expect(restoreByLabel[0]).toContain("refs/remotes/origin/agentproto-checkpoint/wt/def456")
+      expect(restoreByLabel[0]).not.toContain("agentproto-checkpoint/wt/abc123")
+      registry.shutdown()
+    })
+
+    it("falls back to a fresh branch when the dead session's branch has no wt/ prefix", async () => {
+      box.commands.length = 0
+      const registry = createSessionsRegistry({ persist: false })
+      const dead = deadSession(registry)
+      // A delivery target whose branch is NOT a `wt/<slug>` work branch:
+      // slicing the prefix off it would mint a bogus slug ("in" out of
+      // "main"), so the resume must fall back to a fresh branch.
+      registry.setSandboxDeliveryTarget(dead.id, {
+        checkoutDir: "/home/user/agentproto",
+        branch: "main",
+        baseSha: "a".repeat(40),
+      })
+
+      const result = await relaunch(registry, { sessionId: dead.id })
+
+      expect(result.ok).toBe(true)
+      // No bogus slug was cut out of the non-worktree branch.
+      expect(box.commands.some(c => c.includes("wt/in"))).toBe(false)
+      // A fresh work branch was minted instead.
+      expect(box.commands.some(c => /wt\/[0-9a-f]{8}/.test(c))).toBe(true)
       registry.shutdown()
     })
   })

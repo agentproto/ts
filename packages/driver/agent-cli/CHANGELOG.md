@@ -1,5 +1,11 @@
 # @agentproto/driver-agent-cli
 
+## 2.15.0
+
+### Minor Changes
+
+- c14b061: Grant opencode read access to its global config under an app-boundary sandbox, and include the spawned child's stderr tail in agent spawn failures.
+
 ## 2.14.0
 
 ### Minor Changes
