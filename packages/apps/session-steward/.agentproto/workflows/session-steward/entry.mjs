@@ -30,7 +30,7 @@
 // fold. This file wires them over `session_list` / `tool_calls_list` /
 // `host_load` / `app_state`.
 
-import { liveListSteps, scannedRows } from "./live-list.mjs"
+import { LIST_EXTRA_PAGES, LIST_PAGE_LIMIT, liveListSteps, scannedRows } from "./live-list.mjs"
 import {
   classifyOrigin,
   decideAction,
@@ -723,6 +723,11 @@ export function buildReport(b) {
   // Explicit "0 candidates" explanation (mission item 8) — say WHY, instead
   // of leaving an empty table to interpret.
   const scan = b.steps.scan
+  if (scan?.counts?.listTruncated) {
+    lines.push(
+      `- WARNING: the session listing was truncated at ${LIST_PAGE_LIMIT * (LIST_EXTRA_PAGES + 1)} rows per query — older sessions were not scanned, so the counts above under-report the fleet.`,
+    )
+  }
   if (scan && c.close.length === 0 && c.stuck.length === 0 && verdicts.length === 0) {
     lines.push(`- ${explainZeroCandidates(scan.counts)}`)
   }
