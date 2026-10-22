@@ -1,5 +1,5 @@
 /**
- * `session_commands` — the paginated slash-command list.
+ * `session_commands`, the paginated slash-command list.
  *
  * The list a harness advertises can be long (60+ entries on a skill-heavy
  * harness) and used to travel inside every `agent_start` answer. It now
@@ -35,7 +35,7 @@ const fakePtyFactory: PtyFactory = () => ({
 })
 
 async function* neverResolving(): AsyncIterable<AgentStreamEvent> {
-  await new Promise(() => {}) // never resolves — keeps the session "running"
+  await new Promise(() => {}) // never resolves, keeps the session "running"
 }
 
 function fakeAgentSession(prefix: string): AgentSessionLike {
@@ -147,7 +147,7 @@ describe("session_commands", () => {
       const rows = await walk(client, sessionId, 50, { name: "/skill-1" })
       expect(rows.length).toBeGreaterThan(0)
       expect(rows.every(r => r.name.startsWith("/skill-1"))).toBe(true)
-      // /skill-1, /skill-1x… — the exact prefix set of the reference list.
+      // /skill-1, /skill-1x…, the exact prefix set of the reference list.
       expect(rows.map(r => r.name)).toEqual(
         COMMANDS.filter(c => c.name.startsWith("/skill-1")).map(c => c.name),
       )
@@ -215,6 +215,27 @@ describe("session_commands", () => {
         ),
       ) as Page
       expect(Object.keys(page.items[0]!).sort()).toEqual(["name", "scope"])
+    } finally {
+      await close()
+      registry.shutdown()
+    }
+  })
+
+  it("caps a call with no limit at 50 rows and hands back a cursor", async () => {
+    const { client, sessionId, close, registry } = await buildHarness()
+    try {
+      const body = JSON.parse(
+        textOf(
+          await client.callTool({
+            name: "session_commands",
+            arguments: { sessionId },
+          }),
+        ),
+      ) as { commands: CommandRow[]; total?: number; truncated?: boolean; nextCursor?: string }
+      expect(body.commands).toHaveLength(50)
+      expect(body.total).toBe(60)
+      expect(body.truncated).toBe(true)
+      expect(body.nextCursor).toBeTruthy()
     } finally {
       await close()
       registry.shutdown()
