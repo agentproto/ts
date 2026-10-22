@@ -1039,12 +1039,12 @@ jobs:
         run: |
           # The automatic reviewer runs on OpenCode's hosted free Zen routes.
           # This step only checks the credential needed by that free lane.
-          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_GO_API_KEY }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
+          if [ -n "${{ secrets.OPENCODE_API_KEY_WS03 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY_WS02 }}" ] || [ -n "${{ secrets.OPENCODE_API_KEY }}" ]; then
             echo "mode=agentproto" >> "$GITHUB_OUTPUT"
             echo "Using agentproto lane (OpenCode free model)"
           else
             echo "mode=none" >> "$GITHUB_OUTPUT"
-            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_GO_API_KEY/OPENCODE_API_KEY) — the reviewer cannot authenticate."
+            echo "::error::No OpenCode credential (OPENCODE_API_KEY_WS03/_WS02/OPENCODE_API_KEY) — the reviewer cannot authenticate."
           fi
 
           # Cross-ACCOUNT fallback ladder — distinct from the auth-MODE
@@ -2327,6 +2327,7 @@ jobs:
   pr-fix:
     name: Auto-fix from review
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: [pr-review]
     if: |
       always() &&
@@ -2369,7 +2370,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           MAX_ITER=$(jq -r '.commands.fix.maxFixIterations // .maxFixIterations // 3' .github/agentic-review.json)
-          ITER=$(git log --oneline --grep="auto-fix from review" origin/main..HEAD | wc -l | tr -d ' ')
+          ITER=$(git log --oneline --grep="auto-fix from review" origin/${{ github.base_ref }}..HEAD | wc -l | tr -d ' ')
           echo "exhausted=false" >> "$GITHUB_OUTPUT"
           echo "Fix iterations already on branch: $ITER / $MAX_ITER"
           if [ "$ITER" -ge "$MAX_ITER" ] 2>/dev/null; then
@@ -2466,7 +2467,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "No file changes to commit (loop exhausted — escalation was posted)."
           else
-            ITER=$(git log --oneline --grep="auto-fix from review" origin/main..HEAD \
+            ITER=$(git log --oneline --grep="auto-fix from review" origin/${{ github.base_ref }}..HEAD \
               | wc -l | tr -d ' ')
             NEXT=$((ITER + 1))
             git commit -m "chore: auto-fix from review (iter $NEXT)"

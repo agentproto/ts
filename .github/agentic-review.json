@@ -90,7 +90,7 @@
     "opencode-go-deepseek-flash": {
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
-  "reviewerModel": "opencode/mimo-v2.6-flash-free",
+      "reviewerModel": "opencode/mimo-v2.6-flash-free",
       "reviewerSandbox": {
         "provider": "e2b",
         "lifecycle": {
@@ -128,7 +128,7 @@
   },
   "reviewerAdapter": "opencode",
   "reviewerAuthMode": "api-key",
-  "reviewerModel": "opencode-go/deepseek-v4.1-flash",
+  "reviewerModel": "opencode/deepseek-v4.1-flash-free",
   "reviewerSandbox": {
     "provider": "e2b",
     "lifecycle": {
