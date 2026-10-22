@@ -1021,6 +1021,46 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.hostFingerprint ? { hostFingerprint: s.hostFingerprint } : {}),
 })
 
+// ── session_commands rows ────────────────────────────────────────────────
+// One slash-command entry, served page by page by the `session_commands`
+// tool. The COMPACT row (name/description/hint/scope) is exactly what the
+// VS Code transcript panel reads; the harness' own `input` / `_meta` blobs
+// stay behind `full: true`.
+
+/** The raw command entry, as mirrored from the harness' ACP
+ *  `available-commands` event onto the session descriptor. */
+type RawSessionCommand = NonNullable<SessionDescriptor["availableCommands"]>[number]
+
+/** One `session_commands` row, the FLATTENED command entry: the harness'
+ *  nested `input.hint` / `_meta.scope` become top-level `hint` / `scope`, and
+ *  the original blobs are kept alongside for `full: true`. */
+export interface SessionCommandItem {
+  name: string
+  description?: string
+  hint?: string
+  scope?: string
+  input?: { hint?: string } | null
+  _meta?: { scope?: string; path?: string; bareName?: string; qualifiedName?: string }
+}
+
+/** Flatten one raw command entry into a `session_commands` row. */
+export const sessionCommandItem = (c: RawSessionCommand): SessionCommandItem => ({
+  name: c.name,
+  ...(c.description ? { description: c.description } : {}),
+  ...(c.input?.hint ? { hint: c.input.hint } : {}),
+  ...(c._meta?.scope ? { scope: c._meta.scope } : {}),
+  ...(c.input !== undefined ? { input: c.input } : {}),
+  ...(c._meta !== undefined ? { _meta: c._meta } : {}),
+})
+
+/** The default (`compact`) row: identity + human-readable text only. */
+export const compactSessionCommandItem = (c: SessionCommandItem): SessionCommandItem => ({
+  name: c.name,
+  ...(c.description ? { description: c.description } : {}),
+  ...(c.hint ? { hint: c.hint } : {}),
+  ...(c.scope ? { scope: c.scope } : {}),
+})
+
 // ── batch compact projections (tool-transformer migration) ───────────────
 // One compact projection per migrated list tool, same shape philosophy as
 // `compactSessionItem`: identity/routing fields + small usage scalars by
@@ -1417,6 +1457,8 @@ export function registerSessionTools(
     itemKey: string
     /** Row cap for a call with no `limit`/`cursor` (default: unbounded). */
     defaultLimit?: number
+    /** Add `total` to the no-`limit`/`cursor` wrapper too (default off). */
+    includeTotal?: boolean
   }): void => {
     registerBuiltinTool<TInput, TItem[]>(server, {
       id: args.id,
@@ -1431,6 +1473,7 @@ export function registerSessionTools(
           maxLimit: 200,
           itemKey: args.itemKey,
           ...(args.defaultLimit !== undefined ? { defaultLimit: args.defaultLimit } : {}),
+          ...(args.includeTotal ? { includeTotal: true } : {}),
         }),
       ],
     })
@@ -2532,6 +2575,75 @@ export function registerSessionTools(
       }
     },
   )
+
+  // ── session_commands ───────────────────────────────────────────
+  // The harness's slash-command list, PAGE BY PAGE. `agent_start`'s compact
+  // answer carries only `availableCommandsCount` + a `commandsRef` pointing
+  // here; the raw list (60+ entries on a skill-heavy harness) never travels
+  // inside a spawn answer again.
+  //
+  // Rows are COMPACT by default (`name`/`description`/`hint`/`scope`, the
+  // exact fields the VS Code transcript panel reads); `full: true` adds the
+  // harness' own `input` / `_meta` blobs back. `keyOf` is the command NAME,
+  // so the cursor stays stable across calls.
+  const sessionCommandsSchema = z.object({
+    ...sessionRefSchema(z),
+    name: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Keep only the commands whose name starts with this prefix (e.g. \"/sk\").",
+      ),
+    scope: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Keep only the commands with this exact scope (the harness' own " +
+          "scope label, \"user\", \"project\", …).",
+      ),
+  })
+  registerPaginatedListTool<z.infer<typeof sessionCommandsSchema>, SessionCommandItem>({
+    id: "session_commands",
+    description:
+      "List the slash-commands a session's harness advertises, page by page " +
+      "(limit/cursor). Rows are COMPACT by default (name/description/hint/" +
+      "scope); `full: true` adds the harness' own input/_meta blobs. Filter " +
+      "with `name` (prefix) and `scope`. `agent_start` returns the count " +
+      "(`availableCommandsCount`) and a `commandsRef` pointing here.",
+    schema: sessionCommandsSchema,
+    body: async input => {
+      const desc = resolveSessionDesc(registry, input)
+      if (!desc) {
+        throw new Error(`no session "${sessionRefQuery(input)}" found`)
+      }
+      // Subtree scoping (WP4/WP5): same gate as session_capabilities /
+      // session_queue_list, a scoped orchestrator only sees its own subtree.
+      if (callerScope) {
+        const subtree = collectSubtree(
+          callerScope.ownerSessionId,
+          registry.list({ includeArchived: true }),
+        )
+        if (!subtree.has(desc.id)) {
+          throw new Error(`session "${desc.id}" is outside the caller's subtree`)
+        }
+      }
+      // `get()` freshens the live read-surface stamps (availableCommands is
+      // mirrored onto the descriptor by the ACP `available-commands` event).
+      const fresh = registry.get(desc.id) ?? desc
+      const prefix = input.name
+      return (fresh.availableCommands ?? [])
+        .filter(c => (prefix ? c.name.startsWith(prefix) : true))
+        .filter(c => (input.scope ? c._meta?.scope === input.scope : true))
+        .map(c => sessionCommandItem(c))
+    },
+    project: compactSessionCommandItem,
+    keyOf: c => c.name,
+    itemKey: "commands",
+    defaultLimit: 50,
+    includeTotal: true,
+  })
 
   // ── session_checkpoint ───────────────────────────────────────────
   server.tool(

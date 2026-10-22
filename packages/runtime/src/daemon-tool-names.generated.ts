@@ -229,6 +229,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "session_bg_task_tail",
   "session_capabilities",
   "session_checkpoint",
+  "session_commands",
   "session_compact",
   "session_context_status",
   "session_continue_fresh",

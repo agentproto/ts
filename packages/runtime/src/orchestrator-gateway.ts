@@ -94,6 +94,9 @@ export const DEFAULT_ORCHESTRATOR_TOOLS: readonly string[] = [
   "session_events_poll",
   "session_list",
   "session_tree",
+  // Read-only, subtree-scoped slash-command list, the target of
+  // `agent_start`'s compact `commandsRef`, so it must be callable here.
+  "session_commands",
   "policy_attach",
   "policy_status",
   "policy_list",
