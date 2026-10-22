@@ -141,13 +141,13 @@ A flow = a system prompt + a `buildToolset([...])` selection + a skill set. Add
 a capability by adding a tool in `tools.mjs` and referencing it (or a `@group`)
 from a flow.
 
-## Secrets / vars (already configured)
-- `secrets.OPENCODE_GO_API_KEY_WS03` — OpenCode Go subscription key for the
+## Secrets / vars (configure these)
+- `secrets.OPENCODE_GO_API_KEY_WS03`: OpenCode Go subscription key for the
   `opencode-developerws003` (ws03) profile. Funds the automatic review and
   auto-fix. Required; the jobs fail before spawning a model when it is absent.
 - `secrets.OPENCODE_API_KEY`, `secrets.OPENCODE_API_KEY_WS02`,
-  `secrets.OPENCODE_API_KEY_WS03` — Zen keys for the free fallback tier.
-- `secrets.ANTHROPIC_API_KEY` — legacy; no longer used by pr-review / pr-fix.
+  `secrets.OPENCODE_API_KEY_WS03`: Zen keys for the free fallback tier.
+- `secrets.ANTHROPIC_API_KEY`: legacy; no longer used by pr-review / pr-fix.
 - `vars.BOT_APP_ID` + `secrets.BOT_APP_PRIVATE_KEY` — GitHub App; mints a token
   so the bot acts under its own identity with `contents`/`pull-requests` write.
   Falls back to `secrets.GITHUB_TOKEN` when absent.
