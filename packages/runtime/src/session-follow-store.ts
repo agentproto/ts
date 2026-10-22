@@ -16,6 +16,7 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { ulid } from "./app-state.js"
+import { normalizeExpiresAt } from "./expires-at.js"
 import type { FollowTriageFollowInput } from "./follow-triage.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -173,7 +174,9 @@ export function resolveFollowDefaults(input: SessionFollowInput): Omit<SessionFo
     excludeFollowerChildren: input.excludeFollowerChildren ?? true,
     urgency: input.urgency ?? DEFAULT_FOLLOW_URGENCY,
     ...(input.triage ? { triage: input.triage } : {}),
-    ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    // An unparseable `expiresAt` is dropped so the default TTL applies
+    // instead of the follow becoming immortal.
+    ...(normalizeExpiresAt(input.expiresAt) ? { expiresAt: input.expiresAt } : {}),
   }
 }
 

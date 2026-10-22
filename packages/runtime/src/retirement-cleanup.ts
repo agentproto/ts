@@ -16,6 +16,7 @@
 
 import type { SentinelStore } from "./sentinel-store.js"
 import type { SessionFollowStore } from "./session-follow-store.js"
+import { isExpiresAtReached } from "./expires-at.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import type { SessionsRegistry } from "./sessions.js"
 
@@ -75,7 +76,7 @@ export async function sweepWiringLifecycle(
   }
 
   for (const follow of deps.followStore.list()) {
-    const expired = follow.expiresAt !== undefined && Date.parse(follow.expiresAt) <= now
+    const expired = isExpiresAtReached(follow.expiresAt, now)
     if (!expired) {
       const desc = deps.registry.get(follow.follower)
       if (desc && !isRetired(desc)) continue
@@ -96,7 +97,7 @@ export async function sweepWiringLifecycle(
 
   for (const sentinel of deps.sentinelStore.list()) {
     const target = sentinel.spec.target
-    const expired = sentinel.expiresAt !== undefined && Date.parse(sentinel.expiresAt) <= now
+    const expired = isExpiresAtReached(sentinel.expiresAt, now)
     if (!expired && target.kind === "session") {
       const desc = deps.registry.get(target.sessionId)
       if (desc && !isRetired(desc)) continue

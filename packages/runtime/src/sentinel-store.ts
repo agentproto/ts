@@ -26,6 +26,7 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { ulid } from "./app-state.js"
+import { isExpiresAtReached, normalizeExpiresAt } from "./expires-at.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -457,7 +458,9 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
         seen: [],
         terminalSubjects: [],
         closedSubjects: [],
-        ...(input.expiresAt
+        // An unparseable `expiresAt` falls through to the default TTL rather
+        // than making the sentinel immortal.
+        ...(normalizeExpiresAt(input.expiresAt)
           ? { expiresAt: input.expiresAt }
           : spec.target.kind === "session"
             ? { expiresAt: new Date(createdTs + DEFAULT_SENTINEL_TTL_MS).toISOString() }
@@ -541,6 +544,9 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
     isExpired(id: string): boolean {
       const sentinel = sentinels.get(id)
       if (!sentinel) return false
+      // Mirrors the runtime's `isExpiredSpec`: the record's own `expiresAt`
+      // backstop gates exactly like `until.at`.
+      if (isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
       return sentinel.spec.until.kind === "at" ? nowMs() >= sentinel.spec.until.ms : false
     },
 
