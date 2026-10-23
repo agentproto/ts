@@ -6,6 +6,7 @@ import { inModelList } from "@agentproto/model-catalog/lists"
 import {
   deleteModelList,
   getModelListSource,
+  isInModelList,
   loadModelListSource,
   loadModelLists,
   modelListSourceFromLists,
@@ -115,17 +116,81 @@ describe("model list store", () => {
     expect(await deleteModelList("pinned")).toBe(false)
   })
 
-  it("refuses to delete a seed list but still allows editing it", async () => {
+  it("refuses to delete seed lists and to edit the zero-cost entitlement list", async () => {
     await expect(deleteModelList(ZERO_COST_LIST_ID)).rejects.toThrow(/built-in seed/)
     await expect(deleteModelList(DEFAULT_ROTATION_LIST_ID)).rejects.toThrow(/built-in seed/)
-    expect((await loadModelLists()).lists.map(list => list.id)).toContain(ZERO_COST_LIST_ID)
-
-    await saveModelList({ id: ZERO_COST_LIST_ID, label: "Edited", ids: ["custom/model"] })
+    await expect(
+      saveModelList({ id: ZERO_COST_LIST_ID, label: "Edited", ids: ["custom/model"] }),
+    ).rejects.toThrow(/built-in and cannot be edited/)
     expect((await loadModelLists()).lists.find(list => list.id === ZERO_COST_LIST_ID)).toEqual({
       id: ZERO_COST_LIST_ID,
+      label: "Zero-cost models",
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
+  })
+
+  it("still allows editing the default-rotation seed", async () => {
+    await saveModelList({ id: DEFAULT_ROTATION_LIST_ID, label: "Edited", ids: ["custom/model"] })
+    expect(
+      (await loadModelLists()).lists.find(list => list.id === DEFAULT_ROTATION_LIST_ID),
+    ).toEqual({
+      id: DEFAULT_ROTATION_LIST_ID,
       label: "Edited",
       ids: ["custom/model"],
     })
+  })
+
+  it("ignores a tampered zero-cost definition in the file and restores the seed", async () => {
+    await mkdir(join(home, ".agentproto"), { recursive: true })
+    await writeFile(
+      modelListsPath(),
+      JSON.stringify({
+        version: 1,
+        lists: [
+          { id: ZERO_COST_LIST_ID, ids: ["opencode/gpt-5.1-codex"] },
+          { id: "pinned", ids: ["custom/model"] },
+        ],
+      }),
+      "utf8",
+    )
+
+    const file = await loadModelLists()
+    expect(file.lists.find(list => list.id === ZERO_COST_LIST_ID)).toEqual({
+      id: ZERO_COST_LIST_ID,
+      label: "Zero-cost models",
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
+    const source = modelListSourceFromLists(file.lists)
+    expect(inModelList("opencode/gpt-5.1-codex", ZERO_COST_LIST_ID, source)).toBe(false)
+    expect(source.get("pinned")).toEqual({ id: "pinned", ids: ["custom/model"] })
+  })
+
+  it("refuses to delete a list another list references", async () => {
+    await saveModelList({ id: "base", ids: ["custom/a"] })
+    await saveModelList({
+      id: "composite",
+      include: [{ kind: "list", id: "base" }],
+    })
+
+    await expect(deleteModelList("base")).rejects.toThrow(
+      /referenced by "composite"/,
+    )
+    expect(await deleteModelList("composite")).toBe(true)
+    expect(await deleteModelList("base")).toBe(true)
+  })
+
+  it("fails closed when a list is missing or cyclic instead of throwing", () => {
+    expect(isInModelList("big-pickle", "missing")).toBe(false)
+    expect(
+      isInModelList(
+        "big-pickle",
+        "a",
+        modelListSourceFromLists([
+          { id: "a", include: [{ kind: "list", id: "b" }] },
+          { id: "b", include: [{ kind: "list", id: "a" }] },
+        ]),
+      ),
+    ).toBe(false)
   })
 
   it("falls back to the seed definition when a seed id is missing from the file", () => {

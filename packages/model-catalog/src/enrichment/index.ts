@@ -41,12 +41,25 @@ export interface ModelEnrichment {
   actions: readonly string[]
 }
 
-/** The one zero-price rule: both token prices are exactly 0. */
+/** The one zero-price rule: both base token prices are exactly 0 and every
+ *  prompt-length tier is also 0/0. A tiered model whose base is free but whose
+ *  long-prompt tier bills is NOT zero-priced. */
 export function isZeroPriced(pricing: {
   inputPer1M: number
   outputPer1M: number
+  tiers?: readonly {
+    aboveInputTokens?: number
+    inputPer1M: number
+    outputPer1M: number
+  }[]
 }): boolean {
-  return pricing.inputPer1M === 0 && pricing.outputPer1M === 0
+  return (
+    pricing.inputPer1M === 0 &&
+    pricing.outputPer1M === 0 &&
+    (pricing.tiers ?? []).every(
+      tier => tier.inputPer1M === 0 && tier.outputPer1M === 0,
+    )
+  )
 }
 
 /**

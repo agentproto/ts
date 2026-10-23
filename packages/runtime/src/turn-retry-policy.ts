@@ -15,8 +15,8 @@
  */
 
 import { z } from "zod"
-import { inModelList, resolveModelList } from "@agentproto/model-catalog/lists"
-import { DEFAULT_ROTATION_LIST_ID, getModelListSource } from "./model-list-store.js"
+import { resolveModelList } from "@agentproto/model-catalog/lists"
+import { DEFAULT_ROTATION_LIST_ID, getModelListSource, isInModelList } from "./model-list-store.js"
 import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
 
 /** Turn-failure classes `turnRetry.on` can opt into. */
@@ -116,7 +116,15 @@ function bareKey(model: string): string {
 function defaultRotateTargets(currentModel: string, policy: ModelPolicy | undefined): TurnRetryRotateTarget[] {
   const key = bareKey(currentModel)
   const source = getModelListSource()
-  return resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
+  let ids: string[]
+  try {
+    ids = resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
+  } catch {
+    // A broken/cyclic rotation list must fail closed: no rotation, no throw
+    // on the spawn hot path.
+    return []
+  }
+  return ids
     .filter(id => bareKey(id) !== key)
     .filter(id => checkModelPolicy(id, policy, source).ok)
     .map(model => ({ model }))
@@ -136,7 +144,7 @@ export function defaultTurnRetryForSpawn(
     on: [...TURN_RETRY_DEFAULT_ON],
     maxRetries: TURN_RETRY_DEFAULT_MAX_RETRIES,
   }
-  if (!currentModel || !inModelList(currentModel, DEFAULT_ROTATION_LIST_ID, getModelListSource())) {
+  if (!currentModel || !isInModelList(currentModel, DEFAULT_ROTATION_LIST_ID)) {
     return base
   }
   const rotate = defaultRotateTargets(currentModel, policy)
