@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -10,6 +10,7 @@ import {
   saveUserPreset,
   touchUserPreset,
   userPresetsPath,
+  UserPresetValidationError,
 } from "../user-presets.js"
 import type { SessionDescriptor } from "../sessions.js"
 
@@ -178,5 +179,98 @@ describe("deriveRecentSpawnConfigs", () => {
     )
     expect(deriveRecentSpawnConfigs(rows)).toHaveLength(5)
     expect(deriveRecentSpawnConfigs(rows, 2)).toHaveLength(2)
+  })
+})
+
+describe("session preset fields and save-time validation", () => {
+  it("round-trips tags, extends, defaultFor, modelPolicy and nested config (flat wins)", async () => {
+    await saveUserPreset({
+      id: "base",
+      label: "Base",
+      model: "base-model",
+      tags: ["one"],
+    })
+    await saveUserPreset({
+      id: "top",
+      label: "Top",
+      extends: ["base"],
+      defaultFor: "hermes",
+      tags: ["two"],
+      modelPolicy: { block: ["pricey"] },
+      model: "flat-model",
+      config: { model: "nested-model", effort: "low" },
+    })
+
+    const top = await getUserPreset("top")
+    expect(top).toMatchObject({
+      extends: ["base"],
+      defaultFor: "hermes",
+      tags: ["two"],
+      modelPolicy: { block: ["pricey"] },
+      model: "flat-model",
+      effort: "low",
+    })
+    // The nested form is flattened away; the flat axis won.
+    expect(top).not.toHaveProperty("config")
+    expect(top?.model).toBe("flat-model")
+
+    const raw = JSON.parse(await readFile(userPresetsPath(), "utf8"))
+    expect(raw.version).toBe(1)
+    expect(raw.presets.find((p: { id: string }) => p.id === "top").config).toBeUndefined()
+  })
+
+  it("rejects an unknown extends target with a typed error", async () => {
+    await expect(
+      saveUserPreset({ id: "a", label: "A", extends: ["ghost"] }),
+    ).rejects.toMatchObject({ code: "unknown_extends" })
+  })
+
+  it("rejects an extends cycle with a typed error", async () => {
+    await saveUserPreset({ id: "a", label: "A" })
+    await saveUserPreset({ id: "b", label: "B", extends: ["a"] })
+    let error: unknown
+    try {
+      await saveUserPreset({ id: "a", label: "A", extends: ["b"] })
+    } catch (err) {
+      error = err
+    }
+    expect(error).toBeInstanceOf(UserPresetValidationError)
+    expect(error).toMatchObject({ code: "extends_cycle" })
+  })
+
+  it("rejects a second defaultFor for the same harness, but allows editing the first", async () => {
+    await saveUserPreset({ id: "a", label: "A", defaultFor: "hermes" })
+    await expect(
+      saveUserPreset({ id: "b", label: "B", defaultFor: "hermes" }),
+    ).rejects.toMatchObject({ code: "duplicate_default_for" })
+
+    await expect(
+      saveUserPreset({ id: "a", label: "A renamed", defaultFor: "hermes" }),
+    ).resolves.toBeUndefined()
+    await expect(
+      saveUserPreset({ id: "c", label: "C", defaultFor: "codex" }),
+    ).resolves.toBeUndefined()
+  })
+
+  it("loads a version-1 file written before the session-preset fields existed", async () => {
+    const dir = join(home, ".agentproto")
+    await mkdir(dir, { recursive: true })
+    await writeFile(
+      userPresetsPath(),
+      JSON.stringify({
+        version: 1,
+        presets: [
+          { id: "legacy", label: "Legacy", adapter: "hermes", model: "old-model", effort: "high" },
+        ],
+      }),
+    )
+    await expect(listUserPresets()).resolves.toEqual([
+      { id: "legacy", label: "Legacy", adapter: "hermes", model: "old-model", effort: "high" },
+    ])
+    // The flattened legacy entry still saves through the new boundary.
+    await expect(
+      saveUserPreset({ id: "legacy", label: "Legacy", tags: ["kept"] }),
+    ).resolves.toBeUndefined()
+    await expect(getUserPreset("legacy")).resolves.toMatchObject({ tags: ["kept"] })
   })
 })
