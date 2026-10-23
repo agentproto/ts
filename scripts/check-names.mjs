@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Check the TypeScript reference implementation against the canonical AIP
- * names in `specs/names.json` (AIP-70 GLOSSARY, Naming rules).
+ * names in `specs/names.json` (the GLOSSARY spec, agentproto/agentproto#91,
+ * Naming rules).
  *
  * The specs repository owns the registry; this script reads a copy of it and
  * compares what the packages under `packages/` and `adapters/` claim:
@@ -27,7 +28,7 @@
  * reviewed batch of renames.
  *
  * A missing `--names` file is not a failure: the pinned canonical commit
- * predates AIP-70, so there is nothing to compare against yet.
+ * predates the names registry, so there is nothing to compare against yet.
  *
  * House style follows scripts/check-aip-refs.mjs: plain Node ESM, no deps,
  * counted summary, exit 1 on failure with `file:line` for each.
@@ -229,7 +230,7 @@ function main() {
   const result = checkNames({ root, namesPath, writePending: Boolean(args.writePending) })
 
   if (result.skipped) {
-    console.log(`check-names: skipped, ${path.relative(process.cwd(), namesPath) || namesPath} does not exist (canonical pin predates AIP-70)`)
+    console.log(`check-names: skipped, ${path.relative(process.cwd(), namesPath) || namesPath} does not exist (canonical pin predates the names registry)`)
     process.exit(0)
   }
 
