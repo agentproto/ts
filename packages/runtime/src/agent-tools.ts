@@ -803,7 +803,7 @@ export function registerAgentTools(
         // list extra caller sessions allowed to drive the new session
         // besides its owner/the operator. The registry persists the row.
         const attachWarnings: string[] = []
-        // Operator-assigned immutable label (`SessionDescriptor.operatorLabel`):
+        // Operator-assigned label (`SessionDescriptor.operatorLabel`):
         // stamped ONLY when this spawn carried no caller session (human
         // operator / operator-side client) and created a fresh session. It is
         // what `label:` entries in `allowPromptFrom` match on.
@@ -1683,6 +1683,75 @@ export function registerAgentTools(
             {
               type: "text",
               text: `agent_set_prompt_policy: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          ],
+          isError: true,
+        }
+      }
+    }
+  )
+
+  // ── agent_set_operator_label ─────────────────────────────
+  server.tool(
+    "agent_set_operator_label",
+    "Stamp this session's operator-assigned `operatorLabel` — the identity a " +
+      "`label:<label>` / `label:<prefix>*` entry in another session's " +
+      "`allowPromptFrom` matches against. Normally the daemon stamps this " +
+      "ONLY on a fresh root spawn (no caller session, not a resume) and " +
+      "every later `session_restart` / `session_continue_fresh` of that " +
+      "lineage carries it forward automatically. This tool exists for the " +
+      "one case that carry-forward cannot fix: a lineage that has lived by " +
+      "resume/continue-fresh since before it ever got a label, so there was " +
+      "never a prior label to carry forward. Reserved to the human operator " +
+      "— unlike `allowPromptFrom`, a session may not stamp its own (or any) " +
+      "`operatorLabel`: that would let a compromised session grant itself " +
+      "any `label:` grant it likes. Pass an empty string to clear it.",
+    {
+      sessionId: sessionIdField,
+      id: sessionIdAliasField,
+      operatorLabel: z
+        .string()
+        .describe("The operator-assigned label to stamp, or \"\" to clear it."),
+    },
+    async input => {
+      if (effectiveCaller() !== undefined) {
+        return ownerGateError(
+          "agent_set_operator_label",
+          "agent_set_operator_label: reserved to the human operator — a session may not stamp its own (or another session's) operatorLabel. This call came from a session.",
+        )
+      }
+      const sessionId = resolveSessionIdArg(input)
+      if (!sessionId) return missingSessionIdError("agent_set_operator_label")
+      const target = registry.get(sessionId)
+      if (!target) {
+        return {
+          content: [
+            { type: "text", text: `agent_set_operator_label: no session "${sessionId}"` },
+          ],
+          isError: true,
+        }
+      }
+      try {
+        const operatorLabel = input.operatorLabel.trim() || undefined
+        const desc = registry.setOperatorLabel(sessionId, operatorLabel)
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                { ok: true, sessionId, operatorLabel: desc.operatorLabel ?? null },
+                null,
+                2,
+              ),
+            },
+          ],
+        }
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `agent_set_operator_label: ${err instanceof Error ? err.message : String(err)}`,
             },
           ],
           isError: true,

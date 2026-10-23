@@ -54,6 +54,7 @@ const makePrev = (): SessionDescriptor =>
 const fakeRegistry = {
   get: vi.fn(),
   markRetired: vi.fn(),
+  setPromptPolicy: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
 const wireMarkRetired = (): void => {
@@ -71,6 +72,7 @@ describe("continueAgentSessionFresh", () => {
     vi.mocked(spawnAgentSession).mockReset()
     vi.mocked(fakeResolveAdapter).mockReset()
     fakeRegistry.get = vi.fn()
+    fakeRegistry.setPromptPolicy = vi.fn()
     wireMarkRetired()
   })
 
@@ -261,6 +263,28 @@ describe("continueAgentSessionFresh", () => {
     expect(result.continuedFrom).toBe("sess_prev")
     expect(newDesc.continuedFrom).toBe("sess_prev")
     expect(newDesc.checkpointId).toBeDefined()
+  })
+
+  it("carries allowPromptFrom forward to the fresh session's new id", async () => {
+    const prev = {
+      ...makePrev(),
+      allowPromptFrom: ["sess_peer", "label:pygmalion-brain-persistent"],
+    } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setPromptPolicy).toHaveBeenCalledWith("sess_new", [
+      "sess_peer",
+      "label:pygmalion-brain-persistent",
+    ])
   })
 
   it("stamps handoff with matching from/to harness on a same-harness continuation", async () => {

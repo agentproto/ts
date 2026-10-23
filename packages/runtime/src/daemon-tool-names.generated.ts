@@ -17,6 +17,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "agent_sessions_list",
   "agent_set_effort",
   "agent_set_model",
+  "agent_set_operator_label",
   "agent_set_posture",
   "agent_set_prompt_policy",
   "agent_start",

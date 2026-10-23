@@ -66,11 +66,13 @@ export type OwnerGateResult =
  *  5. The session's `allowPromptFrom` list (session ids, `"any"`, or
  *     `label:<operatorLabel>` / `label:<prefix>*` grants): allowed — an
  *     explicitly granted secondary caller. A `label:` entry matches ONLY a
- *     caller's immutable `operatorLabel` (stamped by the daemon when the
- *     operator spawned a root session; no tool can change it) and only when
- *     that caller has no parent. The mutable `label` (settable by the
- *     session itself via `session_rename`, or by any spawner) never
- *     matches, and `label:` / `label:*` (empty prefix) match nothing.
+ *     caller's operator-assigned `operatorLabel` (normally stamped by the
+ *     daemon when the operator spawned a root session; the human operator
+ *     may re-stamp it via `agent_set_operator_label`, but no *session* can
+ *     change it) and only when that caller has no parent. The mutable
+ *     `label` (settable by the session itself via `session_rename`, or by
+ *     any spawner) never matches, and `label:` / `label:*` (empty prefix)
+ *     match nothing.
  *  6. Everything else (a session that is neither an ancestor/owner nor
  *     listed): refused with a pointed error.
  */
@@ -83,7 +85,7 @@ export function checkSessionOwnerGate(input: {
   tool: string
   /** Resolves a session's `parentSessionId` (registry lookup) — enables the
    *  ancestor-chain rule above. Optional; tests may pass none.
-   *  `operatorLabelOf` resolves a session's immutable `operatorLabel`
+   *  `operatorLabelOf` resolves a session's operator-assigned `operatorLabel`
    *  (registry lookup) — enables `label:` entries in `allowPromptFrom`.
    *  Optional; tests may pass none. */
   parentOf?: (id: string) => string | undefined

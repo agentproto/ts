@@ -410,6 +410,35 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries allowPromptFrom forward onto the restarted session's new id", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.setPromptPolicy(prev.id, ["sess_peer", "label:pygmalion-brain-persistent"])
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(registry.get(desc.id as string)?.allowPromptFrom).toEqual([
+      "sess_peer",
+      "label:pygmalion-brain-persistent",
+    ])
+
+    await close()
+    registry.shutdown()
+  })
+
   it("carries origin, parent, and depth forward onto the restarted descriptor (#session-visibility)", async () => {
     const { client, registry, close } = await buildHarness()
 
