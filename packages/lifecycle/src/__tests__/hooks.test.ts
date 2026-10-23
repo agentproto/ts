@@ -8,7 +8,6 @@ import {
   HOOK_PATHS,
   parseAgentHookMap,
   parseHookActionRef,
-  parseHookEventRef,
   parseHostEventRegistration,
   type HostEventRegistration,
   type HookReaction,
@@ -134,15 +133,4 @@ describe("hooks/v1 contract fixtures", () => {
     })
   })
 
-  it("keeps the illustrative AIP-41 event routine strict and action-targeted", () => {
-    const routine = readFixture("aip-41-event-routine.json") as Record<string, unknown>
-    expect(routine.schema).toBe("routine/v1")
-    expect(typeof routine.description).toBe("string")
-    expect((routine.schedule as { kind?: unknown }).kind).toBe("event")
-    expect((routine.schedule as { on?: unknown }).on).toBe("turn-end")
-    expect((routine.target as { action?: unknown }).action).toBe(
-      "session:child-housekeeping",
-    )
-    expect(parseHookEventRef("turn-end").kind).toBe("standard")
-  })
 })

@@ -25,7 +25,7 @@ import {
   isStandardLifecycleEvent,
   parseTemplatedLifecycleEvent,
   resolveLifecycleEvent,
-} from "./index.js"
+} from "./events.js"
 
 export const HOOKS_CONTRACT = "hooks/v1" as const
 
@@ -44,7 +44,7 @@ export const HOOK_CAPABILITY_SURFACES = [
 ] as const
 export type HookCapabilitySurface = (typeof HOOK_CAPABILITY_SURFACES)[number]
 
-export type HookEventKind = "standard" | "alias" | "templated" | "host"
+export type HookEventKind = "standard" | "alias" | "templated" | "custom" | "host"
 
 export interface HookEventRef {
   /** The literal key from the declaration. */
@@ -61,7 +61,7 @@ export interface HookEventRef {
 }
 
 export interface HookActionRef {
-  /** AIP-39 action id, `<target-kind>:<verb>`. */
+  /** AIP-39 action id. Resource-qualified ids are preferred. */
   action: string
   inputs?: Record<string, unknown>
 }
@@ -103,54 +103,6 @@ export interface HookReaction {
   reconciliation: "none" | "safe"
 }
 
-export interface AdmissionHook {
-  path: "admission"
-  action: HookActionRef
-  /** AIP-38 policy ref or host policy id, evaluated before the action runs. */
-  policy: string
-}
-
-export type AdmissionOutcome = "allow" | "deny"
-
-export interface LifecycleEmission {
-  path: "lifecycle"
-  event: HookEventRef
-  payload?: Record<string, unknown>
-}
-
-export type ReactionReceiptStatus =
-  | "pending"
-  | "applied"
-  | "failed"
-  | "skipped"
-  | "reconciled"
-
-export interface ReactionReceipt {
-  receiptId: string
-  eventId: string
-  action: string
-  status: ReactionReceiptStatus
-  delivery: "best-effort" | "durable"
-  reconciliation: "none" | "safe"
-  createdAt: string
-  updatedAt: string
-  error?: string
-}
-
-/**
- * The shape a host should add under the existing capability surfaces when it
- * implements hooks/v1. Optional and additive: older readers ignore it.
- */
-export interface HooksCapabilityAdvertisement {
-  contract: typeof HOOKS_CONTRACT
-  paths: Partial<Record<HookPath, boolean>>
-  hostEvents?: readonly HostEventRegistration[]
-  receipts?: {
-    delivery: "best-effort" | "durable"
-    reconciliation: "none" | "safe"
-  }
-}
-
 export class HooksContractError extends Error {
   constructor(message: string) {
     super(message)
@@ -158,7 +110,7 @@ export class HooksContractError extends Error {
   }
 }
 
-const ACTION_ID_RE = /^[a-z0-9][a-z0-9.-]*:[a-z0-9][a-z0-9.-]*$/
+const ACTION_ID_RE = /^[a-z0-9][a-z0-9.-]*(:[a-z0-9][a-z0-9.-]*)?$/
 const EVENT_WHITESPACE_RE = /\s/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -166,16 +118,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function parseActionId(value: unknown, context: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new HooksContractError(`${context}: action ref must be a non-empty string`)
+  if (typeof value !== "string" || value.length < 2) {
+    throw new HooksContractError(`${context}: action ref must contain at least two characters`)
   }
   if (value.length > 80) {
     throw new HooksContractError(`${context}: action ref must be at most 80 characters`)
   }
   if (!ACTION_ID_RE.test(value)) {
     throw new HooksContractError(
-      `${context}: action ref ${JSON.stringify(value)} must be an AIP-39 '<target-kind>:<verb>' id ` +
-        "(lowercase, one colon, for example `session:child-housekeeping`)",
+      `${context}: action ref ${JSON.stringify(value)} must be an AIP-39 id ` +
+        "(lowercase, with an optional resource kind such as `session:child-housekeeping`)",
     )
   }
   return value
@@ -216,8 +168,8 @@ export function parseHookActionRef(value: unknown, context = "action"): HookActi
 }
 
 /**
- * Parse an AIP-37 event reference. Bare events must be standard, aliases, or
- * templated. Host-specific events must be namespaced and explicitly
+ * Parse an AIP-37 event reference. Hosts may define additional bare events.
+ * Host-specific namespaced events must be explicitly
  * registered, so a typo cannot silently become a nonportable dependency.
  */
 export function parseHookEventRef(
@@ -249,7 +201,8 @@ export function parseHookEventRef(
     }
   }
   if (isNamespacedLifecycleEvent(name)) {
-    const registration = (options.hostEvents ?? []).find(entry => entry.event === name)
+    const registrations = (options.hostEvents ?? []).map(parseHostEventRegistration)
+    const registration = registrations.find(entry => entry.event === name)
     if (!registration) {
       throw new HooksContractError(
         `event ref ${JSON.stringify(name)} is host-specific and nonportable; ` +
@@ -260,10 +213,7 @@ export function parseHookEventRef(
     return { raw: name, event: name, kind: "host", portable: false, host }
   }
 
-  throw new HooksContractError(
-    `event ref ${JSON.stringify(name)} is not an AIP-37 standard, alias, or templated event; ` +
-      "host events must use a namespace such as `agentproto:<event>` and be registered explicitly",
-  )
+  return { raw: name, event: name, kind: "custom", portable: true }
 }
 
 export function parseHostEventRegistration(value: unknown): HostEventRegistration {

@@ -16,8 +16,5 @@
       "dry_run": false
     }
   },
-  "fires_events": [
-    "turn-end"
-  ],
   "enabled": true
 }

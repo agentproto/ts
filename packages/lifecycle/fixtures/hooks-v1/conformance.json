@@ -6,12 +6,6 @@
       "host": "agentproto",
       "portability": "nonportable",
       "description": "Daemon-local event emitted when a child session needs housekeeping."
-    },
-    {
-      "event": "agentproto:context-rescue",
-      "host": "agentproto",
-      "portability": "nonportable",
-      "description": "Daemon-local emergency context rescue event."
     }
   ],
   "agentHookMaps": {
@@ -38,7 +32,7 @@
         "on": {
           "per-turn": [
             "session:child-housekeeping",
-            "session:context-rescue"
+            "session:write-summary"
           ]
         },
         "expect": [
@@ -55,7 +49,7 @@
             "event": "turn-end",
             "eventKind": "alias",
             "portable": true,
-            "action": "session:context-rescue",
+            "action": "session:write-summary",
             "inputs": null,
             "delivery": "best-effort",
             "reconciliation": "none"
@@ -121,15 +115,26 @@
             "reconciliation": "none"
           }
         ]
+      },
+      {
+        "name": "custom bare event remains valid under AIP-37",
+        "on": {
+          "custom-event": "child-housekeeping"
+        },
+        "expect": [
+          {
+            "event": "custom-event",
+            "eventKind": "custom",
+            "portable": true,
+            "action": "child-housekeeping",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
       }
     ],
     "invalid": [
-      {
-        "name": "unknown bare event",
-        "on": {
-          "custom-event": "session:child-housekeeping"
-        }
-      },
       {
         "name": "unregistered host event",
         "on": {
@@ -144,12 +149,6 @@
         }
       },
       {
-        "name": "action id without a target kind",
-        "on": {
-          "turn-end": "child-housekeeping"
-        }
-      },
-      {
         "name": "empty action list",
         "on": {
           "turn-end": []
@@ -160,13 +159,26 @@
         "on": {
           "turn-end": {
             "action": "session:child-housekeeping",
-            "ref": "session:context-rescue"
+            "ref": "session:write-summary"
           }
         }
       },
       {
         "name": "non-object on map",
         "on": []
+      },
+      {
+        "name": "malformed host registration cannot authorize an event",
+        "on": {
+          "agentproto:child-housekeeping": "session:child-housekeeping"
+        },
+        "registrations": [
+          {
+            "event": "agentproto:child-housekeeping",
+            "host": "other",
+            "portability": "nonportable"
+          }
+        ]
       }
     ]
   },

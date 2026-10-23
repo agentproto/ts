@@ -30,8 +30,8 @@ session and prompt path.
 - **Event ref**: an AIP-37 lifecycle event name used as a key. Standard
   names (`turn-end`), aliases (`per-turn`), templated names (`idle-300`), and
   explicitly registered host events (`agentproto:*`) are allowed.
-- **Action ref**: an AIP-39 action id in `<target-kind>:<verb>` form, for
-  example `session:child-housekeeping`.
+- **Action ref**: an AIP-39 action id. Resource-qualified ids such as
+  `session:child-housekeeping` are preferred; unqualified ids remain valid.
 - **Admission hook**: a policy evaluation bound to one action, before the
   action runs.
 - **Lifecycle emission**: an event fired after a daemon-owned transition.
@@ -52,9 +52,9 @@ canonical event. Templated events retain their numeric threshold.
 Host-specific events are namespaced, for example
 `agentproto:child-housekeeping`. They are nonportable and must be registered
 explicitly before a config may reference them. An unregistered namespaced
-event is a contract error, not a silently accepted typo. Unknown bare names
-are also rejected, so an author must either use the standard vocabulary or
-declare a host namespace.
+event is a contract error, not a silently accepted typo. AIP-37 also permits
+hosts to fire additional bare event names; hooks/v1 preserves those as custom
+portable references.
 
 The runtime's `SessionEventType` union uses transport-local names such as
 `session:turn-end`. Those names are not the portable config vocabulary.
@@ -126,8 +126,6 @@ target:
   action: session:child-housekeeping
   inputs:
     dry_run: false
-fires_events:
-  - turn-end
 enabled: true
 ---
 ```
@@ -156,10 +154,9 @@ belongs in the existing surfaces:
 - `harness_capabilities` for harness-level support.
 - `session_capabilities` for session-level support.
 
-`HooksCapabilityAdvertisement` in the contract module describes the optional
-additive block those surfaces may carry. `session_capabilities` is a frozen
-contract, so any addition must be optional and must not change existing
-fields. PR 1 does not modify either response body.
+The concrete advertisement shape is intentionally deferred until a runtime
+implementation extends these frozen responses. PR 1 does not modify either
+response body.
 
 ## Durability and reconciliation are explicit, not implied
 
@@ -198,7 +195,8 @@ of scope for this contract.
 | `packages/runtime/src/routine-registrar.ts` | Registers cron only; event routines and `target.action` skipped | Documented gap, not changed |
 | `packages/runtime/src/session-event-bus.ts` | In-memory `SessionEventType` pub/sub | Transport for lifecycle and reaction paths; not portable config names |
 | `packages/runtime/src/hooks-config.ts` | Existing semantic ACP permission hook engine | Separate surface; not renamed or merged |
-| `packages/runtime/src/capabilities-inventory.ts` | Existing MCP/skill inventory | Future host-level hook capability advertisement would extend existing capabilities surfaces, not this module's shape in PR 1 |
+| `packages/runtime/src/capabilities-inventory.ts` | Existing MCP/skill inventory | Future host-level hook capability advertisement would extend existing capabilities surfaces |
+| `packages/runtime/src/sentinel-webhook-outbox.ts` | Existing durable outbox precedent | Future reaction receipts must generalize or reuse this pattern, not introduce a parallel durability system |
 | `packages/runtime/src/session-capabilities.ts` | Frozen session capability response | Future optional additive hook block; unchanged in PR 1 |
 
 ## Out of scope for PR 1
