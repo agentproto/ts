@@ -65,6 +65,12 @@ export interface PrStatusSnapshot {
   /** The PR's head commit at fetch time — absent from snapshots taken
    *  before this field existed. */
   headSha?: string
+  /** The PR's head branch name at fetch time — absent from snapshots taken
+   *  before this field existed. Unlike GitHub's `author` (the same bot
+   *  account for every PR we open), the branch prefix (`pm-brain/...`,
+   *  `mainteneur/...`, `fix-pr-<n>-...`) identifies which role/agent opened
+   *  the PR. */
+  headRefName?: string
 }
 
 /** The mutable annotations sidecar of a ledger entry. */

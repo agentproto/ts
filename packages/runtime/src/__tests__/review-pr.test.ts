@@ -60,7 +60,7 @@ async function fakeGh(opts: { headSha: string; pulls: unknown[]; failChecks?: bo
     state: "closed",
     merged_at: "2026-09-02T00:00:00Z",
     html_url: "https://github.com/acme/demo/pull/7",
-    head: { sha: opts.headSha },
+    head: { sha: opts.headSha, ref: "mainteneur/fix-7" },
   }
   await writeFile(join(dir, "pulls.json"), JSON.stringify(opts.pulls))
   await writeFile(join(dir, "pull.json"), JSON.stringify(pull))
@@ -183,6 +183,7 @@ describe("review_pr", () => {
         state: "merged",
         reviews: [{ login: "rev", state: "APPROVED", submittedAt: "2026-09-01T00:00:00Z" }],
         checks: [{ name: "ci", conclusion: "success" }],
+        headRefName: "mainteneur/fix-7",
       },
       snapshots: 1,
     })

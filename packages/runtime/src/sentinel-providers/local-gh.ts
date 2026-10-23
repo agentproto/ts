@@ -284,7 +284,13 @@ function diffSnapshots(
         subjects,
         terminal: false,
         time: current.fetchedAt,
-        data: { action: "synchronize", repo: ctx.repo, number: ctx.number, headSha: current.headSha },
+        data: {
+          action: "synchronize",
+          repo: ctx.repo,
+          number: ctx.number,
+          headSha: current.headSha,
+          ...(current.headRefName ? { headRefName: current.headRefName } : {}),
+        },
         summary: `New commits pushed to ${prTag} (${shortSha})`,
       }),
     )
@@ -360,7 +366,7 @@ function diffSnapshots(
 
 // ── Repo scope (one GraphQL call per repo per tick) ─────────────────────
 
-const REPO_PRS_QUERY = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url isDraft state createdAt headRefOid author{login} reviews(last:50){nodes{author{login} state submittedAt}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:60){nodes{__typename ... on CheckRun{name conclusion status} ... on StatusContext{context state}}}}}}}}}}}`
+const REPO_PRS_QUERY = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:30,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{number title url isDraft state createdAt headRefOid headRefName author{login} reviews(last:50){nodes{author{login} state submittedAt}} commits(last:1){nodes{commit{statusCheckRollup{contexts(first:60){nodes{__typename ... on CheckRun{name conclusion status} ... on StatusContext{context state}}}}}}}}}}}`
 
 interface RepoPr {
   number: number
@@ -389,6 +395,7 @@ interface GqlPr {
   state?: string
   createdAt?: string
   headRefOid?: string
+  headRefName?: string
   author?: { login?: string } | null
   reviews?: { nodes?: Array<{ author?: { login?: string } | null; state?: string; submittedAt?: string | null } | null> }
   commits?: { nodes?: Array<{ commit?: { statusCheckRollup?: { contexts?: { nodes?: Array<GqlContext | null> } } | null } } | null> }
@@ -437,6 +444,7 @@ async function fetchRepoPrs(gh: GhRunner, repo: string, now: () => Date): Promis
             .map(r => ({ login: r!.author?.login ?? "", state: r!.state ?? "", submittedAt: r!.submittedAt ?? "" })),
           checks: contexts.filter((c): c is GqlContext => !!c).map(contextToCheck),
           ...(n.headRefOid ? { headSha: n.headRefOid } : {}),
+          ...(n.headRefName ? { headRefName: n.headRefName } : {}),
         },
       }
     })
@@ -466,7 +474,17 @@ function decorate(events: SentinelEvent[], pr: RepoPr): SentinelEvent[] {
   const title = pr.title.length > 80 ? `${pr.title.slice(0, 77)}...` : pr.title
   return events.map(e => ({
     ...e,
-    data: { ...e.data, title: pr.title, url: pr.url, author: pr.author, draft: pr.draft },
+    data: {
+      ...e.data,
+      title: pr.title,
+      url: pr.url,
+      author: pr.author,
+      draft: pr.draft,
+      // The branch prefix (`pm-brain/...`, `mainteneur/...`, `fix-pr-<n>-...`)
+      // identifies which role/agent opened the PR — `author` cannot, since
+      // every PR we open is pushed under the same bot GitHub account.
+      ...(pr.snapshot.headRefName ? { headRefName: pr.snapshot.headRefName } : {}),
+    },
     summary: title ? `${e.summary} - ${title}` : e.summary,
   }))
 }
