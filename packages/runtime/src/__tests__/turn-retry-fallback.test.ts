@@ -20,6 +20,7 @@ import { createModelCooldowns } from "../model-cooldowns.js"
 import {
   classifyTurnError,
   createTurnRetryController,
+  TURN_RETRY_PROMPT_SOURCE,
   type TurnRetryFallbackEffective,
 } from "../turn-retry.js"
 import { createRotationTargetCheck } from "../turn-retry-eligibility.js"
@@ -33,6 +34,8 @@ const FREE_B = "opencode/deepseek-v4.1-flash-free"
 const FREE_C = "opencode/big-pickle"
 const OPENCODE_LIMIT =
   "Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"
+
+const HANDOFF_BRIEF = "checkpoint brief from the handoff"
 
 async function until(predicate: () => boolean, label: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -91,6 +94,12 @@ function harness(opts: {
 }) {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
+  const enqueued: Array<{ id: string; source: string | undefined }> = []
+  const enqueuePrompt = registry.enqueuePrompt.bind(registry)
+  registry.enqueuePrompt = (id, prompt, enqueueOpts) => {
+    enqueued.push({ id, source: enqueueOpts?.source })
+    return enqueuePrompt(id, prompt, enqueueOpts)
+  }
   const trace: string[] = []
   const notices: string[] = []
   const cooldowns = opts.cooldowns ?? createModelCooldowns()
@@ -133,6 +142,9 @@ function harness(opts: {
         harness: handoffOpts.harness,
         ...(handoffOpts.model ? { model: handoffOpts.model } : {}),
       })
+      // The real handoff (continueAgentSessionFresh) spawns the successor
+      // with its checkpoint brief as the first prompt.
+      void registry.sendPrompt(desc.id, HANDOFF_BRIEF)
       return desc
     },
     log: () => {},
@@ -166,6 +178,7 @@ function harness(opts: {
     prompts,
     restarts,
     handoffs,
+    enqueued,
     freshPrompts,
     focusPrompts: () => freshPrompts,
     spawn,
@@ -242,6 +255,7 @@ describe("turn retry fallback", () => {
     await Promise.resolve()
     await until(() => h.fallbackEvents.length === 1, "handoff event")
     await until(() => h.focusPrompts().length === 1, "handoff prompt")
+    expect(h.focusPrompts()[0]).toContain(HANDOFF_BRIEF)
 
     expect(h.handoffs).toHaveLength(1)
     expect(h.handoffs[0]).toMatchObject({
@@ -255,6 +269,11 @@ describe("turn retry fallback", () => {
       to: { harness: "other", model: FREE_C },
     })
     expect(event.newSessionId).toBeDefined()
+    // The successor runs on the handoff's own brief; turn-retry must not
+    // stack its continuation prompt on top of it.
+    expect(
+      h.enqueued.filter(e => e.id === event.newSessionId && e.source === TURN_RETRY_PROMPT_SOURCE),
+    ).toEqual([])
     expect(h.registry.get(event.newSessionId!)?.fallbackStep).toBe(0)
     expect(h.registry.get(desc.id)?.fallbackStep).toBeUndefined()
     h.done()
