@@ -136,6 +136,7 @@
     "@agentproto/agent-runtime": "workspace:*",
     "@agentproto/review": "workspace:*",
     "@agentproto/runtime": "workspace:*",
+    "@agentproto/usage-presets": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.9",
     "@types/ws": "^8.18.2",
