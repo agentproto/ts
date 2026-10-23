@@ -240,8 +240,11 @@ export type ResolvedTarget =
       readonly model: string
       readonly profileRef?: string
       readonly fingerprint: string
-      /** Spawn fields — explicit, so no later layer can substitute. */
-      readonly spawn: Pick<SpawnAgentSessionInput, "adapter" | "model"> & Partial<Pick<SpawnAgentSessionInput, "access">>
+      /** Spawn fields — explicit, so no later layer can substitute. The
+       *  profile's policy travels with the descriptor so live `setModel` /
+       *  restart / rotation stay bounded after the spawn-time check. */
+      readonly spawn: Pick<SpawnAgentSessionInput, "adapter" | "model"> &
+        Partial<Pick<SpawnAgentSessionInput, "access" | "modelPolicy">>
     }
   | { readonly ok: false; readonly code: string; readonly reason: string }
 
@@ -343,6 +346,7 @@ export async function resolveAndValidateTarget(
       adapter: verdict.adapter,
       model: verdict.model,
       ...(profileRef ? { access: { profileRef } } : {}),
+      ...(profile.policy ? { modelPolicy: profile.policy } : {}),
     },
   }
 }

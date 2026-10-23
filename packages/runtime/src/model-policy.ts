@@ -17,7 +17,11 @@ export interface ModelPolicy {
 
 export type PolicyVerdict =
   | { ok: true }
-  | { ok: false; code: "model_blocked" | "model_not_allowed" | "unknown_list"; reason: string }
+  | {
+      ok: false
+      code: "model_blocked" | "model_not_allowed" | "model_unresolved" | "unknown_list"
+      reason: string
+    }
 
 export const modelPolicySchema = z.object({
   allow: z.array(z.string().min(1)).max(32).optional(),
@@ -53,13 +57,24 @@ function unknownList(err: unknown): PolicyVerdict {
 }
 
 export function checkModelPolicy(
-  model: string,
+  model: string | undefined,
   policy: ModelPolicy | undefined,
   src: ModelListSource,
 ): PolicyVerdict {
   if (!policy) return { ok: true }
   for (const id of [...(policy.block ?? []), ...(policy.allow ?? [])]) {
     if (!src.get(id)) return unknownList(new Error(`unknown model list "${id}"`))
+  }
+  if (model === undefined) {
+    // No model means no way to prove the model is inside an allow list. A
+    // block-only policy is still safe: there is no model it could admit.
+    return policy.allow === undefined
+      ? { ok: true }
+      : {
+          ok: false,
+          code: "model_unresolved",
+          reason: `model policy has an allow list (${policy.allow.join(", ") || "none"}) but no model could be resolved to check`,
+        }
   }
   try {
     for (const id of policy.block ?? []) {

@@ -607,7 +607,12 @@ optional lists of list ids.
 - `block`: a model in any blocked list is refused. Block always wins.
 - `allow`: when present, a model outside every allowed list is refused,
   uncataloged ids included. An empty `allow` permits nothing.
-- A list id that does not exist is a refusal (`unknown_list`), never ignored.
+- A list id that does not exist is a refusal (`unknown_list`), never ignored —
+  even when the spawn names no `model`.
+- An `allow` policy needs a model to check: a spawn with no resolvable model
+  (an omitted `model`, or a sandbox spawn that lets the box choose) is refused
+  (`model_unresolved`), never silently allowed. A `block`-only policy has no
+  such requirement.
 
 The policy is stored on the session and enforced at spawn (explicit `model`
 included; refusal is `model_policy_refused`), on a live model switch

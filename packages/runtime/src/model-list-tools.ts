@@ -49,8 +49,8 @@ export function registerModelListTools(server: McpServer): void {
     "List the user's model lists from `~/.agentproto/model-lists.json`. A " +
       "list is named data: include selectors (access-target vocabulary plus " +
       "price / context / route variant), exclude selectors that always win, " +
-      "explicit `ids` pins, an ordering mode and a rotation strategy. The " +
-      "a seed list selects models by the `price:zero` tag.",
+      "explicit `ids` pins, an ordering mode and a rotation strategy. A " +
+      "seed list selects models by the `price:zero` tag.",
     {},
     async () => text({ lists: await listModelLists() }),
   )

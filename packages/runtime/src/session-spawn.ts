@@ -3647,16 +3647,17 @@ export async function spawnAgentSession(
     }
   }
   if (input.modelPolicy) {
+    // Validate the list ids and refuse an unprovable `allow` even when no model
+    // is resolvable (an omitted model, or a sandbox spawn whose box picks its
+    // own default): a policy must never fail open.
     const policyModel = input.model ?? resolved?.defaultModel
-    if (policyModel !== undefined) {
-      const verdict = checkModelPolicy(policyModel, input.modelPolicy, getModelListSource())
-      if (!verdict.ok) {
-        return {
-          ok: false,
-          code: "model_policy_refused",
-          message: `agent_start: ${verdict.reason}`,
-          details: { policyCode: verdict.code, model: policyModel },
-        }
+    const verdict = checkModelPolicy(policyModel, input.modelPolicy, getModelListSource())
+    if (!verdict.ok) {
+      return {
+        ok: false,
+        code: "model_policy_refused",
+        message: `agent_start: ${verdict.reason}`,
+        details: { policyCode: verdict.code, ...(policyModel !== undefined ? { model: policyModel } : {}) },
       }
     }
   }

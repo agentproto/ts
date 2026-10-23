@@ -70,6 +70,29 @@ describe("checkModelPolicy", () => {
       code: "unknown_list",
     })
   })
+
+  it("an unresolved model is refused by an allow policy but not by block alone", () => {
+    expect(checkModelPolicy(undefined, { block: ["pricey"] }, src)).toEqual({ ok: true })
+    expect(checkModelPolicy(undefined, { allow: ["cheap"] }, src)).toMatchObject({
+      ok: false,
+      code: "model_unresolved",
+    })
+    expect(checkModelPolicy(undefined, { allow: [] }, src)).toMatchObject({
+      ok: false,
+      code: "model_unresolved",
+    })
+  })
+
+  it("an unknown list id is refused even when no model is resolved", () => {
+    expect(checkModelPolicy(undefined, { allow: ["nope"] }, src)).toMatchObject({
+      ok: false,
+      code: "unknown_list",
+    })
+    expect(checkModelPolicy(undefined, { block: ["nope"] }, src)).toMatchObject({
+      ok: false,
+      code: "unknown_list",
+    })
+  })
 })
 
 describe("normalizeModelPolicy", () => {
@@ -149,6 +172,44 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     if (result.ok) return
     expect(result.code).toBe("model_policy_refused")
     expect(result.details).toMatchObject({ policyCode: "unknown_list" })
+  })
+
+  it("an allow policy with no resolvable model is refused, not skipped", async () => {
+    const d = deps()
+    const result = await spawnAgentSession(d.deps as never, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      modelPolicy: { allow: ["default-rotation"] },
+    } as never)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("model_policy_refused")
+    expect(result.details).toMatchObject({ policyCode: "model_unresolved" })
+    expect(d.started()).toBe(0)
+  })
+
+  it("an unknown list is refused even when no model is resolvable", async () => {
+    const d = deps()
+    const result = await spawnAgentSession(d.deps as never, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      modelPolicy: { allow: ["no-such-list"] },
+    } as never)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("model_policy_refused")
+    expect(result.details).toMatchObject({ policyCode: "unknown_list" })
+    expect(d.started()).toBe(0)
+  })
+
+  it("a block-only policy still spawns when no model is resolvable", async () => {
+    const d = deps()
+    const result = await spawnAgentSession(d.deps as never, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      modelPolicy: { block: ["default-rotation"] },
+    } as never)
+    expect(result.ok).toBe(true)
   })
 
   it("a permitted model spawns and the policy is stored on the descriptor", async () => {
