@@ -36,7 +36,7 @@ const wired = () =>
 describe("createModelSwitchCheck", () => {
   it("refuses a paid target for a free session, wording straight from rotation", async () => {
     await expect(wired()(desc("opencode/big-pickle"), "opencode/gpt-5.1-codex")).resolves.toBe(
-      "paid model — a free session never rotates onto a paid id",
+      "paid model — a free session never switches onto a paid id",
     )
   })
 

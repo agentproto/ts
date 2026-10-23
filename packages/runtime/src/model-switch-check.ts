@@ -23,7 +23,7 @@ export function createModelSwitchCheck(deps: {
   const rotationCheck = createRotationTargetCheck(deps)
   return async (desc, modelId) => {
     if (desc.model && isOpencodeFreeModel(desc.model) && !isOpencodeFreeModel(modelId)) {
-      return "paid model — a free session never rotates onto a paid id"
+      return "paid model — a free session never switches onto a paid id"
     }
     return rotationCheck(desc, { model: modelId })
   }

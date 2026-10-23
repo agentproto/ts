@@ -5018,7 +5018,7 @@ export async function createGateway(
           ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
         }),
         registry: sessions,
-    ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+        ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
         ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
       })
       return { enabled: true, ...result }
