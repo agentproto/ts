@@ -168,6 +168,7 @@ import { touchUserPreset, type UserPreset } from "./user-presets.js"
 import {
   defaultPresetFor,
   resolveSessionConfig,
+  SessionPresetResolutionError,
   type HarnessPresetOverlay,
   type SessionConfigAxes,
 } from "./session-preset-resolver.js"
@@ -1917,6 +1918,7 @@ export type SpawnAgentSessionResult =
         | "agent_manifest_unresolved"
         | "agent_manifest_unreadable"
         | "model_policy_refused"
+        | "session_preset_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -2206,7 +2208,25 @@ export async function spawnAgentSession(
   // preset (named, its extends chain, or the defaultFor preset) already pins a
   // profile, it is not loaded at all, so neither its profile gate nor its
   // default model can leak next to another profile.
-  const pinnedProfile = resolveWith().config.access?.profileRef
+  // A preset whose extends chain is broken (missing target, cycle) refuses
+  // the spawn with a typed error instead of throwing out of agent_start.
+  const presetRefusal = (err: unknown) =>
+    err instanceof SessionPresetResolutionError
+      ? {
+          ok: false as const,
+          code: "session_preset_invalid" as const,
+          message: `agent_start: ${err.message}`,
+          details: { presetCode: err.code },
+        }
+      : undefined
+  let pinnedProfile: string | undefined
+  try {
+    pinnedProfile = resolveWith().config.access?.profileRef
+  } catch (err) {
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
+    throw err
+  }
   let harnessPreset: HarnessPresetOverlay | undefined
   if (!cloudResolved && !pinnedProfile) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
@@ -2237,18 +2257,12 @@ export async function spawnAgentSession(
     }
   }
 
-  let sessionConfig: import("./session-preset-resolver.js").SessionConfigAxes
+  let sessionConfig: SessionConfigAxes
   try {
-    const resolution = resolveWith(harnessPreset)
-    sessionConfig = resolution.config
+    sessionConfig = resolveWith(harnessPreset).config
   } catch (err) {
-    if (err instanceof (await import("./session-preset-resolver.js")).SessionPresetResolutionError) {
-      return {
-        ok: false,
-        code: "invalid_request",
-        message: `agent_start: ${err.message}`,
-      }
-    }
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
     throw err
   }
   input = {

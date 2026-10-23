@@ -6167,7 +6167,8 @@ function spawnFailureStatus(code: string): number {
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
-    code === "model_policy_refused"
+    code === "model_policy_refused" ||
+    code === "session_preset_invalid"
   ) {
     return 400
   }

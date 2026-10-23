@@ -119,3 +119,21 @@ describe("spawnAgentSession applies the harness defaultFor preset", () => {
     expect(result.descriptor.model).toBe("acme/allowed")
   })
 })
+
+describe("spawnAgentSession refuses a preset whose extends chain is broken", () => {
+  it("returns session_preset_invalid for a missing extends target", async () => {
+    const d = deps()
+    const child: UserPreset = { id: "child", label: "Child", extends: ["missing"] }
+    const result = await spawnAgentSession(d.deps as never, {
+      adapter: "opencode",
+      cwd: "/tmp",
+      preset: child,
+      sessionPresets: [child],
+    } as never)
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("session_preset_invalid")
+    expect(result.details).toMatchObject({ presetCode: "unknown_extends" })
+    expect(d.started()).toBe(0)
+  })
+})
