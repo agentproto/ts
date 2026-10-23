@@ -47,6 +47,7 @@ import {
   reapGcEntry,
   runSandboxOrphanGcPass,
   type SandboxGcLiveSession,
+  type SandboxGcSessionLineage,
   type SandboxLedgerEntry,
   type SandboxOrphanCandidate,
 } from "@agentproto/runtime"
@@ -216,6 +217,10 @@ export interface SandboxGcCliDeps {
   /** Origin-session id → daemon status ("error"/"killed"/"exited"/…).
    *  Defaults to the live daemon's `GET /sessions`. */
   fetchSessionStatuses?: () => Promise<Map<string, string>>
+  /** Session id -> predecessor lineage + resume eligibility. Defaults to
+   *  the live daemon's `GET /sessions`. Used to keep a box a resumed
+   *  successor still uses, and to pause a box whose origin can be revived. */
+  fetchSessionLineage?: () => Promise<Map<string, SandboxGcSessionLineage>>
   /** Resolves a ledger row's provider to its handle. Defaults to the
    *  local sandbox-creds store (same as `attach`). */
   resolveProvider?: SandboxGcProviderHandleResolver
@@ -641,6 +646,38 @@ const defaultResolveProvider: SandboxGcProviderHandleResolver = async slug => {
 /** Default live-session source: the daemon's `GET /sessions` (read-only).
  *  Only the fields the gc needs: the id, the status and the box id a
  *  remote session holds. */
+/** Default lineage source: the same daemon `GET /sessions` read as the
+ *  status fetch, keeping only the fields the gc walks. */
+async function defaultFetchSessionLineage(): Promise<Map<string, SandboxGcSessionLineage>> {
+  const report = await discoverDaemon()
+  if (!report.found) {
+    throw new Error(
+      "no live daemon found - sandbox gc needs the daemon to read session " +
+        "lineage (start one with `agentproto serve`, or set AGENTPROTO_DAEMON_URL).",
+    )
+  }
+  const body = await httpGetJson<{
+    sessions?: Array<{
+      id?: unknown
+      resumedFrom?: unknown
+      continuedFrom?: unknown
+      succeeds?: unknown
+      status?: unknown
+    }>
+  }>(`${report.found.url}/sessions`)
+  const map = new Map<string, SandboxGcSessionLineage>()
+  for (const s of body.sessions ?? []) {
+    if (typeof s.id !== "string") continue
+    const links: SandboxGcSessionLineage = {
+      ...(typeof s.resumedFrom === "string" ? { resumedFrom: s.resumedFrom } : {}),
+      ...(typeof s.continuedFrom === "string" ? { continuedFrom: s.continuedFrom } : {}),
+      ...(typeof s.succeeds === "string" ? { succeeds: s.succeeds } : {}),
+    }
+    if (Object.keys(links).length > 0) map.set(s.id, links)
+  }
+  return map
+}
+
 async function defaultFetchLiveSessions(): Promise<SandboxGcLiveSession[]> {
   const report = await discoverDaemon()
   if (!report.found) {
@@ -700,8 +737,26 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
     liveSessionsError = err instanceof Error ? err.message : String(err)
   }
 
+  let lineage: Map<string, SandboxGcSessionLineage> | undefined
+  // A caller that injects its own status source gets no implicit daemon read
+  // for lineage: it must inject `fetchSessionLineage` too, or the pass runs
+  // without it (tests, and a caller with a partial view).
+  const lineageFetcher =
+    deps.fetchSessionLineage ??
+    (deps.fetchSessionStatuses ? undefined : defaultFetchSessionLineage)
+  if (lineageFetcher) {
+    try {
+      lineage = await lineageFetcher()
+    } catch {
+      // Lineage is advisory: without it the ledger pass still reaps
+      // dead-origin rows, it just cannot see a successor resumed onto the
+      // same box.
+      lineage = undefined
+    }
+  }
+
   const ledger = readSandboxLedger()
-  const candidates = collectGcCandidates(ledger, statuses)
+  const candidates = collectGcCandidates(ledger, statuses, lineage)
 
   // ORPHAN boxes: the PROVIDER's control plane still holds them (and their
   // RAM), but the daemon's sandbox registry never knew them and no live
@@ -823,8 +878,14 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
   const results: Array<{ sandboxId: string; ok: boolean; action?: string; error?: string }> = []
   let failures = 0
   for (const c of candidates) {
+    // A row recorded with a pause teardown (or a dead origin the daemon can
+    // still resume) is paused, never deleted.
+    const pause =
+      values.pause === true ||
+      c.entry.state === "paused" ||
+      lineage?.get(c.entry.originSessionId as string)?.resumable === true
     const res = await reapGcEntry(c.entry, {
-      ...(values.pause ? { pause: true } : {}),
+      ...(pause ? { pause: true } : {}),
       resolveProvider: resolveProvider as unknown as GcProviderResolver,
     })
     const record = res.ok

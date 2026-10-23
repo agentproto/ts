@@ -136,6 +136,7 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
+  canResume,
   SANDBOX_GONE_DEFAULT_RESTART_POLICY,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
@@ -165,6 +166,7 @@ import {
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
   parseSandboxGcInterval,
   startSandboxGcTimer,
+  type SandboxGcSessionLineage,
 } from "./sandbox-gc.js"
 import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
@@ -699,6 +701,7 @@ export {
   GONE_RE,
   isGoneError,
   type SandboxGcCandidate,
+  type SandboxGcSessionLineage,
   type SandboxGcReapDeps,
   type SandboxGcProviderHandle,
   type SandboxGcReapResult,
@@ -4702,6 +4705,19 @@ export async function createGateway(
         const rows = new Map<string, string>()
         for (const desc of sessions.list({ includeArchived: true })) {
           rows.set(desc.id, desc.status)
+        }
+        return rows
+      },
+      fetchSessionLineage: () => {
+        const rows = new Map<string, SandboxGcSessionLineage>()
+        for (const desc of sessions.list({ includeArchived: true })) {
+          const links: SandboxGcSessionLineage = {
+            ...(desc.resumedFrom ? { resumedFrom: desc.resumedFrom } : {}),
+            ...(desc.continuedFrom ? { continuedFrom: desc.continuedFrom } : {}),
+            ...(desc.succeeds ? { succeeds: desc.succeeds } : {}),
+            ...(canResume(desc) ? { resumable: true } : {}),
+          }
+          if (Object.keys(links).length > 0) rows.set(desc.id, links)
         }
         return rows
       },

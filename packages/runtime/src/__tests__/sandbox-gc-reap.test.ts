@@ -177,9 +177,9 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
   it("reaps exactly the dead-session boxes and tallies the pass", async () => {
     const ledger = await tmpLedgerPath()
     await seedLedger(ledger, [
-      entryOf({ sandboxId: "bx_dead", originSessionId: "sess_dead" }),
-      entryOf({ sandboxId: "bx_fail", originSessionId: "sess_dead" }),
-      entryOf({ sandboxId: "bx_live", originSessionId: "sess_live" }),
+      entryOf({ sandboxId: "bx_dead", state: "connected", originSessionId: "sess_dead" }),
+      entryOf({ sandboxId: "bx_fail", state: "connected", originSessionId: "sess_dead" }),
+      entryOf({ sandboxId: "bx_live", state: "connected", originSessionId: "sess_live" }),
     ])
     const remove = vi.fn(async (_id: string) => {})
     const failRemove = vi.fn(async (_id: string) => {
@@ -209,6 +209,60 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     expect(failRemove).toHaveBeenCalledWith("bx_fail")
     // The dead boxes' rows are stamped stopped; the live one untouched here.
     expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
+  })
+
+  it("a row recorded with a PAUSE teardown is paused, never deleted", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_paused", state: "paused", originSessionId: "sess_dead" }),
+    ])
+    const pause = vi.fn(async () => {})
+    const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
+    const stop = vi.fn(async () => {})
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () => new Map([["sess_dead", "error"]]),
+        resolveProvider: async () =>
+          ({
+            provider: {
+              remove,
+              connect: async (id: string) => ({ sandboxId: id, stop, pause }),
+            },
+          }) as SandboxGcProviderHandle,
+        ledgerPath: ledger,
+      },
+      line => lines.push(line),
+    )
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 1, failures: 0 })
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(remove).not.toHaveBeenCalled()
+    expect(stop).not.toHaveBeenCalled()
+    // Stamped paused (not stopped), so a later pass keeps honouring the mode.
+    expect(readFileSync(ledger, "utf8")).toContain('"paused"')
+  })
+
+  it("a dead origin the registry can still resume is PAUSED, not deleted", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_resumable", state: "connected", originSessionId: "sess_dead" }),
+    ])
+    const pause = vi.fn(async () => {})
+    const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
+    const summary = await runSandboxGcPass({
+      fetchSessionStatuses: () => new Map([["sess_dead", "killed"]]),
+      fetchSessionLineage: () => new Map([["sess_dead", { resumable: true }]]),
+      resolveProvider: async () =>
+        ({
+          provider: {
+            remove,
+            connect: async (id: string) => ({ sandboxId: id, stop: vi.fn(async () => {}), pause }),
+          },
+        }) as SandboxGcProviderHandle,
+      ledgerPath: ledger,
+    })
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 1, failures: 0 })
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(remove).not.toHaveBeenCalled()
   })
 
   it("skips live sessions entirely (nothing to reap, nothing to call)", async () => {
