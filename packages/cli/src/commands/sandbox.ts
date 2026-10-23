@@ -46,6 +46,7 @@ import {
   removeSandboxLedgerEntry,
   reapGcEntry,
   runSandboxOrphanGcPass,
+  sandboxGcShouldPause,
   type SandboxGcLiveSession,
   type SandboxGcSessionLineage,
   type SandboxLedgerEntry,
@@ -674,7 +675,7 @@ async function defaultFetchSessionLineage(): Promise<Map<string, SandboxGcSessio
       ...(typeof s.continuedFrom === "string" ? { continuedFrom: s.continuedFrom } : {}),
       ...(typeof s.succeeds === "string" ? { succeeds: s.succeeds } : {}),
       ...(s.sandboxTeardown === "kill" || s.sandboxTeardown === "pause"
-        ? { teardown: s.sandboxTeardown }
+        ? { sandboxTeardown: s.sandboxTeardown }
         : {}),
     }
     if (Object.keys(links).length > 0) map.set(s.id, links)
@@ -897,7 +898,7 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
     // as before.
     const pause =
       values.pause === true ||
-      lineage?.get(c.entry.originSessionId as string)?.teardown === "pause"
+      sandboxGcShouldPause(c.entry, lineage ?? new Map())
     const res = await reapGcEntry(c.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: resolveProvider as unknown as GcProviderResolver,

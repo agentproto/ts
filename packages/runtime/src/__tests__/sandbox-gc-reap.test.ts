@@ -223,7 +223,7 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     const summary = await runSandboxGcPass(
       {
         fetchSessionStatuses: () => new Map([["sess_dead", "error"]]),
-        fetchSessionLineage: () => new Map([["sess_dead", { teardown: "pause" }]]),
+        fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "pause", resumable: false }]]),
         resolveProvider: async () =>
           ({
             provider: {
@@ -252,7 +252,7 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
     const summary = await runSandboxGcPass({
       fetchSessionStatuses: () => new Map([["sess_dead", "killed"]]),
-      fetchSessionLineage: () => new Map([["sess_dead", { teardown: "kill" }]]),
+      fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "kill" }]]),
       resolveProvider: async () =>
         ({
           provider: {
@@ -265,6 +265,30 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     expect(summary).toEqual({ ran: true, candidates: 1, stopped: 1, paused: 0, kept: 0, failures: 0 })
     expect(remove).toHaveBeenCalledWith("bx_kill_teardown", { force: true })
     expect(pause).not.toHaveBeenCalled()
+  })
+
+  it("shouldPause honours a SUCCESSOR's sandboxTeardown, not only the origin's", async () => {
+    const { sandboxGcShouldPause } = await import("../sandbox-gc.js")
+    const entry = entryOf({ state: "connected", originSessionId: "sess_origin" })
+    const lineage = new Map([
+      ["sess_origin", { sandboxTeardown: "kill" as const }],
+      ["sess_successor", { resumedFrom: "sess_origin", sandboxTeardown: "pause" as const }],
+    ])
+    expect(sandboxGcShouldPause(entry, lineage)).toBe(true)
+  })
+
+  it("shouldPause honours an ATTACHED session's sandboxTeardown", async () => {
+    const { sandboxGcShouldPause } = await import("../sandbox-gc.js")
+    const entry = entryOf({
+      state: "connected",
+      originSessionId: "sess_origin",
+      attachedSessions: ["sess_origin", "sess_attache"],
+    })
+    const lineage = new Map([
+      ["sess_origin", { sandboxTeardown: "kill" as const }],
+      ["sess_attache", { sandboxTeardown: "pause" as const }],
+    ])
+    expect(sandboxGcShouldPause(entry, lineage)).toBe(true)
   })
 
   it("a row already paused on the ledger is kept with NO provider call", async () => {

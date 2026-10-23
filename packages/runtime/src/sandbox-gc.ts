@@ -33,14 +33,51 @@ export interface SandboxGcCandidate {
 /** The lineage slice the gc needs to find a LIVE successor of an origin
  *  session. Only the predecessor links are read: inverting them covers the
  *  resume/continue/handover chain, and an inverse link (`continuedTo` /
- *  `succeededBy`) can go stale in the other direction. `teardown` is the
- *  origin descriptor's recorded teardown mode; a box whose session asked for
- *  `pause` is paused rather than deleted. */
+ *  `succeededBy`) can go stale in the other direction. `sandboxTeardown` is
+ *  the descriptor's recorded teardown mode; a box whose origin (or the live
+ *  successor/attache that last held it) asked for `pause` is paused rather
+ *  than deleted. `resumable` stays advisory only: it is true for nearly every
+ *  dead agent-cli row, so it must never drive the pause decision. */
 export interface SandboxGcSessionLineage {
   resumedFrom?: string
   continuedFrom?: string
   succeeds?: string
-  teardown?: "kill" | "pause"
+  sandboxTeardown?: "kill" | "pause"
+  resumable?: boolean
+}
+
+/**
+ * Whether the gc must PAUSE (never delete) a box. Reads the recorded teardown
+ * of the origin descriptor, of every attached session, and of every successor
+ * reachable from the origin through the resume/continue chain. Any `pause`
+ * wins: pausing is recoverable, deleting is not.
+ */
+export function sandboxGcShouldPause(
+  entry: SandboxLedgerEntry,
+  lineage: ReadonlyMap<string, SandboxGcSessionLineage>,
+): boolean {
+  const teardownOf = (id: string | undefined): string | undefined =>
+    id === undefined ? undefined : lineage.get(id)?.sandboxTeardown
+  if (teardownOf(entry.originSessionId) === "pause") return true
+  for (const attached of entry.attachedSessions ?? []) {
+    if (attached !== entry.originSessionId && teardownOf(attached) === "pause") return true
+  }
+  const origin = entry.originSessionId
+  if (origin === undefined) return false
+  const successors = buildSuccessorIndex(lineage)
+  const seen = new Set<string>([origin])
+  let frontier = [...(successors.get(origin) ?? [])]
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const id of frontier) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (teardownOf(id) === "pause") return true
+      next.push(...(successors.get(id) ?? []))
+    }
+    frontier = next
+  }
+  return false
 }
 
 /** Predicate for "this status still counts as alive": any status the registry
@@ -339,8 +376,7 @@ export async function runSandboxGcPass(
     // Honour the session's recorded teardown: a `pause` teardown keeps the
     // box pausable, never deletes it (2026-10-23: the row asked for pause and
     // the pass deleted it). A kill/unset teardown still deletes, as before.
-    const pause =
-      lineage.get(candidate.entry.originSessionId as string)?.teardown === "pause"
+    const pause = sandboxGcShouldPause(candidate.entry, lineage)
     const res = await reapGcEntry(candidate.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: deps.resolveProvider,
