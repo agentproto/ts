@@ -6085,6 +6085,14 @@ export function buildSpawnSessionHttpArgs(
  *                                    pinned}. Pure sort/display state — the
  *                                    HTTP twin of the `session_set_pinned`
  *                                    MCP verb, never touches keepAlive/reaper.
+ *   POST   /sessions/:id/prompt-policy → (re-)grant allowPromptFrom on an
+ *                                    ALREADY-LIVE session, body
+ *                                    {allowPromptFrom: string[]}; returns
+ *                                    {ok, sessionId, allowPromptFrom}. The
+ *                                    HTTP twin of `agent_set_prompt_policy`
+ *                                    - unlike the spawn-time field, works on
+ *                                    a session that was already running
+ *                                    before the grant existed.
  *   POST   /sessions/:id/archive  → hide a TERMINAL session (exited/killed/
  *                                    error) from the default list; returns
  *                                    {ok, sessionId, archived, archivedAt}. The
@@ -8725,7 +8733,7 @@ code { color: #9ad; }
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/prompt-policy|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -9252,6 +9260,39 @@ code { color: #9ad; }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       json(msg.includes("no session") ? 404 : 500, { error: "set_pinned_failed", message: msg })
+    }
+    return true
+  }
+
+  // Prompt policy — the HTTP twin of the `agent_set_prompt_policy` MCP
+  // tool, so a non-MCP caller (Pygmalion's `EngineClient`, notably) can
+  // (re-)grant `allowPromptFrom` on an ALREADY-LIVE session without going
+  // through a fresh spawn: `POST /sessions/agent` only applies the field at
+  // spawn time, so a permanent `keepAlive` agent that was already running
+  // before a grant was added would otherwise never pick it up until it
+  // happens to restart. Body: `{ allowPromptFrom: string[] }` (empty array
+  // resets to owner+operator only). No separate owner-gate check here, same
+  // as `/pin` / `/archive` / `/kill` above: a bearer-token-authenticated
+  // REST caller is operator-equivalent, same trust boundary as every other
+  // route on this surface.
+  if (suffix === "/prompt-policy" && req.method === "POST") {
+    if (!resolvedDesc) {
+      json(404, { error: "session_not_found", id: rawIdOrName })
+      return true
+    }
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    const allowPromptFrom = parseSkillsField(b.allowPromptFrom)
+    if (allowPromptFrom === undefined && b.allowPromptFrom !== undefined) {
+      json(400, { error: "invalid_body", message: "`allowPromptFrom` must be an array of strings" })
+      return true
+    }
+    try {
+      const desc = registry.setPromptPolicy(id, allowPromptFrom)
+      json(200, { ok: true, sessionId: id, allowPromptFrom: desc.allowPromptFrom ?? [] })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      json(msg.includes("no session") ? 404 : 500, { error: "set_prompt_policy_failed", message: msg })
     }
     return true
   }

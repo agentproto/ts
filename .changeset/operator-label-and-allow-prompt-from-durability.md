@@ -19,3 +19,9 @@ Make `allowPromptFrom` and `operatorLabel` survive restart/continue-fresh and th
   way the `agent_start` MCP tool handler already does. Previously the HTTP
   spawn path (used by non-MCP callers such as Pygmalion's `EngineClient`)
   silently accepted and dropped the field.
+- New route `POST /sessions/:id/prompt-policy`, the HTTP twin of
+  `agent_set_prompt_policy`: (re-)grants `allowPromptFrom` on a session
+  that is ALREADY LIVE, for a non-MCP caller. The spawn-time field above
+  only reaches a fresh spawn, so a permanent `keepAlive` agent already
+  running before a grant was added would otherwise never pick it up until
+  it happens to restart.
