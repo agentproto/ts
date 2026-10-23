@@ -9,12 +9,11 @@
  * `models` role table, the OpenRouter billing guard — and adds exactly one
  * thing: an entitlement ceiling checked BEFORE any spawn.
  *
- *   free-only      models in the `zero-cost` model list (by default, catalog
- *                  price 0/0) through the OpenCode adapter. Nothing else — a
- *                  paid preset, an Opus/Sonnet fallback, a rotate target or a
- *                  recovery override that resolves to a non-list id is
- *                  refused, never substituted.
- *   subscription   zero-cost list ids, plus Claude Code Sonnet.
+ *   free-only      the profile's model policy (`{ allow: ["zero-cost"] }`)
+ *                  through the OpenCode adapter. Nothing else — a preset, an
+ *                  Opus/Sonnet fallback, a rotate target or a recovery
+ *                  override outside the policy is refused, never substituted.
+ *   subscription   OpenCode ids in the `zero-cost` list, plus Claude Code Sonnet.
  *
  * Sandbox placement (e2b, …) is not an input here and grants nothing: where a
  * session runs says nothing about what it is allowed to bill.
@@ -23,8 +22,8 @@
  * `@route` suffix or an unreadable auth profile is refused (fail closed).
  */
 
-import { inModelList } from "@agentproto/model-catalog/lists"
 import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
+import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
 import { adapterForModelId, type ResolvedModelRole } from "./model-roles.js"
 import {
   reviewerFingerprint,
@@ -55,6 +54,8 @@ export interface DecisionEscalationTarget {
 export interface DecisionExecProfile {
   readonly id: string
   readonly entitlement: DecisionEntitlement
+  /** Model policy checked against every model this profile may spawn. */
+  readonly policy?: ModelPolicy
   /** Jev direct API classification. Off by default for the free profile. */
   readonly jev: { readonly enabled: boolean; readonly timeoutMs: number }
   /** The ONE escalation allowed per run, through the configured harness. */
@@ -63,6 +64,10 @@ export interface DecisionExecProfile {
   readonly review: { readonly timeoutMs: number }
 }
 
+/** The OpenCode adapter rule: an OpenCode id must be in the `zero-cost` list
+ *  unless the profile carries its own policy. */
+const OPENCODE_POLICY: ModelPolicy = { allow: [ZERO_COST_LIST_ID] }
+
 export const DECISION_PROFILE_IDS = ["local-free", "remote-sonnet"] as const
 export type DecisionProfileId = (typeof DECISION_PROFILE_IDS)[number]
 
@@ -70,6 +75,7 @@ const BUILTIN: Readonly<Record<DecisionProfileId, DecisionExecProfile>> = {
   "local-free": {
     id: "local-free",
     entitlement: "free-only",
+    policy: { allow: [ZERO_COST_LIST_ID] },
     jev: { enabled: false, timeoutMs: 20_000 },
     escalation: { timeoutMs: 120_000 },
     review: { timeoutMs: 20 * 60_000 },
@@ -129,6 +135,7 @@ export function resolveExecProfile(
     profile: {
       id: base.id,
       entitlement: base.entitlement,
+      ...(base.policy ? { policy: base.policy } : {}),
       jev: {
         enabled: input.jev ?? base.jev.enabled,
         timeoutMs: base.jev.timeoutMs,
@@ -163,23 +170,24 @@ export type TargetVerdict =
 const SONNET_RE = /^claude-sonnet[-\w.]*$/i
 
 function modelAllowed(
-  entitlement: DecisionEntitlement,
+  profile: DecisionExecProfile,
   adapter: string,
   model: string,
 ): string | undefined {
+  const { entitlement } = profile
   if (model.includes("@")) {
     return `model "${model}" carries a dynamic @route suffix — the billing endpoint is not provable`
   }
   if (/openrouter/i.test(model)) return `model "${model}" would bill OpenRouter`
   if (adapter === "opencode") {
-    if (inModelList(model, ZERO_COST_LIST_ID, getModelListSource())) return undefined
-    return `model "${model}" is not in model list "${ZERO_COST_LIST_ID}"`
+    const verdict = checkModelPolicy(model, profile.policy ?? OPENCODE_POLICY, getModelListSource())
+    return verdict.ok ? undefined : verdict.reason
   }
   if (entitlement === "subscription" && adapter === "claude-code") {
     return SONNET_RE.test(model) ? undefined : `model "${model}" is not Claude Code Sonnet`
   }
   return entitlement === "free-only"
-    ? `adapter "${adapter}" is not permitted under a free-only profile (model list "${ZERO_COST_LIST_ID}" only)`
+    ? `adapter "${adapter}" is not permitted under a free-only profile (OpenCode only)`
     : `adapter "${adapter}" with model "${model}" is not permitted (model list "${ZERO_COST_LIST_ID}" or Claude Code Sonnet only)`
 }
 
@@ -199,16 +207,16 @@ export function validateSpawnTarget(profile: DecisionExecProfile, target: SpawnT
   if (target.route !== undefined && profile.entitlement === "free-only") {
     return { ok: false, code: "route_not_free", reason: "an explicit gateway route is not allowed under a free-only profile" }
   }
-  const bad = modelAllowed(profile.entitlement, adapter, model)
+  const bad = modelAllowed(profile, adapter, model)
   if (bad) return { ok: false, code: "not_entitled", reason: `${bad} (profile ${profile.id}: ${profile.entitlement})` }
   for (const r of target.rotate ?? []) {
     const rotateAdapter =
       adapterForModelId(r.model) ??
-      (inModelList(r.model, ZERO_COST_LIST_ID, getModelListSource()) ? "opencode" : undefined)
+      (checkModelPolicy(r.model, OPENCODE_POLICY, getModelListSource()).ok ? "opencode" : undefined)
     if (!rotateAdapter) {
       return { ok: false, code: "unknown_rotate", reason: `turnRetry.rotate target "${r.model}" has no provable adapter` }
     }
-    const rotateBad = modelAllowed(profile.entitlement, rotateAdapter, r.model)
+    const rotateBad = modelAllowed(profile, rotateAdapter, r.model)
     if (rotateBad) {
       return { ok: false, code: "rotate_not_entitled", reason: `turnRetry.rotate: ${rotateBad} (profile ${profile.id})` }
     }

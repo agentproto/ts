@@ -306,6 +306,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import { modelPolicySchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
@@ -5787,6 +5788,10 @@ export function buildSpawnSessionHttpArgs(
   const turnRetryParsed = b.turnRetry !== undefined ? parseTurnRetryPolicy(b.turnRetry) : undefined
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
+  const modelPolicyParsed =
+    b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicySchema, b.modelPolicy)) : undefined
+  const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
+    modelPolicyParsed !== undefined ? { modelPolicy: modelPolicyParsed } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -5970,6 +5975,7 @@ export function buildSpawnSessionHttpArgs(
         })()
       : {}),
     ...turnRetryField,
+    ...modelPolicyField,
     // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
     // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
     // a stringified boolean like `permissionHold`/`trace`.
@@ -6505,6 +6511,16 @@ function invalidSpawnHttpField(
     return {
       error: "invalid_command_sandbox",
       message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  if (
+    b.modelPolicy !== undefined &&
+    b.modelPolicy !== null &&
+    parseWithJsonTolerance(modelPolicySchema, b.modelPolicy) === undefined
+  ) {
+    return {
+      error: "invalid_model_policy",
+      message: 'modelPolicy must be { allow?: string[], block?: string[] } of model list ids.',
     }
   }
   return undefined

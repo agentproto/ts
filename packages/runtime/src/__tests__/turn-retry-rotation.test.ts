@@ -2,7 +2,7 @@
  * `turnRetry.rotate` — on a rate-limit / silent stall the controller switches
  * the live session to the next eligible fallback model BEFORE the continuation
  * prompt, a daemon-wide cooldown map keeps every session off a throttled model,
- * and a free OpenCode session never rotates onto a paid id.
+ * and every rotation target must pass the session's model policy.
  *
  * Hermetic: real session registry + event bus with fake adapter sessions and
  * millisecond backoffs (same approach as `turn-retry.test.ts`); no network.
@@ -34,8 +34,11 @@ import {
 } from "../turn-retry-policy.js"
 import { inModelList } from "@agentproto/model-catalog/lists"
 import { seedModelListSource, ZERO_COST_LIST_ID } from "../model-list-store.js"
+import type { ModelPolicy } from "../model-policy.js"
+
+const ZERO_COST_ONLY: ModelPolicy = { allow: [ZERO_COST_LIST_ID] }
 import { spawnAgentSession } from "../session-spawn.js"
-import { addHarnessPreset, HarnessPresetValidationError } from "../harness-preset-store.js"
+import { addHarnessPreset } from "../harness-preset-store.js"
 import { saveUserPreset } from "../user-presets.js"
 import { registerDaemonHealthTools } from "../daemon-health-tools.js"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -110,6 +113,7 @@ function harness(opts: {
   cooldowns?: ReturnType<typeof createModelCooldowns>
   check?: RotationTargetCheck
   accessProfile?: SessionDescriptor["accessProfile"]
+  modelPolicy?: ModelPolicy
 }) {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -145,6 +149,7 @@ function harness(opts: {
       adapterSlug: "fake",
       model: opts.model ?? FREE_A,
       ...(opts.accessProfile ? { accessProfile: opts.accessProfile } : {}),
+      ...(opts.modelPolicy ? { modelPolicy: opts.modelPolicy } : {}),
       turnRetry: resolveTurnRetryPolicy(opts.turnRetry),
     })
   const done = () => {
@@ -274,9 +279,10 @@ describe("turn retry rotation — runtime", () => {
     h.done()
   })
 
-  it("a free session never rotates onto a paid id, even if the list was smuggled in", async () => {
+  it("a session with a policy never rotates onto a refused id, even if the list was smuggled in", async () => {
     const h = harness({
       scripts: [fail("429 status code"), ok],
+      modelPolicy: ZERO_COST_ONLY,
       turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }, { model: FREE_B }], ...FAST },
     })
     const desc = h.spawn()
@@ -285,13 +291,14 @@ describe("turn retry rotation — runtime", () => {
 
     expect(h.trace).not.toContain(`setModel:${PAID}`)
     expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
-    expect(h.notices.find(n => n.includes("rotating model"))).toContain(`skipped ${PAID}: not in model list`)
+    expect(h.notices.find(n => n.includes("rotating model"))).toContain(`skipped ${PAID}: policy:`)
     h.done()
   })
 
-  it("only-paid list on a free session: same-model retry, never a switch", async () => {
+  it("only-refused list on a session with a policy: same-model retry, never a switch", async () => {
     const h = harness({
       scripts: [fail("429 status code"), ok],
+      modelPolicy: ZERO_COST_ONLY,
       turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }], ...FAST },
     })
     const desc = h.spawn()
@@ -299,6 +306,33 @@ describe("turn retry rotation — runtime", () => {
     await until(() => h.prompts.length === 2, "continuation")
     expect(h.trace.some(t => t.startsWith("setModel"))).toBe(false)
     expect(h.registry.get(desc.id)?.model).toBe(FREE_A)
+    h.done()
+  })
+
+  it("a session with NO policy rotates from a zero-cost model onto any account-allowed model", async () => {
+    const h = harness({
+      scripts: [fail("429 status code"), ok],
+      turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }], ...FAST },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.prompts.length === 2, "continuation")
+    expect(h.trace).toContain(`setModel:${PAID}`)
+    expect(h.registry.get(desc.id)?.model).toBe(PAID)
+    h.done()
+  })
+
+  it("a blocked list refuses a rotation target", async () => {
+    const h = harness({
+      scripts: [fail("429 status code"), ok],
+      modelPolicy: { block: [ZERO_COST_LIST_ID] },
+      turnRetry: { on: ["rate-limit"], rotate: [{ model: FREE_B }, { model: PAID }], ...FAST },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.prompts.length === 2, "continuation")
+    expect(h.registry.get(desc.id)?.model).toBe(PAID)
+    expect(h.notices.find(n => n.includes("rotating model"))).toContain(`skipped ${FREE_B}: policy:`)
     h.done()
   })
 
@@ -436,7 +470,7 @@ describe("daemon-wide model cooldowns", () => {
   })
 })
 
-describe("free stays free", () => {
+describe("zero-cost list membership and policy checks", () => {
   it.each([
     ["opencode/glm-5.3-flash-free", true],
     ["opencode/big-pickle", true],
@@ -449,26 +483,28 @@ describe("free stays free", () => {
     expect(inModelList(model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(expected)
   })
 
-  it("validateTurnRetryRotate rejects free → paid and names the offenders", () => {
-    const err = validateTurnRetryRotate([{ model: FREE_B }, { model: PAID }], FREE_A)
-    expect(err).toContain("zero-cost")
+  it("validateTurnRetryRotate rejects targets outside the session policy and names the offenders", () => {
+    const err = validateTurnRetryRotate([{ model: FREE_B }, { model: PAID }], ZERO_COST_ONLY)
+    expect(err).toContain("policy")
     expect(err).toContain(PAID)
-    expect(err).not.toContain(FREE_B + ",")
-    expect(validateTurnRetryRotate([{ model: FREE_B }, { model: FREE_C }], FREE_A)).toBeUndefined()
-    // A paid session may rotate anywhere; no model/rotate ⇒ nothing to check.
-    expect(validateTurnRetryRotate([{ model: PAID }], "opencode/gpt-5.1")).toBeUndefined()
-    expect(validateTurnRetryRotate(undefined, FREE_A)).toBeUndefined()
+    expect(err).not.toContain(FREE_B + " (")
+    expect(validateTurnRetryRotate([{ model: FREE_B }, { model: FREE_C }], ZERO_COST_ONLY)).toBeUndefined()
+    // No policy or no rotate list ⇒ nothing to check.
+    expect(validateTurnRetryRotate([{ model: PAID }], undefined)).toBeUndefined()
+    expect(validateTurnRetryRotate(undefined, ZERO_COST_ONLY)).toBeUndefined()
   })
 
-  it("rotationTargetRejection refuses paid targets for a free session", () => {
+  it("rotationTargetRejection applies the descriptor policy", () => {
     const c = createModelCooldowns()
-    const free = { id: "x", model: FREE_A } as SessionDescriptor
-    expect(rotationTargetRejection(free, { model: PAID }, c, Date.now())).toContain("not in model list")
-    expect(rotationTargetRejection(free, { model: FREE_B }, c, Date.now())).toBeUndefined()
-    expect(rotationTargetRejection(free, { model: FREE_A }, c, Date.now())).toContain("current model")
+    const withPolicy = { id: "x", model: FREE_A, modelPolicy: ZERO_COST_ONLY } as SessionDescriptor
+    expect(rotationTargetRejection(withPolicy, { model: PAID }, c, Date.now())).toContain("policy:")
+    expect(rotationTargetRejection(withPolicy, { model: FREE_B }, c, Date.now())).toBeUndefined()
+    expect(rotationTargetRejection(withPolicy, { model: FREE_A }, c, Date.now())).toContain("current model")
+    const noPolicy = { id: "x", model: FREE_A } as SessionDescriptor
+    expect(rotationTargetRejection(noPolicy, { model: PAID }, c, Date.now())).toBeUndefined()
   })
 
-  it("agent_start rejects a free → paid rotate list at spawn, before any adapter starts", async () => {
+  it("agent_start rejects a rotate list outside the session policy at spawn, before any adapter starts", async () => {
     const startSession = vi.fn(async () => ({}) as AgentSessionLike)
     const registry = createSessionsRegistry({ persist: false })
     const result = await spawnAgentSession(
@@ -480,6 +516,7 @@ describe("free stays free", () => {
         adapter: "opencode",
         cwd: "/tmp",
         model: FREE_A,
+        modelPolicy: ZERO_COST_ONLY,
         turnRetry: resolveTurnRetryPolicy({ on: ["rate-limit"], rotate: [{ model: PAID }] }),
       },
     )
@@ -547,37 +584,24 @@ describe("presets carry turnRetry.rotate", () => {
     expect((await getHarnessPreset("oc-free"))?.turnRetry?.rotate).toEqual([{ model: FREE_B }])
   })
 
-  it("a harness preset rejects free → paid", async () => {
-    await expect(
-      addHarnessPreset(
-        {
-          id: "oc-bad",
-          harnessSlug: "opencode",
-          name: "Bad",
-          profileRef: "zen",
-          defaultModel: FREE_A,
-          isDefault: false,
-          turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }] },
-        },
-        deps,
-      ),
-    ).rejects.toBeInstanceOf(HarnessPresetValidationError)
-  })
-
-  it("a user preset rejects free → paid and accepts a free pool", async () => {
-    await expect(
-      saveUserPreset({
-        id: "bad",
-        label: "Bad",
-        model: FREE_A,
+  it("presets carry no policy of their own: a rotate list is stored as given, the session policy checks it at spawn", async () => {
+    await addHarnessPreset(
+      {
+        id: "oc-paid-pool",
+        harnessSlug: "opencode",
+        name: "Paid pool",
+        profileRef: "zen",
+        defaultModel: FREE_A,
+        isDefault: false,
         turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }] },
-      }),
-    ).rejects.toThrow(/free/)
+      },
+      deps,
+    )
     await saveUserPreset({
-      id: "good",
-      label: "Good",
+      id: "paid-pool",
+      label: "Paid pool",
       model: FREE_A,
-      turnRetry: { on: ["rate-limit"], rotate: [{ model: FREE_B }] },
+      turnRetry: { on: ["rate-limit"], rotate: [{ model: PAID }] },
     })
   })
 })

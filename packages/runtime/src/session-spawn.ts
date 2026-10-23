@@ -38,6 +38,8 @@ import {
   type TurnRetryPolicyInput,
   type TurnRetryInput,
 } from "./turn-retry-policy.js"
+import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
+import { getModelListSource } from "./model-list-store.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
 import type { AgentAdapterLister, AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
@@ -1632,6 +1634,11 @@ export interface SpawnAgentSessionInput {
    *  here (`resolveTurnRetryPolicy`) before it lands on the descriptor.
    *  Omitted ⇒ no automatic retry. */
   turnRetry?: TurnRetryInput
+  /** User-set model policy: model-list ids this session may (`allow`) or may
+   *  not (`block`) use. Absent ⇒ any model the account allows. Enforced at
+   *  spawn (effective model, adapter default included), `setModel`, restart
+   *  and every `turnRetry.rotate` target; persisted on the descriptor. */
+  modelPolicy?: ModelPolicy
   /** AIP-68 clerk hook configuration - the AGENT level of the three-level
    *  resolution (agent > workspace > daemon default). Either the
    *  `agent_start.hooks.clerk` option or the agent manifest's
@@ -1899,6 +1906,7 @@ export type SpawnAgentSessionResult =
         | "no_agent_ref"
         | "agent_manifest_unresolved"
         | "agent_manifest_unreadable"
+        | "model_policy_refused"
       message: string
       details?: Record<string, unknown>
     }
@@ -2252,10 +2260,10 @@ export async function spawnAgentSession(
     ...(reconciled.model !== undefined ? { model: reconciled.model } : {}),
     ...(reconciled.route !== undefined ? { route: reconciled.route } : {}),
   }
-  // Free stays free: a `turnRetry.rotate` list must never move a free OpenCode
-  // session onto a paid id. Checked here against the model we know; the
-  // controller re-applies the same rule at rotation time.
-  const rotateError = validateTurnRetryRotate(input.turnRetry?.rotate, input.model)
+  // A `turnRetry.rotate` list must stay inside the session's model policy.
+  // Checked here against the targets we know; the controller re-applies the
+  // same check at rotation time.
+  const rotateError = validateTurnRetryRotate(input.turnRetry?.rotate, input.modelPolicy)
   if (rotateError) return { ok: false, code: "turn_retry_rotate_invalid", message: `agent_start: ${rotateError}` }
   const {
     registry,
@@ -2991,10 +2999,9 @@ export async function spawnAgentSession(
   // transient provider failure re-prompts instead of just stopping the turn.
   // Interactive supervisor sessions keep the old opt-in behaviour. An
   // explicit opt-out (`turnRetry: null`, or an empty `on`) is honoured: any
-  // explicit input wins over the default. A free OpenCode current model
-  // also rotates on 5xx by default (`defaultTurnRetryForSpawn` builds that
-  // list from other free ids only, so the "free stays free" rule in
-  // `validateTurnRetryRotate` still passes for it).
+  // explicit input wins over the default. A current model in the
+  // `default-rotation` list also rotates on 5xx by default
+  // (`defaultTurnRetryForSpawn`, filtered by the session model policy).
   const explicitTurnRetry = input.turnRetry
   // `turnRetry: null` is an EXPLICIT opt-out, not an omission: land it on an
   // empty `on` so the resolved policy matches nothing (and no default applies).
@@ -3004,7 +3011,7 @@ export async function spawnAgentSession(
       : explicitTurnRetry !== undefined
         ? explicitTurnRetry
         : role.name === "executor" || input.sandbox !== undefined
-          ? defaultTurnRetryForSpawn(input.model)
+          ? defaultTurnRetryForSpawn(input.model, input.modelPolicy)
           : undefined
   // Deferred/lazy tool loading override for the self-mount (harness-parity
   // item 3): per-spawn `input.deferredTools` > harness with native MCP tool
@@ -3637,6 +3644,20 @@ export async function spawnAgentSession(
         : gatewayHint
           ? `agent_start: adapter "${input.adapter}" could not be resolved. ${gatewayHint}`
           : `agent_start: adapter "${input.adapter}" could not be resolved. ${genericHint}`,
+    }
+  }
+  if (input.modelPolicy) {
+    const policyModel = input.model ?? resolved?.defaultModel
+    if (policyModel !== undefined) {
+      const verdict = checkModelPolicy(policyModel, input.modelPolicy, getModelListSource())
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          code: "model_policy_refused",
+          message: `agent_start: ${verdict.reason}`,
+          details: { policyCode: verdict.code, model: policyModel },
+        }
+      }
     }
   }
   if (resolveHostAuth && !resolved) {
@@ -4474,6 +4495,7 @@ export async function spawnAgentSession(
         contextContinuity: resolvedContextContinuity,
         ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
         ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
+        ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(Object.keys(clerkHook).length > 0 ? { clerkHook } : {}),
         ...(input.trace !== undefined ? { trace: input.trace } : {}),
         ...(authEcho?.fingerprint
@@ -5200,6 +5222,7 @@ export async function spawnAgentSession(
       contextContinuity: resolvedContextContinuity,
       ...(input.restartPolicy ? { restartPolicy: input.restartPolicy } : {}),
       ...(turnRetryInput ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput) } : {}),
+      ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
       ...(Object.keys(clerkHook).length > 0 ? { clerkHook } : {}),
       ...(readUsage ? { readUsage } : {}),
       ...(input.trace !== undefined ? { trace: input.trace } : {}),

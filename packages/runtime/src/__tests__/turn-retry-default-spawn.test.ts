@@ -251,13 +251,22 @@ describe("agent_start turnRetry default for sandbox agents", () => {
   }, 20_000)
 })
 
-describe("free stays free — the default rotate list validates at spawn", () => {
-  it("defaultTurnRetryForSpawn output passes validateTurnRetryRotate for a free current model", async () => {
+describe("default rotation is a list, filtered by the session policy", () => {
+  it("defaultTurnRetryForSpawn for opencode/glm-5.3-flash-free is the default-rotation list minus the current model", async () => {
     const { defaultTurnRetryForSpawn, validateTurnRetryRotate } = await import("../turn-retry-policy.js")
     const input = defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free")
-    expect(validateTurnRetryRotate(input.rotate, "opencode/glm-5.3-flash-free")).toBeUndefined()
-    // And an explicit PAID rotate list on a free model is still refused.
-    expect(validateTurnRetryRotate([{ model: "claude-sonnet-4-5" }], "opencode/glm-5.3-flash-free")).toBeDefined()
+    expect(input.rotate?.map(t => t.model)).toEqual(
+      FREE_ROTATE_IDS.filter(m => m !== "opencode/glm-5.3-flash-free"),
+    )
+    expect(validateTurnRetryRotate(input.rotate, { allow: [ZERO_COST_LIST_ID] })).toBeUndefined()
+    expect(validateTurnRetryRotate(input.rotate, undefined)).toBeUndefined()
+  })
+
+  it("a model outside default-rotation gets no default rotate list", async () => {
+    const { defaultTurnRetryForSpawn } = await import("../turn-retry-policy.js")
+    expect(defaultTurnRetryForSpawn("claude-sonnet-4-5").rotate).toBeUndefined()
+    expect(defaultTurnRetryForSpawn("opencode/big-pickle").rotate).toBeUndefined()
+    expect(defaultTurnRetryForSpawn(undefined).rotate).toBeUndefined()
   })
 
   it("resolveTurnRetryPolicy leaves the default's rotate list intact", async () => {
@@ -273,7 +282,7 @@ describe("free stays free — the default rotate list validates at spawn", () =>
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["opencode/big-pickle", "opencode/glm-5.3-flash-free"],
+      ids: ["opencode/big-pickle", "opencode/glm-5.3-flash-free", "opencode/deepseek-v4.1-flash-free"],
     })
     const input = defaultTurnRetryForSpawn("opencode/deepseek-v4.1-flash-free")
     expect(input.rotate?.map(t => t.model)).toEqual([
@@ -282,14 +291,19 @@ describe("free stays free — the default rotate list validates at spawn", () =>
     ])
   })
 
-  it("a default-rotation id outside zero-cost is not used", async () => {
+  it("the session policy filters the default rotate list", async () => {
     const { defaultTurnRetryForSpawn } = await import("../turn-retry-policy.js")
     await saveModelList({
       id: DEFAULT_ROTATION_LIST_ID,
       label: "Default rotation targets",
-      ids: ["opencode/gpt-5.1-codex", "opencode/big-pickle"],
+      ids: ["opencode/gpt-5.1-codex", "opencode/big-pickle", "opencode/glm-5.3-flash-free"],
     })
-    const input = defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free")
-    expect(input.rotate?.map(t => t.model)).toEqual(["opencode/big-pickle"])
+    await saveModelList({ id: "no-codex", ids: ["opencode/gpt-5.1-codex"] })
+    expect(
+      defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free").rotate?.map(t => t.model),
+    ).toEqual(["opencode/gpt-5.1-codex", "opencode/big-pickle"])
+    expect(
+      defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free", { block: ["no-codex"] }).rotate?.map(t => t.model),
+    ).toEqual(["opencode/big-pickle"])
   })
 })

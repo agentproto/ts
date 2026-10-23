@@ -16,11 +16,8 @@
 
 import { z } from "zod"
 import { inModelList, resolveModelList } from "@agentproto/model-catalog/lists"
-import {
-  DEFAULT_ROTATION_LIST_ID,
-  getModelListSource,
-  ZERO_COST_LIST_ID,
-} from "./model-list-store.js"
+import { DEFAULT_ROTATION_LIST_ID, getModelListSource } from "./model-list-store.js"
+import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
 
 /** Turn-failure classes `turnRetry.on` can opt into. */
 export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"] as const
@@ -108,66 +105,60 @@ export const TURN_RETRY_DEFAULT_ON: TurnRetryClass[] = ["rate-limit", "upstream-
 /** Consecutive retries the default policy allows. */
 export const TURN_RETRY_DEFAULT_MAX_RETRIES = 6
 
-/** The same bare key origin/main's free predicate used: `@route` stripped,
- *  last `/` segment, lowercased. */
-function freeKey(model: string): string {
+/** The same bare key used to drop the current model from the default list:
+ *  `@route` stripped, last `/` segment, lowercased. */
+function bareKey(model: string): string {
   return (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
 }
 
-/** The default rotate targets for a zero-cost current model: the curated
- *  `default-rotation` list, keeping only ids that are still in `zero-cost`,
- *  minus the current model (by bare key), in list order. */
-function defaultRotateTargets(currentModel: string): TurnRetryRotateTarget[] {
-  const key = freeKey(currentModel)
+/** The default rotate targets: the curated `default-rotation` list minus the
+ *  current model (by bare key), filtered by the session policy, in list order. */
+function defaultRotateTargets(currentModel: string, policy: ModelPolicy | undefined): TurnRetryRotateTarget[] {
+  const key = bareKey(currentModel)
   const source = getModelListSource()
   return resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
-    .filter(id => inModelList(id, ZERO_COST_LIST_ID, source))
-    .filter(id => freeKey(id) !== key)
+    .filter(id => bareKey(id) !== key)
+    .filter(id => checkModelPolicy(id, policy, source).ok)
     .map(model => ({ model }))
 }
 
 /** Build the turnRetry INPUT a spawn with no explicit `turnRetry` (explicit
  *  or via a preset) receives when the default is ON, i.e. for an executor
- *  role or a `sandbox` spawn. For a current model in the `zero-cost` model
- *  list the default also ROTATES on every covered class (rate limits and 5xx
- *  alike), onto the other zero-cost ids on the same route; a paid current
- *  model never gets a rotate list and so never rotates by default. */
-export function defaultTurnRetryForSpawn(currentModel?: string): Exclude<TurnRetryInput, null> {
+ *  role or a `sandbox` spawn. When the current model is itself in the
+ *  `default-rotation` model list, the default also ROTATES on every covered
+ *  class (rate limits and 5xx alike) onto the other members of that list the
+ *  session policy allows; any other model gets no rotate list. */
+export function defaultTurnRetryForSpawn(
+  currentModel?: string,
+  policy?: ModelPolicy,
+): Exclude<TurnRetryInput, null> {
   const base: Exclude<TurnRetryInput, null> = {
     on: [...TURN_RETRY_DEFAULT_ON],
     maxRetries: TURN_RETRY_DEFAULT_MAX_RETRIES,
   }
-  if (!currentModel || !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())) {
+  if (!currentModel || !inModelList(currentModel, DEFAULT_ROTATION_LIST_ID, getModelListSource())) {
     return base
   }
-  return {
-    ...base,
-    rotate: defaultRotateTargets(currentModel),
-    rotateOn: [...TURN_RETRY_DEFAULT_ON],
-  }
+  const rotate = defaultRotateTargets(currentModel, policy)
+  if (rotate.length === 0) return base
+  return { ...base, rotate, rotateOn: [...TURN_RETRY_DEFAULT_ON] }
 }
 
-/** The "free stays free" spawn-time check: a zero-cost current model may only
- *  rotate to ids in the `zero-cost` model list. Returns an error message, or
- *  undefined when fine. */
+/** Spawn-time check: every rotate target must pass the session's model
+ *  policy, if any. Returns an error message, or undefined when fine. */
 export function validateTurnRetryRotate(
   rotate: readonly TurnRetryRotateTarget[] | undefined,
-  currentModel: string | undefined,
+  policy: ModelPolicy | undefined,
 ): string | undefined {
-  if (
-    !rotate?.length ||
-    !currentModel ||
-    !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())
-  ) {
-    return undefined
-  }
-  const paid = rotate
-    .filter(t => !inModelList(t.model, ZERO_COST_LIST_ID, getModelListSource()))
-    .map(t => t.model)
-  if (paid.length === 0) return undefined
+  if (!rotate?.length || !policy) return undefined
+  const source = getModelListSource()
+  const refused = rotate
+    .map(t => ({ model: t.model, verdict: checkModelPolicy(t.model, policy, source) }))
+    .filter(t => !t.verdict.ok)
+  if (refused.length === 0) return undefined
   return (
-    `turnRetry.rotate: "${currentModel}" is in model list "${ZERO_COST_LIST_ID}", so it may only rotate to ids ` +
-    `in that list — never onto a paid model. Remove: ${paid.join(", ")}.`
+    `turnRetry.rotate: targets refused by the session model policy. ` +
+    refused.map(t => (t.verdict.ok ? "" : `${t.model} (${t.verdict.reason})`)).join("; ")
   )
 }
 

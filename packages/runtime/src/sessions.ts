@@ -192,6 +192,9 @@ import {
 import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
+import type { ModelPolicy } from "./model-policy.js"
+import { checkModelPolicy } from "./model-policy.js"
+import { getModelListSource } from "./model-list-store.js"
 import type { ClerkHookConfig } from "./clerk-hook-config.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
@@ -1839,6 +1842,11 @@ export interface SessionDescriptor {
    *  revives a dead process): this re-prompts a LIVE session with a short
    *  continuation prompt — see `turn-retry.ts`. */
   turnRetry?: TurnRetryPolicy
+  /** User-set model policy (`agent_start.modelPolicy`): model-list ids this
+   *  session may (`allow`) or may not (`block`) use. Absent ⇒ any model the
+   *  account allows. Checked by `checkModelPolicy` at spawn, `setModel`,
+   *  restart and every rotation target. */
+  modelPolicy?: ModelPolicy
   /** The AGENT level of the AIP-68 clerk hook (`agent_start.hooks.clerk`,
    *  or the agent manifest's `metadata.hooks.clerk`). Recorded verbatim so
    *  the clerk-turn-end controller can resolve the three-level
@@ -5623,6 +5631,8 @@ export interface SpawnAgentInput {
   /** Opt-in turn-retry policy (`turn-retry.ts`), recorded verbatim onto
    *  {@link SessionDescriptor.turnRetry}. Absent ⇒ no automatic retry. */
   turnRetry?: TurnRetryPolicy
+  /** Model policy, recorded verbatim onto {@link SessionDescriptor.modelPolicy}. */
+  modelPolicy?: ModelPolicy
   /** The AGENT level of the AIP-68 clerk hook - recorded verbatim onto
    *  {@link SessionDescriptor.clerkHook}. Absent ⇒ this session contributes
    *  no agent level and the less specific level applies. */
@@ -11502,6 +11512,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
+        ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
@@ -11692,6 +11703,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.resumeVia !== undefined ? { resumeVia: input.resumeVia } : {}),
         ...(restartPolicy ? { restartPolicy } : {}),
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
+        ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
@@ -12906,6 +12918,8 @@ export function createSessionsRegistry(opts?: {
             fixedProvider: adapterProvider,
             modelDerivedApiKey,
           })
+      const verdict = checkModelPolicy(modelId, rt.desc.modelPolicy, getModelListSource())
+      if (!verdict.ok) return { applied: false, reason: `policy: ${verdict.reason}` }
       const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
         // Record the CATALOG id the caller requested, not the wire form the

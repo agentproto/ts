@@ -50,7 +50,7 @@ export function registerModelListTools(server: McpServer): void {
       "list is named data: include selectors (access-target vocabulary plus " +
       "price / context / route variant), exclude selectors that always win, " +
       "explicit `ids` pins, an ordering mode and a rotation strategy. The " +
-      "seed list `zero-cost` includes `tag:price:zero`.",
+      "a seed list selects models by the `price:zero` tag.",
     {},
     async () => text({ lists: await listModelLists() }),
   )

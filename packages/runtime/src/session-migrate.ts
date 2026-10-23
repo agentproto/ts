@@ -385,6 +385,7 @@ export async function migrateSandboxSession(
       // first migration). `spawnAgentSession` re-resolves it with
       // `resolveTurnRetryPolicy`, which is idempotent on a resolved policy.
       ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+      ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
     },
   })
 

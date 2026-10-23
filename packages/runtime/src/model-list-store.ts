@@ -2,9 +2,9 @@
  * User-owned model lists — the persisted form of a named model selection.
  *
  * `~/.agentproto/model-lists.json` holds `{ version: 1, lists: ModelList[] }`.
- * The file is seeded with `zero-cost` on first load (price 0/0), which is now
- * the ONE definition of "free" in code: every former free predicate asks
- * `inModelList(model, "zero-cost", getModelListSource())` instead.
+ * The file is seeded with `zero-cost` (price 0/0) on first load. Model rules
+ * never read it by name: a session's `ModelPolicy` (model-policy.ts) refers to
+ * list ids chosen by the user.
  *
  * Writes are 0600 like the sibling stores. A MALFORMED file is a hard error
  * naming the path — unlike the preset stores, silently treating a broken list

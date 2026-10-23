@@ -404,6 +404,77 @@ describe("SessionsRegistry.setModel", () => {
     expect(session.lastSetModel).toBeUndefined()
     reg.shutdown()
   })
+
+  it("refuses a model in a blocked list with a policy reason and never calls the driver", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      model: "opencode/deepseek-v4.1-flash-free",
+      modelPolicy: { block: ["default-rotation"] },
+    })
+
+    const result = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
+    expect(result.applied).toBe(false)
+    expect(result).toMatchObject({ reason: expect.stringMatching(/^policy: /) })
+    expect(session.lastSetModel).toBeUndefined()
+    expect(reg.get(desc.id)?.model).toBe("opencode/deepseek-v4.1-flash-free")
+    reg.shutdown()
+  })
+
+  it("an allow list refuses an uncataloged id and a model outside it, and permits one inside", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      model: "opencode/deepseek-v4.1-flash-free",
+      modelPolicy: { allow: ["default-rotation"] },
+    })
+
+    const refused = await reg.setModel(desc.id, "totally-made-up-model")
+    expect(refused).toMatchObject({ applied: false, reason: expect.stringMatching(/^policy: /) })
+    const ok = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
+    expect(ok.applied).toBe(true)
+    reg.shutdown()
+  })
+
+  it("a session with no policy can switch from a zero-cost model to any model", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      model: "opencode/glm-5.3-flash-free",
+    })
+    const result = await reg.setModel(desc.id, "opencode/gpt-5.1-codex")
+    expect(result.applied).toBe(true)
+    reg.shutdown()
+  })
+
+  it("answers requires-restart across routes before the policy is consulted", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+      modelPolicy: { allow: ["default-rotation"] },
+    })
+    const result = await reg.setModel(desc.id, "deepseek/deepseek-v4-pro@openrouter")
+    expect(result).toMatchObject({ applied: false, reason: "requires-restart" })
+    reg.shutdown()
+  })
 })
 
 describe("POST /sessions/:id/model — HTTP route", () => {

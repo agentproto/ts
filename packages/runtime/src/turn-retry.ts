@@ -66,8 +66,8 @@ import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
-import { inModelList } from "@agentproto/model-catalog/lists"
-import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
+import { getModelListSource } from "./model-list-store.js"
+import { checkModelPolicy } from "./model-policy.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
@@ -392,8 +392,8 @@ export type RotationTargetCheck = (
   target: TurnRetryRotateTarget,
 ) => Promise<string | undefined>
 
-/** Pure part of rotation eligibility: same model, daemon-wide cooldown, free
- *  stays free, and the v1 same-profile limit. `undefined` = passes. */
+/** Pure part of rotation eligibility: same model, daemon-wide cooldown, the
+ *  session's model policy, and the v1 same-profile limit. `undefined` = passes. */
 export function rotationTargetRejection(
   desc: SessionDescriptor,
   target: TurnRetryRotateTarget,
@@ -403,13 +403,8 @@ export function rotationTargetRejection(
   if (target.model === desc.model) return "already the current model"
   const until = cooldowns.until(target.model)
   if (until !== undefined) return `cooling down for ${Math.max(1, Math.round((until - now) / 1000))}s more`
-  if (
-    desc.model &&
-    inModelList(desc.model, ZERO_COST_LIST_ID, getModelListSource()) &&
-    !inModelList(target.model, ZERO_COST_LIST_ID, getModelListSource())
-  ) {
-    return `not in model list "${ZERO_COST_LIST_ID}" — a zero-cost session never rotates onto a paid id`
-  }
+  const verdict = checkModelPolicy(target.model, desc.modelPolicy, getModelListSource())
+  if (!verdict.ok) return `policy: ${verdict.reason}`
   const current = desc.accessProfile?.profileRef
   if (target.profileRef !== undefined && target.profileRef !== current) {
     return `needs profile "${target.profileRef}" (session runs ${current ? `"${current}"` : "the host default"}) — profile switching is not supported live`

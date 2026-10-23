@@ -93,6 +93,13 @@ describe("resolveExecProfile", () => {
 })
 
 describe("validateSpawnTarget", () => {
+  it("local-free carries its restriction as a generic policy, and refuses a paid model through it", () => {
+    expect(free().policy).toEqual({ allow: ["zero-cost"] })
+    const refused = validateSpawnTarget(free(), { adapter: "opencode", model: "kimi-k2-thinking" })
+    expect(refused).toMatchObject({ ok: false, code: "not_entitled" })
+    expect(JSON.stringify(refused)).toMatch(/not in any allowed list/)
+  })
+
   it("free-only permits only ids in the zero-cost model list", () => {
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free" })).toMatchObject({ ok: true })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "big-pickle" })).toMatchObject({ ok: true })

@@ -2157,7 +2157,7 @@ export async function createGateway(
   // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
   await registerBuiltinRoutes({ llmEndpoint: opts.llmEndpoint === true })
   // Model lists are user data loaded once at boot; the sync source serves the
-  // `zero-cost` seed before this completes and the persisted file after.
+  // seed lists before this completes and the persisted file after.
   await loadModelListSource()
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
