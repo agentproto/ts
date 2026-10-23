@@ -79,7 +79,7 @@ export interface UserPreset extends Partial<SessionConfig> {
    *  a cycle is rejected at save time. */
   extends?: string[]
   /** Harness slug this preset is the default for. At most one preset per
-   *  harness — a second one is rejected at save time. */
+   *  harness; a second one is rejected at save time. */
   defaultFor?: string
   /** This implementation's form of the AIP-38 policy (the preset's policy).
    *  Composes with the request's: both apply. */
@@ -146,7 +146,7 @@ export type UserPresetsFile = {
   presets: UserPreset[]
 }
 
-/** A save-time invariant failure — a typed, actionable error rather than a
+/** A save-time invariant failure: a typed, actionable error rather than a
  *  generic parse message. */
 export class UserPresetValidationError extends Error {
   constructor(

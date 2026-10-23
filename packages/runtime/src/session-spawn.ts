@@ -168,6 +168,7 @@ import { touchUserPreset, type UserPreset } from "./user-presets.js"
 import {
   defaultPresetFor,
   resolveSessionConfig,
+  type HarnessPresetOverlay,
   type SessionConfigAxes,
 } from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
@@ -2191,8 +2192,23 @@ export async function spawnAgentSession(
   // `defaultFor` session preset. It is loaded first and handed to the
   // resolver as its own layer, preserving the existing rule that an explicit
   // access pin skips it and that a cloud spawn never resolves host billing.
-  let harnessPreset: { id: string; access: { profileRef: string }; model: string; turnRetry?: UserPreset["turnRetry"] } | undefined
-  if (!cloudResolved && !input.access?.profileRef) {
+  const namedPreset = input.preset
+  const sessionPresets = input.sessionPresets ?? (namedPreset ? [namedPreset] : [])
+  const resolveWith = (harnessPreset?: HarnessPresetOverlay) =>
+    resolveSessionConfig({
+      request: input as SessionConfigAxes,
+      presets: sessionPresets,
+      harness: input.harness ?? input.adapter,
+      ...(namedPreset ? { presetId: namedPreset.id } : {}),
+      ...(harnessPreset ? { harnessPreset } : {}),
+    })
+  // The harness default is a billing fallback: when the request or a session
+  // preset (named, its extends chain, or the defaultFor preset) already pins a
+  // profile, it is not loaded at all, so neither its profile gate nor its
+  // default model can leak next to another profile.
+  const pinnedProfile = resolveWith().config.access?.profileRef
+  let harnessPreset: HarnessPresetOverlay | undefined
+  if (!cloudResolved && !pinnedProfile) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
     if (preset) {
       // A default preset that bills through a since-disabled (or deleted)
@@ -2221,15 +2237,7 @@ export async function spawnAgentSession(
     }
   }
 
-  const namedPreset = input.preset
-  const sessionPresets = input.sessionPresets ?? (namedPreset ? [namedPreset] : [])
-  const resolution = resolveSessionConfig({
-    request: input as SessionConfigAxes,
-    presets: sessionPresets,
-    harness: input.harness ?? input.adapter,
-    ...(namedPreset ? { presetId: namedPreset.id } : {}),
-    ...(harnessPreset ? { harnessPreset } : {}),
-  })
+  const resolution = resolveWith(harnessPreset)
   const sessionConfig = resolution.config
   input = {
     ...input,
@@ -2241,7 +2249,7 @@ export async function spawnAgentSession(
     ...(sessionConfig.contextProfile !== undefined
       ? { contextProfile: sessionConfig.contextProfile }
       : {}),
-    // A preset `cwd` pins the favorite to a fixed repo — it feeds the same
+    // A preset `cwd` pins the favorite to a fixed repo; it feeds the same
     // slot an explicit request would, so the cwd ladder below treats it as
     // caller-named (and the worktree guard sees a real repo, not a fallback).
     ...(sessionConfig.cwd !== undefined ? { cwd: sessionConfig.cwd } : {}),
@@ -2259,7 +2267,7 @@ export async function spawnAgentSession(
     namedPreset?.id ??
     defaultPresetFor(input.harness ?? input.adapter, sessionPresets)?.id
   if (usedPresetId) {
-    // Best-effort recency stamp — a favorite just got resolved and used for
+    // Best-effort recency stamp: a favorite just got resolved and used for
     // this spawn. Never let the write (or its absence, for a since-deleted
     // preset) affect the spawn itself.
     await touchUserPreset(usedPresetId).catch(() => {})

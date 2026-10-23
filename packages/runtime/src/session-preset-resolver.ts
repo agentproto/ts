@@ -93,7 +93,7 @@ export interface HarnessPresetOverlay {
 }
 
 export interface ResolveSessionConfigInput {
-  /** Explicit spawn request axes — the highest layer. */
+  /** Explicit spawn request axes: the highest layer. */
   request?: SessionConfigAxes
   /** The user's session preset store. */
   presets?: readonly UserPreset[]
