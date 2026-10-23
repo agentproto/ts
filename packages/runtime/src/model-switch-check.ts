@@ -4,9 +4,8 @@
  * forbid (`turn-retry.ts` + `turn-retry-eligibility.ts`), but a manual switch
  * historically bypassed those checks: it could move a free session onto a
  * paid id or onto a model the profile's allow-list excludes. This composes
- * the same guards for the manual path — the pure "free stays free" rule
- * straight from `turn-retry-policy.ts` (same wording as
- * `rotationTargetRejection`), everything else delegated to
+ * the same guards for the manual path: the pure "free stays free" rule
+ * (the predicate from `turn-retry-policy.ts`), everything else delegated to
  * `createRotationTargetCheck` so the two paths cannot drift apart.
  */
 
