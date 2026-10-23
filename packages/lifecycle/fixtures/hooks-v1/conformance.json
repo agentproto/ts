@@ -1,0 +1,206 @@
+{
+  "contract": "hooks/v1",
+  "hostEvents": [
+    {
+      "event": "agentproto:child-housekeeping",
+      "host": "agentproto",
+      "portability": "nonportable",
+      "description": "Daemon-local event emitted when a child session needs housekeeping."
+    },
+    {
+      "event": "agentproto:context-rescue",
+      "host": "agentproto",
+      "portability": "nonportable",
+      "description": "Daemon-local emergency context rescue event."
+    }
+  ],
+  "agentHookMaps": {
+    "valid": [
+      {
+        "name": "string action with a resource-kind id",
+        "on": {
+          "turn-end": "session:child-housekeeping"
+        },
+        "expect": [
+          {
+            "event": "turn-end",
+            "eventKind": "standard",
+            "portable": true,
+            "action": "session:child-housekeeping",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
+      },
+      {
+        "name": "alias resolves and array form fans out",
+        "on": {
+          "per-turn": [
+            "session:child-housekeeping",
+            "session:context-rescue"
+          ]
+        },
+        "expect": [
+          {
+            "event": "turn-end",
+            "eventKind": "alias",
+            "portable": true,
+            "action": "session:child-housekeeping",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          },
+          {
+            "event": "turn-end",
+            "eventKind": "alias",
+            "portable": true,
+            "action": "session:context-rescue",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
+      },
+      {
+        "name": "templated idle event",
+        "on": {
+          "idle-300": "session:child-housekeeping"
+        },
+        "expect": [
+          {
+            "event": "idle-300",
+            "eventKind": "templated",
+            "portable": true,
+            "thresholdSeconds": 300,
+            "action": "session:child-housekeeping",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
+      },
+      {
+        "name": "actionRef object carries inputs",
+        "on": {
+          "turn-end": {
+            "action": "session:child-housekeeping",
+            "inputs": {
+              "dry_run": true
+            }
+          }
+        },
+        "expect": [
+          {
+            "event": "turn-end",
+            "eventKind": "standard",
+            "portable": true,
+            "action": "session:child-housekeeping",
+            "inputs": {
+              "dry_run": true
+            },
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
+      },
+      {
+        "name": "registered host event is nonportable",
+        "on": {
+          "agentproto:child-housekeeping": "session:child-housekeeping"
+        },
+        "expect": [
+          {
+            "event": "agentproto:child-housekeeping",
+            "eventKind": "host",
+            "portable": false,
+            "host": "agentproto",
+            "action": "session:child-housekeeping",
+            "inputs": null,
+            "delivery": "best-effort",
+            "reconciliation": "none"
+          }
+        ]
+      }
+    ],
+    "invalid": [
+      {
+        "name": "unknown bare event",
+        "on": {
+          "custom-event": "session:child-housekeeping"
+        }
+      },
+      {
+        "name": "unregistered host event",
+        "on": {
+          "agentproto:child-housekeeping": "session:child-housekeeping"
+        },
+        "registrations": []
+      },
+      {
+        "name": "event contains whitespace",
+        "on": {
+          "turn end": "session:child-housekeeping"
+        }
+      },
+      {
+        "name": "action id without a target kind",
+        "on": {
+          "turn-end": "child-housekeeping"
+        }
+      },
+      {
+        "name": "empty action list",
+        "on": {
+          "turn-end": []
+        }
+      },
+      {
+        "name": "actionRef sets both action and ref",
+        "on": {
+          "turn-end": {
+            "action": "session:child-housekeeping",
+            "ref": "session:context-rescue"
+          }
+        }
+      },
+      {
+        "name": "non-object on map",
+        "on": []
+      }
+    ]
+  },
+  "hostEventRegistrations": {
+    "valid": [
+      {
+        "event": "agentproto:child-housekeeping",
+        "host": "agentproto",
+        "portability": "nonportable"
+      }
+    ],
+    "invalid": [
+      {
+        "name": "standard event is not host-specific",
+        "registration": {
+          "event": "turn-end",
+          "portability": "nonportable"
+        }
+      },
+      {
+        "name": "empty event suffix",
+        "registration": {
+          "event": "agentproto:",
+          "portability": "nonportable"
+        }
+      },
+      {
+        "name": "host must match namespace",
+        "registration": {
+          "event": "agentproto:child-housekeeping",
+          "host": "other",
+          "portability": "nonportable"
+        }
+      }
+    ]
+  }
+}
