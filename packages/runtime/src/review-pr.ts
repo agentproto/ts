@@ -93,7 +93,7 @@ interface GhPull {
   html_url?: string
   state: "open" | "closed"
   merged_at?: string | null
-  head?: { sha?: string }
+  head?: { sha?: string; ref?: string }
 }
 
 /** The PR `headSha` belongs to, or `undefined` when GitHub knows none.
@@ -142,6 +142,7 @@ export async function fetchPrStatus(gh: GhRunner, pr: ReviewPrRef, now: () => Da
     })),
     ...(checks ? { checks } : {}),
     ...(pull.head?.sha ? { headSha: pull.head.sha } : {}),
+    ...(pull.head?.ref ? { headRefName: pull.head.ref } : {}),
   }
 }
 

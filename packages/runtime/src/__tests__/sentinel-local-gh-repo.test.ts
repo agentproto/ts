@@ -19,6 +19,7 @@ interface FakePr {
   isDraft: boolean
   createdAt: string
   headRefOid: string
+  headRefName: string
   author: string
   reviews: Array<{ login: string; state: string; submittedAt: string }>
   checks: Array<{ name: string; conclusion: string | null }>
@@ -35,6 +36,7 @@ function pr(number: number, over: Partial<FakePr> = {}): FakePr {
     isDraft: false,
     createdAt: "2026-10-05T10:00:00Z",
     headRefOid: `sha${number}`,
+    headRefName: `pm-brain/pr-${number}`,
     author: "alice",
     reviews: [],
     checks: [],
@@ -58,6 +60,7 @@ function fakeGh(prs: FakePr[], calls?: string[][]): GhRunner {
               state: p.state,
               createdAt: p.createdAt,
               headRefOid: p.headRefOid,
+              headRefName: p.headRefName,
               author: { login: p.author },
               reviews: {
                 nodes: p.reviews.map(r => ({ author: { login: r.login }, state: r.state, submittedAt: r.submittedAt })),
@@ -150,7 +153,7 @@ describe("local-gh repo scope", () => {
     handle = r.handle
     expect(r.types).toEqual(["github.pull_request.opened#2"])
     expect(r.events[0]!.summary).toContain("(draft)")
-    expect(r.events[0]!.data).toMatchObject({ title: "PR 2", author: "alice", draft: true })
+    expect(r.events[0]!.data).toMatchObject({ title: "PR 2", author: "alice", draft: true, headRefName: "pm-brain/pr-2" })
 
     now += 60_000
     prs[1]!.isDraft = false
