@@ -73,6 +73,16 @@ describe("resolveModelList exclusion and ordering", () => {
     expect(resolveModelList("list", src)).toEqual([])
   })
 
+  it("a model exclusion also removes an uncataloged ids pin", () => {
+    const src = sourceOf({
+      id: "pins",
+      ids: ["custom/model", "keep/model"],
+      exclude: [{ kind: "model", id: "custom/model" }],
+    })
+    expect(resolveModelList("pins", src)).toEqual(["keep/model"])
+    expect(inModelList("custom/model", "pins", src)).toBe(false)
+  })
+
   it("listed keeps insertion order, cheapest / largest-context / newest sort deterministically", () => {
     const src = sourceOf(
       {

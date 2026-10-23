@@ -178,6 +178,24 @@ function selectorMatches(
   }
 }
 
+/** Exclusion is a negation: an explicit `model` target must also be able to
+ *  remove an uncataloged `ids` pin, which no include selector can match. */
+function excludeMatches(
+  selector: ModelSelector,
+  model: ResolvedModel | undefined,
+  rawId: string,
+  src: ModelListSource,
+  stack: string[],
+): boolean {
+  if (
+    selector.kind === "model" &&
+    pinsMatch(selector.id, rawId)
+  ) {
+    return true
+  }
+  return selectorMatches(selector, model, rawId, src, stack)
+}
+
 function candidateIndex(): Map<string, ResolvedModel> {
   if (candidateIndexCache) return candidateIndexCache
   const index = new Map<string, ResolvedModel>()
@@ -241,7 +259,7 @@ function listContains(
   const index = candidateIndex()
   const model = index.get(rawId) ?? index.get(stripRouteSuffix(rawId))
   for (const selector of list.exclude ?? []) {
-    if (selectorMatches(selector, model, rawId, src, stack)) return false
+    if (excludeMatches(selector, model, rawId, src, stack)) return false
   }
   if ((list.ids ?? []).some(pin => pinsMatch(pin, rawId))) return true
   return (list.include ?? []).some(selector =>
@@ -333,7 +351,7 @@ function resolveEntries(
       }
     }
     for (const key of [...entries.keys()]) {
-      if (selectorMatches(selector, index.get(key), key, src, nextStack)) {
+      if (excludeMatches(selector, index.get(key), key, src, nextStack)) {
         entries.delete(key)
       }
     }
