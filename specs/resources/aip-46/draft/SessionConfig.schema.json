@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-46/SessionConfig.schema.json",
+  "title": "AIP-46 SessionConfig, ConfigOverlay and SessionPreset",
+  "description": "Normalized per-session configuration (2026-10-23 session-config amendment). Hosts MAY accept additional host-specific keys only under an x- prefix.",
+  "$defs": {
+    "ConfigOverlay": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-45 harness slug."
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "deprecated": true,
+          "description": "Legacy alias of `harness` (AIP-70). A config MUST NOT carry both."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id, or selector:<id> naming a saved AIP-43 selector."
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1
+        },
+        "posture": {
+          "oneOf": [
+            {
+              "enum": [
+                "default",
+                "plan",
+                "accept-edits",
+                "bypass",
+                "read-only"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "harnessModeId"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "harnessModeId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "contextProfile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "type": "object",
+          "required": [
+            "gateway"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gateway": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "access": {
+          "type": "object",
+          "required": [
+            "profileRef"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "profileRef": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-69 auth profile id."
+            }
+          }
+        },
+        "options": {
+          "type": "object",
+          "description": "Harness-native AIP-45 options, validated against the harness manifest."
+        }
+      },
+      "not": {
+        "required": [
+          "harness",
+          "adapter"
+        ]
+      }
+    },
+    "FailureClass": {
+      "enum": [
+        "rate-limit",
+        "quota-exhausted",
+        "upstream-5xx",
+        "model-unavailable",
+        "auth-failed",
+        "no-output-stall",
+        "harness-crashed"
+      ]
+    },
+    "SessionConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "harness": {
+          "type": "string",
+          "minLength": 1,
+          "description": "AIP-45 harness slug."
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "deprecated": true,
+          "description": "Legacy alias of `harness` (AIP-70). A config MUST NOT carry both."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Model id, or selector:<id> naming a saved AIP-43 selector."
+        },
+        "effort": {
+          "type": "string",
+          "minLength": 1
+        },
+        "posture": {
+          "oneOf": [
+            {
+              "enum": [
+                "default",
+                "plan",
+                "accept-edits",
+                "bypass",
+                "read-only"
+              ]
+            },
+            {
+              "type": "object",
+              "required": [
+                "harnessModeId"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "harnessModeId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        },
+        "contextProfile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "type": "object",
+          "required": [
+            "gateway"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "gateway": {
+              "type": "string",
+              "minLength": 1
+            },
+            "baseUrl": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        },
+        "access": {
+          "type": "object",
+          "required": [
+            "profileRef"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "profileRef": {
+              "type": "string",
+              "minLength": 1,
+              "description": "AIP-69 auth profile id."
+            }
+          }
+        },
+        "options": {
+          "type": "object",
+          "description": "Harness-native AIP-45 options, validated against the harness manifest."
+        },
+        "retry": {
+          "type": "object",
+          "required": [
+            "on"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "on": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/FailureClass"
+              },
+              "uniqueItems": true
+            },
+            "maxRetries": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retryAfterToolCalls": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        },
+        "fallback": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConfigOverlay"
+          }
+        }
+      },
+      "not": {
+        "required": [
+          "harness",
+          "adapter"
+        ]
+      }
+    },
+    "SessionPreset": {
+      "type": "object",
+      "required": [
+        "id",
+        "config"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "extends": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "defaultFor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "config": {
+          "$ref": "#/$defs/SessionConfig"
+        },
+        "policy": {
+          "description": "AIP-38 PolicyRef (inline, ref or file)."
+        }
+      }
+    }
+  },
+  "$ref": "#/$defs/SessionConfig"
+}
