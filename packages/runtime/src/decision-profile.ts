@@ -10,7 +10,7 @@
  * thing: an entitlement ceiling checked BEFORE any spawn.
  *
  *   free-only      the profile's model policy (`{ allow: ["zero-cost"] }`)
- *                  through the OpenCode adapter. Nothing else — a preset, an
+ *                  through the OpenCode adapter. Nothing else: a preset, an
  *                  Opus/Sonnet fallback, a rotate target or a recovery
  *                  override outside the policy is refused, never substituted.
  *   subscription   OpenCode ids in the `zero-cost` list, plus Claude Code Sonnet.
