@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`156` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`157` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 89 |
+| core | 90 |
 | adapters | 25 |
 | spec-reference | 32 |
 | archived | 10 |
@@ -144,6 +144,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/tool-cli | `packages/tool-cli` | 0.2.10 | core | product runtime package consumed by the runtime/cli |
 @agentproto/tooling | `packages/tooling` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/transcript-fixtures | `packages/transcript-fixtures` | 0.3.2 | core | product runtime package consumed by the runtime/cli |
+@agentproto/usage-presets | `packages/usage-presets` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
 agentproto-vscode | `packages/vscode` | 0.25.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/workflow-loader | `packages/workflow-loader` | 0.2.9 | core | product runtime package consumed by the runtime/cli |
 @agentproto/workflow-mastra | `packages/workflow-mastra` | 0.2.12 | core | product runtime package consumed by the runtime/cli |
