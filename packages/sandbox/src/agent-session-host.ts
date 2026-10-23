@@ -250,6 +250,14 @@ export interface SandboxBootOpts {
    * Providers with no such concept simply ignore this.
    */
   keepAlive?: boolean
+  /**
+   * Optional progress logger for the daemon's own log. Providers that have
+   * long, multi-phase boots call this once per phase (e.g. "create
+   * requested", "running", "daemon healthy") so an operator can see where a
+   * slow boot is stuck. Absent means the provider must stay silent; its
+   * package is not a logger.
+   */
+  log?: (line: string) => void
 }
 
 /**
@@ -386,6 +394,9 @@ export interface CreateSandboxAgentSessionHostOpts {
   /** Reconnect to this existing sandbox id instead of booting a fresh box —
    *  requires `provider.connect`; throws a clear error otherwise. */
   sandboxId?: string
+  /** Optional per-phase boot logger forwarded to the provider; see
+   *  `SandboxBootOpts.log`. Absent keeps the provider silent. */
+  log?: (line: string) => void
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -460,9 +471,12 @@ export async function createSandboxAgentSessionHost(
           "but this provider has no connect() — it can only boot fresh sandboxes.",
       )
     }
-    booted = await opts.provider.connect(opts.sandboxId, opts.spec, { env })
+    booted = await opts.provider.connect(opts.sandboxId, opts.spec, {
+      env,
+      ...(opts.log ? { log: opts.log } : {}),
+    })
   } else {
-    booted = await opts.provider.boot(opts.spec, { env })
+    booted = await opts.provider.boot(opts.spec, { env, ...(opts.log ? { log: opts.log } : {}) })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)
   // gates its daemon with a per-box bearer; Box's private path gates with a

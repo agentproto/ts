@@ -10,6 +10,8 @@ export type ComputerSandboxErrorCode =
   | "sandbox_egress_slot_dedicated"
   | "sandbox_egress_slot_unknown"
   | "sandbox_capacity"
+  | "sandbox_capacity_exceeds_budget"
+  | "sandbox_boot_timeout"
 
 export interface ComputerSandboxErrorDetails {
   /** HTTP status from the controller response, when there was one. */
@@ -20,8 +22,17 @@ export interface ComputerSandboxErrorDetails {
   requested?: number
   /** `host-capacity` details: the amount still available. */
   available?: number
+  /** `host-capacity` details: the tenant's TOTAL budget for `resource`, when
+   *  the controller reported it (either on the error or via GET /v1/capacity). */
+  budget?: number
   /** `Retry-After` from the controller, converted to milliseconds. */
   retryAfterMs?: number
+  /** `sandbox_boot_timeout`: the boot phase that was still in flight. */
+  phase?: string
+  /** `sandbox_boot_timeout`: the deadline the boot exceeded. */
+  timeoutMs?: number
+  /** `sandbox_boot_timeout`: the controller computer id, once it was known. */
+  sandboxId?: string
 }
 
 export class ComputerSandboxError extends Error {
@@ -30,7 +41,11 @@ export class ComputerSandboxError extends Error {
   readonly resource?: string
   readonly requested?: number
   readonly available?: number
+  readonly budget?: number
   readonly retryAfterMs?: number
+  readonly phase?: string
+  readonly timeoutMs?: number
+  readonly sandboxId?: string
 
   constructor(code: ComputerSandboxErrorCode, message: string, details: ComputerSandboxErrorDetails = {}) {
     super(message)
@@ -40,7 +55,11 @@ export class ComputerSandboxError extends Error {
     if (details.resource !== undefined) this.resource = details.resource
     if (details.requested !== undefined) this.requested = details.requested
     if (details.available !== undefined) this.available = details.available
+    if (details.budget !== undefined) this.budget = details.budget
     if (details.retryAfterMs !== undefined) this.retryAfterMs = details.retryAfterMs
+    if (details.phase !== undefined) this.phase = details.phase
+    if (details.timeoutMs !== undefined) this.timeoutMs = details.timeoutMs
+    if (details.sandboxId !== undefined) this.sandboxId = details.sandboxId
   }
 }
 
@@ -50,6 +69,8 @@ const COMPUTER_SANDBOX_ERROR_CODES = new Set<ComputerSandboxErrorCode>([
   "sandbox_egress_slot_dedicated",
   "sandbox_egress_slot_unknown",
   "sandbox_capacity",
+  "sandbox_capacity_exceeds_budget",
+  "sandbox_boot_timeout",
 ])
 
 /** Structural check that works across package boundaries and with mocks:

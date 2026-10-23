@@ -71,6 +71,10 @@ export const DEFAULT_TEMPLATE = "agentproto-workstation"
 const EXEC_TIMEOUT_MAX_SEC = 600
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
 const DAEMON_READY_TIMEOUT_MS = 30_000
+/** One budget for the whole provider-side boot (create -> running -> daemon
+ *  healthy -> attach), so a wedge in any phase fails in bounded time instead
+ *  of hanging the caller indefinitely. */
+const DEFAULT_BOOT_DEADLINE_MS = 300_000
 const UPDATE_CLI_TIMEOUT_MS = 600_000
 /** Base64 chunk size for writeFile chunks: ~6668 chars stays under the
  *  controller's 8192-character argv element cap. */
@@ -180,6 +184,10 @@ interface ComputerSandboxConfig {
   waitReadyTimeoutMs?: number
   /** How long to wait for the daemon health probe after starting it. */
   daemonReadyTimeoutMs?: number
+  /** One deadline for the WHOLE provider boot (create, running, daemon healthy,
+   *  attach). Default 5 minutes. On expiry the boot fails with a
+   *  `sandbox_boot_timeout` typed error naming the phase it was stuck in. */
+  bootDeadlineMs?: number
   /** Internal: headers added to `authHeaders` in `daemonRoute` mode. */
   routeHeaders?: Record<string, string>
 }
@@ -323,6 +331,7 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
       : undefined,
     waitReadyTimeoutMs: int(config.waitReadyTimeoutMs),
     daemonReadyTimeoutMs: int(config.daemonReadyTimeoutMs),
+    bootDeadlineMs: int(config.bootDeadlineMs),
   }
 }
 
@@ -334,12 +343,35 @@ const CONTROLLER_ERROR_CODES: Record<string, ComputerSandboxErrorCode> = {
   "host-capacity": "sandbox_capacity",
 }
 
+/** Unit suffix for a resource's amounts, when the controller named one we
+ *  know. Unknown resources stay unitless rather than guessing. */
+function amountUnit(resource: string | undefined): string {
+  if (resource === "memory") return " MiB"
+  if (resource === "cpus") return " cpus"
+  return ""
+}
+
+/** The tenant's TOTAL budget for the refused resource: the error's own
+ *  `budget`/`total` field when present, else `GET /v1/capacity`. Undefined
+ *  when neither answer exists (or the capacity probe fails), in which case
+ *  the caller keeps the ordinary retryable capacity error. */
+async function tenantBudget(client: ComputerControllerClient, err: ComputerApiError): Promise<number | undefined> {
+  if (err.budget !== undefined) return err.budget
+  if (err.resource !== "memory" && err.resource !== "cpus") return undefined
+  try {
+    const capacity = await client.getCapacity()
+    return err.resource === "memory" ? capacity.memoryMiB.budget : capacity.cpus.budget
+  } catch {
+    return undefined
+  }
+}
+
 /** Map a controller's machine error code to the provider's typed error.
  *  Unknown errors are returned unchanged so existing handling/messages stay
  *  intact. Messages are built here from controller status/code and capacity
  *  numbers only — never from the service token (the client already redacts
  *  it from its own message). */
-function mapControllerError(err: unknown): unknown {
+async function mapControllerError(err: unknown, client?: ComputerControllerClient): Promise<unknown> {
   if (!(err instanceof ComputerApiError) || err.code === undefined) return err
   const code = CONTROLLER_ERROR_CODES[err.code]
   if (code === undefined) return err
@@ -349,6 +381,28 @@ function mapControllerError(err: unknown): unknown {
     // the two values it actually sizes ("memory" and "cpus") are usable in a
     // message; anything else is reported as unknown.
     const resource = err.resource === "memory" || err.resource === "cpus" ? err.resource : "unknown"
+    const unit = amountUnit(err.resource)
+    // A request ABOVE the tenant's whole budget can never fit, no matter how
+    // much frees up: say so instead of handing back a retry hint that is
+    // false. Only when both numbers are known; a failed capacity probe
+    // (client absent) falls through to the ordinary retryable error.
+    if (client !== undefined && err.requested !== undefined) {
+      const budget = await tenantBudget(client, err)
+      if (budget !== undefined && err.requested > budget) {
+        return new ComputerSandboxError(
+          "sandbox_capacity_exceeds_budget",
+          `computer sandbox: requested ${err.requested}${unit} exceeds the tenant budget ` +
+            `${budget}${unit}; this can never fit`,
+          {
+            status: err.status,
+            resource: err.resource,
+            requested: err.requested,
+            available: err.available,
+            budget,
+          },
+        )
+      }
+    }
     const amounts =
       err.requested !== undefined || err.available !== undefined
         ? ` (requested ${err.requested ?? "unknown"}, available ${err.available ?? "unknown"})`
@@ -662,7 +716,7 @@ export const computerSandboxProvider: SandboxProvider = {
     try {
       booted = await bootOnClient(client, spec, config, opts)
     } catch (err) {
-      throw mapControllerError(err)
+      throw await mapControllerError(err, client)
     }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
@@ -677,7 +731,7 @@ export const computerSandboxProvider: SandboxProvider = {
     try {
       booted = await connectOnClient(client, sandboxId, spec, config, opts)
     } catch (err) {
-      throw mapControllerError(err)
+      throw await mapControllerError(err, client)
     }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
@@ -695,7 +749,7 @@ export const computerSandboxProvider: SandboxProvider = {
     try {
       booted = await connectForExecOnClient(client, sandboxId, config)
     } catch (err) {
-      throw mapControllerError(err)
+      throw await mapControllerError(err, client)
     }
     probeClientConfigs.set(booted.sandboxId, clientConfig)
     return booted
@@ -803,6 +857,35 @@ async function bootOnClient(
 ): Promise<BootedSandbox> {
   const port = config.port ?? DEFAULT_PORT
   const workspace = config.workspace ?? DEFAULT_WORKSPACE
+  const bootDeadlineMs = config.bootDeadlineMs ?? DEFAULT_BOOT_DEADLINE_MS
+  const deadlineAt = Date.now() + bootDeadlineMs
+  const deadlineLeft = (): number => deadlineAt - Date.now()
+  let sandboxId: string | undefined
+
+  const timeoutError = (phase: string): ComputerSandboxError =>
+    new ComputerSandboxError(
+      "sandbox_boot_timeout",
+      `computer sandbox: boot timed out after ${bootDeadlineMs}ms while waiting for ${phase}` +
+        (sandboxId !== undefined ? ` (computer "${sandboxId}")` : ""),
+      { phase, timeoutMs: bootDeadlineMs, ...(sandboxId !== undefined ? { sandboxId } : {}) },
+    )
+
+  /** Bound one boot phase by what is LEFT of the single boot deadline. */
+  const withinDeadline = async <T>(phase: string, run: () => Promise<T>): Promise<T> => {
+    const remaining = deadlineLeft()
+    if (remaining <= 0) throw timeoutError(phase)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        run(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(timeoutError(phase)), remaining)
+        }),
+      ])
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
 
   // Only controller-shapable env vars are forwarded into the create payload
   // (the controller 400s on anything else). Neither the controller token nor
@@ -815,22 +898,33 @@ async function bootOnClient(
   }
 
   let created
+  const template = config.template ?? DEFAULT_TEMPLATE
+  // No direct logging: the provider stays silent unless the daemon passes
+  // `opts.log` (see `SandboxBootOpts.log`). One helper keeps every phase line
+  // the same shape.
+  const bootLog = (line: string): void => opts.log?.(`[sandbox-computer] boot: ${line}`)
+  bootLog(
+    `create requested (${template}` +
+      `${config.memoryMiB !== undefined ? `, ${config.memoryMiB} MiB` : ""})`,
+  )
   try {
-    created = await client.createComputer({
-      template: config.template ?? DEFAULT_TEMPLATE,
-      tenantId: resolveClientConfig(spec, config).tenantId,
-      ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
-      ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
-      ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
-      ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
-      ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
-      ...(config.egress ? { egress: { allow: config.egress } } : {}),
-      ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
-      env: createEnv,
-    })
+    created = await withinDeadline("create", () =>
+      client.createComputer({
+        template,
+        tenantId: resolveClientConfig(spec, config).tenantId,
+        ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
+        ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
+        ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
+        ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
+        ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
+        ...(config.egress ? { egress: { allow: config.egress } } : {}),
+        ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
+        env: createEnv,
+      }),
+    )
   } catch (err) {
     if (err instanceof ComputerApiError) {
-      const mapped = mapControllerError(err)
+      const mapped = await mapControllerError(err, client)
       if (mapped !== err) throw mapped
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
@@ -841,17 +935,27 @@ async function bootOnClient(
     }
     throw err
   }
-  const sandboxId = created.id
+  sandboxId = created.id
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
   let status: ComputerStatus
 
   try {
-    status = await waitRunning(client, sandboxId, config.waitReadyTimeoutMs ?? DEFAULT_WAIT_READY_TIMEOUT_MS)
+    // An explicit `waitReadyTimeoutMs` still caps the running phase; when it
+    // is left at its default, the single boot deadline is the only bound.
+    const runningTimeout =
+      config.waitReadyTimeoutMs !== undefined
+        ? Math.min(config.waitReadyTimeoutMs, Math.max(1, deadlineLeft()))
+        : Math.max(1, deadlineLeft())
+    status = await waitRunning(client, sandboxId, runningTimeout)
+    bootLog(`computer ${sandboxId} running`)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
-    daemonToken = await daemonHealthyOrThrow(client, sandboxId, config, randomUUID(), port, workspace, mcpOrigin)
-    await attachController(client, sandboxId, config.sessionHolder)
+    daemonToken = await withinDeadline("daemon healthy", () =>
+      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin),
+    )
+    bootLog(`computer ${sandboxId} daemon healthy`)
+    await withinDeadline("attach", () => attachController(client, sandboxId as string, config.sessionHolder))
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
     // sandbox-e2b): propagate the original error but reclaim the box. The
@@ -982,7 +1086,9 @@ async function recoverPublishedPort(
   }
 }
 
-/** Poll until the computer reports `running`, or throw with the last state. */
+/** Poll until the computer reports `running`, or throw with the last state.
+ *  The timeout is part of the caller's boot deadline, so it raises the same
+ *  typed phase error rather than a bare Error. */
 async function waitRunning(
   client: ComputerControllerClient,
   id: string,
@@ -994,7 +1100,11 @@ async function waitRunning(
     if (status === null) throw new SandboxBoxGoneError(id)
     if (status.state === "running") return status
     if (Date.now() >= deadline) {
-      throw new Error(`computer "${id}" did not reach running within ${timeoutMs}ms (last state: ${status.state})`)
+      throw new ComputerSandboxError(
+        "sandbox_boot_timeout",
+        `computer "${id}" did not reach running within ${timeoutMs}ms (last state: ${status.state})`,
+        { phase: "running", timeoutMs, sandboxId: id },
+      )
     }
     await sleep(500)
   }

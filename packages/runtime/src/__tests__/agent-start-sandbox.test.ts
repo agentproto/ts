@@ -198,6 +198,43 @@ describe("agent_start sandbox — boot box + proxy session", () => {
     expect(deps.resolveAgentAdapter).not.toHaveBeenCalled()
   })
 
+  it("registers a visible 'starting' row while the sandbox box is still booting", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const original = await resolveSandboxProviderSpy("fake")
+    const slowProvider: SandboxProvider = {
+      async boot(spec, opts) {
+        await gate
+        return box.provider.boot(spec, opts)
+      },
+    }
+    deps.resolveSandboxProvider = vi.fn(async (slug: string) =>
+      slug === "fake" && original ? { ...original, provider: slowProvider } : null,
+    )
+
+    const spawn = spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+    })
+
+    // The row must appear BEFORE the box exists: polling `session_list`
+    // during a multi-minute boot is exactly the incident this guards.
+    for (let i = 0; i < 200 && registry.list().length === 0; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const starting = registry.list()
+    expect(starting).toHaveLength(1)
+    expect(starting[0]?.status).toBe("starting")
+
+    release()
+    const result = await spawn
+    expect(result.ok).toBe(true)
+    expect(registry.list().map(row => row.status)).toEqual(["running"])
+  })
+
   it("round-trips a prompt through the proxy: agent_prompt/agent_output reach the box and come back", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",

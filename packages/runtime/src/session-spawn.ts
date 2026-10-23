@@ -4420,6 +4420,11 @@ export async function spawnAgentSession(
     settleClaim?.(result)
     return result
   }
+  // A sandbox spawn registers a `starting` row BEFORE booting the box, so a
+  // slow (or wedged) boot is visible in `session_list` instead of looking
+  // like the spawn never arrived. Cleared once `registry.spawnAgent` adopts
+  // the placeholder, and cleaned up on any earlier failure.
+  let sandboxPendingId: string | undefined
   try {
     // Independent of cwd/the worktree — safe to resolve before either the
     // async or the synchronous provisioning branch below needs it.
@@ -4788,6 +4793,25 @@ export async function spawnAgentSession(
       // `boxLoginDeclFor`). Resolved ONCE here so the boot below and the auth
       // block it stamps agree on the same declaration.
       const boxLogin = boxLoginDeclFor(resolved?.authDescriptor, authSpec, authEcho?.provider)
+      // Register the row NOW: `bootSandboxAgentSession` can spend minutes in
+      // box create / workspace clone / inner `agent_start`, and a caller
+      // polling `session_list` must see the spawn as `starting` during that
+      // whole window instead of nothing at all. `registry.spawnAgent` below
+      // adopts this same row once the driver session exists.
+      const pendingSandbox = registry.spawnAgentPending({
+        id: mintedSessionId,
+        workspaceSlug: resolvedSlug,
+        cwd,
+        adapterSlug: input.adapter,
+        harness: input.harness ?? input.adapter,
+        depth: recordedDepth,
+        provisioningPhase: "sandbox",
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+      })
+      sandboxPendingId = pendingSandbox.id
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
@@ -4900,7 +4924,14 @@ export async function spawnAgentSession(
         // clear "no recorded parent" error).
         ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
       })
-      if (!booted.ok) return booted
+      if (!booted.ok) {
+        // The boot never produced a session: remove the placeholder so the
+        // failure path looks exactly like it did before the placeholder
+        // existed (no orphaned `starting` row).
+        registry.forget(pendingSandbox.id)
+        sandboxPendingId = undefined
+        return booted
+      }
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
@@ -5269,6 +5300,9 @@ export async function spawnAgentSession(
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
       ...(input.keepAlive ? { keepAlive: true } : {}),
     })
+    // The placeholder (if any) is now the live row: `spawnAgent` adopted it in
+    // place, so the error path must not try to remove it as an orphan.
+    sandboxPendingId = undefined
     // Stamp the title from the caller's ask BEFORE anything else can name
     // this session from the composed prompt instead: `spawnAgent` above,
     // when `initialPrompt` was passed, already ran the first turn's
@@ -5412,6 +5446,13 @@ export async function spawnAgentSession(
       ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
     })
   } catch (err) {
+    // A sandbox boot that threw before `spawnAgent` adopted the placeholder
+    // must not leave a `starting` row behind: this is the same shape as the
+    // pre-placeholder failure path (no row at all).
+    if (sandboxPendingId !== undefined) {
+      registry.forget(sandboxPendingId)
+      sandboxPendingId = undefined
+    }
     return finish({
       ok: false,
       code: "agent_spawn_failed",
@@ -6210,6 +6251,10 @@ export async function bootSandboxAgentSession(opts: {
       // `defaultProcessEnvResolver` fallback `@agentproto/sandbox` would
       // otherwise apply when `resolver` is omitted.
       secrets: { slugs, resolver: resolveSecret },
+      // The daemon's own log stream: one line per provider boot phase, so a
+      // slow create/running/daemon-healthy boot is traceable from
+      // `daemon.log` instead of silent until it fails.
+      log: (line: string) => console.warn(line),
     })
   } catch (err) {
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
@@ -6400,6 +6445,11 @@ export async function bootSandboxAgentSession(opts: {
     }
   }
 
+  // One daemon-log line per boot phase, with the box id once known. The
+  // provider logs create/running/daemon-healthy itself; the workspace and
+  // agent phases live here.
+  console.warn(`[sandbox] boot: workspace ready (${providerSlug} ${host.sandboxId})`)
+
   if (opts.boxCwdRequest !== undefined && handle.defaultCwd) {
     const landed = resolveBoxCwdRequest({
       requested: opts.boxCwdRequest,
@@ -6542,6 +6592,7 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
+    console.warn(`[sandbox] boot: agent started (${providerSlug} ${host.sandboxId}, session ${remoteSessionId})`)
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
