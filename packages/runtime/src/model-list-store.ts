@@ -166,14 +166,23 @@ export async function getModelList(id: string): Promise<ModelList | undefined> {
   return (await loadModelLists()).lists.find(list => list.id === id)
 }
 
-function sourceFrom(lists: readonly ModelList[]): ModelListSource {
+const SEED_BY_ID = new Map(SEED_MODEL_LISTS.map(list => [list.id, list]))
+
+/** Seed lists fall back to their built-in definition when the stored file has
+ *  lost them, so a deleted/corrupted file can never make a seed id look
+ *  absent (fail closed: the model stays zero-cost, the rotation set stays). */
+export function modelListSourceFromLists(
+  lists: readonly ModelList[],
+): ModelListSource {
   const byId = new Map(lists.map(list => [list.id, list]))
-  return { get: id => byId.get(id) }
+  return {
+    get: id => byId.get(id) ?? SEED_BY_ID.get(id),
+  }
 }
 
 /** The seed-backed source, valid before the daemon has loaded the file. */
 export function seedModelListSource(): ModelListSource {
-  return sourceFrom(SEED_MODEL_LISTS)
+  return modelListSourceFromLists(SEED_MODEL_LISTS)
 }
 
 let syncSource: ModelListSource | undefined
@@ -186,7 +195,7 @@ export function getModelListSource(): ModelListSource {
 /** Load the file at daemon boot and install it as the sync source. */
 export async function loadModelListSource(): Promise<ModelListSource> {
   const file = await loadModelLists()
-  syncSource = sourceFrom(file.lists)
+  syncSource = modelListSourceFromLists(file.lists)
   return syncSource
 }
 
@@ -198,17 +207,23 @@ export async function saveModelList(list: ModelList): Promise<ModelList> {
   if (index === -1) file.lists.push(validated)
   else file.lists[index] = validated
   await writeModelLists(file)
-  syncSource = sourceFrom(file.lists)
+  syncSource = modelListSourceFromLists(file.lists)
   return validated
 }
 
 export async function deleteModelList(id: string): Promise<boolean> {
+  if (SEED_BY_ID.has(id)) {
+    throw new ModelListStoreError(
+      `model list "${id}" is a built-in seed and cannot be deleted; ` +
+        `edit it with model_list_save instead.`,
+    )
+  }
   const file = await loadModelLists()
   const index = file.lists.findIndex(list => list.id === id)
   if (index === -1) return false
   file.lists.splice(index, 1)
   await writeModelLists(file)
-  syncSource = sourceFrom(file.lists)
+  syncSource = modelListSourceFromLists(file.lists)
   return true
 }
 

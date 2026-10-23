@@ -32,6 +32,9 @@ export type ModelSelector =
   | { kind: "variant"; value: string }
   | { kind: "list"; id: string }
 
+/** A named selection over the model catalog. An uncataloged `ids` pin is only
+ *  removed by a `{ kind: "model" }` exclude; no other selector can match an id
+ *  the catalog does not know. */
 export interface ModelList {
   id: string
   label?: string
@@ -66,6 +69,7 @@ const ROUTERS = [
  */
 let candidateCache: ResolvedModel[] | undefined
 let candidateIndexCache: Map<string, ResolvedModel> | undefined
+const subjectIdsCache = new Map<string, string[]>()
 
 function candidates(): ResolvedModel[] {
   if (candidateCache) return candidateCache
@@ -93,6 +97,7 @@ function candidates(): ResolvedModel[] {
 export function clearModelListCache(): void {
   candidateCache = undefined
   candidateIndexCache = undefined
+  subjectIdsCache.clear()
 }
 
 function selectorLabel(selector: ModelSelector): string {
@@ -211,6 +216,8 @@ function candidateIndex(): Map<string, ResolvedModel> {
  * segment equals it (`opencode/big-pickle`).
  */
 function subjectIds(raw: string): string[] {
+  const cached = subjectIdsCache.get(raw)
+  if (cached) return cached
   const stripped = stripRouteSuffix(raw)
   const out = new Set<string>([raw, stripped])
   const consider = (id: string): void => {
@@ -240,7 +247,9 @@ function subjectIds(raw: string): string[] {
       if (segment === bare) out.add(model.id)
     }
   }
-  return [...out]
+  const result = [...out]
+  subjectIdsCache.set(raw, result)
+  return result
 }
 
 function pinsMatch(pin: string, id: string): boolean {

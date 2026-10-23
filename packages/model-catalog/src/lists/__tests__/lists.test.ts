@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import {
   ModelListError,
+  clearModelListCache,
   explainModelList,
   inModelList,
   resolveModelList,
@@ -113,6 +114,18 @@ describe("resolveModelList exclusion and ordering", () => {
     expect(resolveModelList("cheapest", src)[0]).toBe("openai/gpt-4o-mini")
     expect(resolveModelList("context", src)[0]).toBe("claude-fable-5")
     expect(resolveModelList("newest", src)[0]).toBe("opencode/glm-5.3-flash-free")
+  })
+
+  it("memoizes subject ids and clears them with the candidate cache", () => {
+    const src = sourceOf({ id: "pins", ids: ["custom/model"] })
+    expect(inModelList("big-pickle", "pins", src)).toBe(false)
+    expect(inModelList("big-pickle", "pins", src)).toBe(false)
+    clearModelListCache()
+    expect(inModelList("big-pickle", "pins", src)).toBe(false)
+    const bare = sourceOf({ id: "bare", ids: ["opencode/big-pickle"] })
+    expect(inModelList("big-pickle", "bare", bare)).toBe(true)
+    clearModelListCache()
+    expect(inModelList("big-pickle", "bare", bare)).toBe(true)
   })
 
   it("an uncataloged id matches through ids only", () => {

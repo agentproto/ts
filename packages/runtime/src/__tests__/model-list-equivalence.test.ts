@@ -37,8 +37,8 @@ const source = seedModelListSource()
 describe("zero-cost list equivalence with the old free predicate", () => {
   it("classifies every catalog LLM id the same way, except zero-priced ids with no -free suffix", () => {
     const all = catalogPricing()
-    const zeroNoSuffix: string[] = []
     const regressions: string[] = []
+    const unexplained: string[] = []
     const differences: string[] = []
 
     for (const [id, pricing] of all) {
@@ -47,16 +47,19 @@ describe("zero-cost list equivalence with the old free predicate", () => {
       if (oldVerdict === newVerdict) continue
       differences.push(id)
       const zero = pricing?.inputPer1M === 0 && pricing?.outputPer1M === 0
+      // A model that used to be free must never stop being zero-cost.
       if (oldVerdict && !zero) regressions.push(id)
-      if (!oldVerdict && zero) zeroNoSuffix.push(id)
+      // Every new inclusion must be a zero-priced catalog entry. This adapts
+      // to catalog regeneration instead of hardcoding today's ids.
+      if (!oldVerdict && !zero) unexplained.push(id)
     }
 
     expect(regressions).toEqual([])
-    expect(differences.sort()).toEqual(zeroNoSuffix.sort())
-    expect(zeroNoSuffix.sort()).toEqual([
-      "prism-ml/Ternary-Bonsai-27B-AWQ-4bit@huggingface",
-      "prism-ml/Ternary-Bonsai-27B-gguf@huggingface",
-    ])
+    expect(unexplained).toEqual([])
+    for (const id of differences) {
+      const pricing = all.get(id)
+      expect(pricing?.inputPer1M === 0 && pricing.outputPer1M === 0, id).toBe(true)
+    }
   })
 
   it("resolves the bare and @route-suffixed forms the same as the old predicate", () => {

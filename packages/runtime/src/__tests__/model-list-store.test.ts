@@ -8,6 +8,7 @@ import {
   getModelListSource,
   loadModelListSource,
   loadModelLists,
+  modelListSourceFromLists,
   modelListsPath,
   resetModelListSource,
   saveModelList,
@@ -112,5 +113,29 @@ describe("model list store", () => {
     expect(await deleteModelList("pinned")).toBe(true)
     expect(getModelListSource().get("pinned")).toBeUndefined()
     expect(await deleteModelList("pinned")).toBe(false)
+  })
+
+  it("refuses to delete a seed list but still allows editing it", async () => {
+    await expect(deleteModelList(ZERO_COST_LIST_ID)).rejects.toThrow(/built-in seed/)
+    await expect(deleteModelList(DEFAULT_ROTATION_LIST_ID)).rejects.toThrow(/built-in seed/)
+    expect((await loadModelLists()).lists.map(list => list.id)).toContain(ZERO_COST_LIST_ID)
+
+    await saveModelList({ id: ZERO_COST_LIST_ID, label: "Edited", ids: ["custom/model"] })
+    expect((await loadModelLists()).lists.find(list => list.id === ZERO_COST_LIST_ID)).toEqual({
+      id: ZERO_COST_LIST_ID,
+      label: "Edited",
+      ids: ["custom/model"],
+    })
+  })
+
+  it("falls back to the seed definition when a seed id is missing from the file", () => {
+    const source = modelListSourceFromLists([{ id: "custom", ids: ["a/b"] }])
+    expect(source.get(ZERO_COST_LIST_ID)).toMatchObject({
+      id: ZERO_COST_LIST_ID,
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
+    expect(source.get(DEFAULT_ROTATION_LIST_ID)).toMatchObject({
+      id: DEFAULT_ROTATION_LIST_ID,
+    })
   })
 })

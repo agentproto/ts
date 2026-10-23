@@ -29,6 +29,20 @@ function errorText(message: string): {
   return { content: [{ type: "text", text: message }], isError: true }
 }
 
+/** Resolve the prospective list against the store plus itself before writing:
+ *  an unknown nested id or a cycle is a save-time error, not a later throw on
+ *  the spawn/rotation hot path. */
+async function validateSave(list: ModelList): Promise<string | undefined> {
+  const byId = new Map((await listModelLists()).map(existing => [existing.id, existing]))
+  byId.set(list.id, list)
+  try {
+    explainModelList(list.id, { get: id => byId.get(id) })
+    return undefined
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
+}
+
 export function registerModelListTools(server: McpServer): void {
   server.tool(
     "model_list_list",
@@ -51,7 +65,10 @@ export function registerModelListTools(server: McpServer): void {
     modelListSchema.shape,
     async input => {
       try {
-        const saved = await saveModelList(input as ModelList)
+        const list = input as ModelList
+        const invalid = await validateSave(list)
+        if (invalid) return errorText(`model_list_save failed: ${invalid}`)
+        const saved = await saveModelList(list)
         return text({ list: saved })
       } catch (err) {
         return errorText(
