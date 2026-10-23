@@ -365,6 +365,44 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("POST /sessions/agent applies allowPromptFrom post-spawn, like agent_start (MCP)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          adapter: "mock",
+          cwd: "/tmp",
+          allowPromptFrom: ["label:pygmalion-brain-persistent"],
+        }),
+      })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.allowPromptFrom).toEqual(["label:pygmalion-brain-persistent"])
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("orchestrator:true with no buildOrchestratorMcp wired → 501 not-enabled", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const startSession = vi.fn(async () => fakeAgentSession())

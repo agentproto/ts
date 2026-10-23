@@ -411,6 +411,53 @@ describe("session-owner gate over MCP", () => {
     registry.shutdown()
   })
 
+  it("only the human operator may stamp `operatorLabel` (`agent_set_operator_label`)", async () => {
+    const { registry, parent, child } = await twoSessions()
+
+    // The session itself may not stamp its own label.
+    const selfServer = new McpServer({ name: "label-self-server", version: "0.0.0" })
+    registerAgentTools(selfServer, { registry, callerSessionId: child.id })
+    const selfClient = await connectClient(selfServer)
+    const selfRefused = await callTool(selfClient, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "pygmalion-brain-persistent",
+    })
+    expect(selfRefused.isError).toBe(true)
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+
+    // Nor may its owner (unlike `agent_set_prompt_policy`, which the owner may).
+    const parentServer = new McpServer({ name: "label-parent-server", version: "0.0.0" })
+    registerAgentTools(parentServer, { registry, callerSessionId: parent.id })
+    const parentClient = await connectClient(parentServer)
+    const parentRefused = await callTool(parentClient, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "pygmalion-brain-persistent",
+    })
+    expect(parentRefused.isError).toBe(true)
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+
+    // The human operator may.
+    const operatorServer = new McpServer({ name: "label-operator-server", version: "0.0.0" })
+    registerAgentTools(operatorServer, { registry })
+    const operator = await connectClient(operatorServer)
+    const ok = await callTool(operator, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "pygmalion-brain-persistent",
+    })
+    expect(ok.isError).toBeUndefined()
+    expect(JSON.parse(ok.content?.[0]?.text ?? "{}").operatorLabel).toBe("pygmalion-brain-persistent")
+    expect(registry.get(child.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+
+    // An empty string clears it.
+    const cleared = await callTool(operator, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "",
+    })
+    expect(cleared.isError).toBeUndefined()
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+    registry.shutdown()
+  })
+
   it("a spawn-tree ANCESTOR drives a transitive descendant over MCP (grandchild)", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const a = registry.spawnAgent({

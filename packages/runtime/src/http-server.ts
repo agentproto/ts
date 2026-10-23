@@ -7033,9 +7033,26 @@ async function handleSessions(
       })
       return true
     }
+    // The HTTP twin of `agent_start.allowPromptFrom`: applied post-spawn,
+    // same as the MCP tool handler (agent-tools.ts) — `allowPromptFrom` is
+    // never a `spawnAgentSession` field, only a registry row mutated after
+    // the spawn succeeds. Without this the field was silently accepted and
+    // dropped by every caller using `POST /sessions/agent` (Pygmalion's
+    // `EngineClient`, notably), never reaching the session-owner gate.
+    const allowPromptFrom = parseSkillsField(b.allowPromptFrom)
+    let allowPromptFromWarning: string | undefined
+    if (allowPromptFrom?.length) {
+      try {
+        registry.setPromptPolicy(result.descriptor.id, allowPromptFrom)
+      } catch (err) {
+        allowPromptFromWarning = `allowPromptFrom apply failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
     json(201, {
       ...sessionDescriptorForHttp(result.descriptor),
-      ...(result.warnings ? { warnings: result.warnings } : {}),
+      ...(result.warnings || allowPromptFromWarning
+        ? { warnings: [...(result.warnings ?? []), ...(allowPromptFromWarning ? [allowPromptFromWarning] : [])] }
+        : {}),
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
     })

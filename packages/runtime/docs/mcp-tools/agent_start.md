@@ -690,6 +690,14 @@ in/out, or an empty
 array to reset): only the session itself, its owner, and the operator may.
 `any` never widens what a caller's own role allows the daemon to do.
 
+A `label:` entry only matches a caller that already has an `operatorLabel`.
+That label is normally stamped at the fresh root spawn named above and then
+carried forward automatically on every later `session_restart` /
+`session_continue_fresh` — but a lineage that has lived by resume/continue-
+fresh since before it ever got one never had a label to carry. The human
+operator may stamp it directly on the live session with
+`agent_set_operator_label`, no restart required.
+
 Same trust note as the rest of the daemon: the gate is keyed on the
 `?callerSessionId=` identity the session's own mount carries — the same
 daemon-trusted caller identity every other MCP tool already keys on, not an
