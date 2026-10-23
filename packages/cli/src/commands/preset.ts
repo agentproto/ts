@@ -14,12 +14,18 @@ import {
   saveUserPreset,
   type UserPreset,
 } from "@agentproto/runtime/user-presets"
+import {
+  getDefaultHarnessPreset,
+  resolveSessionConfig,
+  type HarnessPresetOverlay,
+} from "@agentproto/runtime"
 
 const USAGE = `agentproto preset — manage saved spawn configurations
 
 Usage:
   agentproto preset list [--json]
   agentproto preset show <id> [--json]
+  agentproto preset resolve <id> [--harness <slug>] [--json]
   agentproto preset add <id> --label <label> [axis flags]
   agentproto preset delete <id>
 
@@ -33,11 +39,22 @@ Axis flags for add:
   --mode-id <id>            raw harness posture mode (mutually exclusive with --posture)
   --effort <value>          low|medium|high|xhigh|max|ultracode
   --context <profile>       full|lean or an adapter-specific profile
+  --tag <tag>               discovery tag (repeatable)
+  --extends <id>            apply another preset first (repeatable, left to right)
+  --default-for <slug>      make this the default preset for a harness
+  --allow-list <id>         model list this preset allows (repeatable)
+  --block-list <id>         model list this preset blocks (repeatable)
+
+`resolve` prints every resolved axis with the layer that produced it
+(manifest, host, definition, harness-preset, preset:<id>,
+preset-default:<id>, request). The same resolution runs at spawn time.
 
 Examples:
-  agentproto preset add fast-deepseek --label "Fast DeepSeek" \\
-    --adapter hermes --model deepseek/deepseek-v4-pro --gateway openrouter \\
-    --profile openrouter-api --posture bypass --effort high
+  agentproto preset add example-preset --label "Example preset" \\
+    --adapter <harness> --model <vendor/model> --gateway <gateway> \\
+    --profile <profile-ref> --posture bypass --effort high \\
+    --tag <tag> --allow-list <allow-list-id>
+  agentproto preset resolve example-preset --harness <harness>
   agentproto preset list
 `
 
@@ -49,6 +66,7 @@ export async function runPreset(args: readonly string[]): Promise<number> {
   const sub = args[0]
   if (sub === "list") return list(args.slice(1))
   if (sub === "show") return show(args.slice(1))
+  if (sub === "resolve") return resolvePreset(args.slice(1))
   if (sub === "add") return add(args.slice(1))
   if (sub === "delete") return remove(args.slice(1))
   process.stderr.write(sub ? `agentproto preset: unknown subcommand "${sub}"\n` : USAGE)
@@ -107,6 +125,54 @@ async function show(args: readonly string[]): Promise<number> {
   return 0
 }
 
+async function resolvePreset(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    strict: true,
+    allowPositionals: true,
+    options: {
+      harness: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const id = positionals[0]
+  if (!id || positionals.length > 1) return missingId("resolve")
+  const presets = await listUserPresets()
+  const preset = presets.find(entry => entry.id === id)
+  if (!preset) {
+    process.stderr.write(`agentproto preset resolve: no preset "${id}".\n`)
+    return 1
+  }
+  const harness = values.harness ?? preset.harness ?? preset.adapter
+  const harnessPreset = harness ? await getDefaultHarnessPreset(harness) : undefined
+  const overlay: HarnessPresetOverlay | undefined = harnessPreset
+    ? {
+        id: harnessPreset.id,
+        access: { profileRef: harnessPreset.profileRef },
+        model: harnessPreset.defaultModel,
+        turnRetry: harnessPreset.turnRetry,
+      }
+    : undefined
+  const resolution = resolveSessionConfig({
+    presets,
+    presetId: id,
+    ...(harness ? { harness } : {}),
+    ...(overlay ? { harnessPreset: overlay } : {}),
+  })
+  if (values.json) {
+    process.stdout.write(JSON.stringify(resolution, null, 2) + "\n")
+    return 0
+  }
+  process.stdout.write(`${preset.label} (${preset.id})\n`)
+  for (const [axis, value] of Object.entries(resolution.config)) {
+    const layer = resolution.layers[axis as keyof typeof resolution.layers] ?? "unset"
+    process.stdout.write(
+      `  ${axis.padEnd(16)} ${typeof value === "string" ? value : JSON.stringify(value)}  [${layer}]\n`,
+    )
+  }
+  return 0
+}
+
 async function add(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: [...args],
@@ -123,6 +189,11 @@ async function add(args: readonly string[]): Promise<number> {
       "mode-id": { type: "string" },
       effort: { type: "string" },
       context: { type: "string" },
+      tag: { type: "string", multiple: true },
+      extends: { type: "string", multiple: true },
+      "default-for": { type: "string" },
+      "allow-list": { type: "string", multiple: true },
+      "block-list": { type: "string", multiple: true },
     },
   })
   const id = positionals[0]
@@ -152,6 +223,17 @@ async function add(args: readonly string[]): Promise<number> {
     ...(values["mode-id"] ? { posture: { harnessModeId: values["mode-id"] } } : {}),
     ...(values.effort ? { effort: values.effort as UserPreset["effort"] } : {}),
     ...(values.context ? { contextProfile: values.context } : {}),
+    ...(values.tag?.length ? { tags: values.tag } : {}),
+    ...(values.extends?.length ? { extends: values.extends } : {}),
+    ...(values["default-for"] ? { defaultFor: values["default-for"] } : {}),
+    ...(values["allow-list"]?.length || values["block-list"]?.length
+      ? {
+          modelPolicy: {
+            ...(values["allow-list"]?.length ? { allow: values["allow-list"] } : {}),
+            ...(values["block-list"]?.length ? { block: values["block-list"] } : {}),
+          },
+        }
+      : {}),
   }
   try {
     await saveUserPreset(preset)
@@ -175,7 +257,7 @@ async function remove(args: readonly string[]): Promise<number> {
   return 0
 }
 
-function missingId(command: "add" | "show" | "delete"): number {
+function missingId(command: "add" | "show" | "resolve" | "delete"): number {
   process.stderr.write(`agentproto preset ${command}: expected exactly one preset id.\n`)
   return 2
 }

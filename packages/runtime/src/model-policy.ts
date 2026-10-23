@@ -13,6 +13,11 @@ export interface ModelPolicy {
   allow?: string[]
   /** List ids. A model in any of them is refused; always wins over `allow`. */
   block?: string[]
+  /** Composition form: every entry must pass. Used when two policies are
+   *  combined (a session preset's and the request's) and the intersection of
+   *  their `allow` lists cannot be represented by one list id array. Never
+   *  accepted from caller input; see {@link composeModelPolicies}. */
+  all?: ModelPolicy[]
 }
 
 export type PolicyVerdict =
@@ -56,12 +61,33 @@ function unknownList(err: unknown): PolicyVerdict {
   }
 }
 
+/** Compose policies so BOTH apply: a model must pass every one. A single
+ *  policy passes through unchanged; otherwise the result is an `all` node
+ *  (an intersection of two allow lists has no single-list representation).
+ *  `undefined` when no policy contributes a rule. */
+export function composeModelPolicies(
+  ...policies: Array<ModelPolicy | undefined>
+): ModelPolicy | undefined {
+  const present = policies.filter(
+    (policy): policy is ModelPolicy =>
+      policy !== undefined &&
+      (policy.all !== undefined || policy.allow !== undefined || policy.block !== undefined),
+  )
+  if (present.length === 0) return undefined
+  if (present.length === 1) return present[0]
+  return { all: present }
+}
+
 export function checkModelPolicy(
   model: string | undefined,
   policy: ModelPolicy | undefined,
   src: ModelListSource,
 ): PolicyVerdict {
   if (!policy) return { ok: true }
+  for (const nested of policy.all ?? []) {
+    const verdict = checkModelPolicy(model, nested, src)
+    if (!verdict.ok) return verdict
+  }
   for (const id of [...(policy.block ?? []), ...(policy.allow ?? [])]) {
     if (!src.get(id)) return unknownList(new Error(`unknown model list "${id}"`))
   }

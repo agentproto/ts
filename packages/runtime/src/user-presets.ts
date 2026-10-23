@@ -20,6 +20,12 @@ import type {
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { SessionDescriptor } from "./sessions.js"
 import { turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.js"
+import { modelPolicyInputSchema, type ModelPolicy } from "./model-policy.js"
+import {
+  defaultPresetFor,
+  presetChain,
+  SessionPresetResolutionError,
+} from "./session-preset-resolver.js"
 
 const effortSchema = z.enum(["low", "medium", "high", "xhigh", "max", "ultracode"])
 const postureSchema = z.union([
@@ -67,6 +73,23 @@ export interface UserPreset extends Partial<SessionConfig> {
    *  turn that failed on a transient provider error). An explicit
    *  `turnRetry` on the spawn wins. */
   turnRetry?: TurnRetryInput
+  /** Discovery tags; unioned with the request's when this preset resolves. */
+  tags?: string[]
+  /** Other session presets applied first, left to right. A missing target or
+   *  a cycle is rejected at save time. */
+  extends?: string[]
+  /** Harness slug this preset is the default for. At most one preset per
+   *  harness — a second one is rejected at save time. */
+  defaultFor?: string
+  /** This implementation's form of the AIP-38 policy (the preset's policy).
+   *  Composes with the request's: both apply. */
+  modelPolicy?: ModelPolicy
+  /** Harness-native options not covered by an axis; merged key by key. */
+  options?: Record<string, unknown>
+  /** Nested form of the same axes, accepted on input for AIP-46 callers. Flat
+   *  fields win when both name an axis. The store persists the flattened
+   *  form. */
+  config?: Partial<SessionConfig> & { options?: Record<string, unknown> }
   /** ISO 8601 timestamp of the last spawn that resolved a `presetId` to this
    *  preset (agent_start, `/sessions/agent`, `/sessions/chat` — stamped once
    *  in `spawnAgentSession`, the shared core all three route through). Never
@@ -75,6 +98,18 @@ export interface UserPreset extends Partial<SessionConfig> {
    *  preset that has never been used to spawn. */
   lastUsedAt?: string
 }
+
+const presetConfigSchema = z.object({
+  harness: z.string().min(1).optional(),
+  model: z.string().min(1).optional(),
+  route: routeSchema.optional(),
+  access: z.object({ profileRef: z.string().min(1).optional() }).optional(),
+  posture: postureSchema.optional(),
+  effort: effortSchema.optional(),
+  contextProfile: z.string().min(1).optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
+  turnRetry: turnRetryInputSchema.optional(),
+})
 
 export const userPresetSchema = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9-]*$/),
@@ -92,6 +127,12 @@ export const userPresetSchema = z.object({
   bundles: z.array(z.string().min(1)).optional(),
   browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
   turnRetry: turnRetryInputSchema.optional(),
+  tags: z.array(z.string().min(1)).optional(),
+  extends: z.array(z.string().min(1)).optional(),
+  defaultFor: z.string().min(1).optional(),
+  modelPolicy: modelPolicyInputSchema.optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
+  config: presetConfigSchema.optional(),
   lastUsedAt: z.string().min(1).optional(),
 }) satisfies z.ZodType<UserPreset>
 
@@ -100,7 +141,64 @@ const userPresetsFileSchema = z.object({
   presets: z.array(userPresetSchema),
 })
 
-export type UserPresetsFile = z.infer<typeof userPresetsFileSchema>
+export type UserPresetsFile = {
+  version: 1
+  presets: UserPreset[]
+}
+
+/** A save-time invariant failure — a typed, actionable error rather than a
+ *  generic parse message. */
+export class UserPresetValidationError extends Error {
+  constructor(
+    readonly code: "unknown_extends" | "extends_cycle" | "duplicate_default_for",
+    message: string,
+  ) {
+    super(message)
+    this.name = "UserPresetValidationError"
+  }
+}
+
+/** Flatten the optional nested `config` under the flat fields. The flat field
+ *  wins when both name an axis, per the AIP-46 migration note. */
+export function normalizeUserPreset(input: UserPreset): UserPreset {
+  if (!input.config) return input
+  const { config, ...flat } = input
+  const options =
+    config.options || flat.options
+      ? { ...(config.options ?? {}), ...(flat.options ?? {}) }
+      : undefined
+  return {
+    ...config,
+    ...flat,
+    ...(options ? { options } : {}),
+  } as UserPreset
+}
+
+function validateSessionPresets(presets: readonly UserPreset[]): void {
+  for (const preset of presets) {
+    try {
+      presetChain(preset.id, presets)
+    } catch (err) {
+      if (err instanceof SessionPresetResolutionError) {
+        throw new UserPresetValidationError(err.code, err.message)
+      }
+      throw err
+    }
+  }
+  const defaults = new Map<string, string>()
+  for (const preset of presets) {
+    if (!preset.defaultFor) continue
+    const existing = defaults.get(preset.defaultFor)
+    if (existing && existing !== preset.id) {
+      throw new UserPresetValidationError(
+        "duplicate_default_for",
+        `harness "${preset.defaultFor}" already has default session preset ` +
+          `"${existing}"; "${preset.id}" cannot be a second default`,
+      )
+    }
+    defaults.set(preset.defaultFor, preset.id)
+  }
+}
 
 function emptyFile(): UserPresetsFile {
   return { version: 1, presets: [] }
@@ -114,7 +212,8 @@ export function userPresetsPath(): string {
  * never prevent the daemon from starting. Writes always restore valid JSON. */
 export async function loadUserPresets(): Promise<UserPresetsFile> {
   try {
-    return userPresetsFileSchema.parse(JSON.parse(await readFile(userPresetsPath(), "utf8")))
+    const parsed = userPresetsFileSchema.parse(JSON.parse(await readFile(userPresetsPath(), "utf8")))
+    return { version: 1, presets: parsed.presets.map(normalizeUserPreset) }
   } catch {
     return emptyFile()
   }
@@ -142,13 +241,14 @@ export async function getUserPreset(id: string): Promise<UserPreset | undefined>
  * `lastUsedAt` keeps the existing preset's stamp rather than wiping it — a
  * rename/retune of a favorite must not erase its recency. */
 export async function saveUserPreset(preset: UserPreset): Promise<void> {
-  const validated = userPresetSchema.parse(preset)
+  const validated = normalizeUserPreset(userPresetSchema.parse(preset))
   const file = await loadUserPresets()
   const index = file.presets.findIndex(existing => existing.id === validated.id)
   const lastUsedAt = validated.lastUsedAt ?? (index === -1 ? undefined : file.presets[index]?.lastUsedAt)
   const next: UserPreset = { ...validated, ...(lastUsedAt ? { lastUsedAt } : {}) }
   if (index === -1) file.presets.push(next)
   else file.presets[index] = next
+  validateSessionPresets(file.presets)
   await writeUserPresets(file)
 }
 

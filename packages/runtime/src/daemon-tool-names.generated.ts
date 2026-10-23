@@ -316,6 +316,7 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "usage_rollup",
   "user_preset_delete",
   "user_preset_list",
+  "user_preset_resolve",
   "user_preset_save",
   "workflow_artifact_get",
   "workflow_cancel",
