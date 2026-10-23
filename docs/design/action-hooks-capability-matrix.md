@@ -20,7 +20,9 @@ documentation or repo code is listed under NOT VERIFIED at the end.
   `NOT VERIFIED`.
 - AIP-37 portable event names are taken from the Harness extension
   lifecycle, Tool / command lifecycle, Agent turn lifecycle and Conversation
-  lifecycle sections of `aip-37.mdx`.
+  lifecycle sections of `aip-37.mdx`:
+  DOC https://raw.githubusercontent.com/agentproto/agentproto/main/specs/aip-37.mdx "#### Harness extension lifecycle"
+  DOC https://raw.githubusercontent.com/agentproto/agentproto/main/specs/aip-37.mdx "| `tool-call` | Before a tool is invoked. |"
 
 ## Step 1: adapters in this repo
 
@@ -329,7 +331,11 @@ the NOT VERIFIED section.
 For readability each cell uses the AIP-71 field order and short JSON. The
 `handlers` names map `mcp_tool` to AIP-71 `mcp`, and `http` stays `http`.
 None of these entries is installed by this document. AIP-71 says capability
-declarations are metadata only.
+declarations are metadata only:
+
+- DOC https://raw.githubusercontent.com/agentproto/agentproto/main/specs/aip-71.mdx "interface NativeHookCapability"
+- DOC https://raw.githubusercontent.com/agentproto/agentproto/main/specs/aip-71.mdx "Capability declarations are metadata."
+- DOC https://raw.githubusercontent.com/agentproto/agentproto/main/specs/aip-71.mdx "capabilities.hooks"
 
 | Portable event | claude-code | codex | opencode | gemini | copilot-cli |
 | --- | --- | --- | --- | --- | --- |
