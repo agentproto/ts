@@ -217,9 +217,9 @@ export interface SandboxGcCliDeps {
   /** Origin-session id → daemon status ("error"/"killed"/"exited"/…).
    *  Defaults to the live daemon's `GET /sessions`. */
   fetchSessionStatuses?: () => Promise<Map<string, string>>
-  /** Session id -> predecessor lineage + resume eligibility. Defaults to
-   *  the live daemon's `GET /sessions`. Used to keep a box a resumed
-   *  successor still uses, and to pause a box whose origin can be revived. */
+  /** Session id -> predecessor lineage + recorded sandbox teardown. Defaults
+   *  to the live daemon's `GET /sessions`. Used to keep a box a resumed
+   *  successor still uses, and to honour a `pause` teardown. */
   fetchSessionLineage?: () => Promise<Map<string, SandboxGcSessionLineage>>
   /** Resolves a ledger row's provider to its handle. Defaults to the
    *  local sandbox-creds store (same as `attach`). */
@@ -662,6 +662,7 @@ async function defaultFetchSessionLineage(): Promise<Map<string, SandboxGcSessio
       resumedFrom?: unknown
       continuedFrom?: unknown
       succeeds?: unknown
+      sandboxTeardown?: unknown
       status?: unknown
     }>
   }>(`${report.found.url}/sessions`)
@@ -672,6 +673,9 @@ async function defaultFetchSessionLineage(): Promise<Map<string, SandboxGcSessio
       ...(typeof s.resumedFrom === "string" ? { resumedFrom: s.resumedFrom } : {}),
       ...(typeof s.continuedFrom === "string" ? { continuedFrom: s.continuedFrom } : {}),
       ...(typeof s.succeeds === "string" ? { succeeds: s.succeeds } : {}),
+      ...(s.sandboxTeardown === "kill" || s.sandboxTeardown === "pause"
+        ? { teardown: s.sandboxTeardown }
+        : {}),
     }
     if (Object.keys(links).length > 0) map.set(s.id, links)
   }
@@ -878,12 +882,22 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
   const results: Array<{ sandboxId: string; ok: boolean; action?: string; error?: string }> = []
   let failures = 0
   for (const c of candidates) {
-    // A row recorded with a pause teardown (or a dead origin the daemon can
-    // still resume) is paused, never deleted.
+    // Already paused: leave it untouched (a repeat pause call every run is a
+    // provider round-trip for no state change).
+    if (c.entry.state === "paused") {
+      if (!values.json) {
+        process.stdout.write(
+          `sandbox ${c.entry.sandboxId} kept paused (session ${c.entry.originSessionId} ${c.sessionStatus})\n`,
+        )
+      }
+      continue
+    }
+    // Honour the session's recorded teardown: `pause` keeps the box, a
+    // kill/unset teardown (and the explicit --pause flag) deletes or pauses
+    // as before.
     const pause =
       values.pause === true ||
-      c.entry.state === "paused" ||
-      lineage?.get(c.entry.originSessionId as string)?.resumable === true
+      lineage?.get(c.entry.originSessionId as string)?.teardown === "pause"
     const res = await reapGcEntry(c.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: resolveProvider as unknown as GcProviderResolver,

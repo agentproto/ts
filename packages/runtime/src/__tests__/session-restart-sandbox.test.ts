@@ -331,6 +331,7 @@ describe("restartAgentSession on a sandboxed session", () => {
         state: "connected",
         originSessionId: prev.id,
         sessionId: prev.id,
+        expiresAt: "2027-01-01T00:00:00.000Z",
       })
 
       const result = await restartAgentSession(registry, resolver, prev, {
@@ -340,9 +341,11 @@ describe("restartAgentSession on a sandboxed session", () => {
       const entry = readSandboxLedger().find(r => r.sandboxId === "sbx_prev_1")
       expect(entry?.originSessionId).toBe(result.desc.id)
       expect(entry?.attachedSessions).toContain(result.desc.id)
-      // The dead predecessor no longer holds the box — it must not keep a
+      // The dead predecessor no longer holds the box; it must not keep a
       // stale refcount alive (which would stop teardown from ever running).
       expect(entry?.attachedSessions).not.toContain(prev.id)
+      // The re-attach keeps the row's idle window.
+      expect(entry?.expiresAt).toBe("2027-01-01T00:00:00.000Z")
     } finally {
       if (savedLedger === undefined) delete process.env.AGENTPROTO_SANDBOX_LEDGER
       else process.env.AGENTPROTO_SANDBOX_LEDGER = savedLedger

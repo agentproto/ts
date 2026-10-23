@@ -136,7 +136,6 @@ import {
 } from "./http-server.js"
 import {
   createSessionsRegistry,
-  canResume,
   SANDBOX_GONE_DEFAULT_RESTART_POLICY,
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
@@ -4715,7 +4714,7 @@ export async function createGateway(
             ...(desc.resumedFrom ? { resumedFrom: desc.resumedFrom } : {}),
             ...(desc.continuedFrom ? { continuedFrom: desc.continuedFrom } : {}),
             ...(desc.succeeds ? { succeeds: desc.succeeds } : {}),
-            ...(canResume(desc) ? { resumable: true } : {}),
+            ...(desc.sandboxTeardown ? { teardown: desc.sandboxTeardown } : {}),
           }
           if (Object.keys(links).length > 0) rows.set(desc.id, links)
         }

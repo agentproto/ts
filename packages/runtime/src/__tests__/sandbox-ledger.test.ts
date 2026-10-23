@@ -97,6 +97,19 @@ describe("sandbox ledger", () => {
     expect(readSandboxLedger(path)[0]?.expiresAt).toBe("2026-09-08T01:00:00.000Z")
   })
 
+  it("keeps the row's expiresAt when a reconnect/boot omits it", () => {
+    const path = newLedgerPath()
+    recordSandboxBoot({
+      sandboxId: "bx_1",
+      provider: "box",
+      state: "booted",
+      expiresAt: "2026-09-08T01:00:00.000Z",
+      path,
+    })
+    recordSandboxBoot({ sandboxId: "bx_1", provider: "box", state: "connected", path })
+    expect(readSandboxLedger(path)[0]?.expiresAt).toBe("2026-09-08T01:00:00.000Z")
+  })
+
   it("backfills originSessionId without disturbing the row", () => {
     const path = newLedgerPath()
     recordSandboxBoot({ sandboxId: "bx_1", provider: "box", state: "booted", path })

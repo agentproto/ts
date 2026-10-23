@@ -53,7 +53,7 @@ describe("sandbox gc — shared-box survivor filter", () => {
     // The restart minted sess_successor with `resumedFrom` the dead origin,
     // but never registered it on the ledger: `attachedSessions` is empty and
     // the origin still reads error. The successor's lineage is the only
-    // evidence the box is in use — it must be enough.
+    // evidence the box is in use, and it must be enough.
     const entry = entryOf({ state: "connected", attachedSessions: [] })
     const statuses = new Map([
       ["sess_origin", "error"],

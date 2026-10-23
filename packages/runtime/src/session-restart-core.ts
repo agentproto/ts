@@ -1692,7 +1692,7 @@ export async function restartAgentSession(
     // Register the RESUMED session on the LIVE box's ledger row. The ledger
     // is the gc's only view of who holds a box, and the pre-fix restart path
     // left the row pointing at the dead origin with an empty (or stale)
-    // attaché list — so the periodic gc reaped a box the resumed session was
+    // attaché list, so the periodic gc reaped a box the resumed session was
     // actively using (2026-10-23). The resumed id is the row's new origin
     // ("last reconnected to the box") and joins the shared-box refcount; the
     // prior id detaches in the same breath, because it no longer holds the

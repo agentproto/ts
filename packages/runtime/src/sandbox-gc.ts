@@ -33,14 +33,14 @@ export interface SandboxGcCandidate {
 /** The lineage slice the gc needs to find a LIVE successor of an origin
  *  session. Only the predecessor links are read: inverting them covers the
  *  resume/continue/handover chain, and an inverse link (`continuedTo` /
- *  `succeededBy`) can go stale in the other direction. `resumable` is the
- *  registry's cap-aware resume verdict (`canResume`), so a box whose dead
- *  origin can still be revived is PAUSED rather than deleted. */
+ *  `succeededBy`) can go stale in the other direction. `teardown` is the
+ *  origin descriptor's recorded teardown mode; a box whose session asked for
+ *  `pause` is paused rather than deleted. */
 export interface SandboxGcSessionLineage {
   resumedFrom?: string
   continuedFrom?: string
   succeeds?: string
-  resumable?: boolean
+  teardown?: "kill" | "pause"
 }
 
 /** Predicate for "this status still counts as alive": any status the registry
@@ -69,7 +69,7 @@ function buildSuccessorIndex(
  * True when the origin has a descendant that is not dead. Walks the
  * resume/continue/handover chain breadth-first (cycle-safe), so a dead
  * intermediate hop does not hide a live grandchild. An unknown/missing
- * status counts as alive — the conservative choice, because deleting a box
+ * status counts as alive, the conservative choice, because deleting a box
  * that a live session still uses loses work.
  */
 function hasLiveSuccessor(
@@ -136,7 +136,7 @@ export function collectGcCandidates(
     })
     // Successor sessions resumed onto the same box are not in
     // `attachedSessions` for ledger rows written before that registration
-    // existed — walk their lineage so an already-broken row is still kept.
+    // existed, so walk their lineage to keep an already-broken row too.
     .filter(c => !hasLiveSuccessor(c.entry.originSessionId as string, sessionStatuses, successors))
 }
 
@@ -298,6 +298,8 @@ export interface SandboxGcPassSummary {
   candidates: number
   stopped: number
   paused: number
+  /** Rows already paused on the ledger: skipped with no provider call. */
+  kept: number
   failures: number
 }
 
@@ -321,16 +323,24 @@ export async function runSandboxGcPass(
     candidates: candidates.length,
     stopped: 0,
     paused: 0,
+    kept: 0,
     failures: 0,
   }
   for (const candidate of candidates) {
-    // A row the ledger recorded as PAUSED is kept pausable: the gc pauses it
-    // again and never deletes it (2026-10-23: a `pause` teardown row was
-    // deleted by the pass). A dead origin the registry can still resume gets
-    // the same treatment — reviving it must find its box.
+    // Already paused: nothing to do, and calling pause() again every interval
+    // would be a provider round-trip per pass forever.
+    if (candidate.entry.state === "paused") {
+      summary.kept++
+      log(
+        `sandbox gc: ${candidate.entry.sandboxId} kept paused (session ${candidate.entry.originSessionId} ${candidate.sessionStatus})`,
+      )
+      continue
+    }
+    // Honour the session's recorded teardown: a `pause` teardown keeps the
+    // box pausable, never deletes it (2026-10-23: the row asked for pause and
+    // the pass deleted it). A kill/unset teardown still deletes, as before.
     const pause =
-      candidate.entry.state === "paused" ||
-      lineage.get(candidate.entry.originSessionId as string)?.resumable === true
+      lineage.get(candidate.entry.originSessionId as string)?.teardown === "pause"
     const res = await reapGcEntry(candidate.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: deps.resolveProvider,
@@ -396,7 +406,7 @@ export function startSandboxGcTimer(
         if (summary.candidates > 0) {
           log(
             `sandbox gc: ${summary.candidates} dead-session box(es) — ` +
-              `${summary.stopped} stopped, ${summary.paused} paused, ${summary.failures} failed`,
+              `${summary.stopped} stopped, ${summary.paused} paused, ${summary.kept} kept, ${summary.failures} failed`,
           )
         }
       } catch (err) {

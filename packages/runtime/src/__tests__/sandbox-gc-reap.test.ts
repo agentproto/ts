@@ -203,6 +203,7 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
       candidates: 2,
       stopped: 1,
       paused: 0,
+      kept: 0,
       failures: 1,
     })
     expect(remove).toHaveBeenCalledWith("bx_dead")
@@ -211,10 +212,10 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
   })
 
-  it("a row recorded with a PAUSE teardown is paused, never deleted", async () => {
+  it("a row whose origin recorded a PAUSE teardown is paused, never deleted", async () => {
     const ledger = await tmpLedgerPath()
     await seedLedger(ledger, [
-      entryOf({ sandboxId: "bx_paused", state: "paused", originSessionId: "sess_dead" }),
+      entryOf({ sandboxId: "bx_pause_teardown", state: "connected", originSessionId: "sess_dead" }),
     ])
     const pause = vi.fn(async () => {})
     const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
@@ -222,6 +223,7 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     const summary = await runSandboxGcPass(
       {
         fetchSessionStatuses: () => new Map([["sess_dead", "error"]]),
+        fetchSessionLineage: () => new Map([["sess_dead", { teardown: "pause" }]]),
         resolveProvider: async () =>
           ({
             provider: {
@@ -233,24 +235,24 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
       },
       line => lines.push(line),
     )
-    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 1, failures: 0 })
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 1, kept: 0, failures: 0 })
     expect(pause).toHaveBeenCalledTimes(1)
     expect(remove).not.toHaveBeenCalled()
     expect(stop).not.toHaveBeenCalled()
-    // Stamped paused (not stopped), so a later pass keeps honouring the mode.
+    // Stamped paused (not stopped), so a later pass sees it as kept.
     expect(readFileSync(ledger, "utf8")).toContain('"paused"')
   })
 
-  it("a dead origin the registry can still resume is PAUSED, not deleted", async () => {
+  it("a dead origin with a kill (or unset) teardown is still deleted, as on main", async () => {
     const ledger = await tmpLedgerPath()
     await seedLedger(ledger, [
-      entryOf({ sandboxId: "bx_resumable", state: "connected", originSessionId: "sess_dead" }),
+      entryOf({ sandboxId: "bx_kill_teardown", state: "connected", originSessionId: "sess_dead" }),
     ])
     const pause = vi.fn(async () => {})
     const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
     const summary = await runSandboxGcPass({
       fetchSessionStatuses: () => new Map([["sess_dead", "killed"]]),
-      fetchSessionLineage: () => new Map([["sess_dead", { resumable: true }]]),
+      fetchSessionLineage: () => new Map([["sess_dead", { teardown: "kill" }]]),
       resolveProvider: async () =>
         ({
           provider: {
@@ -260,9 +262,32 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
         }) as SandboxGcProviderHandle,
       ledgerPath: ledger,
     })
-    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 1, failures: 0 })
-    expect(pause).toHaveBeenCalledTimes(1)
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 1, paused: 0, kept: 0, failures: 0 })
+    expect(remove).toHaveBeenCalledWith("bx_kill_teardown", { force: true })
+    expect(pause).not.toHaveBeenCalled()
+  })
+
+  it("a row already paused on the ledger is kept with NO provider call", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_already_paused", state: "paused", originSessionId: "sess_dead" }),
+    ])
+    const pause = vi.fn(async () => {})
+    const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
+    const connect = vi.fn(async (id: string) => ({ sandboxId: id, stop: vi.fn(async () => {}), pause }))
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () => new Map([["sess_dead", "error"]]),
+        resolveProvider: async () => ({ provider: { remove, connect } }) as SandboxGcProviderHandle,
+        ledgerPath: ledger,
+      },
+      line => lines.push(line),
+    )
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 0, paused: 0, kept: 1, failures: 0 })
+    expect(connect).not.toHaveBeenCalled()
+    expect(pause).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
+    expect(readFileSync(ledger, "utf8")).toContain('"paused"')
   })
 
   it("skips live sessions entirely (nothing to reap, nothing to call)", async () => {
@@ -271,7 +296,7 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
       fetchSessionStatuses: () => new Map([["sess_live", "running"]]),
       resolveProvider: async () => handleFor({ remove }),
     })
-    expect(summary).toEqual({ ran: true, candidates: 0, stopped: 0, paused: 0, failures: 0 })
+    expect(summary).toEqual({ ran: true, candidates: 0, stopped: 0, paused: 0, kept: 0, failures: 0 })
     expect(remove).not.toHaveBeenCalled()
   })
 })
