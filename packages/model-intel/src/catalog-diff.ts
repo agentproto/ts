@@ -36,8 +36,18 @@ export interface CatalogDiff {
   paidToFree: string[]
 }
 
+/** Same rule as `isZeroPriced` in `@agentproto/model-catalog`: both token
+ *  prices are exactly 0. Kept local because `model-intel` deliberately has no
+ *  dependency on the model catalog (and this PR adds no dependency). */
+export function isZeroPriced(pricing: {
+  inputPer1M: number
+  outputPer1M: number
+}): boolean {
+  return pricing.inputPer1M === 0 && pricing.outputPer1M === 0
+}
+
 function isFree(entry: CatalogSnapshotEntry): boolean {
-  return entry.inputPer1M === 0 && entry.outputPer1M === 0
+  return isZeroPriced(entry)
 }
 
 export function diffCatalog(prev: CatalogSnapshot, next: CatalogSnapshot): CatalogDiff {

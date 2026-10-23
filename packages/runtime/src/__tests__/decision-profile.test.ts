@@ -26,7 +26,7 @@ const sub = () => {
 const lookups = (over: Partial<PresetLookups> = {}): PresetLookups => ({
   getHarnessPreset: async id =>
     ({
-      "oc-free": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "glm-4.7-free", isDefault: false },
+      "oc-free": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "opencode/glm-5.3-flash-free", isDefault: false },
       "oc-big": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "big-pickle", isDefault: false },
       "oc-paid": { id, harnessSlug: "opencode", name: id, profileRef: "zen", defaultModel: "kimi-k2-thinking", isDefault: false },
       "cc-sonnet": { id, harnessSlug: "claude-code", name: id, profileRef: "claude-sub", defaultModel: "claude-sonnet-4-5", isDefault: false },
@@ -35,21 +35,21 @@ const lookups = (over: Partial<PresetLookups> = {}): PresetLookups => ({
     })[id as string] as never,
   getUserPreset: async id =>
     ({
-      "user-free": { id, label: id, adapter: "opencode", model: "qwen-free" },
-      "user-route": { id, label: id, adapter: "opencode", model: "glm-free", route: "gateway" },
+      "user-free": { id, label: id, adapter: "opencode", model: "opencode/minimax-m3.1-flash-free" },
+      "user-route": { id, label: id, adapter: "opencode", model: "opencode/glm-5.3-flash-free", route: "gateway" },
       "user-rotate-paid": {
         id,
         label: id,
         adapter: "opencode",
-        model: "glm-free",
+        model: "opencode/glm-5.3-flash-free",
         turnRetry: { rotate: [{ model: "claude-sonnet-4-5" }] },
       },
       "user-rotate-free": {
         id,
         label: id,
         adapter: "opencode",
-        model: "glm-free",
-        turnRetry: { rotate: [{ model: "other-free" }] },
+        model: "opencode/glm-5.3-flash-free",
+        turnRetry: { rotate: [{ model: "opencode/deepseek-v4.1-flash-free" }] },
       },
       "user-openrouter": { id, label: id, adapter: "opencode", model: "openrouter/foo-free" },
       "user-at-route": { id, label: id, adapter: "opencode", model: "glm-free@fast" },
@@ -93,8 +93,15 @@ describe("resolveExecProfile", () => {
 })
 
 describe("validateSpawnTarget", () => {
-  it("free-only permits only OpenCode -free / big-pickle", () => {
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "glm-4.7-free" })).toMatchObject({ ok: true })
+  it("local-free carries its restriction as a generic policy, and refuses a paid model through it", () => {
+    expect(free().policy).toEqual({ allow: ["zero-cost"] })
+    const refused = validateSpawnTarget(free(), { adapter: "opencode", model: "kimi-k2-thinking" })
+    expect(refused).toMatchObject({ ok: false, code: "not_entitled" })
+    expect(JSON.stringify(refused)).toMatch(/not in any allowed list/)
+  })
+
+  it("free-only permits only ids in the zero-cost model list", () => {
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free" })).toMatchObject({ ok: true })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "big-pickle" })).toMatchObject({ ok: true })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "kimi-k2-thinking" })).toMatchObject({ ok: false, code: "not_entitled" })
     expect(validateSpawnTarget(free(), { adapter: "claude-code", model: "claude-sonnet-4-5" })).toMatchObject({ ok: false, code: "not_entitled" })
@@ -111,19 +118,19 @@ describe("validateSpawnTarget", () => {
     expect(validateSpawnTarget(free(), { adapter: "opencode" })).toMatchObject({ ok: false, code: "unknown_model" })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "glm-free@fast" })).toMatchObject({ ok: false })
     expect(validateSpawnTarget(free(), { adapter: "opencode", model: "openrouter/x-free" })).toMatchObject({ ok: false })
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "glm-free", route: "gw" })).toMatchObject({ ok: false, code: "route_not_free" })
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", route: "gw" })).toMatchObject({ ok: false, code: "route_not_free" })
   })
 
   it("checks every rotate fallback, and ignores sandbox placement entirely", () => {
     expect(
-      validateSpawnTarget(free(), { adapter: "opencode", model: "a-free", rotate: [{ model: "claude-sonnet-4-5" }] }),
+      validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", rotate: [{ model: "claude-sonnet-4-5" }] }),
     ).toMatchObject({ ok: false, code: "rotate_not_entitled" })
     expect(
-      validateSpawnTarget(free(), { adapter: "opencode", model: "a-free", rotate: [{ model: "mystery-model" }] }),
+      validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", rotate: [{ model: "mystery-model" }] }),
     ).toMatchObject({ ok: false, code: "unknown_rotate" })
     // E2B (or any) placement grants no entitlement and removes none.
     expect(validateSpawnTarget(free(), { adapter: "claude-code", model: "claude-sonnet-4-5", sandbox: { provider: "e2b" } })).toMatchObject({ ok: false })
-    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "a-free", sandbox: { provider: "e2b" } })).toMatchObject({ ok: true })
+    expect(validateSpawnTarget(free(), { adapter: "opencode", model: "opencode/glm-5.3-flash-free", sandbox: { provider: "e2b" } })).toMatchObject({ ok: true })
   })
 })
 
@@ -157,11 +164,11 @@ describe("resolveAndValidateTarget — presets, roles, overrides", () => {
   it("an actual role/recovery model override is what gets validated", async () => {
     // The preset is free, but the override swaps in Sonnet: refused under free-only.
     expect(await resolveAndValidateTarget(free(), { preset: "oc-free" }, lookups(), { model: "claude-sonnet-4-5" })).toMatchObject({ ok: false })
-    expect(await resolveAndValidateTarget(free(), { preset: "oc-free" }, lookups(), { model: "other-free" })).toMatchObject({ ok: true, model: "other-free" })
+    expect(await resolveAndValidateTarget(free(), { preset: "oc-free" }, lookups(), { model: "opencode/deepseek-v4.1-flash-free" })).toMatchObject({ ok: true, model: "opencode/deepseek-v4.1-flash-free" })
   })
 
   it("explicit adapter+model targets are validated the same way", async () => {
-    expect(await resolveAndValidateTarget(free(), { adapter: "opencode", model: "x-free" }, lookups())).toMatchObject({ ok: true })
+    expect(await resolveAndValidateTarget(free(), { adapter: "opencode", model: "opencode/big-pickle" }, lookups())).toMatchObject({ ok: true })
     expect(await resolveAndValidateTarget(free(), { adapter: "claude-code", model: "claude-sonnet-4-5" }, lookups())).toMatchObject({ ok: false })
     expect(await resolveAndValidateTarget(free(), { model: "mystery" }, lookups())).toMatchObject({ ok: false, code: "unknown_adapter" })
   })
@@ -180,12 +187,12 @@ describe("resolveAndValidateTarget — presets, roles, overrides", () => {
 
   it("refuses an OpenRouter-billing auth profile and an unreadable one; checks the inherited default profile", async () => {
     expect(
-      await resolveAndValidateTarget(free(), { adapter: "opencode", model: "x-free", profileRef: "or-profile" }, lookups()),
+      await resolveAndValidateTarget(free(), { adapter: "opencode", model: "opencode/big-pickle", profileRef: "or-profile" }, lookups()),
     ).toMatchObject({ ok: false, code: "openrouter" })
     expect(
       await resolveAndValidateTarget(
         free(),
-        { adapter: "opencode", model: "x-free", profileRef: "any" },
+        { adapter: "opencode", model: "opencode/big-pickle", profileRef: "any" },
         lookups({
           getAuthProfile: async () => {
             throw new Error("keychain locked")
@@ -197,14 +204,14 @@ describe("resolveAndValidateTarget — presets, roles, overrides", () => {
     expect(
       await resolveAndValidateTarget(
         free(),
-        { adapter: "opencode", model: "x-free" },
+        { adapter: "opencode", model: "opencode/big-pickle" },
         lookups({ getDefaultHarnessPreset: async () => ({ profileRef: "or-profile" }) }),
       ),
     ).toMatchObject({ ok: false, code: "openrouter" })
     expect(
       await resolveAndValidateTarget(
         free(),
-        { adapter: "opencode", model: "x-free" },
+        { adapter: "opencode", model: "opencode/big-pickle" },
         lookups({
           getDefaultHarnessPreset: async () => {
             throw new Error("store unreadable")

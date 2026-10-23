@@ -20,7 +20,7 @@
 import type { ResolvedModel } from "../registry/index.js"
 import { modelHasTag, modelMatchesPriceTier } from "../enrichment/index.js"
 import { evaluateCatalogDefaults } from "./catalog-defaults.js"
-import type { AccessRule, AppScope } from "./types.js"
+import type { AccessRule, AccessTarget, AppScope } from "./types.js"
 
 /**
  * Specificity of non-model rule targets. Higher = more specific.
@@ -56,14 +56,20 @@ export interface AccessDecision {
 const NSFW_TAG_BLOCK_REASONS = new Set(["nsfw", "compliance"])
 
 /**
- * Returns true iff the rule matches the resolved model.
+ * Returns true iff the target matches the resolved model.
  *
  * Tag and priceTier matching go through the enrichment layer
  * (`@agentproto/model-catalog/enrichment`) — explicit per-model
  * enrichment wins, heuristic fallback fills the rest.
+ *
+ * Exported as `modelMatchesTarget` so the model-list selector vocabulary can
+ * reuse the exact same matching semantics; `AccessTarget`, `AccessRule` and
+ * `evaluateAccess` stay unchanged.
  */
-function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
-  const target = rule.target
+export function modelMatchesTarget(
+  target: AccessTarget,
+  model: ResolvedModel,
+): boolean {
   switch (target.kind) {
     case "model":
       return target.id === model.id
@@ -101,6 +107,11 @@ function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
     case "priceTier":
       return modelMatchesPriceTier(model, target.value)
   }
+}
+
+/** Rule-shaped wrapper kept for `evaluateAccess`'s own call sites. */
+function ruleMatches(rule: AccessRule, model: ResolvedModel): boolean {
+  return modelMatchesTarget(rule.target, model)
 }
 
 export function evaluateAccess(input: AccessEvalInput): AccessDecision {

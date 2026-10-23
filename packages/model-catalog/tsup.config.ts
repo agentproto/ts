@@ -21,6 +21,7 @@ export default createTsupConfig({
     "pricing/index": "src/pricing/index.ts",
     "byok/index": "src/byok/index.ts",
     "access/index": "src/access/index.ts",
+    "lists/index": "src/lists/index.ts",
     "picker/index": "src/picker/index.ts",
     "overlay/index": "src/overlay/index.ts",
     "route-identity/index": "src/route-identity/index.ts",

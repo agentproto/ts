@@ -15,6 +15,7 @@
 import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
+import { modelPolicyInputSchema } from "./model-policy.js"
 import { clerkHooksInputSchema } from "./clerk-hook-config.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { sandboxCheckpointOverrideSchema } from "./sandbox-checkpoint-schema.js"
@@ -408,6 +409,11 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       `Retries a transiently failed turn; executor/sandbox on, supervisors off; null opts out. ${help("turnRetry")}`
+    ),
+  modelPolicy: jsonTolerant(opaque(modelPolicyInputSchema))
+    .optional()
+    .describe(
+      `Model rules for this session, over model-list ids (see model_list_*): { allow?: string[], block?: string[] }. block always wins; when allow is present a model outside every allow list is refused (uncataloged ids too). Enforced at spawn, live model switch, restart and every turnRetry.rotate target. Omit for no restriction. ${help("modelPolicy")}`
     ),
   hooks: jsonTolerant(opaque(clerkHooksInputSchema))
     .optional()

@@ -786,3 +786,73 @@ describe("restartAgentSession — restart-with-override (step 6)", () => {
     expect(captured[0]?.model).toBe("z-ai/glm-5.2")
   })
 })
+
+describe("restartAgentSession - model policy", () => {
+  function spawnPolicied(registry: ReturnType<typeof createSessionsRegistry>, modelPolicy: { allow?: string[]; block?: string[] }) {
+    return registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "opencode",
+      model: "opencode/deepseek-v4.1-flash-free",
+      modelPolicy,
+    })
+  }
+
+  it("refuses a model override that is in a blocked list, before any adapter starts", async () => {
+    const { resolver, captured } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = spawnPolicied(registry, { block: ["default-rotation"] })
+
+    await expect(
+      restartAgentSession(registry, resolver, prev, {
+        forceAgentResume: true,
+        overrides: { model: "opencode/glm-5.3-flash-free" },
+      }),
+    ).rejects.toBeInstanceOf(RestartOverrideError)
+    expect(captured).toHaveLength(0)
+  })
+
+  it("refuses an uncataloged model override when the policy has an allow list", async () => {
+    const { resolver } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = spawnPolicied(registry, { allow: ["default-rotation"] })
+
+    await expect(
+      restartAgentSession(registry, resolver, prev, {
+        forceAgentResume: true,
+        overrides: { model: "opencode/not-in-any-list" },
+      }),
+    ).rejects.toThrow(/model policy/)
+  })
+
+  it("allows a model override inside the policy and carries the policy onto the new descriptor", async () => {
+    const { resolver } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = spawnPolicied(registry, { allow: ["default-rotation"] })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      overrides: { model: "opencode/glm-5.3-flash-free" },
+    })
+    expect(restarted.desc.model).toBe("opencode/glm-5.3-flash-free")
+    expect(restarted.desc.modelPolicy).toEqual({ allow: ["default-rotation"] })
+  })
+
+  it("a no-policy session restarts onto any model", async () => {
+    const { resolver } = makeResolver(undefined)
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+    })
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      overrides: { model: "opencode/gpt-5.1-codex" },
+    })
+    expect(restarted.desc.model).toBe("opencode/gpt-5.1-codex")
+  })
+})

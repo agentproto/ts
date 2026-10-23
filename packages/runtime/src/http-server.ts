@@ -306,6 +306,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import { modelPolicyInputSchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
@@ -5787,6 +5788,10 @@ export function buildSpawnSessionHttpArgs(
   const turnRetryParsed = b.turnRetry !== undefined ? parseTurnRetryPolicy(b.turnRetry) : undefined
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
+  const modelPolicyParsed =
+    b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy)) : undefined
+  const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
+    modelPolicyParsed !== undefined ? { modelPolicy: modelPolicyParsed } : {}
   return {
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
@@ -5970,6 +5975,7 @@ export function buildSpawnSessionHttpArgs(
         })()
       : {}),
     ...turnRetryField,
+    ...modelPolicyField,
     // Acknowledge an in-place spawn into a shared, dirty cwd — the HTTP
     // twin of the MCP `agent_start` tool's `allowSharedCwd` field. Tolerate
     // a stringified boolean like `permissionHold`/`trace`.
@@ -6158,7 +6164,8 @@ function spawnFailureStatus(code: string): number {
     code === "sandbox_cwd_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
-    code === "cloud_spawn_refused"
+    code === "cloud_spawn_refused" ||
+    code === "model_policy_refused"
   ) {
     return 400
   }
@@ -6513,6 +6520,16 @@ function invalidSpawnHttpField(
     return {
       error: "invalid_command_sandbox",
       message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  if (
+    b.modelPolicy !== undefined &&
+    b.modelPolicy !== null &&
+    parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy) === undefined
+  ) {
+    return {
+      error: "invalid_model_policy",
+      message: 'modelPolicy must be { allow?: string[], block?: string[] } of model list ids; unknown keys are rejected.',
     }
   }
   return undefined
@@ -7139,27 +7156,7 @@ async function handleSessions(
       spawnArgs,
     )
     if (!result.ok) {
-      const status =
-        result.code === "adapter_not_found" || result.code === "no_cwd"
-          ? 404
-          : result.code === "orchestrator_not_enabled"
-            ? 501
-            : result.code === "orchestrator_max_depth_exceeded" ||
-                result.code === "orchestrator_child_quota_exceeded" ||
-                result.code === "role_spawn_denied"
-              ? 409
-              : result.code === "invalid_role" ||
-                  result.code === "browser_unsupported" ||
-                  result.code === "worktree_requires_explicit_repo" ||
-                  result.code === "device_spawn_requires_repo_identity" ||
-                  result.code === "device_bridge_workspace_unknown" ||
-                  result.code === "access_profile_not_found" ||
-                  result.code === "access_profile_ineligible" ||
-                  result.code === "sandbox_cwd_invalid" ||
-                  result.code === "device_spawn_unreachable" ||
-                  result.code === "device_offline"
-                ? 400
-                : 500
+      const status = spawnFailureStatus(result.code)
       json(status, {
         error: result.code,
         message: result.message,

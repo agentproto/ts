@@ -51,6 +51,7 @@ export {
 } from "./registry/actions.js"
 export {
   getEnrichment,
+  isZeroPriced,
   modelHasTag,
   modelHasAction,
   modelMatchesCatalogPriceTier,

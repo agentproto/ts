@@ -102,6 +102,11 @@
       "import": "./dist/access/index.mjs",
       "default": "./dist/access/index.mjs"
     },
+    "./lists": {
+      "types": "./dist/lists/index.d.ts",
+      "import": "./dist/lists/index.mjs",
+      "default": "./dist/lists/index.mjs"
+    },
     "./picker": {
       "types": "./dist/picker/index.d.ts",
       "import": "./dist/picker/index.mjs",

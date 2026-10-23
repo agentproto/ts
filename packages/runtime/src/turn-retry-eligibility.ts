@@ -3,7 +3,7 @@
  * target model would run, applied to a live session's descriptor — the
  * profile's model allow-list, the money-safety wallet guard, and the
  * adapter-capability guard (`checkModelAdapterEligibility`). The pure half
- * (cooldown, free stays free, same profile) lives in `turn-retry.ts`.
+ * (cooldown, model policy, same profile) lives in `turn-retry.ts`.
  */
 
 import type { AuthProfile } from "@agentproto/auth"

@@ -33,7 +33,7 @@ import { join, resolve } from "node:path"
 import { z } from "zod"
 import { getAuthProfile, type AuthProfile } from "@agentproto/auth"
 import { splitContextWindowHint } from "@agentproto/model-catalog/llm"
-import { turnRetryInputSchema, validateTurnRetryRotate, type TurnRetryInput } from "./turn-retry-policy.js"
+import { turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.js"
 
 /**
  * A persisted harness→profile binding: for one adapter harness, which auth
@@ -187,8 +187,6 @@ async function validateProfileBinding(
       `defaultModel "${preset.defaultModel}" is not in profile "${preset.profileRef}"'s model allowlist.`,
     )
   }
-  const rotateError = validateTurnRetryRotate(preset.turnRetry?.rotate, preset.defaultModel)
-  if (rotateError) throw new HarnessPresetValidationError(rotateError)
 }
 
 /**

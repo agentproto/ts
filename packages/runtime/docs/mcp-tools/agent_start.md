@@ -458,11 +458,11 @@ Graceful retry of a turn that failed for a TRANSIENT provider reason. ON by
 default for executor agents and for sessions that run in a `sandbox` box: a
 spawn that names no `turnRetry` gets the default policy (retry on
 `rate-limit`, `upstream-5xx` and `no-output-stall`, `maxRetries: 6`, default
-backoff). A free OpenCode current model also rotates by default: `rotateOn`
-covers all three classes, and `rotate` lists the other free ids only (the
-"free stays free" rule), so a throttled free model moves onto another free
-model instead of banging on the same one. A paid current model never rotates
-by default. Interactive supervisor sessions keep the old opt-in behaviour:
+backoff). A current model that is itself in the `default-rotation` model list
+also rotates by default: `rotateOn` covers all three classes, and `rotate` is
+that list minus the current model, filtered by the session's `modelPolicy`, so
+a throttled model moves onto another one instead of banging on the same one. A
+model outside `default-rotation` gets no default rotate list. Interactive supervisor sessions keep the old opt-in behaviour:
 without `turnRetry`, a turn that hits a 429 or a 5xx just stops, as before.
 
 An explicit `turnRetry` wins over the default. Setting it to `null`, or to an
@@ -472,10 +472,10 @@ live session a short continuation prompt:
 
 > Continue where you stopped; the previous turn failed with: <error>
 
-Note the free-model default rotation above only applies when the spawn names
-its model explicitly: the default rotation list is built in
-`agent_start` handling before default-model resolution, so a spawn that
-leaves `model` unset never sees the free-rotate default.
+Note the default rotation above only applies when the spawn names its model
+explicitly: the default rotation list is built in `agent_start` handling
+before default-model resolution, so a spawn that leaves `model` unset never
+sees the default rotate list.
 
 Shape: `{ on, action?, maxRetries?, maxMigrations?, baseDelayMs?, factor?, maxDelayMs?, retryAfterToolCalls? }`.
 Only `on` is required; the rest default to `action: "retry"`,
@@ -548,13 +548,13 @@ classes, or a JSON object). User presets and harness presets
 
 ### Rotating to another model
 
-A 429 on a free-tier model is per model per IP, so retrying the SAME model
+A 429 is often per model per IP, so retrying the SAME model
 usually fails again. Add `rotate` to move the session onto the next model
 instead:
 
 ```json
 { "on": ["rate-limit", "no-output-stall"],
-  "rotate": [{ "model": "opencode/minimax-m2.5-free" }, { "model": "opencode/big-pickle" }],
+  "rotate": [{ "model": "opencode/deepseek-v4.1-flash-free" }, { "model": "opencode/big-pickle" }],
   "rotateOn": ["rate-limit", "no-output-stall"], "cooldownMs": 600000 }
 ```
 
@@ -585,7 +585,7 @@ A target is skipped, with the reason in the notice, when it:
 - is the current model, or is cooling down;
 - is not in the session profile's `models` allow-list, or fails the spawn
   eligibility checks (adapter capability, wallet/route);
-- is a paid model while the session's model is OpenCode free (see below);
+- is refused by the session's `modelPolicy` (see `modelPolicy`);
 - names a `profileRef` different from the session's current profile. v1
   rotates within the current profile only; switching profile needs a
   restart-with-override, which mints a new session id.
@@ -593,11 +593,34 @@ A target is skipped, with the reason in the notice, when it:
 If no target is eligible, the retry falls back to the SAME model after the
 backoff, and the notice says `no rotation target available (…)`.
 
-**Free stays free.** When the session's model is an OpenCode free id (ends in
-`-free`, or `big-pickle`, with or without an `opencode/` prefix), `rotate` may
-only list free ids. `agent_start` rejects a list with a paid id
-(`turn_retry_rotate_invalid`), so does saving a user or harness preset, and
-runtime rotation never selects a paid id for such a session.
+A session with a `modelPolicy` has every `rotate` target checked against it:
+`agent_start` rejects a list with a refused id (`turn_retry_rotate_invalid`),
+and runtime rotation never selects one. A session without a policy may rotate
+onto any model its account allows.
+
+## modelPolicy
+
+Model rules for this session, over model-list ids (see the `model_list_*`
+tools): `{ "allow": ["zero-cost"], "block": ["my-banned"] }`. Both keys are
+optional lists of list ids.
+
+- `block`: a model in any blocked list is refused. Block always wins.
+- `allow`: when present, a model outside every allowed list is refused,
+  uncataloged ids included. An empty `allow` permits nothing.
+- A list id that does not exist is a refusal (`unknown_list`), never ignored —
+  even when the spawn names no `model`.
+- An `allow` policy needs a model to check: a spawn with no resolvable model
+  (an omitted `model`, or a sandbox spawn that lets the box choose) is refused
+  (`model_unresolved`), never silently allowed. A `block`-only policy has no
+  such requirement.
+
+The policy is stored on the session and enforced at spawn (explicit `model`
+included; refusal is `model_policy_refused`), on a live model switch
+(`agent_set_model` answers `{applied:false, reason:"policy:<code>: ..."}`; a
+cross-route switch still answers `requires-restart` first), on
+`session_restart` when the model changes, and on every `turnRetry.rotate`
+target. Omit it for no restriction: the session may use any model its account
+allows.
 
 ## contextContinuity
 

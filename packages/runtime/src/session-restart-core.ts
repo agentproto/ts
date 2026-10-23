@@ -118,6 +118,8 @@ import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibilit
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
+import { checkModelPolicy } from "./model-policy.js"
+import { getModelListSource } from "./model-list-store.js"
 import {
   checkModelAdapterEligibility,
   checkModelWalletEligibility,
@@ -1113,6 +1115,12 @@ export async function restartAgentSession(
     route: overrides.route,
   })
   const effModel = reconciled.model ?? prev.model
+  if (effModel !== undefined && effModel !== prev.model) {
+    const verdict = checkModelPolicy(effModel, prev.modelPolicy, getModelListSource())
+    if (!verdict.ok) {
+      throw new RestartOverrideError(`restart model override refused by the session model policy: ${verdict.reason}`)
+    }
+  }
   const effEffort = overrides.effort ?? prev.effort
   const effRoute = reconciled.route ?? prev.route
   const effPosture = overrides.posture ?? prev.posture
@@ -1545,6 +1553,7 @@ export async function restartAgentSession(
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
       ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+      ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
       // Verifiability echo (never the credential) — see the auth
       // resolution block above. Absent when no credential resolved,
       // same as session-spawn.ts.
@@ -2254,6 +2263,7 @@ export async function restartAgentSession(
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
       ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+      ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
       ...(authEcho?.fingerprint
         ? {
             auth: {
