@@ -34,8 +34,8 @@ const wired = () =>
   })
 
 describe("createModelSwitchCheck", () => {
-  it("refuses a paid target for a free session, wording straight from rotation", async () => {
-    await expect(wired()(desc("opencode/big-pickle"), "opencode/gpt-5.1-codex")).resolves.toBe(
+  it("refuses a paid target for a free session (switch-specific wording)", async () => {
+    await expect(wired()(desc("opencode/big-pickle"), "opencode/gpt-5.1-codex", { advertised: false })).resolves.toBe(
       "paid model — a free session never switches onto a paid id",
     )
   })
@@ -43,28 +43,41 @@ describe("createModelSwitchCheck", () => {
   it("delegates the allow-list refusal to the rotation-target check", async () => {
     const check = wired()
     await expect(
-      check(desc("opencode/ling-3.1-flash-free", "zen"), "opencode/kimi-k9-free"),
+      check(desc("opencode/ling-3.1-flash-free", "zen"), "opencode/kimi-k9-free", { advertised: false }),
     ).resolves.toBe(`not in profile "zen"'s model allow-list`)
   })
 
   it("refuses when the session names a missing profile", async () => {
     const check = wired()
     await expect(
-      check(desc("opencode/ling-3.1-flash-free", "gone"), "opencode/big-pickle"),
+      check(desc("opencode/ling-3.1-flash-free", "gone"), "opencode/big-pickle", { advertised: false }),
     ).resolves.toBe(`profile "gone" is missing`)
   })
 
   it("passes an allowed same-profile switch", async () => {
     const check = wired()
     await expect(
-      check(desc("opencode/ling-3.1-flash-free", "zen"), "opencode/big-pickle"),
+      check(desc("opencode/ling-3.1-flash-free", "zen"), "opencode/big-pickle", { advertised: false }),
     ).resolves.toBeUndefined()
   })
 
   it("passes a paid target for a paid session (only free stays free)", async () => {
     const check = wired()
     await expect(
-      check(desc("opencode/gpt-5.1-codex"), "opencode/kimi-k9-codex"),
+      check(desc("opencode/gpt-5.1-codex"), "opencode/kimi-k9-codex", { advertised: false }),
     ).resolves.toBeUndefined()
+  })
+
+  it("skips the profile check for an advertised live value (free-stays-free only)", async () => {
+    const check = wired()
+    // The advertised value is not in the allow-list, but advertised=true means
+    // only the free rule applies; the session's model is paid, so it passes.
+    await expect(
+      check(desc("anthropic/claude-sonnet-5", "zen"), "opus-5", { advertised: true }),
+    ).resolves.toBeUndefined()
+    // The free rule still applies to an advertised value.
+    await expect(
+      check(desc("opencode/big-pickle", "zen"), "opus-5", { advertised: true }),
+    ).resolves.toBe("paid model — a free session never switches onto a paid id")
   })
 })

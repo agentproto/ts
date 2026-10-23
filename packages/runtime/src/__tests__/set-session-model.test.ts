@@ -659,3 +659,96 @@ describe("setModel — checkModelSwitch eligibility gate", () => {
     reg.shutdown()
   })
 })
+
+/** A claude-code-style driver: its `model` config option advertises the live
+ *  values it accepts verbatim (not catalog ids), and it applies any of them. */
+function configOptionAgentSession(): AgentSessionLike & { lastSetModel?: string } {
+  const session: AgentSessionLike & { lastSetModel?: string } = {
+    sessionId: "config-option-session",
+    async *send() {
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+    async setModel(modelId: string) {
+      session.lastSetModel = modelId
+      return { applied: true, model: modelId }
+    },
+    availableConfigOptions: [
+      {
+        id: "model",
+        name: "Model",
+        type: "select",
+        currentValue: "opus-5",
+        options: [{ value: "opus-5", name: "Opus 5" }],
+      },
+    ] as never,
+  }
+  return session
+}
+
+describe("setModel — gate ordering and advertised live values", () => {
+  const FREE_A = "opencode/ling-3.1-flash-free"
+
+  it("still returns requires-restart for a cross-route switch with the eligibility gate wired", async () => {
+    const reg = createSessionsRegistry({
+      persist: false,
+      checkModelSwitch: createModelSwitchCheck({ getProfile: async () => undefined }),
+    })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+    })
+
+    const result = await reg.setModel(desc.id, "deepseek/deepseek-v4-pro@openrouter")
+    expect(result).toEqual({
+      applied: false,
+      reason: "requires-restart",
+      suggestedOverride: {
+        route: { gateway: "openrouter" },
+        model: "deepseek/deepseek-v4-pro@openrouter",
+      },
+    })
+    expect(session.lastSetModel).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("applies a harness-advertised live value outside the profile allow-list (allow-list skipped)", async () => {
+    const reg = createSessionsRegistry({
+      persist: false,
+      checkModelSwitch: createModelSwitchCheck({
+        getProfile: async id =>
+          id === "zen"
+            ? ({
+                id: "zen",
+                endpoint: "opencode",
+                method: "api-key",
+                models: { mode: "allow", ids: [FREE_A] },
+              } as never)
+            : undefined,
+      }),
+    })
+    const session = configOptionAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "claude-code",
+      adapterProvider: "anthropic",
+      model: "anthropic/claude-sonnet-5",
+      accessProfile: { profileRef: "zen", endpoint: "opencode", method: "api-key" },
+    })
+
+    await expect(reg.setModel(desc.id, "opus-5")).resolves.toEqual({
+      applied: true,
+      model: "opus-5",
+    })
+    expect(session.lastSetModel).toBe("opus-5")
+    reg.shutdown()
+  })
+})

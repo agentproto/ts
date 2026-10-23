@@ -6096,8 +6096,15 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
-  /** Eligibility gate for a live model switch; returns a reason to refuse, or undefined. */
-  checkModelSwitch?: (desc: SessionDescriptor, modelId: string) => Promise<string | undefined>
+  /** Eligibility gate for a live model switch; returns a reason to refuse, or
+   *  undefined. `info.advertised` is true when the model id is a
+   *  harness-advertised live value (not a catalog id) —
+   *  `createModelSwitchCheck` then applies only the free-stays-free rule. */
+  checkModelSwitch?: (
+    desc: SessionDescriptor,
+    modelId: string,
+    info: { advertised: boolean },
+  ) => Promise<string | undefined>
   /** Harness capability lister — the "which installed harness has usable
    *  credentials" signal behind handoff suggestions (the `handoff:<harness>`
    *  options of the `ask`-mode context question and the
@@ -12826,15 +12833,6 @@ export function createSessionsRegistry(opts?: {
       if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
         throw new Error(`setModel: session "${id}" is not an agent-cli session`)
       }
-      // Eligibility gate (free stays free, the profile's model allow-list,
-      // wallet + adapter capability) BEFORE the route guard and the driver.
-      // A refusal is a structured result, never a throw.
-      if (checkModelSwitch) {
-        const refusal = await checkModelSwitch(rt.desc, modelId)
-        if (refusal !== undefined) {
-          return { applied: false, reason: "not-eligible: " + refusal }
-        }
-      }
       // Model↔route guard (SPEC risk R2 / §4.4). A live `setModel` can only
       // change the model within the current route — the route is a spawn-time
       // `ANTHROPIC_BASE_URL`, not a live ACP config option. If the requested
@@ -12921,6 +12919,19 @@ export function createSessionsRegistry(opts?: {
             fixedProvider: adapterProvider,
             modelDerivedApiKey,
           })
+      // Eligibility gate (free stays free, the profile's model allow-list,
+      // wallet + adapter capability) AFTER the route guard and the
+      // not-supported check, just before the driver call. Harness-advertised
+      // live values are not catalog ids, so the allow-list cannot judge them
+      // — only the free-stays-free rule still applies (`advertised` flag).
+      if (checkModelSwitch) {
+        const refusal = await checkModelSwitch(rt.desc, modelId, {
+          advertised: isAdvertisedLiveModel(rt, modelId),
+        })
+        if (refusal !== undefined) {
+          return { applied: false, reason: "not-eligible: " + refusal }
+        }
+      }
       const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
         // Record the CATALOG id the caller requested, not the wire form the

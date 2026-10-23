@@ -19,12 +19,17 @@ import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
 export function createModelSwitchCheck(deps: {
   getProfile: (id: string) => Promise<AuthProfile | undefined>
   listCatalogModels?: CatalogModelsLister
-}): (desc: SessionDescriptor, modelId: string) => Promise<string | undefined> {
+}): (
+  desc: SessionDescriptor,
+  modelId: string,
+  info: { advertised: boolean },
+) => Promise<string | undefined> {
   const rotationCheck = createRotationTargetCheck(deps)
-  return async (desc, modelId) => {
+  return async (desc, modelId, info) => {
     if (desc.model && isOpencodeFreeModel(desc.model) && !isOpencodeFreeModel(modelId)) {
       return "paid model — a free session never switches onto a paid id"
     }
+    if (info.advertised) return undefined
     return rotationCheck(desc, { model: modelId })
   }
 }
