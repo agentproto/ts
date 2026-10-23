@@ -50,7 +50,7 @@ describe("pr-fix: sandbox + free model, never local", () => {
     expect(plan.place).toBe("sandbox")
     expect(plan.warning).toBeUndefined()
   })
-  it("repli is paid, same place", () => {
+  it("a paid-only sandbox candidate resolves paid, same place", () => {
     const plan = resolveFromSpec(
       { ...spec, candidates: [{ ...CANDIDATES.sandboxPaidStrong }] },
       { freeLocalInUse: 0 },
@@ -63,7 +63,7 @@ describe("pr-fix: sandbox + free model, never local", () => {
 
 describe("sensitive usage (deploy): free models refused", () => {
   const spec = USAGE_PRESETS["deploy"]!
-  it("the committed chain is clean of free models", () => {
+  it("the committed candidate list is clean of free models", () => {
     expect(spec.sensitive).toBe(true)
     for (const c of spec.candidates) expect(isFreeCandidate(c)).toBe(false)
   })
@@ -73,7 +73,7 @@ describe("sensitive usage (deploy): free models refused", () => {
     expect(plan.place).toBe("local")
     expect(isFreeCandidate({ ...CANDIDATES.localPaidStrong })).toBe(false)
   })
-  it("an injected free candidate in a sensitive chain refuses, naming the model", () => {
+  it("an injected free candidate in a sensitive list refuses, naming the model", () => {
     const poisoned: UsageSpec = {
       slug: "deploy",
       label: "Déploiement",
@@ -110,13 +110,16 @@ describe("the 2-free-agents-local cap", () => {
     expect(plan.warning).toContain("Limite atteinte")
     expect(plan.warning).toContain("sandbox")
     expect(plan.warning).toContain("2")
-    // Repli is the chain's declared free candidate (deepseek), now IN the
-    // sandbox — free is fine inside the box, the IP that bled was the local one.
-    expect(isFreeCandidate(USAGE_PRESETS["explore"]!.candidates[plan.fallbackUsed]!)).toBe(true)
-    expect(plan.resolvedModel).toBe("opencode/deepseek-v4.1-flash-free")
+    // The overflow picks the explicitly sandbox-capable free candidate, not
+    // the local-declared deepseek one — free is fine inside the box, the IP
+    // that bled was the local one.
+    const selected = USAGE_PRESETS["explore"]!.candidates[plan.fallbackUsed]!
+    expect(selected).toBe(CANDIDATES.sandboxGlmFree)
+    expect(isFreeCandidate(selected)).toBe(true)
+    expect(plan.resolvedModel).toBe("opencode/glm-5.3-flash-free")
     expect(plan.spawn.sandbox).toEqual({ provider: "computer" })
   })
-  it("a single-candidate free chain keeps its model but moves it into the box", () => {
+  it("a single-candidate free spec keeps its model but moves it into the box", () => {
     const spec: UsageSpec = {
       slug: "implement",
       label: "x",

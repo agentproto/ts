@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/usage-presets",
   "version": "0.0.1",
-  "description": "@agentproto/usage-presets — usage-named spawn presets (pr-fix, explore, implement, deploy, review). Each usage declares a complete agent_start configuration (adapter, model, auth profile, posture, place: local vs sandbox, sensitivity) plus a fallback chain, so a caller names the USAGE and the free model + execution location are chosen automatically, never remembered. Enforces the house rules: a sensitive usage (deploy, production, secrets, payment) refuses free models outright, and at most 2 free agents run as local subprocesses before overflow is redirected to the sandbox.",
+  "description": "@agentproto/usage-presets — usage-named spawn presets (pr-fix, explore, implement, deploy, review). Each usage declares a complete agent_start configuration (adapter, model, auth profile, posture, place: local vs sandbox, sensitivity) plus ordered place-aware candidates, so a caller names the USAGE and the free model + execution location are chosen automatically, never remembered. Enforces the house rules: a sensitive usage (deploy, production, secrets, payment) refuses free models outright, and at most 2 free agents run as local subprocesses before overflow is redirected to the sandbox.",
   "keywords": [
     "agentproto",
     "usage-presets",

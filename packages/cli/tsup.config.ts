@@ -72,6 +72,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // them via npm; declared under `dependencies` in package.json.
     "@agentproto/secrets",
     "@agentproto/secrets/*",
+    "@agentproto/usage-presets",
     "@agentproto/rendezvous",
     "@agentproto/rendezvous/*",
     // Loaded via a runtime dynamic import by the bundled runtime's sandbox

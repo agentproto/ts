@@ -14,6 +14,7 @@
 import { parseArgs } from "node:util"
 import type { UsageBucket, UsageRollup } from "@agentproto/runtime"
 import {
+  MAX_LOCAL_FREE_AGENTS,
   resolveUsagePlan,
   listUsageSlugs,
   UnknownUsageError,
@@ -191,7 +192,7 @@ function printHuman(rollup: UsageRollup): void {
 // ── plan ───────────────────────────────────────────────────────────────
 
 async function runPlan(argv: readonly string[]): Promise<number> {
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: [...argv],
     allowPositionals: true,
     strict: true,
@@ -202,7 +203,7 @@ async function runPlan(argv: readonly string[]): Promise<number> {
     },
   })
 
-  const usageSlug = argv[0] && !argv[0]!.startsWith("-") ? argv[0]! : undefined
+  const usageSlug = positionals[0]
   if (!usageSlug) {
     process.stderr.write(
       `agentproto usage plan: missing required <usage> — one of: ${listUsageSlugs().join(", ")}\n\n` + USAGE,
@@ -214,15 +215,19 @@ async function runPlan(argv: readonly string[]): Promise<number> {
   // redirects the overflowing free agent to the sandbox (usage plan is
   // read-only here, so nothing changes while we count).
   let freeLocalInUse = 0
+  let freeLocalInUseError: string | undefined
   let daemonFound = false
   const report = await discoverDaemon()
   if (report.found) {
     daemonFound = true
     try {
-      const rows = await httpGetJson<SessionRow[]>(`${report.found.url}/sessions?onlyAlive=true`)
-      freeLocalInUse = countFreeLocalSessions(rows)
-    } catch {
-      freeLocalInUse = 0
+      // GET /sessions returns `{ sessions, total }`, not a bare array.
+      const body = await httpGetJson<{ sessions?: SessionRow[] }>(
+        `${report.found.url}/sessions?onlyAlive=true`,
+      )
+      freeLocalInUse = countFreeLocalSessions(body.sessions ?? [])
+    } catch (err) {
+      freeLocalInUseError = err instanceof Error ? err.message : String(err)
     }
   }
 
@@ -251,6 +256,7 @@ async function runPlan(argv: readonly string[]): Promise<number> {
           usage: plan.usage,
           daemon: daemonFound,
           freeLocalInUse,
+          ...(freeLocalInUseError ? { freeLocalInUseError } : {}),
           plan,
         },
         null,
@@ -267,6 +273,12 @@ async function runPlan(argv: readonly string[]): Promise<number> {
   lines.push(`profile  : ${plan.profileRef}`)
   lines.push(`posture  : ${plan.posture}`)
   if (values.cwd) lines.push(`cwd      : ${values.cwd}`)
+  if (freeLocalInUseError) {
+    lines.push("")
+    lines.push(
+      `⚠ free-local count UNVERIFIED (${freeLocalInUseError}) — the ${MAX_LOCAL_FREE_AGENTS}-agent cap was not applied`,
+    )
+  }
   lines.push("")
   lines.push("agent_start input (the complete configuration; nothing else to remember):")
   lines.push(JSON.stringify(

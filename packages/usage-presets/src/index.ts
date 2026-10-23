@@ -3,14 +3,14 @@
  *
  * The caller names WHAT the work is (an usage slug: pr-fix, explore,
  * implement, deploy, review) — never WHICH model or WHERE the agent runs.
- * Each usage declares a complete `agent_start` configuration plus an
- * ordered fallback chain; `resolveUsagePlan` turns one into a ready
- * spawn plan and enforces the two hard house rules:
+ * Each usage declares a complete `agent_start` configuration plus ordered,
+ * place-aware candidates; `resolveUsagePlan` turns one into a ready spawn
+ * plan and enforces the two hard house rules:
  *
  *   1. NO free models for sensitive work. A usage marked `sensitive`
  *      (deploy, production, secrets, payment) only ever resolves to a
- *      paid candidate; a sensitive usage whose chain contains a free
- *      model refuses outright with `SensitivityRefusalError`.
+ *      paid candidate; a sensitive usage whose candidate list contains a
+ *      free model refuses outright with `SensitivityRefusalError`.
  *   2. At most MAX_LOCAL_FREE_AGENTS (2) free agents run as LOCAL
  *      subprocesses against the local IP — past the limit the resolver
  *      redirects the same free model into the sandbox and says why.
@@ -32,6 +32,8 @@ export interface SpawnCandidate {
   profileRef: string
   /** True when the model is free (no spend, provider rate-limits per IP). */
   free: boolean
+  /** The place this candidate is valid in. Omitted = valid at any place. */
+  place?: Place
   /** Free models are per-IP rate limited locally — sandbox is the relief. */
   posture: "default" | "plan" | "accept-edits" | "bypass" | "read-only"
 }
@@ -57,9 +59,14 @@ export interface UsageSpec {
     | "local-paid"
   /** True for deploy / production / secrets / payment work. A sensitive
    *  usage refuses any `free: true` candidate, even if one appears in its
-   *  fallback chain. */
+   *  candidate list. */
   sensitive?: boolean
-  /** Ordered chain: first candidate is the default; later ones are repli. */
+  /**
+   * Ordered candidates. The resolver selects the first one valid for the
+   * place it chose (see `placePolicy`); the overflow redirect selects the
+   * first explicitly sandbox-capable free candidate. Later entries are
+   * NOT retried automatically on failure.
+   */
   candidates: SpawnCandidate[]
   /** Sandbox provider slug for a `"sandbox"` place. */
   sandboxProvider?: string
@@ -78,7 +85,7 @@ export interface UsagePlan {
   /** Present only when place is `"sandbox"` — the `agent_start.sandbox`
    *  input value. */
   sandbox?: { provider: string }
-  /** Index of the chain candidate actually selected. */
+  /** Index in `candidates` of the candidate actually selected. */
   fallbackUsed: number
   /**
    * Fully serialized `agent_start` input: model, access, posture, place,
@@ -86,9 +93,8 @@ export interface UsagePlan {
    * remember anything else about models or locations.
    */
   spawn: Record<string, unknown>
-  /** Human message when the resolver MOVED the work (limit redirect,
-   *  fallback applied). Absent when the default candidate/choice applied
-   *  cleanly. */
+  /** Human message when the resolver MOVED the work (limit redirect).
+   *  Absent when the default candidate/choice applied cleanly. */
   warning?: string
 }
 
@@ -116,6 +122,7 @@ export const CANDIDATES = {
     model: "opencode/glm-5.3-flash-free",
     profileRef: "opencode-api-zen-ws03",
     free: true,
+    place: "sandbox",
     posture: "bypass",
   },
   /** Local glm 5.3 flash free (Zen route). */
@@ -123,6 +130,7 @@ export const CANDIDATES = {
     model: "opencode/glm-5.3-flash-free",
     profileRef: "opencode-api-zen-ws03",
     free: true,
+    place: "local",
     posture: "bypass",
   },
   /** Local deepseek 4.1 flash free. */
@@ -130,6 +138,7 @@ export const CANDIDATES = {
     model: "opencode/deepseek-v4.1-flash-free",
     profileRef: "opencode-api-zen-ws03",
     free: true,
+    place: "local",
     posture: "bypass",
   },
   /** Local paid glm 5.3 (OpenCode Go route) — no per-IP limit, spends. */
@@ -137,6 +146,7 @@ export const CANDIDATES = {
     model: "opencode-go/glm-5.3",
     profileRef: "opencode-developerws003",
     free: false,
+    place: "local",
     posture: "bypass",
   },
   /** Sandbox paid glm 5.3 — same as local paid, off the local IP. */
@@ -144,6 +154,7 @@ export const CANDIDATES = {
     model: "opencode-go/glm-5.3",
     profileRef: "opencode-developerws003",
     free: false,
+    place: "sandbox",
     posture: "bypass",
   },
   /** Reviewer: paid deepseek v4 pro, read-only. */
@@ -151,13 +162,15 @@ export const CANDIDATES = {
     model: "opencode-go/deepseek-v4-pro",
     profileRef: "opencode-developerws003",
     free: false,
+    place: "sandbox",
     posture: "read-only",
   },
-  /** Reviewer free fallback, read-only, sandbox-safe. */
+  /** Reviewer free alternative, read-only, sandbox-safe. */
   reviewerFree: {
     model: "opencode/glm-5.3-flash-free",
     profileRef: "opencode-api-zen-ws03",
     free: true,
+    place: "sandbox",
     posture: "read-only",
   },
 } as const satisfies Record<string, SpawnCandidate>
@@ -165,7 +178,8 @@ export const CANDIDATES = {
 // ── The usage registry ──────────────────────────────────────────────────
 
 /**
- * Usages named by WORK, not by model. Each fixes model, place and repli.
+ * Usages named by WORK, not by model. Each fixes model, place and an
+ * ordered list of place-aware candidates.
  */
 export const USAGE_PRESETS: Record<string, UsageSpec> = {
   "pr-fix": {
@@ -176,7 +190,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     sandboxProvider: "computer",
     candidates: [
       CANDIDATES.sandboxGlmFree,
-      CANDIDATES.sandboxPaidStrong, // repli: same place, paid rail
+      CANDIDATES.sandboxPaidStrong, // same place, paid rail
     ],
     note: "La PR est fetchée dans la sandbox ; les fichiers locaux ne sont pas nécessaires.",
   },
@@ -187,7 +201,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     candidates: [
       CANDIDATES.localGlmFree,
       CANDIDATES.localDeepseekFree,
-      CANDIDATES.sandboxGlmFree, // repli: per-IP limit or sandbox redirect
+      CANDIDATES.sandboxGlmFree, // explicit sandbox candidate for overflow
     ],
   },
   implement: {
@@ -197,7 +211,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     candidates: [
       CANDIDATES.localDeepseekFree,
       CANDIDATES.localGlmFree,
-      CANDIDATES.sandboxGlmFree, // repli 3e agent gratuit / IP limitée
+      CANDIDATES.sandboxGlmFree, // explicit sandbox candidate for overflow
     ],
   },
   review: {
@@ -207,7 +221,7 @@ export const USAGE_PRESETS: Record<string, UsageSpec> = {
     sandboxProvider: "computer",
     candidates: [
       CANDIDATES.reviewerPaid,
-      CANDIDATES.reviewerFree, // repli: gratuit, toujours read-only
+      CANDIDATES.reviewerFree, // gratuit, toujours read-only
     ],
   },
   deploy: {
@@ -247,6 +261,18 @@ function buildSpawn(
     spawn.sandbox = { provider: spec.sandboxProvider ?? "computer" }
   }
   return spawn
+}
+
+function candidateForPlace(
+  spec: UsageSpec,
+  place: Place,
+  opts: { freeOnly?: boolean } = {},
+): SpawnCandidate {
+  return (
+    spec.candidates.find(
+      c => (c.place ?? place) === place && (!opts.freeOnly || isFreeCandidate(c)),
+    ) ?? spec.candidates[0]!
+  )
 }
 
 // ── The resolver: usage + live free-local count → complete plan ─────────
@@ -290,55 +316,40 @@ export function resolveFromSpec(
       throw new SensitivityRefusalError(
         `usage "${spec.slug}" est sensible (déploiement, secrets, paiement, production) : ` +
           `le modèle gratuit "${spec.candidates[freeIndex]!.model}" (rang ${freeIndex}) est refusé. ` +
-          "Corrigez la chaîne de repli : les usages sensibles n'ont jamais de candidat gratuit.",
+          "Corrigez la liste de candidats : les usages sensibles n'ont jamais de candidat gratuit.",
       )
     }
   }
 
-  let warning: string | undefined
-
   // HARD RULE 2 — the 2-free-agents-local cap, overflow ⇒ sandbox.
   // Redirect gate: the DEFAULT candidate is FREE (a paid-first chain has
   // no free-agent overflow to relieve — paid locals don't bleed the local
-  // IP). The redirect keeps the model free (that's the point of repli)
-  // but moves it INTO the box, whose IP isn't the one that bled.
-  if (spec.placePolicy === "local-preferred") {
-    const first = spec.candidates[0]!
-    const inUse = opts.freeLocalInUse ?? 0
-    if (isFreeCandidate(first) && inUse >= MAX_LOCAL_FREE_AGENTS) {
-      // Prefer a DIFFERENT free candidate (the chain's declared repli); a
-      // single-candidate chain keeps the same free model, inside the box.
-      const sandboxCandidate =
-        spec.candidates.find(c => c !== first && isFreeCandidate(c)) ?? first
-      warning =
-        `Limite atteinte : ${inUse} agents gratuits tournent déjà en local ` +
-        `(max ${MAX_LOCAL_FREE_AGENTS} — l'IP locale est limitée au-delà). ` +
-        `Agent gratuit redirigé vers la sandbox (modèle gratuit ok dans la box : l'IP qui saignait était la locale).`
-      return {
-        usage: spec.slug,
-        resolvedModel: sandboxCandidate.model,
-        profileRef: sandboxCandidate.profileRef,
-        adapter,
-        posture: sandboxCandidate.posture,
-        place: "sandbox",
-        sandbox: { provider: spec.sandboxProvider ?? "computer" },
-        fallbackUsed: spec.candidates.indexOf(sandboxCandidate),
-        spawn: buildSpawn(adapter, sandboxCandidate, "sandbox", spec),
-        warning,
-      }
-    }
-  }
+  // IP). The redirect keeps the model free (that's the point of the
+  // overflow) but moves it INTO the box, whose IP isn't the one that bled.
+  const first = spec.candidates[0]!
+  const inUse = opts.freeLocalInUse ?? 0
+  const overflow =
+    spec.placePolicy === "local-preferred" &&
+    isFreeCandidate(first) &&
+    inUse >= MAX_LOCAL_FREE_AGENTS
 
-  // Default candidate = first of the chain, at the spec's own place.
-  const candidate = spec.candidates[0]!
-  let place: Place
-  if (spec.placePolicy === "sandbox") place = "sandbox"
-  else if (spec.placePolicy === "local-paid") place = "local"
-  else {
-    // local-preferred with capacity: the first candidate IS free usually,
-    // but a paid-first chain also just runs locally.
-    place = "local"
-  }
+  const place: Place =
+    spec.placePolicy === "sandbox" || overflow ? "sandbox" : "local"
+
+  // Selection is place-aware: the first candidate valid for the chosen
+  // place wins. The overflow redirect additionally requires a free,
+  // explicitly sandbox-capable candidate, so it never silently swaps in a
+  // local-declared model.
+  const candidate = overflow
+    ? candidateForPlace(spec, "sandbox", { freeOnly: true })
+    : candidateForPlace(spec, place)
+
+  const warning = overflow
+    ? `Limite atteinte : ${inUse} agents gratuits tournent déjà en local ` +
+      `(max ${MAX_LOCAL_FREE_AGENTS} — l'IP locale est limitée au-delà). ` +
+      `Agent gratuit redirigé vers la sandbox (modèle gratuit ok dans la box : l'IP qui saignait était la locale).`
+    : undefined
+
   return {
     usage: spec.slug,
     resolvedModel: candidate.model,
@@ -349,7 +360,8 @@ export function resolveFromSpec(
     ...(place === "sandbox"
       ? { sandbox: { provider: spec.sandboxProvider ?? "computer" } }
       : {}),
-    fallbackUsed: 0,
+    fallbackUsed: spec.candidates.indexOf(candidate),
     spawn: buildSpawn(adapter, candidate, place, spec),
+    ...(warning ? { warning } : {}),
   }
 }

@@ -1,5 +1,5 @@
 ---
-"@agentproto/usage-presets": major
+"@agentproto/usage-presets": minor
 "@agentproto/cli": minor
 ---
 

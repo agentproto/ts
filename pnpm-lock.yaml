@@ -1613,6 +1613,9 @@ importers:
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
+      '@agentproto/usage-presets':
+        specifier: workspace:*
+        version: link:../usage-presets
       '@agentproto/workflow-loader':
         specifier: workspace:*
         version: link:../workflow-loader
@@ -1719,9 +1722,6 @@ importers:
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
-      '@agentproto/usage-presets':
-        specifier: workspace:*
-        version: link:../usage-presets
       '@types/node':
         specifier: ^25.9.9
         version: 25.9.9
