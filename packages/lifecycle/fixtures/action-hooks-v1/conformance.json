@@ -1,5 +1,5 @@
 {
-  "contract": "hooks/v1",
+  "contract": "action-hooks/v1",
   "hostEvents": [
     {
       "event": "agentproto:child-housekeeping",
