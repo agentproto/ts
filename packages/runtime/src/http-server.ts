@@ -7039,9 +7039,14 @@ async function handleSessions(
     // the spawn succeeds. Without this the field was silently accepted and
     // dropped by every caller using `POST /sessions/agent` (Pygmalion's
     // `EngineClient`, notably), never reaching the session-owner gate.
+    // Gated on `!result.deduped` (like the operatorLabel attach): a dedupe
+    // lands on an existing session that may belong to a different caller, so
+    // this spawn must not rewrite that session's policy.
     const allowPromptFrom = parseSkillsField(b.allowPromptFrom)
     let allowPromptFromWarning: string | undefined
-    if (allowPromptFrom?.length) {
+    if (b.allowPromptFrom !== undefined && allowPromptFrom === undefined) {
+      allowPromptFromWarning = `allowPromptFrom ignored: expected an array of strings (got ${JSON.stringify(b.allowPromptFrom)})`
+    } else if (allowPromptFrom?.length && !result.deduped) {
       try {
         registry.setPromptPolicy(result.descriptor.id, allowPromptFrom)
       } catch (err) {

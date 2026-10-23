@@ -5,7 +5,8 @@
 Make `allowPromptFrom` and `operatorLabel` survive restart/continue-fresh and the HTTP spawn path.
 
 - New MCP tool `agent_set_operator_label`: lets the human operator stamp a
-  session's immutable `operatorLabel` directly, without a fresh root spawn.
+  session's operator-assigned `operatorLabel` directly, without a fresh root
+  spawn.
   Needed for a lineage that has lived by resume/continue-fresh since before
   it ever got a label, so there was never a prior label for the existing
   carry-forward logic to propagate.

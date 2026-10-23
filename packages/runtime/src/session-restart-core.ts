@@ -1570,7 +1570,7 @@ export async function restartAgentSession(
     // Without this, a permanent agent's drive grants (e.g. the brain's
     // `label:pygmalion-brain-persistent` access) are silently dropped at
     // the next restart.
-    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, prev.allowPromptFrom)
+    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, [...prev.allowPromptFrom])
     liveSessionId = desc.id
     return desc
   }
@@ -2288,7 +2288,7 @@ export async function restartAgentSession(
     // Without this, a permanent agent's drive grants (e.g. the brain's
     // `label:pygmalion-brain-persistent` access) are silently dropped at
     // the next restart.
-    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, prev.allowPromptFrom)
+    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, [...prev.allowPromptFrom])
     return desc
   }
 

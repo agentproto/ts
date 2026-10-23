@@ -403,6 +403,94 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     }
   })
 
+  it("POST /sessions/agent does not rewrite allowPromptFrom when the spawn dedupes onto an existing session", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (allowPromptFrom: string[]) =>
+        fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            adapter: "mock",
+            cwd: "/tmp",
+            idempotencyKey: "req-1",
+            allowPromptFrom,
+          }),
+        })
+      const first = await spawn(["sess_first"])
+      expect(first.status).toBe(201)
+      const firstBody = (await first.json()) as { id: string; deduped?: boolean }
+      expect(firstBody.deduped).toBeUndefined()
+      expect(registry.get(firstBody.id)?.allowPromptFrom).toEqual(["sess_first"])
+
+      const second = await spawn(["sess_second"])
+      expect(second.status).toBe(201)
+      const secondBody = (await second.json()) as { id: string; deduped?: boolean }
+      expect(secondBody.deduped).toBe(true)
+      expect(secondBody.id).toBe(firstBody.id)
+      expect(registry.get(firstBody.id)?.allowPromptFrom).toEqual(["sess_first"])
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("POST /sessions/agent warns instead of silently dropping a malformed allowPromptFrom", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          adapter: "mock",
+          cwd: "/tmp",
+          allowPromptFrom: "not-an-array",
+        }),
+      })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string; warnings?: string[] }
+      expect(body.warnings?.some(w => w.includes("allowPromptFrom ignored"))).toBe(true)
+      expect(registry.get(body.id)?.allowPromptFrom).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("orchestrator:true with no buildOrchestratorMcp wired → 501 not-enabled", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const startSession = vi.fn(async () => fakeAgentSession())

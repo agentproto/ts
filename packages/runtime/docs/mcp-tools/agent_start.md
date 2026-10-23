@@ -677,9 +677,10 @@ Session ids allowed to drive the new session through the daemon's drive
 tools (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`,
 `session_continue_fresh`), or `["any"]` to allow any caller session; entries
 of the form `label:<exact label>` or `label:<prefix>*` grant a ROOT caller
-session (no parent) whose operator-assigned, immutable label matches — the label
-stamped when the human operator spawned it with `agent_start`; renaming a
-session later does not change it. By
+session (no parent) whose operator-assigned label matches — normally the label
+stamped when the human operator spawned it with `agent_start` (the operator
+may re-stamp it later with `agent_set_operator_label`); renaming a session
+never changes it. By
 default the session may only be driven by its OWNER — the caller that
 spawned it — one of its ancestors in the spawn tree (a grandparent or
 orchestrator root keeps its existing subtree authority), and the human

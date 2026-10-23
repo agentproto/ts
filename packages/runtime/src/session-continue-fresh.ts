@@ -293,7 +293,7 @@ export async function continueAgentSessionFresh(
   // `spawnAgentSession` — a continue-fresh landing on a NEW session id
   // must carry it forward explicitly or a permanent agent's drive grants
   // silently vanish at the next continuation.
-  if (prev.allowPromptFrom?.length) registry.setPromptPolicy(fresh.id, prev.allowPromptFrom)
+  if (prev.allowPromptFrom?.length) registry.setPromptPolicy(fresh.id, [...prev.allowPromptFrom])
   fresh.continuedFrom = prev.id
   fresh.checkpointId = checkpoint.checkpointId
   // Lineage generation: `prev` (gen 0, absent) → 1, then +1 per hop. Persisted

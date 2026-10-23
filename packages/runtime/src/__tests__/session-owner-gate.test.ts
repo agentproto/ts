@@ -448,6 +448,23 @@ describe("session-owner gate over MCP", () => {
     expect(JSON.parse(ok.content?.[0]?.text ?? "{}").operatorLabel).toBe("pygmalion-brain-persistent")
     expect(registry.get(child.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
 
+    // Surrounding whitespace is trimmed (a padded label would never match an
+    // exact `label:<x>` grant).
+    const padded = await callTool(operator, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "  pygmalion-brain-persistent  ",
+    })
+    expect(padded.isError).toBeUndefined()
+    expect(registry.get(child.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+
+    // A whitespace-only label clears it, same as an empty string.
+    const whitespace = await callTool(operator, "agent_set_operator_label", {
+      sessionId: child.id,
+      operatorLabel: "   ",
+    })
+    expect(whitespace.isError).toBeUndefined()
+    expect(registry.get(child.id)?.operatorLabel).toBeUndefined()
+
     // An empty string clears it.
     const cleared = await callTool(operator, "agent_set_operator_label", {
       sessionId: child.id,
