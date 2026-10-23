@@ -41,6 +41,7 @@ import {
 } from "./session-message.js"
 
 import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
+import { isExpiresAtReached } from "./expires-at.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import { isRetired, type RetirementFields } from "./session-retirement.js"
 import type {
@@ -302,6 +303,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   /** Pure `until` consultation — never mutates. Sweep callers flip status. */
   function isExpiredSpec(sentinel: Sentinel): boolean {
+    // The record's own hard cap (the wiring sweep also removes it): a
+    // persisted `expiresAt` gates delivery exactly like `until.at`.
+    if (isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
     return sentinel.spec.until.kind === "at" && nowMs() >= sentinel.spec.until.ms
   }
 

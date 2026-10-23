@@ -9628,6 +9628,7 @@ async function handleSentinels(
       ...(typeof b.urgency === "string" ? { urgency: b.urgency as MessageUrgency } : {}),
       ...(until ? { until } : {}),
       ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
+      ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
     }
     const result = await createSentinelWatch(
       {
@@ -9832,7 +9833,13 @@ async function handleWebhookTargetSentinel(
   }
 
   try {
-    const sentinel = deps.store.create({ id, spec, provider: providerSlug, handle })
+    const sentinel = deps.store.create({
+      id,
+      spec,
+      provider: providerSlug,
+      handle,
+      ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
+    })
     json(201, sentinelView(sentinel))
   } catch (err) {
     // The provider-side watch exists but the record was refused — cancel to

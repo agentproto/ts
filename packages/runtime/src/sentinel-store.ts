@@ -26,6 +26,7 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
 import { ulid } from "./app-state.js"
+import { isExpiresAtReached, normalizeExpiresAt } from "./expires-at.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -64,6 +65,11 @@ export interface Sentinel {
    *  is parked instead of delivered. Independent of `spec.until`. Absent on
    *  sentinels persisted before this field existed. */
   closedSubjects?: string[]
+  /** ISO timestamp after which the wiring sweep cancels and removes the
+   *  sentinel. Defaulted for session-target sentinels (see
+   *  {@link DEFAULT_SENTINEL_TTL_MS}); webhook targets have no owning session,
+   *  so they only expire when one is given explicitly. */
+  expiresAt?: string
 }
 
 export interface SentinelCreateInput {
@@ -74,12 +80,14 @@ export interface SentinelCreateInput {
   provider: string
   handle: SentinelHandle
   status?: SentinelStatus
+  /** ISO expiry. Defaulted for session-target sentinels. */
+  expiresAt?: string
 }
 
 export type SentinelUpdatePatch = Partial<
   Pick<
     Sentinel,
-    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects"
+    "spec" | "provider" | "handle" | "status" | "lastEventTs" | "eventCount" | "lastError" | "terminalSubjects" | "closedSubjects" | "expiresAt"
   >
 >
 
@@ -198,6 +206,11 @@ export const sentinelsSecretsFileFor = (filePath: string): string =>
 export const WEBHOOK_SECRET_ROTATION_WINDOW_MS = 10 * 60 * 1000
 
 const PERSIST_DEBOUNCE_MS = 1_500
+
+/** Default hard cap on a session-target sentinel's life, mirroring the cron
+ *  scheduler's owned-job backstop. The wiring sweep is the primary lifecycle:
+ *  a sentinel whose target session is gone/retired is cancelled sooner. */
+export const DEFAULT_SENTINEL_TTL_MS = 7 * 24 * 60 * 60_000
 
 /** Per-sentinel cap for the persisted dedup window (design §2). */
 const SEEN_CAP = 1_000
@@ -433,17 +446,31 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       assertTargetImplemented(input.spec.target)
       const spec = denatureWebhookTarget(input.spec)
       const id = input.id ?? mintSentinelId(nowMs())
+      const createdTs = nowMs()
+      const normalizedExpiresAt = normalizeExpiresAt(input.expiresAt)
+      if (input.expiresAt !== undefined && normalizedExpiresAt === undefined) {
+        console.warn(
+          `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(input.expiresAt)}; using the default TTL`,
+        )
+      }
       const sentinel: Sentinel = {
         id,
         spec,
         provider: input.provider,
         handle: input.handle,
         status: input.status ?? "active",
-        createdTs: nowMs(),
+        createdTs,
         eventCount: 0,
         seen: [],
         terminalSubjects: [],
         closedSubjects: [],
+        // An unparseable `expiresAt` falls through to the default TTL rather
+        // than making the sentinel immortal.
+        ...(normalizedExpiresAt
+          ? { expiresAt: normalizedExpiresAt }
+          : spec.target.kind === "session"
+            ? { expiresAt: new Date(createdTs + DEFAULT_SENTINEL_TTL_MS).toISOString() }
+            : {}),
       }
       sentinels.set(id, sentinel)
       schedulePersist()
@@ -455,9 +482,21 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       if (!existing) return undefined
       // A patch that swaps in a webhook target carrying raw secret material
       // goes through the same sidecar denaturing as create (rotation path).
+      const nextPatch: SentinelUpdatePatch = { ...patch }
+      if (patch.expiresAt !== undefined) {
+        const normalized = normalizeExpiresAt(patch.expiresAt)
+        if (normalized === undefined) {
+          console.warn(
+            `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(patch.expiresAt)}; keeping the existing expiry`,
+          )
+          delete nextPatch.expiresAt
+        } else {
+          nextPatch.expiresAt = normalized
+        }
+      }
       const next: Sentinel = {
         ...existing,
-        ...patch,
+        ...nextPatch,
         ...(patch.spec !== undefined ? { spec: denatureWebhookTarget(patch.spec) } : {}),
       }
       sentinels.set(id, next)
@@ -523,6 +562,9 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
     isExpired(id: string): boolean {
       const sentinel = sentinels.get(id)
       if (!sentinel) return false
+      // Mirrors the runtime's `isExpiredSpec`: the record's own `expiresAt`
+      // backstop gates exactly like `until.at`.
+      if (isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
       return sentinel.spec.until.kind === "at" ? nowMs() >= sentinel.spec.until.ms : false
     },
 

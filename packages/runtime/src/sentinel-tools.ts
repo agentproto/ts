@@ -54,6 +54,9 @@ export interface SentinelWatchInput {
   urgency?: MessageUrgency
   until?: "subject_terminal" | "never"
   provider?: string
+  /** ISO timestamp after which the sentinel is cancelled/removed. Defaulted
+   *  for session-target sentinels. */
+  expiresAt?: string
 }
 
 export interface SentinelWatchDeps {
@@ -171,7 +174,13 @@ export async function createSentinelWatch(
   }
 
   try {
-    const sentinel = deps.store.create({ id, spec, provider: providerSlug, handle })
+    const sentinel = deps.store.create({
+      id,
+      spec,
+      provider: providerSlug,
+      handle,
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    })
     return { ok: true, sentinel }
   } catch (err) {
     return { ok: false, error: "create_failed", message: err instanceof Error ? err.message : String(err) }
@@ -236,6 +245,8 @@ export interface SentinelView {
   eventCount: number
   lastEventTs?: number
   lastError?: string
+  /** Hard expiry, when one is set (defaulted for session-target sentinels). */
+  expiresAt?: string
   /** Webhook-target sentinels only, once the outbox holds a row for it. */
   deliveryStatus?: SentinelDeliveryStatus
 }
@@ -261,6 +272,7 @@ export function sentinelView(s: Sentinel): SentinelView {
     eventCount: s.eventCount,
     ...(s.lastEventTs !== undefined ? { lastEventTs: s.lastEventTs } : {}),
     ...(s.lastError ? { lastError: s.lastError } : {}),
+    ...(s.expiresAt ? { expiresAt: s.expiresAt } : {}),
   }
 }
 
@@ -350,6 +362,7 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       urgency: urgencyField.optional().describe("Inbox delivery urgency. Default \"next-turn\"."),
       until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl and for a \"session:<id>\" subject, \"never\" for any other raw subject."),
       provider: z.string().optional().describe("Provider slug: \"local-gh\", \"webhook\", \"agentpush\" or \"session\". Default for a GitHub subject: \"agentpush\" when set up, else \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\". A \"session:<id>\" subject always defaults to \"session\"."),
+      expiresAt: z.string().optional().describe("ISO timestamp after which the sentinel is cancelled and removed. Defaulted to 7 days for session-target sentinels; an unparseable value falls back to that default. An update that omits it keeps the existing expiry."),
     },
     async (input: SentinelWatchInput) => {
       const result = await createSentinelWatch(
