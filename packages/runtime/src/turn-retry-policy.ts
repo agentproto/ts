@@ -16,7 +16,11 @@
 
 import { z } from "zod"
 import { inModelList, resolveModelList } from "@agentproto/model-catalog/lists"
-import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
+import {
+  DEFAULT_ROTATION_LIST_ID,
+  getModelListSource,
+  ZERO_COST_LIST_ID,
+} from "./model-list-store.js"
 
 /** Turn-failure classes `turnRetry.on` can opt into. */
 export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"] as const
@@ -104,37 +108,21 @@ export const TURN_RETRY_DEFAULT_ON: TurnRetryClass[] = ["rate-limit", "upstream-
 /** Consecutive retries the default policy allows. */
 export const TURN_RETRY_DEFAULT_MAX_RETRIES = 6
 
-/** The zero-cost rotation holds at most this many fallbacks, matching the
- *  three ids the old hardcoded list carried. */
-const ZERO_COST_ROTATE_LIMIT = 3
-
-/** Route prefix of a model id (`opencode/` vs `opencode-go/`). */
-function routePrefixOf(model: string): string {
-  const bare = model.split("@")[0] ?? model
-  const slash = bare.indexOf("/")
-  return slash === -1 ? "" : bare.slice(0, slash + 1)
+/** The same bare key origin/main's free predicate used: `@route` stripped,
+ *  last `/` segment, lowercased. */
+function freeKey(model: string): string {
+  return (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
 }
 
-/** The default rotate targets for a zero-cost current model: the zero-cost
- *  list filtered to the current model's route prefix, minus the current model,
- *  in list order, capped at {@link ZERO_COST_ROTATE_LIMIT}. */
-export function zeroCostRotateTargets(currentModel: string): TurnRetryRotateTarget[] {
-  const ids = resolveModelList(ZERO_COST_LIST_ID, getModelListSource())
-  let prefix = routePrefixOf(currentModel)
-  if (prefix === "") {
-    // A bare current id (`big-pickle`) has no route prefix of its own; take it
-    // from the zero-cost catalog id it resolves to (`opencode/big-pickle`).
-    const bare = (currentModel.split("@")[0] ?? currentModel)
-      .split(":")[0]
-      ?.toLowerCase()
-    const match = ids.find(
-      id => id.split("/").pop()?.split(":")[0]?.toLowerCase() === bare,
-    )
-    if (match) prefix = routePrefixOf(match)
-  }
-  return ids
-    .filter(id => id !== currentModel && (prefix === "" || id.startsWith(prefix)))
-    .slice(0, ZERO_COST_ROTATE_LIMIT)
+/** The default rotate targets for a zero-cost current model: the curated
+ *  `default-rotation` list, keeping only ids that are still in `zero-cost`,
+ *  minus the current model (by bare key), in list order. */
+function defaultRotateTargets(currentModel: string): TurnRetryRotateTarget[] {
+  const key = freeKey(currentModel)
+  const source = getModelListSource()
+  return resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
+    .filter(id => inModelList(id, ZERO_COST_LIST_ID, source))
+    .filter(id => freeKey(id) !== key)
     .map(model => ({ model }))
 }
 
@@ -154,7 +142,7 @@ export function defaultTurnRetryForSpawn(currentModel?: string): Exclude<TurnRet
   }
   return {
     ...base,
-    rotate: zeroCostRotateTargets(currentModel),
+    rotate: defaultRotateTargets(currentModel),
     rotateOn: [...TURN_RETRY_DEFAULT_ON],
   }
 }

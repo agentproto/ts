@@ -66,13 +66,25 @@ const modelListsFileSchema = z.object({
 export type ModelListsFile = z.infer<typeof modelListsFileSchema>
 
 export const ZERO_COST_LIST_ID = "zero-cost"
+export const DEFAULT_ROTATION_LIST_ID = "default-rotation"
 
-/** The seed written on first load only when the file is absent. */
+/** Seed lists. Absent seeds are added on every load (so a file written by an
+ *  earlier build gains new seeds), but an existing list with the same id is
+ *  never overwritten — it is user data. */
 export const SEED_MODEL_LISTS: readonly ModelList[] = [
   {
     id: ZERO_COST_LIST_ID,
     label: "Zero-cost models",
     include: [{ kind: "tag", value: "price:zero" }],
+  },
+  {
+    id: DEFAULT_ROTATION_LIST_ID,
+    label: "Default rotation targets",
+    ids: [
+      "opencode/mimo-v2.6-flash-free",
+      "opencode/deepseek-v4.1-flash-free",
+      "opencode/glm-5.3-flash-free",
+    ],
   },
 ]
 
@@ -89,6 +101,23 @@ function seedFile(): ModelListsFile {
     version: 1,
     lists: SEED_MODEL_LISTS.map(list => structuredClone(list)),
   }
+}
+
+/** Append every seed list whose id is missing. Never replaces an existing
+ *  list, including one the user edited. */
+function withMissingSeeds(file: ModelListsFile): {
+  file: ModelListsFile
+  changed: boolean
+} {
+  const existing = new Set(file.lists.map(list => list.id))
+  let changed = false
+  for (const seed of SEED_MODEL_LISTS) {
+    if (existing.has(seed.id)) continue
+    file.lists.push(structuredClone(seed))
+    existing.add(seed.id)
+    changed = true
+  }
+  return { file, changed }
 }
 
 async function writeModelLists(file: ModelListsFile): Promise<void> {
@@ -115,7 +144,10 @@ export async function loadModelLists(): Promise<ModelListsFile> {
     throw err
   }
   try {
-    return modelListsFileSchema.parse(JSON.parse(raw))
+    const parsed = modelListsFileSchema.parse(JSON.parse(raw))
+    const merged = withMissingSeeds(parsed)
+    if (merged.changed) await writeModelLists(merged.file)
+    return merged.file
   } catch (err) {
     throw new ModelListStoreError(
       `model lists file at ${modelListsPath()} is malformed: ` +

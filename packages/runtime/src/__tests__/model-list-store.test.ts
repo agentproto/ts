@@ -12,6 +12,7 @@ import {
   resetModelListSource,
   saveModelList,
   seedModelListSource,
+  DEFAULT_ROTATION_LIST_ID,
   ZERO_COST_LIST_ID,
 } from "../model-list-store.js"
 
@@ -30,7 +31,7 @@ afterEach(async () => {
 })
 
 describe("model list store", () => {
-  it("writes the zero-cost seed when the file is absent, mode 0600", async () => {
+  it("writes both seeds when the file is absent, mode 0600", async () => {
     const file = await loadModelLists()
     expect(file.version).toBe(1)
     expect(file.lists).toEqual([
@@ -39,12 +40,54 @@ describe("model list store", () => {
         label: "Zero-cost models",
         include: [{ kind: "tag", value: "price:zero" }],
       },
+      {
+        id: DEFAULT_ROTATION_LIST_ID,
+        label: "Default rotation targets",
+        ids: [
+          "opencode/mimo-v2.6-flash-free",
+          "opencode/deepseek-v4.1-flash-free",
+          "opencode/glm-5.3-flash-free",
+        ],
+      },
     ])
     const mode = (await stat(modelListsPath())).mode & 0o777
     expect(mode).toBe(0o600)
     expect(JSON.parse(await readFile(modelListsPath(), "utf8"))).toMatchObject({
       version: 1,
     })
+  })
+
+  it("adds a missing seed to an existing file but never overwrites a user list", async () => {
+    await mkdir(join(home, ".agentproto"), { recursive: true })
+    await writeFile(
+      modelListsPath(),
+      JSON.stringify({
+        version: 1,
+        lists: [
+          {
+            id: DEFAULT_ROTATION_LIST_ID,
+            label: "Mine",
+            ids: ["opencode/big-pickle"],
+          },
+        ],
+      }),
+      "utf8",
+    )
+    const first = await loadModelLists()
+    expect(first.lists.map(list => list.id).sort()).toEqual([
+      DEFAULT_ROTATION_LIST_ID,
+      ZERO_COST_LIST_ID,
+    ])
+    expect(first.lists.find(list => list.id === DEFAULT_ROTATION_LIST_ID)).toEqual({
+      id: DEFAULT_ROTATION_LIST_ID,
+      label: "Mine",
+      ids: ["opencode/big-pickle"],
+    })
+
+    // A second load does not duplicate the seed it just added.
+    const second = await loadModelLists()
+    expect(second.lists.filter(list => list.id === ZERO_COST_LIST_ID)).toHaveLength(1)
+    expect(second.lists).toHaveLength(2)
   })
 
   it("a malformed file is a hard error naming the path, never silently empty", async () => {
