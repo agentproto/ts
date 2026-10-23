@@ -613,9 +613,10 @@ jobs:
           fi
           node scripts/check-changeset-coverage.mjs origin/main
 
-  # On PRs: enforce two conventions that used to rely on remembering to say
-  # them in every prompt — no per-worktree scratch docs land in the repo, and
-  # no AI-attribution trailers ride into commits or PR bodies. Fast,
+  # On PRs: enforce three conventions that used to rely on remembering to say
+  # them in every prompt — no per-worktree scratch docs land in the repo, no
+  # AI-attribution trailers ride into commits or PR bodies, and PRs under the
+  # shared `agentiknet` account carry a provenance footer. Fast,
   # pure-git/shell, runs in parallel with build-and-test.
   hygiene-check:
     name: Hygiene checks
@@ -627,7 +628,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Check for scratch docs and AI-attribution trailers
+      - name: Check scratch docs, AI-attribution trailers, and provenance footer
         # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
         # changeset-check step above for why (shell injection via backticks).
         env:
@@ -646,9 +647,11 @@ jobs:
           # Match on the email domain, not the display name — a human
           # contributor named "Claude" (or similar) must not false-positive.
           ATTRIBUTION_PATTERN='Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with'
-          # Keep in sync with MARKER in packages/runtime/src/pr-provenance.ts —
-          # not imported here, this is a plain shell script.
-          PROVENANCE_MARKER='@agentproto-bot'
+          # Match a RENDERED footer (`<sub>…@agentproto-bot…`), not a bare
+          # mention of the marker in prose — keep in sync with
+          # hasProvenanceFooter in packages/runtime/src/pr-provenance.ts (not
+          # imported here, this is a plain shell script).
+          PROVENANCE_PATTERN='<sub>[^<]*@agentproto-bot'
 
           # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
           # are per-worktree planning scratch and must never land in the repo —
@@ -679,7 +682,11 @@ jobs:
             FAIL=1
           fi
 
-          PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body || true)
+          if ! PR_BODY=$(gh pr view "$PR_NUMBER" --json body -q .body); then
+            echo "::error::Failed to fetch the PR body from the GitHub API."
+            echo "This is a transient API/network failure, not a hygiene violation — re-run the job."
+            exit 1
+          fi
           if printf '%s' "$PR_BODY" | grep -iE "$ATTRIBUTION_PATTERN" > /dev/null; then
             echo "::error::The PR body carries an AI-attribution trailer."
             echo "PR bodies must not carry AI-attribution footers (e.g. 'Co-Authored-By: Claude ...', 'Generated with ...'). Edit the PR description to remove them."
@@ -698,16 +705,20 @@ jobs:
           # automatically for every session it spawns, so this only fires for
           # work that bypassed it. A human opening a PR under their own GitHub
           # login is unaffected — the author field already identifies them.
-          if [ "$PR_AUTHOR" = "agentiknet" ] && ! printf '%s' "$PR_BODY" | grep -qF "$PROVENANCE_MARKER"; then
+          if [ "$PR_AUTHOR" = "agentiknet" ] && ! printf '%s' "$PR_BODY" | grep -qE "$PROVENANCE_PATTERN"; then
             echo "::error::This PR was opened under the shared 'agentiknet' account but carries no agentproto provenance footer."
-            echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a '$PROVENANCE_MARKER' footer naming the session/role by hand."
+            echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a rendered '@agentproto-bot' footer naming the session/role by hand."
             FAIL=1
           fi
 
           if [ "$FAIL" -ne 0 ]; then
             exit 1
           fi
-          echo "✓ No scratch docs, no AI-attribution trailers, provenance footer present."
+          if [ "$PR_AUTHOR" = "agentiknet" ]; then
+            echo "✓ No scratch docs, no AI-attribution trailers, provenance footer present."
+          else
+            echo "✓ No scratch docs, no AI-attribution trailers (provenance check skipped — not the shared 'agentiknet' account)."
+          fi
 
   # On PRs: conformance tests for the auto-merge decision logic
   # (scripts/agentflow/merge-gate.mjs) — no workspace deps, so this runs
