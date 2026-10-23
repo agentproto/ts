@@ -1970,14 +1970,16 @@ export interface SessionDescriptor {
    *  and via `agent_set_prompt_policy`; only the owner, the session itself,
    *  and the operator may change it there. Absent = owner+operator only. */
   allowPromptFrom?: string[]
-  /** The operator-assigned, IMMUTABLE label of a root session: set only by
-   *  the daemon, at `agent_start` time, when the spawn carried NO caller
-   *  session (i.e. the human operator or an operator-side client spawned it),
-   *  and carried across restart / continue-fresh. Unlike `label`, no tool
-   *  can change it (`session_rename` only touches `label`), so a
-   *  `label:` entry in another session's `allowPromptFrom` can safely key on
-   *  it — see `checkSessionOwnerGate`. Absent for every session spawned by
-   *  another session. */
+  /** The operator-assigned label of a root session: normally set by the
+   *  daemon at `agent_start` time when the spawn carried NO caller session
+   *  (i.e. the human operator or an operator-side client spawned it), and
+   *  carried across restart / continue-fresh. The human operator may also
+   *  stamp it directly on a live session via `agent_set_operator_label`
+   *  (`registry.setOperatorLabel`). Unlike `label`, no *session* can change
+   *  it (`session_rename` only touches `label`), so a `label:` entry in
+   *  another session's `allowPromptFrom` can safely key on it — see
+   *  `checkSessionOwnerGate`. Absent for every session spawned by another
+   *  session. */
   operatorLabel?: string
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
@@ -4887,10 +4889,11 @@ export interface SessionsRegistry {
   /** Emit a `session:lineage-handover` journal entry on the session event
    *  bus - the lineage handover's own audit trail. Daemon-internal. */
   emitLineageHandover(event: import("./session-event-bus.js").SessionLineageHandoverEvent): void
-  /** Stamp (or clear) the immutable `operatorLabel` (see
-   *  `SessionDescriptor.operatorLabel`). Daemon-internal: called only by the
-   *  `agent_start` handler for operator spawns and by the restart /
-   *  continue-fresh carry-forward — never exposed as an MCP tool. */
+  /** Stamp (or clear) the operator-assigned `operatorLabel` (see
+   *  `SessionDescriptor.operatorLabel`). Called by the `agent_start` handler
+   *  for operator spawns, by the restart / continue-fresh carry-forward, and
+   *  by the operator-only `agent_set_operator_label` MCP tool
+   *  (`agent-tools.ts`). No session-scoped caller may invoke it. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
   /** Record on the session event bus that a drive-tool prompt was accepted
    *  for `id`, and WHO sent it (`caller` = the trusted calling session id,

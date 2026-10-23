@@ -288,6 +288,12 @@ export async function continueAgentSessionFresh(
 
   const fresh = result.descriptor
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
+  // Same reasoning as `operatorLabel` above: `allowPromptFrom` is applied
+  // post-spawn by the `agent_start` MCP handler, never re-derived by
+  // `spawnAgentSession` — a continue-fresh landing on a NEW session id
+  // must carry it forward explicitly or a permanent agent's drive grants
+  // silently vanish at the next continuation.
+  if (prev.allowPromptFrom?.length) registry.setPromptPolicy(fresh.id, [...prev.allowPromptFrom])
   fresh.continuedFrom = prev.id
   fresh.checkpointId = checkpoint.checkpointId
   // Lineage generation: `prev` (gen 0, absent) → 1, then +1 per hop. Persisted

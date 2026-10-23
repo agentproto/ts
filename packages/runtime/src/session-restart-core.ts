@@ -1572,6 +1572,14 @@ export async function restartAgentSession(
       resumeVia,
     })
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
+    // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
+    // applied post-spawn by the MCP tool handler) — never re-derived by
+    // `spawnAgentSession` itself, so a restart that lands on a NEW session
+    // id must carry it forward explicitly, same as `operatorLabel` above.
+    // Without this, a permanent agent's drive grants (e.g. the brain's
+    // `label:pygmalion-brain-persistent` access) are silently dropped at
+    // the next restart.
+    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, [...prev.allowPromptFrom])
     liveSessionId = desc.id
     return desc
   }
@@ -2283,6 +2291,14 @@ export async function restartAgentSession(
       resumeVia: box.resumeVia ?? "",
     })
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
+    // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
+    // applied post-spawn by the MCP tool handler) — never re-derived by
+    // `spawnAgentSession` itself, so a restart that lands on a NEW session
+    // id must carry it forward explicitly, same as `operatorLabel` above.
+    // Without this, a permanent agent's drive grants (e.g. the brain's
+    // `label:pygmalion-brain-persistent` access) are silently dropped at
+    // the next restart.
+    if (prev.allowPromptFrom?.length) registry.setPromptPolicy(desc.id, [...prev.allowPromptFrom])
     return desc
   }
 

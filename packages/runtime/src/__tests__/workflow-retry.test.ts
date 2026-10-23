@@ -32,7 +32,7 @@ import { z } from "zod"
 import { defineTool } from "@agentproto/tool"
 import { defineDriver, implementTool } from "@agentproto/driver"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
-import { createWorkflowRunner, type WorkflowRun } from "../workflow-runner.js"
+import { createWorkflowRunner as createUntrackedRunner, type WorkflowRun } from "../workflow-runner.js"
 import { runStoreDir, runFilePath, readRunFull } from "../workflow-run-store.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
@@ -40,6 +40,41 @@ import type { AgentAdapterResolver } from "../http-server.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const VECTORS_DIR = join(__dirname, "../../../../specs/resources/aip-58/draft/vectors")
+
+type TestRunner = ReturnType<typeof createUntrackedRunner>
+
+/** Per-describe runner tracker: every runner a test builds is recorded so
+ *  teardown can quiesce exactly the runs that test created. Scoped per
+ *  `describe` rather than module-wide, so a later block's runners can't be
+ *  left un-drained by an earlier block's teardown. */
+function makeRunnerTracker() {
+  const live: TestRunner[] = []
+  return {
+    create(opts: Parameters<typeof createUntrackedRunner>[0]): TestRunner {
+      const runner = createUntrackedRunner(opts)
+      live.push(runner)
+      return runner
+    },
+    async drain(): Promise<void> {
+      for (const runner of live.splice(0)) await quiesce(runner)
+    },
+  }
+}
+
+/** Cancel whatever is still active, wait for each run's execution to unwind
+ *  (it clears its lease last), then drain the write chain, so no
+ *  fire-and-forget persistence is still touching the store dir when the
+ *  test's tmpdir is removed. */
+async function quiesce(runner: TestRunner): Promise<void> {
+  const active = runner.list().filter(r => r.status === "running" || r.status === "awaiting-input" || r.status === "awaiting-approval")
+  for (const r of active) runner.cancel(r.runId)
+  for (let i = 0; i < 400 && active.some(r => runner.status(r.runId)?.lease !== undefined); i++) {
+    await new Promise(res => setTimeout(res, 5))
+  }
+  await runner.flush()
+  await new Promise(res => setTimeout(res, 0))
+  await runner.flush()
+}
 
 function makeMockRegistry(overrides: Partial<SessionsRegistry> = {}): SessionsRegistry {
   const descriptors = new Map<string, SessionDescriptor>()
@@ -197,7 +232,7 @@ steps:
   return { manifest, tools, candidates, steps: { fetch, parse, draft, polish, save } }
 }
 
-async function waitTerminal(runner: ReturnType<typeof createWorkflowRunner>, runId: string): Promise<WorkflowRun | undefined> {
+async function waitTerminal(runner: TestRunner, runId: string): Promise<WorkflowRun | undefined> {
   const terminal = new Set(["done", "failed", "cancelled"])
   let final = runner.status(runId)
   for (let i = 0; i < 200 && final && !terminal.has(final.status); i++) {
@@ -208,6 +243,8 @@ async function waitTerminal(runner: ReturnType<typeof createWorkflowRunner>, run
 }
 
 describe("AIP-58 §6 Journal — WorkflowRunner.retry() (P5)", () => {
+  const runners = makeRunnerTracker()
+  const createWorkflowRunner = runners.create
   let tmpDir: string
   let persistPath: string
   let runsRoot: string
@@ -218,10 +255,12 @@ describe("AIP-58 §6 Journal — WorkflowRunner.retry() (P5)", () => {
     runsRoot = join(tmpDir, "runs")
   })
 
-  afterEach(() => {
-    // A late fire-and-forget write can re-create a dir `rmSync` just emptied
-    // (ENOTEMPTY on the parent rmdir); `maxRetries` retries the whole removal,
-    // absorbing it — same deflake as command-tools.test.ts.
+  afterEach(async () => {
+    // Several tests end on `runner.cancel(...)`, whose unwinding and persistence
+    // are asynchronous: a write landing while `rmSync` empties the store dir
+    // fails the teardown with ENOTEMPTY. Quiesce first; `maxRetries` stays as a
+    // backstop for stragglers.
+    await runners.drain()
     rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
@@ -874,6 +913,8 @@ steps:
 }
 
 describe("AIP-58 §6 Journal — retry carries the original run's workspace", () => {
+  const runners = makeRunnerTracker()
+  const createWorkflowRunner = runners.create
   let tmpDir: string
   let persistPath: string
   let runsRoot: string
@@ -884,10 +925,10 @@ describe("AIP-58 §6 Journal — retry carries the original run's workspace", ()
     runsRoot = join(tmpDir, "runs")
   })
 
-  afterEach(() => {
-    // A late fire-and-forget write can re-create a dir `rmSync` just emptied
-    // (ENOTEMPTY on the parent rmdir); `maxRetries` retries the whole removal,
-    // absorbing it — same deflake as command-tools.test.ts.
+  afterEach(async () => {
+    // Quiesce this describe's runs first, then remove the tmpdir; `maxRetries`
+    // stays as a backstop for stragglers.
+    await runners.drain()
     rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
@@ -907,7 +948,7 @@ describe("AIP-58 §6 Journal — retry carries the original run's workspace", ()
     return { wf, runner, path }
   }
 
-  async function retryOf(runner: ReturnType<typeof createWorkflowRunner>, runId: string): Promise<WorkflowRun> {
+  async function retryOf(runner: TestRunner, runId: string): Promise<WorkflowRun> {
     const result = await runner.retry(runId)
     expect(result.ok).toBe(true)
     if (!result.ok) throw new Error("unreachable")
