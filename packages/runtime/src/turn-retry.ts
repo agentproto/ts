@@ -438,9 +438,11 @@ export function rotationTargetRejection(
 }
 
 interface PendingRetry {
-  timer: ReturnType<typeof setTimeout>
+  /** Set once the retry/migration timer is armed; a fallback step that runs
+   *  immediately never owns a timer. */
+  timer?: ReturnType<typeof setTimeout>
   kind: "turn-end" | "stall"
-  errorClass: TurnRetryClass
+  errorClass: TurnErrorClass
   attempt: number
   error?: string
   /** turn-end guard: the row must still be idle at the same turn count. */
@@ -535,7 +537,7 @@ export function createTurnRetryController(opts: {
   const cancel = (id: string, why: string): void => {
     const p = pending.get(id)
     if (!p) return
-    clearTimer(p.timer)
+    if (p.timer !== undefined) clearTimer(p.timer)
     pending.delete(id)
     registry.patchTurnRetry(id, { nextTurnRetryAt: null })
     const desc = registry.get(id)
@@ -556,7 +558,9 @@ export function createTurnRetryController(opts: {
   const rotateIfConfigured = async (desc: SessionDescriptor, p: PendingRetry): Promise<void> => {
     const policy = desc.turnRetry
     if (!policy?.rotate?.length) return
-    if (!(policy.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn).includes(p.errorClass)) return
+    if (!(policy.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn).includes(p.errorClass as TurnRetryClass)) {
+      return
+    }
     const id = desc.id
     const from = desc.model
     const same = (why: string): void => {
@@ -667,7 +671,20 @@ export function createTurnRetryController(opts: {
       const verdict = checkModelPolicy(target.model, desc.modelPolicy, getModelListSource())
       if (!verdict.ok) return `policy: ${verdict.reason}`
     }
-    return opts.checkFallbackTarget?.(desc, target)
+    if (!opts.checkFallbackTarget) return undefined
+    const checked: SessionDescriptor = {
+      ...desc,
+      ...(target.model !== undefined ? { model: target.model } : {}),
+      ...(target.harness !== undefined ? { adapterSlug: target.harness } : {}),
+      ...(target.accessProfileRef !== undefined
+        ? {
+            accessProfile: desc.accessProfile
+              ? { ...desc.accessProfile, profileRef: target.accessProfileRef }
+              : ({ profileRef: target.accessProfileRef } as SessionDescriptor["accessProfile"]),
+          }
+        : {}),
+    }
+    return opts.checkFallbackTarget(checked, target)
   }
 
   const sendFallbackPrompt = (targetId: string, p: PendingRetry): void => {
@@ -684,11 +701,33 @@ export function createTurnRetryController(opts: {
       })
   }
 
+  const applyingFallback = new Set<string>()
+
+  /** Single-flight entry point: one fallback walk per session at a time. A
+   *  duplicate trigger while a step is in flight is ignored with a notice. */
+  const applyFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    const chain = desc.turnRetry?.fallback
+    if (!chain?.length) return false
+    if (applyingFallback.has(desc.id)) {
+      registry.recordNotice(
+        desc.id,
+        "[turn-retry] fallback already in progress — ignoring a duplicate trigger",
+      )
+      return true
+    }
+    applyingFallback.add(desc.id)
+    try {
+      return await walkFallback(desc, p)
+    } finally {
+      applyingFallback.delete(desc.id)
+    }
+  }
+
   /** Walk `turnRetry.fallback` forward from `fallbackStep`, apply the first
    *  eligible overlay with the least disruptive transition, then re-prompt.
    *  Returns false when the chain is exhausted (the caller reports the last
    *  failure and leaves the session idle — never a loop). */
-  const applyFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+  const walkFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
     const chain = desc.turnRetry?.fallback
     if (!chain?.length) return false
     const id = desc.id
@@ -774,7 +813,12 @@ export function createTurnRetryController(opts: {
 
       const baseToStore = desc.fallbackStep === undefined ? base : (desc.fallbackBase ?? base)
       const targetId = targetDesc?.id ?? id
-      registry.patchTurnRetry(targetId, { fallbackStep: step, fallbackBase: baseToStore })
+      registry.patchTurnRetry(targetId, {
+        fallbackStep: step,
+        fallbackBase: baseToStore,
+        turnRetryAttempts: null,
+        turnMigrations: null,
+      })
       const from = current
       const event: SessionFallbackEvent = {
         type: "session:fallback",
@@ -1066,16 +1110,50 @@ export function createTurnRetryController(opts: {
     switch (plan.action) {
       case "ignore":
         return
-      case "skip":
-        emit(desc, {
-          phase: "skipped",
+      case "skip": {
+        const finishSkip = (): void => {
+          emit(desc, {
+            phase: "skipped",
+            errorClass: plan.errorClass,
+            attempt: desc.turnRetryAttempts ?? 0,
+            skipReason: plan.skipReason,
+            ...(plan.error ? { error: plan.error } : {}),
+          })
+          registry.recordNotice(id, `[turn-retry] not retrying: ${plan.skipReason}`)
+        }
+        // AIP-46: a CLASSIFIED failure walks the fallback chain even when it
+        // is not retryable. Auth and usage-limit go straight to the chain (no
+        // same-config retry); `other`, interrupted turns and governance-halted
+        // sessions never reach this branch.
+        const canFallBack =
+          (plan.errorClass === "auth" || plan.errorClass === "usage-limit") &&
+          (desc.turnRetry?.fallback?.length ?? 0) > 0 &&
+          desc.status === "running" &&
+          !(trigger.kind === "turn-end" && trigger.interrupted) &&
+          !halted.has(id)
+        if (!canFallBack) {
+          finishSkip()
+          return
+        }
+        const p: PendingRetry = {
+          kind: trigger.kind,
           errorClass: plan.errorClass,
           attempt: desc.turnRetryAttempts ?? 0,
-          skipReason: plan.skipReason,
           ...(plan.error ? { error: plan.error } : {}),
-        })
-        registry.recordNotice(id, `[turn-retry] not retrying: ${plan.skipReason}`)
+        }
+        void applyFallback(desc, p).then(
+          applied => {
+            if (!applied) finishSkip()
+          },
+          err => {
+            log(
+              `[turn-retry] ${id}: fallback failed: ${err instanceof Error ? err.message : String(err)}`,
+            )
+            finishSkip()
+          },
+        )
         return
+      }
       case "exhausted":
       case "give-up": {
         const finish = (): void => {
@@ -1103,7 +1181,6 @@ export function createTurnRetryController(opts: {
             errorClass: plan.errorClass as TurnRetryClass,
             attempt: plan.attempts,
             ...(plan.error ? { error: plan.error } : {}),
-            timer: undefined as unknown as ReturnType<typeof setTimeout>,
           }
           void applyFallback(desc, p).then(
             applied => {
@@ -1131,7 +1208,6 @@ export function createTurnRetryController(opts: {
           ...(trigger.kind === "turn-end"
             ? { turnsCompleted: desc.turnsCompleted ?? 0 }
             : { stalledSinceMs: desc.stalledSinceMs }),
-          timer: undefined as unknown as ReturnType<typeof setTimeout>,
         }
         p.timer = setTimer(() => fire(id, p), plan.delayMs)
         pending.set(id, p)
@@ -1162,7 +1238,6 @@ export function createTurnRetryController(opts: {
           ...(trigger.kind === "turn-end"
             ? { turnsCompleted: desc.turnsCompleted ?? 0 }
             : { stalledSinceMs: desc.stalledSinceMs }),
-          timer: undefined as unknown as ReturnType<typeof setTimeout>,
         }
         p.timer = setTimer(() => fire(id, p), baseDelayMs)
         pending.set(id, p)
@@ -1231,7 +1306,9 @@ export function createTurnRetryController(opts: {
   return {
     dispose() {
       for (const u of unsubs) u()
-      for (const p of pending.values()) clearTimer(p.timer)
+      for (const p of pending.values()) {
+        if (p.timer !== undefined) clearTimer(p.timer)
+      }
       pending.clear()
     },
     pendingIds: () => [...pending.keys()],

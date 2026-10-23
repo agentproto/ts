@@ -12,11 +12,17 @@
  */
 
 import { describe, expect, it } from "vitest"
+import type { AuthProfile } from "@agentproto/auth"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus, type SessionFallbackEvent, type SessionTurnRetryEvent } from "../session-event-bus.js"
 import { createModelCooldowns } from "../model-cooldowns.js"
-import { createTurnRetryController, type TurnRetryFallbackEffective } from "../turn-retry.js"
+import {
+  classifyTurnError,
+  createTurnRetryController,
+  type TurnRetryFallbackEffective,
+} from "../turn-retry.js"
+import { createRotationTargetCheck } from "../turn-retry-eligibility.js"
 import { resolveTurnRetryPolicy } from "../turn-retry-policy.js"
 import type { ModelPolicy } from "../model-policy.js"
 import { ZERO_COST_LIST_ID } from "../model-list-store.js"
@@ -25,6 +31,8 @@ const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
 const FREE_A = "opencode/glm-5.3-flash-free"
 const FREE_B = "opencode/deepseek-v4.1-flash-free"
 const FREE_C = "opencode/big-pickle"
+const OPENCODE_LIMIT =
+  "Free usage limit reached. Subscribe to OpenCode Go to keep going: https://opencode.ai/go"
 
 async function until(predicate: () => boolean, label: string): Promise<void> {
   for (let i = 0; i < 400; i++) {
@@ -79,6 +87,7 @@ function harness(opts: {
     desc: SessionDescriptor,
     target: TurnRetryFallbackEffective,
   ) => Promise<string | undefined>
+  beforeRestart?: () => Promise<void>
 }) {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -109,6 +118,7 @@ function harness(opts: {
     ...(opts.checkFallbackTarget ? { checkFallbackTarget: opts.checkFallbackTarget } : {}),
     restartSession: async (prev, overrides) => {
       restarts.push({ id: prev.id, overrides })
+      if (opts.beforeRestart) await opts.beforeRestart()
       return prev
     },
     handoffSession: async (prev, handoffOpts) => {
@@ -146,6 +156,7 @@ function harness(opts: {
     })
 
   return {
+    sessionEvents,
     registry,
     cooldowns,
     events,
@@ -295,7 +306,13 @@ describe("turn retry fallback", () => {
 
   it("moves the cursor forward only across two failures", async () => {
     const h = harness({
-      scripts: [fail("429 status code"), fail("429 status code"), fail("429 status code"), ok],
+      scripts: [
+        fail("429 status code"),
+        fail("429 status code"),
+        fail("429 status code"),
+        fail("429 status code"),
+        ok,
+      ],
       turnRetry: {
         on: ["rate-limit"],
         maxRetries: 1,
@@ -306,7 +323,7 @@ describe("turn retry fallback", () => {
     const desc = h.spawn()
     await h.registry.sendPrompt(desc.id, "go")
     await until(
-      () => h.prompts.length === 4 && h.registry.get(desc.id)?.busy === false,
+      () => h.prompts.length === 5 && h.registry.get(desc.id)?.busy === false,
       "second fallback",
     )
 
@@ -333,11 +350,160 @@ describe("turn retry fallback", () => {
     await h.registry.sendPrompt(desc.id, "go")
     await until(() => h.phases().includes("exhausted"), "exhaustion")
 
-    expect(h.prompts).toHaveLength(3)
+    // original + retry, fallback to B, one retry on B, then exhausted.
+    expect(h.prompts).toHaveLength(4)
     expect(h.fallbackEvents).toHaveLength(1)
     expect(h.registry.get(desc.id)?.fallbackStep).toBe(0)
     await new Promise(resolve => setTimeout(resolve, 30))
-    expect(h.prompts).toHaveLength(3)
+    expect(h.prompts).toHaveLength(4)
+    h.done()
+  })
+
+  it("resets the retry budget on the session the fallback step lands on", async () => {
+    const h = harness({
+      scripts: [
+        fail("429 status code"),
+        fail("429 status code"),
+        fail("429 status code"),
+        ok,
+      ],
+      turnRetry: {
+        on: ["rate-limit"],
+        maxRetries: 1,
+        fallback: [{ model: FREE_B }],
+        ...FAST,
+      },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.prompts.length === 4 && h.registry.get(desc.id)?.busy === false, "clean turn")
+
+    // The failure on B schedules a fresh same-config retry (attempt 1),
+    // instead of immediately exhausting into the next chain step.
+    const scheduled = h.events.filter(e => e.phase === "scheduled")
+    expect(scheduled.map(e => e.attempt)).toEqual([1, 1])
+    expect(h.fallbackEvents).toHaveLength(1)
+    expect(h.registry.get(desc.id)?.fallbackStep).toBe(0)
+    h.done()
+  })
+
+  it("usage-limit with a chain falls back with zero same-config retries", async () => {
+    const withChain = harness({
+      scripts: [fail(OPENCODE_LIMIT), ok],
+      turnRetry: {
+        on: ["rate-limit"],
+        maxRetries: 3,
+        fallback: [{ model: FREE_B }],
+        ...FAST,
+      },
+    })
+    const d1 = withChain.spawn()
+    await withChain.registry.sendPrompt(d1.id, "go")
+    await until(() => withChain.prompts.length === 2, "usage-limit fallback")
+
+    expect(withChain.phases()).not.toContain("scheduled")
+    expect(withChain.fallbackEvents).toHaveLength(1)
+    expect(withChain.fallbackEvents[0]).toMatchObject({
+      transition: "live",
+      failure: { errorClass: "usage-limit" },
+    })
+    expect(withChain.registry.get(d1.id)?.model).toBe(FREE_B)
+    withChain.done()
+
+    const withoutChain = harness({
+      scripts: [fail(OPENCODE_LIMIT), ok],
+      turnRetry: { on: ["rate-limit"], maxRetries: 3, ...FAST },
+    })
+    const d2 = withoutChain.spawn()
+    await withoutChain.registry.sendPrompt(d2.id, "go")
+    await until(() => withoutChain.phases().includes("skipped"), "usage-limit skip")
+
+    expect(withoutChain.prompts).toHaveLength(1)
+    expect(withoutChain.fallbackEvents).toHaveLength(0)
+    expect(withoutChain.notices.join("\n")).toContain("provider usage cap")
+    withoutChain.done()
+  })
+
+  it("classifies the opencode Go usage-limit message as usage-limit", () => {
+    expect(classifyTurnError(OPENCODE_LIMIT)).toBe("usage-limit")
+  })
+
+  it("ignores a second fallback trigger while the first step is in flight", async () => {
+    let releaseRestart!: () => void
+    const restartGate = new Promise<void>(resolve => {
+      releaseRestart = resolve
+    })
+    let restartStarted = false
+    const h = harness({
+      scripts: [fail(OPENCODE_LIMIT), ok],
+      beforeRestart: async () => {
+        restartStarted = true
+        await restartGate
+      },
+      turnRetry: {
+        on: ["rate-limit"],
+        maxRetries: 1,
+        fallback: [{ access: { profileRef: "alt" } }],
+        ...FAST,
+      },
+    })
+    const desc = h.spawn()
+    const first = h.registry.sendPrompt(desc.id, "go")
+    await until(() => restartStarted, "restart start")
+
+    h.sessionEvents.emit({
+      type: "session:turn-end",
+      sessionId: desc.id,
+      awaitingInput: false,
+      reason: "error",
+      error: OPENCODE_LIMIT,
+      ts: new Date().toISOString(),
+    })
+    await until(() => h.notices.some(n => n.includes("fallback already in progress")), "duplicate notice")
+    expect(h.restarts).toHaveLength(1)
+
+    releaseRestart()
+    await first
+    await until(() => h.prompts.length === 2, "fallback continuation")
+    expect(h.restarts).toHaveLength(1)
+    expect(h.fallbackEvents).toHaveLength(1)
+    h.done()
+  })
+
+  it("checks an ambient session's fallback profile against that profile", async () => {
+    const profile = {
+      id: "zen",
+      endpoint: "opencode",
+      method: "api-key",
+      models: { mode: "allow", ids: [FREE_C] },
+    } as AuthProfile
+    const check = createRotationTargetCheck({
+      getProfile: async id => (id === "zen" ? profile : undefined),
+    })
+    const h = harness({
+      scripts: [fail(OPENCODE_LIMIT), ok],
+      checkFallbackTarget: async (desc, target) =>
+        target.model === undefined ? undefined : check(desc, { model: target.model }),
+      turnRetry: {
+        on: ["rate-limit"],
+        maxRetries: 1,
+        fallback: [
+          { model: FREE_B, access: { profileRef: "zen" } },
+          { model: FREE_C, access: { profileRef: "zen" } },
+        ],
+        ...FAST,
+      },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.prompts.length === 2, "profile fallback")
+
+    expect(h.restarts).toHaveLength(1)
+    expect(h.restarts[0]?.overrides).toMatchObject({
+      model: FREE_C,
+      access: { profileRef: "zen" },
+    })
+    expect(h.fallbackEvents[0]).toMatchObject({ transition: "restart", to: { model: FREE_C } })
     h.done()
   })
 
