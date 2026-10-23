@@ -52,11 +52,13 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(SCRIPT_DIR, "..")
 const LOCAL_CLI = join(REPO_ROOT, "packages", "cli", "dist", "cli.mjs")
 
-const ESCALATION_LABEL = "start-watchdog-escalation"
+export const ESCALATION_LABEL_PREFIX = "start-watchdog-"
+export const ESCALATION_LABEL = `${ESCALATION_LABEL_PREFIX}escalation`
 const DEFAULT_LOG = join(homedir(), ".agentproto", "start-watchdog.log")
 
 const DEFAULTS = {
   thresholdSec: 180,
+  maxStop: 5,
 }
 
 function usage() {
@@ -66,7 +68,8 @@ function usage() {
   --json                   print the report as JSON
   --threshold <sec>        how long a session may sit in "starting" before
                             it is flagged (${DEFAULTS.thresholdSec})
-  --stop                   also stop (kill) every flagged session
+  --stop                   also stop (kill) flagged sessions, oldest first
+  --max-stop <n>           cap on how many to stop in one pass (${DEFAULTS.maxStop})
   --agent <slug>           spawn this adapter to investigate if nothing
                             else is already watching
   --notify-session <id>    prompt this session instead of spawning an agent
@@ -86,6 +89,7 @@ function parseFlags(argv) {
     json: false,
     thresholdSec: DEFAULTS.thresholdSec,
     stop: false,
+    maxStop: DEFAULTS.maxStop,
     agent: process.env.START_WATCHDOG_AGENT || undefined,
     notifySession: process.env.START_WATCHDOG_NOTIFY_SESSION || undefined,
     escalate: true,
@@ -108,6 +112,12 @@ function parseFlags(argv) {
         break
       }
       case "--stop": out.stop = true; break
+      case "--max-stop": {
+        const n = Number(next())
+        if (!Number.isFinite(n) || n < 0) throw new Error("--max-stop expects a number >= 0")
+        out.maxStop = n
+        break
+      }
       case "--agent": out.agent = next(); break
       case "--notify-session": out.notifySession = next(); break
       case "--no-escalate": out.escalate = false; break
@@ -172,9 +182,21 @@ function selfSessionIds() {
 /**
  * The whole decision, pure over (all, now, thresholdMs, protectedIds): every
  * `starting` row older than the threshold, oldest first. A session is never
- * a candidate when it is this guard's own session (or an ancestor of it) —
- * mirrors host-guard's self-protection, defensive even though a `starting`
- * row cannot yet have live children of its own.
+ * a candidate when:
+ *   - it is this guard's own session (or an ancestor of it);
+ *   - its label starts with `start-watchdog-` — the escalation investigator
+ *     THIS script spawns is itself a fresh `agent-cli` session that cold-
+ *     provisions a worktree, i.e. exactly the "legitimately slow first-time
+ *     provision" case; without this exclusion a slow investigator becomes a
+ *     candidate on the next sweep and gets killed by the watchdog that spawned
+ *     it, which then spawns a replacement — a spawn/kill loop. Mirrors
+ *     host-guard's `labelOf(s).startsWith("host-guard-")` guard;
+ *   - it is not an `agent-cli` session — a non-agent-cli row (PTY/terminal/
+ *     command) has no provisioning path this watchdog understands, same
+ *     reasoning as host-guard's `kind !== "agent-cli"` exclusion;
+ *   - its `provisioning.state` is `"queued"` — a row throttled behind the
+ *     daemon's own concurrency limit is waiting its turn, not hung; stopping
+ *     it only makes the queue's backlog worse.
  */
 export function select(all, now, thresholdMs, protectedSessionIds) {
   const protectedIds = new Set(protectedSessionIds)
@@ -184,6 +206,9 @@ export function select(all, now, thresholdMs, protectedSessionIds) {
     if (s.status !== "starting") continue
     startingCount++
     if (protectedIds.has(s.id)) continue
+    if (labelOf(s).startsWith(ESCALATION_LABEL_PREFIX)) continue
+    if (s.kind !== undefined && s.kind !== "agent-cli") continue
+    if (s.provisioning?.state === "queued") continue
     const startedMs = parseMs(s.startedAt)
     if (startedMs === undefined) continue
     const stuckMs = now - startedMs
@@ -200,7 +225,7 @@ export function select(all, now, thresholdMs, protectedSessionIds) {
   return { starting: startingCount, flagged: candidates }
 }
 
-function escalationPrompt({ flagged, stopped, failed, now }) {
+function escalationPrompt({ flagged, stopped, failed }) {
   const rows = flagged.map(
     c => `- ${c.id} ${c.label} — stuck in "starting" for ${Math.round(c.stuckSec / 60)} min (phase: ${c.phase ?? "unknown"})`,
   )
@@ -242,7 +267,7 @@ async function main() {
   const stopped = []
   const failed = []
   if (!flags.dryRun && flags.stop) {
-    for (const c of selection.flagged) {
+    for (const c of selection.flagged.slice(0, flags.maxStop)) {
       const reason = `start-watchdog: stuck in "starting" for ${Math.round(c.stuckSec / 60)} min, never produced a running session`
       const res = runAgentproto(["sessions", "stop", c.id, "--reason", reason, "--json"], { json: false })
       if (res.status === 0) stopped.push(c)
@@ -252,8 +277,15 @@ async function main() {
 
   let escalation = "none"
   if (!flags.dryRun && selection.flagged.length > 0 && flags.escalate) {
-    const prompt = escalationPrompt({ flagged: selection.flagged, stopped, failed, now })
-    const existing = all.find(s => s.label === ESCALATION_LABEL && (s.status === "running" || s.status === "starting"))
+    const prompt = escalationPrompt({ flagged: selection.flagged, stopped, failed })
+    // `all` is the pre-stop snapshot: a row just killed above would still
+    // resolve here as a live "existing" escalation target, sending the
+    // prompt to a session that no longer exists and spawning a duplicate
+    // next pass. Exclude anything this very run just stopped.
+    const stoppedIds = new Set(stopped.map(c => c.id))
+    const existing = all.find(
+      s => s.label === ESCALATION_LABEL && (s.status === "running" || s.status === "starting") && !stoppedIds.has(s.id),
+    )
     const target = flags.notifySession ?? existing?.id
     if (target) {
       const res = runAgentproto(["sessions", "prompt", target, "--prompt", prompt, "--json"], { json: false })
