@@ -7,7 +7,7 @@
  * injectable child/clock seam and carries no OS processes.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -30,6 +30,13 @@ import type { SessionsRegistry } from "../sessions.js"
 import type { AppService } from "@agentproto/app"
 
 const APP_ID = "@test/proc-app"
+
+/** Fake children still reach the real `killServiceProcess` on `stop()`, which
+ *  signals `-pid` and `pid`. Keep their pids above any OS ceiling (Linux
+ *  pid_max is at most 2^22) so the signal can never land on a live process:
+ *  a low fake pid like 10000 can be a sibling vitest worker on a CI runner. */
+const FAKE_PID_BASE = 2_000_000_000
+const MAX_OS_PID = 4_194_304
 
 /** Minimal fake ChildProcess: enough for registry.register (event emitter +
  *  pid) and for the runner's exit/error wiring — NO OS process. */
@@ -81,7 +88,7 @@ function startFixture(opts?: {
       ...(opts?.logFile !== undefined ? { logFile: opts.logFile } : {}),
       spawnChild: (_spec, o) => {
         void _spec
-        const pid = 10_000 + fx.spawned.length
+        const pid = FAKE_PID_BASE + fx.spawned.length
         const child = fakeChild(pid)
         fx.spawned.push({ pid, child })
         fx.spawnEnvs.push(o.env)
@@ -154,13 +161,13 @@ describe("startAppServiceProcess — deterministic managed process in the regist
     // Env injection: the session/app identity vars are set (assign-last).
     expect(fx.spawnEnvs[0]?.[SESSION_ID_ENV]).toBe(handle.sessionId)
     expect(fx.spawnEnvs[0]?.[APP_ID_ENV]).toBe(APP_ID)
-    expect(handle.pid).toBe(10_000)
+    expect(handle.pid).toBe(FAKE_PID_BASE)
     const desc = fx.registry.get(handle.sessionId)!
     expect(desc).toBeDefined()
     expect(desc.kind).toBe("command")
     expect(desc.pty).toBeUndefined()
     expect(desc.status).toBe("running")
-    expect(desc.pid).toBe(10_000)
+    expect(desc.pid).toBe(FAKE_PID_BASE)
     expect(desc.label).toBe(`app:${APP_ID}:service:web`)
     expect(desc.origin).toBe(`app-service:${APP_ID}`)
     expect(desc.argv).toEqual(["node", "server.js"])
@@ -235,6 +242,22 @@ describe("restart with backoff and cap", () => {
       expect(desc?.status).toBe("killed")
       expect(fx.spawned).toHaveLength(1)
     })
+  })
+
+  it("stop() on a fake child never signals a pid a real process could own", async () => {
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" })
+    })
+    try {
+      const { start } = startFixture()
+      const res = start()
+      if (!res.ok) throw new Error(res.error)
+      await res.handle.stop()
+      expect(kill).toHaveBeenCalled()
+      for (const [pid] of kill.mock.calls) expect(Math.abs(pid)).toBeGreaterThan(MAX_OS_PID)
+    } finally {
+      kill.mockRestore()
+    }
   })
 
   it("maxDelayMs caps the backoff", async () => {
