@@ -364,19 +364,21 @@ export async function runSandboxGcPass(
     failures: 0,
   }
   for (const candidate of candidates) {
-    // Already paused: nothing to do, and calling pause() again every interval
-    // would be a provider round-trip per pass forever.
-    if (candidate.entry.state === "paused") {
+    // Honour the session's recorded teardown: a `pause` teardown keeps the
+    // box pausable, never deletes it (2026-10-23: the row asked for pause and
+    // the pass deleted it). A kill/unset teardown still deletes, as before.
+    const pause = sandboxGcShouldPause(candidate.entry, lineage)
+    // An already paused row whose teardown is pause needs no provider call:
+    // pausing it again every interval is a round-trip for no state change.
+    // A paused row whose teardown is kill/unset is still reaped below, so
+    // paused boxes do not leak forever.
+    if (candidate.entry.state === "paused" && pause) {
       summary.kept++
       log(
         `sandbox gc: ${candidate.entry.sandboxId} kept paused (session ${candidate.entry.originSessionId} ${candidate.sessionStatus})`,
       )
       continue
     }
-    // Honour the session's recorded teardown: a `pause` teardown keeps the
-    // box pausable, never deletes it (2026-10-23: the row asked for pause and
-    // the pass deleted it). A kill/unset teardown still deletes, as before.
-    const pause = sandboxGcShouldPause(candidate.entry, lineage)
     const res = await reapGcEntry(candidate.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: deps.resolveProvider,

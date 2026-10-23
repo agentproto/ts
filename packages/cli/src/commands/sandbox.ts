@@ -883,9 +883,16 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
   const results: Array<{ sandboxId: string; ok: boolean; action?: string; error?: string }> = []
   let failures = 0
   for (const c of candidates) {
-    // Already paused: leave it untouched (a repeat pause call every run is a
-    // provider round-trip for no state change).
-    if (c.entry.state === "paused") {
+    // Honour the session's recorded teardown: `pause` keeps the box, a
+    // kill/unset teardown (and the explicit --pause flag) deletes or pauses
+    // as before.
+    const pause =
+      values.pause === true ||
+      sandboxGcShouldPause(c.entry, lineage ?? new Map())
+    // Already paused with a pause teardown: leave it untouched (a repeat
+    // pause call every run is a round-trip for no state change). A paused
+    // row with kill/unset teardown is still reaped below.
+    if (c.entry.state === "paused" && pause) {
       if (!values.json) {
         process.stdout.write(
           `sandbox ${c.entry.sandboxId} kept paused (session ${c.entry.originSessionId} ${c.sessionStatus})\n`,
@@ -893,12 +900,6 @@ async function runGc(args: readonly string[], cliDeps?: SandboxGcCliDeps): Promi
       }
       continue
     }
-    // Honour the session's recorded teardown: `pause` keeps the box, a
-    // kill/unset teardown (and the explicit --pause flag) deletes or pauses
-    // as before.
-    const pause =
-      values.pause === true ||
-      sandboxGcShouldPause(c.entry, lineage ?? new Map())
     const res = await reapGcEntry(c.entry, {
       ...(pause ? { pause: true } : {}),
       resolveProvider: resolveProvider as unknown as GcProviderResolver,
