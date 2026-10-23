@@ -301,6 +301,15 @@ jobs:
           node --test scripts/sync-specs.test.mjs
           node scripts/sync-specs.mjs --check --source .canonical-specs/specs/resources
 
+      # AIP-70 names: compare packages, SPEC_NAME/SPEC_ID constants and define
+      # exports against the canonical names.json, as a ratchet against
+      # scripts/names-pending.json. The pinned canonical commit may predate
+      # AIP-70; the script then prints one skipped line and exits 0.
+      - name: Check canonical names (AIP-70)
+        run: |
+          node --test scripts/check-names.test.mjs
+          node scripts/check-names.mjs --names .canonical-specs/specs/names.json
+
       # specs/resources is schema-only by design (see sync-specs.mjs's
       # docstring), so a prose-only AIP (e.g. AIP-65, DECISION.md) ships
       # upstream with nothing for the drift check above to flag. This reads
