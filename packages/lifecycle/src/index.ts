@@ -119,3 +119,5 @@ export function parseTemplatedLifecycleEvent(
 export function isNamespacedLifecycleEvent(name: string): boolean {
   return name.includes(":")
 }
+
+export * from "./hooks.js"
