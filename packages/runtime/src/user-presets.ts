@@ -107,6 +107,10 @@ const presetConfigSchema = z.object({
   posture: postureSchema.optional(),
   effort: effortSchema.optional(),
   contextProfile: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+  skills: z.array(z.string().min(1)).optional(),
+  bundles: z.array(z.string().min(1)).optional(),
+  browser: z.union([z.literal("headless"), z.literal(false)]).optional(),
   options: z.record(z.string(), z.unknown()).optional(),
   turnRetry: turnRetryInputSchema.optional(),
 })
@@ -256,6 +260,15 @@ export async function deleteUserPreset(id: string): Promise<boolean> {
   const file = await loadUserPresets()
   const index = file.presets.findIndex(preset => preset.id === id)
   if (index === -1) return false
+  for (const preset of file.presets) {
+    if (preset.id === id) continue
+    if ((preset.extends ?? []).includes(id)) {
+      throw new UserPresetValidationError(
+        "unknown_extends",
+        `cannot delete session preset "${id}" because "${preset.id}" extends it`,
+      )
+    }
+  }
   file.presets.splice(index, 1)
   await writeUserPresets(file)
   return true

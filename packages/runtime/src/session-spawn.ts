@@ -2237,8 +2237,20 @@ export async function spawnAgentSession(
     }
   }
 
-  const resolution = resolveWith(harnessPreset)
-  const sessionConfig = resolution.config
+  let sessionConfig: import("./session-preset-resolver.js").SessionConfigAxes
+  try {
+    const resolution = resolveWith(harnessPreset)
+    sessionConfig = resolution.config
+  } catch (err) {
+    if (err instanceof (await import("./session-preset-resolver.js")).SessionPresetResolutionError) {
+      return {
+        ok: false,
+        code: "invalid_request",
+        message: `agent_start: ${err.message}`,
+      }
+    }
+    throw err
+  }
   input = {
     ...input,
     ...(sessionConfig.model !== undefined ? { model: sessionConfig.model } : {}),
@@ -2259,6 +2271,9 @@ export async function spawnAgentSession(
     // value (null included) wins over a preset turnRetry.
     ...(sessionConfig.turnRetry !== undefined ? { turnRetry: sessionConfig.turnRetry } : {}),
     ...(sessionConfig.modelPolicy !== undefined ? { modelPolicy: sessionConfig.modelPolicy } : {}),
+    ...(sessionConfig.options !== undefined
+      ? { options: sessionConfig.options as SpawnAgentSessionInput["options"] }
+      : {}),
   }
   // A preset `browser` sits BELOW the role default (see `resolveBrowserMode`),
   // so it is kept aside instead of folded into input.
