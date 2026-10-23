@@ -426,7 +426,10 @@ export interface SetSessionModelResult {
   model?: string
   /** Present only when `applied` is false — see
    *  `@agentproto/driver-agent-cli`'s `SetModelResult` for the reason
-   *  vocabulary this passes through verbatim. */
+   *  vocabulary this passes through verbatim. Eligibility refusals are
+   *  prefixed `"not-eligible: "` — the check's reason sentence follows
+   *  (free-session → paid model, the profile's model allow-list, wallet
+   *  billing, adapter capability). */
   reason?: string
   /**
    * Present only on the model↔route guard refusal (SPEC risk R2 / §4.4): the
@@ -6093,6 +6096,8 @@ export function createSessionsRegistry(opts?: {
    *  When omitted, auto-continuation degrades to a hard-stop instead of
    *  spawning a replacement session. */
   resolveAgentAdapter?: AgentAdapterResolver
+  /** Eligibility gate for a live model switch; returns a reason to refuse, or undefined. */
+  checkModelSwitch?: (desc: SessionDescriptor, modelId: string) => Promise<string | undefined>
   /** Harness capability lister — the "which installed harness has usable
    *  credentials" signal behind handoff suggestions (the `handoff:<harness>`
    *  options of the `ask`-mode context question and the
@@ -6194,6 +6199,7 @@ export function createSessionsRegistry(opts?: {
       : undefined)
   const sessionEvents = opts?.sessionEvents
   const resolveAgentAdapter = opts?.resolveAgentAdapter
+  const checkModelSwitch = opts?.checkModelSwitch
   const runWorktreeAutoReclaim = opts?.runWorktreeAutoReclaim
   const runSandboxCheckpointGc = opts?.runSandboxCheckpointGc
   const sessions = new Map<string, SessionRuntime>()
@@ -12819,6 +12825,15 @@ export function createSessionsRegistry(opts?: {
       if (!rt) throw new Error(`setModel: no session "${id}"`)
       if (rt.desc.kind !== "agent-cli" || !rt.agentSession) {
         throw new Error(`setModel: session "${id}" is not an agent-cli session`)
+      }
+      // Eligibility gate (free stays free, the profile's model allow-list,
+      // wallet + adapter capability) BEFORE the route guard and the driver.
+      // A refusal is a structured result, never a throw.
+      if (checkModelSwitch) {
+        const refusal = await checkModelSwitch(rt.desc, modelId)
+        if (refusal !== undefined) {
+          return { applied: false, reason: "not-eligible: " + refusal }
+        }
       }
       // Model↔route guard (SPEC risk R2 / §4.4). A live `setModel` can only
       // change the model within the current route — the route is a spawn-time

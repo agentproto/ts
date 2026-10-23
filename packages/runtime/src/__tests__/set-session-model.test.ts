@@ -18,6 +18,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { startHttpServer } from "../http-server.js"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
+import { createModelSwitchCheck } from "../model-switch-check.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { registerAgentTools } from "../agent-tools.js"
 import { createRuntimeEvents } from "../events.js"
@@ -565,5 +566,96 @@ describe("agent_set_model (MCP)", () => {
     })) as { isError?: boolean }
     expect(result.isError).toBe(true)
     registry.shutdown()
+  })
+})
+
+describe("setModel — checkModelSwitch eligibility gate", () => {
+  const FREE_A = "opencode/ling-3.1-flash-free"
+  const FREE_B = "opencode/minimax-m2.5-free"
+  const PAID = "opencode/gpt-5.1-codex"
+  const zenProfile = {
+    id: "zen",
+    endpoint: "opencode",
+    method: "api-key",
+    models: { mode: "allow", ids: [FREE_A, FREE_B] },
+  } as never
+
+  const wiredRegistry = () =>
+    createSessionsRegistry({
+      persist: false,
+      checkModelSwitch: createModelSwitchCheck({
+        getProfile: async id => (id === "zen" ? zenProfile : undefined),
+      }),
+    })
+
+  it("refuses a free session moving onto a paid model with a not-eligible reason", async () => {
+    const reg = wiredRegistry()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: recordingAgentSession(),
+      adapterSlug: "fake",
+      model: FREE_A,
+    })
+
+    const result = await reg.setModel(desc.id, PAID)
+    expect(result.applied).toBe(false)
+    expect(result.reason).toMatch(/^not-eligible: /)
+    expect(reg.get(desc.id)?.model).toBe(FREE_A)
+    reg.shutdown()
+  })
+
+  it("refuses a model outside the profile's allow-list with a not-eligible reason", async () => {
+    const reg = wiredRegistry()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: recordingAgentSession(),
+      adapterSlug: "fake",
+      model: FREE_A,
+      accessProfile: { profileRef: "zen", endpoint: "opencode", method: "api-key" },
+    })
+
+    const result = await reg.setModel(desc.id, "opencode/zhipu-glm-not-allowed-free")
+    expect(result).toMatchObject({ applied: false })
+    expect(result.reason).toMatch(/^not-eligible: not in profile "zen"/)
+    expect(reg.get(desc.id)?.model).toBe(FREE_A)
+    reg.shutdown()
+  })
+
+  it("still applies an allowed same-route switch when the check is wired", async () => {
+    const reg = wiredRegistry()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: recordingAgentSession(),
+      adapterSlug: "fake",
+      model: FREE_A,
+      accessProfile: { profileRef: "zen", endpoint: "opencode", method: "api-key" },
+    })
+
+    await expect(reg.setModel(desc.id, FREE_B)).resolves.toEqual({
+      applied: true,
+      model: FREE_B,
+    })
+    expect(reg.get(desc.id)?.model).toBe(FREE_B)
+    reg.shutdown()
+  })
+
+  it("behaves unchanged with no checkModelSwitch option (free onto paid applies)", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: recordingAgentSession(),
+      adapterSlug: "fake",
+      model: FREE_A,
+    })
+
+    await expect(reg.setModel(desc.id, PAID)).resolves.toEqual({
+      applied: true,
+      model: PAID,
+    })
+    reg.shutdown()
   })
 })

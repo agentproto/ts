@@ -171,6 +171,7 @@ import { isSandboxBoxGone } from "./sandbox-gone.js"
 import { createTurnRetryController, type MigrateSessionFn } from "./turn-retry.js"
 import { createModelCooldowns } from "./model-cooldowns.js"
 import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
+import { createModelSwitchCheck } from "./model-switch-check.js"
 import { migrateSandboxSession } from "./session-migrate.js"
 import { createCheckpointSources } from "./checkpoint-extract.js"
 import { sweepAppRuns } from "./app-run-liveness.js"
@@ -2685,6 +2686,13 @@ export async function createGateway(
       ? { transcriptDir: defaultTranscriptBaseDir() }
       : {}),
     ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    // Live model switches (agent_set_model) meet the same eligibility guards
+    // rotation does: free stays free, the profile's model allow-list, wallet
+    // and adapter capability.
+    checkModelSwitch: createModelSwitchCheck({
+      getProfile: getAuthProfile,
+      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+    }),
     ...(opts.listHarnessCapabilities
       ? { listHarnessCapabilities: opts.listHarnessCapabilities }
       : {}),
@@ -5010,7 +5018,7 @@ export async function createGateway(
           ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
         }),
         registry: sessions,
-        ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
+    ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
         ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
       })
       return { enabled: true, ...result }
