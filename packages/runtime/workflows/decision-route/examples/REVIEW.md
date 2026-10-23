@@ -13,7 +13,7 @@ target:
 checks:
   - id: claims
     kind: agent
-    # An OpenCode preset whose model ends in -free (or big-pickle).
+    # An OpenCode preset whose model is in the `zero-cost` model list
     preset: opencode-free-review
     rubric: ./rubrics/claims.md
     blockOn: high

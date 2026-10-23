@@ -102,13 +102,15 @@ models and harnesses may run and the budgets. It reuses existing config
 one entitlement ceiling:
 
 - `local-free` (alias `free-only`, default): Jev off; the escalation target is
-  an OpenCode id ending `-free` (or `big-pickle`) and **you must name it** via
-  `profileOptions.escalation` (a preset id, or `adapter`+`model`). Nothing
-  paid is ever substituted — a Sonnet preset, a paid fallback, a rotate
-  target or a recovery model override is refused before spawn.
+  a model in the `zero-cost` model list (by default, catalog price 0/0) and
+  **you must name it** via `profileOptions.escalation` (a preset id, or
+  `adapter`+`model`). Nothing paid is ever substituted — a Sonnet preset, a
+  paid fallback, a rotate target or a recovery model override is refused
+  before spawn.
 - `remote-sonnet` (alias `subscription`): Jev on; escalation defaults to the
-  configured `review.small` role (must resolve to Claude Code Sonnet or an
-  OpenCode free id); free ids plus Claude Code Sonnet are the ceiling.
+  configured `review.small` role (must resolve to Claude Code Sonnet or an id
+  in the `zero-cost` list); the zero-cost list plus Claude Code Sonnet are the
+  ceiling.
 
 E2B (or any) sandbox placement grants no entitlement. Unknown or dynamic
 identity (no explicit model, `@route`, unreadable auth profile) fails closed.

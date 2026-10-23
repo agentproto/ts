@@ -9,11 +9,12 @@
  * `models` role table, the OpenRouter billing guard — and adds exactly one
  * thing: an entitlement ceiling checked BEFORE any spawn.
  *
- *   free-only      OpenCode ids ending in `-free` (or `big-pickle`) through the
- *                  OpenCode adapter. Nothing else — a paid preset, an Opus/
- *                  Sonnet fallback, a rotate target or a recovery override that
- *                  resolves to a non-free id is refused, never substituted.
- *   subscription   free ids, plus Claude Code Sonnet.
+ *   free-only      models in the `zero-cost` model list (by default, catalog
+ *                  price 0/0) through the OpenCode adapter. Nothing else — a
+ *                  paid preset, an Opus/Sonnet fallback, a rotate target or a
+ *                  recovery override that resolves to a non-list id is
+ *                  refused, never substituted.
+ *   subscription   zero-cost list ids, plus Claude Code Sonnet.
  *
  * Sandbox placement (e2b, …) is not an input here and grants nothing: where a
  * session runs says nothing about what it is allowed to bill.
@@ -22,7 +23,8 @@
  * `@route` suffix or an unreadable auth profile is refused (fail closed).
  */
 
-import { isOpencodeFreeModel } from "./turn-retry-policy.js"
+import { inModelList } from "@agentproto/model-catalog/lists"
+import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
 import { adapterForModelId, type ResolvedModelRole } from "./model-roles.js"
 import {
   reviewerFingerprint,
@@ -170,15 +172,15 @@ function modelAllowed(
   }
   if (/openrouter/i.test(model)) return `model "${model}" would bill OpenRouter`
   if (adapter === "opencode") {
-    if (isOpencodeFreeModel(model)) return undefined
-    return `model "${model}" is not an OpenCode free id (-free / big-pickle)`
+    if (inModelList(model, ZERO_COST_LIST_ID, getModelListSource())) return undefined
+    return `model "${model}" is not in model list "${ZERO_COST_LIST_ID}"`
   }
   if (entitlement === "subscription" && adapter === "claude-code") {
     return SONNET_RE.test(model) ? undefined : `model "${model}" is not Claude Code Sonnet`
   }
   return entitlement === "free-only"
-    ? `adapter "${adapter}" is not permitted under a free-only profile (OpenCode free ids only)`
-    : `adapter "${adapter}" with model "${model}" is not permitted (OpenCode free ids or Claude Code Sonnet only)`
+    ? `adapter "${adapter}" is not permitted under a free-only profile (model list "${ZERO_COST_LIST_ID}" only)`
+    : `adapter "${adapter}" with model "${model}" is not permitted (model list "${ZERO_COST_LIST_ID}" or Claude Code Sonnet only)`
 }
 
 /** Fail-closed check of one concrete spawn target against the profile's
@@ -200,7 +202,9 @@ export function validateSpawnTarget(profile: DecisionExecProfile, target: SpawnT
   const bad = modelAllowed(profile.entitlement, adapter, model)
   if (bad) return { ok: false, code: "not_entitled", reason: `${bad} (profile ${profile.id}: ${profile.entitlement})` }
   for (const r of target.rotate ?? []) {
-    const rotateAdapter = adapterForModelId(r.model) ?? (isOpencodeFreeModel(r.model) ? "opencode" : undefined)
+    const rotateAdapter =
+      adapterForModelId(r.model) ??
+      (inModelList(r.model, ZERO_COST_LIST_ID, getModelListSource()) ? "opencode" : undefined)
     if (!rotateAdapter) {
       return { ok: false, code: "unknown_rotate", reason: `turnRetry.rotate target "${r.model}" has no provable adapter` }
     }

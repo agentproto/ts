@@ -102,6 +102,8 @@ export {
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
+import { registerModelListTools } from "./model-list-tools.js"
+import { loadModelListSource } from "./model-list-store.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
@@ -2154,6 +2156,9 @@ export async function createGateway(
   // reads the custom-route map at call time, so a curated `@llm-endpoint` row is
   // only priced + reachable once this has run (`builtin-routes.ts`). Idempotent.
   await registerBuiltinRoutes({ llmEndpoint: opts.llmEndpoint === true })
+  // Model lists are user data loaded once at boot; the sync source serves the
+  // `zero-cost` seed before this completes and the persisted file after.
+  await loadModelListSource()
   // Effective idle-reap threshold (PR-6): a positive ms value enables the
   // periodic reaper, anything else (unset / 0 / negative) keeps it off. Kept as
   // a plain `0`-means-off number so `daemon_health` / `GET /health` can surface
@@ -3997,6 +4002,9 @@ export async function createGateway(
     // the MCP twin of the `/user-presets` HTTP routes. `includeRecent` reads
     // the same session registry as every other session-backed tool here.
     registerUserPresetTools(server, { registry: sessions })
+    // User-owned model lists — model_list_save/list/delete/resolve. Same
+    // no-host-wiring stance: the store reads/writes model-lists.json.
+    registerModelListTools(server)
     // Read-only scanner: report locally-present credentials (Claude Code /
     // Codex / Gemini logins, ~/.hermes/config.yaml, provider env keys) with
     // provenance, so onboarding can offer an import. Never returns a value.

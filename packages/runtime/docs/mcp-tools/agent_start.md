@@ -554,7 +554,7 @@ instead:
 
 ```json
 { "on": ["rate-limit", "no-output-stall"],
-  "rotate": [{ "model": "opencode/minimax-m2.5-free" }, { "model": "opencode/big-pickle" }],
+  "rotate": [{ "model": "opencode/deepseek-v4.1-flash-free" }, { "model": "opencode/big-pickle" }],
   "rotateOn": ["rate-limit", "no-output-stall"], "cooldownMs": 600000 }
 ```
 
@@ -585,7 +585,8 @@ A target is skipped, with the reason in the notice, when it:
 - is the current model, or is cooling down;
 - is not in the session profile's `models` allow-list, or fails the spawn
   eligibility checks (adapter capability, wallet/route);
-- is a paid model while the session's model is OpenCode free (see below);
+- is not in the `zero-cost` model list while the session's current model is
+  in it (see below);
 - names a `profileRef` different from the session's current profile. v1
   rotates within the current profile only; switching profile needs a
   restart-with-override, which mints a new session id.
@@ -593,11 +594,12 @@ A target is skipped, with the reason in the notice, when it:
 If no target is eligible, the retry falls back to the SAME model after the
 backoff, and the notice says `no rotation target available (…)`.
 
-**Free stays free.** When the session's model is an OpenCode free id (ends in
-`-free`, or `big-pickle`, with or without an `opencode/` prefix), `rotate` may
-only list free ids. `agent_start` rejects a list with a paid id
+**Zero cost stays zero cost.** When the session's model is in the `zero-cost`
+model list (by default, catalog price 0/0; the seed is a tag selector, so it
+also covers `big-pickle`), `rotate` may only list ids in that same list.
+`agent_start` rejects a list with an id outside it
 (`turn_retry_rotate_invalid`), so does saving a user or harness preset, and
-runtime rotation never selects a paid id for such a session.
+runtime rotation never selects such an id for that session.
 
 ## contextContinuity
 

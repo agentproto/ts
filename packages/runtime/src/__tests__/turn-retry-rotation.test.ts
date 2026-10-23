@@ -28,11 +28,12 @@ import {
 } from "../turn-retry.js"
 import { createRotationTargetCheck } from "../turn-retry-eligibility.js"
 import {
-  isOpencodeFreeModel,
   parseTurnRetryPolicy,
   resolveTurnRetryPolicy,
   validateTurnRetryRotate,
 } from "../turn-retry-policy.js"
+import { inModelList } from "@agentproto/model-catalog/lists"
+import { seedModelListSource, ZERO_COST_LIST_ID } from "../model-list-store.js"
 import { spawnAgentSession } from "../session-spawn.js"
 import { addHarnessPreset, HarnessPresetValidationError } from "../harness-preset-store.js"
 import { saveUserPreset } from "../user-presets.js"
@@ -42,8 +43,8 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 
 const FAST = { baseDelayMs: 5, factor: 1, maxDelayMs: 5 }
-const FREE_A = "opencode/ling-3.1-flash-free"
-const FREE_B = "opencode/minimax-m2.5-free"
+const FREE_A = "opencode/glm-5.3-flash-free"
+const FREE_B = "opencode/deepseek-v4.1-flash-free"
 const FREE_C = "opencode/big-pickle"
 const PAID = "opencode/gpt-5.1-codex"
 
@@ -284,7 +285,7 @@ describe("turn retry rotation — runtime", () => {
 
     expect(h.trace).not.toContain(`setModel:${PAID}`)
     expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
-    expect(h.notices.find(n => n.includes("rotating model"))).toContain(`skipped ${PAID}: paid model`)
+    expect(h.notices.find(n => n.includes("rotating model"))).toContain(`skipped ${PAID}: not in model list`)
     h.done()
   })
 
@@ -343,7 +344,7 @@ describe("turn retry rotation — runtime", () => {
       turnRetry: {
         on: ["rate-limit"],
         // A different route prefix ⇒ the live-switch route guard answers requires-restart.
-        rotate: [{ model: "opencode-go/glm-5-free" }, { model: FREE_B }],
+        rotate: [{ model: "opencode-go/minimax-m3.1-flash-free" }, { model: FREE_B }],
         ...FAST,
       },
     })
@@ -351,7 +352,7 @@ describe("turn retry rotation — runtime", () => {
     await h.registry.sendPrompt(desc.id, "go")
     await until(() => h.prompts.length === 2, "continuation")
     expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
-    expect(h.notices.find(n => n.includes("rotating model"))).toContain("opencode-go/glm-5-free: switch not applied")
+    expect(h.notices.find(n => n.includes("rotating model"))).toContain("opencode-go/minimax-m3.1-flash-free: switch not applied")
     h.done()
   })
 })
@@ -437,20 +438,20 @@ describe("daemon-wide model cooldowns", () => {
 
 describe("free stays free", () => {
   it.each([
-    ["opencode/ling-3.1-flash-free", true],
+    ["opencode/glm-5.3-flash-free", true],
     ["opencode/big-pickle", true],
     ["big-pickle", true],
-    ["opencode-go/minimax-m2.5-free@opencode", true],
+    ["opencode-go/minimax-m3.1-flash-free@opencode", true],
     ["opencode/gpt-5.1-codex", false],
-    ["opencode-go/glm-5", false],
+    ["opencode-go/glm-5.3", false],
     ["anthropic/claude-free-tier-not", false],
-  ])("isOpencodeFreeModel(%s) = %s", (model, expected) => {
-    expect(isOpencodeFreeModel(model)).toBe(expected)
+  ])("zero-cost membership (%s) = %s", (model, expected) => {
+    expect(inModelList(model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(expected)
   })
 
   it("validateTurnRetryRotate rejects free → paid and names the offenders", () => {
     const err = validateTurnRetryRotate([{ model: FREE_B }, { model: PAID }], FREE_A)
-    expect(err).toContain("free")
+    expect(err).toContain("zero-cost")
     expect(err).toContain(PAID)
     expect(err).not.toContain(FREE_B + ",")
     expect(validateTurnRetryRotate([{ model: FREE_B }, { model: FREE_C }], FREE_A)).toBeUndefined()
@@ -462,7 +463,7 @@ describe("free stays free", () => {
   it("rotationTargetRejection refuses paid targets for a free session", () => {
     const c = createModelCooldowns()
     const free = { id: "x", model: FREE_A } as SessionDescriptor
-    expect(rotationTargetRejection(free, { model: PAID }, c, Date.now())).toContain("paid model")
+    expect(rotationTargetRejection(free, { model: PAID }, c, Date.now())).toContain("not in model list")
     expect(rotationTargetRejection(free, { model: FREE_B }, c, Date.now())).toBeUndefined()
     expect(rotationTargetRejection(free, { model: FREE_A }, c, Date.now())).toContain("current model")
   })

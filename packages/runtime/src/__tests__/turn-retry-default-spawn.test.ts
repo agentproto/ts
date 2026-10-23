@@ -17,12 +17,14 @@ import type { AddressInfo } from "node:net"
 import type { SandboxProvider } from "@agentproto/sandbox"
 
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
+import { inModelList } from "@agentproto/model-catalog/lists"
+import { seedModelListSource, ZERO_COST_LIST_ID } from "../model-list-store.js"
 import { createGateway, type GatewayHandle } from "../index.js"
 import { createSessionsRegistry, type AgentSessionLike, type SessionsRegistry, type AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 
-const FREE_ROTATE_IDS = ["opencode/mimo-v2.6-flash-free", "opencode/deepseek-v4.1-flash-free", "opencode/glm-5.3-flash-free"]
+const FREE_ROTATE_IDS = ["opencode/beam-free", "opencode/big-pickle", "opencode/deepseek-v4.1-flash-free"]
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -147,7 +149,7 @@ describe("agent_start turnRetry default for executor agents", () => {
       FREE_ROTATE_IDS.filter(m => m !== "opencode/glm-5.3-flash-free"),
     )
     for (const target of policy?.rotate ?? []) {
-      expect(target.model).toContain("-free")
+      expect(inModelList(target.model, ZERO_COST_LIST_ID, seedModelListSource())).toBe(true)
     }
 
     // A paid model never rotates by default.
@@ -260,10 +262,7 @@ describe("free stays free — the default rotate list validates at spawn", () =>
 
   it("resolveTurnRetryPolicy leaves the default's rotate list intact", async () => {
     const { defaultTurnRetryForSpawn, resolveTurnRetryPolicy } = await import("../turn-retry-policy.js")
-    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn("mimo-v2.6-flash-free@free"))
-    expect(policy.rotate?.map(t => t.model)).toEqual([
-      "opencode/deepseek-v4.1-flash-free",
-      "opencode/glm-5.3-flash-free",
-    ])
+    const policy = resolveTurnRetryPolicy(defaultTurnRetryForSpawn("opencode/glm-5.3-flash-free"))
+    expect(policy.rotate?.map(t => t.model)).toEqual(FREE_ROTATE_IDS)
   })
 })

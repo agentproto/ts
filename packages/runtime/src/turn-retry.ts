@@ -66,8 +66,9 @@ import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
+import { inModelList } from "@agentproto/model-catalog/lists"
+import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
 import {
-  isOpencodeFreeModel,
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
   type TurnRetryPolicy,
@@ -402,8 +403,12 @@ export function rotationTargetRejection(
   if (target.model === desc.model) return "already the current model"
   const until = cooldowns.until(target.model)
   if (until !== undefined) return `cooling down for ${Math.max(1, Math.round((until - now) / 1000))}s more`
-  if (desc.model && isOpencodeFreeModel(desc.model) && !isOpencodeFreeModel(target.model)) {
-    return "paid model — a free session never rotates onto a paid id"
+  if (
+    desc.model &&
+    inModelList(desc.model, ZERO_COST_LIST_ID, getModelListSource()) &&
+    !inModelList(target.model, ZERO_COST_LIST_ID, getModelListSource())
+  ) {
+    return `not in model list "${ZERO_COST_LIST_ID}" — a zero-cost session never rotates onto a paid id`
   }
   const current = desc.accessProfile?.profileRef
   if (target.profileRef !== undefined && target.profileRef !== current) {

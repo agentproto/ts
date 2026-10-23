@@ -55,7 +55,7 @@ function fakeServer() {
 // ── fakes ─────────────────────────────────────────────────────────────────
 
 const harnessPresets: Record<string, { harnessSlug: string; defaultModel: string; profileRef: string }> = {
-  "opencode-free-review": { harnessSlug: "opencode", defaultModel: "glm-4.7-free", profileRef: "zen" },
+  "opencode-free-review": { harnessSlug: "opencode", defaultModel: "opencode/glm-5.3-flash-free", profileRef: "zen" },
   "claude-sonnet-review": { harnessSlug: "claude-code", defaultModel: "claude-sonnet-4-5", profileRef: "claude-sub" },
   "esc-free": { harnessSlug: "opencode", defaultModel: "big-pickle", profileRef: "zen" },
   "esc-sonnet": { harnessSlug: "claude-code", defaultModel: "claude-sonnet-4-5", profileRef: "claude-sub" },
@@ -134,7 +134,7 @@ function fakeReviewRunner(opts: {
       status: opts.status ?? "done",
       attestation: { verdict: opts.verdict ?? "pass" },
       cached: false,
-      lanes: (opts.lanes ?? [{ id: "claims", kind: "agent", status: "done", blocking: false, preset: "opencode-free-review", model: "glm-4.7-free" }]).map(l => ({
+      lanes: (opts.lanes ?? [{ id: "claims", kind: "agent", status: "done", blocking: false, preset: "opencode-free-review", model: "opencode/glm-5.3-flash-free" }]).map(l => ({
         kind: "agent",
         status: "done",
         blocking: false,
@@ -591,7 +591,7 @@ describe("decision-route — review and verdict validation", () => {
           id: "claims",
           status: "failed",
           preset: "opencode-free-review",
-          model: "glm-4.7-free",
+          model: "opencode/glm-5.3-flash-free",
           recovery: { outcome: "insufficient_evidence" },
         },
       ],

@@ -15,6 +15,8 @@
  */
 
 import { z } from "zod"
+import { inModelList, resolveModelList } from "@agentproto/model-catalog/lists"
+import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
 
 /** Turn-failure classes `turnRetry.on` can opt into. */
 export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"] as const
@@ -102,61 +104,82 @@ export const TURN_RETRY_DEFAULT_ON: TurnRetryClass[] = ["rate-limit", "upstream-
 /** Consecutive retries the default policy allows. */
 export const TURN_RETRY_DEFAULT_MAX_RETRIES = 6
 
-/** Free OpenCode ids the DEFAULT rotation may move a free session onto. All
- *  exist in the model catalog; the session's CURRENT model is subtracted, so
- *  a session never "rotates" onto itself. Free stays free: every entry ends
- *  in `-free`, so a free session rotating by default never lands on a paid
- *  id (and paid sessions get NO default rotate list at all). */
-export const OPENCODE_FREE_ROTATE_MODELS: readonly TurnRetryRotateTarget[] = [
-  { model: "opencode/mimo-v2.6-flash-free" },
-  { model: "opencode/deepseek-v4.1-flash-free" },
-  { model: "opencode/glm-5.3-flash-free" },
-]
+/** The zero-cost rotation holds at most this many fallbacks, matching the
+ *  three ids the old hardcoded list carried. */
+const ZERO_COST_ROTATE_LIMIT = 3
 
-function opencodeFreeModelKey(model: string): string {
-  return (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
+/** Route prefix of a model id (`opencode/` vs `opencode-go/`). */
+function routePrefixOf(model: string): string {
+  const bare = model.split("@")[0] ?? model
+  const slash = bare.indexOf("/")
+  return slash === -1 ? "" : bare.slice(0, slash + 1)
+}
+
+/** The default rotate targets for a zero-cost current model: the zero-cost
+ *  list filtered to the current model's route prefix, minus the current model,
+ *  in list order, capped at {@link ZERO_COST_ROTATE_LIMIT}. */
+export function zeroCostRotateTargets(currentModel: string): TurnRetryRotateTarget[] {
+  const ids = resolveModelList(ZERO_COST_LIST_ID, getModelListSource())
+  let prefix = routePrefixOf(currentModel)
+  if (prefix === "") {
+    // A bare current id (`big-pickle`) has no route prefix of its own; take it
+    // from the zero-cost catalog id it resolves to (`opencode/big-pickle`).
+    const bare = (currentModel.split("@")[0] ?? currentModel)
+      .split(":")[0]
+      ?.toLowerCase()
+    const match = ids.find(
+      id => id.split("/").pop()?.split(":")[0]?.toLowerCase() === bare,
+    )
+    if (match) prefix = routePrefixOf(match)
+  }
+  return ids
+    .filter(id => id !== currentModel && (prefix === "" || id.startsWith(prefix)))
+    .slice(0, ZERO_COST_ROTATE_LIMIT)
+    .map(model => ({ model }))
 }
 
 /** Build the turnRetry INPUT a spawn with no explicit `turnRetry` (explicit
  *  or via a preset) receives when the default is ON, i.e. for an executor
- *  role or a `sandbox` spawn. For a free OpenCode current model the default
- *  also ROTATES on every covered class (rate limits and 5xx alike), onto
- *  the other free ids in {@link OPENCODE_FREE_ROTATE_MODELS}; a paid
- *  current model never gets a rotate list and so never rotates by default. */
+ *  role or a `sandbox` spawn. For a current model in the `zero-cost` model
+ *  list the default also ROTATES on every covered class (rate limits and 5xx
+ *  alike), onto the other zero-cost ids on the same route; a paid current
+ *  model never gets a rotate list and so never rotates by default. */
 export function defaultTurnRetryForSpawn(currentModel?: string): Exclude<TurnRetryInput, null> {
   const base: Exclude<TurnRetryInput, null> = {
     on: [...TURN_RETRY_DEFAULT_ON],
     maxRetries: TURN_RETRY_DEFAULT_MAX_RETRIES,
   }
-  if (!currentModel || !isOpencodeFreeModel(currentModel)) return base
-  const key = opencodeFreeModelKey(currentModel)
-  const rotate = OPENCODE_FREE_ROTATE_MODELS.filter(t => opencodeFreeModelKey(t.model) !== key)
+  if (!currentModel || !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())) {
+    return base
+  }
   return {
     ...base,
-    rotate: rotate.map(t => ({ model: t.model })),
+    rotate: zeroCostRotateTargets(currentModel),
     rotateOn: [...TURN_RETRY_DEFAULT_ON],
   }
 }
 
-/** OpenCode free-tier ids: `…-free`, or `big-pickle`, with or without the
- *  `opencode/` / `opencode-go/` route prefix. */
-export function isOpencodeFreeModel(model: string): boolean {
-  const id = (model.split("@")[0] ?? model).split("/").pop()?.toLowerCase() ?? ""
-  return id === "big-pickle" || id.endsWith("-free")
-}
-
-/** The "free stays free" spawn-time check: a free current model may only
- *  rotate to free ids. Returns an error message, or undefined when fine. */
+/** The "free stays free" spawn-time check: a zero-cost current model may only
+ *  rotate to ids in the `zero-cost` model list. Returns an error message, or
+ *  undefined when fine. */
 export function validateTurnRetryRotate(
   rotate: readonly TurnRetryRotateTarget[] | undefined,
   currentModel: string | undefined,
 ): string | undefined {
-  if (!rotate?.length || !currentModel || !isOpencodeFreeModel(currentModel)) return undefined
-  const paid = rotate.filter(t => !isOpencodeFreeModel(t.model)).map(t => t.model)
+  if (
+    !rotate?.length ||
+    !currentModel ||
+    !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())
+  ) {
+    return undefined
+  }
+  const paid = rotate
+    .filter(t => !inModelList(t.model, ZERO_COST_LIST_ID, getModelListSource()))
+    .map(t => t.model)
   if (paid.length === 0) return undefined
   return (
-    `turnRetry.rotate: "${currentModel}" is an OpenCode free model, so it may only rotate to free ids ` +
-    `(ending in "-free", or "big-pickle") — never onto a paid model. Remove: ${paid.join(", ")}.`
+    `turnRetry.rotate: "${currentModel}" is in model list "${ZERO_COST_LIST_ID}", so it may only rotate to ids ` +
+    `in that list — never onto a paid model. Remove: ${paid.join(", ")}.`
   )
 }
 
