@@ -47,6 +47,15 @@ export interface ResolvedMessagingDefaults {
   /** `defaults.messaging.pendingPromptStaleMinutes` — minutes a queued prompt
    *  may wait before its sender is told it is stuck. Default 5. */
   pendingPromptStaleMinutes: number
+  /** `defaults.drive.allowSameWorkspace` — lets `agent_prompt` /
+   *  `agent_interrupt` / `agent_kill` / `session_restart` /
+   *  `session_continue_fresh` reach any session of the SAME workspace,
+   *  even without a spawn-tree edge or an `allowPromptFrom` grant.
+   *  Default false (unlike messaging's same-workspace allowance, this one
+   *  stays opt-in — see `session-owner.ts`). Not a messaging knob, but
+   *  resolved here alongside it: same "read config fresh per call, no
+   *  boot-time snapshot" discipline this module exists for. */
+  driveAllowSameWorkspace: boolean
 }
 
 /** Same unset-defaults as before this resolver existed — a missing/malformed
@@ -59,6 +68,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   peerGroups: [],
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
+  driveAllowSameWorkspace: false,
 }
 
 export async function resolveMessagingDefaults(
@@ -75,6 +85,8 @@ export async function resolveMessagingDefaults(
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
       pendingPromptStaleMinutes:
         d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,
+      driveAllowSameWorkspace:
+        d?.drive?.allowSameWorkspace ?? DEFAULT_MESSAGING_DEFAULTS.driveAllowSameWorkspace,
     }
   } catch {
     return DEFAULT_MESSAGING_DEFAULTS

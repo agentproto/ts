@@ -2,7 +2,7 @@
  * `resolveMessagingDefaults` (messaging-defaults.ts) — the per-call reader
  * for `defaults.agentPromptInterrupt` / `defaults.messaging.allowSiblings` /
  * `defaults.messaging.allowSameWorkspace` / `defaults.messaging.agentInterrupt`
- * that replaced the boot-time
+ * / `defaults.drive.allowSameWorkspace` that replaced the boot-time
  * `configDefaults` snapshot in index.ts. No caching: every call re-reads
  * via the injected loader, exactly like `spawn-attach.ts` /
  * `worktree-isolation.ts` — a `config_set` change is visible on the very
@@ -29,6 +29,7 @@ describe("resolveMessagingDefaults", () => {
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
         },
+        drive: { allowSameWorkspace: true },
       },
     }))
     expect(result).toEqual({
@@ -38,7 +39,16 @@ describe("resolveMessagingDefaults", () => {
       peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
+      driveAllowSameWorkspace: true,
     })
+  })
+
+  it("defaults the drive same-workspace allowance to OFF (stronger than messaging's)", async () => {
+    const result = await resolveMessagingDefaults(async () => ({
+      defaults: { messaging: { allowSiblings: true } },
+    }))
+    expect(result.driveAllowSameWorkspace).toBe(false)
+    expect(DEFAULT_MESSAGING_DEFAULTS.driveAllowSameWorkspace).toBe(false)
   })
 
   it("defaults the peer groups to none (no cross-workspace link)", async () => {

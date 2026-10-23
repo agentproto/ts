@@ -693,6 +693,10 @@ export interface OrchestratorGatewayDeps {
    *  see `defaultAgentPromptInterrupt` above for the override/resolve
    *  precedence. Forwarded to `registerAgentTools`. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** EXPLICIT override for config.json `defaults.drive.allowSameWorkspace` -
+   *  see `defaultAgentPromptInterrupt` above for the override/resolve
+   *  precedence. Forwarded to `registerSessionTools`. */
+  driveAllowSameWorkspace?: boolean
 }
 
 export type OrchestratorMcpServerFactory = (
@@ -758,6 +762,7 @@ export function createOrchestratorMcpServerFactory(
         deps.messagingAllowSameWorkspace ?? messagingDefaults.allowSameWorkspace,
       messagingPeerGroups: deps.messagingPeerGroups ?? messagingDefaults.peerGroups,
       messagingAgentInterrupt: deps.messagingAgentInterrupt ?? messagingDefaults.agentInterrupt,
+      driveAllowSameWorkspace: deps.driveAllowSameWorkspace ?? messagingDefaults.driveAllowSameWorkspace,
       daemonMcpUrl: deps.daemonMcpUrl,
       ...(deps.supervisor ? { supervisor: deps.supervisor } : {}),
       ...(deps.taskLedger ? { taskLedger: deps.taskLedger } : {}),

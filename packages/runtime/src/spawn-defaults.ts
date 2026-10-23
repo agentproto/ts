@@ -198,6 +198,20 @@ export interface SpawnDefaultsConfig {
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
   }
+  /** Session-drive policy (`agent_prompt` / `agent_interrupt` /
+   *  `agent_kill` / `session_restart` / `session_continue_fresh`) — see
+   *  `session-owner.ts`'s `checkSessionOwnerGate`. */
+  drive?: {
+    /** Let a drive tool reach any session of the SAME workspace, even
+     *  without a spawn-tree edge (owner/ancestor) or an explicit
+     *  `allowPromptFrom` grant. Default false: unlike messaging's
+     *  same-workspace allowance, a drive grant can also restart or kill
+     *  the target, so it stays opt-in rather than on-by-default. Aimed at
+     *  operators whose permanent agents mostly spawn as root siblings
+     *  (not in an ancestor chain) and want any of them to drive any
+     *  other without hand-listing every pair in `allowPromptFrom`. */
+    allowSameWorkspace?: boolean
+  }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig
   /** Spawn-shape defaults applied when neither the `agent_start` call, its

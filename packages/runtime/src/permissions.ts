@@ -210,6 +210,13 @@ export interface PermissionContext {
   /** Registry lookups for the drive gate's ancestor and `label:` rules. */
   parentOf?: (id: string) => string | undefined
   operatorLabelOf?: (id: string) => string | undefined
+  /** `defaults.drive.*`, resolved per call (messaging-defaults.ts). */
+  drive?: {
+    /** `defaults.drive.allowSameWorkspace` (default OFF): two sessions of
+     *  the same workspace may drive each other without a tree edge or an
+     *  `allowPromptFrom` grant. See `session-owner.ts`. */
+    allowSameWorkspace?: boolean
+  }
 }
 
 // ── Decision ───────────────────────────────────────────────────────────
@@ -423,23 +430,29 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
     return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal" })
   }
   const callerSessionId = principal.kind === "session" ? principal.session.id : undefined
+  const callerWorkspaceSlug = principal.kind === "session" ? principal.session.workspaceSlug : undefined
   const r = checkSessionOwnerGate({
     callerSessionId,
     target: {
       id: target.id,
       ...(target.parentSessionId ? { parentSessionId: target.parentSessionId } : {}),
       ...(target.allowPromptFrom ? { allowPromptFrom: [...target.allowPromptFrom] } : {}),
+      ...(target.workspaceSlug ? { workspaceSlug: target.workspaceSlug } : {}),
     },
     tool: "session.drive",
     ...(ctx.parentOf ? { parentOf: ctx.parentOf } : {}),
     ...(ctx.operatorLabelOf ? { operatorLabelOf: ctx.operatorLabelOf } : {}),
+    ...(callerWorkspaceSlug ? { callerWorkspaceSlug } : {}),
+    allowSameWorkspace: ctx.drive?.allowSameWorkspace === true,
   })
   return r.ok
     ? mint({
         ...base,
         allow: true,
         rule: "owner-gate",
-        reason: callerSessionId ? "caller is the session, an ancestor, or granted by allowPromptFrom" : "the operator may drive any session",
+        reason: callerSessionId
+          ? "caller is the session, an ancestor, granted by allowPromptFrom, or (same-workspace driving is on) in the same workspace"
+          : "the operator may drive any session",
       })
     : mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
 }

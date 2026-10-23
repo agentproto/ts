@@ -1230,6 +1230,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     default: true,
   },
   {
+    path: "defaults.drive.allowSameWorkspace",
+    schema: bool,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Allow same-workspace driving",
+    help: "Let agent_prompt/agent_interrupt/agent_kill/session_restart/session_continue_fresh drive any session of the SAME workspace, even without a spawn-tree edge (owner/ancestor) or an allowPromptFrom grant. OFF by default: a drive grant can also restart or kill the target, a stronger capability than messaging's own same-workspace allowance. Takes effect on the next call.",
+    default: false,
+  },
+  {
     path: "defaults.messaging.peerGroups",
     schema: peerGroupsSchema,
     apply: "hot",

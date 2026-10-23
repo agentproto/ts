@@ -187,6 +187,49 @@ describe("decide(session.drive) mirrors the owner gate", () => {
   })
 })
 
+describe("decide(session.drive) same-workspace parity (`defaults.drive.allowSameWorkspace`)", () => {
+  // Two unrelated roots sharing a workspace slug — the COO ↔ PM shape:
+  // no tree edge, so only the same-workspace rule can bridge them.
+  const WS_COO: MessageTreeNode & { workspaceSlug: string } = { id: "coo", workspaceSlug: "default" }
+  const WS_PM: MessageTreeNode & { workspaceSlug: string } = { id: "pm", workspaceSlug: "default" }
+  const WS_OTHER: MessageTreeNode & { workspaceSlug: string } = { id: "other-ws", workspaceSlug: "elsewhere" }
+
+  it("off by default: same-workspace callers agree (both refused) with no `drive` context", () => {
+    const gate = checkSessionOwnerGate({ callerSessionId: WS_COO.id, target: WS_PM, tool: "x" })
+    const d = decide(as(WS_COO), "session.drive", to(WS_PM), {})
+    expect(d.allow).toBe(false)
+    expect(gate.ok).toBe(false)
+    expect(d.allow).toBe(gate.ok)
+  })
+
+  it("`drive.allowSameWorkspace: true` agrees (both allow) for same-workspace siblings", () => {
+    const gate = checkSessionOwnerGate({
+      callerSessionId: WS_COO.id,
+      target: WS_PM,
+      tool: "x",
+      callerWorkspaceSlug: WS_COO.workspaceSlug,
+      allowSameWorkspace: true,
+    })
+    const d = decide(as(WS_COO), "session.drive", to(WS_PM), { drive: { allowSameWorkspace: true } })
+    expect(gate.ok).toBe(true)
+    expect(d.allow).toBe(true)
+    expect(d.allow).toBe(gate.ok)
+  })
+
+  it("`drive.allowSameWorkspace: true` still refuses a DIFFERENT workspace", () => {
+    const gate = checkSessionOwnerGate({
+      callerSessionId: WS_COO.id,
+      target: WS_OTHER,
+      tool: "x",
+      callerWorkspaceSlug: WS_COO.workspaceSlug,
+      allowSameWorkspace: true,
+    })
+    const d = decide(as(WS_COO), "session.drive", to(WS_OTHER), { drive: { allowSameWorkspace: true } })
+    expect(gate.ok).toBe(false)
+    expect(d.allow).toBe(false)
+  })
+})
+
 describe("action vocabulary", () => {
   it("declares every action, and only the messaging pair is routed", () => {
     for (const a of PERMISSION_ACTIONS) expect(PERMISSION_ACTION_INFO[a]).toBeDefined()

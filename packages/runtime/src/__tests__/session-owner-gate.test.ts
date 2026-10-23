@@ -308,6 +308,77 @@ describe("checkSessionOwnerGate (pure)", () => {
     })
   })
 
+  describe("same-workspace driving (`defaults.drive.allowSameWorkspace`)", () => {
+    const target = { id: "sess_child", parentSessionId: undefined, workspaceSlug: "default" }
+
+    it("same workspace + allowSameWorkspace true: allowed", () => {
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_sibling",
+          target,
+          tool: "agent_prompt",
+          callerWorkspaceSlug: "default",
+          allowSameWorkspace: true,
+        }),
+      ).toEqual({ ok: true })
+    })
+
+    it("same workspace but allowSameWorkspace unset/false: still refused (today's behaviour)", () => {
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_sibling",
+          target,
+          tool: "agent_prompt",
+          callerWorkspaceSlug: "default",
+        }).ok,
+      ).toBe(false)
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_sibling",
+          target,
+          tool: "agent_prompt",
+          callerWorkspaceSlug: "default",
+          allowSameWorkspace: false,
+        }).ok,
+      ).toBe(false)
+    })
+
+    it("allowSameWorkspace true but DIFFERENT workspace: refused", () => {
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_other_ws",
+          target,
+          tool: "agent_prompt",
+          callerWorkspaceSlug: "other",
+          allowSameWorkspace: true,
+        }).ok,
+      ).toBe(false)
+    })
+
+    it("allowSameWorkspace true but caller's workspace is unresolved (undefined): refused", () => {
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_unresolved",
+          target,
+          tool: "agent_prompt",
+          allowSameWorkspace: true,
+        }).ok,
+      ).toBe(false)
+    })
+
+    it("allowSameWorkspace true but target has no workspaceSlug: refused", () => {
+      expect(
+        checkSessionOwnerGate({
+          callerSessionId: "sess_sibling",
+          target: { id: "sess_child", parentSessionId: undefined },
+          tool: "agent_prompt",
+          callerWorkspaceSlug: "default",
+          allowSameWorkspace: true,
+        }).ok,
+      ).toBe(false)
+    })
+  })
+
   describe("the policy editor gate", () => {
     const target2 = { id: "sess_child", parentSessionId: "sess_parent" }
     it("operator, self, and owner may change the policy; a stranger may not", () => {
@@ -350,6 +421,38 @@ describe("session-owner gate over MCP", () => {
     const operator = await connectClient(operatorServer)
     const operatorCall = await callTool(operator, "agent_prompt", { sessionId: child.id, prompt: "go" })
     expect(operatorCall.isError).toBeUndefined()
+    registry.shutdown()
+  })
+
+  it("`driveAllowSameWorkspace` lets two unrelated ROOT siblings drive each other (COO ↔ a PM scenario)", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const coo = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+    const pm = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: instantAgentSession(),
+      adapterSlug: "fake",
+    })
+
+    // Off by default: two root siblings (no tree edge between them) are
+    // still refused even though they share a workspace.
+    const closedServer = new McpServer({ name: "same-ws-closed-server", version: "0.0.0" })
+    registerAgentTools(closedServer, { registry, callerSessionId: coo.id })
+    const closedClient = await connectClient(closedServer)
+    const refused = await callTool(closedClient, "agent_prompt", { sessionId: pm.id, prompt: "réponds OK" })
+    expect(refused.isError).toBe(true)
+
+    // Flipping `driveAllowSameWorkspace` on lets the sibling through.
+    const openServer = new McpServer({ name: "same-ws-open-server", version: "0.0.0" })
+    registerAgentTools(openServer, { registry, callerSessionId: coo.id, driveAllowSameWorkspace: true })
+    const openClient = await connectClient(openServer)
+    const ok = await callTool(openClient, "agent_prompt", { sessionId: pm.id, prompt: "réponds OK" })
+    expect(ok.isError).toBeUndefined()
     registry.shutdown()
   })
 

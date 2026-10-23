@@ -32,6 +32,8 @@ export interface RegisterPermissionsToolsOptions {
   peerGroups?: readonly (readonly string[])[]
   /** `defaults.messaging.agentInterrupt === "allow"`, resolved for this request. */
   allowInterrupt?: boolean
+  /** `defaults.drive.allowSameWorkspace`, resolved for this request. */
+  driveAllowSameWorkspace?: boolean
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
@@ -42,8 +44,16 @@ const text = (body: Record<string, unknown>, isError = false): ToolResult => ({
 })
 
 export function registerPermissionsTools(server: McpServer, opts: RegisterPermissionsToolsOptions): void {
-  const { registry, callerScope, callerSessionId, allowSiblings, allowSameWorkspace, peerGroups, allowInterrupt } =
-    opts
+  const {
+    registry,
+    callerScope,
+    callerSessionId,
+    allowSiblings,
+    allowSameWorkspace,
+    peerGroups,
+    allowInterrupt,
+    driveAllowSameWorkspace,
+  } = opts
 
   server.tool(
     "permissions_explain",
@@ -123,6 +133,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         },
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
+        drive: { allowSameWorkspace: driveAllowSameWorkspace === true },
       })
       return text({
         ok: true,

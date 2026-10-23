@@ -761,6 +761,10 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — config.json
    *  `defaults.messaging.agentInterrupt`. */
   messagingAgentInterrupt?: RegisterAgentToolsOptions["messagingAgentInterrupt"]
+  /** Forwarded to `registerAgentTools`, and used directly by this module's
+   *  own drive-tool handlers (`session_continue_fresh`, `session_restart`)
+   *  — config.json `defaults.drive.allowSameWorkspace`. */
+  driveAllowSameWorkspace?: RegisterAgentToolsOptions["driveAllowSameWorkspace"]
   /**
    * Optional git-worktree status lister powering `worktree_status`.
    * Injected here (rather than defaulted inside the runtime) because the join
@@ -2869,6 +2873,8 @@ export function registerSessionTools(
         // authority over the target.
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
+        callerWorkspaceSlug: freshCaller ? registry.get(freshCaller)?.workspaceSlug : undefined,
+        allowSameWorkspace: opts.driveAllowSameWorkspace === true,
       })
       if (!freshOwnerGate.ok) {
         return {
@@ -5630,6 +5636,8 @@ export function registerSessionTools(
         // must not revoke it.
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
+        callerWorkspaceSlug: restartCaller ? registry.get(restartCaller)?.workspaceSlug : undefined,
+        allowSameWorkspace: opts.driveAllowSameWorkspace === true,
       })
       if (!restartOwnerGate.ok) {
         return {

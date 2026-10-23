@@ -556,6 +556,12 @@ export interface RegisterAgentToolsOptions {
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
    *  `steer`. Human (HTTP/CLI) senders always keep interrupt. */
   messagingAgentInterrupt?: "allow" | "deny"
+  /** config.json `defaults.drive.allowSameWorkspace` - lets the drive tools
+   *  (`agent_prompt` / `agent_interrupt` / `agent_kill` /
+   *  `session_restart` / `session_continue_fresh`) reach any session of the
+   *  SAME workspace, even without a spawn-tree edge or an `allowPromptFrom`
+   *  grant (session-owner.ts). Default false. */
+  driveAllowSameWorkspace?: boolean
 }
 
 export function registerAgentTools(
@@ -586,6 +592,7 @@ export function registerAgentTools(
     messagingAllowSameWorkspace,
     messagingPeerGroups,
     messagingAgentInterrupt,
+    driveAllowSameWorkspace,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
   } = opts
@@ -607,15 +614,17 @@ export function registerAgentTools(
     effectiveCallerSessionId(callerScope, callerSessionId)
   // Session-owner gate for the drive tools (session-owner.ts): a call from
   // another agent session is refused unless the caller is the target's owner
-  // (the session that spawned it), the session itself, or granted via the
-  // target's `allowPromptFrom` list. The human operator always passes.
+  // (the session that spawned it), the session itself, granted via the
+  // target's `allowPromptFrom` list, or (when `driveAllowSameWorkspace` is
+  // on) in the same workspace. The human operator always passes.
   const ownerGateText = (
     target: SessionDescriptor | undefined,
     tool: string,
   ): string | undefined => {
     if (!target) return undefined
+    const caller = effectiveCaller()
     const gate = checkSessionOwnerGate({
-      callerSessionId: effectiveCaller(),
+      callerSessionId: caller,
       target,
       tool,
       // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
@@ -623,6 +632,8 @@ export function registerAgentTools(
       // authority over the target — the owner gate must not revoke it.
       parentOf: id => registry.get(id)?.parentSessionId,
       operatorLabelOf: id => registry.get(id)?.operatorLabel,
+      callerWorkspaceSlug: caller ? registry.get(caller)?.workspaceSlug : undefined,
+      allowSameWorkspace: driveAllowSameWorkspace === true,
     })
     return gate.ok ? undefined : gate.message
   }
@@ -1346,6 +1357,7 @@ export function registerAgentTools(
       ? { peerGroups: messagingPeerGroups }
       : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
+    ...(driveAllowSameWorkspace ? { driveAllowSameWorkspace: true } : {}),
   })
 
   // ── agent_output ───────────────────────────────────

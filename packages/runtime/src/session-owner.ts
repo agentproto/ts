@@ -7,8 +7,9 @@
  * `parentSessionId` — or the human operator for a root spawn. Calls coming
  * from ANOTHER agent session are refused, unless the session's
  * `allowPromptFrom` list names the caller (session ids, or the wildcard
- * `"any"`). The operator connects without a `callerSessionId` and always
- * passes the gate.
+ * `"any"`), or `defaults.drive.allowSameWorkspace` is on and the caller sits
+ * in the target's workspace. The operator connects without a
+ * `callerSessionId` and always passes the gate.
  *
  * Enforcement lives in the daemon tool handlers (agent-tools.ts /
  * session-tools.ts), NOT in the mount's `?denyTools=` query alone: the same
@@ -63,7 +64,16 @@ export type OwnerGateResult =
  *     descendants was already the scoped-orchestrator behavioral contract
  *     (subtree gates on `agent_kill`/`session_restart`), so the owner gate
  *     must not revoke it. Pass `parentOf` to enable the walk.
- *  5. The session's `allowPromptFrom` list (session ids, `"any"`, or
+ *  5. Same workspace (`callerWorkspaceSlug` equals the target's
+ *     `workspaceSlug`) AND `allowSameWorkspace` is true: allowed — the
+ *     config-gated, opt-in widening (`defaults.drive.allowSameWorkspace`,
+ *     OFF by default) for operators who run a flat roster of permanent
+ *     agents that mostly spawn at the root (siblings of each other, not
+ *     ancestors) and want any of them to drive any other without hand-
+ *     listing every pair in `allowPromptFrom`. Off by default because a
+ *     drive grant is strictly more powerful than a messaging one — it can
+ *     also restart or kill the target, not just talk to it.
+ *  6. The session's `allowPromptFrom` list (session ids, `"any"`, or
  *     `label:<operatorLabel>` / `label:<prefix>*` grants): allowed — an
  *     explicitly granted secondary caller. A `label:` entry matches ONLY a
  *     caller's operator-assigned `operatorLabel` (normally stamped by the
@@ -73,14 +83,16 @@ export type OwnerGateResult =
  *     `label` (settable by the session itself via `session_rename`, or by
  *     any spawner) never matches, and `label:` / `label:*` (empty prefix)
  *     match nothing.
- *  6. Everything else (a session that is neither an ancestor/owner nor
- *     listed): refused with a pointed error.
+ *  7. Everything else (a session that is neither an ancestor/owner, same-
+ *     workspace-granted, nor listed): refused with a pointed error.
  */
 export function checkSessionOwnerGate(input: {
   /** Effective calling session id, or undefined for the human operator. */
   callerSessionId: string | undefined
-  /** The target session's descriptor. */
-  target: Pick<SessionDescriptor, "id" | "parentSessionId" | "allowPromptFrom">
+  /** The target session's descriptor. `workspaceSlug` is optional here even
+   *  though it's required on `SessionDescriptor` — tests and call sites
+   *  that don't care about rule 5 (same-workspace) can omit it. */
+  target: Pick<SessionDescriptor, "id" | "parentSessionId" | "allowPromptFrom"> & { workspaceSlug?: string }
   /** MCP tool name, for the error text. */
   tool: string
   /** Resolves a session's `parentSessionId` (registry lookup) — enables the
@@ -90,8 +102,18 @@ export function checkSessionOwnerGate(input: {
    *  Optional; tests may pass none. */
   parentOf?: (id: string) => string | undefined
   operatorLabelOf?: (id: string) => string | undefined
+  /** The caller's own `workspaceSlug` (registry lookup), for rule 5.
+   *  Undefined for the human operator (irrelevant — rule 1 already
+   *  passed them) or when the caller's descriptor can't be resolved. */
+  callerWorkspaceSlug?: string
+  /** `defaults.drive.allowSameWorkspace`, already resolved by the caller
+   *  (config read + any explicit override) — this function takes the
+   *  final boolean, never a config object. Default/undefined/false ⇒ rule
+   *  5 never fires, matching every existing deployment's behaviour before
+   *  this flag existed. */
+  allowSameWorkspace?: boolean
 }): OwnerGateResult {
-  const { callerSessionId, target, tool, parentOf, operatorLabelOf } = input
+  const { callerSessionId, target, tool, parentOf, operatorLabelOf, callerWorkspaceSlug, allowSameWorkspace } = input
   if (callerSessionId === undefined) return { ok: true }
   if (callerSessionId === target.id) return { ok: true }
   if (target.parentSessionId && callerSessionId === target.parentSessionId) {
@@ -103,6 +125,14 @@ export function checkSessionOwnerGate(input: {
       if (ancestor === callerSessionId) return { ok: true }
       ancestor = parentOf(ancestor)
     }
+  }
+  if (
+    allowSameWorkspace === true &&
+    !!callerWorkspaceSlug &&
+    !!target.workspaceSlug &&
+    callerWorkspaceSlug === target.workspaceSlug
+  ) {
+    return { ok: true }
   }
   const allow = target.allowPromptFrom ?? []
   if (allow.includes("any") || allow.includes(callerSessionId)) return { ok: true }
@@ -129,9 +159,10 @@ export function checkSessionOwnerGate(input: {
     message:
       `${tool}: session "${target.id}" may only be driven by its owner — ` +
       `the session that spawned it (${owner}) — one of its ancestors in the ` +
-      `spawn tree, by the human operator, or by a caller explicitly granted ` +
-      `access via \`allowPromptFrom\`. This call came from session ` +
-      `"${callerSessionId}", which is none of those.`,
+      `spawn tree, by the human operator, by a caller explicitly granted ` +
+      `access via \`allowPromptFrom\`, or (when \`defaults.drive.` +
+      `allowSameWorkspace\` is on) by a caller in the same workspace. This ` +
+      `call came from session "${callerSessionId}", which is none of those.`,
   }
 }
 
