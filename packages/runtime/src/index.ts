@@ -2951,6 +2951,9 @@ export async function createGateway(
               ...(supervisor ? { supervisor } : {}),
               ...(taskLedger ? { taskLedger } : {}),
             }),
+            spawn: {
+              ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+            },
           },
         )
         return result.descriptor

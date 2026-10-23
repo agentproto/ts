@@ -653,38 +653,42 @@ export function createTurnRetryController(opts: {
     desc: SessionDescriptor,
     target: TurnRetryFallbackEffective,
   ): Promise<string | undefined> => {
-    const currentHarness = desc.harness ?? desc.adapterSlug
-    if (target.harness !== undefined && target.harness !== currentHarness) {
-      const installed = await opts.isHarnessInstalled?.(target.harness)
-      if (installed === false) return `harness "${target.harness}" is not installed`
-    }
-    if (target.accessProfileRef !== undefined && opts.getAuthProfile) {
-      const profile = await opts.getAuthProfile(target.accessProfileRef)
-      if (!profile) return `profile "${target.accessProfileRef}" is missing`
-      if (profile.disabled) return `profile "${target.accessProfileRef}" is disabled`
-    }
-    if (target.model !== undefined) {
-      const until = cooldowns.until(target.model)
-      if (target.model !== desc.model && until !== undefined) {
-        return `model "${target.model}" is cooling down for ${Math.max(1, Math.round((until - now()) / 1000))}s more`
+    try {
+      const currentHarness = desc.harness ?? desc.adapterSlug
+      if (target.harness !== undefined && target.harness !== currentHarness) {
+        const installed = await opts.isHarnessInstalled?.(target.harness)
+        if (installed === false) return `harness "${target.harness}" is not installed`
       }
-      const verdict = checkModelPolicy(target.model, desc.modelPolicy, getModelListSource())
-      if (!verdict.ok) return `policy: ${verdict.reason}`
+      if (target.accessProfileRef !== undefined && opts.getAuthProfile) {
+        const profile = await opts.getAuthProfile(target.accessProfileRef)
+        if (!profile) return `profile "${target.accessProfileRef}" is missing`
+        if (profile.disabled) return `profile "${target.accessProfileRef}" is disabled`
+      }
+      if (target.model !== undefined) {
+        const until = cooldowns.until(target.model)
+        if (target.model !== desc.model && until !== undefined) {
+          return `model "${target.model}" is cooling down for ${Math.max(1, Math.round((until - now()) / 1000))}s more`
+        }
+        const verdict = checkModelPolicy(target.model, desc.modelPolicy, getModelListSource())
+        if (!verdict.ok) return `policy: ${verdict.reason}`
+      }
+      if (!opts.checkFallbackTarget) return undefined
+      const checked: SessionDescriptor = {
+        ...desc,
+        ...(target.model !== undefined ? { model: target.model } : {}),
+        ...(target.harness !== undefined ? { adapterSlug: target.harness } : {}),
+        ...(target.accessProfileRef !== undefined
+          ? {
+              accessProfile: desc.accessProfile
+                ? { ...desc.accessProfile, profileRef: target.accessProfileRef }
+                : ({ profileRef: target.accessProfileRef } as SessionDescriptor["accessProfile"]),
+            }
+          : {}),
+      }
+      return await opts.checkFallbackTarget(checked, target)
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
     }
-    if (!opts.checkFallbackTarget) return undefined
-    const checked: SessionDescriptor = {
-      ...desc,
-      ...(target.model !== undefined ? { model: target.model } : {}),
-      ...(target.harness !== undefined ? { adapterSlug: target.harness } : {}),
-      ...(target.accessProfileRef !== undefined
-        ? {
-            accessProfile: desc.accessProfile
-              ? { ...desc.accessProfile, profileRef: target.accessProfileRef }
-              : ({ profileRef: target.accessProfileRef } as SessionDescriptor["accessProfile"]),
-          }
-        : {}),
-    }
-    return opts.checkFallbackTarget(checked, target)
   }
 
   const sendFallbackPrompt = (targetId: string, p: PendingRetry): void => {
@@ -838,7 +842,9 @@ export function createTurnRetryController(opts: {
           from.model ?? "the current config"
         } to ${target.model ?? "the next config"}` + (rejected.length ? `; skipped ${rejected.join("; ")}` : ""),
       )
-      sendFallbackPrompt(targetId, p)
+      if (transition !== "handoff") {
+        sendFallbackPrompt(targetId, p)
+      }
       return true
     }
     if (rejected.length > 0) {

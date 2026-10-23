@@ -272,6 +272,8 @@ export async function continueAgentSessionFresh(
     ...(prev.appendSystemPrompt !== undefined
       ? { appendSystemPrompt: prev.appendSystemPrompt }
       : {}),
+    // Carry forward turn-retry policy (including fallback chain) across handoffs.
+    ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
     ...opts.spawn,
