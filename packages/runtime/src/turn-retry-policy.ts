@@ -72,6 +72,18 @@ export interface TurnRetryPolicy {
   /** How long a rate-limited model is skipped, daemon-wide, when the error
    *  carries no retry-after hint (ms). Default {@link TURN_ROTATE_DEFAULTS}. */
   cooldownMs?: number
+  /** Ordered config overlays tried after same-config retries are exhausted.
+   *  Each overlay is merged over the session's BASE (spawn) config; the first
+   *  eligible one is applied with the least disruptive transition. `rotate`
+   *  is the model-only special case. Absent ⇒ no fallback chain. */
+  fallback?: TurnRetryFallbackOverlay[]
+}
+
+/** One overlay of `turnRetry.fallback`. Omitted axes keep the base value. */
+export interface TurnRetryFallbackOverlay {
+  model?: string
+  access?: { profileRef: string }
+  harness?: string
 }
 
 /** One fallback target of `turnRetry.rotate`. */
@@ -191,6 +203,20 @@ export const turnRetryObjectSchema = z.object({
     .optional(),
   rotateOn: z.array(z.enum(TURN_RETRY_CLASSES)).min(1).optional(),
   cooldownMs: z.number().int().positive().optional(),
+  fallback: z
+    .array(
+      z
+        .object({
+          model: z.string().min(1).optional(),
+          access: z.object({ profileRef: z.string().min(1) }).optional(),
+          harness: z.string().min(1).optional(),
+        })
+        .refine(o => o.model !== undefined || o.access !== undefined || o.harness !== undefined, {
+          message: "a fallback overlay must set model, access or harness",
+        }),
+    )
+    .max(16)
+    .optional(),
 })
 
 export const turnRetryInputSchema = z.union([turnRetryObjectSchema, z.null()])
@@ -219,6 +245,15 @@ export function resolveTurnRetryPolicy(input: TurnRetryPolicyInput): TurnRetryPo
         }
       : {}),
     ...(input.cooldownMs !== undefined ? { cooldownMs: input.cooldownMs } : {}),
+    ...(input.fallback?.length
+      ? {
+          fallback: input.fallback.map(o => ({
+            ...(o.model !== undefined ? { model: o.model } : {}),
+            ...(o.access !== undefined ? { access: { profileRef: o.access.profileRef } } : {}),
+            ...(o.harness !== undefined ? { harness: o.harness } : {}),
+          })),
+        }
+      : {}),
   }
 }
 
