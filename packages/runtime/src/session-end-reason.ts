@@ -79,7 +79,7 @@ export function isKnownSessionEndReason(reason: string | undefined): reason is S
 // ordinary turn errors, not "this session is dead until the cap resets".
 // hosted plans (e.g. opencode Go) phrase the same cap as "Go usage limit exceeded"
 // (AI_APICallError on its stderr stream).
-const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage limit exceeded\b/i
+const PROVIDER_LIMIT_ERROR_RE = /\bhit your (?:session|usage) limit\b|\busage limit (?:exceeded|reached)\b/i
 
 /**
  * Classify a driver-reported error message as a provider/subscription

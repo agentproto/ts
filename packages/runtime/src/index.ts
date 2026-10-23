@@ -2974,8 +2974,14 @@ export async function createGateway(
           ...desc,
           model: target.model,
           ...(target.harness !== undefined ? { adapterSlug: target.harness } : {}),
-          ...(target.accessProfileRef !== undefined && desc.accessProfile
-            ? { accessProfile: { ...desc.accessProfile, profileRef: target.accessProfileRef } }
+          ...(target.accessProfileRef !== undefined
+            ? {
+                accessProfile: desc.accessProfile
+                  ? { ...desc.accessProfile, profileRef: target.accessProfileRef }
+                  : ({ profileRef: target.accessProfileRef } as NonNullable<
+                      SessionDescriptor["accessProfile"]
+                    >),
+              }
             : {}),
         },
         { model: target.model },
