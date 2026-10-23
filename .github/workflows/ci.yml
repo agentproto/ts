@@ -633,6 +633,7 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TITLE="$PR_TITLE"
@@ -645,6 +646,9 @@ jobs:
           # Match on the email domain, not the display name — a human
           # contributor named "Claude" (or similar) must not false-positive.
           ATTRIBUTION_PATTERN='Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with'
+          # Keep in sync with MARKER in packages/runtime/src/pr-provenance.ts —
+          # not imported here, this is a plain shell script.
+          PROVENANCE_MARKER='@agentproto-bot'
 
           # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
           # are per-worktree planning scratch and must never land in the repo —
@@ -682,10 +686,28 @@ jobs:
             FAIL=1
           fi
 
+          # 3. Every PR pushed under the shared `agentiknet` account must carry
+          # the agentproto provenance footer — that account's `author` field is
+          # identical on every one of our PRs, so it can never say WHICH agent
+          # or role opened this one; the footer (session id, branch authors,
+          # adapter/model) is the only thing that can. A PR missing it under
+          # this account means it was opened by a tool that never ran through
+          # agentproto at all (e.g. a bare `gh pr create` from a Claude Desktop
+          # or Codex session outside any agentproto session) — the daemon's
+          # `provenance.wrapGh` PATH shim (gh-provenance-shim.ts) stamps this
+          # automatically for every session it spawns, so this only fires for
+          # work that bypassed it. A human opening a PR under their own GitHub
+          # login is unaffected — the author field already identifies them.
+          if [ "$PR_AUTHOR" = "agentiknet" ] && ! printf '%s' "$PR_BODY" | grep -qF "$PROVENANCE_MARKER"; then
+            echo "::error::This PR was opened under the shared 'agentiknet' account but carries no agentproto provenance footer."
+            echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a '$PROVENANCE_MARKER' footer naming the session/role by hand."
+            FAIL=1
+          fi
+
           if [ "$FAIL" -ne 0 ]; then
             exit 1
           fi
-          echo "✓ No scratch docs, no AI-attribution trailers."
+          echo "✓ No scratch docs, no AI-attribution trailers, provenance footer present."
 
   # On PRs: conformance tests for the auto-merge decision logic
   # (scripts/agentflow/merge-gate.mjs) — no workspace deps, so this runs
