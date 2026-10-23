@@ -419,7 +419,7 @@ describe("SessionsRegistry.setModel", () => {
 
     const result = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
     expect(result.applied).toBe(false)
-    expect(result).toMatchObject({ reason: expect.stringMatching(/^policy: /) })
+    expect(result).toMatchObject({ reason: expect.stringMatching(/^policy:model_blocked: /) })
     expect(session.lastSetModel).toBeUndefined()
     expect(reg.get(desc.id)?.model).toBe("opencode/deepseek-v4.1-flash-free")
     reg.shutdown()
@@ -438,7 +438,7 @@ describe("SessionsRegistry.setModel", () => {
     })
 
     const refused = await reg.setModel(desc.id, "totally-made-up-model")
-    expect(refused).toMatchObject({ applied: false, reason: expect.stringMatching(/^policy: /) })
+    expect(refused).toMatchObject({ applied: false, reason: expect.stringMatching(/^policy:model_not_allowed: /) })
     const ok = await reg.setModel(desc.id, "opencode/glm-5.3-flash-free")
     expect(ok.applied).toBe(true)
     reg.shutdown()

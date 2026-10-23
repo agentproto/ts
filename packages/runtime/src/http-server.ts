@@ -306,7 +306,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
-import { modelPolicySchema, normalizeModelPolicy } from "./model-policy.js"
+import { modelPolicyInputSchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import {
@@ -5789,7 +5789,7 @@ export function buildSpawnSessionHttpArgs(
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
   const modelPolicyParsed =
-    b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicySchema, b.modelPolicy)) : undefined
+    b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy)) : undefined
   const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
     modelPolicyParsed !== undefined ? { modelPolicy: modelPolicyParsed } : {}
   return {
@@ -6516,11 +6516,11 @@ function invalidSpawnHttpField(
   if (
     b.modelPolicy !== undefined &&
     b.modelPolicy !== null &&
-    parseWithJsonTolerance(modelPolicySchema, b.modelPolicy) === undefined
+    parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy) === undefined
   ) {
     return {
       error: "invalid_model_policy",
-      message: 'modelPolicy must be { allow?: string[], block?: string[] } of model list ids.',
+      message: 'modelPolicy must be { allow?: string[], block?: string[] } of model list ids; unknown keys are rejected.',
     }
   }
   return undefined

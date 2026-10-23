@@ -6,7 +6,8 @@
 import { describe, expect, it } from "vitest"
 import type { ModelList, ModelListSource } from "@agentproto/model-catalog/lists"
 
-import { checkModelPolicy, normalizeModelPolicy } from "../model-policy.js"
+import { checkModelPolicy, modelPolicyInputSchema, normalizeModelPolicy } from "../model-policy.js"
+import { agentStartInputSchema } from "../agent-start-schema.js"
 import { spawnAgentSession } from "../session-spawn.js"
 import { createSessionsRegistry } from "../sessions.js"
 
@@ -161,5 +162,21 @@ describe("spawnAgentSession enforces the policy on every merge layer", () => {
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.descriptor.modelPolicy).toEqual({ allow: ["default-rotation"] })
+  })
+})
+
+describe("modelPolicy input is strict (a typo must not become no restriction)", () => {
+  it("modelPolicyInputSchema rejects unknown keys and wrong shapes", () => {
+    expect(modelPolicyInputSchema.safeParse({ allows: ["x"] }).success).toBe(false)
+    expect(modelPolicyInputSchema.safeParse({ allow: ["x"], blok: ["y"] }).success).toBe(false)
+    expect(modelPolicyInputSchema.safeParse({ allow: "x" }).success).toBe(false)
+    expect(modelPolicyInputSchema.safeParse({ allow: ["x"], block: ["y"] }).success).toBe(true)
+  })
+
+  it("agent_start's modelPolicy field rejects {allows:[...]} instead of dropping it", () => {
+    const base = { adapter: "opencode", cwd: "/tmp" }
+    expect(agentStartInputSchema.safeParse({ ...base, modelPolicy: { allows: ["x"] } }).success).toBe(false)
+    expect(agentStartInputSchema.safeParse({ ...base, modelPolicy: JSON.stringify({ allows: ["x"] }) }).success).toBe(false)
+    expect(agentStartInputSchema.safeParse({ ...base, modelPolicy: { allow: ["x"] } }).success).toBe(true)
   })
 })

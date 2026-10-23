@@ -24,9 +24,15 @@ export const modelPolicySchema = z.object({
   block: z.array(z.string().min(1)).max(32).optional(),
 })
 
-/** Tolerant normalizer for stored / HTTP input: dedupes, returns undefined
- *  when the value is not a policy or has neither key. An empty `allow` is
- *  kept: it means "nothing is allowed". */
+/** Strict schema for caller input (`agent_start`, HTTP spawn): an unknown key
+ *  such as `allows` is a validation error, never a silently dropped
+ *  restriction. */
+export const modelPolicyInputSchema = modelPolicySchema.strict()
+
+/** Tolerant normalizer for already-validated or stored descriptors: dedupes,
+ *  returns undefined when the value is not a policy or has neither key. An
+ *  empty `allow` is kept: it means "nothing is allowed". Never use it to
+ *  validate caller input; use {@link modelPolicyInputSchema}. */
 export function normalizeModelPolicy(raw: unknown): ModelPolicy | undefined {
   const parsed = modelPolicySchema.safeParse(raw)
   if (!parsed.success) return undefined

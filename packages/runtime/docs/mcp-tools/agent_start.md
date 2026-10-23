@@ -611,7 +611,7 @@ optional lists of list ids.
 
 The policy is stored on the session and enforced at spawn (explicit `model`
 included; refusal is `model_policy_refused`), on a live model switch
-(`agent_set_model` answers `{applied:false, reason:"policy: ..."}`; a
+(`agent_set_model` answers `{applied:false, reason:"policy:<code>: ..."}`; a
 cross-route switch still answers `requires-restart` first), on
 `session_restart` when the model changes, and on every `turnRetry.rotate`
 target. Omit it for no restriction: the session may use any model its account

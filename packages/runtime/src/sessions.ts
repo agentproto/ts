@@ -12919,7 +12919,7 @@ export function createSessionsRegistry(opts?: {
             modelDerivedApiKey,
           })
       const verdict = checkModelPolicy(modelId, rt.desc.modelPolicy, getModelListSource())
-      if (!verdict.ok) return { applied: false, reason: `policy: ${verdict.reason}` }
+      if (!verdict.ok) return { applied: false, reason: `policy:${verdict.code}: ${verdict.reason}` }
       const result = await rt.agentSession.setModel(wireModel)
       if (result.applied) {
         // Record the CATALOG id the caller requested, not the wire form the

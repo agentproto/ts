@@ -594,6 +594,46 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     }
   })
 
+  it("a malformed modelPolicy (unknown key, wrong shape) is a 400 invalid_model_policy, never an unrestricted spawn", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (path: string, modelPolicy: unknown) =>
+        fetch(`http://127.0.0.1:${port}${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", prompt: "hi", modelPolicy }),
+        })
+      for (const path of ["/sessions/agent", "/sessions/chat"]) {
+        for (const bad of [{ allows: ["zero-cost"] }, { allow: "zero-cost" }, { allow: ["a"], extra: 1 }, "nonsense"]) {
+          const res = await spawn(path, bad)
+          expect(res.status).toBe(400)
+          expect(await res.json()).toMatchObject({ error: "invalid_model_policy" })
+        }
+      }
+      expect(startSession).not.toHaveBeenCalled()
+      expect((await spawn("/sessions/agent", { allow: ["default-rotation"] })).status).toBe(201)
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("maps commandSandbox, skills, contextContinuity, deferredTools, attach, notifyUrl and notifySecret like agent_start", () => {
     const secret = encodeWhsecSecret(Buffer.alloc(32, 0xab))
     const args = buildSpawnSessionHttpArgs(
