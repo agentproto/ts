@@ -15,10 +15,11 @@
  */
 
 import { z } from "zod"
-import { inModelList, resolveModelList } from "@agentproto/model-catalog/lists"
+import { resolveModelList } from "@agentproto/model-catalog/lists"
 import {
   DEFAULT_ROTATION_LIST_ID,
   getModelListSource,
+  isInModelList,
   ZERO_COST_LIST_ID,
 } from "./model-list-store.js"
 
@@ -120,8 +121,16 @@ function freeKey(model: string): string {
 function defaultRotateTargets(currentModel: string): TurnRetryRotateTarget[] {
   const key = freeKey(currentModel)
   const source = getModelListSource()
-  return resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
-    .filter(id => inModelList(id, ZERO_COST_LIST_ID, source))
+  let ids: string[]
+  try {
+    ids = resolveModelList(DEFAULT_ROTATION_LIST_ID, source)
+  } catch {
+    // A broken/cyclic rotation list must fail closed: no rotation, no throw
+    // on the spawn hot path.
+    return []
+  }
+  return ids
+    .filter(id => isInModelList(id, ZERO_COST_LIST_ID, source))
     .filter(id => freeKey(id) !== key)
     .map(model => ({ model }))
 }
@@ -137,7 +146,7 @@ export function defaultTurnRetryForSpawn(currentModel?: string): Exclude<TurnRet
     on: [...TURN_RETRY_DEFAULT_ON],
     maxRetries: TURN_RETRY_DEFAULT_MAX_RETRIES,
   }
-  if (!currentModel || !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())) {
+  if (!currentModel || !isInModelList(currentModel, ZERO_COST_LIST_ID)) {
     return base
   }
   return {
@@ -157,12 +166,12 @@ export function validateTurnRetryRotate(
   if (
     !rotate?.length ||
     !currentModel ||
-    !inModelList(currentModel, ZERO_COST_LIST_ID, getModelListSource())
+    !isInModelList(currentModel, ZERO_COST_LIST_ID)
   ) {
     return undefined
   }
   const paid = rotate
-    .filter(t => !inModelList(t.model, ZERO_COST_LIST_ID, getModelListSource()))
+    .filter(t => !isInModelList(t.model, ZERO_COST_LIST_ID))
     .map(t => t.model)
   if (paid.length === 0) return undefined
   return (

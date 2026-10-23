@@ -66,8 +66,7 @@ import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
-import { inModelList } from "@agentproto/model-catalog/lists"
-import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
+import { isInModelList, ZERO_COST_LIST_ID } from "./model-list-store.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
@@ -405,8 +404,8 @@ export function rotationTargetRejection(
   if (until !== undefined) return `cooling down for ${Math.max(1, Math.round((until - now) / 1000))}s more`
   if (
     desc.model &&
-    inModelList(desc.model, ZERO_COST_LIST_ID, getModelListSource()) &&
-    !inModelList(target.model, ZERO_COST_LIST_ID, getModelListSource())
+    isInModelList(desc.model, ZERO_COST_LIST_ID) &&
+    !isInModelList(target.model, ZERO_COST_LIST_ID)
   ) {
     return `not in model list "${ZERO_COST_LIST_ID}" — a zero-cost session never rotates onto a paid id`
   }

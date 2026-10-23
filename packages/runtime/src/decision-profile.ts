@@ -23,8 +23,7 @@
  * `@route` suffix or an unreadable auth profile is refused (fail closed).
  */
 
-import { inModelList } from "@agentproto/model-catalog/lists"
-import { getModelListSource, ZERO_COST_LIST_ID } from "./model-list-store.js"
+import { isInModelList, ZERO_COST_LIST_ID } from "./model-list-store.js"
 import { adapterForModelId, type ResolvedModelRole } from "./model-roles.js"
 import {
   reviewerFingerprint,
@@ -172,7 +171,7 @@ function modelAllowed(
   }
   if (/openrouter/i.test(model)) return `model "${model}" would bill OpenRouter`
   if (adapter === "opencode") {
-    if (inModelList(model, ZERO_COST_LIST_ID, getModelListSource())) return undefined
+    if (isInModelList(model, ZERO_COST_LIST_ID)) return undefined
     return `model "${model}" is not in model list "${ZERO_COST_LIST_ID}"`
   }
   if (entitlement === "subscription" && adapter === "claude-code") {
@@ -204,7 +203,7 @@ export function validateSpawnTarget(profile: DecisionExecProfile, target: SpawnT
   for (const r of target.rotate ?? []) {
     const rotateAdapter =
       adapterForModelId(r.model) ??
-      (inModelList(r.model, ZERO_COST_LIST_ID, getModelListSource()) ? "opencode" : undefined)
+      (isInModelList(r.model, ZERO_COST_LIST_ID) ? "opencode" : undefined)
     if (!rotateAdapter) {
       return { ok: false, code: "unknown_rotate", reason: `turnRetry.rotate target "${r.model}" has no provable adapter` }
     }

@@ -3,7 +3,11 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { getModelList, resetModelListSource } from "../model-list-store.js"
+import {
+  getModelList,
+  resetModelListSource,
+  ZERO_COST_LIST_ID,
+} from "../model-list-store.js"
 import { registerModelListTools } from "../model-list-tools.js"
 
 type Handler = (args: Record<string, unknown>) => Promise<{
@@ -65,5 +69,19 @@ describe("model_list_save reference validation", () => {
     expect(result.isError).toBe(true)
     expect(result.content[0]?.text).toContain("cycle")
     expect(await getModelList("a")).toEqual({ id: "a", ids: ["custom/a"] })
+  })
+
+  it("refuses to widen or replace the zero-cost entitlement list", async () => {
+    const result = await save({
+      id: ZERO_COST_LIST_ID,
+      ids: ["opencode/gpt-5.1-codex"],
+    })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]?.text).toMatch(/built-in and cannot be edited/)
+    expect(await getModelList(ZERO_COST_LIST_ID)).toEqual({
+      id: ZERO_COST_LIST_ID,
+      label: "Zero-cost models",
+      include: [{ kind: "tag", value: "price:zero" }],
+    })
   })
 })
