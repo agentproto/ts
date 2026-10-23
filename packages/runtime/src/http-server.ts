@@ -6156,7 +6156,8 @@ function spawnFailureStatus(code: string): number {
     code === "sandbox_cwd_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
-    code === "cloud_spawn_refused"
+    code === "cloud_spawn_refused" ||
+    code === "model_policy_refused"
   ) {
     return 400
   }
@@ -7125,27 +7126,7 @@ async function handleSessions(
       spawnArgs,
     )
     if (!result.ok) {
-      const status =
-        result.code === "adapter_not_found" || result.code === "no_cwd"
-          ? 404
-          : result.code === "orchestrator_not_enabled"
-            ? 501
-            : result.code === "orchestrator_max_depth_exceeded" ||
-                result.code === "orchestrator_child_quota_exceeded" ||
-                result.code === "role_spawn_denied"
-              ? 409
-              : result.code === "invalid_role" ||
-                  result.code === "browser_unsupported" ||
-                  result.code === "worktree_requires_explicit_repo" ||
-                  result.code === "device_spawn_requires_repo_identity" ||
-                  result.code === "device_bridge_workspace_unknown" ||
-                  result.code === "access_profile_not_found" ||
-                  result.code === "access_profile_ineligible" ||
-                  result.code === "sandbox_cwd_invalid" ||
-                  result.code === "device_spawn_unreachable" ||
-                  result.code === "device_offline"
-                ? 400
-                : 500
+      const status = spawnFailureStatus(result.code)
       json(status, {
         error: result.code,
         message: result.message,

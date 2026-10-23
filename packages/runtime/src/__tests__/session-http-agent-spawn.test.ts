@@ -614,11 +614,11 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       meta: { workspace: process.cwd(), registered: [] },
     })
     try {
-      const spawn = (path: string, modelPolicy: unknown) =>
+      const spawn = (path: string, modelPolicy: unknown, model?: string) =>
         fetch(`http://127.0.0.1:${port}${path}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", prompt: "hi", modelPolicy }),
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", prompt: "hi", modelPolicy, ...(model ? { model } : {}) }),
         })
       for (const path of ["/sessions/agent", "/sessions/chat"]) {
         for (const bad of [{ allows: ["zero-cost"] }, { allow: "zero-cost" }, { allow: ["a"], extra: 1 }, "nonsense"]) {
@@ -628,7 +628,14 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
         }
       }
       expect(startSession).not.toHaveBeenCalled()
-      expect((await spawn("/sessions/agent", { allow: ["default-rotation"] })).status).toBe(201)
+      // A well-formed policy the model satisfies spawns; one it does not is a
+      // 400 refusal on both routes, never a 500.
+      expect((await spawn("/sessions/agent", { allow: ["default-rotation"] }, "opencode/glm-5.3-flash-free")).status).toBe(201)
+      for (const path of ["/sessions/agent", "/sessions/chat"]) {
+        const refused = await spawn(path, { block: ["default-rotation"] }, "opencode/glm-5.3-flash-free")
+        expect(refused.status).toBe(400)
+        expect(await refused.json()).toMatchObject({ error: "model_policy_refused" })
+      }
     } finally {
       await http.stop()
     }
