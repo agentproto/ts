@@ -1,0 +1,20 @@
+{
+  "schema": "routine/v1",
+  "id": "child-housekeeping-on-turn-end",
+  "description": "Reconcile child sessions after each completed turn.",
+  "version": "1.0.0",
+  "schedule": {
+    "kind": "event",
+    "on": "turn-end",
+    "filter": {
+      "awaitingInput": false
+    }
+  },
+  "target": {
+    "action": "session:child-housekeeping",
+    "inputs": {
+      "dry_run": false
+    }
+  },
+  "enabled": true
+}
