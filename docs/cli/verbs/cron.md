@@ -5,7 +5,7 @@ agentproto cron add --schedule <cron-expr>
                     (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
                      | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                                        [--options-json <json|@file>]
-                     | --target-session <id> --prompt <text>)
+                     | --target-session <id|agent:<label>> --prompt <text>)
                     [--label <text>] [--once] [--json]
 agentproto cron list   [--json]
 agentproto cron remove <id>                    (aliases: delete, rm)
@@ -46,7 +46,7 @@ mutually exclusive, and passing none or more than one exits `2`.
 |------|------|--------------|
 | Command | `--command <cmd>` | Runs an allowlisted shell command. Must be listed in `<workspace>/.agentproto/allowed-commands.json`. |
 | Agent | `--adapter <slug>` | Spawns a **brand-new** agent session and prompts it. Requires `--prompt`. |
-| Prompt-session | `--target-session <id>` | Re-prompts an existing, already-running session **in place** — no new session is spawned. Requires `--prompt`. For a durable session a job checks in on periodically. |
+| Prompt-session | `--target-session <id\|agent:<label>>` | Re-prompts an existing, already-running session **in place** — no new session is spawned. Requires `--prompt`. For a durable session a job checks in on periodically. The target may also be an **agent label**, spelled `agent:<label>`: the label is resolved to the live session carrying it **at fire time** (not at create time), so the job survives the target agent being relaunched under a new id (a restart keeps the label, the id changes). Resolution picks the newest live session with that label, follows a retired session's successor chain, and revives an ended session through the usual restart path; otherwise the tick fails naming the label. A plain session id keeps working unchanged. |
 
 ## Subverbs
 
@@ -61,7 +61,7 @@ next run.
 | `--command <cmd>` | — | Allowlisted command to run. |
 | `--args <arg>` | — | Argument for `--command`; repeatable. |
 | `--adapter <slug>` | — | Adapter to spawn a fresh session from. |
-| `--target-session <id>` | — | Live session to re-prompt in place. |
+| `--target-session <id\|agent:<label>>` | — | Live session to re-prompt in place, or `agent:<label>` to resolve an agent label at fire time (see [Action kinds](#action-kinds)). |
 | `--prompt <text>` | — | The turn to send. Required with `--adapter` or `--target-session`. |
 | `--cwd <dir>` | — | Working dir (command and agent kinds). |
 | `--model <id>` | — | Model override (agent kind). |
