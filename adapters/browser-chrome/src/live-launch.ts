@@ -5,16 +5,16 @@ import { buildChromeArgs, defaultDataDir, defaultSpawn, type ChromeProcess, type
 import { resolveChrome } from "./resolve.js"
 
 /**
- * Auto-launch fallback for `chrome-live`.
+ * Dedicated-Chrome launcher for `chrome-live`.
  *
- * `chrome-live` normally attaches to the user's own Chrome through the remote
- * debugging toggle (port 9222). When nothing answers there — the toggle was
- * never turned on — the provider launches a DEDICATED, headful Chrome on a free
- * port with its own persisted user-data-dir (never the user's default profile),
- * then connects to it. Chrome never asks for consent on that dedicated profile,
- * so the fallback costs the user zero clicks. Only the process this module
- * spawned is ever killed; the user's own Chrome is untouched (pid scissors in
- * `live.ts`).
+ * `chrome-live` launches a DEDICATED, headful Chrome on a free port with its
+ * own persisted user-data-dir (never the user's default profile) when the
+ * caller wants a dedicated browser (the default) or asks for one explicitly.
+ * It is NOT a fallback for a failed attach to the user's own Chrome: that
+ * failure is surfaced so an agent never believes it is driving the user's
+ * browser. Chrome never asks for consent on the dedicated profile. Only the
+ * process this module spawned is ever killed; the user's own Chrome is
+ * untouched (pid scissors in `live.ts`).
  */
 
 /** Env override for the persisted profile dir. Blank counts as unset. */
