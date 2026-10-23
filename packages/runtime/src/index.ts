@@ -170,7 +170,12 @@ import { runCrashDetectPass } from "./crash-reaper.js"
 import { runStallWatchdogPass } from "./stall-watchdog.js"
 import { createRestartScheduler, runRestartSweepPass } from "./restart-scheduler.js"
 import { isSandboxBoxGone } from "./sandbox-gone.js"
-import { createTurnRetryController, type MigrateSessionFn } from "./turn-retry.js"
+import {
+  createTurnRetryController,
+  type FallbackHandoffFn,
+  type FallbackRestartFn,
+  type MigrateSessionFn,
+} from "./turn-retry.js"
 import { createModelCooldowns } from "./model-cooldowns.js"
 import { createRotationTargetCheck } from "./turn-retry-eligibility.js"
 import { migrateSandboxSession } from "./session-migrate.js"
@@ -191,6 +196,7 @@ import {
   restartAgentSession,
   restartPreferInPlace,
 } from "./session-restart-core.js"
+import { continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { cloudMetaOf } from "./cloud-vendors.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
@@ -2909,15 +2915,72 @@ export async function createGateway(
           },
         )
     : undefined
+  const rotationTargetCheck = createRotationTargetCheck({
+    getProfile: getAuthProfile,
+    ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+  })
+  const turnRetryFallbackRestart: FallbackRestartFn | undefined = opts.resolveAgentAdapter
+    ? async (prev, overrides) => {
+        const restarted = await restartAgentSession(sessions, opts.resolveAgentAdapter!, prev, {
+          overrides,
+          resolveSandboxProvider: resolveSandboxProviderResolved,
+          daemonMcpUrl,
+          ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+        })
+        return restarted.desc
+      }
+    : undefined
+  const turnRetryFallbackHandoff: FallbackHandoffFn | undefined = opts.resolveAgentAdapter
+    ? async (prev, target) => {
+        const result = await continueAgentSessionFresh(
+          {
+            registry: sessions,
+            resolveAgentAdapter: opts.resolveAgentAdapter!,
+            daemonMcpUrl,
+            resolveSandboxProvider: resolveSandboxProviderResolved,
+            ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
+            ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
+          },
+          prev,
+          {
+            adapter: target.harness,
+            harness: target.harness,
+            ...(target.model !== undefined ? { model: target.model } : {}),
+            ...(target.access !== undefined ? { access: target.access } : {}),
+            sources: createCheckpointSources({
+              ...(supervisor ? { supervisor } : {}),
+              ...(taskLedger ? { taskLedger } : {}),
+            }),
+          },
+        )
+        return result.descriptor
+      }
+    : undefined
   const turnRetryController = createTurnRetryController({
     registry: sessions,
     sessionEvents,
     cooldowns: modelCooldowns,
-    checkRotationTarget: createRotationTargetCheck({
-      getProfile: getAuthProfile,
-      ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
-    }),
+    checkRotationTarget: rotationTargetCheck,
     ...(turnRetryMigrateSession ? { migrateSession: turnRetryMigrateSession } : {}),
+    ...(turnRetryFallbackRestart ? { restartSession: turnRetryFallbackRestart } : {}),
+    ...(turnRetryFallbackHandoff ? { handoffSession: turnRetryFallbackHandoff } : {}),
+    getAuthProfile,
+    isHarnessInstalled: async harness =>
+      opts.resolveAgentAdapter ? (await opts.resolveAgentAdapter(harness)) != null : false,
+    checkFallbackTarget: async (desc, target) => {
+      if (target.model === undefined) return undefined
+      return rotationTargetCheck(
+        {
+          ...desc,
+          model: target.model,
+          ...(target.harness !== undefined ? { adapterSlug: target.harness } : {}),
+          ...(target.accessProfileRef !== undefined && desc.accessProfile
+            ? { accessProfile: { ...desc.accessProfile, profileRef: target.accessProfileRef } }
+            : {}),
+        },
+        { model: target.model },
+      )
+    },
   })
 
   // Completion-policy supervisor — watches sessions and runs shell gates.

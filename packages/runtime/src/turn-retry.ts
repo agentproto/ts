@@ -62,7 +62,12 @@
  */
 
 import type { SessionDescriptor } from "./sessions.js"
-import type { SessionEventBus, SessionTurnRetryEvent } from "./session-event-bus.js"
+import type {
+  SessionEventBus,
+  SessionFallbackConfig,
+  SessionFallbackEvent,
+  SessionTurnRetryEvent,
+} from "./session-event-bus.js"
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
@@ -71,6 +76,7 @@ import { checkModelPolicy } from "./model-policy.js"
 import {
   TURN_ROTATE_DEFAULTS,
   type TurnRetryClass,
+  type TurnRetryFallbackOverlay,
   type TurnRetryPolicy,
   type TurnRetryRotateTarget,
 } from "./turn-retry-policy.js"
@@ -376,6 +382,8 @@ export interface TurnRetryRegistry {
       turnMigrations?: number | null
       lastTurnRetryAt?: string | null
       nextTurnRetryAt?: string | null
+      fallbackStep?: number | null
+      fallbackBase?: SessionDescriptor["fallbackBase"] | null
     },
   ): boolean
   /** Live model switch (`agent_set_model`). Absent ⇒ rotation is unavailable. */
@@ -383,6 +391,23 @@ export interface TurnRetryRegistry {
   /** Cut the in-flight turn before a switch on a stalled session. */
   interruptSession?(id: string): Promise<unknown>
 }
+
+/** Config axes a fallback overlay resolves to, merged over the base config. */
+export interface TurnRetryFallbackEffective extends SessionFallbackConfig {
+  routeGateway?: string
+}
+
+/** Apply a restart transition for a fallback step (same session id). */
+export type FallbackRestartFn = (
+  prev: SessionDescriptor,
+  overrides: { model?: string; access?: { profileRef: string } },
+) => Promise<SessionDescriptor>
+
+/** Apply a cross-harness handoff for a fallback step (new session id). */
+export type FallbackHandoffFn = (
+  prev: SessionDescriptor,
+  opts: { harness: string; model?: string; access?: { profileRef: string } },
+) => Promise<SessionDescriptor>
 
 /** Async eligibility verdict for a rotation target: `undefined` = eligible,
  *  otherwise a short reason it is not. Runs the same checks a spawn would
@@ -451,6 +476,19 @@ export function createTurnRetryController(opts: {
   /** Box-migration orchestration for `turnRetry.action: "migrate"`. Absent ⇒ a
    *  migration decision falls back to a normal retry with a notice. */
   migrateSession?: MigrateSessionFn
+  /** Restart a session on a new access/model overlay (`session_restart`). */
+  restartSession?: FallbackRestartFn
+  /** Move a session to another harness (`session_continue_fresh`). */
+  handoffSession?: FallbackHandoffFn
+  /** Profile lookup for fallback eligibility (missing/disabled = skip). */
+  getAuthProfile?: (id: string) => Promise<{ disabled?: boolean } | undefined>
+  /** Harness installed check for fallback eligibility. */
+  isHarnessInstalled?: (harness: string) => Promise<boolean>
+  /** Extra async fallback eligibility (route/adapter/profile allow-list). */
+  checkFallbackTarget?: (
+    desc: SessionDescriptor,
+    target: TurnRetryFallbackEffective,
+  ) => Promise<string | undefined>
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void
   log?: (line: string) => void
@@ -568,6 +606,201 @@ export function createTurnRetryController(opts: {
       return
     }
     same(rejected.join("; ") || "none listed")
+  }
+
+  const configOf = (desc: SessionDescriptor): TurnRetryFallbackEffective => ({
+    ...(desc.model !== undefined ? { model: desc.model } : {}),
+    ...((desc.harness ?? desc.adapterSlug) !== undefined
+      ? { harness: desc.harness ?? desc.adapterSlug }
+      : {}),
+    ...(desc.accessProfile?.profileRef !== undefined
+      ? { accessProfileRef: desc.accessProfile.profileRef }
+      : {}),
+    ...(desc.route?.gateway !== undefined ? { routeGateway: desc.route.gateway } : {}),
+  })
+
+  const baseConfigOf = (desc: SessionDescriptor): TurnRetryFallbackEffective =>
+    desc.fallbackBase ? { ...desc.fallbackBase } : configOf(desc)
+
+  /** Merge an overlay over the BASE config (never over the previous step). */
+  const mergeOverlay = (
+    base: TurnRetryFallbackEffective,
+    overlay: TurnRetryFallbackOverlay,
+  ): TurnRetryFallbackEffective => ({
+    ...(overlay.model !== undefined
+      ? { model: overlay.model }
+      : base.model !== undefined
+        ? { model: base.model }
+        : {}),
+    ...(overlay.harness !== undefined
+      ? { harness: overlay.harness }
+      : base.harness !== undefined
+        ? { harness: base.harness }
+        : {}),
+    ...(overlay.access !== undefined
+      ? { accessProfileRef: overlay.access.profileRef }
+      : base.accessProfileRef !== undefined
+        ? { accessProfileRef: base.accessProfileRef }
+        : {}),
+    ...(base.routeGateway !== undefined ? { routeGateway: base.routeGateway } : {}),
+  })
+
+  const fallbackRejection = async (
+    desc: SessionDescriptor,
+    target: TurnRetryFallbackEffective,
+  ): Promise<string | undefined> => {
+    const currentHarness = desc.harness ?? desc.adapterSlug
+    if (target.harness !== undefined && target.harness !== currentHarness) {
+      const installed = await opts.isHarnessInstalled?.(target.harness)
+      if (installed === false) return `harness "${target.harness}" is not installed`
+    }
+    if (target.accessProfileRef !== undefined && opts.getAuthProfile) {
+      const profile = await opts.getAuthProfile(target.accessProfileRef)
+      if (!profile) return `profile "${target.accessProfileRef}" is missing`
+      if (profile.disabled) return `profile "${target.accessProfileRef}" is disabled`
+    }
+    if (target.model !== undefined) {
+      const until = cooldowns.until(target.model)
+      if (target.model !== desc.model && until !== undefined) {
+        return `model "${target.model}" is cooling down for ${Math.max(1, Math.round((until - now()) / 1000))}s more`
+      }
+      const verdict = checkModelPolicy(target.model, desc.modelPolicy, getModelListSource())
+      if (!verdict.ok) return `policy: ${verdict.reason}`
+    }
+    return opts.checkFallbackTarget?.(desc, target)
+  }
+
+  const sendFallbackPrompt = (targetId: string, p: PendingRetry): void => {
+    registry
+      .enqueuePrompt(targetId, buildContinuationPrompt(p.error), {
+        source: TURN_RETRY_PROMPT_SOURCE,
+        origin: "daemon",
+        ...(p.kind === "stall" ? { interrupt: true } : {}),
+      })
+      .catch(err => {
+        const msg = err instanceof Error ? err.message : String(err)
+        log(`[turn-retry] ${targetId}: fallback continuation prompt rejected: ${msg}`)
+        registry.recordNotice(targetId, `[turn-retry] fallback continuation prompt rejected: ${msg}`)
+      })
+  }
+
+  /** Walk `turnRetry.fallback` forward from `fallbackStep`, apply the first
+   *  eligible overlay with the least disruptive transition, then re-prompt.
+   *  Returns false when the chain is exhausted (the caller reports the last
+   *  failure and leaves the session idle — never a loop). */
+  const applyFallback = async (desc: SessionDescriptor, p: PendingRetry): Promise<boolean> => {
+    const chain = desc.turnRetry?.fallback
+    if (!chain?.length) return false
+    const id = desc.id
+    const base = baseConfigOf(desc)
+    const current = configOf(desc)
+    const start = desc.fallbackStep === undefined ? 0 : desc.fallbackStep + 1
+    const rejected: string[] = []
+    for (let step = start; step < chain.length; step++) {
+      const overlay = chain[step]!
+      const target = mergeOverlay(base, overlay)
+      const why = await fallbackRejection(desc, target)
+      if (why) {
+        rejected.push(`fallback[${step}]: ${why}`)
+        continue
+      }
+      const harnessChanged = target.harness !== undefined && target.harness !== current.harness
+      const accessChanged =
+        target.accessProfileRef !== undefined && target.accessProfileRef !== current.accessProfileRef
+      const modelChanged = target.model !== undefined && target.model !== current.model
+      if (!harnessChanged && !accessChanged && !modelChanged) {
+        rejected.push(`fallback[${step}]: already the current config`)
+        continue
+      }
+
+      let transition: SessionFallbackEvent["transition"] = "live"
+      let targetDesc: SessionDescriptor | undefined
+      try {
+        if (p.kind === "stall") await registry.interruptSession?.(id)
+
+        if (harnessChanged) {
+          if (!opts.handoffSession) {
+            rejected.push(`fallback[${step}]: cross-harness handoff is not configured`)
+            continue
+          }
+          transition = "handoff"
+          targetDesc = await opts.handoffSession(desc, {
+            harness: target.harness!,
+            ...(target.model !== undefined ? { model: target.model } : {}),
+            ...(target.accessProfileRef !== undefined
+              ? { access: { profileRef: target.accessProfileRef } }
+              : {}),
+          })
+        } else if (accessChanged) {
+          if (!opts.restartSession) {
+            rejected.push(`fallback[${step}]: restart is not configured`)
+            continue
+          }
+          transition = "restart"
+          targetDesc = await opts.restartSession(desc, {
+            ...(modelChanged ? { model: target.model } : {}),
+            access: { profileRef: target.accessProfileRef! },
+          })
+        } else if (registry.setModel) {
+          const res = await registry.setModel(id, target.model!)
+          if (res.applied) {
+            transition = "live"
+            targetDesc = registry.get(id) ?? desc
+          } else if (res.reason === "requires-restart") {
+            if (!opts.restartSession) {
+              rejected.push(`fallback[${step}]: model needs a restart and restart is not configured`)
+              continue
+            }
+            transition = "restart"
+            targetDesc = await opts.restartSession(desc, { model: target.model! })
+          } else {
+            rejected.push(
+              `fallback[${step}]: live switch not applied${res.reason ? ` (${res.reason})` : ""}`,
+            )
+            continue
+          }
+        } else {
+          if (!opts.restartSession) {
+            rejected.push(`fallback[${step}]: this registry cannot switch models and restart is not configured`)
+            continue
+          }
+          transition = "restart"
+          targetDesc = await opts.restartSession(desc, { model: target.model! })
+        }
+      } catch (err) {
+        rejected.push(`fallback[${step}]: ${err instanceof Error ? err.message : String(err)}`)
+        continue
+      }
+
+      const baseToStore = desc.fallbackStep === undefined ? base : (desc.fallbackBase ?? base)
+      const targetId = targetDesc?.id ?? id
+      registry.patchTurnRetry(targetId, { fallbackStep: step, fallbackBase: baseToStore })
+      const from = current
+      const event: SessionFallbackEvent = {
+        type: "session:fallback",
+        sessionId: id,
+        from,
+        to: target,
+        transition,
+        failure: { errorClass: p.errorClass, ...(p.error ? { error: p.error } : {}) },
+        ...(targetId !== id ? { newSessionId: targetId } : {}),
+        ...(desc.label ? { label: desc.label } : {}),
+        ts: new Date(now()).toISOString(),
+      }
+      sessionEvents.emit(event)
+      registry.recordNotice(
+        id,
+        `[turn-retry] fallback[${step}] (${transition}) from ${
+          from.model ?? "the current config"
+        } to ${target.model ?? "the next config"}` + (rejected.length ? `; skipped ${rejected.join("; ")}` : ""),
+      )
+      sendFallbackPrompt(targetId, p)
+      return true
+    }
+    if (rejected.length > 0) {
+      registry.recordNotice(id, `[turn-retry] fallback chain exhausted: ${rejected.join("; ")}`)
+    }
+    return false
   }
 
   /**
@@ -844,25 +1077,50 @@ export function createTurnRetryController(opts: {
         registry.recordNotice(id, `[turn-retry] not retrying: ${plan.skipReason}`)
         return
       case "exhausted":
-      case "give-up":
-        emit(desc, {
-          phase: "exhausted",
-          errorClass: plan.errorClass,
-          attempt: plan.attempts,
-          ...(plan.error ? { error: plan.error } : {}),
-        })
-        registry.recordNotice(
-          id,
-          turnRetryGaveUpNotice({
-            attempts: plan.attempts,
+      case "give-up": {
+        const finish = (): void => {
+          emit(desc, {
+            phase: "exhausted",
             errorClass: plan.errorClass,
-            // A `give-up` (both caps spent) names the migrations too; a plain
-            // `exhausted` (retry budget spent, nothing migrated) keeps the
-            // wording it always had.
-            ...(plan.action === "give-up" ? { migrations: plan.migrations } : {}),
-          }),
-        )
+            attempt: plan.attempts,
+            ...(plan.error ? { error: plan.error } : {}),
+          })
+          registry.recordNotice(
+            id,
+            turnRetryGaveUpNotice({
+              attempts: plan.attempts,
+              errorClass: plan.errorClass,
+              // A `give-up` (both caps spent) names the migrations too; a plain
+              // `exhausted` (retry budget spent, nothing migrated) keeps the
+              // wording it always had.
+              ...(plan.action === "give-up" ? { migrations: plan.migrations } : {}),
+            }),
+          )
+        }
+        if (plan.action === "exhausted" && desc.turnRetry?.fallback?.length) {
+          const p: PendingRetry = {
+            kind: trigger.kind,
+            errorClass: plan.errorClass as TurnRetryClass,
+            attempt: plan.attempts,
+            ...(plan.error ? { error: plan.error } : {}),
+            timer: undefined as unknown as ReturnType<typeof setTimeout>,
+          }
+          void applyFallback(desc, p).then(
+            applied => {
+              if (!applied) finish()
+            },
+            err => {
+              log(
+                `[turn-retry] ${id}: fallback failed: ${err instanceof Error ? err.message : String(err)}`,
+              )
+              finish()
+            },
+          )
+          return
+        }
+        finish()
         return
+      }
       case "retry": {
         if (plan.note) registry.recordNotice(id, `[turn-retry] no migration: ${plan.note}`)
         const p: PendingRetry = {
