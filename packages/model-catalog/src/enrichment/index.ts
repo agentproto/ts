@@ -41,6 +41,14 @@ export interface ModelEnrichment {
   actions: readonly string[]
 }
 
+/** The one zero-price rule: both token prices are exactly 0. */
+export function isZeroPriced(pricing: {
+  inputPer1M: number
+  outputPer1M: number
+}): boolean {
+  return pricing.inputPer1M === 0 && pricing.outputPer1M === 0
+}
+
 /**
  * Internal shape for the curated explicit-enrichment map. The map carries
  * only the *curation* fields — `tags` here is curation-only (no action
@@ -379,9 +387,20 @@ function mergeTags(
 export function getEnrichment(model: ResolvedModel): ModelEnrichment {
   const curation = getCurationEnrichment(model)
   const actions = getActions(model)
+  const tags = mergeTags(curation.tags, actions)
+  // Derived on BOTH paths: the explicit map returns before `inferTags`, so a
+  // curated model must still carry `price:zero` when its pricing is 0/0.
+  if (
+    model.kind === "llm" &&
+    model.pricing !== undefined &&
+    isZeroPriced(model.pricing) &&
+    !tags.includes("price:zero")
+  ) {
+    tags.push("price:zero")
+  }
   return {
     catalogPriceTier: curation.catalogPriceTier,
-    tags: mergeTags(curation.tags, actions),
+    tags,
     lifecycle: curation.lifecycle,
     actions,
   }
