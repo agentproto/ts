@@ -139,7 +139,9 @@ export interface VerifyAttestationResult {
  */
 export function verifyAttestation(att: Attestation, expect: VerifyAttestationExpect = {}): VerifyAttestationResult {
   const problems: string[] = []
-  if (att.schema !== ATTESTATION_SCHEMA) problems.push(`unknown schema '${String(att.schema)}'`)
+  if (att.schema !== ATTESTATION_SCHEMA && att.schema !== "review.attestation/v1") {
+    problems.push(`unknown schema '${String(att.schema)}'`)
+  }
   if (att.rangeSha !== rangeSha(att.target)) problems.push("rangeSha does not match target.baseSha..target.headSha")
   const refolded = foldVerdict(att.lanes)
   if (refolded !== att.verdict) problems.push(`verdict '${att.verdict}' does not follow from its lanes (expected '${refolded}')`)

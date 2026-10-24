@@ -283,6 +283,17 @@ function noAdapterError(agentId: string): string {
   return `agent "${agentId}" has no adapter: set metadata.adapter in its AGENT.md, use a claude-*, opencode/* or opencode-go/* model, or pass adapter to app_run`
 }
 
+/** The shared failure for an installed app's AGENT.md that cannot be read at
+ *  run time. When the app's install `dir` itself is gone (an app installed
+ *  from a worktree that was later removed), say so and how to fix it. */
+function agentManifestReadError(app: InstalledApp, agentId: string, agentPath: string, err: unknown): string {
+  const cause = err instanceof Error ? err.message : String(err)
+  const dirGone = existsSync(app.dir)
+    ? ""
+    : `; installed app dir "${app.dir}" no longer exists, re-run app_install for "${app.appId}" from a live checkout`
+  return `agent "${agentId}": could not read AGENT.md "${agentPath}": ${cause}${dirGone}`
+}
+
 /**
  * Build `compileWorkflow`'s `agentRefs` map for a workflow bundled by an
  * installed app — every agent id the app bundles resolves to a spawn adapter
@@ -321,21 +332,18 @@ export async function resolveAgentRefsForWorkflow(
   const refs: Record<string, AgentRefResolution> = {}
   const caps = new Map<string, Promise<AgentProjectionCaps>>()
   for (const agent of app.agents) {
-    let loaded: LoadedAgentManifest | undefined
+    let loaded: LoadedAgentManifest
     try {
       loaded = await loadAgentPromptDefaults(agent.path, resolveRole)
-    } catch {
-      // AGENT.md unreadable/invalid at run time (already validated at
-      // install) — if that leaves the agent with no adapter at all, the
-      // no-adapter error below names it rather than silently degrading the
-      // whole workflow.
+    } catch (err) {
+      // AGENT.md unreadable/invalid at run time (validated at install, so
+      // usually the install's `dir` vanished under it). Name the real cause:
+      // with no manifest there is no adapter either, and a bare no-adapter
+      // error sends the reader to edit a file that is not there.
+      throw new Error(agentManifestReadError(app, agent.id, agent.path, err))
     }
-    const adapter = resolveAgentSpawnAdapter(loaded?.model, loaded?.metadata)
+    const adapter = resolveAgentSpawnAdapter(loaded.model, loaded.metadata)
     if (adapter === undefined) throw new Error(noAdapterError(agent.id))
-    if (loaded === undefined) {
-      refs[agent.id] = { adapter }
-      continue
-    }
     let adapterCaps = caps.get(adapter)
     if (adapterCaps === undefined) {
       adapterCaps = projectionCapsFor(resolveAgentAdapter, adapter)
@@ -2566,10 +2574,7 @@ export function registerAppTools(
         try {
           loaded = await loadAgentPromptDefaults(agentPath, resolveModelRole)
         } catch (err) {
-          errors.push({
-            agentId,
-            error: `could not read AGENT.md "${agentPath}": ${err instanceof Error ? err.message : String(err)}`,
-          })
+          errors.push({ agentId, error: agentManifestReadError(app, agentId, agentPath, err) })
           return null
         }
 

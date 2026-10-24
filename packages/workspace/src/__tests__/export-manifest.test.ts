@@ -32,8 +32,23 @@ describe("EXPORT.md round-trip", () => {
     ).toThrow()
   })
 
+  it("parses the canonical workspace.export/v1 tag", () => {
+    const md = "---\nschema: workspace.export/v1\nfrom: \"@a/b\"\ngenerated_at: \"2026-10-17T07:00:00Z\"\n---\n"
+    expect(parseExportManifest(md).frontmatter.schema).toBe("workspace.export/v1")
+  })
+
+  it("still parses the legacy workspace-export/v1 tag", () => {
+    const md = "---\nschema: workspace-export/v1\nfrom: \"@a/b\"\ngenerated_at: \"2026-10-17T07:00:00Z\"\n---\n"
+    expect(parseExportManifest(md).frontmatter.schema).toBe("workspace-export/v1")
+  })
+
+  it("keeps writing the legacy tag even when handed the canonical one", () => {
+    const md = writeExportManifest({ schema: "workspace.export/v1", from: "@a/b", generated_at: "2026-10-17T07:00:00Z" }, "")
+    expect(md).toContain("schema: workspace-export/v1")
+  })
+
   it("parseExportManifest rejects a wrong schema literal", () => {
-    const md = "---\nschema: workspace-export/v2\nfrom: \"@a/b\"\ngenerated_at: 2026-10-17T07:00:00Z\n---\n"
+    const md = "---\nschema: workspace-export/v2\nfrom: \"@a/b\"\ngenerated_at: \"2026-10-17T07:00:00Z\"\n---\n"
     expect(() => parseExportManifest(md)).toThrow(/parseExportManifest/)
   })
 })

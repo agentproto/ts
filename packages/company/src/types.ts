@@ -12,9 +12,9 @@
  */
 export type CompanyDefinition = {
   /**
-   * Format identifier. MUST be the literal string `agentcompanies/v1`.
+   * Format identifier. `agentcompanies/v1` is accepted as a legacy alias (AIP-70).
    */
-  schema: "agentcompanies/v1"
+  schema: "company/v1" | "agentcompanies/v1"
   /**
    * Discriminator. Selects the doctype-specific branch under `oneOf`.
    */

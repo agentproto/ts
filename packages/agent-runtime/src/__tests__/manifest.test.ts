@@ -47,6 +47,36 @@ Test swarm.
     expect(skeptic.config).toEqual({ model: "sonnet" })
   })
 
+  it("parses a manifest carrying the canonical runtime/v1 tag", () => {
+    const manifest = parseManifest(`---
+schema: runtime/v1
+kind: MultiAgentRuntime
+id: canonical-swarm
+participants:
+  - id: reviewer
+    executor: agent-cli
+substrate: { kind: file }
+dispatcher: { kind: mention }
+---
+`)
+    expect(manifest.schema).toBe("runtime/v1")
+  })
+
+  it("still parses the legacy agentruntimes/v1 tag", () => {
+    const manifest = parseManifest(`---
+schema: agentruntimes/v1
+kind: MultiAgentRuntime
+id: legacy-swarm
+participants:
+  - id: reviewer
+    executor: agent-cli
+substrate: { kind: file }
+dispatcher: { kind: mention }
+---
+`)
+    expect(manifest.schema).toBe("agentruntimes/v1")
+  })
+
   it("keeps config optional for backward compatibility", () => {
     const manifest = parseManifest(`---
 schema: agentruntimes/v1

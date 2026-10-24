@@ -110,6 +110,11 @@ describe("isActionKind", () => {
       expect(isActionKind(id)).toBe(false)
     }
   })
+
+  it("returns false instead of throwing for non-string input", () => {
+    expect(isActionKind(undefined as unknown as string)).toBe(false)
+    expect(isActionKind(42 as unknown as string)).toBe(false)
+  })
 })
 
 describe("occurrence keys", () => {
