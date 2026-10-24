@@ -122,6 +122,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/provider-kit | `packages/provider-kit` | 0.4.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/provider-presets | `packages/provider-presets` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/providers-store | `packages/providers-store` | 0.4.0 | core | product runtime package consumed by the runtime/cli |
+@agentproto/quota | `packages/quota` | 0.0.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/redaction | `packages/redaction` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/ref | `packages/ref` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/registry | `packages/registry` | 0.1.2 | core | product runtime package consumed by the runtime/cli |

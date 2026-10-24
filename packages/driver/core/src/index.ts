@@ -5,7 +5,7 @@
  * Spec: https://agentproto.sh/docs/aip-30
  */
 
-export const SPEC_NAME = "agentdriver/v1" as const
+export const SPEC_NAME = "driver/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineDriver, normalizeToolId } from "./define-provider.js"

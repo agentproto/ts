@@ -10,7 +10,7 @@
  *   - MD:  `parsePersonaManifest(src) → personaFromManifest({...})` → `PersonaHandle`
  */
 
-export const SPEC_NAME = "agentpersona/v1" as const
+export const SPEC_NAME = "persona/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { definePersona } from "./define-persona.js"

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { ACCEPTED_SPEC_NAMES } from "../names.js"
 
 /**
  * agentgovernance/v1 — audit-log.jsonl line doctype.
@@ -55,7 +56,11 @@ export const KNOWN_ENTITY_TYPES = [
 ] as const
 
 export const auditEventSchema = z.object({
-  schema: z.literal("agentgovernance/v1"),
+  // Reads accept the AIP-70 name and the pre-AIP-70 legacy name. The tag
+  // is part of the hashed row bytes: verification always uses the tag
+  // stored in the row, never one re-derived from SPEC_NAME. New rows keep
+  // being written with the legacy tag for now (EMITTED_SPEC_NAME).
+  schema: z.enum(ACCEPTED_SPEC_NAMES),
   doctype: z.literal("audit-event"),
 
   /** Who performed the action. */

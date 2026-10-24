@@ -10,7 +10,7 @@
  *   - MD:  `parseCodeManifest(src) → codeFromManifest({...})` → `CodeHandle`
  */
 
-export const SPEC_NAME = "agentcode/v1" as const
+export const SPEC_NAME = "code/v2" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineCode } from "./define-code.js"

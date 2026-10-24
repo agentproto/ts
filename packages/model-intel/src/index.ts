@@ -1,22 +1,32 @@
 /**
  * @agentproto/model-intel — model intelligence primitives.
  *
- * Unified, provider-neutral quota status (AIP-67): one QuotaStatus shape with a
- * mandatory `basis`, a never-throw QuotaReader contract, and a reader registry.
- * Unknown is omitted, never fabricated.
+ * Catalog watch domain: a pure diff of two priced catalog snapshots.
  *
- * @see https://agentproto.sh/docs/aip-67
+ * The AIP-67 quota API now lives in `@agentproto/quota`. Every quota export is
+ * re-exported below for compatibility and is deprecated here.
  */
 
-export const SPEC_NAME = "quota/v1" as const
-export const SPEC_VERSION = "1.0.0-alpha" as const
-
+/** @deprecated Import from @agentproto/quota. */
 export {
+  SPEC_NAME,
+  SPEC_VERSION,
   QUOTA_BASES,
   quotaCreditsSchema,
   quotaStatusSchema,
   quotaWindowSchema,
-} from "./types.js"
+  buildQuotaStatus,
+  remainingPctFromCounts,
+  remainingPctFromUsed,
+  QuotaReaderRegistry,
+  defineQuotaReader,
+  quotaFromAnthropicHeaders,
+  quotaFromCodexRateLimits,
+  createMoonshotQuotaReader,
+  createOpenRouterQuotaReader,
+} from "@agentproto/quota"
+
+/** @deprecated Import from @agentproto/quota. */
 export type {
   QuotaBasis,
   QuotaCredits,
@@ -25,14 +35,12 @@ export type {
   QuotaReader,
   QuotaStatus,
   QuotaWindow,
-} from "./types.js"
-export {
-  buildQuotaStatus,
-  remainingPctFromCounts,
-  remainingPctFromUsed,
-} from "./build.js"
-export type { BuildQuotaStatusInput } from "./build.js"
-export { QuotaReaderRegistry, defineQuotaReader } from "./registry.js"
+  BuildQuotaStatusInput,
+  CodexCredits,
+  CodexRateLimits,
+  CodexRateLimitsInput,
+  CodexRateLimitWindow,
+} from "@agentproto/quota"
 
 /**
  * Catalog watch domain: pure diff of two priced catalog snapshots.
@@ -44,13 +52,3 @@ export type {
   CatalogSnapshot,
   CatalogSnapshotEntry,
 } from "./catalog-diff.js"
-export { quotaFromAnthropicHeaders } from "./readers/anthropic.js"
-export { quotaFromCodexRateLimits } from "./readers/codex.js"
-export type {
-  CodexCredits,
-  CodexRateLimits,
-  CodexRateLimitsInput,
-  CodexRateLimitWindow,
-} from "./readers/codex.js"
-export { createMoonshotQuotaReader } from "./readers/moonshot.js"
-export { createOpenRouterQuotaReader } from "./readers/openrouter.js"

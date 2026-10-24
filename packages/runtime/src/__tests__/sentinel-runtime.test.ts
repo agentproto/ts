@@ -8,13 +8,17 @@
  * `supervisor-notify.test.ts`, which needs `markCrashed`).
  */
 
-import { describe, expect, it, vi } from "vitest"
+import { afterAll, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { createSentinelStore, type Sentinel, type SentinelStore } from "../sentinel-store.js"
-import { createSentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel-runtime.js"
+import {
+  createSentinelRuntime as createSentinelRuntimeBase,
+  type SentinelRuntimeOptions,
+  type SentinelRuntimeRegistry,
+} from "../sentinel-runtime.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
 import { singleMatch, type SentinelMatchClause, type SentinelProviderHandle } from "../sentinel-providers/types.js"
 import { SessionNotAliveError, type SendMessageResult } from "../sessions.js"
@@ -79,6 +83,17 @@ function resolverFor(provider: SentinelProviderHandle) {
     slug === provider.slug ? provider : null
 }
 
+// Every runtime in this file writes an observation ledger. Keep that off the
+// operator's real home directory; individual tests that inspect the ledger
+// pass their own `triagePath`.
+const defaultTriageDir = mkdtempSync(join(tmpdir(), "sentinel-triage-default-"))
+const defaultTriagePath = join(defaultTriageDir, "sentinel-triage.jsonl")
+afterAll(() => rmSync(defaultTriageDir, { recursive: true, force: true }))
+
+function createSentinelRuntime(opts: SentinelRuntimeOptions) {
+  return createSentinelRuntimeBase({ ...opts, triagePath: opts.triagePath ?? defaultTriagePath })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 describe("SentinelRuntime", () => {
@@ -115,6 +130,123 @@ describe("SentinelRuntime", () => {
     expect(updated?.eventCount).toBe(1)
     expect(updated?.lastEventTs).toBeDefined()
     expect(updated?.handle.cursor).toBe("1")
+  })
+
+  it("writes exactly one observation ledger line and delivers the same sendMessage call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-runtime-"))
+    const triagePath = join(dir, "sentinel-triage.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_1" })
+      const event = makeFakeEvent({
+        id: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-1",
+        summary: "SECRET_SUMMARY_TEXT",
+        data: { secret: "SECRET_DATA_VALUE" },
+      })
+      provider.emit(event)
+
+      const registry = stubRegistry(async () => okResult())
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        triagePath,
+      })
+
+      await runtime.pollOnce()
+
+      // The delivery itself is byte-for-byte what it was before triage: a
+      // system notice with the same correlation id, text and envelope, and
+      // the same sendMessage options.
+      expect(registry.calls).toHaveLength(1)
+      expect(registry.calls[0]).toEqual({
+        msg: {
+          id: expect.any(String),
+          ts: expect.any(String),
+          to: "sess_1",
+          from: { relation: "system" },
+          kind: "notice",
+          urgency: "next-turn",
+          correlationId: "sentinel:fake:widget-1",
+          text: "[fake] SECRET_SUMMARY_TEXT",
+          data: event,
+        },
+        opts: { source: "sentinel", origin: sentinel.id },
+      })
+
+      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toEqual({
+        ts: expect.any(String),
+        source: "sentinel",
+        applied: false,
+        decision: "wake",
+        rule: "default",
+        target: "sess_1",
+        sentinelId: sentinel.id,
+        eventId: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-1",
+        urgency: "next-turn",
+      })
+      expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")
+      expect(lines[0]).not.toContain("SECRET_DATA_VALUE")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("on sendMessage failure the event is retried without treating it as a repeat", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-retry-"))
+    const triagePath = join(dir, "sentinel-triage.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_1", subject: "fake:widget-42" })
+      const event = makeFakeEvent({
+        id: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-42",
+      })
+      provider.emit(event)
+
+      let attempt = 0
+      const registry = stubRegistry(async () => {
+        attempt++
+        if (attempt === 1) throw new Error("transient")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        triagePath,
+      })
+
+      await runtime.pollOnce()
+      expect(registry.calls).toHaveLength(1)
+      expect(store.isSeen(sentinel.id, "evt_1")).toBe(false)
+
+      await runtime.pollOnce()
+      expect(registry.calls).toHaveLength(2)
+      expect(store.isSeen(sentinel.id, "evt_1")).toBe(true)
+
+      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(2)
+      const first = JSON.parse(lines[0]!)
+      const second = JSON.parse(lines[1]!)
+      expect(first.rule).toBe("default")
+      expect(second.rule).toBe("default")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("dedups: an event id already in the persisted `seen` window is never re-delivered", async () => {

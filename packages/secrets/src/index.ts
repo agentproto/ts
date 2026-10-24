@@ -10,7 +10,7 @@
  *   - MD:  `parseSecretsManifest(src) → secretsFromManifest({...})` → `SecretsHandle`
  */
 
-export const SPEC_NAME = "agentsecrets/v1" as const
+export const SPEC_NAME = "secrets/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineSecrets } from "./define-secrets.js"
