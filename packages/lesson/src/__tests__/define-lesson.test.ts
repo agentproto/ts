@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { defineLesson } from "../define-lesson.js"
+import { parseLessonManifest } from "../manifest/index.js"
 import type { LessonDefinition } from "../types.js"
 
 const MINIMAL: LessonDefinition = {
@@ -57,5 +58,28 @@ describe("defineLesson — schema-derived field validation runs in TS path", () 
     expect(() =>
       defineLesson({ ...MINIMAL, title: "x".repeat(201) }),
     ).toThrow(/defineLesson \(AIP-11\)/)
+  })
+})
+
+describe("parseLessonManifest (AIP-11) document tags", () => {
+  const doc = (tag: string) => `---
+schema: ${tag}
+slug: validate-source-before-recommend
+title: Validate the source before recommending a paper.
+trigger:
+  description: Recommendation involves a peer-reviewed publication.
+outcome: success
+evidence:
+  - kind: run
+    ref: run:42
+---
+`
+
+  it("parses a LESSON.md carrying the canonical lesson/v1 tag", () => {
+    expect(parseLessonManifest(doc("lesson/v1")).frontmatter.schema).toBe("lesson/v1")
+  })
+
+  it("still parses the legacy learning/v1 tag", () => {
+    expect(parseLessonManifest(doc("learning/v1")).frontmatter.schema).toBe("learning/v1")
   })
 })
