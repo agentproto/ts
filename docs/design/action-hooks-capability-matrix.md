@@ -366,6 +366,9 @@ declarations are metadata only:
   CLIs examined.
 - Copilot CLI `prompt` handlers are only supported on `sessionStart`, which
   is why only that row lists `prompt`.
+- A consumer MUST NOT treat a declaration with both `can_block: true` and
+  `async: true` as an asynchronous blocking binding: a blocking admission
+  binding must use the synchronous form.
 
 ### ACP permission request availability
 
@@ -395,58 +398,69 @@ declarations are metadata only:
 The AIP-45 manifest is typed twice in this repo: a zod schema used by both
 authoring paths, and a TypeScript interface.
 
-- packages/driver/agent-cli/src/schema.ts:362 `const capabilitiesSchema = z.object({`
-- packages/driver/agent-cli/src/schema.ts:402 `}).strict()`
-- packages/driver/agent-cli/src/types.ts:372 `export interface AgentCliCapabilities {`
-- packages/driver/agent-cli/src/schema.ts:607 `capabilities: capabilitiesSchema.optional(),`
+- packages/driver/agent-cli/src/schema.ts:386 `const capabilitiesSchema = z.object({`
+- packages/driver/agent-cli/src/schema.ts:426 `hooks: z`
+- packages/driver/agent-cli/src/schema.ts:435 `}).strict()`
+- packages/driver/agent-cli/src/types.ts:402 `export interface AgentCliCapabilities {`
+- packages/driver/agent-cli/src/types.ts:459 `hooks?: readonly NativeHookCapability[]`
+- packages/driver/agent-cli/src/schema.ts:640 `capabilities: capabilitiesSchema.optional(),`
 
-`capabilitiesSchema` is strict and lists only the currently known booleans
-(`streaming`, `tool_calls`, `sub_agents`, `file_io`, `multimodal`,
-`resumable`, `bidirectional`, `nativeTerminalResume`, `nativeToolSearch`,
-`deferredToolDiscovery`, and the file-attach field). An unknown key is
-rejected by zod's strict object.
+`capabilitiesSchema` is strict and lists the known booleans (`streaming`,
+`tool_calls`, `sub_agents`, `file_io`, `multimodal`, `resumable`,
+`bidirectional`, `nativeTerminalResume`, `nativeToolSearch`,
+`deferredToolDiscovery`, and the file-attach field) plus `hooks`. The
+`hooks` key is an array of `nativeHookCapabilitySchema`, which mirrors the
+AIP-71 `NativeHookCapability` shape:
 
-A `hooks` array under `capabilities` would NOT pass validation today. Two
-places must change:
+- packages/driver/agent-cli/src/schema.ts:362 `const nativeHookHandlerSchema = z.enum(["command", "mcp", "http", "prompt", "agent"])`
+- packages/driver/agent-cli/src/schema.ts:364 `const nativeHookCapabilitySchema = z`
 
-1. Add `hooks` to `capabilitiesSchema` in
-   packages/driver/agent-cli/src/schema.ts:362, with a zod schema mirroring
-   the AIP-71 `NativeHookCapability` shape.
-2. Add a corresponding `hooks?: NativeHookCapability[]` (or readonly array)
-   to `AgentCliCapabilities` in packages/driver/agent-cli/src/types.ts:372.
-
-Because both authoring paths validate against the zod schema, the schema
-change is the blocking one. The TypeScript interface is needed for adapter
-handles and for consumers that read the field.
+Both authoring paths validate against this schema, and adapter handles read
+the same shape through `AgentCliCapabilities.hooks`, so a declared `hooks`
+array passes validation and is carried on the typed handle.
 
 ### Harness capability response
 
 `harness_capabilities` is not built by a single runtime function. The MCP
 tool delegates to an injected lister:
 
-- packages/runtime/src/agent-tools.ts:2148 `"harness_capabilities",`
+- packages/runtime/src/agent-tools.ts:2152 `"harness_capabilities",`
 - packages/cli/src/registry/resolve.ts:1056 `export async function listHarnessCapabilities(opts?: {`
-- packages/provider-kit/src/capability.ts:82 `export interface HarnessCapabilities {`
-- packages/provider-kit/src/capability.ts:173 `export function deriveDeclaredCapabilities(def: HarnessManifestView): HarnessCapabilities {`
+- packages/provider-kit/src/capability.ts:98 `export interface HarnessCapabilities {`
+- packages/provider-kit/src/capability.ts:193 `export function deriveDeclaredCapabilities(def: HarnessManifestView): HarnessCapabilities {`
 
-The current `HarnessCapabilities` record has `adapter`, `source`,
-`discoverable`, `authStores`, `providers`, `models`, `endpointCompat` and
-`application`. It has no hook block. Hooks support would be an additive
-field on this record, populated by `listHarnessCapabilities` from the
-adapter manifest or a capability strategy.
+The `HarnessCapabilities` record has `adapter`, `source`, `discoverable`,
+`authStores`, `providers`, `models`, `endpointCompat`, `application` and an
+optional hook block:
+
+- packages/provider-kit/src/capability.ts:114 `hooks?: readonly HookCapabilityView[]`
+
+`deriveDeclaredCapabilities` reads the manifest field and projects it onto
+that block:
+
+- packages/provider-kit/src/capability.ts:211 `const declaredHooks = def.capabilities?.hooks`
+- packages/provider-kit/src/capability.ts:230 `? { hooks: declaredHooks.map((hook) => ({ ...hook, handlers: [...hook.handlers] })) }`
 
 ### Session capability response
 
 `session_capabilities` is built by one shared function used by both the MCP
 tool and the HTTP twin:
 
-- packages/runtime/src/session-capabilities.ts:134 `export function buildSessionCapabilities(`
+- packages/runtime/src/session-capabilities.ts:141 `export function buildSessionCapabilities(`
 - packages/runtime/src/session-tools.ts:2510 `"session_capabilities",`
 
-The frozen `SessionCapabilities` body has no hook block. A future additive
-field would go into `buildSessionCapabilities` and the corresponding HTTP
-route that calls it. The lifecycle package already names these two surfaces
-as the only advertised homes for hook capability discovery:
+The `SessionCapabilities` body has an optional hook block:
+
+- packages/runtime/src/session-capabilities.ts:101 `hooks?: { native: readonly HookCapabilityView[] }`
+
+`buildSessionCapabilities` emits it when the session descriptor carries
+native hook declarations:
+
+- packages/runtime/src/session-capabilities.ts:185 `...(desc.nativeHooks !== undefined && desc.nativeHooks.length > 0`
+- packages/runtime/src/session-capabilities.ts:186 `? { hooks: { native: desc.nativeHooks } }`
+
+The lifecycle package names these two surfaces as the only advertised homes
+for hook capability discovery:
 
 - packages/lifecycle/src/hooks.ts:41 `export const HOOK_CAPABILITY_SURFACES = [`
 - packages/lifecycle/src/hooks.ts:42 `"harness_capabilities",`

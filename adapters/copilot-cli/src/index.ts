@@ -35,6 +35,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { copilotCliNativeHooks } from "./native-hooks.js"
 
 export const copilotCli: AgentCliHandle = defineAgentCli({
   name: "copilot-cli",
@@ -129,6 +130,7 @@ export const copilotCli: AgentCliHandle = defineAgentCli({
     // ACP session load (0.0.410+) backs the `native-resume` continuation.
     resumable: true,
     bidirectional: true,
+    hooks: copilotCliNativeHooks,
   },
   options: [
     {
