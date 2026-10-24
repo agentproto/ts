@@ -358,11 +358,28 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
       const redacted = redactUrls(error)
       if (row.attempt >= row.maxAttempts) {
         // Exhaustion is terminal and must not replay: persist durably.
+        const previous = {
+          status: row.status,
+          lastError: row.lastError,
+          completedAt: row.completedAt,
+          nextAttemptAt: row.nextAttemptAt,
+        }
         row.status = "dead"
         row.lastError = redacted
         row.completedAt = nowMs()
         delete row.nextAttemptAt
-        await durable.persistNow()
+        try {
+          await durable.persistNow()
+        } catch (err) {
+          row.status = previous.status
+          if (previous.lastError === undefined) delete row.lastError
+          else row.lastError = previous.lastError
+          if (previous.completedAt === undefined) delete row.completedAt
+          else row.completedAt = previous.completedAt
+          if (previous.nextAttemptAt === undefined) delete row.nextAttemptAt
+          else row.nextAttemptAt = previous.nextAttemptAt
+          throw err
+        }
         return
       }
       row.status = "failed"
@@ -377,13 +394,30 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
       const row = present(key)
       if (row.status === "dead") return
       if (row.status === "done") throw new ReceiptTransitionError("terminal", key)
+      const previous = {
+        status: row.status,
+        lastError: row.lastError,
+        completedAt: row.completedAt,
+        nextAttemptAt: row.nextAttemptAt,
+      }
       row.status = "dead"
       row.lastError = redactUrls(reason)
       row.completedAt = nowMs()
       delete row.nextAttemptAt
       // Rare and terminal: a lost dead must not replay a non-retryable or
       // recursion-capped reaction.
-      await durable.persistNow()
+      try {
+        await durable.persistNow()
+      } catch (err) {
+        row.status = previous.status
+        if (previous.lastError === undefined) delete row.lastError
+        else row.lastError = previous.lastError
+        if (previous.completedAt === undefined) delete row.completedAt
+        else row.completedAt = previous.completedAt
+        if (previous.nextAttemptAt === undefined) delete row.nextAttemptAt
+        else row.nextAttemptAt = previous.nextAttemptAt
+        throw err
+      }
     },
 
     sweep,

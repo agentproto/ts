@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -301,6 +301,55 @@ describe("ReactionReceiptStore", () => {
     expect(row?.status).toBe("dead")
     expect(row?.completedAt).toBe(1_002_000)
     expect(row?.nextAttemptAt).toBeUndefined()
+  })
+
+  it("markDead whose durable write fails restores the running row and can be retried", async () => {
+    const dir = tmp()
+    const nested = join(dir, "nested")
+    const file = join(nested, "receipts.json")
+    const c = clock()
+    const store = createReactionReceiptStore({ filePath: file, nowMs: c.now, debounceMs: 60_000, log: () => {} })
+    await store.insertPending(input())
+    await store.markRunning(keyOf())
+    rmSync(nested, { recursive: true, force: true })
+    writeFileSync(nested, "not a directory")
+    c.advance(1_000)
+    await expect(store.markDead(keyOf(), "recursion_cap")).rejects.toThrow()
+    const row = store.get(keyOf())
+    expect(row?.status).toBe("running")
+    expect(row?.completedAt).toBeUndefined()
+    expect(row?.lastError).toBeUndefined()
+
+    rmSync(nested, { force: true })
+    mkdirSync(nested)
+    await store.markDead(keyOf(), "recursion_cap")
+    const second = reopen(file, c)
+    expect(second.get(keyOf())?.status).toBe("dead")
+  })
+
+  it("markFailed at the cap whose durable write fails restores running and the retry commits dead", async () => {
+    const dir = tmp()
+    const nested = join(dir, "nested")
+    const file = join(nested, "receipts.json")
+    const c = clock()
+    const store = createReactionReceiptStore({ filePath: file, nowMs: c.now, debounceMs: 60_000, log: () => {} })
+    await store.insertPending(input({ maxAttempts: 1 }))
+    await store.markRunning(keyOf())
+    rmSync(nested, { recursive: true, force: true })
+    writeFileSync(nested, "not a directory")
+    c.advance(1_000)
+    await expect(store.markFailed(keyOf(), "exhausted", undefined)).rejects.toThrow()
+    const row = store.get(keyOf())
+    expect(row?.status).toBe("running")
+    expect(row?.completedAt).toBeUndefined()
+    expect(row?.lastError).toBeUndefined()
+
+    rmSync(nested, { force: true })
+    mkdirSync(nested)
+    await store.markFailed(keyOf(), "exhausted", undefined)
+    expect(store.get(keyOf())?.status).toBe("dead")
+    const second = reopen(file, c)
+    expect(second.get(keyOf())?.status).toBe("dead")
   })
 
   it("markDead is durable and idempotent and terminal rows never come back", async () => {
