@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/agency-v2",
   "version": "0.1.5",
-  "description": "@agentproto/agency-v2 — AIP-21 AGENCY.md reference implementation. A workspace-only successor to AIP-8 that drops the eleven hardcoded agency doctypes (service, engagement, agreement, deliverable, invoice, counterparty, procedure, pricing-model, routine, capacity, agency) and delegates all per-doctype schema work to AIP-18 collections — owning only the workspace root manifest, the engagement lifecycle helpers that span collections, scope axes, and cross-AIP composition with strong governance and work bindings.",
+  "description": "DEPRECATED: renamed @agentproto/agency. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",
     "aip-21",
@@ -54,9 +54,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
-    "gray-matter": "^4.0.3",
-    "zod": "^4.6.7"
+    "@agentproto/agency": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
@@ -64,5 +62,8 @@
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
+  },
+  "engines": {
+    "node": ">=20.9.0"
   }
 }

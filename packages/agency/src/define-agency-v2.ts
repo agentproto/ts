@@ -54,3 +54,6 @@ export const defineAgencyV2 = createDoctype<AgencyV2Definition, AgencyV2Handle>(
     return { ...def } as AgencyV2Handle
   },
 })
+
+/** AIP-70 registry name for `defineAgencyV2`. */
+export const defineAgency = defineAgencyV2
