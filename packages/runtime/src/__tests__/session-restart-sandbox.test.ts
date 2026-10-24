@@ -731,6 +731,64 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(desc.sandboxCheckpointOverride).toBe(false)
   })
 
+  it("arms the periodic checkpoint timer on a restart onto a LIVE box, one interval after the resume", async () => {
+    const sessionsDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-sessions-"))
+    setDefaultSessionsBaseDir(sessionsDir)
+    try {
+      const target: SandboxDeliveryTarget = {
+        checkoutDir: "/home/user/proj",
+        branch: "wt/resume-live",
+        baseSha: "c".repeat(40),
+      }
+      const { resolver, providerResolver } = await setup({ deliveryTarget: target })
+      const commands: string[] = []
+      const inner = box.provider
+      const withExec: (slug: string) => Promise<SandboxProviderHandle | null> = async slug => {
+        const handle = await providerResolver(slug)
+        if (!handle) return null
+        return {
+          ...handle,
+          provider: {
+            boot: inner.boot.bind(inner),
+            async connect(
+              sandboxId: string,
+              spec: SandboxSpec,
+              connectOpts: Parameters<NonNullable<typeof inner.connect>>[2],
+            ) {
+              const booted = await inner.connect!(sandboxId, spec, connectOpts)
+              return {
+                ...booted,
+                async exec(o: { command: string }) {
+                  commands.push(o.command)
+                  return { exitCode: 0, stdout: "ahead=0\nuncommitted=0\n", stderr: "", durationMs: 1 }
+                },
+              }
+            },
+          },
+        }
+      }
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: withExec,
+        loadDefaultsConfig: async () => ({ sandbox: { checkpoint: { intervalMs: 25 } } }),
+      })
+      // The interval is armed at proxy creation (the resume), so the first
+      // checkpoint lands one interval after the restart even though no turn
+      // has started and the box was already up before the restart.
+      await vi.waitFor(
+        () => {
+          expect(
+            commands.some(c => c.includes("wt/resume-live") && c.includes("rev-list")),
+          ).toBe(true)
+        },
+        { timeout: 2_000 },
+      )
+      expect(registry.get(result.desc.id)?.sandboxCheckpoint).toBeDefined()
+    } finally {
+      setDefaultSessionsBaseDir(undefined)
+      await rm(sessionsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+    }
+  })
+
   it("a session with no work branch restarts without any delivery hook", async () => {
     const { resolver, providerResolver } = await setup()
     const result = await restartAgentSession(registry, resolver, prev, {
