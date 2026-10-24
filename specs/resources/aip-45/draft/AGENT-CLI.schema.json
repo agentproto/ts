@@ -56,7 +56,7 @@
       "items": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/setupStep" }
     },
     "auth": {
-      "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/$defs/auth"
+      "$ref": "#/$defs/auth"
     },
     "sandbox": {
       "description": "Inherits AIP-36 SANDBOX.md verbatim. Either an inline block or a workspace-relative ref to a SANDBOX.md.",
@@ -114,10 +114,16 @@
       "items": { "$ref": "#/$defs/option" },
       "description": "Independent typed knobs the CLI accepts. The host picks any subset per turn via OPERATOR.runtime.config.options. Patches apply in declaration order, AFTER mode patches."
     },
+    "gateways": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/preset" },
+      "description": "AIP-45 gateway endpoints this harness can be pointed at (Anthropic/OpenAI-compatible backends). Merged into the gateway catalog (agentproto presets list / list_provider_presets) alongside the built-in registry, deduped by id (built-in wins on collision). Lets an external harness surface a gateway the built-in registry doesn't know about. Replaces the legacy `presets` field; a manifest MUST NOT carry both."
+    },
     "presets": {
       "type": "array",
       "items": { "$ref": "#/$defs/preset" },
-      "description": "AIP-45 gateway presets this adapter can drive (Anthropic/OpenAI-compatible backends). Merged into the provider-preset catalog (agentproto presets list / list_provider_presets) alongside the built-in registry, deduped by id (built-in wins on collision). Lets an external adapter surface a gateway the built-in registry doesn't know about."
+      "deprecated": true,
+      "description": "DEPRECATED: legacy alias for `gateways`, with identical entry fields. Accepted so existing manifests keep loading. A manifest MUST NOT carry both `gateways` and `presets`."
     },
     "continuation": { "$ref": "#/$defs/continuation" },
     "requires": { "$ref": "https://agentproto.sh/docs/aip-29/CLI.schema.json#/properties/requires" },
@@ -179,6 +185,9 @@
       }
     },
     {
+      "not": { "required": ["gateways", "presets"] }
+    },
+    {
       "if": {
         "type": "object",
         "properties": {
@@ -206,6 +215,66 @@
     }
   ],
   "$defs": {
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Auth surface. The `ref`, `state`, `login`, `refresh`, and `expiry` fields follow AIP-29's auth schema verbatim; `methods` is the AIP-45 addition that lists the credential methods the harness can present per billing route.",
+      "properties": {
+        "ref":   { "type": "string", "description": "Workspace-relative path to SECRETS.md (AIP-19)." },
+        "state": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "paths": { "type": "array", "items": { "type": "string" } },
+            "env":   { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "login": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cmd"],
+          "properties": {
+            "cmd":                   { "type": "string" },
+            "interactive":           { "type": "boolean" },
+            "requires_callback_url": { "type": "boolean" },
+            "completes_when": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cmd"],
+              "properties": {
+                "cmd":       { "type": "string" },
+                "exit_code": { "type": "integer" }
+              }
+            }
+          }
+        },
+        "refresh": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cmd"],
+          "properties": {
+            "cmd":   { "type": "string" },
+            "every": { "type": "string", "pattern": "^P(?:T)?\\S+$", "description": "ISO-8601 duration." }
+          }
+        },
+        "expiry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "detect": { "type": "string", "pattern": "^exit_code:\\d+$" }
+          }
+        },
+        "methods": {
+          "type": "object",
+          "description": "Optional map from billing route to the credential methods the harness can present on that route. A route key is one of gateways[].id, or the reserved key `default` for the route the harness uses when no gateway is selected. A host selects an auth profile only if the profile's method appears in this list for the session's route. Absent: the host falls back to its own per-harness table and MUST be able to show it.",
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
     "session": {
       "type": "object",
       "additionalProperties": false,
@@ -392,16 +461,16 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["id", "label", "schemaFlavor", "baseUrl", "keyEnv"],
-      "description": "A gateway preset this adapter can drive — a backend an Anthropic/OpenAI-compatible client can front. Declared in the manifest so the catalog surfaces adapter-contributed presets alongside the built-in registry. No adapter projection (env/env_unset/bin_args) here; that stays in modes/options.",
+      "description": "A gateway this harness can be pointed at: a backend an Anthropic/OpenAI-compatible client can front. Declared in the manifest so the catalog surfaces harness-contributed gateways alongside the built-in registry. No harness projection (env/env_unset/bin_args) here; that stays in modes/options.",
       "properties": {
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "Stable preset id. SHOULD equal the mode id if the adapter projects this preset as a mode. Catalog dedupes built-in vs adapter-declared by id; an adapter-declared id colliding with a built-in is ignored in favor of the built-in (registry is source of truth for canonical providers)."
+          "description": "Stable gateway id. SHOULD equal the mode id if the harness projects this gateway as a mode. Catalog dedupes built-in vs harness-declared by id; a harness-declared id colliding with a built-in is ignored in favor of the built-in (registry is source of truth for canonical providers)."
         },
         "label": { "type": "string", "minLength": 1, "description": "Human label for the catalog UI." },
         "description": { "type": "string" },
-        "schemaFlavor": { "enum": ["anthropic", "openai"], "description": "API schema flavor — selects which adapter family can consume the preset." },
+        "schemaFlavor": { "enum": ["anthropic", "openai"], "description": "API schema flavor: selects which harness family can consume the gateway." },
         "baseUrl": { "type": "string", "minLength": 1, "description": "Base URL the client hits." },
         "keyEnv": {
           "type": "string",

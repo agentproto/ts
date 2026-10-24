@@ -30,16 +30,123 @@ export interface SandboxGcCandidate {
   sessionStatus: string
 }
 
+/** The lineage slice the gc needs to find a LIVE successor of an origin
+ *  session. Only the predecessor links are read: inverting them covers the
+ *  resume/continue/handover chain, and an inverse link (`continuedTo` /
+ *  `succeededBy`) can go stale in the other direction. `sandboxTeardown` is
+ *  the descriptor's recorded teardown mode; a box whose origin (or the live
+ *  successor/attache that last held it) asked for `pause` is paused rather
+ *  than deleted. `resumable` stays advisory only: it is true for nearly every
+ *  dead agent-cli row, so it must never drive the pause decision. */
+export interface SandboxGcSessionLineage {
+  resumedFrom?: string
+  continuedFrom?: string
+  succeeds?: string
+  sandboxTeardown?: "kill" | "pause"
+  resumable?: boolean
+}
+
+/**
+ * Whether the gc must PAUSE (never delete) a box. Reads the recorded teardown
+ * of the origin descriptor, of every attached session, and of every successor
+ * reachable from the origin through the resume/continue chain. Any `pause`
+ * wins: pausing is recoverable, deleting is not.
+ */
+export function sandboxGcShouldPause(
+  entry: SandboxLedgerEntry,
+  lineage: ReadonlyMap<string, SandboxGcSessionLineage>,
+): boolean {
+  const teardownOf = (id: string | undefined): string | undefined =>
+    id === undefined ? undefined : lineage.get(id)?.sandboxTeardown
+  if (teardownOf(entry.originSessionId) === "pause") return true
+  for (const attached of entry.attachedSessions ?? []) {
+    if (attached !== entry.originSessionId && teardownOf(attached) === "pause") return true
+  }
+  const origin = entry.originSessionId
+  if (origin === undefined) return false
+  const successors = buildSuccessorIndex(lineage)
+  const seen = new Set<string>([origin])
+  let frontier = [...(successors.get(origin) ?? [])]
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const id of frontier) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (teardownOf(id) === "pause") return true
+      next.push(...(successors.get(id) ?? []))
+    }
+    frontier = next
+  }
+  return false
+}
+
+/** Predicate for "this status still counts as alive": any status the registry
+ *  did not report is alive too (the conservative choice the attaché filter
+ *  already makes). */
+const isAliveStatus = (status: string | undefined): boolean =>
+  status === undefined || !DEAD_SESSION_STATUSES.has(status)
+
+/** Index every predecessor link so the descendant walk is a plain lookup. */
+function buildSuccessorIndex(
+  lineage: ReadonlyMap<string, SandboxGcSessionLineage>,
+): Map<string, string[]> {
+  const successors = new Map<string, string[]>()
+  for (const [id, links] of lineage) {
+    for (const predecessor of [links.resumedFrom, links.continuedFrom, links.succeeds]) {
+      if (!predecessor) continue
+      const children = successors.get(predecessor)
+      if (children) children.push(id)
+      else successors.set(predecessor, [id])
+    }
+  }
+  return successors
+}
+
+/**
+ * True when the origin has a descendant that is not dead. Walks the
+ * resume/continue/handover chain breadth-first (cycle-safe), so a dead
+ * intermediate hop does not hide a live grandchild. An unknown/missing
+ * status counts as alive, the conservative choice, because deleting a box
+ * that a live session still uses loses work.
+ */
+function hasLiveSuccessor(
+  originSessionId: string,
+  sessionStatuses: ReadonlyMap<string, string>,
+  successors: ReadonlyMap<string, readonly string[]>,
+): boolean {
+  const seen = new Set<string>([originSessionId])
+  let frontier = [...(successors.get(originSessionId) ?? [])]
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const id of frontier) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      if (isAliveStatus(sessionStatuses.get(id))) return true
+      next.push(...(successors.get(id) ?? []))
+    }
+    frontier = next
+  }
+  return false
+}
+
 /**
  * Select ledger entries whose origin session is error/killed/exited.
  * Rows already marked "stopped" are skipped (nothing left to tear down);
  * rows with no `originSessionId` are skipped too — their owning session
  * is unknown, so "orphan" cannot be established from this surface.
+ *
+ * `sessionLineage` is optional so callers that only have statuses keep
+ * working; when supplied, the resume/continue chain behind the origin is
+ * walked as well (the 2026-10-23 incident: a `session_restart` resumed a
+ * dead origin's box under a NEW id, so the ledger origin was dead while a
+ * live session still used the box).
  */
 export function collectGcCandidates(
   entries: readonly SandboxLedgerEntry[],
   sessionStatuses: ReadonlyMap<string, string>,
+  sessionLineage: ReadonlyMap<string, SandboxGcSessionLineage> = new Map(),
 ): SandboxGcCandidate[] {
+  const successors = buildSuccessorIndex(sessionLineage)
   return entries
     .filter(e => e.originSessionId !== undefined && e.state !== "stopped")
     .map(entry => ({
@@ -64,6 +171,10 @@ export function collectGcCandidates(
         return st !== undefined && DEAD_SESSION_STATUSES.has(st)
       })
     })
+    // Successor sessions resumed onto the same box are not in
+    // `attachedSessions` for ledger rows written before that registration
+    // existed, so walk their lineage to keep an already-broken row too.
+    .filter(c => !hasLiveSuccessor(c.entry.originSessionId as string, sessionStatuses, successors))
 }
 
 /** Provider resolution + ledger targeting for the reaper — injectable so
@@ -209,6 +320,11 @@ export const GC_REAPABLE_STATES: readonly SandboxLedgerState[] = ["booted", "con
  *  daemon pass reads its OWN registry and the CLI keeps its HTTP one. */
 export interface SandboxGcReadDeps {
   fetchSessionStatuses: () => Promise<Map<string, string>> | Map<string, string>
+  /** Predecessor lineage + resume eligibility per session. Optional: without
+   *  it the pass falls back to the attaché filter only. */
+  fetchSessionLineage?: () =>
+    | Promise<ReadonlyMap<string, SandboxGcSessionLineage>>
+    | ReadonlyMap<string, SandboxGcSessionLineage>
   resolveProvider: (slug: string) => Promise<SandboxGcProviderHandle | null>
   ledgerPath?: string
 }
@@ -219,6 +335,8 @@ export interface SandboxGcPassSummary {
   candidates: number
   stopped: number
   paused: number
+  /** Rows already paused on the ledger: skipped with no provider call. */
+  kept: number
   failures: number
 }
 
@@ -235,16 +353,34 @@ export async function runSandboxGcPass(
   log: (line: string) => void = () => undefined,
 ): Promise<SandboxGcPassSummary> {
   const statuses = await deps.fetchSessionStatuses()
-  const candidates = collectGcCandidates(readSandboxLedger(deps.ledgerPath), statuses)
+  const lineage = deps.fetchSessionLineage ? await deps.fetchSessionLineage() : new Map()
+  const candidates = collectGcCandidates(readSandboxLedger(deps.ledgerPath), statuses, lineage)
   const summary: SandboxGcPassSummary = {
     ran: true,
     candidates: candidates.length,
     stopped: 0,
     paused: 0,
+    kept: 0,
     failures: 0,
   }
   for (const candidate of candidates) {
+    // Honour the session's recorded teardown: a `pause` teardown keeps the
+    // box pausable, never deletes it (2026-10-23: the row asked for pause and
+    // the pass deleted it). A kill/unset teardown still deletes, as before.
+    const pause = sandboxGcShouldPause(candidate.entry, lineage)
+    // An already paused row whose teardown is pause needs no provider call:
+    // pausing it again every interval is a round-trip for no state change.
+    // A paused row whose teardown is kill/unset is still reaped below, so
+    // paused boxes do not leak forever.
+    if (candidate.entry.state === "paused" && pause) {
+      summary.kept++
+      log(
+        `sandbox gc: ${candidate.entry.sandboxId} kept paused (session ${candidate.entry.originSessionId} ${candidate.sessionStatus})`,
+      )
+      continue
+    }
     const res = await reapGcEntry(candidate.entry, {
+      ...(pause ? { pause: true } : {}),
       resolveProvider: deps.resolveProvider,
       ...(deps.ledgerPath !== undefined ? { ledgerPath: deps.ledgerPath } : {}),
     })
@@ -308,7 +444,7 @@ export function startSandboxGcTimer(
         if (summary.candidates > 0) {
           log(
             `sandbox gc: ${summary.candidates} dead-session box(es) — ` +
-              `${summary.stopped} stopped, ${summary.paused} paused, ${summary.failures} failed`,
+              `${summary.stopped} stopped, ${summary.paused} paused, ${summary.kept} kept, ${summary.failures} failed`,
           )
         }
       } catch (err) {

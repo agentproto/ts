@@ -132,7 +132,7 @@ describe("agentproto sandbox gc", () => {
       {
         sandboxId: "sbx_orphan1",
         provider: "e2b",
-        state: "paused",
+        state: "connected",
         createdAt: "2026-09-11T00:00:00Z",
         updatedAt: "2026-09-11T00:00:00Z",
         originSessionId: "sess_dead_killed",

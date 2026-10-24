@@ -253,7 +253,11 @@ export function recordSandboxBoot(opts: {
         : prior?.originSessionId
           ? { originSessionId: prior.originSessionId }
           : {}),
-      ...(opts.expiresAt ? { expiresAt: opts.expiresAt } : {}),
+      ...(opts.expiresAt
+        ? { expiresAt: opts.expiresAt }
+        : prior?.expiresAt
+          ? { expiresAt: prior.expiresAt }
+          : {}),
       ...(opts.gitTokenWorkspace
         ? { gitTokenWorkspace: opts.gitTokenWorkspace }
         : prior?.gitTokenWorkspace

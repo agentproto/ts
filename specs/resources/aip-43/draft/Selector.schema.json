@@ -1,0 +1,245 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/schemas/aip-43/Selector.schema.json",
+  "title": "AIP-43 saved Selector",
+  "description": "A named, ordered, declarative selection over one registry family (2026-10-23 saved-selectors amendment). Host-specific keys on the Selector object MUST be prefixed x-; clause kinds are closed except family clauses.",
+  "type": "object",
+  "required": [
+    "id",
+    "family"
+  ],
+  "additionalProperties": false,
+  "patternProperties": {
+    "^x-": {}
+  },
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+    },
+    "family": {
+      "type": "string",
+      "minLength": 1
+    },
+    "label": {
+      "type": "string"
+    },
+    "include": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Clause"
+      }
+    },
+    "exclude": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Clause"
+      }
+    },
+    "ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "order": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "object",
+          "required": [
+            "by"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "by": {
+              "type": "string",
+              "minLength": 1
+            },
+            "direction": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "default": "asc"
+            }
+          }
+        }
+      ],
+      "default": "listed"
+    },
+    "rotation": {
+      "enum": [
+        "priority",
+        "round-robin",
+        "least-recently-limited"
+      ],
+      "default": "priority"
+    },
+    "revision": {
+      "type": "string",
+      "description": "Content digest of this revision, set by the host on save."
+    }
+  },
+  "$defs": {
+    "Clause": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "tag"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "tag": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "capability"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "capability": {
+              "type": "string",
+              "minLength": 1
+            },
+            "eq": {},
+            "in": {
+              "type": "array"
+            },
+            "lte": {
+              "type": "number"
+            },
+            "gte": {
+              "type": "number"
+            },
+            "exists": {
+              "type": "boolean"
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "eq"
+              ]
+            },
+            {
+              "required": [
+                "in"
+              ]
+            },
+            {
+              "required": [
+                "lte"
+              ]
+            },
+            {
+              "required": [
+                "gte"
+              ]
+            },
+            {
+              "required": [
+                "exists"
+              ]
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "required": [
+            "selector"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "selector": {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "all"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "all": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/Clause"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "id"
+                ]
+              },
+              {
+                "required": [
+                  "tag"
+                ]
+              },
+              {
+                "required": [
+                  "capability"
+                ]
+              },
+              {
+                "required": [
+                  "selector"
+                ]
+              },
+              {
+                "required": [
+                  "all"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "kind": {
+              "type": "string",
+              "minLength": 1,
+              "description": "A clause kind registered by the selector's family; its meaning is the family's expansion."
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    }
+  }
+}
