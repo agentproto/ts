@@ -262,6 +262,23 @@ describe("ReactionReceiptStore", () => {
     }
   })
 
+  it("markDone clears the failure fields left by an earlier attempt", async () => {
+    const { c, store } = setup()
+    await store.insertPending(input())
+    await store.markRunning(keyOf())
+    c.advance(1_000)
+    await store.markFailed(keyOf(), "first attempt failed", c.now() + 30_000)
+    c.advance(30_000)
+    await store.markRunning(keyOf())
+    c.advance(1_000)
+    await store.markDone(keyOf(), undefined)
+    const row = store.get(keyOf())
+    expect(row?.status).toBe("done")
+    expect(row?.lastError).toBeUndefined()
+    expect(row?.lastAttemptAt).toBeUndefined()
+    expect(row?.completedAt).toBe(c.now())
+  })
+
   it("markDone from pending rejects not_running", async () => {
     const { store } = setup()
     await store.insertPending(input())

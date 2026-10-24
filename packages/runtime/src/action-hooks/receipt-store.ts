@@ -366,6 +366,8 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
       row.completedAt = nowMs()
       if (outcomeRef !== undefined) row.outcomeRef = outcomeRef
       delete row.nextAttemptAt
+      delete row.lastError
+      delete row.lastAttemptAt
       // Debounced: a lost `done` is recovered by a re-drive of the running row.
       durable.schedulePersist()
     },
