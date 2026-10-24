@@ -573,7 +573,7 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
   })
 })
 
-describe("POST /sessions/agent — operatorLabel (HTTP twin of agent_start)", () => {
+describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () => {
   async function startServer(registry = createSessionsRegistry({ persist: false })) {
     const startSession = vi.fn(async () => fakeAgentSession())
     const resolveAgentAdapter: AgentAdapterResolver = async () => ({

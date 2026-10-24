@@ -7074,7 +7074,7 @@ async function handleSessions(
     }
     // Operator-assigned label (`SessionDescriptor.operatorLabel`): the HTTP
     // twin of `agent_start`'s "Operator-assigned label" block
-    // (agent-tools.ts) — same rule, stamped ONLY on an operator spawn (no
+    // (agent-tools.ts), same rule: stamped ONLY on an operator spawn (no
     // caller session identity, no `parentSessionId`) that created a fresh
     // session. It is what `label:` entries in `allowPromptFrom` match on, and
     // Pygmalion launches its persistent agents through this route with
