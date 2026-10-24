@@ -88,6 +88,12 @@ function parseFilter(value: unknown): EventFilter | undefined {
   const filter: Record<string, string | number | boolean | null> = {}
   for (const key of Object.keys(value)) {
     const segments = key.split(".")
+    if (segments.includes("__proto__")) {
+      throw new EventBindingError(
+        "filter-invalid",
+        `schedule.filter key ${JSON.stringify(key)} must not contain a __proto__ segment`,
+      )
+    }
     if (segments.length === 0 || segments.some(segment => segment.length === 0)) {
       throw new EventBindingError(
         "filter-invalid",

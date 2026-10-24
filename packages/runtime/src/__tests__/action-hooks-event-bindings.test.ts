@@ -138,6 +138,26 @@ describe("resolveRoutineEventBinding", () => {
       }
     }
   })
+
+  it("rejects an own __proto__ filter key instead of silently dropping it", () => {
+    const filter: Record<string, unknown> = { event: "turn-end" }
+    Object.defineProperty(filter, "__proto__", {
+      value: "x",
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    })
+    try {
+      resolveRoutineEventBinding(
+        routine({ schedule: { kind: "event", on: "turn-end", filter } }),
+      )
+      expect.unreachable("expected filter-invalid for __proto__")
+    } catch (err) {
+      expect(err).toBeInstanceOf(EventBindingError)
+      expect((err as EventBindingError).code).toBe("filter-invalid")
+      expect((err as Error).message).toContain("__proto__")
+    }
+  })
 })
 
 describe("matchEventFilter", () => {
