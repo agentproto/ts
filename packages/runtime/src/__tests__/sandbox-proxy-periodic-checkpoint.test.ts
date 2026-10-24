@@ -114,4 +114,22 @@ describe("sandbox proxy — periodic in-turn checkpoint (fake timers)", () => {
     expect(checkpoint).not.toHaveBeenCalled()
     await proxy.close().catch(() => undefined)
   })
+
+  it("a resumed proxy arms its first interval checkpoint one period after resume, not after the original boot", async () => {
+    vi.useFakeTimers()
+    const checkpoint = vi.fn(async () => ({}))
+    // `session_restart` onto a live box builds a FRESH proxy here; the timer is
+    // armed off proxy creation (the resume), so the first checkpoint cannot be
+    // pushed into the past by however long the box had already been up.
+    const proxy = createSandboxAgentSessionProxy({
+      host: makeHost(),
+      remoteSessionId: "remote_resumed",
+      checkpoint: { run: checkpoint, intervalMs: 3 * 60_000, periodic: true, onTurnEnd: false },
+    })
+    await vi.advanceTimersByTimeAsync(3 * 60_000 - 1)
+    expect(checkpoint).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(checkpoint).toHaveBeenCalledTimes(1)
+    await proxy.close().catch(() => undefined)
+  })
 })
