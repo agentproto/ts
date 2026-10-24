@@ -108,6 +108,37 @@ test("computeStatus(root) reads packages under root, not process.cwd()", () => {
   }
 });
 
+test("both doctype package names seed the spec-reference closure", () => {
+  const tmp = mkdtempSync(path.join(tmpdir(), "gen-status-doctype-seed-"));
+  try {
+    mkdirSync(path.join(tmp, "packages", "doctype"), { recursive: true });
+    writeFileSync(
+      path.join(tmp, "packages", "doctype", "package.json"),
+      JSON.stringify({
+        name: "@agentproto/doctype",
+        version: "0.1.4",
+        devDependencies: { "@agentproto/tooling": "workspace:*" },
+      }),
+    );
+    mkdirSync(path.join(tmp, "packages", "consumer"), { recursive: true });
+    writeFileSync(
+      path.join(tmp, "packages", "consumer", "package.json"),
+      JSON.stringify({
+        name: "@agentproto/consumer",
+        version: "1.0.0",
+        dependencies: { "@agentproto/doctype": "workspace:*" },
+      }),
+    );
+    const byName = new Map(
+      computeStatus(tmp).map((e) => [e.name, e]),
+    );
+    assert.equal(byName.get("@agentproto/doctype").tier, "spec-reference");
+    assert.equal(byName.get("@agentproto/consumer").tier, "spec-reference");
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("tier is one of the four canonical tiers", () => {
   for (const e of computeStatus(REPO_ROOT)) {
     assert.ok(

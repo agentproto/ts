@@ -2,14 +2,14 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`162` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`163` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
 1. Packages on the explicit dead-package override list in `scripts/gen-status.mjs` (verified zero-dependent in the workspace) → `archived`. The override wins over the `adapters/**` path rule.
 2. `adapters/**` (not on the override list) → `adapters`.
 3. The core runtime family — `runtime`, `cli`, `driver` (core), the `sandbox` family, `auth`, `model-catalog` and their runtime neighbours — → `core`.
-4. Spec-only / doctype-only packages — reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory `@agentproto/define-doctype`, the generic doctype verbs `@agentproto/manifest` and build tooling `@agentproto/tooling` — → `spec-reference`.
+4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory `@agentproto/doctype` (plus the deprecated `@agentproto/define-doctype` shim), the generic doctype verbs `@agentproto/manifest` and build tooling `@agentproto/tooling` -> `spec-reference`.
 5. Everything else → `core`.
 
 Each package appears exactly once; tiers are applied in the order above.
@@ -20,7 +20,7 @@ Each package appears exactly once; tiers are applied in the order above.
 |---|---|
 | core | 95 |
 | adapters | 25 |
-| spec-reference | 32 |
+| spec-reference | 33 |
 | archived | 10 |
 
 ## Package table
@@ -167,6 +167,7 @@ agentproto-vscode | `packages/vscode` | 0.25.0 | core | product runtime package 
 @agentproto/company | `packages/company` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/define-doctype | `packages/define-doctype` | 0.1.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/design | `packages/design` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/doctype | `packages/doctype` | 0.1.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/extension | `packages/extension` | 0.2.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/governance | `packages/governance/core` | 0.1.6 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/intent | `packages/intent` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |

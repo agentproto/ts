@@ -2,8 +2,8 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
 export default createTsupConfig({
   banner: `/**
- * @agentproto/define-doctype v0.1.0-alpha
- * Meta-factory for AIP defineX(definition) constructors.
+ * @agentproto/define-doctype v0.1.4 (deprecated shim)
+ * Re-exports @agentproto/doctype unchanged.
  */`,
   entry: {
     index: "src/index.ts",
@@ -11,6 +11,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: false,
   dts: true,
-  external: [],
+  external: ["@agentproto/doctype", "@agentproto/doctype/*"],
   noExternal: [],
 })
