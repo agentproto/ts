@@ -331,6 +331,13 @@ import {
   type SpawnDedupeMode,
 } from "./spawn-dedupe.js"
 import {
+  evaluateSpawnAdmission,
+  type SpawnAdmission,
+  type SpawnAdmissionCheck,
+  type SpawnDedupeSource,
+} from "./action-hooks/spawn-admission.js"
+import type { AdmissionDecision } from "./action-hooks/types.js"
+import {
   loadProvenanceWrapGh,
   ensureGhShimDir,
   buildGhShimEnv,
@@ -1346,6 +1353,15 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub to pin the mode without touching env or the file.
    *  See `spawn-dedupe.ts`. */
   resolveSpawnDedupe?: () => Promise<SpawnDedupeMode>
+  /** Parity telemetry hook for the `builtin:spawn-admission` policy. Called
+   *  once per evaluated admission stage, including `allow`. A throwing
+   *  observer is swallowed and can never change a spawn. */
+  onSpawnAdmission?: (event: {
+    stage: SpawnAdmissionCheck["stage"]
+    decision: AdmissionDecision
+    dedupeSource?: SpawnDedupeSource
+    label?: string
+  }) => void
   /** Resolves the effective `provenance.wrapGh` opt-in (env > config >
    *  `false`). When it resolves true, a `gh` PATH shim is prepended to the
    *  spawned session's env so any `gh pr create` it (or an adapter
@@ -2058,6 +2074,23 @@ export function narrowSandboxOrchestratorForward(
 }
 
 
+function spawnAdmissionOutcome(admission: SpawnAdmission): "allow" | "reuse" | "deny" {
+  switch (admission.decision.outcome) {
+    case "allow":
+      return "allow"
+    case "reuse":
+      return "reuse"
+    case "deny":
+      return "deny"
+    case "defer":
+      throw new Error("unreachable spawn admission outcome")
+    default: {
+      const _exhaustive: never = admission.decision
+      throw new Error("unreachable spawn admission outcome")
+    }
+  }
+}
+
 export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
@@ -2071,6 +2104,21 @@ export async function spawnAgentSession(
   // captured value; after stripping, only the boolean stays in scope.
   const deviceBridgeArrival = input.deviceBridge === true
   if (input.deviceBridge !== undefined) delete input.deviceBridge
+  const notifySpawnAdmission = (
+    check: SpawnAdmissionCheck,
+    admission: SpawnAdmission,
+  ): void => {
+    try {
+      deps.onSpawnAdmission?.({
+        stage: check.stage,
+        decision: admission.decision,
+        ...(admission.dedupeSource ? { dedupeSource: admission.dedupeSource } : {}),
+        ...(input.label ? { label: input.label } : {}),
+      })
+    } catch {
+      // Telemetry must never change a spawn.
+    }
+  }
   // CRASH RESUME - a relaunch linked to a DEAD session resumes THAT
   // session's work: its last checkpoint is restored onto the new checkout
   // (`git restore --source=<ref>`) and its work branch is reused, so the
@@ -2851,8 +2899,17 @@ export async function spawnAgentSession(
       sharedDirtyCwd,
       ...(input.allowSharedCwd ? { allowSharedCwd: true } : {}),
     })
-    if (decision.action === "reject") {
-      return { ok: false, code: "worktree_disabled", message: decision.message }
+    const worktreePolicyCheck: SpawnAdmissionCheck =
+      decision.action === "reject"
+        ? { stage: "worktree-policy", reject: { message: decision.message } }
+        : { stage: "worktree-policy" }
+    const worktreeAdmission = evaluateSpawnAdmission(worktreePolicyCheck)
+    notifySpawnAdmission(worktreePolicyCheck, worktreeAdmission)
+    if (worktreeAdmission.decision.outcome === "deny") {
+      return { ok: false, code: "worktree_disabled", message: worktreeAdmission.decision.message }
+    }
+    if (spawnAdmissionOutcome(worktreeAdmission) !== "allow") {
+      throw new Error("unreachable spawn admission outcome")
     }
     if (decision.action === "spawn-in-place" && decision.warn) {
       spawnWarnings.push(decision.warn)
@@ -4438,23 +4495,55 @@ export async function spawnAgentSession(
     const claims = claimsFor(registry)
     const key = `${input.adapter}\x1f${cwd}\x1f${claimKey}`
     gcSpawnClaims(claims, Date.now())
+    const claimSource: "explicit" | "implicit" =
+      dedupeSource === "implicit" ? "implicit" : "explicit"
     const existing = claims.get(key)
     if (existing) {
       const result = await existing.result
       if (result.ok) {
-        // Observability: a dedupe hit otherwise leaves NO daemon-side trace —
-        // the caller gets the cached descriptor and nothing is logged or
-        // persisted, which makes "why did my second agent_start return an
-        // existing session?" (or its UI residue, e.g. two widget cards for
-        // one session) undiagnosable from logs after the fact.
-        console.warn(
-          `[agent_start] dedupe hit (${dedupeSource}): returning existing session ` +
-            `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
-            `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
-        )
-        return { ...result, deduped: true, dedupeSource }
+        const claimCheck: SpawnAdmissionCheck = {
+          stage: "claim",
+          source: claimSource,
+          existing: { ok: true, sessionId: result.descriptor.id },
+        }
+        const claimAdmission = evaluateSpawnAdmission(claimCheck)
+        notifySpawnAdmission(claimCheck, claimAdmission)
+        if (spawnAdmissionOutcome(claimAdmission) === "reuse") {
+          // Observability: a dedupe hit otherwise leaves NO daemon-side trace —
+          // the caller gets the cached descriptor and nothing is logged or
+          // persisted, which makes "why did my second agent_start return an
+          // existing session?" (or its UI residue, e.g. two widget cards for
+          // one session) undiagnosable from logs after the fact.
+          console.warn(
+            `[agent_start] dedupe hit (${claimAdmission.dedupeSource}): returning existing session ` +
+              `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
+              `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
+          )
+          return { ...result, deduped: true, dedupeSource: claimAdmission.dedupeSource }
+        }
+        throw new Error("unreachable spawn admission outcome")
       }
-      return result
+      const failedClaimCheck: SpawnAdmissionCheck = {
+        stage: "claim",
+        source: claimSource,
+        existing: { ok: false, code: result.code, message: result.message },
+      }
+      const failedClaimAdmission = evaluateSpawnAdmission(failedClaimCheck)
+      notifySpawnAdmission(failedClaimCheck, failedClaimAdmission)
+      if (spawnAdmissionOutcome(failedClaimAdmission) === "deny") {
+        return result
+      }
+      throw new Error("unreachable spawn admission outcome")
+    }
+    const freshClaimCheck: SpawnAdmissionCheck = {
+      stage: "claim",
+      source: claimSource,
+      existing: undefined,
+    }
+    const freshClaimAdmission = evaluateSpawnAdmission(freshClaimCheck)
+    notifySpawnAdmission(freshClaimCheck, freshClaimAdmission)
+    if (spawnAdmissionOutcome(freshClaimAdmission) !== "allow") {
+      throw new Error("unreachable spawn admission outcome")
     }
     let resolveClaim!: (result: SpawnAgentSessionResult) => void
     claims.set(key, {
@@ -4656,15 +4745,23 @@ export async function spawnAgentSession(
           // the one that's already live, rather than promoting it to a
           // real duplicate. See `findWorktreeLabelCwdCollision`'s doc.
           const dupe = findWorktreeLabelCwdCollision(registry, pendingDesc.id, input.label, finalCwd)
-          if (dupe) {
+          const asyncCollisionCheck: SpawnAdmissionCheck = {
+            stage: "worktree-collision-async",
+            ...(dupe ? { collisionSessionId: dupe.id } : {}),
+            label: input.label ?? "",
+            cwd: finalCwd,
+          }
+          const asyncCollisionAdmission = evaluateSpawnAdmission(asyncCollisionCheck)
+          notifySpawnAdmission(asyncCollisionCheck, asyncCollisionAdmission)
+          if (asyncCollisionAdmission.decision.outcome === "deny") {
             registry.settlePendingAgent(pendingDesc.id, {
               ok: false,
-              message:
-                `agent_start: refused — another LIVE session ("${dupe.id}") already has the ` +
-                `same label ("${input.label}") and cwd ("${finalCwd}") as this worktree spawn. ` +
-                "Not starting a second agent in the same worktree.",
+              message: asyncCollisionAdmission.decision.message,
             })
             return
+          }
+          if (spawnAdmissionOutcome(asyncCollisionAdmission) !== "allow") {
+            throw new Error("unreachable spawn admission outcome")
           }
         }
         try {
@@ -4801,7 +4898,13 @@ export async function spawnAgentSession(
         // the caller gets the existing session's descriptor back instead,
         // exactly like an idempotency-key dedupe.
         const dupe = findWorktreeLabelCwdCollision(registry, mintedSessionId, input.label, cwd)
-        if (dupe) {
+        const syncCollisionCheck: SpawnAdmissionCheck = {
+          stage: "worktree-collision-sync",
+          ...(dupe ? { collisionSessionId: dupe.id } : {}),
+        }
+        const syncCollisionAdmission = evaluateSpawnAdmission(syncCollisionCheck)
+        notifySpawnAdmission(syncCollisionCheck, syncCollisionAdmission)
+        if (spawnAdmissionOutcome(syncCollisionAdmission) === "reuse" && dupe) {
           return finish({
             ok: true,
             descriptor: dupe,
@@ -4809,6 +4912,9 @@ export async function spawnAgentSession(
             dedupeSource: "worktree-cwd",
             ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
           })
+        }
+        if (spawnAdmissionOutcome(syncCollisionAdmission) !== "allow") {
+          throw new Error("unreachable spawn admission outcome")
         }
       }
     }

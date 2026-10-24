@@ -184,6 +184,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
         code: "spawn_claim_hit",
       },
       dedupeSource: "explicit",
+      label: "worker",
     })
   })
 
@@ -220,6 +221,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
         code: "spawn_claim_hit",
       },
       dedupeSource: "implicit",
+      label: "worker",
     })
   })
 
@@ -236,10 +238,10 @@ describe("spawnAgentSession — spawn admission parity", () => {
     const input = { adapter: "mock", cwd: "/tmp", idempotencyKey: "failed-retry" }
 
     const first = spawnAgentSession(deps, input)
+    const second = spawnAgentSession(deps, input)
     await vi.waitFor(() => {
       expect(startSession).toHaveBeenCalledTimes(1)
     })
-    const second = spawnAgentSession(deps, input)
     boot.reject(new Error("adapter boot failed"))
 
     const [firstResult, secondResult] = await Promise.all([first, second])
@@ -324,7 +326,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
     expect(second.dedupeSource).toBe("worktree-cwd")
     expect(registry.list()).toHaveLength(1)
 
-    const reuse = events.find(event => event.stage === "worktree-collision-sync")
+    const reuse = events.filter(event => event.stage === "worktree-collision-sync").at(-1)
     expect(reuse).toEqual({
       stage: "worktree-collision-sync",
       decision: {
@@ -333,6 +335,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
         code: "worktree_label_cwd_collision",
       },
       dedupeSource: "worktree-cwd",
+      label: "fix login",
     })
   })
 
@@ -381,7 +384,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
       "Not starting a second agent in the same worktree."
     expect(registry.get(second.descriptor.id)?.lastError).toBe(expectedMessage)
 
-    const deny = events.find(event => event.stage === "worktree-collision-async")
+    const deny = events.filter(event => event.stage === "worktree-collision-async").at(-1)
     expect(deny).toEqual({
       stage: "worktree-collision-async",
       decision: {
