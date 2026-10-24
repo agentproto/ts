@@ -226,6 +226,76 @@ describe("sandbox proxy — structured SSE stream", () => {
     ])
   })
 
+  it("close() during a reconnect wait ends the turn promptly without a daemon-lost error", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementationOnce(async () =>
+      sseResponse([
+        {
+          seq: 1,
+          ts: "t",
+          kind: "tool-call",
+          sessionId: "remote_1",
+          toolCallId: "tc1",
+          toolName: "bash",
+          arguments: { command: "pnpm install" },
+        },
+      ]),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const events: AgentStreamEvent[] = []
+    const done = (async () => {
+      for await (const ev of proxy.send("go")) events.push(ev)
+    })().then(
+      () => undefined,
+      (err: unknown) => err,
+    )
+
+    // The first connection delivers its record and drops into the 5s wait.
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const closed = proxy.close()
+    // No 5s advance: the abort must settle the wait immediately.
+    await vi.advanceTimersByTimeAsync(0)
+    const err = await done
+    await closed
+
+    expect(err).toBeUndefined()
+    expect(events).toEqual([
+      { kind: "tool-call", toolCallId: "tc1", toolName: "bash", arguments: { command: "pnpm install" } },
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps turning when a productive tunnel drops repeatedly (40 drops, each after real records)", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+    for (let i = 0; i < 40; i++) {
+      fetchMock.mockImplementationOnce(async () =>
+        sseResponse([
+          { seq: i + 1, ts: "t", kind: "text-delta", sessionId: "remote_1", text: `chunk ${i + 1}\n` },
+        ]),
+      )
+    }
+    fetchMock.mockImplementationOnce(async () =>
+      sseResponse([{ seq: 41, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" }]),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const done = collect(proxy.send("go"))
+    await vi.advanceTimersByTimeAsync(40 * 5_000 + 10_000)
+    const events = await done
+
+    expect(events.filter(e => e.kind === "text-delta")).toHaveLength(40)
+    expect(events[events.length - 1]).toEqual({ kind: "turn-end", reason: "completed" })
+    expect(fetchMock).toHaveBeenCalledTimes(41)
+  })
+
   it("falls back to the legacy agent_output poll when the stream route 404s (older box daemon)", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => sseResponse([], 404)))
 
