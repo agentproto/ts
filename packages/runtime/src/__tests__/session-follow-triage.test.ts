@@ -361,11 +361,145 @@ describe("follow-triage", () => {
       const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map(l => JSON.parse(l) as { event: string; decision: string; rule: string; follower: string })
+        .map(
+          l =>
+            JSON.parse(l) as {
+              source: string
+              applied: boolean
+              event: string
+              decision: string
+              rule: string
+              follower: string
+            },
+        )
       expect(lines).toHaveLength(2)
-      expect(lines[0]).toMatchObject({ follower: "chief", event: "exited", decision: "fyi", rule: "operator-exit" })
-      expect(lines[1]).toMatchObject({ event: "turn-end", decision: "wake", rule: "default" })
+      expect(lines[0]).toMatchObject({
+        source: "follow",
+        applied: true,
+        follower: "chief",
+        event: "exited",
+        decision: "fyi",
+        rule: "operator-exit",
+      })
+      expect(lines[1]).toMatchObject({
+        source: "follow",
+        applied: true,
+        event: "turn-end",
+        decision: "wake",
+        rule: "default",
+      })
       expect(sent).toHaveLength(1)
+    })
+
+    it("records a rule decision per event while triage is off", async () => {
+      const { sent } = setup([running("chief"), running("w"), running("x")], {
+        selector: { sessionIds: ["w", "x"] },
+      })
+      bus.emit({
+        type: "session:message",
+        sessionId: "chief",
+        messageId: "msg_1",
+        fromSessionId: "w",
+        relation: "child",
+        kind: "report",
+        urgency: "next-turn",
+        ts: at(-5_000),
+      } as never)
+      turnEnd("w", { ts: T0 })
+      turnEnd("x", { ts: T0 })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("(w)")
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(
+          l =>
+            JSON.parse(l) as {
+              source: string
+              applied: boolean
+              follower: string
+              event: string
+              sessionId: string
+              decision: string
+              rule: string
+            },
+        )
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toMatchObject({
+        source: "follow",
+        applied: false,
+        follower: "chief",
+        event: "turn-end",
+        sessionId: "w",
+        decision: "drop",
+        rule: "reported-turn-end",
+      })
+      expect(lines[1]).toMatchObject({
+        source: "follow",
+        applied: false,
+        follower: "chief",
+        event: "turn-end",
+        sessionId: "x",
+        decision: "wake",
+        rule: "default",
+      })
+    })
+
+    it("never runs a daemon classifier while triage is off", async () => {
+      const marker = join(tmp, "ran")
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { triage: { ...defaultFollowTriageConfig(), classifier: { command: `touch ${marker}` } } },
+      )
+      turnEnd("w")
+      await handle!.flush()
+      expect(existsSync(marker)).toBe(false)
+      expect(sent).toHaveLength(1)
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        source: "follow",
+        applied: false,
+        decision: "wake",
+        rule: "default",
+      })
+    })
+
+    it("delivers exactly the legacy digest while recording the rules' decisions", async () => {
+      const { sent } = setup([running("chief"), running("w"), running("x")], {
+        selector: { sessionIds: ["w", "x"] },
+      })
+      bus.emit({
+        type: "session:message",
+        sessionId: "chief",
+        messageId: "msg_1",
+        fromSessionId: "w",
+        relation: "child",
+        kind: "report",
+        urgency: "next-turn",
+        ts: at(-5_000),
+      } as never)
+      turnEnd("w", { ts: T0 })
+      turnEnd("x", { ts: T0 })
+      await handle!.flush()
+      const expected = [
+        "[session-follow] automatic digest \u2014 2 events from sessions you follow. Decide whether anything needs the human's attention; if not, no reply is needed.",
+        "[session-follow] w (w) turn-end \u2014 proj",
+        "[session-follow] x (x) turn-end \u2014 proj",
+      ].join("\n")
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+      expect(sent[0]!.text).toBe(expected)
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(l => JSON.parse(l) as { applied: boolean; decision: string; sessionId: string })
+      expect(lines).toHaveLength(2)
+      expect(lines.map(line => line.applied)).toEqual([false, false])
+      expect(lines.map(line => line.decision)).toEqual(["drop", "wake"])
+      expect(lines.map(line => line.sessionId)).toEqual(["w", "x"])
     })
   })
 
