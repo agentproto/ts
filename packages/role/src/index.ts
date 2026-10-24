@@ -20,7 +20,7 @@
  *     the role — see AIP-47 §Role vs Policy vs Governance.
  */
 
-export const SPEC_NAME = "agentrole/v1" as const
+export const SPEC_NAME = "role/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 /**

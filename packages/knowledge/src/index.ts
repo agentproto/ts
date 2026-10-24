@@ -10,7 +10,7 @@
  *   - MD:  `parseKnowledgeManifest(src) → knowledgeFromManifest({...})` → `KnowledgeHandle`
  */
 
-export const SPEC_NAME = "agentknowledge/v1" as const
+export const SPEC_NAME = "knowledge/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineKnowledge } from "./define-knowledge.js"

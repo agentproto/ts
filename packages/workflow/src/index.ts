@@ -10,7 +10,7 @@
  *   - MD:  `parseWorkflowManifest(src) → workflowFromManifest({...})` → `WorkflowHandle`
  */
 
-export const SPEC_NAME = "agentworkflow/v1" as const
+export const SPEC_NAME = "workflow/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineWorkflow } from "./define-workflow.js"

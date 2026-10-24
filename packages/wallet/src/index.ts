@@ -10,7 +10,7 @@
  * Spec: https://agentproto.sh/docs/wallet
  */
 
-export const SPEC_NAME = "agentwallet/v1" as const
+export const SPEC_NAME = "wallet/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
 
 // Asset — ERC-20-style declaration + rule set
