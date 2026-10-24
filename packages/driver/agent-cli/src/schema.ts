@@ -1,7 +1,7 @@
 /**
  * AIP-45 AGENT-CLI.md frontmatter zod schema.
  *
- * Mirrors `resources/aip-45/draft/AGENT-CLI.schema.json`. AIP-45 is a
+ * Mirrors `resources/aip-45/draft/HARNESS.schema.json`. AIP-45 is a
  * sibling of AIP-29 (CLI.md, tool CLIs) covering interactive
  * agent-as-process binaries. The `protocol` discriminator (acp / mcp
  * / proprietary) selects the wire arm; cross-field rules ensure the
@@ -41,7 +41,7 @@ const CONTINUATION_KEY_SCOPES = [
 
 // AIP-29 install methods, mirrored locally to avoid a runtime cross-package import.
 // Schema-level $ref to AIP-29 is preserved on the JSON Schema side
-// (resources/aip-45/draft/AGENT-CLI.schema.json); this zod copy is the
+// (resources/aip-45/draft/HARNESS.schema.json); this zod copy is the
 // TS-side mirror used by `defineAgentCli`. When AIP-29 grows new
 // install methods, both sides update together via scaffold-aip.
 
