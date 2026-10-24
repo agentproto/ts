@@ -79,7 +79,7 @@ export interface ApplicationContract {
 }
 
 /**
- * One native hook bridge capability declared by the manifest. Mirrors
+ * One native hook capability declared by the manifest. Mirrors
  * AIP-71's `NativeHookCapability` and `@agentproto/driver-agent-cli`'s
  * manifest type structurally, declared locally because provider-kit has no
  * dependency on that package.

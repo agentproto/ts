@@ -610,7 +610,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           : {}),
         ...(adapter.handle.capabilities?.hooks !== undefined &&
         adapter.handle.capabilities.hooks.length > 0
-          ? { hooks: adapter.handle.capabilities.hooks }
+          ? { nativeHooks: adapter.handle.capabilities.hooks }
           : {}),
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }

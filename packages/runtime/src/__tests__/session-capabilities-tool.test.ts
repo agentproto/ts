@@ -335,7 +335,7 @@ describe("session_capabilities", () => {
       cwd: process.cwd(),
       adapterSlug: "claude-code",
       agentSession: fakeAcpAgentSession(),
-      hooks: [
+      nativeHooks: [
         {
           event: "tool.call",
           native_event: "PreToolUse",
@@ -390,7 +390,7 @@ describe("session_capabilities", () => {
       expect(body).toEqual(buildSessionCapabilities(registry.get(desc.id)!, 0))
       expect(body.arm).toBe("acp")
       expect(body.commands).toEqual([{ name: "/compact", description: "Compact context" }])
-      expect(body.hooks).toEqual({ native: desc.hooks })
+      expect(body.hooks).toEqual({ native: desc.nativeHooks })
 
       expect((await fetch(`${base}/sessions/sess_nope/capabilities`)).status).toBe(404)
     } finally {

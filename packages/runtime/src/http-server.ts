@@ -730,12 +730,13 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    */
   nativeTerminalResume?: boolean
   /**
-   * Manifest-declared `capabilities.hooks` (AIP-71) — native hook bridge
-   * callbacks. Threaded onto {@link SessionDescriptor.hooks} at spawn and
-   * restart time so `session_capabilities` can echo them. Metadata only.
-   * Omitted when the adapter declares none.
+   * Manifest-declared `capabilities.hooks` (AIP-71): native hook
+   * callbacks. Threaded onto {@link SessionDescriptor.nativeHooks} at spawn
+   * and restart time so `session_capabilities` can echo them. Metadata only.
+   * Omitted when the harness declares none. Not the AIP-68 clerk `hooks`
+   * option (`agent_start.hooks.clerk`).
    */
-  hooks?: readonly HookCapabilityView[]
+  nativeHooks?: readonly HookCapabilityView[]
   /**
    * Manifest-declared `capabilities.nativeToolSearch` (AIP-45) — the
    * harness defers mounted MCP tools behind its own search tool, so the

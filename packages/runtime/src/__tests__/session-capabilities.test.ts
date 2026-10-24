@@ -61,21 +61,21 @@ describe("hooks in session_capabilities", () => {
     },
   ]
 
-  it("reports the session adapter's declared hooks under hooks.native", () => {
+  it("reports the session harness's declared hooks under hooks.native", () => {
     const registry = createSessionsRegistry({ persist: false })
     const desc = registry.spawnAgent({
       workspaceSlug: "w",
       cwd: "/tmp",
       agentSession: agent({}),
       adapterSlug: "mock",
-      hooks,
+      nativeHooks: hooks,
     })
     const body = buildSessionCapabilities(registry.get(desc.id)!, 0)
     expect(body.hooks).toEqual({ native: hooks })
     registry.shutdown()
   })
 
-  it("omits the hooks key when the adapter declares none", () => {
+  it("omits the hooks key when the harness declares none", () => {
     const registry = createSessionsRegistry({ persist: false })
     const desc = registry.spawnAgent({
       workspaceSlug: "w",

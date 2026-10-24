@@ -94,7 +94,7 @@ export interface SessionCapabilities {
   skillsApplied: boolean
   permissionHold: boolean
   /**
-   * Native hook bridge callbacks this session's adapter declares (AIP-71).
+   * Native hook callbacks this session's harness declares (AIP-71).
    * Present only when non-empty; metadata only, no handler is installed.
    * Ownership (harness vs host) is resolved elsewhere.
    */
@@ -182,8 +182,8 @@ export function buildSessionCapabilities(
     skillsApplied: desc.adapterSlug !== undefined && SKILLS_APPLYING_ADAPTERS.has(desc.adapterSlug),
     permissionHold: desc.permissionHold === true,
     pendingPermissions,
-    ...(desc.hooks !== undefined && desc.hooks.length > 0
-      ? { hooks: { native: desc.hooks } }
+    ...(desc.nativeHooks !== undefined && desc.nativeHooks.length > 0
+      ? { hooks: { native: desc.nativeHooks } }
       : {}),
   }
 }

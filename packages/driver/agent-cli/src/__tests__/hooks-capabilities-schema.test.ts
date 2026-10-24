@@ -9,7 +9,7 @@ import type {
 const minimal = (overrides: Partial<AgentCliDefinition> = {}): AgentCliDefinition => ({
   name: "hermes",
   id: "hermes",
-  description: "Nous Research Hermes Agent — autonomous CLI agent.",
+  description: "Nous Research Hermes Agent: autonomous CLI agent.",
   version: "0.1.0",
   bin: "hermes",
   bin_args: ["acp"],

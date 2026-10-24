@@ -5,4 +5,4 @@
 "@agentproto/cli": minor
 ---
 
-Declare native hook bridge capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session adapter's declared hooks from `session_capabilities`.
+Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.

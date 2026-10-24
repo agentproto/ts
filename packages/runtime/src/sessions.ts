@@ -2123,11 +2123,15 @@ export interface SessionDescriptor {
   nativeTerminalResume?: boolean
   /**
    * Manifest-declared `capabilities.hooks` (AIP-71) for this session's
-   * adapter, stamped from the resolver at spawn/restart time. Metadata only,
+   * harness, stamped from the resolver at spawn/restart time. Metadata only,
    * echoed by `session_capabilities`; ownership resolution is not done here.
-   * Omitted when the adapter declares none, or for pty/command kinds.
+   * Omitted when the harness declares none, or for pty/command kinds.
+   *
+   * This is the native hook capability list, NOT the AIP-68 clerk
+   * `hooks` option (`agent_start.hooks.clerk`, recorded separately as
+   * {@link SessionDescriptor.clerkHook}).
    */
-  hooks?: readonly HookCapabilityView[]
+  nativeHooks?: readonly HookCapabilityView[]
   /**
    * Canonical harness slug for agent-cli sessions — the same identity as
    *  `adapterSlug`, recorded under the canonical axis name. Falls back to
@@ -5509,8 +5513,9 @@ export interface SpawnAgentInput {
    *  onto {@link SessionDescriptor.nativeTerminalResume} — see that field's doc. */
   nativeTerminalResume?: boolean
   /** Manifest-declared `capabilities.hooks` (AIP-71), recorded verbatim onto
-   *  {@link SessionDescriptor.hooks} — see that field's doc. */
-  hooks?: readonly HookCapabilityView[]
+   *  {@link SessionDescriptor.nativeHooks}. See that field's doc. Not the
+   *  AIP-68 clerk `hooks` option (`SpawnAgentSessionInput.hooks`). */
+  nativeHooks?: readonly HookCapabilityView[]
   /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
   harness?: string
   /** Manifest-declared `routeSelection` (AIP-45) — recorded verbatim onto
@@ -5748,7 +5753,10 @@ export type PendingAgentOutcome =
       commandPreview?: string
       resumable?: boolean
       nativeTerminalResume?: boolean
-      hooks?: readonly HookCapabilityView[]
+      /** Manifest-declared `capabilities.hooks` (AIP-71). See
+       *  {@link SessionDescriptor.nativeHooks}. Not the AIP-68 clerk `hooks`
+       *  option. */
+      nativeHooks?: readonly HookCapabilityView[]
       readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
       /** Dispatched now that the tree + driver session both exist — never
        *  passed to `spawnAgentPending`, which would race the tree. A plain
@@ -11421,7 +11429,9 @@ export function createSessionsRegistry(opts?: {
         ...(input.nativeTerminalResume !== undefined
           ? { nativeTerminalResume: input.nativeTerminalResume }
           : {}),
-        ...(input.hooks !== undefined && input.hooks.length > 0 ? { hooks: input.hooks } : {}),
+        ...(input.nativeHooks !== undefined && input.nativeHooks.length > 0
+          ? { nativeHooks: input.nativeHooks }
+          : {}),
         harness: input.harness ?? input.adapterSlug,
         ...(input.routeSelection !== undefined
           ? { routeSelection: input.routeSelection }
@@ -11843,7 +11853,9 @@ export function createSessionsRegistry(opts?: {
       if (outcome.nativeTerminalResume !== undefined) {
         rt.desc.nativeTerminalResume = outcome.nativeTerminalResume
       }
-      if (outcome.hooks !== undefined && outcome.hooks.length > 0) rt.desc.hooks = outcome.hooks
+      if (outcome.nativeHooks !== undefined && outcome.nativeHooks.length > 0) {
+        rt.desc.nativeHooks = outcome.nativeHooks
+      }
       rt.desc.status = "running"
       rt.emitter.emit("status", rt.desc.status)
       linkContinuedTo(rt.desc.resumedFrom, id)

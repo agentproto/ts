@@ -370,7 +370,7 @@ export interface AgentCliModels {
 }
 
 /**
- * Which side of the AIP-71 hook bridge an adapter callback belongs to.
+ * Which side of the AIP-71 native hook seam a harness callback belongs to.
  * `"admission"` runs before an operation and may be able to block it;
  * `"lifecycle"` observes after a transition and never blocks.
  */
@@ -383,14 +383,14 @@ export type NativeHookHandler = "command" | "mcp" | "http" | "prompt" | "agent"
 export type NativeHookContext = "none" | "append"
 
 /**
- * One native hook bridge capability (AIP-71), declared under
+ * One native hook capability (AIP-71), declared under
  * `capabilities.hooks`. Metadata only: declaring an entry never installs a
  * handler.
  */
 export interface NativeHookCapability {
   /** Portable AIP-37 event name. */
   event: string
-  /** Harness callback id (descriptive, adapter-owned). */
+  /** Harness callback id (descriptive, harness-owned). */
   native_event: string
   path: NativeHookPath
   can_block: boolean
@@ -451,7 +451,7 @@ export interface AgentCliCapabilities {
    */
   deferredToolDiscovery?: boolean
   /**
-   * Native hook bridge callbacks this harness exposes (AIP-71). Metadata
+   * Native hook callbacks this harness exposes (AIP-71). Metadata
    * only: declaring an entry never installs a handler. Define-agent-cli and
    * the markdown manifest both validate each entry, including the rule that
    * `path: "lifecycle"` cannot block.
