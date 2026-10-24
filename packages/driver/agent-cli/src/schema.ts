@@ -359,6 +359,30 @@ const modelsSchema = z.object({
   bin_args_template: z.array(z.string()).optional(),
 }).strict()
 
+const nativeHookHandlerSchema = z.enum(["command", "mcp", "http", "prompt", "agent"])
+
+const nativeHookCapabilitySchema = z
+  .object({
+    event: z.string().min(1).regex(/^\S+$/, "event must not contain whitespace"),
+    native_event: z.string().min(1).regex(/^\S+$/, "native_event must not contain whitespace"),
+    path: z.enum(["admission", "lifecycle"]),
+    can_block: z.boolean(),
+    handlers: z
+      .array(nativeHookHandlerSchema)
+      .min(1, "handlers must not be empty")
+      .refine(
+        (handlers) => new Set(handlers).size === handlers.length,
+        "handlers must not contain duplicates",
+      ),
+    async: z.boolean().optional(),
+    context: z.enum(["none", "append"]).optional(),
+  })
+  .strict()
+  .refine(
+    (hook) => !(hook.path === "lifecycle" && hook.can_block),
+    "can_block must be false when path is lifecycle",
+  )
+
 const capabilitiesSchema = z.object({
   streaming: z.boolean().optional(),
   tool_calls: z.boolean().optional(),
@@ -399,6 +423,15 @@ const capabilitiesSchema = z.object({
    * this flag — defaults to false (conservative).
    */
   file_attach: z.boolean().optional(),
+  hooks: z
+    .array(nativeHookCapabilitySchema)
+    .optional()
+    .refine(
+      (hooks) =>
+        hooks === undefined ||
+        new Set(hooks.map((hook) => `${hook.event}\u0000${hook.native_event}`)).size === hooks.length,
+      "hooks must not repeat the same (event, native_event) pair",
+    ),
 }).strict()
 
 export const modeSchema = z.object({

@@ -78,6 +78,22 @@ export interface ApplicationContract {
   coupled: boolean
 }
 
+/**
+ * One native hook bridge capability declared by the manifest. Mirrors
+ * AIP-71's `NativeHookCapability` and `@agentproto/driver-agent-cli`'s
+ * manifest type structurally, declared locally because provider-kit has no
+ * dependency on that package.
+ */
+export interface HookCapabilityView {
+  event: string
+  native_event: string
+  path: "admission" | "lifecycle"
+  can_block: boolean
+  handlers: readonly ("command" | "mcp" | "http" | "prompt" | "agent")[]
+  async?: boolean
+  context?: "none" | "append"
+}
+
 /** Full capability record for one adapter. */
 export interface HarnessCapabilities {
   adapter: string
@@ -93,6 +109,9 @@ export interface HarnessCapabilities {
   models: ModelDiscovery
   endpointCompat: EndpointCompat
   application: ApplicationContract
+  /** Native hook callbacks the manifest declares (AIP-71). Present only
+   *  when non-empty; metadata only, never installed by this module. */
+  hooks?: readonly HookCapabilityView[]
 }
 
 /**
@@ -117,6 +136,7 @@ export interface HarnessManifestView {
   auth?: { state?: { env?: string[] } }
   options?: unknown[]
   modes?: unknown[]
+  capabilities?: { hooks?: readonly HookCapabilityView[] }
 }
 
 /** Context a `CapabilityStrategy` reads from — never a raw credential
@@ -188,6 +208,7 @@ export function deriveDeclaredCapabilities(def: HarnessManifestView): HarnessCap
     providerKeyed: false,
   }))
 
+  const declaredHooks = def.capabilities?.hooks
   const modelApply = def.models?.apply
   return {
     adapter: def.id,
@@ -205,6 +226,9 @@ export function deriveDeclaredCapabilities(def: HarnessManifestView): HarnessCap
       postureApply: "none",
       coupled: false,
     },
+    ...(declaredHooks && declaredHooks.length > 0
+      ? { hooks: declaredHooks.map((hook) => ({ ...hook, handlers: [...hook.handlers] })) }
+      : {}),
   }
 }
 
@@ -222,7 +246,11 @@ export async function discoverCapabilities(
 ): Promise<HarnessCapabilities> {
   if (!strategy) return deriveDeclaredCapabilities(def)
   try {
-    return await strategy(def, ctx)
+    const discovered = await strategy(def, ctx)
+    const declaredHooks = def.capabilities?.hooks
+    return declaredHooks && declaredHooks.length > 0
+      ? { ...discovered, hooks: declaredHooks.map((hook) => ({ ...hook, handlers: [...hook.handlers] })) }
+      : discovered
   } catch (err) {
     ctx.warn(
       `capability discovery failed for '${def.id}', falling back to manifest: ` +
