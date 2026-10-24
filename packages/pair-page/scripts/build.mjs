@@ -3,7 +3,7 @@
  * Build the pair page into dist/, the static bundle the edge Worker serves:
  *
  *   dist/index.html              the one document (every app route)
- *   dist/assets/app-<hash>.js    the page (src/main.ts + @agentproto/pair-client)
+ *   dist/assets/app-<hash>.js    the page (src/main.ts + @agentproto/pairing)
  *   dist/assets/app-<hash>.css   its styles
  *   dist/pair-sw.js              the service worker (fixed name, max scope /)
  *   dist/manifest.webmanifest, dist/icon*.{svg,png}

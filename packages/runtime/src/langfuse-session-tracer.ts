@@ -34,7 +34,7 @@ import {
   type Redactor,
   type RedactionField,
   type RedactorSpec,
-} from "@agentproto/redaction"
+} from "@agentproto/processor"
 
 import type { SessionObserver } from "./session-observer.js"
 import type { AgentStreamEvent } from "./sessions.js"

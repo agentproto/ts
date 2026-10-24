@@ -8,7 +8,7 @@ https://<daemon-fingerprint>.agentproto.cloud/pair#<offer>
 ```
 
 The page pairs with the daemon through the rendezvous (end-to-end encrypted,
-`@agentproto/pair-client`), stores the credential in IndexedDB, and installs a
+`@agentproto/pairing`), stores the credential in IndexedDB, and installs a
 service worker that serves the daemon's Control Center from the daemon itself,
 through the tunnel.
 

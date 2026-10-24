@@ -120,7 +120,7 @@ export async function startDaemon(
     reconnectGreeting?: string
   } = {},
 ): Promise<Daemon> {
-  const tmp = await mkdtemp(join(tmpdir(), "agentproto-pair-client-"))
+  const tmp = await mkdtemp(join(tmpdir(), "agentproto-pairing-"))
   const identity = await generateIdentity()
   const upstream = stubUpstream()
   const rendezvous = createRendezvousServer({ parkTimeoutMs: 5_000 })
