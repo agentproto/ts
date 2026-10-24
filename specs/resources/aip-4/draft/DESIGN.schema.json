@@ -8,8 +8,8 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "designkit/v1",
-      "description": "Pins the registry schema this kit conforms to. Required for registry submission."
+      "enum": ["design/v1", "designkit/v1"],
+      "description": "Pins the registry schema this kit conforms to. Required for registry submission. `designkit/v1` is accepted as a legacy alias (AIP-70)."
     },
     "kit": {
       "type": "string",

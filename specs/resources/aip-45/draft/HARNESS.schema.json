@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentproto.sh/docs/aip-45/AGENT-CLI.schema.json",
-  "title": "AGENT-CLI.md frontmatter — agentcli-interactive/v1",
-  "description": "JSON Schema for the YAML frontmatter of an AIP-45 AGENT-CLI.md manifest. Sibling of AIP-29 (CLI.md, tool CLIs); covers interactive agent CLIs (Hermes, Claude Code, OpenCode, Goose, Gemini CLI). Shares install/version/auth blocks with AIP-29 via $ref; binds to AIP-44 ACP for the wire protocol when protocol=acp.",
+  "$id": "https://agentproto.sh/docs/aip-45/HARNESS.schema.json",
+  "title": "HARNESS.md frontmatter — harness/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-45 HARNESS.md manifest. Sibling of AIP-29 (CLI.md, tool CLIs); covers interactive harnesses (Hermes, Claude Code, OpenCode, Goose, Gemini CLI). Shares install/version/auth blocks with AIP-29 via $ref; binds to AIP-44 ACP for the wire protocol when protocol=acp.",
   "type": "object",
   "additionalProperties": false,
   "required": ["name", "id", "description", "version", "bin", "install", "version_check", "sandbox", "protocol"],

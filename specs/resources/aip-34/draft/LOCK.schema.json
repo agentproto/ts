@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-34/LOCK.schema.json",
-  "title": "agentproto.lock — agentproto-lock/v1 (tree-wide app/pack lockfile)",
+  "title": "agentproto.lock — workspace.lock/v1 (tree-wide app/pack lockfile)",
   "description": "Validates agentproto.lock, a plain YAML file (NOT frontmatter — no markdown body) at the tree root. Pins every AIP-53 app and AIP-64 pack installed anywhere in the tree to the exact version, source and attach point it resolved to, so `agentproto workspace check` can flag drift between WORKSPACE.md `apps:` version ranges and what is actually installed.",
   "type": "object",
   "required": ["lockfile", "generated"],
   "additionalProperties": false,
   "properties": {
-    "lockfile": { "const": "agentproto-lock/v1" },
+    "lockfile": { "enum": ["workspace.lock/v1", "agentproto-lock/v1"], "description": "`agentproto-lock/v1` is accepted as a legacy alias (AIP-70)." },
     "generated": { "type": "string", "format": "date-time" },
     "apps": {
       "type": "array",
@@ -64,7 +64,7 @@
         },
         "digest": {
           "type": "string",
-          "pattern": "^agentproto-pack-digest/v1:.+$"
+          "pattern": "^review.pack-digest/v1:.+$"
         },
         "attach": {
           "type": "string",

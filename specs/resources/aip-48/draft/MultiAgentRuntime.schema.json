@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-48/MultiAgentRuntime.schema.json",
   "title": "MultiAgentRuntime",
-  "description": "Manifest format for agentruntimes/v1 — a composable multi-agent execution kernel. See AIP-48.",
+  "description": "Manifest format for runtime/v1 — a composable multi-agent execution kernel. See AIP-48.",
   "type": "object",
   "required": ["schema", "kind", "id", "participants", "substrate", "dispatcher"],
   "additionalProperties": true,
   "properties": {
     "schema": {
-      "const": "agentruntimes/v1",
-      "description": "Schema discriminator. MUST be 'agentruntimes/v1'."
+      "enum": ["runtime/v1", "agentruntimes/v1"],
+      "description": "Schema discriminator. MUST be 'runtime/v1'. `agentruntimes/v1` is accepted as a legacy alias (AIP-70)."
     },
     "kind": {
       "const": "MultiAgentRuntime",

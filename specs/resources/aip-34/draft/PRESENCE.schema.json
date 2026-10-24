@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-34/PRESENCE.schema.json",
-  "title": "PRESENCE.md frontmatter (AIP-34, presence/v1)",
-  "description": "Validates the YAML frontmatter of a presence/v1 document: the editorial and channel policy of one workspace node (who it talks to, about what, where, how often, in which words). The voice itself lives in the AIP-25 PERSONA.md named by `persona`. The body is markdown and is not validated.",
+  "title": "PRESENCE.md frontmatter (AIP-34, workspace.presence/v1)",
+  "description": "Validates the YAML frontmatter of a workspace.presence/v1 document: the editorial and channel policy of one workspace node (who it talks to, about what, where, how often, in which words). The voice itself lives in the AIP-25 PERSONA.md named by `persona`. The body is markdown and is not validated.",
   "type": "object",
   "required": ["schema", "name", "title", "description", "version", "status"],
   "additionalProperties": false,
@@ -93,7 +93,7 @@
     }
   },
   "properties": {
-    "schema": { "const": "presence/v1" },
+    "schema": { "enum": ["workspace.presence/v1", "presence/v1"], "description": "`presence/v1` is accepted as a legacy alias (AIP-70)." },
     "name": { "$ref": "#/$defs/kebab" },
     "title": { "type": "string", "minLength": 1, "maxLength": 120 },
     "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
