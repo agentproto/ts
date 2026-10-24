@@ -12,7 +12,7 @@
  *     AIP-47 role…). Returns a frozen `AppHandle`.
  *   - `handle.toMastraAgents(resolvers)` builds each agent into a Mastra
  *     agent whose `instructions` field is the real system prompt — the
- *     AGENT.md body (via `@agentproto/mastra`).
+ *     AGENT.md body (via `@agentproto/bridge`).
  *   - `handle.emit(dir)` writes `.agentproto/agents/<id>/AGENT.md` + shared
  *     `.agentproto/workflows/<id>/WORKFLOW.md` manifests under an
  *     agentproto-owned base (not the shared root `.agents/`), plus a root

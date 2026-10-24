@@ -2,6 +2,8 @@
 "@agentproto/inference-endpoint": minor
 "@agentproto/app": minor
 "@agentproto/app-kit": minor
+"@agentproto/bridge": minor
+"@agentproto/mastra": minor
 "@agentproto/llm-endpoint": minor
 "@agentproto/cli": patch
 "@agentproto/apps": patch

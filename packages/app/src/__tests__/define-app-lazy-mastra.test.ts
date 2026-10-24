@@ -1,6 +1,6 @@
 /**
  * Regression guard: `defineApp()` must not statically import
- * `@agentproto/mastra` (and therefore `@mastra/core`) — that chain is a
+ * `@agentproto/bridge` (and therefore `@mastra/core`) — that chain is a
  * documented peer dependency (see ../index.ts), and a static top-level
  * import would force any bundler that traces into `define-app.js` to inline
  * it even for a caller that never calls `toMastraAgent(s)` (e.g. a UI-only
@@ -8,7 +8,7 @@
  * an app import to a panel's `index.ts` pulled `@mastra/core` (and its
  * `@ast-grep/napi` native binary) into the whole extension.js.
  *
- * `@agentproto/mastra` is mocked to throw on import — if `define-app.js`
+ * `@agentproto/bridge` is mocked to throw on import — if `define-app.js`
  * (or anything it statically imports) still reaches for it at module-load
  * time, importing `defineApp` itself would throw and this test would fail
  * before ever calling it.
@@ -16,12 +16,12 @@
 
 import { describe, it, expect, vi } from "vitest"
 
-vi.mock("@agentproto/mastra", () => {
-  throw new Error("@agentproto/mastra must not be imported eagerly by defineApp()")
+vi.mock("@agentproto/bridge", () => {
+  throw new Error("@agentproto/bridge must not be imported eagerly by defineApp()")
 })
 
-describe("defineApp — does not eagerly import @agentproto/mastra", () => {
-  it("constructs a UI-only handle without touching @agentproto/mastra", async () => {
+describe("defineApp — does not eagerly import @agentproto/bridge", () => {
+  it("constructs a UI-only handle without touching @agentproto/bridge", async () => {
     const { defineApp } = await import("../define-app.js")
     const handle = defineApp({
       agents: [],

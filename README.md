@@ -246,7 +246,7 @@ Re-express any `ToolImplementation` in a host framework's tool shape:
 ```
 adapters/ai-sdk/        @agentproto/adapter-ai-sdk    Vercel AI SDK Tool projection
 adapters/mastra/        @agentproto/adapter-mastra     Mastra createTool projection
-packages/mastra/        @agentproto/mastra             AIP-42 AGENT.md → Mastra Agent
+packages/bridge/        @agentproto/bridge             AIP-42 AGENT.md → Mastra Agent
 ```
 
 ```ts
@@ -304,7 +304,7 @@ Key specs implemented here:
 | AIP-36 | SANDBOX.md | `@agentproto/sandbox` |
 | AIP-40 | EXTENSION.md | `@agentproto/extension` |
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
-| AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
+| AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/bridge` |
 | AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity,jcode}` |
 | AIP-57 | Model resolution primitive | `@agentproto/model-routing` |
 | AIP-62 | REVIEW.md | `@agentproto/review` |

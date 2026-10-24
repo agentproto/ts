@@ -203,7 +203,7 @@
     "@mastra/core": ">=1.0.0"
   },
   "devDependencies": {
-    "@agentproto/mastra": "workspace:*",
+    "@agentproto/bridge": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@mastra/core": "1.66.0",
     "@types/node": "^25.9.9",

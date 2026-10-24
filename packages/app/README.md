@@ -75,7 +75,7 @@ There is **no `systemPrompt` field anywhere in AIP**. An AGENT.md is
 **body**, and it's optional: omit it and the prompt composes from the agent's
 `persona` (AIP-25), `boundaries`, and `traits` — the same way Guilde assembles an
 operator's prompt from AIP-47 role instructions + persona rather than a stored
-string. `composeInstructions` (in [`@agentproto/mastra`](../mastra)) is the
+string. `composeInstructions` (in [`@agentproto/bridge`](../mastra)) is the
 assembler.
 
 ## The attachment invariant
@@ -312,7 +312,7 @@ export const dashboardApp = defineApp({
 ### `handle.toMastraAgents(resolvers)` — run them
 
 Builds every agent, keyed by id, turning each `body` into a **real Mastra
-`instructions` field** via [`@agentproto/mastra`](../mastra). You supply the
+`instructions` field** via [`@agentproto/bridge`](../mastra). You supply the
 resolvers (model, tools, memory…).
 
 ```ts

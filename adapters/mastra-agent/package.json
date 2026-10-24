@@ -58,7 +58,7 @@
     "@agentclientprotocol/sdk": "^0.21.1",
     "@agentproto/agent": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
-    "@agentproto/mastra": "workspace:*",
+    "@agentproto/bridge": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@ai-sdk/anthropic": "^3.0.133",
     "@ai-sdk/provider": "^3.0.19",

@@ -49,7 +49,7 @@ export default createTsupConfig({
     "@agentproto/app",
     "@agentproto/agent",
     "@agentproto/workflow",
-    "@agentproto/mastra",
+    "@agentproto/bridge",
     "@mastra/core",
     "@mastra/core/agent",
     "zod",

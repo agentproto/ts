@@ -55,7 +55,7 @@
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-cli": "workspace:*",
     "@agentproto/driver-http": "workspace:*",
-    "@agentproto/mastra": "workspace:*",
+    "@agentproto/bridge": "workspace:*",
     "@agentproto/tool": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "@agentproto/workflow-loader": "workspace:*",

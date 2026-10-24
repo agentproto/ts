@@ -21,7 +21,7 @@
 import { isAbsolute } from "node:path"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
-import type { BuildMastraAgentResult } from "@agentproto/mastra"
+import type { BuildMastraAgentResult } from "@agentproto/bridge"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
@@ -376,13 +376,13 @@ function selectAgents(
 }
 
 async function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult> {
-  // Dynamic import, not a static top-level one: `@agentproto/mastra` pulls in
+  // Dynamic import, not a static top-level one: `@agentproto/bridge` pulls in
   // `@mastra/core` (a documented peer dependency — see index.ts), which a
   // bundler would otherwise inline into ANY host that merely calls
   // `defineApp()` without ever calling `toMastraAgent(s)` (e.g. a UI-only app
   // consumer). Loading it lazily, only from the one place it's actually used,
   // keeps `defineApp()`/the rest of this module free of that cost.
-  const { buildMastraAgent } = await import("@agentproto/mastra")
+  const { buildMastraAgent } = await import("@agentproto/bridge")
   // `entry.body` (the AGENT.md body) wins as instructions; an explicit
   // `opts.body` still overrides, matching buildMastraAgent's contract.
   return buildMastraAgent(entry.agent, { body: entry.body, ...opts })

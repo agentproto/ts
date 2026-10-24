@@ -19,7 +19,7 @@
 import type { AgentHandle } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle, WorkspaceDefinition } from "@agentproto/workspace"
-import type { BuildMastraAgentResult, BuildMastraAgentOptions } from "@agentproto/mastra"
+import type { BuildMastraAgentResult, BuildMastraAgentOptions } from "@agentproto/bridge"
 import type { ToolHandle } from "@agentproto/tool"
 import type { DriverHandle } from "@agentproto/driver"
 
