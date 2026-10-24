@@ -774,4 +774,158 @@ describe("reaction runner", () => {
     await flush()
     expect(store.rows().length).toBe(rowsBefore)
   })
+
+  it("keeps a queued occurrence pending while another holds the only slot", async () => {
+    let notifyEntered: (() => void) | undefined
+    const entered = new Promise<void>(resolve => {
+      notifyEntered = resolve
+    })
+    let release: (() => void) | undefined
+    const run = vi.fn(async (input: ReactionTargetInput) => {
+      if (input.occurrenceId === "exit:first") {
+        notifyEntered?.()
+        notifyEntered = undefined
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+      }
+      return { ok: true, outcomeRef: `ref-${input.occurrenceId}` }
+    })
+    const target: ReactionTarget = {
+      actionId: "brain:ingest",
+      idempotent: true,
+      run: run as unknown as ReactionTarget["run"],
+    }
+    const { runner, store, c, file } = setup({
+      bindings: [makeBinding({ target })],
+      maxConcurrent: 1,
+    })
+
+    await store.insertPending(pendingInput({ occurrenceId: "exit:second" }))
+    const first = runner.handleEvent(completed({ occurrenceId: "exit:first" }), "exit:first")
+    await entered
+    const second = runner.handleEvent(completed({ occurrenceId: "exit:second" }), "exit:second")
+    await flush()
+
+    const fresh = openStore(file, c)
+    expect(fresh.get(keyOf("exit:first"))?.status).toBe("running")
+    expect(fresh.get(keyOf("exit:second"))?.status).toBe("pending")
+
+    release?.()
+    await Promise.all([first, second])
+
+    expect(store.get(keyOf("exit:first"))?.status).toBe("done")
+    expect(store.get(keyOf("exit:second"))?.status).toBe("done")
+  })
+
+  it("does not run a receipt twice from overlapping retry ticks", async () => {
+    let notifyEntered: (() => void) | undefined
+    const entered = new Promise<void>(resolve => {
+      notifyEntered = resolve
+    })
+    let release: (() => void) | undefined
+    const run = vi.fn(async (input: ReactionTargetInput) => {
+      if (input.occurrenceId === "exit:hold") {
+        notifyEntered?.()
+        notifyEntered = undefined
+        await new Promise<void>(resolve => {
+          release = resolve
+        })
+        return { ok: true, outcomeRef: "hold-ref" }
+      }
+      return { ok: false, retryable: true, error: "again" }
+    })
+    const target: ReactionTarget = {
+      actionId: "brain:ingest",
+      idempotent: true,
+      run: run as unknown as ReactionTarget["run"],
+    }
+    const { runner, store, c } = setup({
+      bindings: [makeBinding({ target })],
+      maxConcurrent: 1,
+    })
+
+    const failedKey = keyOf("exit:fail")
+    await store.insertPending(pendingInput({ occurrenceId: "exit:fail" }))
+    await store.markRunning(failedKey)
+    await store.markFailed(failedKey, "first failure", c.now())
+
+    const holding = runner.handleEvent(completed({ occurrenceId: "exit:hold" }), "exit:hold")
+    await entered
+    const tickOne = runner.retryDue()
+    const tickTwo = runner.retryDue()
+    await flush()
+    release?.()
+    await holding
+    await Promise.all([tickOne, tickTwo])
+
+    const failCalls = run.mock.calls.filter(
+      call => (call[0] as ReactionTargetInput).occurrenceId === "exit:fail",
+    )
+    expect(failCalls).toHaveLength(1)
+    const receipt = store.get(failedKey)
+    expect(receipt?.status).toBe("failed")
+    expect(receipt?.attempt).toBe(2)
+  })
+
+  it("retryDue resolves when sweep throws", async () => {
+    const { runner, store, logs } = setup()
+    store.sweep = () => {
+      throw new Error("sweep exploded")
+    }
+
+    await expect(runner.retryDue()).resolves.toBeUndefined()
+    expect(
+      logs.some(line => line.includes("retryDue failed") && line.includes("sweep exploded")),
+    ).toBe(true)
+  })
+
+  it("does not log a terminal markDead on a repeated capped delivery", async () => {
+    const run = vi.fn(async () => ({ ok: true, outcomeRef: "ref" }))
+    const target: ReactionTarget = {
+      actionId: "brain:ingest",
+      idempotent: true,
+      run: run as unknown as ReactionTarget["run"],
+    }
+    const { runner, store, logs } = setup({
+      bindings: [makeBinding({ target, reactionDepth: 4 })],
+      maxReactionDepth: 4,
+    })
+
+    const event = completed({ occurrenceId: "exit:cap" })
+    await runner.handleEvent(event, "exit:cap")
+    await runner.handleEvent(event, "exit:cap")
+
+    expect(run).not.toHaveBeenCalled()
+    const receipt = store.get(keyOf("exit:cap"))
+    expect(receipt?.status).toBe("dead")
+    expect(receipt?.lastError).toBe("recursion_cap")
+    expect(logs.filter(line => line.includes("markDead"))).toHaveLength(0)
+  })
+
+  it("unrefs the retry tick when the interval handle supports it", () => {
+    const unref = vi.fn()
+    const handle = { unref } as unknown as ReturnType<typeof setInterval>
+    const setIntervalMock = vi.fn(() => handle)
+    const clearIntervalMock = vi.fn()
+    const { runner } = setup({
+      retryIntervalMs: 1_000,
+      setInterval: setIntervalMock as unknown as typeof setInterval,
+      clearInterval: clearIntervalMock as unknown as typeof clearInterval,
+    })
+
+    runner.start()
+    expect(unref).toHaveBeenCalledTimes(1)
+    runner.stop()
+
+    const plainHandle = {} as unknown as ReturnType<typeof setInterval>
+    const setIntervalPlain = vi.fn(() => plainHandle)
+    const { runner: plainRunner } = setup({
+      retryIntervalMs: 1_000,
+      setInterval: setIntervalPlain as unknown as typeof setInterval,
+      clearInterval: clearIntervalMock as unknown as typeof clearInterval,
+    })
+    expect(() => plainRunner.start()).not.toThrow()
+    plainRunner.stop()
+  })
 })

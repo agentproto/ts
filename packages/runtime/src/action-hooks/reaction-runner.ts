@@ -187,14 +187,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     if (next) next()
   }
 
-  const withSlot = async <T>(fn: () => Promise<T>): Promise<T> => {
-    await acquire()
-    try {
-      return await fn()
-    } finally {
-      release()
-    }
-  }
+  const inFlight = new Set<string>()
 
   // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -239,7 +232,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     const key = receipt.receiptKey
     let outcome: ReactionTargetOutcome
     try {
-      outcome = await withSlot(() => binding.target.run(targetInput(receipt)))
+      outcome = await binding.target.run(targetInput(receipt))
     } catch (err) {
       await markFailedSafe(key, binding, receipt, messageOf(err))
       return
@@ -268,26 +261,33 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     opts?: { redrive?: boolean },
   ): Promise<void> => {
     const key = receipt.receiptKey
-    await Promise.resolve()
+    if (inFlight.has(key)) return
+    inFlight.add(key)
+    await acquire()
     try {
-      await store.markRunning(key, opts)
-    } catch (err) {
-      if (
-        err instanceof ReceiptTransitionError &&
-        (err.code === "already_running" || err.code === "terminal")
-      ) {
+      try {
+        await store.markRunning(key, opts)
+      } catch (err) {
+        if (
+          err instanceof ReceiptTransitionError &&
+          (err.code === "already_running" || err.code === "terminal")
+        ) {
+          return
+        }
+        logLine(`markRunning ${key} (${binding.bindingId}) failed: ${messageOf(err)}`)
         return
       }
-      logLine(`markRunning ${key} (${binding.bindingId}) failed: ${messageOf(err)}`)
-      return
-    }
 
-    const current = store.get(key)
-    if (!current) {
-      logLine(`receipt ${key} vanished after markRunning`)
-      return
+      const current = store.get(key)
+      if (!current) {
+        logLine(`receipt ${key} vanished after markRunning`)
+        return
+      }
+      await invokeTarget(binding, current)
+    } finally {
+      release()
+      inFlight.delete(key)
     }
-    await invokeTarget(binding, current)
   }
 
   const runBinding = async (
@@ -343,12 +343,14 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         return
       }
 
+      const current = store.get(key) ?? inserted
       if (binding.reactionDepth >= maxReactionDepth) {
-        await markDeadSafe(key, "recursion_cap")
+        if (current.status !== "done" && current.status !== "dead") {
+          await markDeadSafe(key, "recursion_cap")
+        }
         return
       }
 
-      const current = store.get(key) ?? inserted
       if (current.status === "done" || current.status === "dead" || current.status === "running") {
         return
       }
@@ -397,8 +399,11 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         unsubscribers.push(unsubscribe)
       }
       tick = setIntervalFn(() => {
-        void runner.retryDue()
+        runner.retryDue().catch(err => {
+          logLine(`retryDue failed: ${messageOf(err)}`)
+        })
       }, retryIntervalMs)
+      ;(tick as { unref?: () => void }).unref?.()
     },
 
     stop(): void {
@@ -431,17 +436,26 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     },
 
     async retryDue(): Promise<void> {
-      const now = nowMs()
-      const due: Array<{ binding: ReactionBinding; receipt: ReactionReceipt }> = []
-      for (const receipt of store.rows()) {
-        if (receipt.status !== "failed") continue
-        const binding = bindingById.get(receipt.bindingId)
-        if (!binding) continue
-        if (receipt.nextAttemptAt !== undefined && receipt.nextAttemptAt > now) continue
-        due.push({ binding, receipt })
+      try {
+        const now = nowMs()
+        const due: Array<{ binding: ReactionBinding; receipt: ReactionReceipt }> = []
+        for (const receipt of store.rows()) {
+          if (receipt.status !== "failed") continue
+          const binding = bindingById.get(receipt.bindingId)
+          if (!binding) continue
+          if (receipt.nextAttemptAt !== undefined && receipt.nextAttemptAt > now) continue
+          due.push({ binding, receipt })
+        }
+        await Promise.all(due.map(({ binding, receipt }) => runReceipt(binding, receipt)))
+      } catch (err) {
+        logLine(`retryDue failed: ${messageOf(err)}`)
+      } finally {
+        try {
+          store.sweep()
+        } catch (err) {
+          logLine(`retryDue failed: ${messageOf(err)}`)
+        }
       }
-      await Promise.all(due.map(({ binding, receipt }) => runReceipt(binding, receipt)))
-      store.sweep()
     },
 
     async reconcileOnBoot(): Promise<void> {
