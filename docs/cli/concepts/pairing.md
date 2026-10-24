@@ -161,7 +161,7 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   with the offer in its URL fragment
   (`https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…`). A fragment never reaches a
   server. The page runs the client handshake in the browser with
-  `@agentproto/pair-client` (WebCrypto, WebSocket, IndexedDB), which speaks
+  `@agentproto/pairing` (WebCrypto, WebSocket, IndexedDB), which speaks
   the same wire protocol as `pair accept`, so the daemon can't tell the two
   apart. `parseOfferUrl` accepts both forms. Which page serves the link is
   configurable (`pairing.pairPage`, `--pair-page`); see
@@ -267,7 +267,7 @@ with that instruction, not a timeout:
 ## The phone pair page: one origin per daemon
 
 The page a phone opens from the QR is a static web app. It runs the handshake
-with `@agentproto/pair-client`, keeps the credential in IndexedDB, and
+with `@agentproto/pairing`, keeps the credential in IndexedDB, and
 installs the service worker that proxies the daemon's UI. The browser scopes
 all of that to the page's **origin**. If every daemon's pages shared one
 origin, a script on that origin could read every pairing's credential and

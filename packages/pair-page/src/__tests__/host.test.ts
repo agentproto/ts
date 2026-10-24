@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { createMemoryCredentialStore, type PairCredential } from "@agentproto/pair-client"
+import { createMemoryCredentialStore, type PairCredential } from "@agentproto/pairing"
 import { daemonOrigin, ForeignDaemonError, pageMode, scopeCredentialStore } from "../lib/host"
 
 const A = "ae5be03faa146dd70123456789abcdef"

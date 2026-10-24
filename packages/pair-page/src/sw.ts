@@ -1,7 +1,7 @@
 /**
  * The pairing service worker (AIP-59 §5): registered once per paired daemon
  * with scope `/d/<id>/`, it answers every fetch under that scope from the
- * daemon, through the E2E rendezvous tunnel (`@agentproto/pair-client`). The
+ * daemon, through the E2E rendezvous tunnel (`@agentproto/pairing`). The
  * Control Center page, its REST and `/mcp` calls and its SSE streams all come
  * from the daemon this way; the pair page's server hosts none of it.
  *
@@ -25,7 +25,7 @@ import {
   TunnelClientError,
   type StateChange,
   type TunnelClient,
-} from "@agentproto/pair-client"
+} from "@agentproto/pairing"
 import { pageMode, scopeCredentialStore } from "./lib/host"
 import {
   CONTROL_CENTER_PATH,

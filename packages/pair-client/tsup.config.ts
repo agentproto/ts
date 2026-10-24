@@ -1,17 +1,18 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const entry = {
+  index: "src/index.ts",
+}
+
 export default createTsupConfig({
   banner: `/**
- * @agentproto/pair-client
- * Browser-safe client for agentproto E2E daemon pairing — pair from an offer,
- * then fetch through the daemon over an end-to-end encrypted rendezvous tunnel.
+ * @agentproto/pair-client v1.0.5 (deprecated shim)
+ * Re-exports @agentproto/pairing unchanged.
  */`,
-  entry: {
-    index: "src/index.ts",
-  },
+  entry,
   format: ["esm"],
   splitting: false,
-  dts: true,
-  external: ["@agentproto/acp", "@agentproto/secrets"],
+  dts: { entry },
+  external: ["@agentproto/pairing", "@agentproto/pairing/*"],
   noExternal: [],
 })

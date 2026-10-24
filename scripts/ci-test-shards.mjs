@@ -35,7 +35,7 @@ export const WEIGHTS = {
   'agentproto-vscode': 201,
   '@agentproto/worktree': 189,
   '@agentproto/cli': 152,
-  '@agentproto/pair-client': 77,
+  '@agentproto/pairing': 77,
   '@agentproto/corpus-cli': 54,
   '@agentproto/adapter-mastra-agent': 39,
   '@agentproto/workflow-mastra': 33,

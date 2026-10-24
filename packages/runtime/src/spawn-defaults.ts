@@ -165,7 +165,7 @@ export interface SpawnDefaultsConfig {
    *  for the agent to wake ITSELF (Claude Code does) before prompting it. */
   backgroundTaskWake?: { enabled?: boolean; graceMs?: number }
   /** Redactor slug applied to traced session content before it's sent to
-   *  Langfuse (see `@agentproto/redaction`'s registry). Default "secrets"
+   *  Langfuse (see `@agentproto/processor`'s registry). Default "secrets"
    *  (deny-list by key + value-scan for secret shapes). */
   traceRedactor?: string
   /** Default `interrupt` applied when an `agent_prompt` / `message_parent`
