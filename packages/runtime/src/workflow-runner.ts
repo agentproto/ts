@@ -1522,6 +1522,7 @@ async function executeRunWorkflow(
   // or another. Cleared unconditionally below once execution is done.
   if (lease) {
     const renew = (): void => {
+      if (!isActiveStatus(state.run.status)) return
       state.run.lease = { ownerId: lease.ownerId, heartbeatAt: lease.now().toISOString() }
       lease.onRenew?.(state)
     }
@@ -2382,7 +2383,10 @@ export function createWorkflowRunner(opts: {
     const lease = state.run.lease
     if (!lease) return
     const runId = state.run.runId
-    enqueue(() => writeLeaseFile(storeDir, runId, { ownerId: lease.ownerId, heartbeatAt: lease.heartbeatAt }))
+    enqueue(() => {
+      if (isTerminalStatus(state.run.status) || !state.run.lease) return
+      return writeLeaseFile(storeDir, runId, { ownerId: lease.ownerId, heartbeatAt: lease.heartbeatAt })
+    })
   }
 
   const demote = (state: RunState): void => {
