@@ -1,6 +1,8 @@
 # Action hooks: idempotent reaction receipts with boot reconciliation
 
-Pinned commit: de667d623683eeb1a244dbaf93f288679d7b41ad
+Pinned commit: de667d623683eeb1a244dbaf93f288679d7b41ad. Every line number in
+sections 1 to 3 is pinned to that commit and will drift on `main`; read them
+with `git show de667d6:<path>`.
 
 Status: design proposal for the first runtime step of action hooks v1 (AIP-71).
 This document adds no code. Sections 1 to 3 are facts about the pinned
@@ -50,7 +52,7 @@ and carries `requestId` at
 `packages/runtime/src/sentinel-webhook-outbox.ts:60` `  eventId: string`,
 the exact wire body at
 `packages/runtime/src/sentinel-webhook-outbox.ts:63` `  bodyBytes: string`,
-a always-null cursor at
+an always-null cursor at
 `packages/runtime/src/sentinel-webhook-outbox.ts:65` `  cursor: null`,
 attempt state at
 `packages/runtime/src/sentinel-webhook-outbox.ts:67` `  deliveryState: { attempts: number; lastError?: string; lastAt?: string }`,
@@ -264,8 +266,8 @@ The fresh row records the reverse link:
 `packages/runtime/src/session-continue-fresh.ts:297` `  fresh.continuedFrom = prev.id`.
 Durable fact: `continuedTo` and `continuedFrom` round-trip through
 `sessions.json`, cited at
-`packages/runtime/src/sessions.ts:2599` `  continuedTo?: string` and
-`packages/runtime/src/sessions.ts:2659` `  resumedFrom?: string`.
+`packages/runtime/src/sessions.ts:2589` `  continuedFrom?: string` and
+`packages/runtime/src/sessions.ts:2599` `  continuedTo?: string`.
 Replay after a crash is safe as a marker check: a reaction can see that the
 prior session already points at a successor and skip spawning a second one,
 provided the check and the write share a lock. The continuation spawn itself is
@@ -334,7 +336,10 @@ with cap at
 The read-only check is
 `packages/runtime/src/sentinel-store.ts:528` `      return sentinel.seen.includes(eventId)`.
 This is the sentinel event dedupe state, not a reaction receipt store. AIP-71
-section 7 forbids reusing it as a generic receipt database.
+section 7 (Sentinel boundary, in agentproto/agentproto
+[`specs/aip-71.mdx`](https://github.com/agentproto/agentproto/blob/main/specs/aip-71.mdx))
+forbids reusing it as a generic receipt database: "hook configuration MUST NOT
+reuse the Sentinel store as a generic receipt database".
 
 ### Reconstructibility of candidate triggers
 
@@ -368,7 +373,7 @@ pair. Proposed fields:
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `receiptKey` | string, primary key | Exact `<session-id>/<event>/<occurrence-id>/<binding-id>` |
-| `sessionId` | string | Index for session-level reporting and boot scans |
+| `sessionId` | string | Scan key for session-level reporting and boot scans. The v1 store has no session index: the boot pass filters `rows()` by `sessionId` |
 | `event` | string | Portable event ref, for example `session:exited` |
 | `occurrenceId` | string | Stable id from the source, for example `turn:<n>` or `exit:<endedAt>` |
 | `bindingId` | string | Stable id of the reaction binding, not the action id |
@@ -381,7 +386,8 @@ pair. Proposed fields:
 | `lastError` | string or absent | Redacted failure detail |
 | `createdAt` | number | Receipt durability time |
 | `startedAt` | number or absent | Last attempt start |
-| `completedAt` | number or absent | Terminal time |
+| `lastAttemptAt` | number or absent | End of the last failed attempt, the shape of the outbox `lastAt`. Set by `failed` only |
+| `completedAt` | number or absent | Terminal time. Set by `done` and `dead` only |
 | `causedByEventId` | string or absent | Upstream event id when the source has one |
 | `reactionDepth` | number | Recursion depth of the reaction chain |
 | `outcomeRef` | string or absent | Durable reference to the target's own outcome record, not a payload copy |
@@ -389,9 +395,11 @@ pair. Proposed fields:
 
 State machine: `pending -> running -> done`, `running -> failed`, `failed ->
 running` on retry, and `failed -> dead` at cap or on a non-retryable error. A
-`pending` receipt means durable acceptance but no started target. A `running`
-receipt means the target may have started. A `done` receipt is terminal and is
-never re-driven. `dead` is terminal and reported only.
+`pending` receipt means durable acceptance but no started target: the
+`running` write is durable before the target is invoked (section 5, step 5), so
+a persisted `pending` row never started. A `running` receipt means the target
+may have started. A `done` receipt is terminal and is never re-driven. `dead`
+is terminal and reported only.
 
 `outcomeRef` is deliberately opaque. For the pilot it is the brain ledger key,
 session id, because the brain records the ingested session in `brain-state.json`
@@ -405,50 +413,65 @@ delivery status is documented as carrying no URL, body or secret:
 `packages/runtime/src/sentinel-webhook-outbox.ts:88` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
 Receipts persist only a redacted reason string and an opaque reference.
 
-### Mapping onto the existing outbox record
+### Relationship to the existing outbox: share the mechanics, keep two stores
 
-Keep from the existing outbox:
+AIP-71 section 7 (Sentinel boundary) forbids reusing the Sentinel store as a
+generic receipt database, and asks a durable reaction implementation to reuse
+the proven outbox patterns "without merging the two public contracts". So the
+receipt store is a new store with its own file, its own row shape and its own
+status vocabulary. It does not generalize `sentinel-webhook-outbox.ts`, and the
+webhook outbox does not become an adapter of the receipt store.
 
-- The atomic durable write path (`writeFileDurable`) and its serialized write
-  chain, cited in section 1.
-- The persist-before-ack rule for `pending`.
-- The debounced best-effort status writes for transitions.
-- The terminal status vocabulary and terminal timestamp.
-- The bounded row file, age-out and terminal reaping.
-- The in-memory idempotency check before creating a row.
-- The `resumeDeliveries` shape, renamed to a reconciliation driver.
+The two stores share the durable-row mechanics, extracted from the outbox into
+one module (proposed `packages/runtime/src/durable-row-file.ts`, next to the
+existing `durable-file.ts`). The extraction is a behaviour-preserving refactor
+of the outbox: its public interface, row shape, file format and tests do not
+change, and its existing tests are the guard.
 
-Change in the outbox to support receipts:
+Extract into the shared module, parameterized and with no knowledge of
+sentinels:
 
-- Generalize the key from `${sentinelId}::${eventId}` to an opaque
-  `receiptKey`. The outbox's `rowKey` at
-  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``
-  is the only hard-coded composition today.
-- Generalize `enqueue` from `{sentinelId, event}` to a receipt input. A webhook
-  outbox becomes one adapter that composes its key as
-  `<sentinel-id>/webhook/<event-id>/<binding-id>` and keeps its existing
-  envelope handling.
-- Replace `bodyBytes`, `cursor`, `envelope` and `event` with receipt fields for
-  non-webhook reactions. The webhook adapter may keep its payload fields inside
-  an adapter-owned sub-record, but the base receipt row must not require them.
-- Replace `deliveryState` with `attemptState`, or keep the shape and document
-  that it is the generic attempt record. The fields `attempts`, `lastError` and
-  `lastAt` are already the right shape.
-- Add `configRevision`, `reactionDepth`, `causedByEventId`, `outcomeRef` and
-  `nextAttemptAt`.
-- Replace `onTerminal(sentinelId, row)` with a generic terminal hook that
-  receives the receipt. The sentinel ack becomes one consumer of that hook.
-- Replace the sentinel-specific expiry and secret gates in `dispatchRow` with a
-  runner callback, so the store does not know about sentinels.
+- The load of a JSON map keyed by an opaque string, and the pretty-printed
+  snapshot written through `writeFileDurable` (mode `0o600`, tmp plus fsync
+  plus rename), cited in section 1.
+- The single serialized write chain and the generation guard that keeps a slow
+  older snapshot from overwriting a newer one, cited in section 1.
+- The persist-before-ack rule for a new row, with the rollback of the
+  in-memory row when the persist fails, cited in section 1.
+- The debounced best-effort write for non-critical transitions, and the
+  `flushSync` shutdown path.
+- Bounded retention: terminal age-out, non-terminal age-out, the row cap and
+  the oldest-terminal eviction, with the three values passed in by each store.
 
-What can stay untouched:
+The receipt store owns, and the outbox never sees:
 
-- The file format remains a JSON map keyed by the receipt key.
-- The retention constants remain 24 hours for terminal rows, 7 days for
-  non-terminal rows and a 2000 row cap, unless a later receipt class needs a
-  different policy.
-- The `flushSync` shutdown path.
-- The pretty-printed JSON body and mode `0o600`.
+- The opaque `receiptKey` and the row shape of the record table above.
+- The status vocabulary `pending | running | done | failed | dead` and the
+  state machine, including the durable `running` transition (section 5,
+  step 5).
+- `configRevision`, `reactionDepth`, `causedByEventId`, `outcomeRef`,
+  `nextAttemptAt` and `lastAttemptAt`.
+- The runner callback, the terminal hook, and a reconciliation driver modeled
+  on `resumeDeliveries` (section 6).
+- Its own file, next to the outbox file under the agentproto home, so the two
+  stores never share a row or a path.
+- Its retention values, which start equal to the outbox values (24 hours for
+  terminal rows, 7 days for non-terminal rows, 2000 rows) and can differ per
+  receipt class.
+
+The outbox keeps, unchanged:
+
+- Its key, built from sentinel and event:
+  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
+- Its row shape (`bodyBytes`, `cursor`, `envelope`, `event`, `deliveryState`)
+  and its status vocabulary, which is `pending | delivered | dead`
+  (`packages/runtime/src/sentinel-webhook-outbox.ts:52` `export type SentinelWebhookOutboxStatus = "pending"`).
+  The receipt status is a different vocabulary, `pending | running | done |
+  failed | dead`: `done` plays the role of the outbox `delivered`, and
+  `running` and `failed` exist only in receipts.
+- Its terminal ack
+  (`packages/runtime/src/sentinel-runtime.ts:396` `    onTerminal: (sentinelId: string, row: SentinelWebhookOutboxRow): void => {`),
+  the expiry and secret gates in `dispatchRow`, and `resumeDeliveries`.
 
 ## 5. Proposal: lifecycle of one reaction
 
@@ -463,13 +486,19 @@ What can stay untouched:
    `nextAttemptAt`, do nothing until due.
 4. For a new key, write the receipt in `pending` durably, before acknowledging
    the event. If the write fails, do not ack and do not run the target.
-5. Transition to `running` with `startedAt` and `attempt + 1`. This transition
-   may be debounced, because a crash between the write and the target start is
-   recoverable as an unknown attempt.
+5. Transition to `running` with `startedAt` and `attempt + 1`, and make that
+   write durable before invoking the target. It costs one extra durable write
+   per reaction, and it is what keeps `pending` meaning "never started": a
+   debounced write could leave a persisted `pending` row whose target already
+   ran, and boot reconciliation would then replay a target with an unknown
+   outcome.
 6. Run the target with the event's occurrence id and the receipt key. The
    target must be declared idempotent or safe to reconcile.
 7. On success, write `done` with `completedAt` and `outcomeRef`. On a classified
-   failure, write `failed` with a redacted `lastError` and `nextAttemptAt`.
+   failure, write `failed` with a redacted `lastError`, `lastAttemptAt` and
+   `nextAttemptAt`. These two writes may be debounced: a lost `done` or
+   `failed` write on an idempotent target with a proven ledger (section 6) is
+   recovered by a re-drive of the `running` row.
 8. Retry `failed` receipts with exponential backoff, capped by `maxAttempts`.
    Exhaustion moves the receipt to `dead` with a terminal reason. A
    non-retryable error moves directly to `dead`.
@@ -698,6 +727,7 @@ export interface ReactionReceipt {
   lastError?: string
   createdAt: number
   startedAt?: number
+  lastAttemptAt?: number
   completedAt?: number
   causedByEventId?: string
   reactionDepth: number
@@ -710,11 +740,11 @@ export interface ReactionReceiptStore {
   get(key: string): ReactionReceipt | undefined
   rows(): ReactionReceipt[]
   insertPending(input: Omit<ReactionReceipt, "status" | "attempt" | "createdAt"> & { createdAt?: number }): Promise<ReactionReceipt>
-  markRunning(key: string, startedAt: number): Promise<void>
-  markDone(key: string, outcomeRef: string | undefined, completedAt: number): Promise<void>
-  markFailed(key: string, error: string, nextAttemptAt: number | undefined, completedAt: number): Promise<void>
-  markDead(key: string, reason: string, completedAt: number): Promise<void>
-  sweep(nowMs: number): void
+  markRunning(key: string): Promise<void>
+  markDone(key: string, outcomeRef: string | undefined): Promise<void>
+  markFailed(key: string, error: string, nextAttemptAt: number | undefined): Promise<void>
+  markDead(key: string, reason: string): Promise<void>
+  sweep(): void
   flushSync(): void
 }
 
@@ -834,6 +864,9 @@ NOT VERIFIED:
 - Whether `session:reaped` always results in a persisted `endedReason` of
   `idle-reaped` after an unclean shutdown. The reaper path is cited, but the
   crash window between the event and the persist was not traced.
+- That the extraction of the shared durable-row module preserves the outbox
+  behaviour exactly. The existing outbox tests are the guard and were not run
+  for this design.
 - The exact count and identity of every legacy mechanism that would need to be
   disabled to guarantee one owner per binding. The event-mapping doc is the
   current authority and this design did not re-audit every producer.

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/pending/memory/MEMORY.schema.json",
   "title": "MEMORY.md frontmatter — memory/v1",
-  "description": "Validates the YAML frontmatter of a memory/v1 MEMORY.md file — the individual agent's own memory. This is a THIRD doctype: it neither absorbs nor replaces AIP-10 agentknowledge/v1 (curated, shareable wiki entries) nor AIP-11 learning/v1 (lessons). A memory/v1 document carries the AIP-10 base fields (schema, slug, kind, title, updated_at); the remaining fields codify the item shape Pygmalion already writes, and are OPTIONAL so an AIP-10-aligned writer and the current Pygmalion writer both round-trip through the same schema. The markdown body (the `body` property) is unrestricted text.",
+  "description": "Validates the YAML frontmatter of a memory/v1 MEMORY.md file — the individual agent's own memory. This is a THIRD doctype: it neither absorbs nor replaces AIP-10 agentknowledge/v1 (curated, shareable wiki entries) nor AIP-11 lesson/v1 (lessons). A memory/v1 document carries the AIP-10 base fields (schema, slug, kind, title, updated_at); the remaining fields codify the item shape Pygmalion already writes, and are OPTIONAL so an AIP-10-aligned writer and the current Pygmalion writer both round-trip through the same schema. The markdown body (the `body` property) is unrestricted text.",
   "type": "object",
   "additionalProperties": false,
   "anyOf": [

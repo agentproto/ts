@@ -51,7 +51,7 @@
     },
     "presence": {
       "$ref": "#/$defs/presenceRef",
-      "description": "PRESENCE.md block (presence/v1, see AIP-34 §Presence block). Optional. How this node speaks in public: audience, topics, forbidden words, channels, cadence, approval. Same inline/ref/file union as `work`; a `file` is path-confined."
+      "description": "PRESENCE.md block (workspace.presence/v1, see AIP-34 §Presence block). Optional. How this node speaks in public: audience, topics, forbidden words, channels, cadence, approval. Same inline/ref/file union as `work`; a `file` is path-confined."
     },
     "identity": { "$ref": "#/$defs/identityRefBlock" },
     "wall": {
