@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 95 |
+| core | 96 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 10 |
@@ -67,6 +67,7 @@ Package | Path | Version | Tier | Reason (one line) |
 @agentproto/agencies | `packages/agencies/core` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agencies-engine | `packages/agencies/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agencies-mastra | `packages/agencies/mastra` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
+@agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agent-runtime | `packages/agent-runtime` | 0.1.6 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app | `packages/app` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
@@ -158,7 +159,7 @@ agentproto-vscode | `packages/vscode` | 0.25.0 | core | product runtime package 
 @agentproto/worktree | `packages/worktree` | 0.19.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/worktree-agent-example | `packages/worktree-agent-example` | 0.0.37 | core | product runtime package consumed by the runtime/cli |
 @agentproto/action | `packages/action` | 0.1.7 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/agency | `packages/agency` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/agent | `packages/agent` | 0.4.1 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/assembly | `packages/assembly` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/canvakit | `packages/canvakit` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
