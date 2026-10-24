@@ -61,7 +61,11 @@ agentproto-claude-code-cloud-acp
 ```
 
 `session/cancel` reports unsupported: the vendor exposes no interrupt verb
-(AIP-66 §6). No model menu is exposed either — the vendor picks the model.
+(AIP-66 §6). No curated `models` menu is exposed — the vendor bills its own
+models (AIP-66 §4) — but a spawn may pin a free-form `model` id
+(`agent_start { cloud: "anthropic", adapter: "claude-code-cloud", model: "claude-opus-5-5" }`);
+the relay applies it via `ANTHROPIC_MODEL` on every spawned claude child.
+Omitting `model` leaves the vendor's own default in place.
 
 ## Protocol details
 

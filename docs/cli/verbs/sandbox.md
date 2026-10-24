@@ -4,7 +4,7 @@
 agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
-agentproto sandbox gc     [--apply] [--pause] [--json]
+agentproto sandbox gc     [--apply] [--pause] [--provider <slug>...] [--include-attached] [--json]
 agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
 agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
@@ -99,20 +99,37 @@ insecure URL). Prints the connection descriptor and a paste-ready
 agentproto sandbox gc              # dry run — print what would be torn down
 agentproto sandbox gc --apply      # actually kill orphan boxes on the provider
 agentproto sandbox gc --apply --pause   # pause instead of kill (stays reattachable)
+agentproto sandbox gc --provider computer --include-attached
 agentproto sandbox gc --json       # machine-readable plan / outcomes
 ```
 
-Reaps **orphan** boxes: ledger entries whose origin session ended in a
-failure state (`error` / `killed` / `exited`) — the session can never
-return to its box, so the box is wasted spend. Dry run by default;
-nothing is torn down until `--apply` is passed.
+Reaps **orphan** boxes from two sources:
 
-Requires a running daemon to look up origin-session statuses.
+- **Ledger orphans** — ledger entries whose origin session ended in a
+  failure state (`error` / `killed` / `exited`) — the session can never
+  return to its box, so the box is wasted spend.
+- **Orphan provider boxes** — boxes a provider's control plane still
+  holds (and still charges RAM for) that the daemon's sandbox registry
+  never knew and that no live session references. A candidate must be
+  past a 15-minute grace window and carry no attached session (a box a
+  live session holds is never a candidate). A box the provider does not
+  date can never be proven stale and is never proposed.
+
+Dry run by default; nothing is torn down until `--apply` is passed.
+Ledger orphans honor `--pause`; orphan provider boxes are always
+force-deleted on the provider under `--apply` (a paused orphan would
+keep holding its RAM).
+
+Requires a running daemon to look up origin-session statuses and the
+live-session set (without live sessions the provider sweep is skipped —
+the ledger pass still runs).
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--apply` | `false` | Actually tear down (or pause) the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
-| `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
+| `--apply` | `false` | Actually tear down the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
+| `--pause` | `false` | With `--apply`: pause the **ledger** orphans instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. Orphan provider boxes are always force-deleted. |
+| `--provider <slug>` | `computer` | Provider whose control plane is swept for orphan boxes. Repeatable. |
+| `--include-attached` | `false` | Also propose the orphan provider boxes the provider still counts an attached session on. By default they are left alone (they may be in use by a session the daemon cannot see). |
 | `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
 
 ### `checkpoint-gc`

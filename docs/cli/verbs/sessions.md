@@ -39,6 +39,7 @@ agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+                                         [--auto-compact-at-tokens <n>]
 agentproto sessions switch-profile --from <profileRef> --to <profileRef>
                                            [--dry-run] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
@@ -633,6 +634,11 @@ fresh shape when the adapter reports the id is unknown ("session
 killed too early to persist"). The banner reports which path was
 taken: `(resumed via claude --resume from ses_abc12)` or
 `(fresh — resume not available)`.
+
+`--auto-compact-at-tokens <n>` carries an absolute context-continuity
+threshold across the restart: an idle session is auto-compacted once its
+context reaches `<n>` tokens (clamped to 200000 max; `0` disables). See
+[`autoCompactAtTokens`](../reference/config-schema.md#defaults-object).
 
 **Restart-with-override (MCP/HTTP).** The `session_restart` MCP tool (and the
 `POST /sessions/:id/restart` route) accept per-axis overrides — `model`,

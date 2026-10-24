@@ -40,7 +40,7 @@ The flags you will actually touch (verified against `cron add --help`):
 | `--schedule <expr>` | Required. 5-field cron expression, local time. |
 | `--adapter <slug>` + `--prompt <text>` | Spawn a fresh agent session each fire. |
 | `--command <cmd>` + `--args <arg>` | Run an allowlisted shell command (repeat `--args` for more). |
-| `--target-session <id>` + `--prompt <text>` | Re-prompt a live session in place; no new session is spawned. |
+| `--target-session <id\|agent:<label>>` + `--prompt <text>` | Re-prompt a live session in place; no new session is spawned. An `agent:<label>` target resolves the label to the live session carrying it at fire time, so the job survives the agent being relaunched under a new id. |
 | `--label <text>` | Human-readable name shown by `cron list`. |
 | `--once` | Fire a single time, then deactivate (the job stays listed, inactive). |
 | `--model <id>` / `--cwd <dir>` | Model override and working directory (agent kind). |
