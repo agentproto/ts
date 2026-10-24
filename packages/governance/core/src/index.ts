@@ -1,5 +1,5 @@
 /**
- * @agentproto/governance — governance/v1 spec implementation (AIP-70
+ * @agentproto/governance: governance/v1 spec implementation (AIP-70
  * registry name; the pre-AIP-70 tag agentgovernance/v1 is still accepted
  * on read paths and still emitted into new artifacts for now).
  *
