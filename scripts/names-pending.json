@@ -57,7 +57,10 @@
     "ts:aip-9:spec-name",
     "ts:package:@agentproto/agencies:unregistered",
     "ts:package:@agentproto/agency-v2:unregistered",
+    "ts:package:@agentproto/catalog:unregistered",
+    "ts:package:@agentproto/corpus:unregistered",
     "ts:package:@agentproto/driver-agent-cli:unregistered",
+    "ts:package:@agentproto/eval:unregistered",
     "ts:package:@agentproto/model-intel:unregistered"
   ]
 }

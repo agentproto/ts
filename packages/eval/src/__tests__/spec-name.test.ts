@@ -7,6 +7,6 @@ describe("eval format identity", () => {
   })
 
   it("exposes the internal format id", () => {
-    expect(EVAL_FORMAT).toBe("agentproto.eval@1")
+    expect(EVAL_FORMAT).toBe("agentproto.eval/v1")
   })
 })

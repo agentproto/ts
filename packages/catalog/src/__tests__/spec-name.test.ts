@@ -7,6 +7,6 @@ describe("catalog format identity", () => {
   })
 
   it("exposes the internal format id", () => {
-    expect(CATALOG_FORMAT).toBe("agentproto.catalog@1")
+    expect(CATALOG_FORMAT).toBe("agentproto.catalog/v1")
   })
 })

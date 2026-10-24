@@ -7,6 +7,6 @@ describe("corpus format identity", () => {
   })
 
   it("exposes the internal format id", () => {
-    expect(CORPUS_FORMAT).toBe("agentproto.corpus@1")
+    expect(CORPUS_FORMAT).toBe("agentproto.corpus/v1")
   })
 })

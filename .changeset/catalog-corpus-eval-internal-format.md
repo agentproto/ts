@@ -1,7 +1,7 @@
 ---
-"@agentproto/catalog": patch
-"@agentproto/corpus": patch
-"@agentproto/eval": patch
+"@agentproto/catalog": minor
+"@agentproto/corpus": minor
+"@agentproto/eval": minor
 ---
 
-Stop claiming an AIP registry spec name. Each package now exposes an internal format id (`CATALOG_FORMAT`, `CORPUS_FORMAT`, `EVAL_FORMAT`) and keeps its legacy `SPEC_NAME` only for compatibility.
+Add an internal data-format id (`CATALOG_FORMAT`, `CORPUS_FORMAT`, `EVAL_FORMAT`), removing the packages' claims to be AIP registry specs. The legacy `SPEC_NAME` export is retained for compatibility and is now deprecated; it remains a legitimate pending registry-name deviation until it is removed.
