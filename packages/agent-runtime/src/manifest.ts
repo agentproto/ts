@@ -15,6 +15,8 @@ import { resolve as resolvePath, dirname } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 
+/** The legacy tag writers still emit until the next major. Old readers in the
+ *  field only know agentruntimes/v1. */
 export const MULTI_AGENT_RUNTIME_SCHEMA = "agentruntimes/v1"
 export const MULTI_AGENT_RUNTIME_KIND = "MultiAgentRuntime"
 
@@ -47,7 +49,7 @@ export type ParticipantManifestConfig = z.infer<typeof ParticipantConfigSchema>
 
 export const MultiAgentRuntimeManifestSchema = z
   .object({
-    schema: z.literal(MULTI_AGENT_RUNTIME_SCHEMA),
+    schema: z.enum(["runtime/v1", MULTI_AGENT_RUNTIME_SCHEMA]),
     kind: z.literal(MULTI_AGENT_RUNTIME_KIND),
     id: z.string().min(1),
     participants: z.array(ParticipantManifestSchema).min(1),
