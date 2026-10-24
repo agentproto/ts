@@ -127,7 +127,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // a switch in its own JS shim, and is pulled in transitively (@mastra/
     // core -> its bundled workspace/code-search tooling does a dynamic
     // `import("@ast-grep/napi")`, reachable once @agentproto/runtime ->
-    // @agentproto/app-kit -> @agentproto/mastra is bundled into cli.mjs).
+    // @agentproto/app -> @agentproto/mastra is bundled into cli.mjs).
     // Bundling it makes esbuild statically resolve every platform branch
     // in that shim, which fails for every platform's binary except
     // whichever one happens to be installed locally. Externalise it like

@@ -11,7 +11,7 @@
  * of the panel.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { narrator } from "./agents/narrator.js"
 import { narrateSession } from "./workflows/narrate-session.js"
 import { SESSION_VIEWER_HTML, SESSION_VIEWER_TOOLS } from "./ui.js"

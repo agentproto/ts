@@ -27,7 +27,7 @@ my-app/
   data/                                    # durable app-scoped storage (app_data_*), gitignored
 ```
 
-`defineApp().emit(dir)` (from `@agentproto/app-kit`) writes exactly this
+`defineApp().emit(dir)` (from `@agentproto/app`) writes exactly this
 shape; `loadAppHandle(dir)` reads it back and re-validates. The daemon's
 `app_install`/`app_run`/`app_data_*` tools only ever care about `APP.md` and
 what it points at — everything else in the folder is yours.
@@ -46,7 +46,7 @@ Two ways in:
   init trame my-app` for the bare-minimum trame: one agent, one workflow, a
   gate, a stage-board UI, `data/DATA.md`, `scripts/verify.mjs`). Full flags
   and template comparison: [create-agentproto-app](./create-agentproto-app.md).
-- **Author directly in TypeScript** with `@agentproto/app-kit` — what this
+- **Author directly in TypeScript** with `@agentproto/app` — what this
   guide does, because it makes every piece (agent, workflow, UI, data hint)
   visible in one file.
 
@@ -57,7 +57,7 @@ into a digest.
 ```ts
 // build.mjs
 import { readFileSync } from "node:fs"
-import { defineApp } from "@agentproto/app-kit"
+import { defineApp } from "@agentproto/app"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 

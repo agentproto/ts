@@ -23,7 +23,7 @@
  */
 import { codeTeam } from "@agentproto/apps/code-team"
 import { mediaViewer } from "@agentproto/apps/media-viewer"
-import { refKey } from "@agentproto/app-kit"
+import { refKey } from "@agentproto/app"
 import { describe, expect, it } from "vitest"
 import { makeWorkspaceTools } from "../workspace-tools.js"
 

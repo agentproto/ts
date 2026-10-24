@@ -71,7 +71,7 @@ Package | Path | Version | Tier | Reason (one line) |
 agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-client | `packages/app-client` | 0.4.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-config | `packages/app-config` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/app-kit | `packages/app-kit` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
+@agentproto/app | `packages/app` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/apps | `packages/apps` | 0.24.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/auth | `packages/auth` | 1.3.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/batch | `packages/batch` | 0.2.3 | core | product runtime package consumed by the runtime/cli |

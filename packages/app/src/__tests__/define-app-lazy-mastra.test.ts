@@ -5,7 +5,7 @@
  * import would force any bundler that traces into `define-app.js` to inline
  * it even for a caller that never calls `toMastraAgent(s)` (e.g. a UI-only
  * app). This bit `packages/vscode`'s extension bundle once already: adding
- * an app-kit import to a panel's `index.ts` pulled `@mastra/core` (and its
+ * an app import to a panel's `index.ts` pulled `@mastra/core` (and its
  * `@ast-grep/napi` native binary) into the whole extension.js.
  *
  * `@agentproto/mastra` is mocked to throw on import — if `define-app.js`

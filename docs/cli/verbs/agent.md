@@ -8,7 +8,7 @@ agentproto agent list [dir]
 
 Author and inspect AIP-42 agent manifests in the canonical hand-written
 layout `<dir>/.agents/<slug>/AGENT.md` — the one `loadAgent` and the daemon's
-`self_inspect` read first (an app emitted by `app-kit` writes under
+`self_inspect` read first (an app emitted by `app` writes under
 `.agentproto/agents/<id>/AGENT.md` instead; both are discovered). Neither
 verb needs a running daemon.
 

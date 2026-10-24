@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app-kit"
+import type { AgentEntry } from "@agentproto/app"
 
 /** Writes the requested change. */
 export const implementer: AgentEntry = {

@@ -81,7 +81,7 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/adapter-browser": "workspace:*",
     "@agentproto/app-client": "workspace:*",
-    "@agentproto/app-kit": "workspace:*",
+    "@agentproto/app": "workspace:*",
     "@agentproto/apps": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/driver": "workspace:*",

@@ -841,7 +841,7 @@ export interface InstalledAppUi {
 
 /** An agent or workflow an installed app bundles: its id plus the absolute
  *  path of the emitted manifest (`AGENT.md` / `WORKFLOW.md`) on the daemon
- *  host — what `@agentproto/app-kit`'s `emit` materializes. */
+ *  host — what `@agentproto/app`'s `emit` materializes. */
 export interface InstalledAppRef {
   id: string
   path: string

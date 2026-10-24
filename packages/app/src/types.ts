@@ -1,11 +1,11 @@
 /**
- * Types for `@agentproto/app-kit`.
+ * Types for `@agentproto/app`.
  *
  * An "app" is the smallest shippable unit that couples one or more AIP-42
  * agents with the AIP-15 workflows they run — plus any other AIP artifacts
  * you want to ride along (an AIP-6 company, AIP-25 personas, AIP-47 roles,
  * policies…). The agents and workflows are authored with the existing
- * `defineAgent` / `defineWorkflow`; app-kit bundles + cross-links them.
+ * `defineAgent` / `defineWorkflow`; app bundles + cross-links them.
  *
  * On the system prompt: there is no `systemPrompt` field anywhere in AIP.
  * The prompt is the free-text BODY of an AGENT.md (AIP-42) — frontmatter is
@@ -39,7 +39,7 @@ export interface AgentEntry {
  * Structural view of any AIP doctype handle (agent, company, persona,
  * role, policy…). Every `defineX` handle has a stable `id`; `schema`
  * carries the doctype literal when the doctype declares one. Kept
- * structural so an app can `attach` any AIP artifact without app-kit
+ * structural so an app can `attach` any AIP artifact without app
  * depending on each doctype package.
  */
 export interface DoctypeHandle {
@@ -64,7 +64,7 @@ export interface WorkspaceShorthand {
   readonly version?: string
   readonly description?: string
   /**
-   * AIP-34 v2 node `type`. Defaults to `"app"` — app-kit workspaces are
+   * AIP-34 v2 node `type`. Defaults to `"app"` — app workspaces are
    * standalone roots (one app, one workspace), not nodes in anyone's
    * `TYPES.md`-governed tree, so this is a fixed, sensible default rather
    * than something a caller needs to pick from a registry.
@@ -83,7 +83,7 @@ export type WorkspaceInput = WorkspaceHandle | WorkspaceShorthand
  * How to (re)build an `AppUiDefinition`'s on-disk bundle when it's missing
  * or stale, so a repo can ship an APP.md that declares a build step instead
  * of committing the generated `.agentproto/ui/index.html`. Carried verbatim
- * in APP.md frontmatter (`ui.build`); app-kit itself never runs `command` —
+ * in APP.md frontmatter (`ui.build`); app itself never runs `command` —
  * it stays host-agnostic (see load-app.ts's module doc) — the daemon/CLI
  * do, via `@agentproto/runtime`'s `ensureAppUiBuilt` (app-ui-build.ts).
  */
@@ -261,18 +261,18 @@ export interface AppDevDefinition {
  * One supervised service the app hosts in production (AIP-53 `services[]`).
  *
  * This is NOT a dev launcher: `dev.launch` stays dev-only and is never
- * executed by app-kit. A `services` entry names the production hosting
+ * executed by app. A `services` entry names the production hosting
  * surface — the host (later work item) spawns ONE keep-alive service-owner
  * session per entry at install time that runs `entry`. One process per
  * entry, one port; there is no dependency graph, no scaling and no
- * scheduler behind this field. app-kit's loader/`defineApp` only carries it.
+ * scheduler behind this field. app's loader/`defineApp` only carries it.
  */
 export interface AppService {
   /** Service identifier — kebab-case, unique across the array. */
   readonly name: string
   /** Legacy shell command line that starts the service, e.g.
    *  `"pnpm --filter x start"` or `"node dist/server.js"`. Exactly one of
-   *  `entry`/`command` must be present. Carried verbatim; app-kit never
+   *  `entry`/`command` must be present. Carried verbatim; app never
    *  runs it. */
   readonly entry?: string
   /** Structured command form (preferred): the binary (or script) to run.
@@ -282,7 +282,7 @@ export interface AppService {
   readonly args?: readonly string[]
   /** Structured + legacy: working directory the runner starts the service
    *  in. Relative paths are resolved against the app's installed dir by the
-   *  host, not by app-kit. */
+   *  host, not by app. */
   readonly cwd?: string
   /** Optional TCP port the service listens on (1..65535). Omitted = a
    *  service that does not listen (no port). */
@@ -462,7 +462,7 @@ export interface AppSetupVendorStep {
  * `prompt`, `oauth`, `external`, `choice`, `auth-profile`, `pairing`,
  * `check`, plus vendor `x-*`). Ordered, idempotent post-install
  * configuration the host runs after install and before the app is
- * `ready`. app-kit validates and carries the field verbatim; it never
+ * `ready`. app validates and carries the field verbatim; it never
  * executes a step (the host's setup engine does).
  */
 export type AppSetupStep =
@@ -645,7 +645,7 @@ export interface AppDefinition {
    * Production hosting surface (AIP-53 `services`): one supervised service
    * process per entry. The host spawns ONE keep-alive service-owner session
    * per entry at install time (later work item) that runs the entry's
-   * `entry` command; app-kit only carries the field. NOT a launcher —
+   * `entry` command; app only carries the field. NOT a launcher —
    * `dev.launch` remains dev-only and is never executed here. Array must be
    * non-empty with unique kebab-case names when present.
    */
@@ -655,7 +655,7 @@ export interface AppDefinition {
    * `setup[]`): the values only the user can supply and the one-time
    * bindings that outlive the install. Non-empty when present; step ids
    * unique; `when.step` references an EARLIER step (conformance rule 10 —
-   * see `defineApp`). app-kit validates and carries the field verbatim;
+   * see `defineApp`). app validates and carries the field verbatim;
    * it never runs a step — the host's setup engine does, after the
    * install record is written and before the app is `ready`.
    */
@@ -682,9 +682,9 @@ export interface AppDefinition {
   readonly boundaries?: AppBoundariesDefinition
   /**
    * Coarse grouping surfaced in catalogs/trees — e.g. `"book"` groups the
-   * VS Code Apps tree's "Books" section. Freeform: app-kit does not
+   * VS Code Apps tree's "Books" section. Freeform: app does not
    * validate against a fixed enum, since new categories may appear without
-   * an app-kit release.
+   * an app release.
    */
   readonly category?: string
 }
@@ -761,7 +761,7 @@ export interface AppHandle {
   readonly dev?: AppDevDefinition
   /** Production hosting surface (see {@link AppDefinition.services}): one
    *  supervised service process per entry, carried verbatim. NOT executed by
-   *  app-kit — the host runs each `entry` at install time (later work item). */
+   *  app — the host runs each `entry` at install time (later work item). */
   readonly services?: readonly AppService[]
   /** AIP-53 `setup[]` (see {@link AppDefinition.setup}): validated,
    *  frozen, carried verbatim. Absent when the app declares no setup. */

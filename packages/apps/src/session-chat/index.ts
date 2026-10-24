@@ -31,7 +31,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 import { SESSION_CHAT_FALLBACK_HTML, sessionChatEmbedHtml } from "./panel.js"
 

@@ -12,7 +12,7 @@ import type {
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
   OpenAIIcon,
-} from "@agentproto/app-kit"
+} from "@agentproto/app"
 import type { z } from "zod"
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -79,7 +79,7 @@ export interface AgnoMcpApp<TInput = unknown, TOutput = unknown> {
   /** Namespaced OpenAI MCP-extensions projection (§3.2). Present only when
    *  the app declares `ui.extensions.openai`; absent ⇒ identical tool,
    *  resource, and wire snapshot as before (I1/I5). Sources from the app's
-   *  normalized `AppUiDefinition.extensions.openai` (W-A's app-kit
+   *  normalized `AppUiDefinition.extensions.openai` (W-A's app
    *  contract, carried through install as `InstalledApp.ui.extensions`). */
   openai?: OpenAIAppDescriptor
 }

@@ -12,7 +12,7 @@
 import { describe, it, expect } from "vitest"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle } from "@agentproto/app"
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "repo-maintenance")
 

@@ -21,7 +21,7 @@ import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { parseArgs } from "node:util"
 
-import { unpackApp } from "@agentproto/app-kit"
+import { unpackApp } from "@agentproto/app"
 import matter from "gray-matter"
 import {
   AppCatalogEntrySchema,
