@@ -102,7 +102,7 @@ export interface DeviceRegistry {
  * field carries a real client-kind hint yet — pair/v2's `clientName` is the
  * only signal the handshake exchanges — but both shipped clients default
  * that name to a recognisable shape: `browser@<host>` (or bare `browser`)
- * for the web pair page (`pair-client/src/pair.ts`), `<user>@<host>` for the
+ * for the web pair page (`pairing/src/pair.ts`), `<user>@<host>` for the
  * CLI (`cli/src/util/pair-transport.ts`). A user-supplied `--name` overrides
  * the default and loses the signal — acceptable for a hint, not an identity.
  */

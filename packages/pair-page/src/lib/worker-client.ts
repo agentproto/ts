@@ -3,7 +3,7 @@
  * worker registration, and page → worker messages.
  */
 
-import { createIndexedDbCredentialStore, type CredentialStore } from "@agentproto/pair-client"
+import { createIndexedDbCredentialStore, type CredentialStore } from "@agentproto/pairing"
 import { pageMode, scopeCredentialStore, type PageMode } from "./host"
 import { PAIR_SW_URL, pairingScope, type PairWorkerRequest } from "./pair"
 

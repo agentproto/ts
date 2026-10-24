@@ -13,7 +13,7 @@ import {
   type PairCredential,
   type PairedDaemon,
   type PendingPairing,
-} from "@agentproto/pair-client"
+} from "@agentproto/pairing"
 import { daemonOrigin } from "../lib/host"
 import { isOutdatedPairingError, statusPath } from "../lib/pair"
 import {
