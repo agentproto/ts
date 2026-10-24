@@ -1,17 +1,19 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const entry = {
+  index: "src/index.ts",
+  "manifest/index": "src/manifest/index.ts",
+}
+
 export default createTsupConfig({
   banner: `/**
- * @agentproto/agency-v2 v0.1.0-alpha
- * AIP-21 AGENCY.md \`defineAgencyV2\` reference implementation.
+ * @agentproto/agency-v2 v0.1.5 (deprecated shim)
+ * Re-exports @agentproto/agency unchanged.
  */`,
-  entry: {
-    index: "src/index.ts",
-    "manifest/index": "src/manifest/index.ts",
-  },
+  entry,
   format: ["esm"],
   splitting: true,
-  dts: true,
-  external: ["zod", "gray-matter", "@agentproto/define-doctype"],
+  dts: { entry },
+  external: ["@agentproto/agency", "@agentproto/agency/*"],
   noExternal: [],
 })
