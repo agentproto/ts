@@ -135,4 +135,35 @@ describe("sandbox proxy — poll resilience", () => {
     expect(waitForAny).toHaveBeenCalledTimes(4)
     expect(events[events.length - 1]).toEqual({ kind: "turn-end", reason: "completed" })
   })
+
+  it("keeps relaying new lines once the ring window has rotated past MAX_OUTPUT_LINES, with no duplicates and no garbled suffix", async () => {
+    const window = (from: number, to: number): string =>
+      Array.from({ length: to - from + 1 }, (_, i) => `line ${from + i}`).join("\n") + "\n"
+    // The box's `agent_output` is a last-N-lines window. Simulate the ring
+    // saturating and then sliding: the second pull shares only its second
+    // half with the first, the third is entirely inside the second.
+    const waitForAny = vi
+      .fn()
+      .mockResolvedValueOnce({ timedOut: true, sessionIds: [] })
+      .mockResolvedValueOnce({ timedOut: true, sessionIds: [] })
+      .mockResolvedValueOnce({ timedOut: false, event: "turn-end", sessionIds: [] })
+    const output = vi
+      .fn()
+      .mockResolvedValueOnce(window(1, 500))
+      .mockResolvedValueOnce(window(251, 750))
+      .mockResolvedValueOnce(window(501, 750))
+    const host = makeHost({ waitForAny, output })
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const events = await collect(proxy.send("go"))
+    const relayed = events
+      .map(e => (e.kind === "text-delta" ? e.text : undefined))
+      .filter((text): text is string => typeof text === "string")
+      .join("")
+    const lines = relayed.split("\n").filter(Boolean)
+
+    expect(lines).toEqual(Array.from({ length: 750 }, (_, i) => `line ${i + 1}`))
+    expect(new Set(lines).size).toBe(lines.length)
+    expect(events[events.length - 1]).toEqual({ kind: "turn-end", reason: "completed" })
+  })
 })

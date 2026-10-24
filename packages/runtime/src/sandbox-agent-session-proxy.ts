@@ -51,6 +51,19 @@ const MAX_OUTPUT_LINES = 500
 const MAX_CONSECUTIVE_POLL_FAILURES = 6
 /** Pause between failed polls — no tight error loop against a sick box. */
 const POLL_RETRY_DELAY_MS = 5_000
+/** A structured `/events/stream` connection that closes before a turn-end is
+ *  treated as a transient disconnect and re-opened from the last consumed
+ *  transcript seq (the route replays from `?since=`). Give up only after this
+ *  many consecutive attempts that produced NO record at all: a connection
+ *  that delivered real events resets the count. */
+const MAX_CONSECUTIVE_STREAM_FAILURES = 6
+/** Absolute cap on reconnects that produced NO record, so a dead connection
+ *  cannot keep a turn alive indefinitely. Productive connections that drop
+ *  (a flaky but healthy tunnel) are not counted: the daemon was demonstrably
+ *  alive on those attempts, so their drops must not exhaust the budget. */
+const MAX_EMPTY_RECONNECTS = 30
+/** Pause before re-opening a dropped structured stream. */
+const STREAM_RECONNECT_DELAY_MS = 5_000
 /** Box-daemon watchdog defaults: probe `/health` every 30s; declare the daemon
  *  dead after 3 definitive failures in a row (~90s), or after 10 probes in a
  *  row that got no answer at all (~5 min — a box thrashing out of memory). */
@@ -600,7 +613,60 @@ async function* pollAgentOutputFallback(
   // back newline-less chunks that get glued into one mangled line instead.
   // Yielding the raw new suffix (embedded newlines intact) lets that same
   // coalescing logic split it correctly.
-  let seenLength = 0
+  // `host.output` returns the LAST `limit` LINES of the box's ring buffer,
+  // not an append-only stream: once the ring is saturated every pull is a
+  // sliding window, so a character offset into it is meaningless (it would
+  // cut mid-line and relay a garbled suffix). Track the previous window's
+  // LINES and emit only the lines that follow their longest overlap with the
+  // new window; when the window has rotated past the overlap entirely, emit
+  // the whole new window.
+  let lastWindowLines: string[] = []
+  /** The lines of `next` that follow the longest suffix of `prev` that is a
+   *  prefix of `next` (empty when the window is unchanged). */
+  function freshWindowLines(prev: readonly string[], next: readonly string[]): string[] {
+    const max = Math.min(prev.length, next.length)
+    for (let k = max; k > 0; k--) {
+      let matches = true
+      for (let i = 0; i < k; i++) {
+        if (prev[prev.length - k + i] !== next[i]) {
+          matches = false
+          break
+        }
+      }
+      if (matches) return next.slice(k)
+    }
+    return [...next]
+  }
+  /** Pull whatever the box's ring buffer has grown past our last window and
+   *  relay it as text-delta. Used both at a real turn boundary AND on every
+   *  clean long-poll timeout: this loop only hears about turn boundaries, so
+   *  without the timeout pull a long tool call left the HOST with no events
+   *  at all for the whole turn: its lastActivityAt froze, the stall
+   *  watchdog flagged a perfectly healthy box, and the box's open `[tool]`
+   *  line never reached the host's phase state. Best-effort: a failed pull
+   *  loses nothing (a later successful pull picks it up). */
+  async function* pullUnseenTail(): AsyncGenerator<AgentStreamEvent> {
+    let tail: string | undefined
+    try {
+      tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+    } catch {
+      try {
+        tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
+      } catch {
+        tail = undefined
+      }
+    }
+    if (tail === undefined) return
+    // Compare complete lines only: a trailing newline would otherwise add an
+    // empty sentinel that never lines up with the next window's prefix.
+    const endsWithNewline = tail.endsWith("\n")
+    const next = (endsWithNewline ? tail.slice(0, -1) : tail).split("\n")
+    const fresh = freshWindowLines(lastWindowLines, next)
+    lastWindowLines = next
+    if (fresh.length === 0) return
+    const text = fresh.join("\n") + (endsWithNewline ? "\n" : "")
+    if (text.length > 0) yield { kind: "text-delta", text }
+  }
   try {
     // Transient-failure tolerance: a single failed poll request must NOT
     // kill the turn. A long review turn saturates a small box (monorepo
@@ -639,28 +705,22 @@ async function* pollAgentOutputFallback(
       }
       // A clean long-poll timeout carries no `event` at all — keep polling
       // past it instead of mistaking it for a real settle (mirrors
-      // `@agentproto/worktree`'s `waitForSettled`).
-      if (result.timedOut) continue
+      // `@agentproto/worktree`'s `waitForSettled`). Relay any output the box
+      // produced in the meantime first: the long-poll only wakes on a turn
+      // boundary, so this is the only chance to see a long tool call's
+      // `[tool]`/`[tool-result]` lines (and to keep the host's activity
+      // clock alive) before the turn ends.
+      if (result.timedOut) {
+        yield* pullUnseenTail()
+        continue
+      }
 
       // The tail pull is best-effort: the offset-based diff means a failed
       // pull loses nothing — a later successful pull (or the catch's final
       // harvest below) yields the full unseen suffix. One immediate retry,
       // then proceed without it rather than killing a settled turn over a
       // missed output read.
-      let tail: string | undefined
-      try {
-        tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
-      } catch {
-        try {
-          tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
-        } catch {
-          tail = undefined
-        }
-      }
-      if (tail !== undefined && tail.length > seenLength) {
-        yield { kind: "text-delta", text: tail.slice(seenLength) }
-      }
-      if (tail !== undefined) seenLength = tail.length
+      yield* pullUnseenTail()
 
       if (result.event === "exited") {
         // The box's OWN session ended out-of-band (crash, OOM, an
@@ -689,14 +749,7 @@ async function* pollAgentOutputFallback(
     // EMPTY and post-mortem diagnosis blind (observed in CI: a box session
     // erroring ~2min in with zero surfaced output). Best-effort: the box
     // may already be unreachable.
-    try {
-      const tail = await host.output(remoteSessionId, MAX_OUTPUT_LINES)
-      if (tail.length > seenLength) {
-        yield { kind: "text-delta", text: tail.slice(seenLength) }
-      }
-    } catch {
-      // box gone — nothing more to salvage
-    }
+    yield* pullUnseenTail()
     throw err
   }
 }
@@ -888,96 +941,176 @@ export function createSandboxAgentSessionProxy(
   ): AsyncGenerator<AgentStreamEvent> {
     const controller = new AbortController()
     activeController = controller
-    let sseBody: ReadableStream<Uint8Array> | undefined
-    try {
-      sseBody = await openBoxEventStream(
-        host.mcpUrl,
-        remoteSessionId,
-        transcriptCursor,
-        controller.signal,
-        host.authHeaders,
-      )
-    } catch {
-      // Unreachable box, or a daemon old enough to 404 the route —
-      // degrade to the flattened poll rather than failing the turn.
-      sseBody = undefined
-    }
     await parkIfDetached()
-
-    if (!sseBody) {
-      try {
-        for await (const evt of pollAgentOutputFallback(host, remoteSessionId, since)) {
-          if (quietEndMs === undefined) {
-            renewBoxLifetime()
-            refreshLoginFile()
-          }
-          yield evt
-        }
-      } catch (err) {
-        await parkIfDetached()
-        throw err
-      }
-      return
-    }
 
     try {
       let sawTurnEnd = false
       let sawAssistantText = false
       let sawToolCall = false
       const quietState = { quiet: false }
-      const source =
-        quietEndMs === undefined
-          ? readSseRecords(sseBody)
-          : endAfterQuiet(readSseRecords(sseBody), quietEndMs, quietState)
-      for await (const record of source) {
-        if (typeof record.seq === "number") transcriptCursor = record.seq
-        const evt = recordToStreamEvent(record)
-        if (!evt) continue
-        // An idle re-attach replay (`quietEndMs` set) is stale backlog, not work.
-        if (quietEndMs === undefined) {
-          renewBoxLifetime()
-          refreshLoginFile()
-        }
-        if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
-        else if (evt.kind === "tool-call") sawToolCall = true
-        if (evt.kind === "turn-end") {
-          sawTurnEnd = true
-          // Device first-turn failure surfacing: the box's structured
-          // transcript carries no cause for an EMPTY turn (a bad model id),
-          // and an `error` reason may have its message only in the box's
-          // ring buffer. Pull that raw line into the controller's view
-          // BEFORE the terminal turn-end so it reads as part of this turn.
-          if (
-            opts.surfaceHostTurnErrors &&
-            isFirstTurn &&
-            (evt.reason === "error" || (!sawAssistantText && !sawToolCall))
-          ) {
-            yield* harvestHostErrorNotice(host, remoteSessionId)
+      // A box's SSE connection can drop while the box daemon, its HTTP
+      // server and the adapter session are all still perfectly alive: a
+      // tunnel idle timeout, a TCP reset, a momentarily saturated box. The
+      // route replays the session's `events.jsonl` from `?since=`, so the
+      // right response is to RE-OPEN the stream from the last consumed
+      // record, not to declare the box gone. Declaring it gone here flipped
+      // a healthy mid-turn box session to `status:"error"` (and skipped
+      // turn-retry as "session error"); observed live 2026-10-23 on
+      // `sess_08a99130`, whose SSE died after two minutes while the agent
+      // kept working for another five. Mirrors the fallback loop's
+      // transient-failure tolerance: retry, and only give up after a run of
+      // failures that really does look like a dead daemon.
+      let consecutiveStreamFailures = 0
+      let emptyReconnects = 0
+      let firstAttempt = true
+      /** Abortable, unref'd reconnect pause. `close()` aborts the turn's
+       *  controller, which must settle this immediately instead of letting
+       *  a teardown wait out up to six 5s sleeps. */
+      const waitForReconnect = (ms: number): Promise<void> =>
+        new Promise(resolve => {
+          if (closed || controller.signal.aborted) return resolve()
+          const onAbort = (): void => {
+            clearTimeout(timer)
+            resolve()
           }
-          yield evt
-          break
+          const timer = setTimeout(() => {
+            controller.signal.removeEventListener("abort", onAbort)
+            resolve()
+          }, ms)
+          timer.unref?.()
+          controller.signal.addEventListener("abort", onAbort, { once: true })
+        })
+
+      for (;;) {
+        await parkIfDetached()
+        if (closed || controller.signal.aborted) return
+        let sseBody: ReadableStream<Uint8Array> | undefined
+        // Whether THIS attempt delivered at least one structured record. Only
+        // an attempt that delivered nothing counts toward the dead-daemon
+        // budget: a flaky-but-productive tunnel that drops every few records
+        // is not a dead daemon, so its drops must not exhaust the budget.
+        let attemptDeliveredRecord = false
+        try {
+          sseBody = await openBoxEventStream(
+            host.mcpUrl,
+            remoteSessionId,
+            transcriptCursor,
+            controller.signal,
+            host.authHeaders,
+          )
+        } catch {
+          sseBody = undefined
         }
-        yield evt
-      }
-      await parkIfDetached()
-      if (!sawTurnEnd && !quietState.quiet) {
-        // The connection closed (box HTTP server gone, not just the
-        // adapter subprocess) without a terminal turn-end record ever
-        // landing. The box's OWN `runAgentTurn` guarantees a turn-end
-        // (real or synthesized) for any outcome it can observe — a
-        // stream that ends without one means the box daemon itself
-        // stopped observing, i.e. it's gone. Throwing here mirrors the
-        // fallback path's "exited" handling: the registry's
-        // `runAgentTurn` catch flips this session's status to "error"
-        // and emits `session:exited`.
-        throw new Error(
-          `sandbox proxy: structured event stream for remote session "${remoteSessionId}" ` +
-            "ended without a turn-end — the box's own agentproto daemon connection was " +
-            "lost (crash, OOM, or an out-of-band kill).",
-        )
+        await parkIfDetached()
+        if (closed || controller.signal.aborted) return
+
+        if (!sseBody) {
+          // FIRST attempt: unreachable box, or a daemon old enough to 404
+          // the route. Degrade to the flattened poll rather than failing
+          // the turn (unchanged legacy behavior). Later attempts are
+          // reconnects of a stream that was already working, so they retry
+          // instead of switching relay modes mid-turn.
+          if (firstAttempt) {
+            firstAttempt = false
+            try {
+              for await (const evt of pollAgentOutputFallback(host, remoteSessionId, since)) {
+                if (quietEndMs === undefined) {
+                  renewBoxLifetime()
+                  refreshLoginFile()
+                }
+                yield evt
+              }
+            } catch (err) {
+              await parkIfDetached()
+              if (closed || controller.signal.aborted) return
+              throw err
+            }
+            return
+          }
+        } else {
+          try {
+            const source =
+              quietEndMs === undefined
+                ? readSseRecords(sseBody)
+                : endAfterQuiet(readSseRecords(sseBody), quietEndMs, quietState)
+            for await (const record of source) {
+              if (typeof record.seq === "number") transcriptCursor = record.seq
+              const evt = recordToStreamEvent(record)
+              if (!evt) continue
+              // Records are arriving, so this connection is healthy: a
+              // later drop starts a fresh retry budget.
+              attemptDeliveredRecord = true
+              consecutiveStreamFailures = 0
+              // An idle re-attach replay (`quietEndMs` set) is stale backlog, not work.
+              if (quietEndMs === undefined) {
+                renewBoxLifetime()
+                refreshLoginFile()
+              }
+              if (evt.kind === "text-delta" && evt.text?.trim()) sawAssistantText = true
+              else if (evt.kind === "tool-call") sawToolCall = true
+              if (evt.kind === "turn-end") {
+                sawTurnEnd = true
+                // Device first-turn failure surfacing: the box's structured
+                // transcript carries no cause for an EMPTY turn (a bad model id),
+                // and an `error` reason may have its message only in the box's
+                // ring buffer. Pull that raw line into the controller's view
+                // BEFORE the terminal turn-end so it reads as part of this turn.
+                if (
+                  opts.surfaceHostTurnErrors &&
+                  isFirstTurn &&
+                  (evt.reason === "error" || (!sawAssistantText && !sawToolCall))
+                ) {
+                  yield* harvestHostErrorNotice(host, remoteSessionId)
+                }
+                yield evt
+                break
+              }
+              yield evt
+            }
+          } catch (err) {
+            // A read error is an abnormal disconnect. An AbortError from our
+            // own teardown (`close()` / `detach()`) ends here quietly; any
+            // other read error is retried below, from the same cursor.
+            await parkIfDetached()
+            if (closed || controller.signal.aborted) return
+          }
+          await parkIfDetached()
+          if (sawTurnEnd) return
+          if (quietEndMs !== undefined && quietState.quiet) return
+        }
+        firstAttempt = false
+
+        if (attemptDeliveredRecord) {
+          // Productive attempt: it dropped, but the daemon was demonstrably
+          // alive. Do not count it toward the dead-daemon budget.
+          consecutiveStreamFailures = 0
+        } else {
+          consecutiveStreamFailures++
+          emptyReconnects++
+        }
+
+        if (
+          consecutiveStreamFailures >= MAX_CONSECUTIVE_STREAM_FAILURES ||
+          emptyReconnects >= MAX_EMPTY_RECONNECTS
+        ) {
+          // The box's OWN `runAgentTurn` guarantees a turn-end (real or
+          // synthesized) for any outcome it can observe. A stream that
+          // keeps ending without one means the box daemon itself stopped
+          // observing. Throwing here mirrors the fallback path's "exited"
+          // handling: the registry's `runAgentTurn` catch flips this
+          // session's status to "error" and emits `session:exited`.
+          throw new Error(
+            `sandbox proxy: structured event stream for remote session "${remoteSessionId}" ` +
+              "ended without a turn-end: the box's own agentproto daemon connection was " +
+              `lost (crash, OOM, or an out-of-band kill) and did not recover after ` +
+              `${consecutiveStreamFailures} consecutive reconnect failures.`,
+          )
+        }
+        await waitForReconnect(STREAM_RECONNECT_DELAY_MS)
       }
     } catch (err) {
       await parkIfDetached()
+      if (closed || controller.signal.aborted) return
       // Best-effort final harvest, same rationale as the legacy fallback's
       // catch: pull whatever the box printed that this turn hasn't
       // yielded as a structured event, so the HOST transcript isn't left
@@ -1318,6 +1451,11 @@ export function createSandboxAgentSessionProxy(
       if (closed) return
       closed = true
       stopTimers()
+      // A turn may be parked in the reconnect wait (a dropped relay stream).
+      // Abort it here, before the teardown that kills the box, so `close()`
+      // never waits out the reconnect budget and never reports the box as
+      // lost when it was the caller that ended the turn.
+      activeController?.abort()
       // IDLE REAP: take a final checkpoint of the box's uncommitted work while
       // its filesystem is still reachable — the teardown below is what ends the
       // box, and the reaped session's only way back is a cold boot from this

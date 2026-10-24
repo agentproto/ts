@@ -57,6 +57,7 @@ function sseResponse(records: Array<Record<string, unknown>>, status = 200): Res
 
 describe("sandbox proxy — structured SSE stream", () => {
   afterEach(() => {
+    vi.useRealTimers()
     vi.unstubAllGlobals()
   })
 
@@ -152,30 +153,147 @@ describe("sandbox proxy — structured SSE stream", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it("throws (mirroring the fallback's exited handling) when the stream ends without a turn-end", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () =>
+  it("re-opens the stream from the last consumed seq when it drops mid-turn instead of failing a live turn", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async (input: string | URL) => {
+        expect(new URL(input).searchParams.get("since")).toBe("0")
+        // The connection dies after the tool call, while the box session is
+        // still running (no turn-end): exactly the 2026-10-23 incident.
+        return sseResponse([
+          {
+            seq: 1,
+            ts: "t",
+            kind: "tool-call",
+            sessionId: "remote_1",
+            toolCallId: "tc1",
+            toolName: "bash",
+            arguments: { command: "pnpm install" },
+          },
+        ])
+      })
+      .mockImplementationOnce(async (input: string | URL) => {
+        expect(new URL(input).searchParams.get("since")).toBe("1")
+        return sseResponse([
+          { seq: 2, ts: "t", kind: "tool-result", sessionId: "remote_1", toolCallId: "tc1", isError: false },
+          { seq: 3, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" },
+        ])
+      })
+    vi.stubGlobal("fetch", fetchMock)
+
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const done = collect(proxy.send("go"))
+    await vi.advanceTimersByTimeAsync(10_000)
+    const events = await done
+
+    expect(events.map(e => e.kind)).toEqual(["tool-call", "tool-result", "turn-end"])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("gives up (mirroring the fallback's exited handling) only after the dropped stream fails to recover", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () =>
         sseResponse([
           { seq: 1, ts: "t", kind: "text-delta", sessionId: "remote_1", text: "partial\n" },
         ]),
-      ),
-    )
+      )
+      // Every reconnect gets a stream that ends again with no record at all.
+      .mockImplementation(async () => sseResponse([]))
+    vi.stubGlobal("fetch", fetchMock)
     const output = vi.fn(async () => "box stderr tail")
     const host = makeHost({ output })
     const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
 
     const events: AgentStreamEvent[] = []
-    await expect(async () => {
+    const done = (async () => {
       for await (const ev of proxy.send("go")) events.push(ev)
-    }).rejects.toThrow(/ended without a turn-end/)
+    })().catch((err: unknown) => err)
+    await vi.advanceTimersByTimeAsync(120_000)
+    const err = await done
 
+    expect(String(err)).toMatch(/ended without a turn-end/)
+    expect(String(err)).toMatch(/consecutive reconnect failures/)
     // The structured event still yielded before the connection dropped, plus
     // a best-effort harvest of the box's ring buffer.
     expect(events).toEqual([
       { kind: "text-delta", text: "partial\n" },
       { kind: "text-delta", text: "box stderr tail" },
     ])
+  })
+
+  it("close() during a reconnect wait ends the turn promptly without a daemon-lost error", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementationOnce(async () =>
+      sseResponse([
+        {
+          seq: 1,
+          ts: "t",
+          kind: "tool-call",
+          sessionId: "remote_1",
+          toolCallId: "tc1",
+          toolName: "bash",
+          arguments: { command: "pnpm install" },
+        },
+      ]),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const events: AgentStreamEvent[] = []
+    const done = (async () => {
+      for await (const ev of proxy.send("go")) events.push(ev)
+    })().then(
+      () => undefined,
+      (err: unknown) => err,
+    )
+
+    // The first connection delivers its record and drops into the 5s wait.
+    await vi.advanceTimersByTimeAsync(100)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const closed = proxy.close()
+    // No 5s advance: the abort must settle the wait immediately.
+    await vi.advanceTimersByTimeAsync(0)
+    const err = await done
+    await closed
+
+    expect(err).toBeUndefined()
+    expect(events).toEqual([
+      { kind: "tool-call", toolCallId: "tc1", toolName: "bash", arguments: { command: "pnpm install" } },
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps turning when a productive tunnel drops repeatedly (40 drops, each after real records)", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+    for (let i = 0; i < 40; i++) {
+      fetchMock.mockImplementationOnce(async () =>
+        sseResponse([
+          { seq: i + 1, ts: "t", kind: "text-delta", sessionId: "remote_1", text: `chunk ${i + 1}\n` },
+        ]),
+      )
+    }
+    fetchMock.mockImplementationOnce(async () =>
+      sseResponse([{ seq: 41, ts: "t", kind: "turn-end", sessionId: "remote_1", reason: "completed" }]),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const host = makeHost()
+    const proxy = createSandboxAgentSessionProxy({ host, remoteSessionId: "remote_1" })
+
+    const done = collect(proxy.send("go"))
+    await vi.advanceTimersByTimeAsync(40 * 5_000 + 10_000)
+    const events = await done
+
+    expect(events.filter(e => e.kind === "text-delta")).toHaveLength(40)
+    expect(events[events.length - 1]).toEqual({ kind: "turn-end", reason: "completed" })
+    expect(fetchMock).toHaveBeenCalledTimes(41)
   })
 
   it("falls back to the legacy agent_output poll when the stream route 404s (older box daemon)", async () => {

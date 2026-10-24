@@ -687,6 +687,61 @@ function isTurnOutputEvent(evt: AgentStreamEvent): boolean {
 }
 
 /**
+ * What one line of a sandbox relay's FLATTENED output means for the
+ * descriptor's live tool-call state. A box session whose daemon predates
+ * (or cannot serve) the structured `/events/stream` route reaches this
+ * daemon only as `text-delta` lines copied from the box's `agent_output`
+ * ring buffer: the same `\x1b[36m[tool] …\x1b[0m` / `\x1b[2m[tool-result]
+ * …\x1b[0m` lines a LOCAL session's projector would have written. Those
+ * lines are the only evidence the host gets that a tool is in flight, so
+ * they feed the same `activeToolCalls` phase state a structured
+ * `tool-call` event does (see `applyRelayedBoxLine`). Anything else that
+ * means "the model has the floor again" (a `[thought]` line, or plain
+ * assistant text) closes the open calls, exactly like the structured
+ * text-delta/thought handlers do.
+ *
+ * The ANSI prefix is load-bearing: it distinguishes the ring buffer's own
+ * projector output from assistant text that merely starts with `[tool]`.
+ */
+const RELAYED_TOOL_LINE_RE = /^\x1b\[36m\[tool\] ([^\x1b]*?)\x1b\[0m/
+const RELAYED_TOOL_RESULT_RE = /^\x1b\[(?:2m\[tool-result\]|31m\[tool-error\])/
+const RELAYED_THOUGHT_LINE_RE = /^\x1b\[2m\[thought\]/
+
+/** Update a remote session's live tool-call state from one flattened relay
+ *  line. Mirrors `trackToolCall`/`resolveToolCall` for the text channel: an
+ *  unmatched `[tool] …` stays in `activeToolCalls` (so `currentPhase` reads
+ *  `tool-call:<name>` and the stall watchdog never treats the expected
+ *  silence of a long build as a dead stream) until its `[tool-result]`
+ *  arrives or the model takes the floor again. */
+function applyRelayedBoxLine(
+  rt: { activeToolCalls?: Map<string, string>; relayToolSeq?: number },
+  line: string,
+): void {
+  const tool = RELAYED_TOOL_LINE_RE.exec(line)
+  if (tool) {
+    if (!rt.activeToolCalls) rt.activeToolCalls = new Map()
+    rt.relayToolSeq = (rt.relayToolSeq ?? 0) + 1
+    const name = (tool[1] ?? "").trim().split(/\s/)[0] || "unknown"
+    rt.activeToolCalls.set(`relay:${rt.relayToolSeq}`, name)
+    return
+  }
+  if (RELAYED_TOOL_RESULT_RE.test(line)) {
+    if (!rt.activeToolCalls) return
+    const latestRelay = Array.from(rt.activeToolCalls.keys())
+      .filter(key => key.startsWith("relay:"))
+      .at(-1)
+    if (latestRelay) rt.activeToolCalls.delete(latestRelay)
+    return
+  }
+  if (
+    RELAYED_THOUGHT_LINE_RE.test(line) ||
+    (!line.startsWith("\x1b[") && !line.trimStart().startsWith("["))
+  ) {
+    rt.activeToolCalls?.clear()
+  }
+}
+
+/**
  * Defensively narrow an "agent-prompt" event's `options` (typed `unknown`
  * — see `AgentStreamEvent.options`) into a flat label list. Accepts plain
  * strings, or objects exposing `label`/`name`/`id`/`optionId` (covers both
@@ -3113,6 +3168,10 @@ interface SessionRuntime {
   /** Active tool calls in announcement order. Multiple calls can overlap;
    *  removing the latest one falls back to the previous still-active call. */
   activeToolCalls?: Map<string, string>
+  /** Monotonic key source for tool calls reconstructed from a sandbox
+   *  relay's flattened `[tool]` lines (see `applyRelayedBoxLine`). Kept
+   *  separate from adapter `toolCallId`s so the two sources never collide. */
+  relayToolSeq?: number
   /** Distinct tool-call ids seen during this turn, for enrichment de-dup. */
   toolCallIdsThisTurn?: Set<string>
   /** Per-turn tool-call count surfaced by the read-time status projection. */
@@ -7654,7 +7713,13 @@ export function createSessionsRegistry(opts?: {
         // (whether or not the adapter bothered to emit one; several don't).
         // This is the catch-all behind the explicit releases below.
         releaseBlockedOn(rt.desc)
-        rt.activeToolCalls?.clear()
+        // A LOCAL adapter's text-delta is assistant text, full stop. A REMOTE
+        // (sandbox) session's flattened relay, however, carries the box's
+        // whole ring-buffer projection, including its `[tool]` / `[tool-result]`
+        // lines: those must feed the live tool-call state (see
+        // `applyRelayedBoxLine`) rather than be blanket-cleared here, or a box
+        // running a long tool call looks like a silent dead stream.
+        if (rt.desc.remote !== true) rt.activeToolCalls?.clear()
         if (evt.text) {
           const prior = rt.lastAssistantTextSealed ? "" : (rt.lastAssistantText ?? "")
           const text = prior + evt.text
@@ -7667,7 +7732,10 @@ export function createSessionsRegistry(opts?: {
           const combined = rt.textBuf + evt.text
           const lines = combined.split(/\r?\n/)
           rt.textBuf = lines.pop() ?? ""
-          for (const line of lines) appendLine(rt, line, "stdout")
+          for (const line of lines) {
+            if (rt.desc.remote === true) applyRelayedBoxLine(rt, line)
+            appendLine(rt, line, "stdout")
+          }
         }
         break
       case "thought":

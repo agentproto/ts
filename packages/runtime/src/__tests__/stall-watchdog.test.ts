@@ -240,6 +240,25 @@ function idleAgentSession(sessionId: string): AgentSessionLike {
   }
 }
 
+/** A box session whose legacy relay has delivered exactly one flattened ring
+ *  line, a `[tool] bash` announcement with no matching `[tool-result]`, and
+ *  then gone quiet: a long foreground build inside the box. */
+function relayedOpenToolAgentSession(sessionId: string): AgentSessionLike {
+  return {
+    sessionId,
+    async *send() {
+      yield {
+        kind: "text-delta",
+        text: '\x1b[36m[tool] bash {"cwd":"/home/user/.worktrees/x"}\x1b[0m\n',
+      }
+      await new Promise<void>(() => {}) // the tool keeps running; no further relay events
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
 const sleep = (ms: number) => new Promise(res => setTimeout(res, ms))
 
 describe("registry.markStalled / clearStalled — the trip/clear actions", () => {
@@ -315,7 +334,7 @@ describe("registry.markStalled / clearStalled — the trip/clear actions", () =>
     reg.shutdown()
   })
 
-  it("refuses a row with a tool call in flight whose name does NOT classify into blockedOn — the action-level guard covers a long `pnpm install` announced by a per-adapter tool name", async () => {
+  it("refuses a row with a tool call in flight whose name does NOT classify into blockedOn, the action-level guard covers a long `pnpm install` announced by a per-adapter tool name", async () => {
     const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
     const desc = reg.spawnAgent({
       workspaceSlug: "default",
@@ -352,6 +371,38 @@ describe("registry.markStalled / clearStalled — the trip/clear actions", () =>
     expect(reg.get(desc.id)?.busy).toBe(true)
     expect(reg.get(desc.id)?.blockedOn).toBe("command")
     expect(reg.markStalled(desc.id, 1)).toBe(false)
+
+    reg.kill(desc.id)
+    reg.shutdown()
+  })
+
+  it("does NOT flag a box session whose last relayed event is an unmatched [tool] line older than the threshold", async () => {
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      remote: true,
+      agentSession: relayedOpenToolAgentSession("acp-box-installing"),
+      adapterSlug: "fake",
+      initialPrompt: "go",
+    })
+    await sleep(20)
+    expect(reg.get(desc.id)?.busy).toBe(true)
+    // The flattened relay's `[tool] bash` line must become an in-flight tool
+    // call, the same phase a structured `tool-call` event produces locally.
+    expect(reg.get(desc.id)?.currentPhase).toBe("tool-call:bash")
+    // The action layer agrees: an open tool call is expected silence, so it
+    // refuses the mark even when called directly.
+    expect(reg.markStalled(desc.id, 1)).toBe(false)
+
+    const lastActivity = Date.parse(reg.get(desc.id)?.lastActivityAt ?? new Date().toISOString())
+    const summary = runStallWatchdogPass({
+      registry: reg,
+      turnStallAfterMs: FIVE_MIN,
+      now: () => lastActivity + 10 * 60_000,
+    })
+    expect(summary.candidates).toBe(0)
+    expect(summary.stalled).toBe(0)
 
     reg.kill(desc.id)
     reg.shutdown()
