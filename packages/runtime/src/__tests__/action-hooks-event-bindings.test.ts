@@ -254,6 +254,11 @@ describe("HOST_EVENT_REGISTRATIONS", () => {
     expect(registration!.event).toBe(completed.type)
     expect(HOST_EVENT_REGISTRATIONS.map(entry => entry.event)).toContain("agentproto:session-completed")
   })
+
+  it("cannot be mutated at runtime", () => {
+    expect(Object.isFrozen(HOST_EVENT_REGISTRATIONS)).toBe(true)
+    expect(Object.isFrozen(HOST_EVENT_REGISTRATIONS[0])).toBe(true)
+  })
 })
 
 describe("resolveAgentOnBindings agent id validation", () => {

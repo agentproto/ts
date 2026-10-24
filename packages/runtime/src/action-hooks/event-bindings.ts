@@ -8,14 +8,14 @@ import {
 } from "@agentproto/lifecycle"
 
 /** Host events this runtime emits. A namespaced event is accepted in a routine or an `on` map only when listed here. */
-export const HOST_EVENT_REGISTRATIONS: readonly HostEventRegistration[] = [
-  {
+export const HOST_EVENT_REGISTRATIONS: readonly HostEventRegistration[] = Object.freeze([
+  Object.freeze<HostEventRegistration>({
     event: "agentproto:session-completed",
     host: "agentproto",
     portability: "nonportable",
     description: "A session reached a terminal completed outcome, once per terminal transition.",
-  },
-]
+  }),
+])
 
 /** Dotted payload path to a primitive. Semantics: every entry must match, exact equality, AND of all entries. */
 export type EventFilter = Readonly<Record<string, string | number | boolean | null>>
@@ -33,7 +33,7 @@ export interface ResolvedEventBinding {
   /** The AIP-41 target arm as authored (`action` | `workflow` | `tool` | `agent`), or `{ action, inputs? }` for an `on` entry. Not dispatched here. */
   target: RoutineFrontmatter["target"]
   source: EventBindingSource
-  /** Stable 16 hex chars: sha256 of the key-sorted JSON of { event: event.event, filter, target }. Same input, same revision, across processes. */
+  /** Stable 16 hex chars: sha256 of the key-sorted JSON of { event: event.event, filter, target }. Same input, same revision, across processes. It hashes the config content only; the binding identity is `bindingId`. */
   configRevision: string
 }
 
