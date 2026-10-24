@@ -92,8 +92,12 @@ export interface RouteSpec {
 }
 
 /**
- * What enters context. `"lean"` drops bundled skills
- * (`adapters/claude-code/src/index.ts:196-204`); `"full"` is the default. The
+ * What enters context. `"lean"` is executor-specific: the claude-code adapter's
+ * `lean` mode drops bundled skills (`CLAUDE_CODE_DISABLE_BUNDLED_SKILLS`) and
+ * enables deferred tool schemas (`ENABLE_TOOL_SEARCH`); the opencode adapter's
+ * `lean` mode disables the agentproto MCP server (`LEAN_INLINE_CONFIG`). `lean`
+ * is only the built-in default for opencode executors
+ * (`BUILTIN_EXECUTOR_CONTEXT_PROFILE`); `"full"` is the default otherwise. The
  * `(string & {})` arm keeps a future adapter-declared context profile from
  * being blocked while preserving literal autocompletion for the known values.
  */
