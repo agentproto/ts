@@ -1,5 +1,7 @@
 /**
- * @agentproto/governance — agentgovernance/v1 spec implementation.
+ * @agentproto/governance: governance/v1 spec implementation (AIP-70
+ * registry name; the pre-AIP-70 tag agentgovernance/v1 is still accepted
+ * on read paths and still emitted into new artifacts for now).
  *
  * Universal contractual approval framework: signatures, audit logs, policies.
  * All doctypes are workspace files; this package is filesystem-first and
@@ -19,7 +21,12 @@
  *           src/spec/agentgovernance-v1.md (source of truth)
  */
 
-export const SPEC_NAME = "agentgovernance/v1" as const
+export {
+  SPEC_NAME,
+  LEGACY_SPEC_NAMES,
+  EMITTED_SPEC_NAME,
+  ACCEPTED_SPEC_NAMES,
+} from "./spec/names.js"
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export * from "./spec/doctypes/index.js"

@@ -53,8 +53,6 @@
     "ts:aip-68:package",
     "ts:aip-6:spec-name",
     "ts:aip-7:define",
-    "ts:aip-7:spec-name",
-    "ts:aip-9:spec-name",
     "ts:package:@agentproto/agencies:unregistered",
     "ts:package:@agentproto/agency-v2:unregistered",
     "ts:package:@agentproto/catalog:unregistered",
