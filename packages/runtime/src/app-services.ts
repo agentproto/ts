@@ -25,7 +25,7 @@
  *
  * Scope note: this module is the whole SERVICE-LAUNCHER behaviour, lifted out
  * of app-tools.ts so it is unit-testable without an MCP server or a real
- * spawn. `services:` validation itself now delegates to app-kit's
+ * spawn. `services:` validation itself now delegates to app's
  * `parseServiceList` — the single validator for the manifest `services:`
  * array, shared with `defineApp`/`loadAppHandle`.
  */
@@ -33,7 +33,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { parseServiceList, type AppService } from "@agentproto/app-kit"
+import { parseServiceList, type AppService } from "@agentproto/app"
 
 export type { AppService }
 
@@ -49,7 +49,7 @@ export interface AppServiceValidation {
 
 /**
  * Validate a raw APP.md `services` frontmatter value — delegates to
- * app-kit's `parseServiceList`, the single validator shared with
+ * app's `parseServiceList`, the single validator shared with
  * `defineApp`/`loadAppHandle`. `undefined`/`null` (no block) yields
  * `{ services: [], errors: [] }` — the launcher's no-op case, so an app
  * WITHOUT `services` is byte-for-byte unaffected. Any other malformed value

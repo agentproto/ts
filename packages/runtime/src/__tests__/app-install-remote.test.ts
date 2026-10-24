@@ -17,7 +17,7 @@ import matter from "gray-matter"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
-import { defineApp, packApp } from "@agentproto/app-kit"
+import { defineApp, packApp } from "@agentproto/app"
 import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 

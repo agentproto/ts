@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app-kit"
+import type { AgentEntry } from "@agentproto/app"
 
 /** Applies the reviewer's findings, precisely and minimally. */
 export const fixer: AgentEntry = {

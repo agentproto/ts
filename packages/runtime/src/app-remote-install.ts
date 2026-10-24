@@ -17,7 +17,7 @@ import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { z } from "zod"
-import { safeId, unpackApp } from "@agentproto/app-kit"
+import { safeId, unpackApp } from "@agentproto/app"
 import type { AppSource } from "./app-registry.js"
 
 export const DOWNLOAD_TIMEOUT_MS = 30_000

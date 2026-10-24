@@ -1,8 +1,8 @@
 /**
  * MCP tools that expose the LlmEndpointRegistry to agents connected to the
  * daemon. Lets a remote operator start, stop, and inspect the
- * `@agentproto/llm-endpoint` proxy sidecar without running
- * `pnpm --filter @agentproto/llm-endpoint serve` by hand.
+ * `@agentproto/inference-endpoint` proxy sidecar without running
+ * `pnpm --filter @agentproto/inference-endpoint serve` by hand.
  *
  * Three tools:
  *   llm_endpoint_start   spawn (or reuse) the proxy child, inject provider keys
@@ -154,7 +154,7 @@ export function registerLlmEndpointTools(
   // ── llm_endpoint_start ─────────────────────────────────────────
   server.tool(
     "llm_endpoint_start",
-    "Start the @agentproto/llm-endpoint proxy gateway as a daemon-supervised " +
+    "Start the @agentproto/inference-endpoint proxy gateway as a daemon-supervised " +
       "sidecar (spawns `node <bin> serve` as a child process). Injects the " +
       "stored provider API keys, `LLM_ENDPOINT_PORT` (default 18090), and " +
       "`LLM_ENDPOINT_ACCESS_TOKENS` (when supplied) into the child's env. " +

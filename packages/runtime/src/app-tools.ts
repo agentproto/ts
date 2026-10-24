@@ -1,5 +1,5 @@
 /**
- * MCP tools that install and run `@agentproto/app-kit` apps — a bundle of
+ * MCP tools that install and run `@agentproto/app` apps — a bundle of
  * one or more AIP-42 agents plus the AIP-15 workflows they run, emitted
  * under `<dir>/.agentproto/` by `defineApp().emit(dir)`.
  *
@@ -26,7 +26,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path"
 import matter from "gray-matter"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app-kit"
+import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type AppUiBuildConfig, type OpenAIAppUiExtension } from "@agentproto/app"
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
@@ -717,7 +717,7 @@ async function dispatchAllowlistedAppTool(
   // `app_link_mint` is privileged (mints a scoped token — app-link-token.ts)
   // and must NEVER be reachable through this gateway at all, scoped or not:
   // `defineApp` already refuses to let an app put it in `ui.tools`, but a
-  // builtin panel's allowlist isn't app-kit-validated, so this is the
+  // builtin panel's allowlist isn't app-validated, so this is the
   // actual fail-closed enforcement.
   if (input.tool === "app_link_mint") {
     return errorResult(`app_tool_call: "app_link_mint" is a privileged daemon action, never reachable via app_tool_call.`)
@@ -1121,7 +1121,7 @@ interface AppRefsUi {
   readonly build?: AppUiBuildConfig
   /** Raw APP.md `ui.extensions` frontmatter — structurally preserved here;
    *  the normalized OpenAI projection (`handle.ui.extensions`, already
-   *  validated by app-kit) is what actually persists. */
+   *  validated by app) is what actually persists. */
   readonly extensions?: { readonly openai?: OpenAIAppUiExtension }
 }
 
@@ -1508,9 +1508,9 @@ export async function performInstall(
         ...(handle.ui?.csp !== undefined ? { csp: handle.ui.csp } : {}),
         ...(handle.ui?.build !== undefined && allowUiBuild ? { build: handle.ui.build } : {}),
         // OpenAI MCP-extensions carrier (plan W-B): the normalized,
-        // app-kit-validated `ui.extensions` block persists verbatim on the
+        // app-validated `ui.extensions` block persists verbatim on the
         // installed record — `makeInstalledAppUiApps` (W-C) is the only
-        // consumer. Frozen already by app-kit; spread-cloned here so the
+        // consumer. Frozen already by app; spread-cloned here so the
         // persisted shape stays a plain JSON-safe object (apps.json is
         // what actually freezes it). Apps without the block install
         // identically to before (plan I1).
@@ -2041,7 +2041,7 @@ export function registerAppTools(
 
   server.tool(
     "app_install",
-    "Install an @agentproto/app-kit app. Exactly one source: `{dir}` — an emitted app " +
+    "Install an @agentproto/app app. Exactly one source: `{dir}` — an emitted app " +
       "directory on disk (`<dir>/.agentproto/APP.md`, see `defineApp().emit(dir)`); " +
       "`{url, ref?, subdir?}` — a git repo (shallow-cloned into `<daemon state dir>/apps/<slug>`, " +
       "the installed commit pinned in `source.sha`); `{url}` ending in `.agentapp` — a packed " +

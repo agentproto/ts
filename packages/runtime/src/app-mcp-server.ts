@@ -25,7 +25,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import type { AddressInfo } from "node:net"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
-import { loadAppBundledTools, loadAppHandle } from "@agentproto/app-kit"
+import { loadAppBundledTools, loadAppHandle } from "@agentproto/app"
 import { registerUiResource, toMcpTool } from "@agentproto/mcp-server"
 import { appUiToolId } from "./app-ui-apps.js"
 

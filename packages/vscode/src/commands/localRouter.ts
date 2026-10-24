@@ -1,6 +1,6 @@
 /**
  * Local Router commands — start / stop the daemon-supervised
- * `@agentproto/llm-endpoint` proxy sidecar from the auth profiles tree's
+ * `@agentproto/inference-endpoint` proxy sidecar from the auth profiles tree's
  * Local Router node. Thin vscode shells over the daemon's
  * `llm_endpoint_start` / `llm_endpoint_stop` verbs; the tree refreshes after
  * each so the status row + discovered models repaint.

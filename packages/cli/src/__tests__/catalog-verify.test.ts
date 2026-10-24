@@ -184,7 +184,7 @@ describe("catalog verify", () => {
       se.mockRestore()
     }
     // Extract the real manifest digest so only the ui.build check fails.
-    const { unpackApp } = await import("@agentproto/app-kit")
+    const { unpackApp } = await import("@agentproto/app")
     const dest = join(root, "peek")
     const { manifest: m } = await unpackApp({ file: bundle, dest })
     const entry = {

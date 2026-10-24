@@ -10,7 +10,7 @@
  * worktree GC (dry-run first), and the cron ledger.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { manager } from "./agents/manager.js"
 import { watchdog } from "./agents/watchdog.js"
 import { OPS_PANEL_HTML, OPS_PANEL_TOOLS } from "./ui.js"

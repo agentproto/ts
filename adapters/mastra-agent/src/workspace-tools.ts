@@ -48,7 +48,7 @@ import { tmpdir } from "node:os"
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { promisify } from "node:util"
 import { createTool } from "@mastra/core/tools"
-import type { MastraToolLike } from "@agentproto/mastra"
+import type { MastraToolLike } from "@agentproto/bridge"
 import {
   interpreterExecWarning,
   isCommandAllowed,

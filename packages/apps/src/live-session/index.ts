@@ -8,7 +8,7 @@
  * ./panel.ts, which imports nothing beyond plain TS — see that file for the
  * full protocol/rendering doc. Kept separate so a consumer that only needs
  * the HTML can import `@agentproto/apps/live-session/panel` without pulling
- * in `@agentproto/app-kit` (and therefore `@mastra/core`) the way importing
+ * in `@agentproto/app` (and therefore `@mastra/core`) the way importing
  * from this file would.
  *
  * This module also exports `liveSessionApp`, a real `defineApp()`
@@ -20,7 +20,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 import { LIVE_SESSION_HTML, type LiveSessionOutput } from "./panel.js"
 

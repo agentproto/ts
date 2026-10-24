@@ -14,8 +14,8 @@ const index = [
     hasSrcDir: true,
   },
   {
-    dir: 'packages/llm-endpoint',
-    name: '@agentproto/llm-endpoint',
+    dir: 'packages/inference-endpoint',
+    name: '@agentproto/inference-endpoint',
     private: false,
     files: ['dist', 'README.md', 'LICENSE'],
     hasSrcDir: true,
@@ -30,7 +30,7 @@ const index = [
 ]
 
 test('docs-only change in a public package does not reach the published surface', () => {
-  assert.deepEqual(filterPublishedChanges(['packages/llm-endpoint/docs/router-ux-design.md'], index), [])
+  assert.deepEqual(filterPublishedChanges(['packages/inference-endpoint/docs/router-ux-design.md'], index), [])
 })
 
 test('src/ change in a public package reaches the published surface (compiles into the shipped dist)', () => {

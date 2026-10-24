@@ -6,7 +6,7 @@ first-party agentproto agent. See `src/index.ts` for the authoritative
 
 Unlike the other adapters, this package does not wrap an external agent CLI:
 it **is** the agent. An AIP-42 `AGENT.md` is parsed (`@agentproto/agent`), built
-into a live Mastra agent (`@agentproto/mastra`), and served over AIP-44 ACP.
+into a live Mastra agent (`@agentproto/bridge`), and served over AIP-44 ACP.
 
 - **bin:** `node <dist>/cli.mjs acp` (self-locating) — also published as the
   `agentproto-mastra` bin.

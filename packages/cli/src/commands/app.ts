@@ -13,7 +13,7 @@
  * into a single self-contained `.agentapp` tar.gz bundle — the "APK for
  * agentproto apps" — and unpack that bundle back into a folder, verifying
  * the aggregate SHA-256 before restoring. The pack/unpack core lives in
- * `@agentproto/app-kit` (`packApp` / `unpackApp`); the verbs here are thin
+ * `@agentproto/app` (`packApp` / `unpackApp`); the verbs here are thin
  * wrappers over it. This file also dispatches `app serve` (`../app-serve.ts`),
  * `app build` (`../app-build.ts`), and `app dev` (`../app-dev.ts`).
  *
@@ -31,7 +31,7 @@ import { dirname, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
-import { AgentAppPackError, loadAppHandle, packApp, peekAppUi, unpackApp } from "@agentproto/app-kit"
+import { AgentAppPackError, loadAppHandle, packApp, peekAppUi, unpackApp } from "@agentproto/app"
 import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"

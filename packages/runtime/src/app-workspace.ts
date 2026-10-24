@@ -10,7 +10,7 @@
 
 import { mkdir, readdir, rmdir, stat } from "node:fs/promises"
 import { isAbsolute } from "node:path"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle } from "@agentproto/app"
 import {
   createGithubFilesystem,
   realGitRunner,

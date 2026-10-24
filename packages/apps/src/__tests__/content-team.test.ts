@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest"
 import { contentTeam } from "../content-team/index.js"
-import { refKey } from "@agentproto/app-kit"
+import { refKey } from "@agentproto/app"
 
 const fakeModel = { provider: "test", id: "test-model" }
 
