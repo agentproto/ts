@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { ACCEPTED_SPEC_NAMES } from "../names.js"
 
 /**
  * agentgovernance/v1 — `signature.json` doctype.
@@ -97,7 +98,10 @@ const signerIdSchema = z
 
 export const signatureSchema = z
   .object({
-    schema: z.literal("agentgovernance/v1"),
+    // Reads accept the AIP-70 name and the pre-AIP-70 legacy name; new
+    // signatures keep being written with the legacy tag for now (see
+    // EMITTED_SPEC_NAME in ../names.js).
+    schema: z.enum(ACCEPTED_SPEC_NAMES),
     doctype: z.literal("signature"),
 
     /** Canonical "<kind>:<slug>" identifier of the signer. */

@@ -10,7 +10,7 @@
  *   - MD:  `parseCollectionManifest(src) → collectionFromManifest({...})` → `CollectionHandle`
  */
 
-export const SPEC_NAME = "agentcollection/v1" as const
+export const SPEC_NAME = "collection/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineCollection } from "./define-collection.js"

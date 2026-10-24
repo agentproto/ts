@@ -54,7 +54,17 @@ describe("parseOperatorManifest", () => {
     expect(m.body).toContain("# Lex")
   })
 
-  it("accepts the canonical agentoperators/v1 tag", () => {
+  it("accepts the AIP-70 registry operator/v1 tag", () => {
+    const registry = SAMPLE.replace(
+      "schema: agentoperators/v1",
+      "schema: operator/v1",
+    )
+    const m = parseOperatorManifest(registry)
+    expect(m.frontmatter.schema).toBe("operator/v1")
+    expect(m.frontmatter.id).toBe("lex")
+  })
+
+  it("accepts the legacy agentoperators/v1 tag", () => {
     const m = parseOperatorManifest(SAMPLE)
     expect(m.frontmatter.schema).toBe("agentoperators/v1")
   })

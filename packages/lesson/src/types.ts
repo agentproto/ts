@@ -14,9 +14,9 @@ export type LessonDefinition = {
   [k: string]: unknown
 } & {
   /**
-   * Spec identifier. Must be the literal string 'learning/v1'.
+   * Spec identifier. `learning/v1` is accepted as a legacy alias (AIP-70).
    */
-  schema: "learning/v1"
+  schema: "lesson/v1" | "learning/v1"
   /**
    * Machine identifier, also the filename. Lowercase, digits, dashes. Imperative voice recommended.
    */

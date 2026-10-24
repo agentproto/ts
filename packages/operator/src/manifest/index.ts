@@ -50,8 +50,12 @@ const toolRefSchema = z.union([
 ])
 
 export const operatorManifestFrontmatterSchema = z.object({
-  // "agentoperator/v1" (singular) is the deprecated pre-AIP-9 spelling; still accepted.
-  schema: z.enum(["agentoperators/v1", "agentoperator/v1"]).optional(),
+  // "operator/v1" is the AIP-70 registry name; "agentoperators/v1" and
+  // "agentoperator/v1" (singular) are the deprecated pre-AIP-9 spellings;
+  // all three are still accepted.
+  schema: z
+    .enum(["operator/v1", "agentoperators/v1", "agentoperator/v1"])
+    .optional(),
   name: z.string().min(1).max(80),
   id: z
     .string()

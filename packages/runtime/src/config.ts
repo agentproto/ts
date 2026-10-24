@@ -457,8 +457,8 @@ export interface ProvenanceConfig {
 
 /**
  * Approvals policy (`packages/runtime/src/approvals/`, E1a) — config for
- * the `web_click` human decision channel. See `AIP-7-AMENDMENT.md` for the
- * full channel design.
+ * the `web_click` human decision channel. See AIP-7
+ * (https://agentproto.dev/docs/aip-7) for the full channel design.
  */
 export interface ApprovalsConfig {
   /**

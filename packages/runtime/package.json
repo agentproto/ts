@@ -257,6 +257,7 @@
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/provider-presets": "workspace:*",
     "@agentproto/providers-store": "workspace:*",
+    "@agentproto/quota": "workspace:*",
     "@agentproto/redaction": "workspace:*",
     "@agentproto/review": "workspace:*",
     "@agentproto/routine": "workspace:*",

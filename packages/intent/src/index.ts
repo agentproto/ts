@@ -10,7 +10,7 @@
  *   - MD:  `parseIntentManifest(src) → intentFromManifest({...})` → `IntentHandle`
  */
 
-export const SPEC_NAME = "agentintent/v1" as const
+export const SPEC_NAME = "intent/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineIntent } from "./define-intent.js"

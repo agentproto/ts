@@ -170,7 +170,9 @@ export interface PackLoader {
   load(ref: string): Promise<PackSource>
 }
 
-/** The only pack-digest recipe version that exists today — see
+/** The legacy pack-digest recipe string writers still emit until the next
+ *  major. Old readers in the field only know agentproto-pack-digest/v1.
+ *  See
  *  {@link computePackDigestSha256}'s doc comment for the exact byte
  *  layout. Travels as `PackDigest.alg`, inside the signed attestation. */
 export const PACK_DIGEST_ALG = "agentproto-pack-digest/v1" as const

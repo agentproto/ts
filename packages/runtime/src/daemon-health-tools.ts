@@ -78,7 +78,8 @@ export interface RegisterDaemonHealthToolsOptions {
    *  would DETACH (box keeps running), `reattach` is how the last boot's
    *  reattach pass went. Mirrors `/health`'s `sandboxSessions`. */
   sandboxSessions?: () => SandboxSessionStats
-  /** Installed-app registry records that loaded partial or unusable (see
+  /** Installed-app registry records that loaded partial or unusable, or
+   *  whose install `dir` is gone (see
    *  `AppRegistry.listIssues`). Surfaced as `appRegistryIssues` — empty when
    *  the registry is clean — so a bad record is reported, not thrown on. */
   modelCooldowns?: () => readonly ModelCooldownEntry[]

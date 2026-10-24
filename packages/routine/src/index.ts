@@ -10,7 +10,7 @@
  *   - MD:  `parseRoutineManifest(src) → routineFromManifest({...})` → `RoutineHandle`
  */
 
-export const SPEC_NAME = "agentroutine/v1" as const
+export const SPEC_NAME = "routine/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineRoutine } from "./define-routine.js"

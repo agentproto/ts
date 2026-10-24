@@ -1,5 +1,5 @@
 /**
- * agentcatalog/v1 — public types.
+ * Public types for the catalog format.
  *
  * A Catalog<T> is built from N CatalogSources. Each source declares a
  * tier. When multiple sources return the same item (identified by a

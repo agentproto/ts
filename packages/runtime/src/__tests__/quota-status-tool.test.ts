@@ -11,7 +11,7 @@ import {
   type QuotaStatus,
   type QuotaProfile,
   type QuotaReadContext,
-} from "@agentproto/model-intel"
+} from "@agentproto/quota"
 import type { AuthProfile } from "@agentproto/auth"
 import { readQuotaStatus } from "../quota-status-tool.js"
 

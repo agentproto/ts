@@ -179,7 +179,7 @@ export interface PackDigest {
   ref: string
   id: string
   version: string
-  alg: "agentproto-pack-digest/v1"
+  alg: "review.pack-digest/v1" | "agentproto-pack-digest/v1"
   sha256: string
 }
 
@@ -241,7 +241,7 @@ export interface ReviewPrRef {
  */
 export interface Attestation {
   /** Format marker so a verifier can reject a document it doesn't speak. */
-  schema: typeof ATTESTATION_SCHEMA
+  schema: typeof ATTESTATION_SCHEMA | "review.attestation/v1"
   /** The run that produced this attestation. */
   runId: string
   /** The REVIEW.md `id`. */
@@ -272,4 +272,6 @@ export interface Attestation {
   createdAt: string
 }
 
+/** Writers keep emitting the legacy tag until the next major. Old readers in
+ *  the field only know agentproto.review.attestation/v1. */
 export const ATTESTATION_SCHEMA = "agentproto.review.attestation/v1" as const

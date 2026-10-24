@@ -455,9 +455,10 @@ The receipt store owns, and the outbox never sees:
   on `resumeDeliveries` (section 6).
 - Its own file, next to the outbox file under the agentproto home, so the two
   stores never share a row or a path.
-- Its retention values, which start equal to the outbox values (24 hours for
-  terminal rows, 7 days for non-terminal rows, 2000 rows) and can differ per
-  receipt class.
+- Its retention values, which start equal to the outbox values (`done` rows
+  reaped after 24 hours, 7 days for non-terminal rows, 2000 rows) and can
+  differ per receipt class. `dead` rows are kept until the row cap evicts
+  them, matching the outbox which reaps only `delivered`.
 
 The outbox keeps, unchanged:
 
@@ -701,7 +702,7 @@ record call order, so it does not need a real sandbox.
 Proposed file: `packages/runtime/src/action-hooks/receipt-store.ts`.
 
 ```ts
-import type { SessionEventBus } from "../session-event-bus.js"
+export const RECEIPT_REDACTION_REVISION = "url-v1"
 
 export type ReactionReceiptStatus = "pending" | "running" | "done" | "failed" | "dead"
 
@@ -735,12 +736,25 @@ export interface ReactionReceipt {
   redaction: string
 }
 
+export type NewReactionReceipt = Omit<
+  ReactionReceipt,
+  "status" | "attempt" | "createdAt" | "redaction" | "receiptKey"
+> & { createdAt?: number }
+
+export type ReceiptTransitionCode = "not_found" | "terminal" | "already_running" | "not_running"
+
+export class ReceiptTransitionError extends Error {
+  readonly code: ReceiptTransitionCode
+  readonly receiptKey: string
+  constructor(code: ReceiptTransitionCode, receiptKey: string)
+}
+
 export interface ReactionReceiptStore {
   readonly path: string
   get(key: string): ReactionReceipt | undefined
   rows(): ReactionReceipt[]
-  insertPending(input: Omit<ReactionReceipt, "status" | "attempt" | "createdAt"> & { createdAt?: number }): Promise<ReactionReceipt>
-  markRunning(key: string): Promise<void>
+  insertPending(input: NewReactionReceipt): Promise<ReactionReceipt>
+  markRunning(key: string, opts?: { redrive?: boolean }): Promise<void>
   markDone(key: string, outcomeRef: string | undefined): Promise<void>
   markFailed(key: string, error: string, nextAttemptAt: number | undefined): Promise<void>
   markDead(key: string, reason: string): Promise<void>
@@ -754,10 +768,13 @@ export interface ReactionReceiptStoreOptions {
   debounceMs?: number
   persist?: boolean
   log?: (line: string) => void
+  doneReapMs?: number
+  nonTerminalAgeOutMs?: number
+  rowCap?: number
 }
 
 export function buildReactionReceiptKey(key: ReactionReceiptKey): string
-export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions): ReactionReceiptStore
+export function createReactionReceiptStore(opts?: ReactionReceiptStoreOptions): ReactionReceiptStore
 ```
 
 Proposed file: `packages/runtime/src/action-hooks/reaction-runner.ts`.
