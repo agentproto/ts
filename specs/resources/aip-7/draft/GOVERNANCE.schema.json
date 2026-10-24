@@ -1,19 +1,32 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-7/GOVERNANCE.schema.json",
-  "title": "agentgovernance/v1 (AIP-7)",
+  "title": "governance/v1 (AIP-7)",
   "description": "Validates the five AIP-7 doctypes: signature (approval event), audit-event (append-only log line), policy (declarative autonomy rule), approval-request (pending human decision over a pinned payload), and governance.workspace/v1 (workspace manifest, root or view). Branch on the `doctype` (or for the workspace, the `schema`) field.",
   "oneOf": [
-    { "$ref": "#/$defs/signature" },
-    { "$ref": "#/$defs/auditEvent" },
-    { "$ref": "#/$defs/policy" },
-    { "$ref": "#/$defs/approvalRequest" },
-    { "$ref": "#/$defs/workspace" }
+    {
+      "$ref": "#/$defs/signature"
+    },
+    {
+      "$ref": "#/$defs/auditEvent"
+    },
+    {
+      "$ref": "#/$defs/policy"
+    },
+    {
+      "$ref": "#/$defs/approvalRequest"
+    },
+    {
+      "$ref": "#/$defs/workspace"
+    }
   ],
   "$defs": {
     "schemaTag": {
-      "const": "agentgovernance/v1",
-      "description": "Doctype family. Constant across all three doctypes."
+      "enum": [
+        "governance/v1",
+        "agentgovernance/v1"
+      ],
+      "description": "Doctype family. Constant across all three doctypes. `agentgovernance/v1` is accepted as a legacy alias (AIP-70)."
     },
     "isoDateTime": {
       "type": "string",
@@ -39,21 +52,39 @@
     },
     "signer": {
       "type": "object",
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "$ref": "#/$defs/principalId" },
-        "role": { "type": "string", "maxLength": 64 },
-        "displayName": { "type": "string", "maxLength": 120 }
+        "id": {
+          "$ref": "#/$defs/principalId"
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        }
       }
     },
     "signatureBlock": {
       "type": "object",
-      "required": ["alg", "value"],
+      "required": [
+        "alg",
+        "value"
+      ],
       "additionalProperties": false,
       "properties": {
         "alg": {
-          "enum": ["Ed25519", "ECDSA-P256", "RSA-PSS-SHA256", "Sigstore"],
+          "enum": [
+            "Ed25519",
+            "ECDSA-P256",
+            "RSA-PSS-SHA256",
+            "Sigstore"
+          ],
           "description": "Cryptographic algorithm. Default Ed25519."
         },
         "value": {
@@ -68,22 +99,37 @@
     },
     "policyRef": {
       "type": "object",
-      "required": ["ref"],
+      "required": [
+        "ref"
+      ],
       "additionalProperties": false,
       "properties": {
-        "ref": { "$ref": "#/$defs/slug" },
+        "ref": {
+          "$ref": "#/$defs/slug"
+        },
         "decision": {
-          "enum": ["allow", "deny", "require-approval", "escalate"]
+          "enum": [
+            "allow",
+            "deny",
+            "require-approval",
+            "escalate"
+          ]
         }
       }
     },
     "redactedValue": {
       "type": "object",
-      "required": ["$redacted"],
+      "required": [
+        "$redacted"
+      ],
       "additionalProperties": false,
       "properties": {
-        "$redacted": { "const": true },
-        "reason": { "type": "string" }
+        "$redacted": {
+          "const": true
+        },
+        "reason": {
+          "type": "string"
+        }
       }
     },
     "signature": {
@@ -99,14 +145,22 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "$schema": { "$ref": "#/$defs/schemaTag" },
-        "doctype": { "const": "signature" },
+        "$schema": {
+          "$ref": "#/$defs/schemaTag"
+        },
+        "doctype": {
+          "const": "signature"
+        },
         "artifact": {
           "type": "string",
           "description": "Slug or workspace-relative path of the artifact being approved."
         },
         "decision": {
-          "enum": ["approve", "reject", "abstain"]
+          "enum": [
+            "approve",
+            "reject",
+            "abstain"
+          ]
         },
         "reason": {
           "type": "string",
@@ -118,26 +172,50 @@
           "pattern": "^[0-9a-f]{64}$",
           "description": "Lowercase hex SHA-256 of the artifact's bytes at signing time. For a signature that resolves an approval-request, MUST equal that request's payloadHash."
         },
-        "signer": { "$ref": "#/$defs/signer" },
+        "signer": {
+          "$ref": "#/$defs/signer"
+        },
         "signerKind": {
-          "enum": ["operator", "user", "counterparty", "agent", "external"],
+          "enum": [
+            "operator",
+            "user",
+            "counterparty",
+            "agent",
+            "external"
+          ],
           "description": "What kind of principal signed. An approve that resolves an approval-request MUST carry 'user'."
         },
         "method": {
-          "enum": ["typed_name", "agent_confirm", "click_through", "esign_external"],
+          "enum": [
+            "typed_name",
+            "agent_confirm",
+            "click_through",
+            "esign_external"
+          ],
           "description": "How the signature was produced. An approve that resolves an approval-request MUST carry 'click_through'."
         },
         "evidence": {
           "type": "object",
-          "required": ["kind"],
+          "required": [
+            "kind"
+          ],
           "additionalProperties": true,
           "properties": {
             "kind": {
-              "enum": ["typed_name", "agent_confirm", "click_through", "esign_external"],
+              "enum": [
+                "typed_name",
+                "agent_confirm",
+                "click_through",
+                "esign_external"
+              ],
               "description": "MUST equal `method` when both are present."
             },
-            "ipAddress": { "type": "string" },
-            "userAgent": { "type": "string" },
+            "ipAddress": {
+              "type": "string"
+            },
+            "userAgent": {
+              "type": "string"
+            },
             "signedUrlToken": {
               "type": "string",
               "description": "click_through: a value unique to this decision. For a ui_card decision, the hash of the one-time ticket, never the ticket."
@@ -145,9 +223,15 @@
           },
           "description": "Method-specific evidence. Shape shown is for click_through; other methods define their own members."
         },
-        "signedAt": { "$ref": "#/$defs/isoDateTime" },
-        "policy": { "$ref": "#/$defs/policyRef" },
-        "signature": { "$ref": "#/$defs/signatureBlock" },
+        "signedAt": {
+          "$ref": "#/$defs/isoDateTime"
+        },
+        "policy": {
+          "$ref": "#/$defs/policyRef"
+        },
+        "signature": {
+          "$ref": "#/$defs/signatureBlock"
+        },
         "metadata": {
           "type": "object",
           "additionalProperties": true,
@@ -156,8 +240,18 @@
       },
       "allOf": [
         {
-          "if": { "properties": { "decision": { "const": "reject" } } },
-          "then": { "required": ["reason"] }
+          "if": {
+            "properties": {
+              "decision": {
+                "const": "reject"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
         }
       ]
     },
@@ -178,8 +272,12 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "$schema": { "$ref": "#/$defs/schemaTag" },
-        "doctype": { "const": "approval-request" },
+        "$schema": {
+          "$ref": "#/$defs/schemaTag"
+        },
+        "doctype": {
+          "const": "approval-request"
+        },
         "id": {
           "type": "string",
           "minLength": 1,
@@ -193,7 +291,11 @@
           "maxLength": 128,
           "description": "Free-form class of the thing being approved."
         },
-        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
         "preview": {
           "description": "JSON value supplied by the requester for a human-facing surface to render. Opaque to the host and NOT covered by payloadHash."
         },
@@ -203,76 +305,166 @@
           "description": "Lowercase hex SHA-256 of the UTF-8 bytes of the canonical JSON of the pinned payload (keys sorted recursively by UTF-16 code unit, arrays in order, undefined as null)."
         },
         "status": {
-          "enum": ["pending", "approved", "denied", "expired", "consumed"],
+          "enum": [
+            "pending",
+            "approved",
+            "denied",
+            "expired",
+            "consumed"
+          ],
           "description": "pending -> approved | denied | expired; approved -> consumed. denied, expired, and consumed are terminal."
         },
         "requestedBy": {
           "oneOf": [
             {
               "type": "object",
-              "required": ["sessionId"],
+              "required": [
+                "sessionId"
+              ],
               "additionalProperties": false,
               "properties": {
-                "sessionId": { "type": "string", "minLength": 1 }
+                "sessionId": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             },
             {
               "type": "object",
-              "required": ["operator"],
+              "required": [
+                "operator"
+              ],
               "additionalProperties": false,
               "properties": {
-                "operator": { "const": true }
+                "operator": {
+                  "const": true
+                }
               }
             }
           ],
           "description": "The requester: an agent session, or the operator acting directly. Only the requester (an operator for operator-made requests) may consume."
         },
-        "taskId": { "type": "string", "minLength": 1 },
-        "appId": { "type": "string", "minLength": 1 },
+        "taskId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "appId": {
+          "type": "string",
+          "minLength": 1
+        },
         "channels": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/approvalChannel" },
+          "items": {
+            "$ref": "#/$defs/approvalChannel"
+          },
           "description": "Human channels allowed to decide this request. A decision on any other channel MUST be rejected. Empty when no declared channel is enabled."
         },
-        "requestedAt": { "$ref": "#/$defs/isoDateTime" },
-        "expiresAt": { "$ref": "#/$defs/isoDateTime" },
+        "requestedAt": {
+          "$ref": "#/$defs/isoDateTime"
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/isoDateTime"
+        },
         "decision": {
           "type": "object",
-          "required": ["decision", "channel", "decidedAt"],
+          "required": [
+            "decision",
+            "channel",
+            "decidedAt"
+          ],
           "additionalProperties": false,
           "properties": {
-            "decision": { "enum": ["approved", "denied"] },
-            "channel": { "$ref": "#/$defs/approvalChannel" },
-            "decidedAt": { "$ref": "#/$defs/isoDateTime" },
+            "decision": {
+              "enum": [
+                "approved",
+                "denied"
+              ]
+            },
+            "channel": {
+              "$ref": "#/$defs/approvalChannel"
+            },
+            "decidedAt": {
+              "$ref": "#/$defs/isoDateTime"
+            },
             "signaturePath": {
               "type": "string",
               "description": "Workspace-relative path to the signature.json. Present only when decision is 'approved', and written after the signature exists."
             }
           }
         },
-        "consumedAt": { "$ref": "#/$defs/isoDateTime" }
+        "consumedAt": {
+          "$ref": "#/$defs/isoDateTime"
+        }
       },
       "allOf": [
         {
-          "if": { "properties": { "status": { "enum": ["approved", "denied", "consumed"] } } },
-          "then": { "required": ["decision"] }
-        },
-        {
-          "if": { "properties": { "status": { "const": "consumed" } } },
-          "then": { "required": ["consumedAt"] }
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "approved",
+                  "denied",
+                  "consumed"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "decision"
+            ]
+          }
         },
         {
           "if": {
-            "required": ["decision"],
-            "properties": { "decision": { "properties": { "decision": { "const": "denied" } } } }
+            "properties": {
+              "status": {
+                "const": "consumed"
+              }
+            }
           },
-          "then": { "properties": { "decision": { "not": { "required": ["signaturePath"] } } } }
+          "then": {
+            "required": [
+              "consumedAt"
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "decision"
+            ],
+            "properties": {
+              "decision": {
+                "properties": {
+                  "decision": {
+                    "const": "denied"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "decision": {
+                "not": {
+                  "required": [
+                    "signaturePath"
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
     },
     "approvalChannel": {
-      "enum": ["web_click", "ui_card", "telegram"],
+      "enum": [
+        "web_click",
+        "ui_card",
+        "telegram"
+      ],
       "description": "A declared human channel. web_click: bearer credential plus an Origin on a configured allowlist. ui_card: one-time ticket minted per card render, app-only decide action, served on a surface agent sessions cannot reach. telegram: a shared bot-bridge bearer secret, in place of an Origin (a Telegram webhook callback has none). Further channels MAY be registered; each MUST satisfy the AIP-7 human channel rule."
     },
     "auditEvent": {
@@ -291,21 +483,34 @@
       ],
       "additionalProperties": false,
       "properties": {
-        "$schema": { "$ref": "#/$defs/schemaTag" },
-        "doctype": { "const": "audit-event" },
+        "$schema": {
+          "$ref": "#/$defs/schemaTag"
+        },
+        "doctype": {
+          "const": "audit-event"
+        },
         "seq": {
           "type": "integer",
           "minimum": 0,
           "description": "Monotonic sequence number per chain. Starts at 0; gaps are spec violations."
         },
-        "ts": { "$ref": "#/$defs/isoDateTime" },
+        "ts": {
+          "$ref": "#/$defs/isoDateTime"
+        },
         "actor": {
           "type": "object",
-          "required": ["id"],
+          "required": [
+            "id"
+          ],
           "additionalProperties": false,
           "properties": {
-            "id": { "$ref": "#/$defs/principalId" },
-            "role": { "type": "string", "maxLength": 64 }
+            "id": {
+              "$ref": "#/$defs/principalId"
+            },
+            "role": {
+              "type": "string",
+              "maxLength": 64
+            }
           }
         },
         "action": {
@@ -316,23 +521,50 @@
         },
         "subject": {
           "type": "object",
-          "required": ["kind"],
+          "required": [
+            "kind"
+          ],
           "additionalProperties": false,
           "properties": {
-            "kind": { "type": "string", "maxLength": 32 },
-            "ref": { "type": "string", "maxLength": 256 },
-            "path": { "type": "string", "maxLength": 1024 }
+            "kind": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "ref": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "path": {
+              "type": "string",
+              "maxLength": 1024
+            }
           }
         },
         "input": {
           "description": "Input arguments (or {$redacted: true} placeholder).",
-          "anyOf": [{ "type": "object" }, { "$ref": "#/$defs/redactedValue" }]
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/redactedValue"
+            }
+          ]
         },
         "output": {
           "description": "Output payload (or {$redacted: true} placeholder).",
-          "anyOf": [{ "type": "object" }, { "$ref": "#/$defs/redactedValue" }]
+          "anyOf": [
+            {
+              "type": "object"
+            },
+            {
+              "$ref": "#/$defs/redactedValue"
+            }
+          ]
         },
-        "policy": { "$ref": "#/$defs/policyRef" },
+        "policy": {
+          "$ref": "#/$defs/policyRef"
+        },
         "signatures": {
           "type": "array",
           "items": {
@@ -341,14 +573,20 @@
           },
           "default": []
         },
-        "prevHash": { "$ref": "#/$defs/hexHash" },
+        "prevHash": {
+          "$ref": "#/$defs/hexHash"
+        },
         "hash": {
           "type": "string",
           "pattern": "^[0-9a-f]{32,128}$",
           "description": "Hash of the canonical JSON of every other field. Recomputed on read."
         },
         "hashAlg": {
-          "enum": ["sha256", "sha512", "blake2b-256"],
+          "enum": [
+            "sha256",
+            "sha512",
+            "blake2b-256"
+          ],
           "default": "sha256"
         },
         "metadata": {
@@ -361,19 +599,34 @@
     "policy": {
       "type": "object",
       "title": "policy (declarative autonomy rule)",
-      "required": ["schema", "doctype", "slug", "version", "match", "decision"],
+      "required": [
+        "schema",
+        "doctype",
+        "slug",
+        "version",
+        "match",
+        "decision"
+      ],
       "additionalProperties": false,
       "properties": {
-        "schema": { "$ref": "#/$defs/schemaTag" },
-        "doctype": { "const": "policy" },
-        "slug": { "$ref": "#/$defs/slug" },
+        "schema": {
+          "$ref": "#/$defs/schemaTag"
+        },
+        "doctype": {
+          "const": "policy"
+        },
+        "slug": {
+          "$ref": "#/$defs/slug"
+        },
         "version": {
           "type": "string",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:[-+][a-zA-Z0-9.-]+)?$"
         },
         "match": {
           "type": "object",
-          "required": ["action"],
+          "required": [
+            "action"
+          ],
           "additionalProperties": false,
           "properties": {
             "action": {
@@ -394,7 +647,12 @@
           }
         },
         "decision": {
-          "enum": ["allow", "deny", "require-approval", "escalate"]
+          "enum": [
+            "allow",
+            "deny",
+            "require-approval",
+            "escalate"
+          ]
         },
         "signers": {
           "type": "array",
@@ -403,17 +661,34 @@
             "additionalProperties": false,
             "anyOf": [
               {
-                "required": ["role"],
-                "properties": { "role": { "type": "string" } }
+                "required": [
+                  "role"
+                ],
+                "properties": {
+                  "role": {
+                    "type": "string"
+                  }
+                }
               },
               {
-                "required": ["userId"],
-                "properties": { "userId": { "$ref": "#/$defs/principalId" } }
+                "required": [
+                  "userId"
+                ],
+                "properties": {
+                  "userId": {
+                    "$ref": "#/$defs/principalId"
+                  }
+                }
               }
             ],
             "properties": {
-              "role": { "type": "string", "maxLength": 64 },
-              "userId": { "$ref": "#/$defs/principalId" }
+              "role": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "userId": {
+                "$ref": "#/$defs/principalId"
+              }
             }
           }
         },
@@ -434,9 +709,18 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "max_per_hour": { "type": "integer", "minimum": 1 },
-            "max_per_day": { "type": "integer", "minimum": 1 },
-            "max_amount_cents": { "type": "integer", "minimum": 1 },
+            "max_per_hour": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_per_day": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_amount_cents": {
+              "type": "integer",
+              "minimum": 1
+            },
             "currency": {
               "type": "string",
               "pattern": "^[A-Z]{3}$",
@@ -453,9 +737,17 @@
       "allOf": [
         {
           "if": {
-            "properties": { "decision": { "const": "require-approval" } }
+            "properties": {
+              "decision": {
+                "const": "require-approval"
+              }
+            }
           },
-          "then": { "required": ["signers"] }
+          "then": {
+            "required": [
+              "signers"
+            ]
+          }
         }
       ]
     },
@@ -463,7 +755,13 @@
       "type": "object",
       "title": "governance.workspace/v1 (manifest, root or view)",
       "description": "Workspace manifest doctype for AIP-7. Used both as the root manifest of a governance scope (no `extends`) and as a per-consumer view (with `extends`). The same schema validates both modes; the host distinguishes by checking whether `extends` is set. One-way switches (audit.appendOnly, signing.required) are enforced by the host at merge time and cannot be relaxed by a descendant view.",
-      "required": ["schema", "name", "title", "description", "version"],
+      "required": [
+        "schema",
+        "name",
+        "title",
+        "description",
+        "version"
+      ],
       "additionalProperties": false,
       "properties": {
         "schema": {
@@ -529,10 +827,19 @@
             "approvalEscalation": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["from", "to"],
+              "required": [
+                "from",
+                "to"
+              ],
               "properties": {
-                "from": { "type": "string", "maxLength": 96 },
-                "to": { "type": "string", "maxLength": 96 }
+                "from": {
+                  "type": "string",
+                  "maxLength": 96
+                },
+                "to": {
+                  "type": "string",
+                  "maxLength": 96
+                }
               },
               "description": "Fallback route when defaultApproval can't resolve a quorum. 'from' and 'to' name approval classes."
             }
@@ -544,7 +851,11 @@
           "additionalProperties": false,
           "properties": {
             "algo": {
-              "enum": ["ed25519", "ecdsa-p256", "rsa-pss-sha256"],
+              "enum": [
+                "ed25519",
+                "ecdsa-p256",
+                "rsa-pss-sha256"
+              ],
               "description": "Default signing algorithm. Hosts MUST support ed25519; others are OPTIONAL."
             },
             "keyring": {
@@ -570,7 +881,11 @@
               "description": "Audit-log retention. 'forever' or 'days:<n>'."
             },
             "hashAlgo": {
-              "enum": ["sha256", "sha512", "blake3"],
+              "enum": [
+                "sha256",
+                "sha512",
+                "blake3"
+              ],
               "description": "Hash algorithm for the audit chain. Default sha256."
             },
             "appendOnly": {
@@ -594,7 +909,10 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id", "ref"],
+            "required": [
+              "id",
+              "ref"
+            ],
             "additionalProperties": false,
             "properties": {
               "id": {
@@ -614,7 +932,11 @@
                 "description": "AIP-7 action class to bind this policy to (e.g. 'workspace.write', 'tool.call', 'mutates') or '*' for all actions."
               },
               "severity": {
-                "enum": ["error", "warn", "info"],
+                "enum": [
+                  "error",
+                  "warn",
+                  "info"
+                ],
                 "description": "Severity when this policy is violated. 'error' = block; 'warn' = surface; 'info' = log only."
               },
               "params": {
@@ -631,7 +953,9 @@
           "type": "array",
           "items": {
             "type": "object",
-            "required": ["id"],
+            "required": [
+              "id"
+            ],
             "additionalProperties": false,
             "properties": {
               "id": {
@@ -712,13 +1036,20 @@
         {
           "description": "A view (any manifest with appliesTo set) MUST extend a parent. A workspace-root manifest has neither field.",
           "if": {
-            "required": ["appliesTo"],
+            "required": [
+              "appliesTo"
+            ],
             "properties": {
-              "appliesTo": { "type": "array", "minItems": 1 }
+              "appliesTo": {
+                "type": "array",
+                "minItems": 1
+              }
             }
           },
           "then": {
-            "required": ["extends"]
+            "required": [
+              "extends"
+            ]
           }
         }
       ]

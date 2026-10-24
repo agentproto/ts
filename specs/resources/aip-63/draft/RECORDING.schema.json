@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/docs/aip-63/RECORDING.schema.json",
-  "title": "browser-recording/v1",
+  "title": "browser.recording/v1",
   "description": "Schemas for the files of a browser recording directory (AIP-63 section 6). manifest.json validates against $defs/manifest. Each line of frames.jsonl validates against $defs/frame and each line of actions.jsonl against $defs/action. The property sets are closed on purpose: there is no field in which a typed value of a masked input could be placed (R8, R9).",
   "$ref": "#/$defs/manifest",
   "$defs": {
@@ -47,7 +47,7 @@
         "retentionDays"
       ],
       "properties": {
-        "schema": { "const": "browser-recording/v1" },
+        "schema": { "enum": ["browser.recording/v1", "browser-recording/v1"], "description": "`browser-recording/v1` is accepted as a legacy alias (AIP-70)." },
         "id": { "$ref": "#/$defs/recordingId" },
         "sessionId": {
           "type": "string",

@@ -54,8 +54,8 @@
       "description": "AIP-3 extensions to the agentskills.io baseline. Runtimes that don't implement AIP-3 MUST preserve this object verbatim (it lives in agentskills.io's `metadata`).",
       "properties": {
         "schema": {
-          "const": "skills/v1",
-          "description": "Schema dispatch tag. Required for AIP-3 conformance. Pinned to 'skills/v1' for the current spec version."
+          "enum": ["skill/v1", "skills/v1"],
+          "description": "Schema dispatch tag. Required for AIP-3 conformance. Pinned to 'skill/v1' for the current spec version. `skills/v1` is accepted as a legacy alias (AIP-70)."
         },
         "variant": {
           "enum": ["instruction", "executable", "composite"],
