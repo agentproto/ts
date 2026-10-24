@@ -16,7 +16,7 @@ export type DesignDefinition = {
   /**
    * Pins the registry schema this kit conforms to. Required for registry submission.
    */
-  schema?: "designkit/v1"
+  schema?: "design/v1" | "designkit/v1"
   /**
    * Kebab-case kit identifier. Namespaced by the registry on publish.
    */
