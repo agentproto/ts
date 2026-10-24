@@ -12,8 +12,34 @@ third-party bridge needed.
 The bridge connects to the daemon over HTTP (Streamable HTTP transport),
 pulls the tool list once at startup, then passes `listTools`, `callTool`,
 `resources/list`, `resources/read`, and `resources/templates/list`
-requests through verbatim. Tool JSON schemas are forwarded intact so
+requests through. Tool JSON schemas are forwarded intact so
 clients see the real parameter names and types.
+
+## Codex Desktop conversation identity
+
+When a tool call carries Codex thread metadata, the bridge connects that call
+as `/mcp?callerSessionId=codex:<thread-id>&host=codex`. The daemon registers an
+external session for that chat, so `session_follow` can default its follower
+without the model choosing a session id. The bridge reads the metadata on
+every call and uses a separate request-local connection; concurrent chats do
+not share a last-seen identity. Existing `callerSessionId` URLs take precedence.
+
+Recognized metadata includes `_meta["x-codex-turn-metadata"]` (an object or JSON
+string containing `thread_id`), `openai/threadId`, `openai/thread_id`,
+`codexThreadId`, `codex_thread_id`, `threadId`, `thread_id`, and `thread.id`.
+These are host-supplied MCP metadata, outside the tool's arguments. A host
+must identify itself as Codex to use the generic thread aliases; namespaced
+Codex/OpenAI metadata also works with a generic handshake name. A host
+that does not attach them must be updated to do so. The bridge never derives
+conversation identity from `clientInfo.name`, a process-wide `CODEX_THREAD_ID`,
+or an old agentproto session id.
+
+**Identity does not provide a wake transport.** External sessions have an
+inbox and no daemon-owned agent process. `session_follow` reports
+`delivery: { mode: "external-inbox", wakesFollower: false, ... }` for them.
+A digest keeps its requested `next-turn` urgency in that inbox, but only the
+Desktop host can enqueue a new turn in the original chat. See the
+[host integration requirements](../guides/session-follow.md#desktop-host-integration).
 
 ## Configuration
 
