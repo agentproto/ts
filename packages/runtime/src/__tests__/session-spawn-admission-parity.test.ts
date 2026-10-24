@@ -116,7 +116,7 @@ function claimsOf(events: ObservedAdmission[]): ObservedAdmission[] {
   return events.filter(event => event.stage === "claim")
 }
 
-describe("spawnAgentSession — spawn admission parity", () => {
+describe("spawnAgentSession: spawn admission parity", () => {
   it("(1) a fresh spawn reports claim allow only when a key exists and returns the same result", async () => {
     const events: ObservedAdmission[] = []
     const { registry, deps } = baseDeps({
@@ -379,7 +379,7 @@ describe("spawnAgentSession — spawn admission parity", () => {
       expect(registry.get(second.descriptor.id)?.status).toBe("error")
     })
     const expectedMessage =
-      `agent_start: refused — another LIVE session ("${first.descriptor.id}") already has the ` +
+      `agent_start: refused \u2014 another LIVE session ("${first.descriptor.id}") already has the ` +
       `same label ("fix login") and cwd ("${worktree}") as this worktree spawn. ` +
       "Not starting a second agent in the same worktree."
     expect(registry.get(second.descriptor.id)?.lastError).toBe(expectedMessage)

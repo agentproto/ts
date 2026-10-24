@@ -75,7 +75,7 @@ export function evaluateSpawnAdmission(check: SpawnAdmissionCheck): SpawnAdmissi
             outcome: "deny",
             code: "worktree_label_cwd_collision",
             message:
-              `agent_start: refused — another LIVE session ("${check.collisionSessionId}") already has the ` +
+              `agent_start: refused \u2014 another LIVE session ("${check.collisionSessionId}") already has the ` +
               `same label ("${check.label}") and cwd ("${check.cwd}") as this worktree spawn. ` +
               "Not starting a second agent in the same worktree.",
           },
