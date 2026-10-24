@@ -7075,16 +7075,20 @@ async function handleSessions(
     // Operator-assigned label (`SessionDescriptor.operatorLabel`): the HTTP
     // twin of `agent_start`'s "Operator-assigned label" block
     // (agent-tools.ts), same rule: stamped ONLY on an operator spawn (no
-    // caller session identity, no `parentSessionId`) that created a fresh
-    // session. It is what `label:` entries in `allowPromptFrom` match on, and
-    // Pygmalion launches its persistent agents through this route with
-    // `label`, so its `label:pygmalion-brain-persistent` grants were inert
-    // without it. Same discipline as `allowPromptFrom` below: a failure is a
-    // warning, never a failed spawn.
+    // caller session identity, no resolved `parentSessionId`) that created a
+    // fresh session. It is what `label:` entries in `allowPromptFrom` match
+    // on, and Pygmalion launches its persistent agents through this route
+    // with `label`, so its `label:pygmalion-brain-persistent` grants were
+    // inert without it. The parent check must use the resolved descriptor
+    // (not the raw body) because `attach` can derive a parent. Same
+    // discipline as `allowPromptFrom` below: a failure is a warning, never a
+    // failed spawn.
     const operatorLabel = typeof b.label === "string" ? b.label.trim() : undefined
     let operatorLabelWarning: string | undefined
     const callerSessionId = resolveCallerSessionIdFor?.(req)
-    const hasParent = typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
+    const hasParent =
+      typeof result.descriptor.parentSessionId === "string" &&
+      result.descriptor.parentSessionId.length > 0
     if (operatorLabel && !result.deduped && !hasParent && !callerSessionId) {
       try {
         registry.setOperatorLabel(result.descriptor.id, operatorLabel)

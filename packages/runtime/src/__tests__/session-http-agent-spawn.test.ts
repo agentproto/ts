@@ -598,7 +598,7 @@ describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () =>
         headers: { "content-type": "application/json", ...headers },
         body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...body }),
       })
-    return { registry, http, spawn }
+    return { registry, http, spawn, port }
   }
 
   it("stamps the trimmed label when the spawn is an operator spawn (no parent, no caller)", async () => {
@@ -633,6 +633,26 @@ describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () =>
     }
   })
 
+  it("does not stamp operatorLabel when a parent is derived via attach", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      harness: "mock",
+    })
+    const { http, spawn } = await startServer(registry)
+    try {
+      const res = await spawn({ label: "attach-label", attach: { parent: parent.id } })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("does not stamp operatorLabel when the request carries a caller session id header", async () => {
     const { registry, http, spawn } = await startServer()
     try {
@@ -640,6 +660,22 @@ describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () =>
         { label: "caller-label" },
         { "x-agentproto-caller-session-id": "sess_caller" },
       )
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel when the request carries a caller session id query param", async () => {
+    const { registry, http, spawn, port } = await startServer()
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent?callerSessionId=sess_caller`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", label: "query-caller-label" }),
+      })
       expect(res.status).toBe(201)
       const body = (await res.json()) as { id: string }
       expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
