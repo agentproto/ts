@@ -2,7 +2,7 @@
  * MCP tool `quota_status` — live provider quota for a named auth profile
  * (AIP-67).
  *
- * One tool, one shape: the `QuotaStatus` from `@agentproto/model-intel`
+ * One tool, one shape: the `QuotaStatus` from `@agentproto/quota`
  * (basis, windows with `remainingPct`, credits when the provider reports
  * them) read through its `QuotaReaderRegistry`. Read-only, never fabricates
  * a figure — a negative is an explicit result (see the error codes), never a
@@ -26,7 +26,7 @@ import {
   createOpenRouterQuotaReader,
   type QuotaProfile,
   type QuotaStatus,
-} from "@agentproto/model-intel"
+} from "@agentproto/quota"
 
 /**
  * Build the registry `quota_status` reads through. Registration order is
