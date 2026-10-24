@@ -222,6 +222,11 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
 
   const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}`
 
+  // All writes ride one serialized chain. Enqueue awaits its write (durable
+  // before ack) through insertDurable; status transitions use the debounced,
+  // best effort schedulePersist, and losing one only re-delivers a row
+  // (at-least-once), never loses it. The mechanics live in
+  // durable-row-file.ts.
   const durable = createDurableRowFile<PersistedOutboxRow>({
     filePath,
     persist,

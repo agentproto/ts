@@ -24,6 +24,45 @@ import {
   type DurableRowFileOptions,
 } from "../durable-row-file.js"
 
+const durableFileFakes = vi.hoisted(() => {
+  type AsyncCall = { filePath: string; data: string; opts?: { commitIf?: () => boolean } }
+  type SyncCall = { filePath: string; data: string }
+  const fakes = {
+    mode: "real" as "real" | "manual",
+    pending: [] as Array<{ resolve: () => void; reject: (err: unknown) => void }>,
+    asyncCalls: [] as AsyncCall[],
+    syncCalls: [] as SyncCall[],
+    reset() {
+      fakes.mode = "real"
+      fakes.pending.length = 0
+      fakes.asyncCalls.length = 0
+      fakes.syncCalls.length = 0
+    },
+  }
+  return fakes
+})
+
+vi.mock("../durable-file.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../durable-file.js")>()
+  return {
+    ...actual,
+    writeFileDurable: (filePath: string, data: string, opts?: { commitIf?: () => boolean }) => {
+      if (durableFileFakes.mode === "manual") {
+        durableFileFakes.asyncCalls.push({ filePath, data, ...(opts ? { opts } : {}) })
+        return new Promise<void>((resolve, reject) => durableFileFakes.pending.push({ resolve, reject }))
+      }
+      return actual.writeFileDurable(filePath, data, opts)
+    },
+    writeFileDurableSync: (filePath: string, data: string, mode?: number) => {
+      if (durableFileFakes.mode === "manual") {
+        durableFileFakes.syncCalls.push({ filePath, data })
+        return
+      }
+      return actual.writeFileDurableSync(filePath, data, mode)
+    },
+  }
+})
+
 interface Row {
   id: string
   status: "pending" | "done"
@@ -40,6 +79,7 @@ const tmp = (): string => {
 afterEach(() => {
   vi.useRealTimers()
   vi.restoreAllMocks()
+  durableFileFakes.reset()
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
@@ -126,32 +166,48 @@ describe("durable row file persistence", () => {
     expect(statSync(file).mode & 0o777).toBe(0o600)
   })
 
-  it("two overlapping persistNow calls end with the newer snapshot on disk", async () => {
+  it("serializes overlapping persistNow calls through one chain", async () => {
+    durableFileFakes.mode = "manual"
     const file = join(tmp(), "store.json")
     const { store } = make(file)
     store.rows.set("a", row("a", 1))
 
     const first = store.persistNow()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(durableFileFakes.asyncCalls).toHaveLength(1))
     store.rows.set("b", row("b", 2))
     const second = store.persistNow()
+    await Promise.resolve()
 
+    expect(durableFileFakes.asyncCalls).toHaveLength(1)
+    durableFileFakes.pending.shift()!.resolve()
+    await vi.waitFor(() => expect(durableFileFakes.asyncCalls).toHaveLength(2))
+    durableFileFakes.pending.shift()!.resolve()
     await Promise.all([first, second])
-    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")) as Record<string, Row>)).toEqual(["a", "b"])
+
+    const bodies = durableFileFakes.asyncCalls.map(call => Object.keys(JSON.parse(call.data) as object))
+    expect(bodies).toEqual([["a"], ["a", "b"]])
   })
 
-  it("flushSync wins over an in-flight async write via the generation guard", async () => {
+  it("flushSync invalidates an in-flight async write via the generation guard", async () => {
+    durableFileFakes.mode = "manual"
     const file = join(tmp(), "store.json")
     const { store } = make(file)
     store.rows.set("a", row("a", 1))
 
     const write = store.persistNow()
-    await Promise.resolve()
+    await vi.waitFor(() => expect(durableFileFakes.asyncCalls).toHaveLength(1))
+    const captured = durableFileFakes.asyncCalls[0]!
+    expect(captured.opts?.commitIf?.()).toBe(true)
+
     store.rows.set("b", row("b", 2))
     store.flushSync()
-    await write
 
-    expect(Object.keys(JSON.parse(readFileSync(file, "utf8")) as Record<string, Row>)).toEqual(["a", "b"])
+    expect(captured.opts?.commitIf?.()).toBe(false)
+    expect(durableFileFakes.syncCalls).toHaveLength(1)
+    expect(Object.keys(JSON.parse(durableFileFakes.syncCalls[0]!.data) as object)).toEqual(["a", "b"])
+
+    durableFileFakes.pending.shift()!.resolve()
+    await write
   })
 
   it("schedulePersist coalesces calls into one debounced write", async () => {
