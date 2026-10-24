@@ -1,5 +1,16 @@
 # @agentproto/adapter-jcode
 
+## 0.4.4
+
+### Patch Changes
+
+- Updated dependencies [8d53429]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/driver-agent-cli@2.16.0
+  - @agentproto/provider-kit@0.5.0
+
 ## 0.4.3
 
 ### Patch Changes

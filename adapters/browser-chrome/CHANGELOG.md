@@ -1,5 +1,15 @@
 # @agentproto/adapter-browser-chrome
 
+## 0.8.0
+
+### Minor Changes
+
+- a68476e: Discover Chrome browser UUID, fail loudly, add key/select/wait tools
+
+### Patch Changes
+
+- @agentproto/driver-browser@0.3.2
+
 ## 0.7.0
 
 ### Minor Changes

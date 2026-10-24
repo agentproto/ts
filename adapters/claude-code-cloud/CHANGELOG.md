@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [76003b9]
+  - @agentproto/driver-agent-cli@2.16.0
+  - @agentproto/adapter-claude-sdk@0.7.31
+
 ## 0.3.0
 
 ### Minor Changes

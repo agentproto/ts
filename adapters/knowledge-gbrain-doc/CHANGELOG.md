@@ -1,5 +1,12 @@
 # @agentproto/adapter-knowledge-gbrain-doc
 
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [76003b9]
+  - @agentproto/provider-kit@0.5.0
+
 ## 0.3.3
 
 ### Patch Changes

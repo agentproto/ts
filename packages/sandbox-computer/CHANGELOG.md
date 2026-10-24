@@ -1,5 +1,16 @@
 # @agentproto/sandbox-computer
 
+## 0.5.0
+
+### Minor Changes
+
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+
+### Patch Changes
+
+- Updated dependencies [804db17]
+  - @agentproto/sandbox@0.14.0
+
 ## 0.4.0
 
 ### Minor Changes

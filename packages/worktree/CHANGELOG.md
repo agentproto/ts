@@ -1,5 +1,12 @@
 # @agentproto/worktree
 
+## 0.19.1
+
+### Patch Changes
+
+- e1fa90e: Attach stored verdicts to checkpoint refs in branch gc
+- e1fa90e: Attach stored review verdicts to sandbox checkpoint refs in branch gc and let `includeReviewed` reclaim an agreeing checkpoint through the line-coverage guard.
+
 ## 0.19.0
 
 ### Minor Changes
