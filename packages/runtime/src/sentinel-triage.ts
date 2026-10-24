@@ -13,9 +13,10 @@
  *    within the last 10 minutes, so this one is only `fyi`.
  * 3. `default`: everything else wakes.
  *
- * Keys are recorded AFTER classification, so an event never counts as a
- * repeat of itself. {@link RecentKeys} is a bounded map (1000 entries by
- * default) that evicts the oldest insertion when full.
+ * Keys are recorded by the caller AFTER a successful delivery, so an event
+ * never counts as a repeat of itself and a failed send is not recorded as
+ * seen. {@link RecentKeys} is a bounded map (1000 entries by default) that
+ * evicts the oldest insertion when full.
  */
 
 import { appendFileSync, mkdirSync } from "node:fs"
@@ -69,7 +70,10 @@ export class RecentKeys {
    *  a repeat. */
   has(target: string, key: string, now: number): boolean {
     const at = this.entries.get(mapKey(target, key))
-    return at !== undefined && now - at < SENTINEL_TRIAGE_REPEAT_WINDOW_MS
+    if (at === undefined) return false
+    const delta = now - at
+    if (delta < 0) return false
+    return delta < SENTINEL_TRIAGE_REPEAT_WINDOW_MS
   }
 
   record(target: string, key: string, now: number): void {
@@ -84,26 +88,33 @@ export class RecentKeys {
   }
 }
 
-/** Classify one event without applying anything. The coalesce key, when one
- *  exists, is recorded after the decision so the current event cannot match
- *  itself. */
+/** Classify one event without applying anything. The caller records the
+ *  coalesce key after a successful delivery so a failed send is not counted
+ *  as seen and an event never counts as a repeat of itself. */
 export function classifySentinelEvent(
   event: SentinelEvent,
   input: SentinelTriageInput,
 ): SentinelTriageResult {
   const key = coalesceKeyFor(event)
 
-  let result: SentinelTriageResult
   if (event.terminal === true) {
-    result = { decision: "wake", rule: "terminal" }
+    return { decision: "wake", rule: "terminal" }
   } else if (key !== undefined && input.recent.has(input.target, key, input.now)) {
-    result = { decision: "fyi", rule: "coalesced-repeat" }
+    return { decision: "fyi", rule: "coalesced-repeat" }
   } else {
-    result = { decision: "wake", rule: "default" }
+    return { decision: "wake", rule: "default" }
   }
+}
 
-  if (key !== undefined) input.recent.record(input.target, key, input.now)
-  return result
+/** Record the coalesce key for a successfully delivered event. */
+export function recordSentinelTriageKey(
+  event: SentinelEvent,
+  input: Pick<SentinelTriageInput, "target" | "now" | "recent">,
+): void {
+  const key = coalesceKeyFor(event)
+  if (key !== undefined) {
+    input.recent.record(input.target, key, input.now)
+  }
 }
 
 /** The fields the caller supplies for one ledger line. `source` and

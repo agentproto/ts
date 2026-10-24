@@ -71,7 +71,12 @@ import {
 } from "./sentinel-webhook-outbox.js"
 import type { DeliveryReplay } from "./webhook-egress/delivery.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import { RecentKeys, classifySentinelEvent, writeSentinelTriageLedger } from "./sentinel-triage.js"
+import {
+  RecentKeys,
+  classifySentinelEvent,
+  recordSentinelTriageKey,
+  writeSentinelTriageLedger,
+} from "./sentinel-triage.js"
 import {
   deliveryPreferenceFor,
   type SentinelEvent,
@@ -579,9 +584,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // persisted sentinel never actually reaches this branch — narrows the
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
+    const now = nowMs()
+    let triage: { decision: ReturnType<typeof classifySentinelEvent>["decision"]; rule: ReturnType<typeof classifySentinelEvent>["rule"] } | undefined
     try {
-      const now = nowMs()
-      const { decision, rule } = classifySentinelEvent(event, {
+      triage = classifySentinelEvent(event, {
         target: target.sessionId,
         sentinelId: sentinel.id,
         now,
@@ -589,8 +595,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       })
       writeSentinelTriageLedger(triagePath, {
         ts: new Date(now).toISOString(),
-        decision,
-        rule,
+        decision: triage.decision,
+        rule: triage.rule,
         target: target.sessionId,
         sentinelId: sentinel.id,
         eventId: event.id,
@@ -610,6 +616,17 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         origin: sentinel.id,
         ...(key ? { coalesceKey: key } : {}),
       })
+      try {
+        if (triage) {
+          recordSentinelTriageKey(event, {
+            target: target.sessionId,
+            now,
+            recent: recentTriageKeys,
+          })
+        }
+      } catch (err) {
+        log(`[sentinel-runtime] triage record failed: ${describeError(err)}`)
+      }
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
         await handleDeadSession(sentinel, event, msg)

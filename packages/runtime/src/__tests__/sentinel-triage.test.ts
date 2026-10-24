@@ -15,6 +15,7 @@ import {
   RecentKeys,
   SENTINEL_TRIAGE_REPEAT_WINDOW_MS,
   classifySentinelEvent,
+  recordSentinelTriageKey,
   writeSentinelTriageLedger,
 } from "../sentinel-triage.js"
 import type { SentinelEvent } from "../sentinel-providers/types.js"
@@ -56,8 +57,10 @@ describe("classifySentinelEvent", () => {
 
   it("coalesced-repeat: the same (target, key) within 10 minutes is fyi", () => {
     const recent = new RecentKeys()
-    const first = classifySentinelEvent(push(), input(recent, 0))
+    const firstEvent = push()
+    const first = classifySentinelEvent(firstEvent, input(recent, 0))
     expect(first).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(firstEvent, input(recent, 0))
 
     const second = classifySentinelEvent(push({ id: "evt_2" }), input(recent, 60_000))
     expect(second).toEqual({ decision: "fyi", rule: "coalesced-repeat" })
@@ -65,10 +68,12 @@ describe("classifySentinelEvent", () => {
 
   it("a repeat counts per target, not globally", () => {
     const recent = new RecentKeys()
-    expect(classifySentinelEvent(push(), input(recent, 0, "sess_1"))).toEqual({
+    const e1 = push()
+    expect(classifySentinelEvent(e1, input(recent, 0, "sess_1"))).toEqual({
       decision: "wake",
       rule: "default",
     })
+    recordSentinelTriageKey(e1, input(recent, 0, "sess_1"))
     expect(classifySentinelEvent(push({ id: "evt_2" }), input(recent, 1_000, "sess_2"))).toEqual({
       decision: "wake",
       rule: "default",
@@ -87,13 +92,17 @@ describe("classifySentinelEvent", () => {
 
   it("a key recorded exactly 10 minutes ago is no longer a repeat, just inside is", () => {
     const inside = new RecentKeys()
-    expect(classifySentinelEvent(push(), input(inside, 0))).toEqual({ decision: "wake", rule: "default" })
+    const e1 = push()
+    expect(classifySentinelEvent(e1, input(inside, 0))).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(e1, input(inside, 0))
     expect(
       classifySentinelEvent(push({ id: "evt_inside" }), input(inside, SENTINEL_TRIAGE_REPEAT_WINDOW_MS - 1)),
     ).toEqual({ decision: "fyi", rule: "coalesced-repeat" })
 
     const boundary = new RecentKeys()
-    expect(classifySentinelEvent(push(), input(boundary, 0))).toEqual({ decision: "wake", rule: "default" })
+    const e2 = push()
+    expect(classifySentinelEvent(e2, input(boundary, 0))).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(e2, input(boundary, 0))
     expect(
       classifySentinelEvent(push({ id: "evt_boundary" }), input(boundary, SENTINEL_TRIAGE_REPEAT_WINDOW_MS)),
     ).toEqual({ decision: "wake", rule: "default" })
@@ -115,10 +124,10 @@ describe("RecentKeys", () => {
     expect(recent.has("sess_1", "k1000", 0)).toBe(true)
   })
 
-  it("records the classifying event after deciding, so it is not its own repeat", () => {
+  it("does not record the classifying event; the caller records after a successful delivery", () => {
     const recent = new RecentKeys()
     expect(classifySentinelEvent(push(), input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
-    expect(recent.size).toBe(1)
+    expect(recent.size).toBe(0)
   })
 })
 

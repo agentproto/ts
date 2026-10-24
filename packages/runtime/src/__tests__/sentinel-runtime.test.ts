@@ -201,6 +201,54 @@ describe("SentinelRuntime", () => {
     }
   })
 
+  it("on sendMessage failure the event is retried without treating it as a repeat", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-retry-"))
+    const triagePath = join(dir, "sentinel-triage.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_1", subject: "fake:widget-42" })
+      const event = makeFakeEvent({
+        id: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-42",
+      })
+      provider.emit(event)
+
+      let attempt = 0
+      const registry = stubRegistry(async () => {
+        attempt++
+        if (attempt === 1) throw new Error("transient")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        triagePath,
+      })
+
+      await runtime.pollOnce()
+      expect(registry.calls).toHaveLength(1)
+      expect(store.isSeen(sentinel.id, "evt_1")).toBe(false)
+
+      await runtime.pollOnce()
+      expect(registry.calls).toHaveLength(2)
+      expect(store.isSeen(sentinel.id, "evt_1")).toBe(true)
+
+      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(2)
+      const first = JSON.parse(lines[0]!)
+      const second = JSON.parse(lines[1]!)
+      expect(first.rule).toBe("default")
+      expect(second.rule).toBe("default")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("dedups: an event id already in the persisted `seen` window is never re-delivered", async () => {
     const store = createSentinelStore({ persist: false })
     const provider = createFakeSentinelProvider()
