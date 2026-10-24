@@ -238,6 +238,13 @@ jobs:
       - name: Run release-tooling tests
         run: node --test scripts/release-notes.test.mjs scripts/version-pr-changelog.test.mjs scripts/lib/agent-lane.test.mjs scripts/list-unpublished-packages.test.mjs
 
+      # Guards start-watchdog's flagging policy (scripts/start-watchdog.mjs),
+      # including the self-protection that keeps the escalation investigator it
+      # spawns from being killed by the next sweep. Lives outside
+      # packages/**/adapters/**, so `pnpm test` misses it.
+      - name: Run start-watchdog tests
+        run: node --test scripts/start-watchdog.test.mjs
+
       # Guard STATUS.md (scripts/gen-status.mjs) against drift: the package
       # tier table is generated, so a workspace package add/remove/rename or
       # a classification change without a regen would otherwise ship stale.
