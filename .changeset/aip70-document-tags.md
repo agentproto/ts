@@ -2,6 +2,7 @@
 "@agentproto/agent-runtime": minor
 "@agentproto/company": minor
 "@agentproto/design": minor
+"@agentproto/driver-agent-cli": patch
 "@agentproto/lesson": minor
 "@agentproto/playbook": minor
 "@agentproto/review": minor
