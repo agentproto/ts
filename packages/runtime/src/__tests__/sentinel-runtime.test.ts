@@ -117,6 +117,74 @@ describe("SentinelRuntime", () => {
     expect(updated?.handle.cursor).toBe("1")
   })
 
+  it("writes exactly one triage ledger line and delivers the same message as before", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-runtime-triage-"))
+    const triagePath = join(dir, "sentinel-triage.jsonl")
+    const fixedNow = Date.parse("2026-10-01T00:01:00.000Z")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const sentinel = newSentinel(store, { sessionId: "sess_1", urgency: "steer" })
+      const event = makeFakeEvent({
+        id: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-1",
+        summary: "Widget created",
+        time: "2026-10-01T00:00:30.000Z",
+      })
+      provider.emit(event)
+
+      const registry = stubRegistry(async () => okResult())
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        triagePath,
+        nowMs: () => fixedNow,
+      })
+
+      await runtime.pollOnce()
+
+      expect(registry.calls).toHaveLength(1)
+      const { msg, opts } = registry.calls[0]!
+      // The minted id/ts are the only non-deterministic fields; every
+      // delivery-relevant field must be identical to main's behaviour.
+      expect(msg.id).toMatch(/^msg_/)
+      expect(msg).toEqual({
+        id: msg.id,
+        ts: msg.ts,
+        to: "sess_1",
+        from: { relation: "system" },
+        kind: "notice",
+        urgency: "steer",
+        correlationId: "sentinel:fake:widget-1",
+        text: "[fake] Widget created",
+        data: event,
+      })
+      expect(opts).toEqual({ source: "sentinel", origin: sentinel.id })
+
+      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toEqual({
+        ts: new Date(fixedNow).toISOString(),
+        source: "sentinel",
+        applied: false,
+        decision: "wake",
+        rule: "default",
+        target: "sess_1",
+        sentinelId: sentinel.id,
+        eventId: "evt_1",
+        type: "fake.widget.created",
+        subject: "fake:widget-1",
+        urgency: "steer",
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("dedups: an event id already in the persisted `seen` window is never re-delivered", async () => {
     const store = createSentinelStore({ persist: false })
     const provider = createFakeSentinelProvider()

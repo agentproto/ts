@@ -72,6 +72,11 @@ import {
 import type { DeliveryReplay } from "./webhook-egress/delivery.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
 import {
+  classifySentinelEvent,
+  createRecentKeys,
+  writeSentinelTriageLedger,
+} from "./sentinel-triage.js"
+import {
   deliveryPreferenceFor,
   type SentinelEvent,
   type SentinelMatchClause,
@@ -212,6 +217,9 @@ export interface SentinelRuntimeOptions {
   /** Override for the parked-event journal (tests). Default
    *  `~/.agentproto/sentinels-parked.jsonl`. */
   parkedPath?: string
+  /** Override for the observation-only triage ledger (tests). Default
+   *  `~/.agentproto/sentinel-triage.jsonl`. */
+  triagePath?: string
   nowMs?: () => number
   log?: (line: string) => void
   /** Override persist path for the webhook outbox (tests). Default
@@ -270,6 +278,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   const idleIntervalMs = opts.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS
   const hotWindowMs = opts.hotWindowMs ?? DEFAULT_HOT_WINDOW_MS
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "sentinels-parked.jsonl")
+  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "sentinel-triage.jsonl")
+  // One bounded recent-key map per runtime: a 'repeat' only counts across
+  // deliveries made by this process, never across restarts.
+  const recentSentinelKeys = createRecentKeys()
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let inFlight = false
@@ -573,6 +585,35 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // persisted sentinel never actually reaches this branch — narrows the
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
+
+    // Observation only: record what a pre-wake triage stage WOULD decide,
+    // then deliver exactly as before. A ledger failure must never block or
+    // alter delivery.
+    try {
+      const now = nowMs()
+      const triage = classifySentinelEvent(event, {
+        target: target.sessionId,
+        sentinelId: sentinel.id,
+        now,
+        recent: recentSentinelKeys,
+      })
+      writeSentinelTriageLedger(triagePath, {
+        ts: new Date(now).toISOString(),
+        source: "sentinel",
+        applied: false,
+        decision: triage.decision,
+        rule: triage.rule,
+        target: target.sessionId,
+        sentinelId: sentinel.id,
+        eventId: event.id,
+        type: event.type,
+        subject: event.subject,
+        urgency: target.urgency,
+      })
+    } catch (err) {
+      log(`[sentinel-runtime] failed to write the triage ledger for ${sentinel.id}: ${describeError(err)}`)
+    }
+
     const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
     const key = coalesceKeyFor(event)
     try {
