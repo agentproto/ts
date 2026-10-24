@@ -1068,6 +1068,56 @@ describe("branch gc — sandbox checkpoint branches", () => {
     expect(e.reclaimReason).toBeUndefined()
     expect(e.verdictGuard).toBe("line coverage 0% of 2 added lines (< 95%)")
   })
+
+  it("includeReviewed refuses a work-branch-less checkpoint verdict with no measurable coverage", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    // An orphan snapshot: no common history with base, so the ladder has no
+    // lines to measure against — exactly the "work branch is gone" rescue case.
+    await execGit(repo, ["checkout", "-q", "--orphan", "tmp/snap"])
+    await execGit(repo, ["rm", "-q", "-rf", "."])
+    const snap = await commitFiles(repo, { "rescued.txt": "only copy of the rescued work\n" }, "orphan snapshot")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+    await pushCheckpoint(repo, "wt/dead", snap)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: checkpointVerdict("wt/dead", snap, true) })
+
+    const e = entry(await plan(repo, { base: "origin/main", verdicts, includeReviewed: true }), `${CHECKPOINT_BRANCH_PREFIX}wt/dead`, "remote")
+    expect(e).toMatchObject({ class: "review", status: "unmerged", verdict: { agree: true } })
+    expect(e.reclaimReason).toBeUndefined()
+    expect(e.verdictGuard).toBe("no line coverage for checkpoint snapshot")
+  })
+
+  it("includeReviewed guards the CHECKPOINT snapshot's coverage, not the work branch's", async () => {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    await commitFiles(repo, { "src/b.ts": "header\n" }, "b")
+    await branchWith(repo, "wt/hi", { "src/b.ts": "header\nconst alpha = 1\nconst beta = 2\n" })
+    await commitFiles(repo, { "src/b.ts": "const alpha = 1\nconst beta = 2\nheader\n// base moved it\n" }, "base landed it differently")
+    await execGit(repo, ["push", "-q", "origin", "main"])
+    // The work tip is fully covered by base, but the snapshot taken on it adds
+    // unlanded work — the snapshot is what the verdict covers.
+    await execGit(repo, ["checkout", "-q", "-b", "tmp/snap", "wt/hi"])
+    const snap = await commitFiles(
+      repo,
+      { "src/c.ts": "export function rescued() { return 99 }\nexport const alsoRescued = 'yes'\n" },
+      "snapshot with unlanded work",
+    )
+    await execGit(repo, ["checkout", "-q", "main"])
+    await execGit(repo, ["branch", "-q", "-D", "tmp/snap"])
+    await pushCheckpoint(repo, "wt/hi", snap)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: checkpointVerdict("wt/hi", snap, true) })
+
+    const p = await plan(repo, { base: "origin/main", verdicts, includeReviewed: true })
+    expect(entry(p, "wt/hi").lineCoverage).toMatchObject({ pct: 100 })
+    const e = entry(p, `${CHECKPOINT_BRANCH_PREFIX}wt/hi`, "remote")
+    expect(e.lineCoverage?.pct).toBeLessThan(95)
+    expect(e).toMatchObject({ class: "review", status: "unmerged", verdict: { agree: true } })
+    expect(e.reclaimReason).toBeUndefined()
+    expect(e.verdictGuard).toContain("line coverage")
+  })
 })
 
 // ── forge-mirror orphans ─────────────────────────────────────────────────
