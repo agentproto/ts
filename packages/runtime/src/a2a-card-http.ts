@@ -5,12 +5,12 @@
  *   GET /a2a/apps/:appId/.well-known/agent-card.json      one card per installed app
  *
  * Skills come only from the manifest's `exposes`. Until `handle.exposes` is
- * on `AppHandle` (app-kit placement/exposes fields), it is read through a
+ * on `AppHandle` (app placement/exposes fields), it is read through a
  * narrow optional type, and an app without it exposes nothing.
  */
 
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle } from "@agentproto/app"
 import {
   buildAppAgentCard,
   buildDaemonAgentCard,
@@ -42,7 +42,7 @@ export interface A2aCardDeps {
   appRegistry: AppRegistry
   /** Daemon HTTP base as seen by this request. */
   baseUrl: string
-  /** Test seam; defaults to app-kit's `loadAppHandle`. */
+  /** Test seam; defaults to app's `loadAppHandle`. */
   loadHandle?: LoadCardHandle
 }
 

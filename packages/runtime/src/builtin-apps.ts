@@ -59,7 +59,7 @@ import {
   type ReviewPanelInput,
   type ReviewPanelOutput,
 } from "@agentproto/apps"
-import type { AppHandle } from "@agentproto/app-kit"
+import type { AppHandle } from "@agentproto/app"
 import { stableAppEmbedToken } from "./embed-tokens.js"
 import type { SessionDescriptor } from "./sessions.js"
 import type { TaskRecord } from "./task-ledger.js"
@@ -218,7 +218,7 @@ export interface BuiltinPanelCatalogEntry {
  * disk. `appId`/`name`/`description` come from each panel's real `AppHandle`
  * (`PANEL_APP_HANDLES`); `toolId`/`resourceUri` come from the actual mounted
  * `AgnoMcpApp` (`app.id`) since those are the real MCP-visible identifiers,
- * not the app-kit handle's. `listSessions`/`httpBaseUrl`/`listTasks` below
+ * not the app handle's. `listSessions`/`httpBaseUrl`/`listTasks` below
  * are never invoked — only the static id metadata on each built `AgnoMcpApp`
  * is read.
  */

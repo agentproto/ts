@@ -39,7 +39,7 @@ An app folder is any directory with `.agentproto/APP.md` plus the agents
 (`.agentproto/agents/<id>/AGENT.md`), workflows
 (`.agentproto/workflows/<id>/WORKFLOW.md`), and optional UI
 (`.agentproto/ui/`) it references — the shape `defineApp().emit(dir)`
-(`@agentproto/app-kit`) produces. The bundle walks the WHOLE folder
+(`@agentproto/app`) produces. The bundle walks the WHOLE folder
 (including `.agentproto/` and any loose workspace files, but skipping any
 `node_modules/` or `.git/` directory at any depth — a `ui/` source tree ships
 both and neither belongs in the shipped app), so unpacking restores the
@@ -437,7 +437,7 @@ resolved `cwd` (incl. `.`) resolves against the run's own cwd.
 Check `[dir]` (default: the current directory) against the app loader.
 Exit `0` iff ALL of:
 
-1. `loadAppHandle` (`@agentproto/app-kit`) succeeds — `APP.md` parses, every
+1. `loadAppHandle` (`@agentproto/app`) succeeds — `APP.md` parses, every
    `AGENT.md` loads, and the `defineApp` attachment invariant holds.
 2. Every declared workflow loads via `@agentproto/workflow-loader` —
    harness blocks, `promptFile` resolution, and `kind: gate` steps are

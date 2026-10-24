@@ -53,7 +53,7 @@
     "@agentproto/ref": "workspace:*"
   },
   "devDependencies": {
-    "@agentproto/app-kit": "workspace:*",
+    "@agentproto/app": "workspace:*",
     "@agentproto/pack": "workspace:*",
     "@agentproto/registry": "workspace:*",
     "@agentproto/tool": "workspace:*",

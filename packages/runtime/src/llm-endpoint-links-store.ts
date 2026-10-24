@@ -14,10 +14,10 @@
  *
  * `provider` is validated against {@link CANONICAL_UPSTREAMS} on write — the 8
  * upstream ids are re-declared here (not imported) because `@agentproto/runtime`
- * deliberately has ZERO dependency on `@agentproto/llm-endpoint` (the proxy is
+ * deliberately has ZERO dependency on `@agentproto/inference-endpoint` (the proxy is
  * spawned as a child bin, never imported — same stance as cloudflared). The
  * list mirrors llm-endpoint's `ProviderKeys` / `CANONICAL_UPSTREAMS`
- * (`packages/llm-endpoint/src/index.ts:210-620`); keep the two in lock-step.
+ * (`packages/inference-endpoint/src/index.ts:210-620`); keep the two in lock-step.
  *
  * `profileId` is NOT validated to reference an existing profile here — a
  * dangling link resolves to a hard 401 at proxy request time exactly as today
@@ -192,7 +192,7 @@ export async function injectLlmEndpointLinksIntoEnv(
 /**
  * The env-var name a link maps to — `LLM_ENDPOINT_PROFILE_<PROVIDER_UPPER>`.
  * MUST match llm-endpoint's `upstreamProfileEnvVar`
- * (`packages/llm-endpoint/src/index.ts:453`) exactly, or the proxy won't read
+ * (`packages/inference-endpoint/src/index.ts:453`) exactly, or the proxy won't read
  * the injected value. Re-declared (not imported) per the zero-dep stance.
  */
 export function upstreamProfileEnvVar(provider: string): string {

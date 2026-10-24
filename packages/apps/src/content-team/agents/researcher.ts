@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app-kit"
+import type { AgentEntry } from "@agentproto/app"
 
 /** Gathers sources for the piece. */
 export const researcher: AgentEntry = {

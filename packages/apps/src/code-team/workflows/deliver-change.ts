@@ -2,7 +2,7 @@ import { defineWorkflow } from "@agentproto/workflow"
 
 /**
  * The one workflow the code team delivers a change through. Every team agent
- * references it; the app-kit attachment invariant keeps that honest.
+ * references it; the app attachment invariant keeps that honest.
  *
  * Three declarative `kind:"agent"` steps — implementer → reviewer → fixer —
  * one per team agent, each `agent.ref` resolving (at compile time, against

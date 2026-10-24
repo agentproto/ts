@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest"
 import { defineProduct, attachPricing, collectPriced } from "../index.js"
 import { createRegistry } from "@agentproto/registry"
 import { refFor, RefCatalog, type ArtifactRef } from "@agentproto/ref"
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { definePack, type PackHandle } from "@agentproto/pack"
 import { defineTool } from "@agentproto/tool"
 

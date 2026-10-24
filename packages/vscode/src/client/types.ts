@@ -841,7 +841,7 @@ export interface InstalledAppUi {
 
 /** An agent or workflow an installed app bundles: its id plus the absolute
  *  path of the emitted manifest (`AGENT.md` / `WORKFLOW.md`) on the daemon
- *  host — what `@agentproto/app-kit`'s `emit` materializes. */
+ *  host — what `@agentproto/app`'s `emit` materializes. */
 export interface InstalledAppRef {
   id: string
   path: string
@@ -975,7 +975,7 @@ export interface CatalogProviderModelsResponse {
 
 /**
  * Result of the `llm_endpoint_status` MCP verb — the daemon-supervised
- * `@agentproto/llm-endpoint` proxy sidecar's lifecycle state. `running`
+ * `@agentproto/inference-endpoint` proxy sidecar's lifecycle state. `running`
  * reflects a live child, `healthy` a live `GET /v1/models` probe;
  * `never-started` is the fresh-boot state before it has ever been spawned.
  * Mirrors runtime LlmEndpointRegistry.status().

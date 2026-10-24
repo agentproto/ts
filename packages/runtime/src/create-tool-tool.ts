@@ -46,7 +46,7 @@ import { dirname, join } from "node:path"
 import matter from "gray-matter"
 import { z } from "zod"
 import { AGENT_ID_PATTERN, loadAgent } from "@agentproto/agent"
-import { stripOwner } from "@agentproto/app-kit"
+import { stripOwner } from "@agentproto/app"
 import { createTool, type ToolContext, type ToolDefinition } from "@agentproto/tool"
 
 /** AIP-14 id regex — the same one `parseToolManifest` enforces. */

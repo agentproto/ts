@@ -1,13 +1,13 @@
 /**
  * `content-team` — a ready-made agentproto app: a small team that produces a
  * piece of content. Three agents (researcher → writer → editor) bound to one
- * production workflow, declared with `@agentproto/app-kit`.
+ * production workflow, declared with `@agentproto/app`.
  *
  * Generic on purpose — `@agentproto/…` ids, no product dependency. A host
  * imports it and uses any subset of its agents/workflows.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { researcher } from "./agents/researcher.js"
 import { writer } from "./agents/writer.js"
 import { editor } from "./agents/editor.js"

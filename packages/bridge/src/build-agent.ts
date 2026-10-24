@@ -101,7 +101,7 @@ async function resolveTools(
       )
     }
     console.warn(
-      `[@agentproto/mastra] agent '${ctx.agentId}' declares ${refs.length} tool(s) but no resolveTool was provided — skipping`,
+      `[@agentproto/bridge] agent '${ctx.agentId}' declares ${refs.length} tool(s) but no resolveTool was provided — skipping`,
     )
     refs.forEach((r) => droppedTools.push(refKey(r)))
     return { tools, resolvedTools, droppedTools }
@@ -117,7 +117,7 @@ async function resolveTools(
         )
       }
       console.warn(
-        `[@agentproto/mastra] agent '${ctx.agentId}' tool '${refKey(ref)}' did not resolve — skipping`,
+        `[@agentproto/bridge] agent '${ctx.agentId}' tool '${refKey(ref)}' did not resolve — skipping`,
       )
       continue
     }

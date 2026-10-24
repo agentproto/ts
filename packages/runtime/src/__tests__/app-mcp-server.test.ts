@@ -7,7 +7,7 @@ import matter from "gray-matter"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
-import { defineApp } from "@agentproto/app-kit"
+import { defineApp } from "@agentproto/app"
 import { loadPublishedApp, startAppMcpHttp } from "../app-mcp-server.js"
 
 async function writeBundled(dir: string, kind: "tools" | "drivers", id: string, file: string, data: Record<string, unknown>) {

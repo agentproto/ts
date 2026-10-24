@@ -20,7 +20,7 @@
 
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
 import { loadAgent } from "@agentproto/agent"
-import { stripOwner } from "@agentproto/app-kit"
+import { stripOwner } from "@agentproto/app"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"

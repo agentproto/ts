@@ -5,7 +5,7 @@
  * CREATE renders a valid AIP-42 `agent/v1` AGENT.md at
  * `<dir>/.agents/<slug>/AGENT.md` — the canonical hand-written layout
  * `loadAgent` / `self_inspect` read first — through the shared
- * `renderAgentManifest` (`@agentproto/app-kit`), so a created manifest is
+ * `renderAgentManifest` (`@agentproto/app`), so a created manifest is
  * byte-identical to one `app emit` writes. It refuses to overwrite an
  * existing manifest unless `--force`.
  *
@@ -21,7 +21,7 @@ import { dirname, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
-import { renderAgentManifest } from "@agentproto/app-kit"
+import { renderAgentManifest } from "@agentproto/app"
 
 import { pathExists } from "./skill-install/shared.js"
 import { expandHome } from "./skill-install/pack-resolve.js"
