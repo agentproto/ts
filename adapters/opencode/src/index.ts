@@ -148,6 +148,18 @@ export const opencode: AgentCliHandle = defineAgentCli({
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
   credentialDataHome: { env: "XDG_DATA_HOME" },
+  // opencode keeps mutable runtime state (the lock/state store its MCP client
+  // registers ACP-provided servers through, plus logs) in
+  // `$XDG_STATE_HOME/opencode`. A confined spawn (workflow agent step under an
+  // app boundary) denies `$HOME`, so that store cannot be created and
+  // opencode SILENTLY drops every `session/new.mcpServers` entry: the ACP
+  // handshake succeeds, the session runs with its native tools only, and no
+  // `agentproto_*` tool ever appears (maintain/reviewOne sessions hand-posted
+  // JSON-RPC over curl instead). Pointing XDG_STATE_HOME at the per-session
+  // config dir gives the confined spawn a writable state home (the driver
+  // grants it too), so the mount survives. Unlike `credentialDataHome` this
+  // applies to EVERY confined spawn, credential or not.
+  stateHome: { env: "XDG_STATE_HOME", defaultDir: ".local/state" },
   // opencode reads its GLOBAL config at startup even when
   // `OPENCODE_CONFIG_CONTENT` carries the per-session overrides. A confined
   // spawn (workflow agent step under an app boundary) denies `$HOME`, so
