@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { CredentialStore, StoreRef, StoredCredential } from "@agentproto/auth"
 import type { HarnessPreset } from "@agentproto/runtime"
-import type { EndpointConfig } from "@agentproto/llm-endpoint"
+import type { EndpointConfig } from "@agentproto/inference-endpoint"
 import type { ImportedMcpsConfig } from "@agentproto/runtime/mcp-imports"
 import type { AdapterInfo } from "../registry/resolve.js"
 import {

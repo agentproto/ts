@@ -1580,9 +1580,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
-      '@agentproto/llm-endpoint':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../llm-endpoint
+        version: link:../inference-endpoint
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
@@ -2645,6 +2645,40 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/inference-endpoint:
+    dependencies:
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@agentproto/batch':
+        specifier: workspace:*
+        version: link:../batch
+      '@agentproto/providers-store':
+        specifier: workspace:*
+        version: link:../providers-store
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/intent:
     dependencies:
       '@agentproto/define-doctype':
@@ -2836,18 +2870,9 @@ importers:
 
   packages/llm-endpoint:
     dependencies:
-      '@agentproto/auth':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../auth
-      '@agentproto/batch':
-        specifier: workspace:*
-        version: link:../batch
-      '@agentproto/providers-store':
-        specifier: workspace:*
-        version: link:../providers-store
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
+        version: link:../inference-endpoint
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -2858,9 +2883,6 @@ importers:
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
-      tsx:
-        specifier: ^4.23.15
-        version: 4.23.15
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -3800,9 +3822,9 @@ importers:
       '@agentproto/governance-engine':
         specifier: workspace:*
         version: link:../governance/engine
-      '@agentproto/llm-endpoint':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../llm-endpoint
+        version: link:../inference-endpoint
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest

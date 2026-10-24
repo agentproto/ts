@@ -180,5 +180,5 @@ async function testE2E() {
 
 // Live suite — hits a running proxy (localhost:18090) + real provider keys.
 // Not a vitest unit test (renamed off the `.test.` glob). Run with:
-//   pnpm --filter @agentproto/llm-endpoint test:e2e
+//   pnpm --filter @agentproto/inference-endpoint test:e2e
 testE2E();

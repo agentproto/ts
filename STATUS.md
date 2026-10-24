@@ -102,7 +102,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/harness | `packages/harness` | 0.6.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
+@agentproto/inference-endpoint | `packages/inference-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mastra | `packages/mastra` | 0.2.20 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mcp-app-host | `packages/mcp-app-host` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mcp-server | `packages/mcp-server` | 0.7.1 | core | product runtime package consumed by the runtime/cli |

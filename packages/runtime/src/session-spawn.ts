@@ -210,7 +210,7 @@ import {
   unenforceableWarning,
   type AppBoundary,
 } from "./app-boundary.js"
-import { syncPiModels } from "@agentproto/llm-endpoint"
+import { syncPiModels } from "@agentproto/inference-endpoint"
 import {
   fitCheckForTarget,
   projectInferenceBinding,

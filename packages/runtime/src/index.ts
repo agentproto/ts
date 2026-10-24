@@ -2397,7 +2397,7 @@ export async function createGateway(
     }),
   )
 
-  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
+  // Single-sidecar registry for the @agentproto/inference-endpoint proxy — gated
   // behind `opts.llmEndpoint` (default false). When off, no registry is
   // created, no MCP tools are registered, and the route is absent too
   // (`registerBuiltinRoutes` above already skipped it).

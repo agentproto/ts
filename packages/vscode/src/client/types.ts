@@ -975,7 +975,7 @@ export interface CatalogProviderModelsResponse {
 
 /**
  * Result of the `llm_endpoint_status` MCP verb — the daemon-supervised
- * `@agentproto/llm-endpoint` proxy sidecar's lifecycle state. `running`
+ * `@agentproto/inference-endpoint` proxy sidecar's lifecycle state. `running`
  * reflects a live child, `healthy` a live `GET /v1/models` probe;
  * `never-started` is the fresh-boot state before it has ever been spawned.
  * Mirrors runtime LlmEndpointRegistry.status().

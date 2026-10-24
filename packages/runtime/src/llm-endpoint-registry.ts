@@ -1,10 +1,10 @@
 /**
  * LlmEndpointRegistry — supervised-sidecar manager for the
- * `@agentproto/llm-endpoint` proxy gateway.
+ * `@agentproto/inference-endpoint` proxy gateway.
  *
  * The daemon spawns the llm-endpoint bin as a CHILD PROCESS (never an
  * in-process import — the runtime package has zero dependency on
- * @agentproto/llm-endpoint, exactly like it never imports cloudflared).
+ * @agentproto/inference-endpoint, exactly like it never imports cloudflared).
  * This is the single-sidecar analog of {@link TunnelRegistry}: one endpoint,
  * one port, an in-memory descriptor that tracks pid / port / status /
  * startedAt, and a start / stop / status lifecycle exposed over MCP.
@@ -62,7 +62,7 @@ export interface LlmEndpointStatusReport {
   lastError?: string
   injectedProviders?: string[]
   linkedProviders?: string[]
-  /** `@agentproto/llm-endpoint`'s own package version, read from the
+  /** `@agentproto/inference-endpoint`'s own package version, read from the
    *  resolved bin's `package.json` — best-effort, present only for
    *  `owner:"daemon"` (the version of the code this registry would spawn /
    *  did spawn). Undefined when unresolvable, or for `owner:"external"`
@@ -270,7 +270,7 @@ export async function assembleLlmEndpointEnv(input: {
  * Locate the llm-endpoint bin without a package dependency (the same stance
  * as cloudflared — an external binary found at spawn time, with an override):
  *   1. explicit `override` arg / `LLM_ENDPOINT_BIN` env,
- *   2. Node resolution of `@agentproto/llm-endpoint` (published/hoisted layouts),
+ *   2. Node resolution of `@agentproto/inference-endpoint` (published/hoisted layouts),
  *   3. the monorepo sibling relative to this module's built location.
  * Returns the first path that exists; throws a clear, actionable error rather
  * than handing back a non-existent path that would spawn a dead child.
@@ -292,7 +292,7 @@ export function resolveLlmEndpointBin(override?: string): string {
   // Node resolution — works when the package is installed & resolvable here.
   try {
     const req = createRequire(import.meta.url)
-    const pkgJson = req.resolve("@agentproto/llm-endpoint/package.json")
+    const pkgJson = req.resolve("@agentproto/inference-endpoint/package.json")
     const bin = join(dirname(pkgJson), "dist", "cli.mjs")
     if (existsSync(bin)) return bin
   } catch {
@@ -300,13 +300,13 @@ export function resolveLlmEndpointBin(override?: string): string {
   }
 
   // Monorepo sibling: this module builds into <root>/packages/runtime/dist,
-  // llm-endpoint sits alongside at <root>/packages/llm-endpoint/dist/cli.mjs.
+  // llm-endpoint sits alongside at <root>/packages/inference-endpoint/dist/cli.mjs.
   const hereDir = dirname(fileURLToPath(import.meta.url))
-  const sibling = resolve(hereDir, "..", "..", "llm-endpoint", "dist", "cli.mjs")
+  const sibling = resolve(hereDir, "..", "..", "inference-endpoint", "dist", "cli.mjs")
   if (!existsSync(sibling)) {
     throw new Error(
-      "llm-endpoint bin not found (is @agentproto/llm-endpoint built? run " +
-        `pnpm build). Tried node resolution of @agentproto/llm-endpoint and ` +
+      "llm-endpoint bin not found (is @agentproto/inference-endpoint built? run " +
+        `pnpm build). Tried node resolution of @agentproto/inference-endpoint and ` +
         `the monorepo sibling at ${JSON.stringify(sibling)}. Set LLM_ENDPOINT_BIN ` +
         "or pass binPath to override.",
     )
@@ -649,7 +649,7 @@ export class LlmEndpointRegistry {
   }
 
   /**
-   * Best-effort `@agentproto/llm-endpoint` package version, read from the
+   * Best-effort `@agentproto/inference-endpoint` package version, read from the
    * resolved bin's `package.json` (memoized — a permanently-unresolvable
    * bin, e.g. never built, shouldn't re-hit the filesystem on every
    * `status()` call). Returns `undefined` rather than throwing so a missing

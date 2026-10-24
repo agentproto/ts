@@ -86,7 +86,7 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
-    "@agentproto/llm-endpoint": "workspace:*",
+    "@agentproto/inference-endpoint": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/pairing-host": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
