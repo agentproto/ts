@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto"
 import type { RoutineFrontmatter } from "@agentproto/routine"
 import {
-  HooksContractError,
   parseAgentHookMap,
   parseHookEventRef,
   type HookEventRef,
@@ -136,11 +135,33 @@ export function resolveRoutineEventBinding(frontmatter: RoutineFrontmatter): Res
   }
 }
 
-/** `on` is the raw AGENT.md map. [] for undefined. Throws what parseAgentHookMap throws, or EventBindingError agent-id-invalid for an empty agentId. */
-export function resolveAgentOnBindings(agentId: string, on: unknown): ResolvedEventBinding[] {
+function isValidAgentIdSegment(segment: string): boolean {
+  if (segment.length === 0) return false
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment.charCodeAt(i)
+    if (ch <= 0x1f || ch === 0x7f) return false
+    if (ch === 0x20 || ch === 0x09 || ch === 0x0a || ch === 0x0d) return false
+    if (ch === 0x2f || ch === 0x5c) return false
+  }
+  return true
+}
+
+function validateAgentId(agentId: string): void {
   if (agentId.length === 0) {
     throw new EventBindingError("agent-id-invalid", "agent id must be a non-empty string")
   }
+  const segments = agentId.split("/")
+  if (segments.some(segment => !isValidAgentIdSegment(segment))) {
+    throw new EventBindingError(
+      "agent-id-invalid",
+      "agent id must not contain empty segments, whitespace/control characters or path separators",
+    )
+  }
+}
+
+/** `on` is the raw AGENT.md map. [] for undefined. Throws what parseAgentHookMap throws, or EventBindingError agent-id-invalid for an empty agentId. */
+export function resolveAgentOnBindings(agentId: string, on: unknown): ResolvedEventBinding[] {
+  validateAgentId(agentId)
   const reactions = parseAgentHookMap(on, { hostEvents: HOST_EVENT_REGISTRATIONS })
   const nextIndexByEvent = new Map<string, number>()
   const bindings: ResolvedEventBinding[] = []
