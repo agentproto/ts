@@ -12,7 +12,6 @@
     "ts:aip-65:package",
     "ts:aip-66:package",
     "ts:aip-68:package",
-    "ts:aip-7:define",
     "ts:package:@agentproto/agencies:unregistered",
     "ts:package:@agentproto/agency-v2:unregistered",
     "ts:package:@agentproto/catalog:unregistered",
