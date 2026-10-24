@@ -14,7 +14,7 @@
     "preview": "node scripts/preview.mjs"
   },
   "dependencies": {
-    "@agentproto/pair-client": "workspace:*"
+    "@agentproto/pairing": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

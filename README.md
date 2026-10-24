@@ -277,7 +277,7 @@ zero HTTP — all I/O via injected ports.
 packages/auth/          @agentproto/auth           Pluggable CredentialStore + device-code (RFC 8628) auth flow
 packages/sandbox/       @agentproto/sandbox        agent_start.sandbox: boot/reconnect/pause an isolated box
 packages/secrets/       @agentproto/secrets        Broker-resolved provision auth headers, mcp-header exposure
-packages/redaction/     @agentproto/redaction      Dependency-free Redactor port for transcript/log scrubbing
+packages/processor/     @agentproto/processor      Dependency-free Redactor port for transcript/log scrubbing
 packages/telemetry/     @agentproto/telemetry      Telemetry port + OTel adapter
 packages/eval/          @agentproto/eval           Scorers + runEval, including an LLM-judge scorer
 ```

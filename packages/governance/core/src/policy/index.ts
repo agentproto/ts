@@ -138,6 +138,9 @@ export const definePolicy = createDoctype<PolicyDefinition, PolicyHandle>({
   },
 })
 
+/** AIP-70 registry name for the AIP-7 governance define function. */
+export const defineGovernance = definePolicy
+
 /**
  * Parsed POLICY.md manifest — frontmatter validated against the
  * AIP-7 zod schema, body kept as-is for downstream consumers.

@@ -6620,6 +6620,23 @@ export function createSessionsRegistry(opts?: {
     schedulePersist()
   }
 
+  // Announce a Level-2 outcome write so consumers (notably the
+  // `agentproto:session-completed` wiring) can re-derive from the updated
+  // descriptor. A terminal path flips the row and emits `session:exited`
+  // BEFORE layering the judged/declared outcome on top, so an exit-time
+  // reader would miss it; this is the "outcome changed" trigger. The Level-1
+  // outcome `recordOutcome` writes from inside `emitExited` deliberately does
+  // NOT announce — `session:exited` itself covers that one.
+  const emitOutcomeRecorded = (rt: SessionRuntime): void => {
+    if (!sessionEvents) return
+    sessionEvents.emit({
+      type: "session:outcome-recorded",
+      sessionId: rt.desc.id,
+      ...(rt.desc.endedAt ? { endedAt: rt.desc.endedAt } : {}),
+      ts: new Date().toISOString(),
+    })
+  }
+
   // "Mark as completed" (UI affordance): an operator saying
   // reason:"operator-completed" about a row that's ALREADY terminal isn't an
   // error — `kill()` relabels the persisted outcome's `termination.reason`
@@ -6647,6 +6664,7 @@ export function createSessionsRegistry(opts?: {
       recordedAt: new Date().toISOString(),
     }
     schedulePersist()
+    emitOutcomeRecorded(rt)
   }
 
   // Layer a declared Level-2 outcome (verdict + structured detail) on the
@@ -6667,6 +6685,7 @@ export function createSessionsRegistry(opts?: {
       recordedAt: new Date().toISOString(),
     }
     schedulePersist()
+    emitOutcomeRecorded(rt)
   }
 
   // Layer a Level-2 (judged/declared) resolution onto the row's outcome —
@@ -6691,6 +6710,7 @@ export function createSessionsRegistry(opts?: {
       recordedAt: new Date().toISOString(),
     }
     schedulePersist()
+    emitOutcomeRecorded(rt)
   }
 
   // Emit session:exited once per session, deduplicated via exitedEmitted flag.
