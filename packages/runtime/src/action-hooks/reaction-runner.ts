@@ -268,6 +268,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     opts?: { redrive?: boolean },
   ): Promise<void> => {
     const key = receipt.receiptKey
+    await Promise.resolve()
     try {
       await store.markRunning(key, opts)
     } catch (err) {

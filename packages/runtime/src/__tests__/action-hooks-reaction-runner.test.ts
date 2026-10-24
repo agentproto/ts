@@ -178,7 +178,7 @@ describe("reaction runner", () => {
     runner.stop()
 
     expect(run).toHaveBeenCalledTimes(1)
-    const input = run.mock.calls[0]?.[0] as unknown as ReactionTargetInput
+    const input = (run.mock.calls[0] as unknown as [ReactionTargetInput])[0]
     expect(input.receiptKey).toBe(keyOf("exit:1"))
     expect(input.occurrenceId).toBe("exit:1")
     expect(input.bindingId).toBe("bind-1")
@@ -229,19 +229,8 @@ describe("reaction runner", () => {
 
   it("the same occurrence delivered twice, sequentially and concurrently, runs the target once", async () => {
     const calls: string[] = []
-    let releaseConcurrent: (() => void) | undefined
-    let notifyEntered: (() => void) | undefined
-    let entered = new Promise<void>(resolve => {
-      notifyEntered = resolve
-    })
     const run = vi.fn(async (input: ReactionTargetInput) => {
       calls.push(input.occurrenceId)
-      if (input.occurrenceId === "exit:concurrent") {
-        notifyEntered?.()
-        await new Promise<void>(resolve => {
-          releaseConcurrent = resolve
-        })
-      }
       return { ok: true, outcomeRef: `ref-${input.occurrenceId}` }
     })
     const target: ReactionTarget = {
@@ -249,24 +238,28 @@ describe("reaction runner", () => {
       idempotent: true,
       run: run as unknown as ReactionTarget["run"],
     }
-    const { runner } = setup({ bindings: [makeBinding({ target })] })
+    const { runner, store, c } = setup({ bindings: [makeBinding({ target })] })
 
     const event = completed({ occurrenceId: "exit:sequential" })
     await runner.handleEvent(event, "exit:sequential")
     await runner.handleEvent(event, "exit:sequential")
     expect(run).toHaveBeenCalledTimes(1)
 
-    entered = new Promise<void>(resolve => {
-      notifyEntered = resolve
-    })
     const concurrentEvent = completed({ occurrenceId: "exit:concurrent" })
-    const first = runner.handleEvent(concurrentEvent, "exit:concurrent")
-    const second = runner.handleEvent(concurrentEvent, "exit:concurrent")
-    await entered
-    releaseConcurrent?.()
-    await Promise.all([first, second])
-
+    await store.insertPending(pendingInput({ occurrenceId: "exit:concurrent" }))
+    await Promise.all([
+      runner.handleEvent(concurrentEvent, "exit:concurrent"),
+      runner.handleEvent(concurrentEvent, "exit:concurrent"),
+    ])
     expect(calls).toEqual(["exit:sequential", "exit:concurrent"])
+
+    const raceKey = keyOf("exit:race")
+    await store.insertPending(pendingInput({ occurrenceId: "exit:race" }))
+    await store.markRunning(raceKey)
+    await store.markFailed(raceKey, "retry me", c.now())
+    const raceEvent = completed({ occurrenceId: "exit:race" })
+    await Promise.all([runner.retryDue(), runner.handleEvent(raceEvent, "exit:race")])
+    expect(calls.filter(occurrenceId => occurrenceId === "exit:race")).toHaveLength(1)
   })
 
   it("running is durable before the target starts", async () => {
