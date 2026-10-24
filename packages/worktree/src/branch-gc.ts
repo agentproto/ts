@@ -978,6 +978,48 @@ async function isAncestorOf(env: ClassifyEnv, maybeAncestor: string, tip: string
   }
 }
 
+/** Stamp the stored verdict for `sha` onto `entry` (`BranchVerdictSummary` shape), if one exists. */
+async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: ClassifyEnv): Promise<void> {
+  const stored = env.verdicts ? await env.verdicts.get(env.repoName, sha) : null
+  if (!stored) return
+  entry.verdict = {
+    triage: stored.triage.verdict,
+    agree: stored.gate ? stored.gate.agree : null,
+    reviewer: stored.reviewer,
+    ...(stored.operator ? { operator: stored.operator } : {}),
+  }
+}
+
+/**
+ * Resolve an unmerged entry that reached the review rung: `includeReviewed`
+ * plus an agreeing verdict reclaims it (`reviewed`) unless the deterministic
+ * line-coverage guard refuses it (operator approval bypasses the guard and is
+ * recorded in `verdictGuard`). Otherwise the entry stays `review`.
+ */
+function applyReviewedDecision(entry: BranchGcPlanEntry, env: ClassifyEnv): void {
+  if (!(env.includeReviewed && entry.verdict?.agree === true)) {
+    entry.class = "review"
+    return
+  }
+  // The deterministic line check outranks the reviewer: an approval of a tip
+  // whose added lines are mostly NOT in base is refused, the ref stays review.
+  const guard = lineCoverageGuard(entry.lineCoverage, env.minLineCoverage)
+  if (guard) {
+    // An operator approval is the human exit from the refusal queue: it
+    // overrides the deterministic line guard for this exact tip, and the
+    // plan records who bypassed it. A reviewer-only verdict stays refused.
+    const operator = entry.verdict.operator
+    if (!operator) {
+      entry.verdictGuard = guard
+      entry.class = "review"
+      return
+    }
+    entry.verdictGuard = `bypassed by operator ${operator.by}${operator.note ? ` (${operator.note})` : ""}: ${guard}`
+  }
+  entry.class = "reclaim"
+  entry.reclaimReason = "reviewed"
+}
+
 /**
  * A sandbox checkpoint branch never merges (its tip is a snapshot commit), so
  * the ladder on its OWN tip proves nothing — it is classified against its
@@ -1059,10 +1101,24 @@ async function classifyCheckpointRef(b: BranchRef, work: string, env: ClassifyEn
         return entry
       }
     }
+    return reviewCheckpointRef(entry, b, env)
+  }
+  return reviewCheckpointRef(entry, b, env)
+}
+
+/**
+ * A checkpoint ref that stayed on the review rung is treated like any other
+ * unmerged branch there: its stored verdict (keyed by the SNAPSHOT tip sha) is
+ * stamped, and `includeReviewed` acts on an agreeing one through the same
+ * line-coverage guard.
+ */
+async function reviewCheckpointRef(entry: BranchGcPlanEntry, b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlanEntry> {
+  if (entry.status !== "unmerged") {
     entry.class = "review"
     return entry
   }
-  entry.class = "review"
+  await stampVerdict(entry, b.sha, env)
+  applyReviewedDecision(entry, env)
   return entry
 }
 
@@ -1186,15 +1242,7 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
   if (entry.status === "unmerged") {
     const pushed = await pushStateOf(b, env)
     if (pushed) entry.pushed = pushed
-    const stored = env.verdicts ? await env.verdicts.get(env.repoName, b.sha) : null
-    if (stored) {
-      entry.verdict = {
-        triage: stored.triage.verdict,
-        agree: stored.gate ? stored.gate.agree : null,
-        reviewer: stored.reviewer,
-        ...(stored.operator ? { operator: stored.operator } : {}),
-      }
-    }
+    await stampVerdict(entry, b.sha, env)
   }
   const hold = holdFor(b, env)
   if (hold) {
@@ -1212,30 +1260,7 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     entry.holdDetail = `${ageDays}d < ${env.minAgeDays}d`
     return entry
   }
-  if (env.includeReviewed && entry.verdict?.agree === true) {
-    // The deterministic line check outranks the reviewer: an approval of a tip
-    // whose added lines are mostly NOT in base is refused, the ref stays review.
-    const guard = lineCoverageGuard(entry.lineCoverage, env.minLineCoverage)
-    if (guard) {
-      // An operator approval is the human exit from the refusal queue: it
-      // overrides the deterministic line guard for this exact tip, and the
-      // plan records who bypassed it. A reviewer-only verdict stays refused.
-      const operator = entry.verdict.operator
-      if (!operator) {
-        entry.verdictGuard = guard
-        entry.class = "review"
-        return entry
-      }
-      entry.verdictGuard = `bypassed by operator ${operator.by}${operator.note ? ` (${operator.note})` : ""}: ${guard}`
-      entry.class = "reclaim"
-      entry.reclaimReason = "reviewed"
-      return entry
-    }
-    entry.class = "reclaim"
-    entry.reclaimReason = "reviewed"
-    return entry
-  }
-  entry.class = "review"
+  applyReviewedDecision(entry, env)
   return entry
 }
 
