@@ -129,6 +129,15 @@ const STATUSES: readonly ReactionReceiptStatus[] = ["pending", "running", "done"
 
 const FINITE_NUMBER_FIELDS = ["attempt", "maxAttempts", "createdAt", "reactionDepth"] as const
 
+const OPTIONAL_FINITE_NUMBER_FIELDS = [
+  "startedAt",
+  "lastAttemptAt",
+  "completedAt",
+  "nextAttemptAt",
+] as const
+
+const OPTIONAL_STRING_FIELDS = ["lastError", "outcomeRef", "causedByEventId"] as const
+
 const STRING_FIELDS = [
   "receiptKey",
   "sessionId",
@@ -173,6 +182,18 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
     for (const field of FINITE_NUMBER_FIELDS) {
       if (typeof row[field] !== "number" || !Number.isFinite(row[field])) {
         return drop(`${field} is not a finite number`)
+      }
+    }
+    for (const field of OPTIONAL_FINITE_NUMBER_FIELDS) {
+      const value = row[field]
+      if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
+        return drop(`${field} is not a finite number`)
+      }
+    }
+    for (const field of OPTIONAL_STRING_FIELDS) {
+      const value = row[field]
+      if (value !== undefined && typeof value !== "string") {
+        return drop(`${field} is not a string`)
       }
     }
     const receipt = row as ReactionReceipt

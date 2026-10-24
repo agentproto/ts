@@ -474,6 +474,41 @@ describe("ReactionReceiptStore", () => {
     expect(logs.filter(line => line.includes("dropped invalid row"))).toHaveLength(2)
   })
 
+  it("load drops rows whose optional fields have the wrong type", async () => {
+    const dir = tmp()
+    const file = join(dir, "receipts.json")
+    const c = clock()
+    const seed = createReactionReceiptStore({ filePath: file, nowMs: c.now, debounceMs: 60_000, log: () => {} })
+    await seed.insertPending(input())
+    const validKey = keyOf()
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Record<string, Record<string, unknown>>
+    const valid = parsed[validKey]
+    const badCompleted = {
+      ...valid,
+      receiptKey: keyOf({ occurrenceId: "bad-completed" }),
+      occurrenceId: "bad-completed",
+      completedAt: "x",
+    }
+    const badError = {
+      ...valid,
+      receiptKey: keyOf({ occurrenceId: "bad-error" }),
+      occurrenceId: "bad-error",
+      lastError: 42,
+    }
+    writeFileSync(file, JSON.stringify({ [validKey]: valid, badCompleted, badError }, null, 2) + "\n")
+
+    const logs: string[] = []
+    const store = createReactionReceiptStore({
+      filePath: file,
+      nowMs: c.now,
+      debounceMs: 60_000,
+      log: line => logs.push(line),
+    })
+    expect(store.rows()).toHaveLength(1)
+    expect(store.get(validKey)?.status).toBe("pending")
+    expect(logs.filter(line => line.includes("dropped invalid row"))).toHaveLength(2)
+  })
+
   it("get and rows return copies, not the live rows", async () => {
     const { store } = setup()
     await store.insertPending(input())
