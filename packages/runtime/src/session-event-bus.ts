@@ -60,6 +60,7 @@ export type SessionEventType =
   | "workflow:suspend-resumed"
   | "session:harness-warning"
   | "session:turn-retry"
+  | "session:fallback"
   | "mcp:degraded"
   | "session:handoff-suggested"
   | "session:context-rescue"
@@ -1033,6 +1034,32 @@ export interface SessionTurnRetryEvent {
   ts: string
 }
 
+/** Config axes carried on a `session:fallback` event (no credentials). */
+export interface SessionFallbackConfig {
+  model?: string
+  harness?: string
+  accessProfileRef?: string
+}
+
+/**
+ * Emitted by the turn-retry controller (`turn-retry.ts`) when same-config
+ * retries are exhausted and a `turnRetry.fallback` overlay is applied. It
+ * records the config the session moved from and to, the transition used, and
+ * the failure that triggered it. Credential material is never included.
+ */
+export interface SessionFallbackEvent {
+  type: "session:fallback"
+  sessionId: string
+  from: SessionFallbackConfig
+  to: SessionFallbackConfig
+  transition: "live" | "restart" | "handoff"
+  failure: { errorClass: string; error?: string }
+  /** `handoff` only: the fresh session id that took over. */
+  newSessionId?: string
+  label?: string
+  ts: string
+}
+
 /**
  * Emitted when a `kind: "agent"` step's `harness` block declared a field the
  * spawn couldn't honor (today: `harness.tools` — no adapter exposes a
@@ -1244,6 +1271,7 @@ export type SessionEvent =
   | WorkflowSuspendResumedEvent
   | SessionHarnessWarningEvent
   | SessionTurnRetryEvent
+  | SessionFallbackEvent
   | McpDegradedEvent
   | ApprovalRequestedEvent
   | ApprovalDecidedEvent

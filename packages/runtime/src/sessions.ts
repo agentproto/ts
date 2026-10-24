@@ -1898,6 +1898,19 @@ export interface SessionDescriptor {
    *  revives a dead process): this re-prompts a LIVE session with a short
    *  continuation prompt — see `turn-retry.ts`. */
   turnRetry?: TurnRetryPolicy
+  /** Index of the `turnRetry.fallback` overlay currently in effect; absent
+   *  means the session runs on its base (spawn) config. Monotonic: the
+   *  fallback walk never moves back to an earlier step. PERSISTED. */
+  fallbackStep?: number
+  /** Snapshot of the spawn config the fallback overlays are merged over, so
+   *  a later step never compounds an earlier one. Written when the first
+   *  fallback step is applied. PERSISTED. */
+  fallbackBase?: {
+    model?: string
+    accessProfileRef?: string
+    harness?: string
+    routeGateway?: string
+  }
   /** User-set model policy (`agent_start.modelPolicy`): model-list ids this
    *  session may (`allow`) or may not (`block`) use. Absent ⇒ any model the
    *  account allows. Checked by `checkModelPolicy` at spawn, `setModel`,
@@ -5333,6 +5346,8 @@ export interface SessionsRegistry {
       turnMigrations?: number | null
       lastTurnRetryAt?: string | null
       nextTurnRetryAt?: string | null
+      fallbackStep?: number | null
+      fallbackBase?: SessionDescriptor["fallbackBase"] | null
     },
   ): boolean
   /** Record a daemon-authored DISPLAY-ONLY notice into an agent-cli
@@ -13920,7 +13935,14 @@ export function createSessionsRegistry(opts?: {
     patchTurnRetry(id, patch) {
       const rt = sessions.get(id)
       if (!rt) return false
-      for (const key of ["turnRetryAttempts", "turnMigrations", "lastTurnRetryAt", "nextTurnRetryAt"] as const) {
+      for (const key of [
+        "turnRetryAttempts",
+        "turnMigrations",
+        "lastTurnRetryAt",
+        "nextTurnRetryAt",
+        "fallbackStep",
+        "fallbackBase",
+      ] as const) {
         if (!(key in patch)) continue
         const value = patch[key]
         if (value === null || value === undefined) delete rt.desc[key]
