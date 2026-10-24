@@ -114,10 +114,12 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/model-routing | `packages/model-routing` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pair-client | `packages/pair-client` | 1.0.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pair-page | `packages/pair-page` | 0.0.14 | core | product runtime package consumed by the runtime/cli |
+@agentproto/pairing | `packages/pairing` | 1.0.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pairing-host | `packages/pairing-host` | 0.2.10 | core | product runtime package consumed by the runtime/cli |
 @agentproto/plugin | `packages/plugin` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/plugin-local-browser | `packages/plugin-local-browser` | 0.3.6 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pr-outcome | `packages/pr-outcome` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
+@agentproto/processor | `packages/processor` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/product | `packages/product` | 1.0.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/provider-kit | `packages/provider-kit` | 0.4.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/provider-presets | `packages/provider-presets` | 0.7.1 | core | product runtime package consumed by the runtime/cli |

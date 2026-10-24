@@ -10,7 +10,7 @@
  * host, so any other host the page runs on is a preview.
  */
 
-import type { CredentialStore, PairCredential } from "@agentproto/pair-client"
+import type { CredentialStore, PairCredential } from "@agentproto/pairing"
 import { isPairingId } from "./pair"
 
 export type PageMode =

@@ -1,5 +1,5 @@
 /**
- * Browser-safety check for `@agentproto/pair-client`, the same check as the
+ * Browser-safety check for `@agentproto/pairing`, the same check as the
  * `@agentproto/acp/tunnel/browser` and `@agentproto/secrets/pairing/browser`
  * entries:
  *
@@ -62,7 +62,7 @@ afterEach(async () => {
   daemon = null
 })
 
-describe("@agentproto/pair-client is browser-safe", () => {
+describe("@agentproto/pairing is browser-safe", () => {
   it("reaches no Node builtin (and the check does catch one in the Node harness)", async () => {
     const browser = await bundleForBrowser(entry)
     expect(browser.offenders).toEqual([])

@@ -255,6 +255,7 @@ import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
+import { wireSessionCompletion } from "./action-hooks/index.js"
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -2862,6 +2863,15 @@ export async function createGateway(
       : {}),
   })
   sessionsRef = sessions
+
+  // `agentproto:session-completed` host event: derived after `session:exited`
+  // from the descriptor outcome or a recorded `policy:passed`. The bus has no
+  // shutdown hook (neither does the brain subscriber), so the unsubscribe the
+  // wiring returns is not kept.
+  wireSessionCompletion({
+    bus: sessionEvents,
+    getSession: id => sessions.get(id),
+  })
 
   // Install the real `session` sentinel provider (AIP-60) now that
   // `sessions` exists — see `configureSessionSentinelProvider`'s doc for why
