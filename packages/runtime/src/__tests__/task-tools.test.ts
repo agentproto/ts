@@ -69,7 +69,17 @@ function fakeLedger(results: {
     get: () => task,
     claim(input, caller) {
       calls.push({ verb: "claim", input, caller })
-      return results.claim ?? { ok: true, task }
+      if (results.claim) return results.claim
+      // Mirror the real ledger's CAS write: the owner is the caller's id and
+      // a session caller is appended to `sessions`.
+      const owner = caller.kind === "session" ? caller.sessionId : "operator"
+      task.owner = owner
+      task.status = "in_progress"
+      task.rev = input.rev + 1
+      if (caller.kind === "session") {
+        task.sessions = [...(task.sessions ?? []), caller.sessionId]
+      }
+      return { ok: true, task }
     },
     update(input, caller) {
       calls.push({ verb: "update", input, caller })
@@ -87,11 +97,13 @@ function fakeLedger(results: {
 async function client(opts: {
   ledger?: TaskLedger
   callerScope?: { ownerSessionId?: string }
+  callerSessionId?: string
 }): Promise<Client> {
   const server = new McpServer({ name: "task-tools-server", version: "0.0.0" })
   registerTaskTools(server, {
     ...(opts.ledger ? { ledger: opts.ledger } : {}),
     ...(opts.callerScope ? { callerScope: opts.callerScope } : {}),
+    ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -183,6 +195,44 @@ describe("caller identity", () => {
       },
     ])
     // The echoed default board is derived from that identity.
+    const listed = await call(mcp, "task_list", {})
+    expect(listed.boardId).toBe("tree:sess_x")
+    await mcp.close()
+  })
+
+  it("root context with no scope stamps the operator as the claim owner (non-regression)", async () => {
+    const { ledger } = fakeLedger()
+    const mcp = await client({ ledger })
+    const payload = await call(mcp, "task_claim", { taskId: "task_1", rev: 0 })
+    expect(payload.task).toMatchObject({ owner: "operator" })
+    await mcp.close()
+  })
+
+  it("a root /mcp callerSessionId attributes the claim to that session", async () => {
+    const { ledger, calls } = fakeLedger()
+    const mcp = await client({ ledger, callerSessionId: "sess_x" })
+    const payload = await call(mcp, "task_claim", { taskId: "task_1", rev: 0 })
+    expect(calls[0]?.caller).toEqual({ kind: "session", sessionId: "sess_x" })
+    expect(payload.task).toMatchObject({ owner: "sess_x", sessions: ["sess_x"] })
+    await mcp.close()
+  })
+
+  it("a bound scope outranks a callerSessionId (scope wins)", async () => {
+    const { ledger, calls } = fakeLedger()
+    const mcp = await client({
+      ledger,
+      callerScope: { ownerSessionId: "sess_scope" },
+      callerSessionId: "sess_x",
+    })
+    const payload = await call(mcp, "task_claim", { taskId: "task_1", rev: 0 })
+    expect(calls[0]?.caller).toEqual({ kind: "session", sessionId: "sess_scope" })
+    expect(payload.task).toMatchObject({ owner: "sess_scope" })
+    await mcp.close()
+  })
+
+  it("a root callerSessionId defaults task_list to the session's tree board", async () => {
+    const { ledger } = fakeLedger()
+    const mcp = await client({ ledger, callerSessionId: "sess_x" })
     const listed = await call(mcp, "task_list", {})
     expect(listed.boardId).toBe("tree:sess_x")
     await mcp.close()

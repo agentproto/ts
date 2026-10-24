@@ -2014,6 +2014,7 @@ export function registerOrchestrationTools(
   registerTaskTools(server, {
     ...(opts.taskLedger ? { ledger: opts.taskLedger } : {}),
     ...(callerScope ? { callerScope } : {}),
+    ...(callerSessionId ? { callerSessionId } : {}),
   })
 
   // ── activities_list (optional — only when an activity projector is wired) ─
