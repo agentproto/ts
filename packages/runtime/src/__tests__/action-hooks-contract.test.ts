@@ -75,14 +75,20 @@ describe("isActionKind", () => {
     }
   })
 
+  it("accepts unqualified action ids", () => {
+    expect(isActionKind("session")).toBe(true)
+  })
+
   it("rejects malformed ids", () => {
     for (const id of [
-      "session",
       "Session:spawn",
       "a:b:c",
       ":x",
       "x:",
       "-a:b",
+      ".a:b",
+      "a:-b",
+      "a:.b",
       `a:${"b".repeat(79)}`,
     ]) {
       expect(isActionKind(id)).toBe(false)
@@ -124,7 +130,7 @@ describe("occurrence keys", () => {
     }
   })
 
-  it("throws when a first three segment contains a slash", () => {
+  it("throws when a first three segments contains a slash", () => {
     const base = {
       sessionId: "sess-1",
       event: "turn-end",

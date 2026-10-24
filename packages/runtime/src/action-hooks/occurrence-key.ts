@@ -4,17 +4,15 @@
 
 import type { ActionKind } from "./types.js"
 
-const ACTION_KIND = /^[a-z0-9.-]+:[a-z0-9.-]+$/
+const ACTION_ID_RE = /^[a-z0-9][a-z0-9.-]*(:[a-z0-9][a-z0-9.-]*)?$/
 const FORBIDDEN = /[\s\u0000-\u001f\u007f-\u009f]/
 
-/** True for an AIP-39 action id. */
+/** True for an AIP-39 action id (qualified or unqualified). */
 export function isActionKind(value: string): value is ActionKind {
+  if (typeof value !== "string") return false
   if (value.length < 2 || value.length > 80) return false
-  if (!ACTION_KIND.test(value)) return false
-  const colon = value.indexOf(":")
-  const category = value.slice(0, colon)
-  const verb = value.slice(colon + 1)
-  return !category.startsWith("-") && !category.startsWith(".") && !verb.startsWith("-") && !verb.startsWith(".")
+  if (FORBIDDEN.test(value)) return false
+  return ACTION_ID_RE.test(value)
 }
 
 export interface OccurrenceKeyParts {

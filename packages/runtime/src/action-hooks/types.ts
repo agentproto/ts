@@ -1,17 +1,22 @@
 /**
  * Action hooks contract types for the AIP-71 reference implementation.
- * See specs/aip-71.mdx and docs/design/action-hooks-v1.md.
+ * See https://agentproto.sh/docs/aip-71 and docs/design/action-hooks-v1.md.
  */
 
-// An AIP-39 action id (`<category>:<verb>`). These six are the runtime actions of specs/aip-39.mdx.
+/**
+ * An AIP-39 action id (qualified `<category>:<verb>` or unqualified). These six
+ * are the runtime actions of specs/aip-39.mdx.
+ */
 export type ActionKind =
+  | "session"
   | "session:spawn"
   | "session:prompt"
   | "session:control"
   | "session:configure"
   | "model:invoke"
   | "auth-profile:use"
-  | `${string}:${string}`
+  | string
+
 export type ActionInterception = "full" | "permission-only" | "observe-only" | "unavailable"
 export interface ActionActor { kind: "operator" | "session" | "routine" | "system"; id: string }
 export interface ActionScope { daemonId: string; workspace?: string; sessionId?: string; parentSessionId?: string }

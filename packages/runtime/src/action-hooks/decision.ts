@@ -13,6 +13,8 @@ const RANK: Record<AdmissionDecision["outcome"], number> = {
 
 /**
  * Combine decisions with precedence `deny > reuse > defer > allow`.
+ * Deny must win because admission can only narrow. Reuse vs defer ordering is a
+ * local choice for this implementation (reuse takes precedence over defer).
  * The first decision of the winning outcome wins. An empty list allows.
  */
 export function combineAdmissionDecisions(
