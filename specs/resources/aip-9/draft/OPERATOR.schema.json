@@ -149,7 +149,7 @@
       "type": "object",
       "required": ["kind"],
       "additionalProperties": false,
-      "description": "Runtime binding. When kind=in-process (default), the operator runs in the host's in-process agent runtime. When kind=agent-cli, turns are dispatched to a spawned AIP-45 agent CLI subprocess (Hermes, Claude Code, OpenCode, ...).",
+      "description": "Runtime binding. When kind=in-process (default), the operator runs in the host's in-process agent runtime. When kind=agent-cli, turns are dispatched to a spawned AIP-45 harness subprocess (Hermes, Claude Code, OpenCode, ...).",
       "properties": {
         "kind": {
           "enum": ["in-process", "agent-cli"],
@@ -157,7 +157,7 @@
         },
         "ref": {
           "type": "string",
-          "description": "AIP-45 AGENT-CLI reference. Required when kind=agent-cli. Conventional shape: '<package>#<export>' (e.g. '@agentproto/adapter-hermes#hermes') or a workspace-relative path to an AGENT-CLI.md."
+          "description": "AIP-45 HARNESS reference. Required when kind=agent-cli. Conventional shape: '<package>#<export>' (e.g. '@agentproto/adapter-hermes#hermes') or a workspace-relative path to a HARNESS.md."
         },
         "session": {
           "type": "object",

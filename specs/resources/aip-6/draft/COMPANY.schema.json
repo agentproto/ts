@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-6/COMPANY.schema.json",
-  "title": "agentcompanies/v1 doctype frontmatter (AIP-6)",
-  "description": "Validates the YAML frontmatter portion of any agentcompanies/v1 doctype file. The `doctype` field discriminates between company / role / objective; each branch enforces the doctype-specific shape. Operator doctype is sketched here but the normative definition lives in AIP-8 — only company / role / objective are normative under AIP-6.",
+  "title": "company/v1 doctype frontmatter (AIP-6)",
+  "description": "Validates the YAML frontmatter portion of any company/v1 doctype file. The `doctype` field discriminates between company / role / objective; each branch enforces the doctype-specific shape. Operator doctype is sketched here but the normative definition lives in AIP-8 — only company / role / objective are normative under AIP-6.",
   "type": "object",
   "required": ["schema", "doctype", "id"],
   "properties": {
     "schema": {
-      "const": "agentcompanies/v1",
-      "description": "Format identifier. MUST be the literal string `agentcompanies/v1`."
+      "enum": ["company/v1", "agentcompanies/v1"],
+      "description": "Format identifier. MUST be the canonical string `company/v1`. `agentcompanies/v1` is accepted as a legacy alias (AIP-70)."
     },
     "doctype": {
       "enum": ["company", "role", "objective"],

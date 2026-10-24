@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-62/ATTESTATION.schema.json",
-  "title": "agentproto.review.attestation/v1",
+  "title": "review.attestation/v1",
   "description": "A review verdict bound to a manifest and a frozen git range. The `verdict` MUST equal the fold of `lanes` (AIP-62 verdict fold); a verifier recomputes it. `attestor.signature`, when present, covers the canonical JSON of the attestation with `attestor.signature` removed. Mutable annotations (PR status) live outside this document and are never signed.",
   "type": "object",
   "required": [
@@ -20,7 +20,11 @@
   ],
   "properties": {
     "schema": {
-      "const": "agentproto.review.attestation/v1"
+      "enum": [
+        "review.attestation/v1",
+        "agentproto.review.attestation/v1"
+      ],
+      "description": "`agentproto.review.attestation/v1` is accepted as a legacy alias (AIP-70)."
     },
     "runId": {
       "type": "string",
@@ -150,8 +154,11 @@
             "type": "string"
           },
           "alg": {
-            "const": "agentproto-pack-digest/v1",
-            "description": "The digest recipe tag. A verifier that does not recognize it MUST refuse to compare."
+            "enum": [
+              "review.pack-digest/v1",
+              "agentproto-pack-digest/v1"
+            ],
+            "description": "The digest recipe tag. A verifier that does not recognize it MUST refuse to compare. `agentproto-pack-digest/v1` is accepted as a legacy alias (AIP-70)."
           },
           "sha256": {
             "$ref": "#/$defs/sha256"

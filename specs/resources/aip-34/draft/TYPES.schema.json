@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-34/TYPES.schema.json",
-  "title": "TYPES.md frontmatter — workspace-types/v1 (tree node-type registry)",
+  "title": "TYPES.md frontmatter — workspace.types/v1 (tree node-type registry)",
   "description": "Validates the YAML frontmatter portion of a TYPES.md manifest. Exactly one per tree, at the root. Declares the node `type` values a workspace/v2 WORKSPACE.md may use, their allowed parent types, their default wall level, required sibling files, and a 'starter' shape a `ws new` command materializes. Each entry conceptually compiles to an AIP-40 EXTENSION.md; this file is the authoring surface.",
   "type": "object",
   "required": ["schema", "types"],
   "additionalProperties": false,
   "properties": {
-    "schema": { "const": "workspace-types/v1" },
+    "schema": { "enum": ["workspace.types/v1", "workspace-types/v1"], "description": "`workspace-types/v1` is accepted as a legacy alias (AIP-70)." },
     "types": {
       "type": "object",
       "minProperties": 1,
