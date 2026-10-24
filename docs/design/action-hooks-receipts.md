@@ -413,57 +413,65 @@ delivery status is documented as carrying no URL, body or secret:
 `packages/runtime/src/sentinel-webhook-outbox.ts:88` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
 Receipts persist only a redacted reason string and an opaque reference.
 
-### Mapping onto the existing outbox record
+### Relationship to the existing outbox: share the mechanics, keep two stores
 
-Keep from the existing outbox:
+AIP-71 section 7 (Sentinel boundary) forbids reusing the Sentinel store as a
+generic receipt database, and asks a durable reaction implementation to reuse
+the proven outbox patterns "without merging the two public contracts". So the
+receipt store is a new store with its own file, its own row shape and its own
+status vocabulary. It does not generalize `sentinel-webhook-outbox.ts`, and the
+webhook outbox does not become an adapter of the receipt store.
 
-- The atomic durable write path (`writeFileDurable`) and its serialized write
-  chain, cited in section 1.
-- The persist-before-ack rule for `pending`.
-- The debounced best-effort status writes, but only for the `done` and `failed`
-  transitions. The `running` transition is durable (section 5, step 5).
-- The rule that a terminal row is never re-driven.
-- The bounded row file, age-out and terminal reaping.
-- The in-memory idempotency check before creating a row.
-- The `resumeDeliveries` shape, renamed to a reconciliation driver.
+The two stores share the durable-row mechanics, extracted from the outbox into
+one module (proposed `packages/runtime/src/durable-row-file.ts`, next to the
+existing `durable-file.ts`). The extraction is a behaviour-preserving refactor
+of the outbox: its public interface, row shape, file format and tests do not
+change, and its existing tests are the guard.
 
-Change in the outbox to support receipts:
+Extract into the shared module, parameterized and with no knowledge of
+sentinels:
 
-- Rename the status vocabulary. The outbox status is
-  `pending | delivered | dead`
-  (`packages/runtime/src/sentinel-webhook-outbox.ts:52` `export type SentinelWebhookOutboxStatus = "pending"`)
-  The receipt status is `pending | running | done | failed | dead`: `delivered`
-  becomes `done`, and `running` and `failed` are new. This is a rename, not a
-  preserved vocabulary.
-- Generalize the key from `${sentinelId}::${eventId}` to an opaque
-  `receiptKey`. The outbox's `rowKey` at
-  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``
-  is the only hard-coded composition today.
-- Generalize `enqueue` from `{sentinelId, event}` to a receipt input. A webhook
-  outbox becomes one adapter that composes its key as
-  `<sentinel-id>/webhook/<event-id>/<binding-id>` and keeps its existing
-  envelope handling.
-- Replace `bodyBytes`, `cursor`, `envelope` and `event` with receipt fields for
-  non-webhook reactions. The webhook adapter may keep its payload fields inside
-  an adapter-owned sub-record, but the base receipt row must not require them.
-- Replace `deliveryState` with `attemptState`, or keep the shape and document
-  that it is the generic attempt record. The fields `attempts`, `lastError` and
-  `lastAt` are already the right shape.
-- Add `configRevision`, `reactionDepth`, `causedByEventId`, `outcomeRef` and
-  `nextAttemptAt`.
-- Replace `onTerminal(sentinelId, row)` with a generic terminal hook that
-  receives the receipt. The sentinel ack becomes one consumer of that hook.
-- Replace the sentinel-specific expiry and secret gates in `dispatchRow` with a
-  runner callback, so the store does not know about sentinels.
+- The load of a JSON map keyed by an opaque string, and the pretty-printed
+  snapshot written through `writeFileDurable` (mode `0o600`, tmp plus fsync
+  plus rename), cited in section 1.
+- The single serialized write chain and the generation guard that keeps a slow
+  older snapshot from overwriting a newer one, cited in section 1.
+- The persist-before-ack rule for a new row, with the rollback of the
+  in-memory row when the persist fails, cited in section 1.
+- The debounced best-effort write for non-critical transitions, and the
+  `flushSync` shutdown path.
+- Bounded retention: terminal age-out, non-terminal age-out, the row cap and
+  the oldest-terminal eviction, with the three values passed in by each store.
 
-What can stay untouched:
+The receipt store owns, and the outbox never sees:
 
-- The file format remains a JSON map keyed by the receipt key.
-- The retention constants remain 24 hours for terminal rows, 7 days for
-  non-terminal rows and a 2000 row cap, unless a later receipt class needs a
-  different policy.
-- The `flushSync` shutdown path.
-- The pretty-printed JSON body and mode `0o600`.
+- The opaque `receiptKey` and the row shape of the record table above.
+- The status vocabulary `pending | running | done | failed | dead` and the
+  state machine, including the durable `running` transition (section 5,
+  step 5).
+- `configRevision`, `reactionDepth`, `causedByEventId`, `outcomeRef`,
+  `nextAttemptAt` and `lastAttemptAt`.
+- The runner callback, the terminal hook, and a reconciliation driver modeled
+  on `resumeDeliveries` (section 6).
+- Its own file, next to the outbox file under the agentproto home, so the two
+  stores never share a row or a path.
+- Its retention values, which start equal to the outbox values (24 hours for
+  terminal rows, 7 days for non-terminal rows, 2000 rows) and can differ per
+  receipt class.
+
+The outbox keeps, unchanged:
+
+- Its key, built from sentinel and event:
+  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
+- Its row shape (`bodyBytes`, `cursor`, `envelope`, `event`, `deliveryState`)
+  and its status vocabulary, which is `pending | delivered | dead`
+  (`packages/runtime/src/sentinel-webhook-outbox.ts:52` `export type SentinelWebhookOutboxStatus = "pending"`).
+  The receipt status is a different vocabulary, `pending | running | done |
+  failed | dead`: `done` plays the role of the outbox `delivered`, and
+  `running` and `failed` exist only in receipts.
+- Its terminal ack
+  (`packages/runtime/src/sentinel-runtime.ts:396` `    onTerminal: (sentinelId: string, row: SentinelWebhookOutboxRow): void => {`),
+  the expiry and secret gates in `dispatchRow`, and `resumeDeliveries`.
 
 ## 5. Proposal: lifecycle of one reaction
 
@@ -856,6 +864,9 @@ NOT VERIFIED:
 - Whether `session:reaped` always results in a persisted `endedReason` of
   `idle-reaped` after an unclean shutdown. The reaper path is cited, but the
   crash window between the event and the persist was not traced.
+- That the extraction of the shared durable-row module preserves the outbox
+  behaviour exactly. The existing outbox tests are the guard and were not run
+  for this design.
 - The exact count and identity of every legacy mechanism that would need to be
   disabled to guarantee one owner per binding. The event-mapping doc is the
   current authority and this design did not re-audit every producer.
