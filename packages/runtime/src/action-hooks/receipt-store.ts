@@ -1,5 +1,5 @@
 /**
- * ReactionReceiptStore — the durable receipt store for action hooks (AIP-71).
+ * ReactionReceiptStore: the durable receipt store for action hooks (AIP-71).
  *
  * A receipt is the durable record of one reaction attempt, keyed by the
  * AIP-71 occurrence key `<session-id>/<event>/<occurrence-id>/<binding-id>`.
