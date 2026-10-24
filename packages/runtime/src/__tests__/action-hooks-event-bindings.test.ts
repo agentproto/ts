@@ -255,3 +255,26 @@ describe("HOST_EVENT_REGISTRATIONS", () => {
     expect(HOST_EVENT_REGISTRATIONS.map(entry => entry.event)).toContain("agentproto:session-completed")
   })
 })
+
+describe("resolveAgentOnBindings agent id validation", () => {
+  it("rejects malformed agent ids", () => {
+    const invalidIds = ["a//b", "/a", "a/", " a", "a b", "a\tb", "a\\b"]
+    for (const id of invalidIds) {
+      try {
+        resolveAgentOnBindings(id, { "turn-end": "session:a" })
+        expect.unreachable(`expected agent-id-invalid for ${JSON.stringify(id)}`)
+      } catch (err) {
+        expect(err).toBeInstanceOf(EventBindingError)
+        expect((err as EventBindingError).code).toBe("agent-id-invalid")
+      }
+    }
+  })
+
+  it("accepts an owner-qualified id and a plain id", () => {
+    const owner = resolveAgentOnBindings("@owner/agent-name", { "turn-end": "session:a" })
+    expect(owner.map(binding => binding.bindingId)).toEqual(["@owner/agent-name/on/turn-end/0"])
+
+    const plain = resolveAgentOnBindings("agent-1", { "turn-end": "session:a" })
+    expect(plain.map(binding => binding.bindingId)).toEqual(["agent-1/on/turn-end/0"])
+  })
+})
