@@ -71,6 +71,7 @@ import {
 } from "./sentinel-webhook-outbox.js"
 import type { DeliveryReplay } from "./webhook-egress/delivery.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
+import { RecentKeys, classifySentinelEvent, writeSentinelTriageLedger } from "./sentinel-triage.js"
 import {
   deliveryPreferenceFor,
   type SentinelEvent,
@@ -212,6 +213,9 @@ export interface SentinelRuntimeOptions {
   /** Override for the parked-event journal (tests). Default
    *  `~/.agentproto/sentinels-parked.jsonl`. */
   parkedPath?: string
+  /** Observation-only triage ledger (tests). Default
+   *  `~/.agentproto/sentinel-triage.jsonl`. */
+  triagePath?: string
   nowMs?: () => number
   log?: (line: string) => void
   /** Override persist path for the webhook outbox (tests). Default
@@ -270,6 +274,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   const idleIntervalMs = opts.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS
   const hotWindowMs = opts.hotWindowMs ?? DEFAULT_HOT_WINDOW_MS
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "sentinels-parked.jsonl")
+  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "sentinel-triage.jsonl")
+  const recentTriageKeys = new RecentKeys()
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let inFlight = false
@@ -573,6 +579,28 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // persisted sentinel never actually reaches this branch — narrows the
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
+    try {
+      const now = nowMs()
+      const { decision, rule } = classifySentinelEvent(event, {
+        target: target.sessionId,
+        sentinelId: sentinel.id,
+        now,
+        recent: recentTriageKeys,
+      })
+      writeSentinelTriageLedger(triagePath, {
+        ts: new Date(now).toISOString(),
+        decision,
+        rule,
+        target: target.sessionId,
+        sentinelId: sentinel.id,
+        eventId: event.id,
+        type: event.type,
+        subject: event.subject,
+        urgency: target.urgency,
+      })
+    } catch {
+      // Observation only: triage must never block delivery.
+    }
     const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
     const key = coalesceKeyFor(event)
     try {
