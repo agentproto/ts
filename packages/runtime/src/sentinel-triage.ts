@@ -8,10 +8,10 @@
  * stage, not a gate.
  *
  * Rules are checked in order; the first match wins:
- * 1. `terminal` — an event that ends its subject's lifecycle always wakes.
- * 2. `coalesced-repeat` — the same `(target, coalesce key)` was classified
+ * 1. `terminal`: an event that ends its subject's lifecycle always wakes.
+ * 2. `coalesced-repeat`: the same `(target, coalesce key)` was classified
  *    within the last 10 minutes, so this one is only `fyi`.
- * 3. `default` — everything else wakes.
+ * 3. `default`: everything else wakes.
  *
  * Keys are recorded AFTER classification, so an event never counts as a
  * repeat of itself. {@link RecentKeys} is a bounded map (1000 entries by

@@ -598,8 +598,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         subject: event.subject,
         urgency: target.urgency,
       })
-    } catch {
+    } catch (err) {
       // Observation only: triage must never block delivery.
+      log(`[sentinel-runtime] triage ledger failed: ${describeError(err)}`)
     }
     const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
     const key = coalesceKeyFor(event)
