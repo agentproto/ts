@@ -3869,6 +3869,9 @@ importers:
       '@agentproto/governance-engine':
         specifier: workspace:*
         version: link:../governance/engine
+      '@agentproto/lifecycle':
+        specifier: workspace:*
+        version: link:../lifecycle
       '@agentproto/llm-endpoint':
         specifier: workspace:*
         version: link:../llm-endpoint
