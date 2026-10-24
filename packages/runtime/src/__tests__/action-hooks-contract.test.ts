@@ -11,6 +11,7 @@ import {
   isActionKind,
   isNativeExpressible,
   parseOccurrenceKey,
+  RUNTIME_ACTION_IDS,
   type AdmissionDecision,
 } from "../action-hooks/index.js"
 
@@ -61,8 +62,9 @@ describe("isNativeExpressible", () => {
 })
 
 describe("isActionKind", () => {
-  it("accepts the runtime action ids and a tool id", () => {
+  it("accepts qualified and unqualified action ids", () => {
     for (const id of [
+      "session",
       "session:spawn",
       "session:prompt",
       "session:control",
@@ -70,13 +72,25 @@ describe("isActionKind", () => {
       "model:invoke",
       "auth-profile:use",
       "tool:read-file",
+      "storage:commit",
+      "a.b:c-d",
     ]) {
       expect(isActionKind(id)).toBe(true)
     }
   })
 
-  it("accepts unqualified action ids", () => {
-    expect(isActionKind("session")).toBe(true)
+  it("declares the six runtime action ids and accepts all of them", () => {
+    expect(RUNTIME_ACTION_IDS).toEqual([
+      "session:spawn",
+      "session:prompt",
+      "session:control",
+      "session:configure",
+      "model:invoke",
+      "auth-profile:use",
+    ])
+    for (const id of RUNTIME_ACTION_IDS) {
+      expect(isActionKind(id)).toBe(true)
+    }
   })
 
   it("rejects malformed ids", () => {
@@ -90,6 +104,8 @@ describe("isActionKind", () => {
       "a:-b",
       "a:.b",
       `a:${"b".repeat(79)}`,
+      "a",
+      "",
     ]) {
       expect(isActionKind(id)).toBe(false)
     }
@@ -130,7 +146,7 @@ describe("occurrence keys", () => {
     }
   })
 
-  it("throws when a first three segments contains a slash", () => {
+  it("throws when one of the first three segments contains a slash", () => {
     const base = {
       sessionId: "sess-1",
       event: "turn-end",

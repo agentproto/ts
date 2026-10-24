@@ -13,9 +13,10 @@ const RANK: Record<AdmissionDecision["outcome"], number> = {
 
 /**
  * Combine decisions with precedence `deny > reuse > defer > allow`.
- * Deny must win because admission can only narrow. Reuse vs defer ordering is a
- * local choice for this implementation (reuse takes precedence over defer).
- * The first decision of the winning outcome wins. An empty list allows.
+ * Deny wins because admission can only narrow. Reuse beats defer because reuse
+ * points at an existing result while defer only postpones. AIP-71 does not
+ * order reuse and defer, this ordering is the local choice of the action hooks
+ * plan. The first decision of the winning outcome wins. An empty list allows.
  */
 export function combineAdmissionDecisions(
   decisions: readonly AdmissionDecision[],

@@ -2,16 +2,13 @@
  * Action id grammar and occurrence keys for action hooks.
  */
 
-import type { ActionKind } from "./types.js"
-
+// Same grammar as ACTION_ID_RE in packages/lifecycle/src/hooks.ts (specs/aip-39.mdx).
 const ACTION_ID_RE = /^[a-z0-9][a-z0-9.-]*(:[a-z0-9][a-z0-9.-]*)?$/
 const FORBIDDEN = /[\s\u0000-\u001f\u007f-\u009f]/
 
 /** True for an AIP-39 action id (qualified or unqualified). */
-export function isActionKind(value: string): value is ActionKind {
-  if (typeof value !== "string") return false
+export function isActionKind(value: string): boolean {
   if (value.length < 2 || value.length > 80) return false
-  if (FORBIDDEN.test(value)) return false
   return ACTION_ID_RE.test(value)
 }
 
