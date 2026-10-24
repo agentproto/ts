@@ -302,6 +302,41 @@ describe("per-run files, dirty-only writes", () => {
     // A finished run no longer has a lease sidecar.
     expect(existsSync(leaseA)).toBe(false)
   })
+
+  it("a heartbeat that lands after the done flush does not recreate a finished run's lease sidecar", async () => {
+    const realSetInterval = globalThis.setInterval
+    const heartbeats: Array<() => void> = []
+    globalThis.setInterval = ((cb: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+      const handle = realSetInterval(cb, ms, ...args)
+      if (ms === 60_000) heartbeats.push(() => cb(...args))
+      return handle
+    }) as unknown as typeof globalThis.setInterval
+    try {
+      const runner = makeRunner(approvalWorkflow, { heartbeatIntervalMs: 60_000 })
+      const started = await runner.startFromFile({ path: writeWorkflowMd() })
+      await waitStatus(runner, started.runId, "awaiting-approval")
+      await runner.flush()
+
+      expect(heartbeats).toHaveLength(1)
+      // A heartbeat while parked still rewrites the lease sidecar.
+      heartbeats[0]!()
+      await runner.flush()
+      const lease = leaseFilePath(runStoreDir(persistPath), started.runId)!
+      expect(existsSync(lease)).toBe(true)
+
+      runner.resolveApproval(started.runId, { approved: true, who: "t" })
+      await waitStatus(runner, started.runId, "done")
+      await runner.flush()
+      expect(existsSync(lease)).toBe(false)
+
+      // A heartbeat that fires after the done flush must not resurrect the sidecar.
+      heartbeats[0]!()
+      await runner.flush()
+      expect(existsSync(lease)).toBe(false)
+    } finally {
+      globalThis.setInterval = realSetInterval
+    }
+  })
 })
 
 describe("memory: summaries and lazy load", () => {
