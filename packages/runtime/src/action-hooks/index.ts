@@ -1,4 +1,5 @@
 export * from "./types.js"
 export * from "./decision.js"
 export * from "./occurrence-key.js"
+export * from "./session-completion.js"
 export * from "./receipt-store.js"
