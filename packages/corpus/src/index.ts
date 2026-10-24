@@ -4,8 +4,13 @@
  * Spec: https://agentproto.sh/docs/corpus
  */
 
-export const SPEC_NAME = "agentcorpus/v1" as const
+/** Internal format id; this package implements no AIP, so it claims no registry spec name (AIP-70). */
+export const CORPUS_FORMAT = "agentproto.corpus@1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
+
+const LEGACY_SPEC_NAME = "agentcorpus/v1"
+/** @deprecated Not an AIP spec name (AIP-70); kept for compatibility. */
+export const SPEC_NAME: "agentcorpus/v1" = LEGACY_SPEC_NAME
 
 // Shared slug + language utilities (single source of truth)
 export {

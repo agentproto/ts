@@ -39,8 +39,13 @@ import {
   latencyBudgetImpl,
 } from "./scorers.js"
 
-export const SPEC_NAME = "agenteval/v1" as const
+/** Internal format id; this package implements no AIP, so it claims no registry spec name (AIP-70). */
+export const EVAL_FORMAT = "agentproto.eval@1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
+
+const LEGACY_SPEC_NAME = "agenteval/v1"
+/** @deprecated Not an AIP spec name (AIP-70); kept for compatibility. */
+export const SPEC_NAME: "agenteval/v1" = LEGACY_SPEC_NAME
 
 export { scoreSchema, type Score } from "./score.js"
 
