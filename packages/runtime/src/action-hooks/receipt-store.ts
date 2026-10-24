@@ -288,6 +288,9 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
 
     async insertPending(input: NewReactionReceipt): Promise<ReactionReceipt> {
       const key = buildReactionReceiptKey(input)
+      if (input.createdAt !== undefined && !Number.isFinite(input.createdAt)) {
+        throw new Error(`reaction receipt ${key}: createdAt is not a finite number`)
+      }
       const existing = rows.get(key)
       if (existing) {
         // Dedupe: a duplicate never creates a second row and never resets a

@@ -157,6 +157,13 @@ describe("ReactionReceiptStore", () => {
     expect(existsSync(file)).toBe(false)
   })
 
+  it("rejects a non-finite createdAt and writes nothing", async () => {
+    const { file, store } = setup()
+    await expect(store.insertPending(input({ createdAt: Number.NaN }))).rejects.toThrow(/finite number/)
+    expect(store.rows()).toHaveLength(0)
+    expect(existsSync(file)).toBe(false)
+  })
+
   it("insertPending whose persist fails rejects and leaves no row in memory", async () => {
     const dir = tmp()
     const blocker = join(dir, "blocked")
