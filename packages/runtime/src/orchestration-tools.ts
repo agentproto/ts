@@ -62,6 +62,7 @@ import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
 import { registerTaskTools } from "./task-tools.js"
 import type { TaskLedger } from "./task-ledger.js"
+import { matchesSessionGrant } from "./session-owner.js"
 import {
   activityCounts,
   ACTIVITY_KINDS,
@@ -696,6 +697,11 @@ export interface RegisterOrchestrationToolsOptions {
    *  only from inside a workflow-spawned session's own turn, resolved from
    *  this id, never a caller-supplied one. */
   callerSessionId?: string
+  /** `config.json`'s `defaults.tasks.operatorDelegates`, resolved for this
+   *  request (read per `/mcp` call, same discipline as
+   *  `defaults.messaging.*`). Named sessions keep the task ledger's operator
+   *  rights while still being attributed under their own id. */
+  operatorDelegates?: readonly string[]
 }
 
 /** F30: a compact error is capped here — a tool step's full stderr (KBs)
@@ -2011,10 +2017,17 @@ export function registerOrchestrationTools(
   // ledger they answer a structured error. `server` is already
   // subset-wrapped here, so the scope's allowlist applies; the caller's
   // scope identity drives ACL + the default board inside task-tools.ts.
+  const operatorDelegates = opts.operatorDelegates ?? []
   registerTaskTools(server, {
     ...(opts.taskLedger ? { ledger: opts.taskLedger } : {}),
     ...(callerScope ? { callerScope } : {}),
     ...(callerSessionId ? { callerSessionId } : {}),
+    ...(callerSessionId
+      ? {
+          isOperatorDelegate: (sessionId: string) =>
+            matchesSessionGrant(operatorDelegates, sessionId, id => registry.get(id)?.operatorLabel),
+        }
+      : {}),
   })
 
   // ── activities_list (optional — only when an activity projector is wired) ─

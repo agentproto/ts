@@ -27,8 +27,11 @@
  * `?callerSessionId=` is ALSO that session (not the operator), so its
  * default board is its `tree:<root>` too. Only a root endpoint with no
  * caller attribution falls back to the operator, whose default board is
- * `ws:<workspaceSlug>`. An unbound scope (token minted, owner not yet
- * bound) can act as nobody — same refusal as `policy_attach`.
+ * `ws:<workspaceSlug>`. A root caller named by
+ * `defaults.tasks.operatorDelegates` stays a session caller (attribution,
+ * `owner`, `sessions[]`) but keeps the operator's ledger rights. An unbound
+ * scope (token minted, owner not yet bound) can act as nobody — same
+ * refusal as `policy_attach`.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -98,6 +101,11 @@ export interface RegisterTaskToolsOptions {
    *  receives. It only NARROWS privileges (operator → session), never widens
    *  them, and a bound `callerScope` outranks it. */
   callerSessionId?: string
+  /** Whether that caller keeps the ledger's operator rights while remaining
+   *  attributed under its own id — true only when `config.json`'s
+   *  `defaults.tasks.operatorDelegates` names it. Never consulted for a
+   *  bound `callerScope`. */
+  isOperatorDelegate?: (sessionId: string) => boolean
   /** Optional allowlist — same semantics as the other register passes. */
   toolSubset?: ReadonlySet<string>
 }
@@ -134,7 +142,7 @@ export function registerTaskTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { ledger, callerScope, callerSessionId } = opts
+  const { ledger, callerScope, callerSessionId, isOperatorDelegate } = opts
 
   /**
    * Resolve the calling identity. A bound scope is that session; an unbound
@@ -150,7 +158,13 @@ export function registerTaskTools(
       }
       return { kind: "session", sessionId: callerScope.ownerSessionId }
     }
-    if (callerSessionId) return { kind: "session", sessionId: callerSessionId }
+    if (callerSessionId) {
+      return {
+        kind: "session",
+        sessionId: callerSessionId,
+        ...(isOperatorDelegate?.(callerSessionId) ? { actsAsOperator: true } : {}),
+      }
+    }
     return { kind: "operator" }
   }
 

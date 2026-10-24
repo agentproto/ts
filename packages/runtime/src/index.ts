@@ -181,6 +181,7 @@ import { sweepAppRuns } from "./app-run-liveness.js"
 import { loadConfig } from "./config.js"
 import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
 import { resolveMessagingDefaults } from "./messaging-defaults.js"
+import { resolveTaskDefaults } from "./task-defaults.js"
 import { defaultTranscriptBaseDir, setDefaultSessionsBaseDir } from "./transcript-writer.js"
 import { backfillSessionIndexesAsync } from "./session-index.js"
 import {
@@ -3697,6 +3698,9 @@ export async function createGateway(
     // takes effect on the very next `agent_prompt` / `message_parent` /
     // `message_send` / `message_reply` call, no daemon restart.
     const messagingDefaults = await resolveMessagingDefaults()
+    // Same fresh-per-request read for the task ledger's operator delegates,
+    // so a `config_set` takes effect on the next task_* call.
+    const taskDefaults = await resolveTaskDefaults()
     // Deferred/lazy tool loading (opt-in — see deferred-tools.ts). Wraps
     // every subsequent `registerXTools(server, ...)` pass below so tools
     // outside `alwaysOn` register but start disabled (hidden from the
@@ -4065,6 +4069,7 @@ export async function createGateway(
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
       ...(callerSessionId ? { callerSessionId } : {}),
+      operatorDelegates: taskDefaults.operatorDelegates,
     })
     // Review primitive (@agentproto/review) — review_run/status/cancel/
     // ledger/export over the gateway-singleton runner + ledger above. The

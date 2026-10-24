@@ -200,11 +200,18 @@ export interface TaskRecord {
  * Who is talking to the ledger. A spawned child arrives through the scoped
  * orchestrator gateway carrying `callerScope.ownerSessionId`
  * (orchestration-tools.ts) → `{kind:"session"}`. The root `/mcp` endpoint
- * and the `/tasks` HTTP routes are operator context.
+ * attributed by `?callerSessionId=` is ALSO that session; only an
+ * unattributed root endpoint and the `/tasks` HTTP routes are operator
+ * context.
+ *
+ * `actsAsOperator` is set ONLY when `config.json`'s
+ * `defaults.tasks.operatorDelegates` names the session: it keeps the
+ * ledger's operator rights (any board, any task, `ws:<slug>` default board)
+ * while `callerId` still attributes writes to the session's own id.
  */
 export type TaskCaller =
   | { kind: "operator" }
-  | { kind: "session"; sessionId: string }
+  | { kind: "session"; sessionId: string; actsAsOperator?: true }
 
 /** Owner values that are NOT session ids — never released on session death. */
 const NON_SESSION_OWNERS: readonly string[] = ["human", "operator"]
@@ -673,7 +680,7 @@ export function createTaskLedger(opts: {
 
   const resolveBoardId = (caller: TaskCaller, explicit?: string): string => {
     if (explicit) return explicit
-    if (caller.kind === "session") {
+    if (caller.kind === "session" && !caller.actsAsOperator) {
       // An explicitly-stamped board (`agent_start.boardId` →
       // `SessionDescriptor.meta.boardId`) wins over the lineage walk: the
       // common cowork/operator fan-out spawns several depth-0 roots with NO
@@ -696,7 +703,7 @@ export function createTaskLedger(opts: {
    * escape hatch a cowork supervisor uses to join its depth-0 children.
    */
   const canAccessBoard = (caller: TaskCaller, boardId: string): boolean => {
-    if (caller.kind === "operator") return true
+    if (caller.kind === "operator" || caller.actsAsOperator === true) return true
     if (!boardId.startsWith("tree:")) return true
     const target = boardId.slice("tree:".length)
     return rootOf(target) === rootOf(caller.sessionId)
@@ -709,13 +716,20 @@ export function createTaskLedger(opts: {
 
   const isManager = (caller: TaskCaller, task: TaskRecord): boolean =>
     caller.kind === "operator" ||
+    caller.actsAsOperator === true ||
     (caller.kind === "session" && caller.sessionId === task.createdBy)
 
-  const isOwner = (caller: TaskCaller, task: TaskRecord): boolean =>
-    task.owner !== undefined &&
-    (caller.kind === "session"
-      ? caller.sessionId === task.owner
-      : task.owner === "operator" || task.owner === "human")
+  const isOwner = (caller: TaskCaller, task: TaskRecord): boolean => {
+    if (task.owner === undefined) return false
+    if (caller.kind === "operator") {
+      return task.owner === "operator" || task.owner === "human"
+    }
+    if (caller.sessionId === task.owner) return true
+    return (
+      caller.actsAsOperator === true &&
+      (task.owner === "operator" || task.owner === "human")
+    )
+  }
 
   const emitChanged = (
     task: TaskRecord,

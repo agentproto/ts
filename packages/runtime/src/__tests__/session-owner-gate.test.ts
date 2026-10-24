@@ -17,7 +17,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerAgentTools } from "../agent-tools.js"
-import { checkSessionOwnerGate, checkPromptPolicyEditor } from "../session-owner.js"
+import {
+  checkSessionOwnerGate,
+  checkPromptPolicyEditor,
+  matchesSessionGrant,
+} from "../session-owner.js"
 import {
   createSessionsRegistry,
   type AgentSessionLike,
@@ -74,6 +78,50 @@ async function twoSessions(opts?: { allowPromptFrom?: string[] }) {
   }
   return { registry, parent, child }
 }
+
+describe("matchesSessionGrant", () => {
+  const labels: Record<string, string | undefined> = {
+    sess_brain: "pygmalion-brain-persistent",
+    sess_agent: "pygmalion-agent-alpha",
+    sess_unlabeled: undefined,
+  }
+  const operatorLabelOf = (id: string) => labels[id]
+
+  it("matches an exact session id", () => {
+    expect(matchesSessionGrant(["sess_brain"], "sess_brain", operatorLabelOf)).toBe(true)
+    expect(matchesSessionGrant(["sess_other"], "sess_brain", operatorLabelOf)).toBe(false)
+  })
+
+  it("matches an exact `label:` entry", () => {
+    expect(
+      matchesSessionGrant(["label:pygmalion-brain-persistent"], "sess_brain", operatorLabelOf),
+    ).toBe(true)
+    expect(
+      matchesSessionGrant(["label:pygmalion-brain-other"], "sess_brain", operatorLabelOf),
+    ).toBe(false)
+  })
+
+  it("matches a `label:<prefix>*` entry", () => {
+    expect(matchesSessionGrant(["label:pygmalion-agent-*"], "sess_agent", operatorLabelOf)).toBe(
+      true,
+    )
+    expect(matchesSessionGrant(["label:pygmalion-brain-*"], "sess_agent", operatorLabelOf)).toBe(
+      false,
+    )
+  })
+
+  it("`label:` / `label:*` with an empty prefix match nothing", () => {
+    for (const entry of ["label:", "label:*"]) {
+      expect(matchesSessionGrant([entry], "sess_brain", operatorLabelOf)).toBe(false)
+    }
+  })
+
+  it("never matches the mutable `label`, only the operatorLabel", () => {
+    // A caller that renamed itself carries no operatorLabel: no match.
+    expect(matchesSessionGrant(["label:pygmalion-brain-persistent"], "sess_renamed", () => undefined)).toBe(false)
+    expect(matchesSessionGrant(["label:pygmalion-brain-*"], "sess_unlabeled", operatorLabelOf)).toBe(false)
+  })
+})
 
 describe("checkSessionOwnerGate (pure)", () => {
   const target = { id: "sess_child", parentSessionId: "sess_parent" }
