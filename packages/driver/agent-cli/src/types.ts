@@ -1,7 +1,7 @@
 /**
  * AIP-45 AgentCliDefinition + AgentCliHandle.
  *
- * Mirrors `resources/aip-45/draft/AGENT-CLI.schema.json`. Top-level
+ * Mirrors `resources/aip-45/draft/HARNESS.schema.json`. Top-level
  * fields cover the binary's install / version / auth / sandbox /
  * protocol surface; `protocol` discriminates between ACP, MCP, and
  * proprietary adapter arms.
@@ -648,7 +648,7 @@ export interface AgentCliPresetDeclaration {
 /**
  * Built-in continuation strategy ids. Future custom strategies require
  * a follow-up AIP that opens this enum. Keep this in lockstep with
- * `continuationStrategyId` in `AGENT-CLI.schema.json`.
+ * `continuationStrategyId` in `HARNESS.schema.json`.
  */
 export type ContinuationStrategyId =
   | "none"

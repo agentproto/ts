@@ -10,7 +10,7 @@
  *   - MD:  `parseSkillManifest(src) → skillFromManifest({...})` → `SkillHandle`
  */
 
-export const SPEC_NAME = "agentskill/v1" as const
+export const SPEC_NAME = "skill/v1" as const
 export const SPEC_VERSION = "2.0.0-alpha" as const
 
 export { defineSkill } from "./define-skill.js"

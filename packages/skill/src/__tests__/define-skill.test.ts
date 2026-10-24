@@ -198,6 +198,36 @@ metadata:
       )
     })
 
+    it("parses a SKILL.md carrying the canonical skill/v1 tag", () => {
+      const md = `---
+name: pdf-generator
+description: Generates PDF documents from templates with dynamic data.
+metadata:
+  aip3:
+    schema: skill/v1
+---
+
+# PDF Generator
+`
+      const { frontmatter } = parseSkillManifest(md)
+      expect(frontmatter.metadata?.aip3?.schema).toBe("skill/v1")
+    })
+
+    it("still parses the legacy skills/v1 tag", () => {
+      const md = `---
+name: pdf-generator
+description: Generates PDF documents from templates with dynamic data.
+metadata:
+  aip3:
+    schema: skills/v1
+---
+
+# PDF Generator
+`
+      const { frontmatter } = parseSkillManifest(md)
+      expect(frontmatter.metadata?.aip3?.schema).toBe("skills/v1")
+    })
+
     it("rejects a manifest with empty frontmatter", () => {
       expect(() => parseSkillManifest("# no frontmatter")).toThrow(
         /missing or empty frontmatter/,

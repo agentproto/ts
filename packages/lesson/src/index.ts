@@ -10,7 +10,7 @@
  *   - MD:  `parseLessonManifest(src) → lessonFromManifest({...})` → `LessonHandle`
  */
 
-export const SPEC_NAME = "agentlesson/v1" as const
+export const SPEC_NAME = "lesson/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineLesson } from "./define-lesson.js"

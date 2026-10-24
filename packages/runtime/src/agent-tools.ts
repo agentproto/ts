@@ -809,10 +809,20 @@ export function registerAgentTools(
         const attachWarnings: string[] = []
         // Operator-assigned label (`SessionDescriptor.operatorLabel`):
         // stamped ONLY when this spawn carried no caller session (human
-        // operator / operator-side client) and created a fresh session. It is
-        // what `label:` entries in `allowPromptFrom` match on.
+        // operator / operator-side client), no resolved parent, and created a
+        // fresh session. It is what `label:` entries in `allowPromptFrom`
+        // match on. Check the resolved descriptor because `attach` /
+        // `autoParentSessionId` can derive a parent.
         const spawnLabel = input.label?.trim()
-        if (spawnLabel && !result.deduped && effectiveCaller() === undefined) {
+        const hasResolvedParent =
+          typeof result.descriptor.parentSessionId === "string" &&
+          result.descriptor.parentSessionId.length > 0
+        if (
+          spawnLabel &&
+          !result.deduped &&
+          effectiveCaller() === undefined &&
+          !hasResolvedParent
+        ) {
           try {
             registry.setOperatorLabel(result.descriptor.id, spawnLabel)
           } catch (err) {

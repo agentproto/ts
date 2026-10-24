@@ -10,7 +10,7 @@
  *   - MD:  `parseSandboxManifest(src) → sandboxFromManifest({...})` → `SandboxHandle`
  */
 
-export const SPEC_NAME = "agentsandbox/v1" as const
+export const SPEC_NAME = "sandbox/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineSandbox } from "./define-sandbox.js"

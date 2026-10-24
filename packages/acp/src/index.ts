@@ -14,7 +14,7 @@
  *   - Expose an operator as a server: `createAcpServer({ handle, ... })`
  */
 
-export const SPEC_NAME = "agentacp/v1" as const
+export const SPEC_NAME = "acp/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
 
 export { defineAcp } from "./define-acp.js"

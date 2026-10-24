@@ -10,7 +10,7 @@
  *   - MD:  `parsePlaybookManifest(src) → playbookFromManifest({...})` → `PlaybookHandle`
  */
 
-export const SPEC_NAME = "agentplaybook/v1" as const
+export const SPEC_NAME = "playbook/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { definePlaybook } from "./define-playbook.js"

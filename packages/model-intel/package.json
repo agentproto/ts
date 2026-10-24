@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/model-intel",
   "version": "0.3.0",
-  "description": "@agentproto/model-intel — model intelligence primitives. Unified, provider-neutral quota status (AIP-67): a QuotaStatus shape with a mandatory basis, a never-throw QuotaReader contract, and a reader registry. Unknown is omitted, never fabricated.",
+  "description": "@agentproto/model-intel - model intelligence primitives. Catalog watch domain: a pure diff of two priced catalog snapshots, plus a deprecated re-export of the AIP-67 quota API now in @agentproto/quota.",
   "keywords": [
     "agentproto",
     "aip-67",
@@ -50,6 +50,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@agentproto/quota": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -367,6 +367,89 @@ describe("follow-triage", () => {
       expect(lines[1]).toMatchObject({ event: "turn-end", decision: "wake", rule: "default" })
       expect(sent).toHaveLength(1)
     })
+
+    it("records every rule verdict with applied:false while triage is off", async () => {
+      const { sent } = setup([running("chief"), running("w")], {
+        selector: { sessionIds: ["w"] },
+      })
+      bus.emit({
+        type: "session:message",
+        sessionId: "chief",
+        messageId: "msg_1",
+        fromSessionId: "w",
+        relation: "child",
+        kind: "report",
+        urgency: "next-turn",
+        ts: at(-5_000),
+      } as never)
+      turnEnd("w")
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(l => JSON.parse(l) as Record<string, unknown>)
+      expect(lines).toHaveLength(2)
+      expect(lines[0]).toMatchObject({
+        source: "follow",
+        applied: false,
+        event: "turn-end",
+        decision: "drop",
+        rule: "reported-turn-end",
+      })
+      expect(lines[1]).toMatchObject({
+        source: "follow",
+        applied: false,
+        event: "exited",
+        decision: "fyi",
+        rule: "operator-exit",
+      })
+      // Delivery is unchanged: the disabled ledger never filters the digest.
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("2 events")
+    })
+
+    it("never runs a daemon classifier while triage is off", async () => {
+      const marker = join(tmp, "ran")
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        {
+          triage: {
+            ...defaultFollowTriageConfig(),
+            classifier: { command: `touch ${marker}` },
+          },
+        },
+      )
+      turnEnd("w")
+      await handle!.flush()
+      expect(existsSync(marker)).toBe(false)
+      expect(sent).toHaveLength(1)
+      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        source: "follow",
+        applied: false,
+        decision: "wake",
+        rule: "default",
+      })
+    })
+
+    it("keeps the legacy digest text and urgency while triage is off", async () => {
+      const { sent } = setup([running("chief"), running("w")], {
+        selector: { sessionIds: ["w"] },
+      })
+      turnEnd("w")
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+      expect(sent[0]!.text).toBe(
+        "[session-follow] automatic digest \u2014 2 events from sessions you follow. " +
+          "Decide whether anything needs the human's attention; if not, no reply is needed.\n" +
+          "[session-follow] w (w) turn-end \u2014 proj\n" +
+          "[session-follow] w (w) exited \u2014 proj \u2014 operator-stopped",
+      )
+    })
   })
 
   // ── The tool surface ────────────────────────────────────────────────

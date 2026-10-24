@@ -26,6 +26,7 @@
 
 import { createDoctype } from "@agentproto/define-doctype"
 import matter from "gray-matter"
+import { EMITTED_SPEC_NAME } from "../spec/names.js"
 import {
   policyFrontmatterSchema,
   type PolicyAppliesTo,
@@ -64,7 +65,9 @@ export interface PolicyDefinition {
  * with array/object fields shallow-frozen to lock the wire shape.
  */
 export interface PolicyHandle {
-  readonly schema: "agentgovernance/v1"
+  // definePolicy keeps emitting the pre-AIP-70 tag for now; it flips to
+  // SPEC_NAME at the next major (EMITTED_SPEC_NAME).
+  readonly schema: typeof EMITTED_SPEC_NAME
   readonly doctype: "policy"
   readonly slug: string
   readonly name: string
@@ -116,7 +119,9 @@ export const definePolicy = createDoctype<PolicyDefinition, PolicyHandle>({
   },
   build(def) {
     return {
-      schema: "agentgovernance/v1",
+      // Emit the legacy tag until the next major: verifiers in the field
+      // only know it (EMITTED_SPEC_NAME).
+      schema: EMITTED_SPEC_NAME,
       doctype: "policy",
       slug: def.slug,
       name: def.name,

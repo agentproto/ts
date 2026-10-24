@@ -1,11 +1,18 @@
 /**
  * @agentproto/corpus — composition of AIP-10/12/18/9/15/41.
  *
- * Spec: https://agentproto.sh/docs/corpus
+ * Docs: https://agentproto.sh/docs/corpus
  */
 
-export const SPEC_NAME = "agentcorpus/v1" as const
+/** Internal data-format id (not an AIP registry spec name); see AIP-70. */
+export const CORPUS_FORMAT = "agentproto.corpus/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
+
+/**
+ * @deprecated Not an AIP spec name; use {@link CORPUS_FORMAT} instead.
+ * Kept for backward compatibility.
+ */
+export const SPEC_NAME = "agentcorpus/v1" as const
 
 // Shared slug + language utilities (single source of truth)
 export {
