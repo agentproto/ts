@@ -1,6 +1,6 @@
 # Which tools can an app agent call?
 
-An `@agentproto/app` app bundles one or more AIP-42 agents, each with its
+An `@agentproto/app-kit` app bundles one or more AIP-42 agents, each with its
 own `AGENT.md`. This page covers what a `tools:` entry in that frontmatter
 can actually resolve to once the daemon spawns the agent — the executor
 behind each tool id, and the allowlist rule that keeps an app from reaching

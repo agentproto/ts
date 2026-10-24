@@ -131,7 +131,7 @@ const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
  * Parse + validate the AIP-53 `services` array (production hosting surface).
  * One entry = one supervised service process: `name` is a unique kebab-case
  * slug, `entry` a non-empty command line, `port` an optional 1..65535 integer
- * (omitted = a service that does not listen). app NEVER executes `entry`
+ * (omitted = a service that does not listen). app-kit NEVER executes `entry`
  * — that is the later install-time service-owner's job (see define-app.ts's
  * NOT-A-LAUNCHER note); this only carries the field through validate/freeze.
  *
@@ -503,7 +503,7 @@ function setupStep(entry: unknown, path: string, fail: Fail): AppSetupStep {
   // Vendor `x-*` steps are the ONE open shape in APP.md — carried
   // verbatim, only `id`/`kind` validated here. A host that does not
   // implement the kind fails closed with `setup_unsupported_step`; that
-  // is the SETUP ENGINE's job, never app's (app never runs a
+  // is the SETUP ENGINE's job, never app-kit's (app-kit never runs a
   // step).
   if (!SETUP_STEP_KINDS.has(kind)) {
     return { ...entry, ...common, kind } as AppSetupVendorStep

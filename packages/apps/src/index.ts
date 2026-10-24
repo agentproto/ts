@@ -1,7 +1,7 @@
 /**
  * @agentproto/apps — a home for ready-made agentproto apps: **teams** of
  * agents plus the workflows they run, each declared with
- * [`@agentproto/app`](../app).
+ * [`@agentproto/app-kit`](../app-kit).
  *
  * An app here is a plain `AppHandle`. Import one and use any subset of its
  * agents/workflows from your own host:

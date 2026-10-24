@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import type { ConnectorModel, EndpointConfig } from "@agentproto/inference-endpoint"
+import type { ConnectorModel, EndpointConfig } from "@agentproto/llm-endpoint"
 import {
   fitCheckForTarget,
   projectInferenceBinding,

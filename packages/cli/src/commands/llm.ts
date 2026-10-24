@@ -6,7 +6,7 @@
  * endpoints (local/LAN model servers — LM Studio, Ollama, llama-server,
  * vLLM, …), configured in `~/.agentproto/llm-endpoints.json`
  * (`LLM_ENDPOINT_ENDPOINTS_FILE` overrides the path) — the same file
- * `@agentproto/inference-endpoint` reads at request time to route `<id>/<model>`.
+ * `@agentproto/llm-endpoint` reads at request time to route `<id>/<model>`.
  *
  * `list`/`test` are read-only. `add`/`remove` edit the file for you (see the
  * package README's "Named endpoints" section for its shape) instead of
@@ -16,7 +16,7 @@
  * mirrors how `auth cred`/`auth profile` keep their own JSON stores.
  *
  * `gateway status|restart` is a different thing entirely: the daemon-managed
- * `@agentproto/inference-endpoint` PROXY sidecar itself (`LlmEndpointRegistry`,
+ * `@agentproto/llm-endpoint` PROXY sidecar itself (`LlmEndpointRegistry`,
  * `features.llmEndpoint`) — managed/external/missing, reachable, port,
  * providers. Talks to the daemon's `/llm-endpoint/*` REST routes, same
  * discovery + HTTP-helper pattern `agentproto tunnel` uses.
@@ -41,7 +41,7 @@ import {
   type ConnectorId,
   type ConnectorModel,
   type FitVerdict,
-} from "@agentproto/inference-endpoint"
+} from "@agentproto/llm-endpoint"
 import type { LlmEndpointStatusReport } from "@agentproto/runtime"
 import {
   discoverDaemon,
@@ -82,10 +82,10 @@ Usage:
   agentproto llm gateway restart [--json]
 
 Endpoints live in ~/.agentproto/llm-endpoints.json (LLM_ENDPOINT_ENDPOINTS_FILE
-overrides the path) — see the @agentproto/inference-endpoint README's "Named
+overrides the path) — see the @agentproto/llm-endpoint README's "Named
 endpoints" section for the file's shape.
 
-\`gateway status|restart\` manage the daemon-supervised @agentproto/inference-endpoint
+\`gateway status|restart\` manage the daemon-supervised @agentproto/llm-endpoint
 PROXY sidecar itself (features.llmEndpoint) — a different thing from the named
 endpoints above.
 `

@@ -26,7 +26,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { BUREAU_SESSIONS_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 

@@ -128,7 +128,7 @@ export const mastraAgent: AgentCliHandle = defineAgentCli({
       id: "agent",
       // Path to an AIP-42 AGENT.md. Lets `agent_start` pick WHICH agent this
       // arm runs — e.g. an emitted `.agentproto/agents/<id>/AGENT.md` from an
-      // @agentproto/app app. Without it the built-in default agent runs.
+      // @agentproto/app-kit app. Without it the built-in default agent runs.
       // The CLI already reads `--agent` (see cli.ts); this exposes it through
       // the manifest so the daemon can pass it.
       type: "string" as const,

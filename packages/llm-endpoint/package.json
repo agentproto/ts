@@ -1,10 +1,9 @@
 {
   "name": "@agentproto/llm-endpoint",
   "version": "0.11.15",
-  "description": "DEPRECATED: renamed @agentproto/inference-endpoint. This package re-exports it unchanged.",
+  "description": "@agentproto/llm-endpoint — a multi-surface LLM proxy gateway. Exposes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses API surfaces with transparent provider/model routing to Moonshot, OpenRouter, ZAI/Zhipu, Groq, xAI, and OpenAI. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
   "keywords": [
     "agentproto",
-    "inference",
     "llm",
     "proxy",
     "anthropic",
@@ -35,10 +34,6 @@
       "import": "./dist/index.mjs",
       "default": "./dist/index.mjs"
     },
-    "./cli": {
-      "import": "./dist/cli.mjs",
-      "default": "./dist/cli.mjs"
-    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -46,28 +41,29 @@
     "README.md",
     "LICENSE"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
   "scripts": {
     "dev": "tsup --watch",
+    "serve": "tsx watch src/cli.ts",
+    "start": "node dist/cli.mjs",
     "build": "tsup",
     "clean": "rm -rf dist",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:e2e": "tsx src/__tests__/e2e.live.ts"
   },
   "dependencies": {
-    "@agentproto/inference-endpoint": "workspace:*"
+    "@agentproto/auth": "workspace:*",
+    "@agentproto/batch": "workspace:*",
+    "@agentproto/providers-store": "workspace:*",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.9",
     "tsup": "^8.5.1",
+    "tsx": "^4.23.15",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"
-  },
-  "engines": {
-    "node": ">=20.9.0"
   }
 }

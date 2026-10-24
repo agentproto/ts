@@ -22,7 +22,7 @@ import { loadOperatorRoutes } from "./routes-config.js"
  * Light duck-type read of `~/.agentproto/llm-endpoints.json`'s
  * `{ endpoints: [...] }` envelope — enough to detect "at least one entry
  * configured". Deliberately NOT the real validated parse
- * (`parseEndpointsConfig`, `@agentproto/inference-endpoint`): the runtime package
+ * (`parseEndpointsConfig`, `@agentproto/llm-endpoint`): the runtime package
  * has zero dependency on that package (same stance as the proxy sidecar
  * itself, spawned as a child bin, never imported). A malformed file reads as
  * "no endpoints" here — the CLI's `agentproto llm endpoints list` / `doctor`

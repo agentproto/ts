@@ -4,7 +4,7 @@
  * configured named endpoints + their connectors, so a locally loaded model
  * is usable from `pi` without a hand edit.
  *
- * Lives in `@agentproto/inference-endpoint` (not `@agentproto/cli`, where it
+ * Lives in `@agentproto/llm-endpoint` (not `@agentproto/cli`, where it
  * started) so BOTH the CLI (`agentproto llm endpoints sync-pi`) and the
  * daemon (`packages/runtime`'s `inference` session-binding, which must
  * sync before spawning a `pi` session against a local endpoint) can call it

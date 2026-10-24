@@ -18,7 +18,7 @@ agentproto-mastra acp --model anthropic/claude-opus-4-8
 
 ```
 AGENT.md ──parseAgentManifest──▶ AgentHandle
-                                     │ buildMastraAgent (@agentproto/bridge)
+                                     │ buildMastraAgent (@agentproto/mastra)
                                      ▼
                          Mastra AgentController
                                      │ AgentControllerEvent subscription

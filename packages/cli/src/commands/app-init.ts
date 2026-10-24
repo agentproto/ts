@@ -11,7 +11,7 @@
  * `node:test` suite — everything `app validate` knows how to check.
  *
  * VALIDATE is the read-side counterpart: load the app with
- * `@agentproto/app`'s `loadAppHandle` (which itself loads every
+ * `@agentproto/app-kit`'s `loadAppHandle` (which itself loads every
  * AGENT.md and re-runs `defineApp`), load every declared WORKFLOW.md with
  * `@agentproto/workflow-loader` (harness/promptFile/gate blocks validated
  * by the loader), check each `ui.tools` entry against the known daemon
@@ -29,7 +29,7 @@ import { parseArgs } from "node:util"
 
 import matter from "gray-matter"
 import { scaffoldApp } from "create-agentproto-app/scaffold"
-import { loadAppHandle } from "@agentproto/app"
+import { loadAppHandle } from "@agentproto/app-kit"
 import { loadWorkflowHandle } from "@agentproto/workflow-loader"
 import { DAEMON_TOOL_NAMES } from "@agentproto/runtime/daemon-tool-names"
 

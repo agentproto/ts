@@ -12,7 +12,7 @@ agentproto llm gateway restart [--json]
 ```
 
 The `endpoints` subverbs provide read/write visibility into the LLM gateway's
-(`@agentproto/inference-endpoint`) **named endpoints** — local/LAN OpenAI-compatible
+(`@agentproto/llm-endpoint`) **named endpoints** — local/LAN OpenAI-compatible
 model servers (LM Studio, Ollama, llama-server, vLLM, …) the gateway can route
 `<id>/<model>` requests to, alongside its fixed hosted providers and the single
 `forge` self-hosted slot. The `gateway` subverbs manage the proxy sidecar
@@ -52,7 +52,7 @@ config is portable between the two gateways. `connector` is new: it names
 which local/LAN runtime `baseUrl` points at (`lmstudio`, `ollama`, `vllm`,
 `llama-server`, or the generic `openai-compatible` fallback) — it never
 affects request routing, only which connector's model listing/context-size
-detail `test`/`detect`/`doctor` show. See the `@agentproto/inference-endpoint`
+detail `test`/`detect`/`doctor` show. See the `@agentproto/llm-endpoint`
 README's "Named endpoints" section for the full shape and how the gateway
 routes/merges these at runtime (`GET /v1/models`, `GET /v1/endpoints`,
 `defaultRequestFields` merging, and the `LLM_ENDPOINT_PASSTHROUGH_THINKING`
@@ -166,7 +166,7 @@ agentproto llm endpoints list --json | jq -r '.endpoints[].id'
 
 ## `gateway`
 
-Manage the **daemon-supervised `@agentproto/inference-endpoint` proxy sidecar** — a
+Manage the **daemon-supervised `@agentproto/llm-endpoint` proxy sidecar** — a
 different surface from the named endpoints above. The sidecar is the process the
 daemon boots (and restarts on crash) when `features.llmEndpoint` is on; it's
 what clients actually hit when they talk to `GET /v1/models` or POST a chat
@@ -210,7 +210,7 @@ never touched — the daemon never spawned it, so it has nothing to stop.
 
 ## See also
 
-- The `@agentproto/inference-endpoint` README's "Named endpoints" section — the
+- The `@agentproto/llm-endpoint` README's "Named endpoints" section — the
   config file's full shape, routing/merging behavior, and the gateway's own
   `GET /v1/endpoints` health route.
 - [`doctor.md`](./doctor.md) — `agentproto doctor` includes an optional

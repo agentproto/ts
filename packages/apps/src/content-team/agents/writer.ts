@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app"
+import type { AgentEntry } from "@agentproto/app-kit"
 
 /** Drafts the piece from the brief. */
 export const writer: AgentEntry = {

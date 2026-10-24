@@ -32,7 +32,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app"
+import { defineApp, type AppHandle } from "@agentproto/app-kit"
 import { AGENTS_OVERVIEW_HTML } from "./panel.js"
 import type { AgnoMcpApp } from "../mcp-app-types.js"
 

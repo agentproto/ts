@@ -58,7 +58,7 @@
     "@agentclientprotocol/sdk": "^0.21.1",
     "@agentproto/agent": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
-    "@agentproto/bridge": "workspace:*",
+    "@agentproto/mastra": "workspace:*",
     "@agentproto/runtime": "workspace:*",
     "@ai-sdk/anthropic": "^3.0.133",
     "@ai-sdk/provider": "^3.0.19",
@@ -69,7 +69,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@agentproto/app": "workspace:*",
+    "@agentproto/app-kit": "workspace:*",
     "@agentproto/apps": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.9",

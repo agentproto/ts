@@ -164,7 +164,7 @@ export function appHasChildren(app: InstalledAppInfo): boolean {
 }
 
 /** Absolute path of the app's root manifest (`<dir>/.agentproto/APP.md`,
- *  where `@agentproto/app`'s `emit` writes it). Undefined when the
+ *  where `@agentproto/app-kit`'s `emit` writes it). Undefined when the
  *  registry record carries no `dir` (older daemon). */
 export function appManifestPath(app: InstalledAppInfo): string | undefined {
   const dir = app.dir?.trim()

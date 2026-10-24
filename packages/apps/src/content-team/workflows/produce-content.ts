@@ -2,7 +2,7 @@ import { defineWorkflow } from "@agentproto/workflow"
 
 /**
  * The one workflow the content team produces a piece through. Every team
- * agent references it (app attachment invariant).
+ * agent references it (app-kit attachment invariant).
  *
  * Three declarative `kind:"agent"` steps — researcher → writer → editor —
  * one per team agent, each `agent.ref` resolving (at compile time, against

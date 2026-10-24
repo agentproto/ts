@@ -1,6 +1,6 @@
 ---
 name: ap-apps
-description: Install and run agentproto APPs (AIP-53 bundles of agents and workflows) — app_install, app_apply/unapply to scopes, app_run with concurrent or sequenced agents, app_status/app_stop, and app data/artifact/skill reads. Trigger when asked to install or run an agentproto app, bundle, or app package.
+description: Install and run agentproto APPs (AIP-53 bundles of agents and workflows) — app_install, app_apply/unapply to scopes, app_run with concurrent or sequenced agents, app_status/app_stop, and app data/artifact/skill reads. Trigger when asked to install or run an agentproto app, bundle, or app-kit package.
 ---
 
 # ap-apps

@@ -77,7 +77,7 @@ vi.mock("@agentproto/auth", async importOriginal => {
   }
 })
 
-// Control `@agentproto/inference-endpoint`'s configured-endpoints/connector reads
+// Control `@agentproto/llm-endpoint`'s configured-endpoints/connector reads
 // deterministically — the `inference`-binding tests below must never touch
 // the real `~/.agentproto/llm-endpoints.json` or make a real network probe,
 // and `syncPiModels` must never touch the real `~/.pi/agent/models.json`.
@@ -86,8 +86,8 @@ const llmEndpointState = vi.hoisted(() => ({
   models: {} as Record<string, { id: string; state: "loaded" | "not-loaded" | "unknown"; loadedCtx?: number }[]>,
   syncPiModelsCalls: 0,
 }))
-vi.mock("@agentproto/inference-endpoint", async importOriginal => {
-  const actual = await importOriginal<typeof import("@agentproto/inference-endpoint")>()
+vi.mock("@agentproto/llm-endpoint", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/llm-endpoint")>()
   return {
     ...actual,
     getConfiguredEndpoints: () => llmEndpointState.endpoints,

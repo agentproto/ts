@@ -63,8 +63,8 @@ describe("§3.2 OpenAI descriptor types", () => {
     void bad
   })
 
-  it("openai-ui-extension — the app normalized shape drops in unchanged (W-A contract, not duplicated)", () => {
-    // Table: the full normalized block — assembled from the W-A app
+  it("openai-ui-extension — the app-kit normalized shape drops in unchanged (W-A contract, not duplicated)", () => {
+    // Table: the full normalized block — assembled from the W-A app-kit
     // validator's output — must be accepted as `openai` in the descriptor.
     const normalized: OpenAIAppUiExtension = {
       entrypoints: [{ type: "global" }, { type: "thread" }, { type: "file", extensions: [".md"] }],

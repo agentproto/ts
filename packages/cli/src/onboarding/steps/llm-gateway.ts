@@ -1,5 +1,5 @@
 /**
- * llm-gateway — the daemon-managed `@agentproto/inference-endpoint` PROXY sidecar
+ * llm-gateway — the daemon-managed `@agentproto/llm-endpoint` PROXY sidecar
  * itself (`features.llmEndpoint` / `LlmEndpointRegistry`). NOT the same
  * thing as `local-models.ts`, which probes the named local/LAN model
  * ENDPOINTS the gateway routes to — this step is about whether the gateway

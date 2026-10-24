@@ -317,7 +317,7 @@ describe("publish pipeline end to end", () => {
     expect(doc.entries[0].appId).toBe("e2e-app")
 
     // 4. the entry's sha256 is what unpack/stageAgentApp verifies
-    const { unpackApp } = await import("@agentproto/app")
+    const { unpackApp } = await import("@agentproto/app-kit")
     const { manifest } = await unpackApp({ file: bundle, dest: join(root, "restored") })
     expect(parsed.source.kind).toBe("agentapp")
     if (parsed.source.kind === "agentapp") {

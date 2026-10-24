@@ -122,7 +122,7 @@ PACKAGES=(
   "@agentproto/extension|extension"
   "@agentproto/intent|intent"
   "@agentproto/lesson|lesson"
-  "@agentproto/bridge|bridge"
+  "@agentproto/mastra|mastra"
   "@agentproto/mcp-server|mcp-server"
   "@agentproto/office|office"
   "@agentproto/persona|persona"

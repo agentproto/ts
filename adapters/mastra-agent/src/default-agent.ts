@@ -8,8 +8,8 @@
 
 import { readFile } from "node:fs/promises"
 import { agentFromManifest, parseAgentManifest } from "@agentproto/agent"
-import { buildMastraAgent } from "@agentproto/bridge"
-import type { MastraToolLike } from "@agentproto/bridge"
+import { buildMastraAgent } from "@agentproto/mastra"
+import type { MastraToolLike } from "@agentproto/mastra"
 import { ProviderHistoryCompat } from "@mastra/core/processors"
 import type { CompatRule } from "@mastra/core/processors"
 import { AgentController } from "@mastra/core/agent-controller"

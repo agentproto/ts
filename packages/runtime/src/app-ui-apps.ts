@@ -1,5 +1,5 @@
 /**
- * Dynamic MCP-app panels for installed `@agentproto/app` apps that ship
+ * Dynamic MCP-app panels for installed `@agentproto/app-kit` apps that ship
  * a `ui` block (`defineApp({ ui: { html, title?, tools?, csp? } })`,
  * `app-tools.ts`'s `performInstall`). Bridges `AppRegistry` → `AgnoMcpApp[]`
  * so `registerMcpApps` (mcp-apps-adapter.ts) can mount them next to the

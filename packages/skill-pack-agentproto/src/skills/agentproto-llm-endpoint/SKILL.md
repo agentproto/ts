@@ -22,7 +22,7 @@ metadata:
 
 ## The proxy
 
-The LLM endpoint proxy lives in `projects/agentproto/ts/packages/inference-endpoint`.
+The LLM endpoint proxy lives in `projects/agentproto/ts/packages/llm-endpoint`.
 It exposes an Anthropic-compatible `/v1/messages` endpoint and maps "secret
 codenames" to real provider models.
 
@@ -52,7 +52,7 @@ codenames" to real provider models.
 
 ```bash
 # From repo root
-pnpm --filter=@agentproto/inference-endpoint start
+pnpm --filter=@agentproto/llm-endpoint start
 # → listens on http://localhost:18090/v1
 ```
 
@@ -286,7 +286,7 @@ pkill -f "agentproto serve"
 
 - `agentproto` skill — general daemon/CLI/MCP usage
 - `ap-tunnels` / `ap-adapters` skills — tunnel creation, adapter catalog
-- `projects/agentproto/ts/packages/inference-endpoint` — proxy source
+- `projects/agentproto/ts/packages/llm-endpoint` — proxy source
 - `projects/agentproto/ts/adapters/claude-sdk/src/index.ts` — SDK adapter
   manifest
 - `projects/agentproto/ts/adapters/claude-code/src/index.ts` — Code adapter

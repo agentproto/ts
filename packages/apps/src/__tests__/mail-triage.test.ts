@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest"
-import { loadAppHandle } from "@agentproto/app"
+import { loadAppHandle } from "@agentproto/app-kit"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"

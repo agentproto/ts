@@ -8,7 +8,7 @@
  * that only needs the HTML (e.g. packages/vscode's story-panel-style
  * webviews, or a future live-session webview) can import it via the
  * `@agentproto/apps/live-session/panel` subpath without pulling in
- * `@agentproto/app` (and therefore `@mastra/core`) the way importing
+ * `@agentproto/app-kit` (and therefore `@mastra/core`) the way importing
  * from `./index.js` would.
  *
  * Forked structurally from terminal-panel-app.ts: same "static ui://

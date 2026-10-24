@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app"
+import type { AgentEntry } from "@agentproto/app-kit"
 
 /** Reviews the diff; reports only. */
 export const reviewer: AgentEntry = {

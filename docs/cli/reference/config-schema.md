@@ -332,7 +332,7 @@ Daemon feature toggles. All fields are optional; defaults are conservative
 | Field         | Type      | Meaning |
 | ------------- | --------- | ------- |
 | `pty`         | `boolean` | Informational hint that PTY support is desired. The daemon still detects `node-pty`'s presence at runtime. |
-| `llmEndpoint` | `boolean` | Enable the local `@agentproto/inference-endpoint` proxy sidecar. When `true`, the daemon registers the `llm-endpoint` route and exposes the `llm_endpoint_*` MCP tools. Default `false` — opt-in because the sidecar spawns a child process and binds an extra port. |
+| `llmEndpoint` | `boolean` | Enable the local `@agentproto/llm-endpoint` proxy sidecar. When `true`, the daemon registers the `llm-endpoint` route and exposes the `llm_endpoint_*` MCP tools. Default `false` — opt-in because the sidecar spawns a child process and binds an extra port. |
 
 ### `models: Record<string, string | object>`
 

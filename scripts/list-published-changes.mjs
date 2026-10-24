@@ -9,7 +9,7 @@
  * `package.json` is npm's own allowlist for what ships in the tarball (e.g.
  * `["dist", "README.md", "LICENSE"]`) — everything else in the package
  * directory (docs/, scripts/, tests/, source configs) never leaves the repo.
- * A docs-only change in a PUBLIC package (e.g. `packages/inference-endpoint/docs/
+ * A docs-only change in a PUBLIC package (e.g. `packages/llm-endpoint/docs/
  * router-ux-design.md` — PR #690) demanded a changeset and a real npm bump for
  * zero shipped lines, purely because the old gate's test was a path-prefix
  * ("is this dir private") instead of a published-surface test. It happened to

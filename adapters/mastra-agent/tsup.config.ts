@@ -18,7 +18,7 @@ export default createTsupConfig({
   external: [
     "@agentproto/agent",
     "@agentproto/driver-agent-cli",
-    "@agentproto/bridge",
+    "@agentproto/mastra",
     "@agentclientprotocol/sdk",
     "@ai-sdk/anthropic",
     "@ai-sdk/provider",

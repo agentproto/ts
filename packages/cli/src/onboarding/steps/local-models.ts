@@ -26,14 +26,14 @@ import {
   type ConnectorId,
   type ConnectorModel,
   type EndpointConfig,
-} from "@agentproto/inference-endpoint"
+} from "@agentproto/llm-endpoint"
 import type { OnboardingStep, StepCheck, StepContext } from "../types.js"
 import { errorMessage, readText, tildify } from "./_util.js"
 
 const PROBE_TIMEOUT_MS = 4000
 
 /**
- * Mirrors `resolveEndpointsFilePath` (`@agentproto/inference-endpoint`) but reads
+ * Mirrors `resolveEndpointsFilePath` (`@agentproto/llm-endpoint`) but reads
  * `ctx.env`/`ctx.homedir` instead of `process.env`/`os.homedir()` directly,
  * so this step stays fakeable in tests like every other onboarding step.
  */

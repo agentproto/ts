@@ -26,7 +26,7 @@ import { registerTunnelTools } from "../tunnel-tools.js"
 import { TunnelRegistry } from "../tunnel-registry.js"
 import { registerAppDataTools } from "../app-data.js"
 import { registerAppExternalTools } from "../app-external.js"
-import { defineApp } from "@agentproto/app"
+import { defineApp } from "@agentproto/app-kit"
 
 function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content

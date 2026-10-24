@@ -1300,7 +1300,7 @@ export class DaemonClient {
   }
 
   /**
-   * `llm_endpoint_status` — the daemon-supervised `@agentproto/inference-endpoint`
+   * `llm_endpoint_status` — the daemon-supervised `@agentproto/llm-endpoint`
    * proxy sidecar's lifecycle state {running, pid, port, baseUrl, healthy,
    * startedAt, status}. `healthy` reflects a live `GET /v1/models` probe. An
    * endpoint never started this boot resolves `status: "never-started"`.

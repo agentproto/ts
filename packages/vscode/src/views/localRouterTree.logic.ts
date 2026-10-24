@@ -1,6 +1,6 @@
 /**
  * Pure tree-building logic for the "Local Router" grouping in the auth
- * profiles view — the daemon-supervised `@agentproto/inference-endpoint` proxy
+ * profiles view — the daemon-supervised `@agentproto/llm-endpoint` proxy
  * sidecar. No vscode import so it's unit-testable under plain vitest, mirroring
  * authProfilesTree.logic.ts.
  *

@@ -58,6 +58,51 @@ function toolOnlyAgentSession(): AgentSessionLike {
   }
 }
 
+/** Yields only an `inbox_ack` tool call (no assistant text) — the no-op ack case. */
+function ackOnlyAgentSession(toolName = "inbox_ack"): AgentSessionLike {
+  return {
+    sessionId: "ack-only",
+    async *send() {
+      yield { kind: "tool-call", toolName, toolCallId: "t1", arguments: { ids: ["m1"] } }
+      yield { kind: "tool-result", toolName, toolCallId: "t1", result: "ok" }
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+/** Yields an `inbox_ack` plus assistant text — a turn that said something. */
+function ackAndTalkingAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "ack-and-talking",
+    async *send() {
+      yield { kind: "tool-call", toolName: "inbox_ack", toolCallId: "t1", arguments: { ids: ["m1"] } }
+      yield { kind: "tool-result", toolName: "inbox_ack", toolCallId: "t1", result: "ok" }
+      yield { kind: "text-delta", text: "RIEN\n" }
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+/** Yields `inbox_ack` plus another tool call — not a pure acknowledgement. */
+function ackAndSendAgentSession(): AgentSessionLike {
+  return {
+    sessionId: "ack-and-send",
+    async *send() {
+      yield { kind: "tool-call", toolName: "inbox_ack", toolCallId: "t1", arguments: { ids: ["m1"] } }
+      yield { kind: "tool-result", toolName: "inbox_ack", toolCallId: "t1", result: "ok" }
+      yield { kind: "tool-call", toolName: "message_send", toolCallId: "t2", arguments: { text: "hi" } }
+      yield { kind: "tool-result", toolName: "message_send", toolCallId: "t2", result: "ok" }
+      yield { kind: "turn-end", reason: "completed" }
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
 async function runOneTurn(agent: AgentSessionLike): Promise<SessionTurnEndEvent> {
   const sessionEvents = createSessionEventBus()
   const registry = createSessionsRegistry({ sessionEvents, persist: false })
@@ -112,5 +157,29 @@ describe("empty-turn detection", () => {
     registry.shutdown()
 
     expect(lines.some(l => l.includes("empty turn"))).toBe(true)
+  })
+})
+
+describe("silent-turn detection", () => {
+  it("flags a turn whose only tool call is inbox_ack and which produced no text", async () => {
+    const ev = await runOneTurn(ackOnlyAgentSession())
+    expect(ev.silent).toBe(true)
+    expect(ev.empty).toBeUndefined()
+  })
+
+  it("matches an inbox_ack tool name behind an MCP server prefix", async () => {
+    const ev = await runOneTurn(ackOnlyAgentSession("mcp__agentproto__inbox_ack"))
+    expect(ev.silent).toBe(true)
+    expect(ev.empty).toBeUndefined()
+  })
+
+  it("does NOT flag an inbox_ack turn that also produced assistant text", async () => {
+    const ev = await runOneTurn(ackAndTalkingAgentSession())
+    expect(ev.silent).not.toBe(true)
+  })
+
+  it("does NOT flag a turn that acknowledged an inbox item and called another tool", async () => {
+    const ev = await runOneTurn(ackAndSendAgentSession())
+    expect(ev.silent).not.toBe(true)
   })
 })

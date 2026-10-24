@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app"
+import type { AgentEntry } from "@agentproto/app-kit"
 
 /** Art-directs the cover illustration for each article. */
 export const illustrator: AgentEntry = {

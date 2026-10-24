@@ -1357,7 +1357,7 @@ function resolveAppProvenance(
  * wins. Otherwise, when the workflow is owned by EXACTLY ONE installed app
  * (same ambiguity rule as {@link resolveAppProvenance}), agent steps (and
  * the run itself) default to that app's root — the same root #1395's
- * app-bundled cli drivers spawn under (`packages/app/src/
+ * app-bundled cli drivers spawn under (`packages/app-kit/src/
  * load-app-tools.ts`'s `resolveCliCwd`), so a workflow mixing `tool` and
  * `agent` steps sees one consistent cwd regardless of step kind.
  *

@@ -29,8 +29,6 @@ export {
 } from "./spec/names.js"
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-export { defineGovernance } from "./policy/index.js"
-
 export * from "./spec/doctypes/index.js"
 export * from "./spec/validators/index.js"
 export * from "./spec/hash-chain/index.js"

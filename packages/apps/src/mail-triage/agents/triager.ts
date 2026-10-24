@@ -1,5 +1,5 @@
 import { defineAgent } from "@agentproto/agent"
-import type { AgentEntry } from "@agentproto/app"
+import type { AgentEntry } from "@agentproto/app-kit"
 
 /** Triages your inbox — finds unread mail, categorizes, labels, archives. */
 export const triager: AgentEntry = {

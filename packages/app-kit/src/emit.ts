@@ -72,7 +72,7 @@ interface EmitInput {
  *
  *  - `"canonical"` — `<dir>/.agents/<id>/AGENT.md`, the AIP-42 hand-written
  *    layout `loadAgent`/`self_inspect` read first.
- *  - `"app"` — `<dir>/.agentproto/agents/<id>/AGENT.md`, the app
+ *  - `"app"` — `<dir>/.agentproto/agents/<id>/AGENT.md`, the app-kit
  *    `emitApp` default (stays out of the shared root `.agents/`).
  */
 export type AgentManifestLayout = "canonical" | "app"

@@ -9962,7 +9962,7 @@ async function handleWebhookTargetSentinel(
 
 /**
  * /llm-endpoint routes — status + restart for the daemon-managed
- * `@agentproto/inference-endpoint` proxy sidecar. REST twin of the MCP
+ * `@agentproto/llm-endpoint` proxy sidecar. REST twin of the MCP
  * `llm_endpoint_status` / `llm_endpoint_start` / `llm_endpoint_stop` tools
  * (llm-endpoint-tools.ts), same `LlmEndpointRegistry` singleton — for
  * `agentproto llm gateway status|restart` and the "LLM gateway" doctor step,

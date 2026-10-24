@@ -256,6 +256,18 @@ describe("session-follow", () => {
       expect(keep.sent).toHaveLength(1)
     })
 
+    it("a follower with skipEmptyTurns drops a silent turn-end and still delivers a non-silent one", async () => {
+      const { sent } = setup([running("chief"), running("a"), running("b")], { selector: { all: true } })
+      emitTurnEnd(bus, "a", { silent: true })
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+
+      emitTurnEnd(bus, "b")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("(b)")
+    })
+
     it("a turn-end that left the session awaiting input reads as awaiting-input, once", async () => {
       const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
       emitTurnEnd(bus, "a", { awaitingInput: true, question: { text: "Deploy now?", source: "heuristic" } })

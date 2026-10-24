@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/apps v0.1.0
- * Ready-made agentproto apps (teams of agents + workflows) built on app.
+ * Ready-made agentproto apps (teams of agents + workflows) built on app-kit.
  */`,
   entry: {
     index: "src/index.ts",
@@ -23,11 +23,11 @@ export default createTsupConfig({
     "work-board": "src/work-board/index.ts",
     "review-panel": "src/review-panel/index.ts",
     "store": "src/store/index.ts",
-    // HTML-only entries — no `@agentproto/app` (and therefore
+    // HTML-only entries — no `@agentproto/app-kit` (and therefore
     // `@mastra/core`) reachable from these, unlike the entries above. A
     // consumer that only needs the panel HTML (packages/vscode's
     // storyPanel.ts) imports one of these subpaths instead, so its own
-    // bundler never has a reason to trace into app/mastra at all.
+    // bundler never has a reason to trace into app-kit/mastra at all.
     "sessions-panel/panel": "src/sessions-panel/panel.ts",
     "agents-overview/panel": "src/agents-overview/panel.ts",
     "bureau-sessions/panel": "src/bureau-sessions/panel.ts",
@@ -42,14 +42,14 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: false,
   // dts emitted by `tsc -p tsconfig.build.json` instead — @mastra/core's own
-  // .d.ts (pulled transitively via app) has generic-variance issues that
-  // break rollup-plugin-dts even when external (same trick app/mastra use).
+  // .d.ts (pulled transitively via app-kit) has generic-variance issues that
+  // break rollup-plugin-dts even when external (same trick app-kit/mastra use).
   dts: false,
   external: [
-    "@agentproto/app",
+    "@agentproto/app-kit",
     "@agentproto/agent",
     "@agentproto/workflow",
-    "@agentproto/bridge",
+    "@agentproto/mastra",
     "@mastra/core",
     "@mastra/core/agent",
     "zod",

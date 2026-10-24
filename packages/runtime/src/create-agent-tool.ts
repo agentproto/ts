@@ -2,7 +2,7 @@
  * `create_agent` — a daemon MCP tool that renders an AIP-42 `agent/v1`
  * AGENT.md for a slug into the caller's workspace `.agents/<slug>/AGENT.md`
  * (the canonical hand-written layout `loadAgent` / `self_inspect` read
- * first). Shares `renderAgentManifest` (`@agentproto/app`) with `emitApp`
+ * first). Shares `renderAgentManifest` (`@agentproto/app-kit`) with `emitApp`
  * and the `agentproto agent create` CLI verb, so every authoring path emits
  * an identical manifest.
  *
@@ -18,7 +18,7 @@ import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
 import { z } from "zod"
-import { renderAgentManifest } from "@agentproto/app"
+import { renderAgentManifest } from "@agentproto/app-kit"
 
 /** Default model stamped into a created manifest when the caller names none. */
 export const DEFAULT_CREATED_AGENT_MODEL = "claude-sonnet-5"

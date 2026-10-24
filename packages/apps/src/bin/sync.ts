@@ -4,7 +4,7 @@
  * and write a catalog of what landed where.
  *
  * Each app's `AGENT.md` / `WORKFLOW.md` / `APP.md` manifests are written
- * under `<baseDir>/<slug>` via `AppHandle.emit` (see `@agentproto/app`'s
+ * under `<baseDir>/<slug>` via `AppHandle.emit` (see `@agentproto/app-kit`'s
  * `emitApp`); the catalog is a flat index a host can read without walking
  * every app's directory (`app_install`'s own discovery path already reads
  * each `APP.md` individually — this is a cheaper "what's on disk" summary
@@ -15,7 +15,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { parseArgs } from "node:util"
-import type { AppHandle } from "@agentproto/app"
+import type { AppHandle } from "@agentproto/app-kit"
 import { codeTeam } from "../code-team/index.js"
 import { contentTeam } from "../content-team/index.js"
 import { mailTriage } from "../mail-triage/index.js"

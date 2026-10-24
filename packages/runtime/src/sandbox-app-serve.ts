@@ -46,7 +46,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
 import type { SandboxExecOpts } from "@agentproto/sandbox"
 import type { SandboxExec } from "./sandbox-workspace-remote.js"
-import { workspaceFromMarkdownText } from "@agentproto/app"
+import { workspaceFromMarkdownText } from "@agentproto/app-kit"
 import {
   createGithubWorkspaceSync,
   type AsyncGitRunner,

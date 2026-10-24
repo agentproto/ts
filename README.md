@@ -149,7 +149,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `command_log_tail` | Read the JSONL audit log for `command_execute` |
 | `policy_attach` / `policy_cancel` / `policy_status` | Supervisor completion-policy lifecycle |
 | `workflow_run_file` / `workflow_start` / `workflow_status` / `workflow_cancel` | Run WORKFLOW.md and stage-barrier workflows |
-| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app` apps as live agent sessions |
+| `app_install` / `app_run` / `app_list` / `app_status` / `app_stop` | Install and run `@agentproto/app-kit` apps as live agent sessions |
 | `app_apply` / `app_unapply` / `app_list_applied` | Mount / unmount apps to scopes with dependency validation |
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration), anchored at the app's `dataDir` (default `<dir>/data`) |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets |
@@ -246,7 +246,7 @@ Re-express any `ToolImplementation` in a host framework's tool shape:
 ```
 adapters/ai-sdk/        @agentproto/adapter-ai-sdk    Vercel AI SDK Tool projection
 adapters/mastra/        @agentproto/adapter-mastra     Mastra createTool projection
-packages/bridge/        @agentproto/bridge             AIP-42 AGENT.md → Mastra Agent
+packages/mastra/        @agentproto/mastra             AIP-42 AGENT.md → Mastra Agent
 ```
 
 ```ts
@@ -304,7 +304,7 @@ Key specs implemented here:
 | AIP-36 | SANDBOX.md | `@agentproto/sandbox` |
 | AIP-40 | EXTENSION.md | `@agentproto/extension` |
 | AIP-41 | ROUTINE.md | `@agentproto/routine` |
-| AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/bridge` |
+| AIP-42 | AGENT.md | `@agentproto/agent`, `@agentproto/mastra` |
 | AIP-45 | Agent CLI adapter | `adapters/{claude-code,claude-sdk,hermes,opencode,codex,openclaw,mastra-agent,antigravity,jcode}` |
 | AIP-57 | Model resolution primitive | `@agentproto/model-routing` |
 | AIP-62 | REVIEW.md | `@agentproto/review` |

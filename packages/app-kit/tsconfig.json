@@ -1,7 +1,6 @@
 {
   "extends": "@agentproto/tooling/typescript/node-library.json",
   "compilerOptions": {
-    "rootDir": "src",
     "declaration": false,
     "declarationMap": false
   },

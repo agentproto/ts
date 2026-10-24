@@ -129,7 +129,7 @@ describe("app pack --release --entry", () => {
     // unpackApp verifies the aggregate sha256 exactly like stageAgentApp
     // does at install time; a wrong entry digest would not match it.
     const dest = join(root, "restored")
-    const { unpackApp } = await import("@agentproto/app")
+    const { unpackApp } = await import("@agentproto/app-kit")
     const unpacked = await unpackApp({ file: bundle, dest })
     expect(unpacked.manifest.sha256).toBe(entry.source.sha256)
     expect(entry.source.size).toBe((await stat(bundle)).size)

@@ -64,7 +64,7 @@ import {
   readEndpointsFromDisk,
   resolveEndpointsFilePath,
   type EndpointConfig,
-} from "@agentproto/inference-endpoint"
+} from "@agentproto/llm-endpoint"
 import { listInstalledAdapters as listInstalledAdaptersImpl } from "../registry/resolve.js"
 import {
   sealWithPassphrase,

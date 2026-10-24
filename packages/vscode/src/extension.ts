@@ -85,7 +85,7 @@ import type { AppCatalogEntry } from "./client/types.js"
 // The builtin's own module is the single source of truth for its id and its
 // UI tool allowlist, so neither is copied here to drift. Import the
 // `/work-board/panel` subpath specifically, NOT `@agentproto/apps` — the
-// package root pulls in app, whose transitive native `.node` deps esbuild
+// package root pulls in app-kit, whose transitive native `.node` deps esbuild
 // refuses to bundle ("No loader is configured for '.node' files"). Same
 // reason storyPanel.ts imports `/session-story/panel`.
 import { WORK_BOARD_APP_ID, WORK_BOARD_UI_TOOLS } from "@agentproto/apps/work-board/panel"

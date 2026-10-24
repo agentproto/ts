@@ -8,7 +8,7 @@
 import { describe, it, expect } from "vitest"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
-import { loadAppHandle } from "@agentproto/app"
+import { loadAppHandle } from "@agentproto/app-kit"
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "session-steward")
 const ENTRY = join(APP_DIR, ".agentproto", "workflows", "session-steward", "entry.mjs")

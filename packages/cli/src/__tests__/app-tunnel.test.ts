@@ -2,7 +2,7 @@
  * `agentproto app tunnel` (`commands/app.ts`) against a mocked daemon /mcp
  * client: the flags it forwards to the daemon's `app_tunnel` tool. The app
  * manifest load is mocked too, so the test exercises the CLI's argument
- * plumbing (not app's loader) — `--public` must reach the daemon as
+ * plumbing (not app-kit's loader) — `--public` must reach the daemon as
  * `public: true`, and its absence must NOT send the key at all (the tool
  * defaults to a private, signed link).
  */
@@ -35,8 +35,8 @@ vi.mock("../app-serve.js", async (importOriginal) => {
   }
 })
 
-vi.mock("@agentproto/app", async (importOriginal) => {
-  const mod = await importOriginal<typeof import("@agentproto/app")>()
+vi.mock("@agentproto/app-kit", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("@agentproto/app-kit")>()
   return {
     ...mod,
     loadAppHandle: vi.fn(async () => ({ ui: { port: 4321 } })),

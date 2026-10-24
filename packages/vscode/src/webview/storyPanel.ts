@@ -8,7 +8,7 @@
  * panel's house-app source), reused byte-for-byte (the same validated
  * surface the MCP-Apps host renders). Imported from the `/panel` subpath
  * specifically, not `@agentproto/apps/session-story` — that entry also
- * exports a `defineApp()` `AppHandle`, which pulls in `@agentproto/app`
+ * exports a `defineApp()` `AppHandle`, which pulls in `@agentproto/app-kit`
  * (and therefore `@mastra/core`) at bundle time; this extension has no use
  * for that and must not pay for it.
  *

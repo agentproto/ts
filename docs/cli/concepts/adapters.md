@@ -65,7 +65,7 @@ See [`verbs/run.md`](../verbs/run.md) and
 `@agentproto/adapter-mastra-agent` is the **first-party agent** — unlike
 the other adapters, it does not wrap an external CLI. It parses an
 AIP-42 `AGENT.md` manifest, builds a live Mastra agent
-(`@agentproto/bridge`), and serves it over AIP-44 ACP (Agent Client
+(`@agentproto/mastra`), and serves it over AIP-44 ACP (Agent Client
 Protocol). Internally it uses Mastra's model router, which accepts any
 `provider/model` string the Mastra gateway can route:
 

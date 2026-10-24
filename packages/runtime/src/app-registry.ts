@@ -9,9 +9,9 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, dirname } from "node:path"
 import { mkdirSync, readFileSync, existsSync, writeFileSync, renameSync } from "node:fs"
-import type { AppExposes, AppRequirement, OpenAIAppUiExtension } from "@agentproto/app"
+import type { AppExposes, AppRequirement, OpenAIAppUiExtension } from "@agentproto/app-kit"
 
-/** A ref pair as materialized by `@agentproto/app`'s `emit` — an
+/** A ref pair as materialized by `@agentproto/app-kit`'s `emit` — an
  *  agent/workflow id plus the absolute path to its manifest on disk. */
 export interface InstalledAppRef {
   readonly id: string
@@ -88,7 +88,7 @@ export interface InstalledApp {
     /** AIP-53 link-token scoping (app-link-token.ts): argument-level
      *  refinement of `tools`, keyed by tool id, enforced only for calls
      *  made under a valid scoped link/session token. See
-     *  `@agentproto/app`'s `AppUiDefinition.toolScope` for the full
+     *  `@agentproto/app-kit`'s `AppUiDefinition.toolScope` for the full
      *  contract — carried here verbatim from `installed.ui.toolScope` at
      *  install time. */
     readonly toolScope?: Readonly<Record<string, Readonly<Record<string, string>>>>
@@ -110,7 +110,7 @@ export interface InstalledApp {
      *  structurally from the app's normalized `AppUiDefinition.extensions`
      *  by `performInstall` (app-tools.ts is the ONLY writer; every other
      *  reader treats this as already-validated — validation happened in
-     *  app at `defineApp`/load time, install is not a second gate).
+     *  app-kit at `defineApp`/load time, install is not a second gate).
      *  Frozen as a plain JSON-safe object so `apps.json` persistence is
      *  byte-stable. Absent ⇒ the app is portable-only. */
     readonly extensions?: {
