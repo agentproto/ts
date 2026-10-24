@@ -24,7 +24,7 @@
  * no LLM SDK or network dependency of its own; a real adapter (agent
  * session, supervisor judge-gate, …) is a documented follow-up.
  *
- * Spec: https://agentproto.sh/docs/aip-14 (TOOL), /docs/aip-30 (PROVIDER)
+ * Related specs: https://agentproto.sh/docs/aip-14 (TOOL), /docs/aip-30 (PROVIDER)
  */
 
 import { defineDriver } from "@agentproto/driver"
@@ -39,8 +39,15 @@ import {
   latencyBudgetImpl,
 } from "./scorers.js"
 
-export const SPEC_NAME = "agenteval/v1" as const
+/** Internal data-format id (not an AIP registry spec name); see AIP-70. */
+export const EVAL_FORMAT = "agentproto.eval/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
+
+/**
+ * @deprecated Not an AIP spec name; use {@link EVAL_FORMAT} instead.
+ * Kept for backward compatibility.
+ */
+export const SPEC_NAME = "agenteval/v1" as const
 
 export { scoreSchema, type Score } from "./score.js"
 

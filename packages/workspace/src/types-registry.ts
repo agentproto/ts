@@ -30,7 +30,7 @@ const typeEntrySchema = z
 
 export const typesManifestSchema = z
   .object({
-    schema: z.literal("workspace-types/v1"),
+    schema: z.enum(["workspace.types/v1", "workspace-types/v1"]),
     types: z.record(z.string().regex(/^[a-z][a-z0-9-]*$/), typeEntrySchema),
   })
   .strict()
@@ -57,7 +57,9 @@ export function parseTypesManifest(source: string): TypesManifestFrontmatter {
 // author doesn't have to spell out every zod default by hand.
 export function writeTypesManifest(def: TypesManifestFrontmatterInput, body = ""): string {
   const parsed = typesManifestSchema.parse(def)
-  return matter.stringify(body, parsed)
+  // Writers keep emitting the legacy tag until the next major. Old readers
+  // in the field only know workspace-types/v1.
+  return matter.stringify(body, { ...parsed, schema: "workspace-types/v1" })
 }
 
 /** `type`'s resolved parent-chain floor, per the type's own `extends` chain. */

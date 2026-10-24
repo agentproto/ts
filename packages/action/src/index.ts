@@ -10,7 +10,7 @@
  *   - MD:  `parseActionManifest(src) → actionFromManifest({...})` → `ActionHandle`
  */
 
-export const SPEC_NAME = "agentaction/v1" as const
+export const SPEC_NAME = "action/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineAction } from "./define-action.js"

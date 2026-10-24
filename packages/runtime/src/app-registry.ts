@@ -209,16 +209,21 @@ interface AppRegistryState {
  *  unusable (no `appId`/`dir`) and are not in the registry; `incomplete`
  *  records were kept with the missing fields defaulted, and are cleared once
  *  the app is reinstalled (`upsertApp`) — the daemon does that on its own
- *  from the app's dir (`repairIncompleteApps`, app-tools.ts). */
+ *  from the app's dir (`repairIncompleteApps`, app-tools.ts). `dir-missing`
+ *  is computed live on every `listIssues()` call: an installed app whose
+ *  `dir` no longer exists on disk (e.g. installed from a worktree that was
+ *  later removed), so its agents and workflows cannot load until it is
+ *  reinstalled from a live checkout. */
 export interface AppRegistryIssue {
-  readonly kind: "dropped" | "incomplete"
+  readonly kind: "dropped" | "incomplete" | "dir-missing"
   readonly appId: string | null
   readonly dir: string | null
   readonly problems: readonly string[]
 }
 
 export interface AppRegistry {
-  /** Records that loaded partial or malformed (see {@link AppRegistryIssue}). */
+  /** Records that loaded partial or malformed, plus installed apps whose
+   *  `dir` is gone (see {@link AppRegistryIssue}). */
   listIssues(): AppRegistryIssue[]
   /** Insert or, keyed by `appId`, fully replace an installed-app record. */
   upsertApp(
@@ -412,7 +417,10 @@ export function createAppRegistry(opts?: {
 
   return {
     listIssues() {
-      return issues.map(i => ({ ...i }))
+      const dirMissing: AppRegistryIssue[] = state.apps
+        .filter(a => !existsSync(a.dir))
+        .map(a => ({ kind: "dir-missing", appId: a.appId, dir: a.dir, problems: [`dir no longer exists: ${a.dir}`] }))
+      return [...issues.map(i => ({ ...i })), ...dirMissing]
     },
     upsertApp(input) {
       const now = new Date().toISOString()

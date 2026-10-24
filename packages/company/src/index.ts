@@ -10,7 +10,7 @@
  *   - MD:  `parseCompanyManifest(src) → companyFromManifest({...})` → `CompanyHandle`
  */
 
-export const SPEC_NAME = "agentcompany/v1" as const
+export const SPEC_NAME = "company/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineCompany } from "./define-company.js"

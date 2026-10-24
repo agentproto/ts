@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { signingMethodSchema } from "./signature.js"
 import { actorKindSchema } from "./audit-event.js"
+import { ACCEPTED_SPEC_NAMES } from "../names.js"
 
 /**
  * agentgovernance/v1 — POLICY.md doctype.
@@ -100,7 +101,10 @@ export type PolicyEscalation = z.infer<typeof policyEscalationSchema>
 
 export const policyFrontmatterSchema = z
   .object({
-    schema: z.literal("agentgovernance/v1"),
+    // Reads accept the AIP-70 name and the pre-AIP-70 legacy name; new
+    // policy handles keep being written with the legacy tag for now (see
+    // EMITTED_SPEC_NAME in ../names.js).
+    schema: z.enum(ACCEPTED_SPEC_NAMES),
     doctype: z.literal("policy"),
     slug: z
       .string()

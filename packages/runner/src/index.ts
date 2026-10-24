@@ -10,7 +10,7 @@
  *   - MD:  `parseRunnerManifest(src) → runnerFromManifest({...})` → `RunnerHandle`
  */
 
-export const SPEC_NAME = "agentrunner/v1" as const
+export const SPEC_NAME = "runner/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineRunner } from "./define-runner.js"

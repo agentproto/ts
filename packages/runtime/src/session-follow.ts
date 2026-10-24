@@ -44,6 +44,7 @@ import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import {
+  classifyFollowEvent,
   defaultFollowTriageConfig,
   resolveFollowTriageConfig,
   triageFollowEvent,
@@ -561,7 +562,12 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
 
   /** One JSONL line per triaged event — the training data a future
    *  classifier is fitted on. Never throws: a failed write is logged. */
-  function writeTriageLedger(followerId: string, entries: readonly BatchEntry[], results: readonly TriageResult[]): void {
+  function writeTriageLedger(
+    followerId: string,
+    entries: readonly BatchEntry[],
+    results: readonly TriageResult[],
+    applied: boolean,
+  ): void {
     try {
       mkdirSync(dirname(triagePath), { recursive: true })
       const lines = entries
@@ -570,6 +576,8 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           if (!result) return null
           return JSON.stringify({
             ts: new Date().toISOString(),
+            source: "follow",
+            applied,
             follower: followerId,
             event: entry.event,
             sessionId: entry.sessionId,
@@ -749,7 +757,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       for (const entry of entries) {
         results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
       }
-      writeTriageLedger(followerId, entries, results)
+      writeTriageLedger(followerId, entries, results, true)
       const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
       const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
       if (wakeEntries.length === 0) {
@@ -768,6 +776,17 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
       }
     } else {
+      // Triage off still records the rules' verdict for every event, marked
+      // as not applied: the ledger is always on, the delivery is unchanged.
+      try {
+        const facts = factsFor(entries)
+        const results = entries.map(entry =>
+          classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
+        )
+        writeTriageLedger(followerId, entries, results, false)
+      } catch (err) {
+        log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
+      }
       text = formatFollowDigest(entries, textFor, id => registry.get(id))
     }
     const p = deliver(followerId, text, batch.followIds, urgency)

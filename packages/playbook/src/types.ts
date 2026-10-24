@@ -13,7 +13,7 @@
 export type PlaybookDefinition = {
   [k: string]: unknown
 } & {
-  schema: "playbooks/v1"
+  schema: "playbook/v1" | "playbooks/v1"
   slug: string
   title: string
   /**

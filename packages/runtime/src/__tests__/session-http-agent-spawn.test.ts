@@ -573,6 +573,150 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
   })
 })
 
+describe("POST /sessions/agent: operatorLabel (HTTP twin of agent_start)", () => {
+  async function startServer(registry = createSessionsRegistry({ persist: false })) {
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const spawn = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+      fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...body }),
+      })
+    return { registry, http, spawn, port }
+  }
+
+  it("stamps the trimmed label when the spawn is an operator spawn (no parent, no caller)", async () => {
+    const { registry, http, spawn } = await startServer()
+    try {
+      const res = await spawn({ label: "  pygmalion-brain-persistent  " })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBe("pygmalion-brain-persistent")
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel when the spawn carries a parentSessionId", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      harness: "mock",
+    })
+    const { http, spawn } = await startServer(registry)
+    try {
+      const res = await spawn({ label: "child-label", parentSessionId: parent.id })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel when a parent is derived via attach", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const parent = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+      harness: "mock",
+    })
+    const { http, spawn } = await startServer(registry)
+    try {
+      const res = await spawn({ label: "attach-label", attach: { parent: parent.id } })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel when the request carries a caller session id header", async () => {
+    const { registry, http, spawn } = await startServer()
+    try {
+      const res = await spawn(
+        { label: "caller-label" },
+        { "x-agentproto-caller-session-id": "sess_caller" },
+      )
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel when the request carries a caller session id query param", async () => {
+    const { registry, http, spawn, port } = await startServer()
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/agent?callerSessionId=sess_caller`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "mock", cwd: "/tmp", label: "query-caller-label" }),
+      })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not rewrite operatorLabel when the spawn dedupes onto an existing session", async () => {
+    const { registry, http, spawn } = await startServer()
+    try {
+      const first = await spawn({ label: "first-label", idempotencyKey: "req-label-1" })
+      expect(first.status).toBe(201)
+      const firstBody = (await first.json()) as { id: string; deduped?: boolean }
+      expect(firstBody.deduped).toBeUndefined()
+      expect(registry.get(firstBody.id)?.operatorLabel).toBe("first-label")
+
+      const second = await spawn({ label: "second-label", idempotencyKey: "req-label-1" })
+      expect(second.status).toBe(201)
+      const secondBody = (await second.json()) as { id: string; deduped?: boolean }
+      expect(secondBody.deduped).toBe(true)
+      expect(secondBody.id).toBe(firstBody.id)
+      expect(registry.get(firstBody.id)?.operatorLabel).toBe("first-label")
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("does not stamp operatorLabel for a whitespace-only label", async () => {
+    const { registry, http, spawn } = await startServer()
+    try {
+      const res = await spawn({ label: "   " })
+      expect(res.status).toBe(201)
+      const body = (await res.json()) as { id: string }
+      expect(registry.get(body.id)?.operatorLabel).toBeUndefined()
+    } finally {
+      await http.stop()
+    }
+  })
+})
+
 describe("POST /sessions/agent — sandbox field forwarding", () => {
   it("sandbox body field is parsed and forwarded; no resolver → sandbox_provider_not_found", async () => {
     const registry = createSessionsRegistry({ persist: false })

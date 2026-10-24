@@ -1,11 +1,10 @@
 # @agentproto/model-intel
 
-Model intelligence primitives. This first slice is the unified quota status
-contract of AIP-67 (`quota/v1`):
+Model intelligence primitives.
 
-- `QuotaStatus` with a mandatory `basis` (`provider` | `probe` | `observed` | `estimated`)
-- `QuotaWindow.remainingPct` (0-100) is required; a window that cannot state it is omitted
-- `QuotaReader`: never throws, never fabricates, unknown resolves to `undefined`
-- `QuotaReaderRegistry` / `defineQuotaReader`
+This package holds the catalog watch domain: `diffCatalog`, a pure diff of
+two priced catalog snapshots.
 
-Core readers MUST NOT emit `basis: "probe"`.
+The AIP-67 quota API moved to `@agentproto/quota`. The quota exports remain
+here as deprecated re-exports so existing imports keep working; import quota
+symbols from `@agentproto/quota` instead.

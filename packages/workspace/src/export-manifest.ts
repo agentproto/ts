@@ -12,7 +12,7 @@ import { z } from "zod"
 
 export const exportManifestSchema = z
   .object({
-    schema: z.literal("workspace-export/v1"),
+    schema: z.enum(["workspace.export/v1", "workspace-export/v1"]),
     from: z.string().regex(/^@[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/),
     generated_at: z.string().datetime({ offset: true }),
     generated_by: z.string().optional(),
@@ -44,5 +44,7 @@ export function parseExportManifest(source: string): ExportManifest {
 
 export function writeExportManifest(frontmatter: ExportManifestFrontmatterInput, body: string): string {
   const parsed = exportManifestSchema.parse(frontmatter)
-  return matter.stringify(body, parsed)
+  // Writers keep emitting the legacy tag until the next major. Old readers
+  // in the field only know workspace-export/v1.
+  return matter.stringify(body, { ...parsed, schema: "workspace-export/v1" })
 }

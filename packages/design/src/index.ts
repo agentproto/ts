@@ -10,7 +10,7 @@
  *   - MD:  `parseDesignManifest(src) → designFromManifest({...})` → `DesignHandle`
  */
 
-export const SPEC_NAME = "agentdesign/v1" as const
+export const SPEC_NAME = "design/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineDesign } from "./define-design.js"
