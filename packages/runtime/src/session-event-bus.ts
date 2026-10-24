@@ -44,6 +44,7 @@ export type SessionEventType =
   | "session:artifact-pinned-changed"
   | "session:message"
   | "session:prompt"
+  | "agentproto:session-completed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -297,6 +298,27 @@ export interface SessionExitedEvent {
    *  `session_monitor`) tell WHY this exit happened rather than just that it
    *  did. Absent for a plain natural exit or an ordinary turn error. */
   reason?: SessionEndReason
+}
+
+/**
+ * Emitted at most once per terminal transition of a session, AFTER
+ * `session:exited`, when the session reached a terminal outcome: either its
+ * descriptor's outcome says completed or a `policy:passed` event was recorded
+ * for it. A plain kill, an error exit, an idle reap and an explicit archive do
+ * not count on their own; a raw process exit and `turn-end` are not
+ * completion. The occurrence id is `exit:<endedAt>`, stable for one terminal
+ * transition (AIP-71).
+ */
+export interface SessionCompletedEvent {
+  type: "agentproto:session-completed"
+  sessionId: string
+  /** `exit:<endedAt>`: stable for one terminal transition, the AIP-71 occurrence id. */
+  occurrenceId: string
+  /** What established the terminal outcome. */
+  basis: "outcome" | "policy"
+  endedAt: string
+  label?: string
+  ts: string
 }
 
 /**
@@ -1230,6 +1252,7 @@ export type SessionEvent =
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
+  | SessionCompletedEvent
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
