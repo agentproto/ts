@@ -2866,9 +2866,9 @@ export async function createGateway(
 
   // `agentproto:session-completed` host event: derived after `session:exited`
   // from the descriptor outcome or a recorded `policy:passed`. The bus has no
-  // shutdown hook (neither does the brain subscriber), so keep the
-  // unsubscribe in a variable for a later teardown.
-  const unsubscribeSessionCompletion = wireSessionCompletion({
+  // shutdown hook (neither does the brain subscriber), so the unsubscribe the
+  // wiring returns is not kept.
+  wireSessionCompletion({
     bus: sessionEvents,
     getSession: id => sessions.get(id),
   })
