@@ -23,6 +23,7 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
+import { codexNativeHooks } from "./native-hooks.js"
 
 export const codex: AgentCliHandle = defineAgentCli({
   name: "codex",
@@ -224,6 +225,7 @@ export const codex: AgentCliHandle = defineAgentCli({
     // continuation strategy for cold-start reattach.
     resumable: true,
     bidirectional: true,
+    hooks: codexNativeHooks,
   },
   // No manifest `modes[]`: codex's operation profiles (default / read-only /
   // full-access) are POSTURE, which no longer lives in the manifest (SPEC

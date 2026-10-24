@@ -14,6 +14,7 @@ import {
   listNativeModelIds,
   listOpencodeAnthropicModelRefs,
 } from "@agentproto/model-catalog/llm"
+import { claudeCodeNativeHooks } from "./native-hooks.js"
 
 // Cloud-provider redirect toggles that must be scrubbed alongside the core
 // ANTHROPIC_API_KEY whenever the claude binary is pointed at a non-Anthropic
@@ -264,6 +265,7 @@ export const claudeCode: AgentCliHandle = defineAgentCli({
     // multi-machine).
     resumable: true,
     bidirectional: true,
+    hooks: claudeCodeNativeHooks,
     // Claude Code's Read tool can ingest any absolute path the host
     // surfaces via the prompt. Pair with the daemon's POST /files/upload
     // route + a host UI drag-drop handler: drop a file → daemon writes
