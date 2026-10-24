@@ -1,10 +1,10 @@
 /**
- * AIP-53 `setup[]` — the post-install configuration pipeline, app-kit side.
+ * AIP-53 `setup[]` — the post-install configuration pipeline, app side.
  *
  * One positive per step kind (incl. a vendor `x-*` step), one negative per
  * conformance rule-10 clause, the emit → load round trip, and the spec's
  * Pygmalion reference example (EXAMPLES.md §5) as a positive fixture.
- * app-kit NEVER executes a step: every test asserts carry/validate only.
+ * app NEVER executes a step: every test asserts carry/validate only.
  */
 
 import { describe, it, expect } from "vitest"
@@ -271,7 +271,7 @@ describe("defineApp — setup[] shape validation (loader-shared)", () => {
   })
 
   it("never executes a step's cmd — a destructive `cmd`/`skip_if` is carried as data", async () => {
-    const marker = join(tmpdir(), `app-kit-setup-marker-${process.pid}-${Date.now()}`)
+    const marker = join(tmpdir(), `app-setup-marker-${process.pid}-${Date.now()}`)
     const app = appWithSetup([{ id: "boom", kind: "cmd", cmd: `touch ${marker}`, skip_if: { cmd: `touch ${marker}` } }])
     expect(app.setup![0]).toMatchObject({ kind: "cmd", cmd: `touch ${marker}` })
     const { existsSync } = await import("node:fs")
@@ -306,8 +306,8 @@ describe("setup[] — emit → load round trip", () => {
   ]
 
   it("writes setup verbatim into APP.md, omits it when absent, and loads it back re-validated", async () => {
-    const withSetup = await mkdtemp(join(tmpdir(), "app-kit-emit-setup-"))
-    const without = await mkdtemp(join(tmpdir(), "app-kit-emit-nosetup-"))
+    const withSetup = await mkdtemp(join(tmpdir(), "app-emit-setup-"))
+    const without = await mkdtemp(join(tmpdir(), "app-emit-nosetup-"))
     try {
       const { appPath } = await appWithSetup(steps).emit(withSetup)
       const parsed = matter(await readFile(appPath, "utf8"))
@@ -328,7 +328,7 @@ describe("setup[] — emit → load round trip", () => {
   })
 
   it("re-validates rule 10 on load — a hand-edited APP.md with a forward `when.step` fails", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-kit-load-setup-rule10-"))
+    const d = await mkdtemp(join(tmpdir(), "app-load-setup-rule10-"))
     try {
       const { appPath } = await appWithSetup(steps).emit(d)
       const parsed = matter(await readFile(appPath, "utf8"))
@@ -350,7 +350,7 @@ describe("setup[] — emit → load round trip", () => {
   })
 
   it("rejects a hand-edited APP.md whose setup step shape is invalid, naming the field path", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-kit-load-setup-shape-"))
+    const d = await mkdtemp(join(tmpdir(), "app-load-setup-shape-"))
     try {
       const { appPath } = await appWithSetup(steps).emit(d)
       const parsed = matter(await readFile(appPath, "utf8"))
@@ -434,7 +434,7 @@ describe("setup[] — Pygmalion reference example (AIP-53 EXAMPLES.md §5)", () 
   ]
 
   it("constructs, carries every step, and round-trips through emit → load", async () => {
-    const d = await mkdtemp(join(tmpdir(), "app-kit-pygmalion-"))
+    const d = await mkdtemp(join(tmpdir(), "app-pygmalion-"))
     try {
       const app = defineApp({
         id: "@pygmalion/app",

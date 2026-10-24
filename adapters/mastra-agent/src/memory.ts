@@ -14,7 +14,7 @@ import { LibSQLStore } from "@mastra/libsql"
 import { Memory } from "@mastra/memory"
 import type { MemoryConfig } from "@agentproto/agent"
 
-/** A built Mastra memory — structural, matching `@agentproto/mastra`'s
+/** A built Mastra memory — structural, matching `@agentproto/bridge`'s
  *  `MastraMemoryLike` expectation without importing the exact type. */
 export type MastraMemoryLike = Memory
 

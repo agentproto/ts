@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`160` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`162` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 93 |
+| core | 95 |
 | adapters | 25 |
 | spec-reference | 32 |
 | archived | 10 |
@@ -70,12 +70,14 @@ Package | Path | Version | Tier | Reason (one line) |
 @agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agent-runtime | `packages/agent-runtime` | 0.1.6 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
+@agentproto/app | `packages/app` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-client | `packages/app-client` | 0.4.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-config | `packages/app-config` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-kit | `packages/app-kit` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/apps | `packages/apps` | 0.24.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/auth | `packages/auth` | 1.3.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/batch | `packages/batch` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
+@agentproto/bridge | `packages/bridge` | 0.2.20 | core | product runtime package consumed by the runtime/cli |
 @agentproto/browser-process | `packages/browser-process` | 0.2.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/browser-profiles | `packages/browser-profiles` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/catalog-sync | `packages/catalog-sync` | 0.8.10 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
@@ -101,6 +103,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/events-channel | `packages/events-channel` | 0.1.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/governance-engine | `packages/governance/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
 @agentproto/harness | `packages/harness` | 0.6.0 | core | product runtime package consumed by the runtime/cli |
+@agentproto/inference-endpoint | `packages/inference-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |

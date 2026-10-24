@@ -1,7 +1,7 @@
 /**
  * `code-team` — a ready-made agentproto app: a small team that ships a code
  * change. Three agents (implementer → reviewer → fixer) bound to one delivery
- * workflow, declared with `@agentproto/app-kit`.
+ * workflow, declared with `@agentproto/app`.
  *
  * Generic on purpose — `@agentproto/…` ids, no product dependency, no home
  * workspace. A host imports it and uses any subset of its agents/workflows:
@@ -9,7 +9,7 @@
  * `codeTeam.emit(dir)`.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { implementer } from "./agents/implementer.js"
 import { reviewer } from "./agents/reviewer.js"
 import { fixer } from "./agents/fixer.js"

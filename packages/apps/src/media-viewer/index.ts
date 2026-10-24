@@ -6,7 +6,7 @@
  * with a Cowork McpApp gallery widget for visual browsing.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { cataloger } from "./agents/cataloger.js"
 import { scanMedia } from "./workflows/scan-media.js"
 import { MEDIA_VIEWER_HTML, MEDIA_VIEWER_TOOLS } from "./ui.js"

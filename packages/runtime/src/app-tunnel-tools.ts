@@ -23,7 +23,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { resolve } from "node:path"
 import { z } from "zod"
 
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle } from "@agentproto/app"
 
 import type { TunnelDescriptor, TunnelRegistry } from "./tunnel-registry.js"
 import { makeTunnelCredsStore } from "./tunnel-adapters.js"
@@ -38,7 +38,7 @@ export interface RegisterAppTunnelToolsOptions {
    * creds store (`~/.agentproto/tunnel-creds/`); injectable for tests.
    */
   readCreds?: (slug: string) => Promise<Record<string, string> | null>
-  /** Manifest loader seam (tests). Defaults to app-kit's `loadAppHandle`. */
+  /** Manifest loader seam (tests). Defaults to app's `loadAppHandle`. */
   loadHandle?: (dir: string) => Promise<{ ui?: { port?: number } }>
 }
 

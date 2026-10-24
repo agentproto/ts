@@ -139,7 +139,7 @@ export function createDaemonToolRegistry(
   return { tools, candidates: [daemonDriver] }
 }
 
-/** The subset of `loadAppBundledTools`'s (`@agentproto/app-kit`) result
+/** The subset of `loadAppBundledTools`'s (`@agentproto/app`) result
  *  `createDaemonToolRegistry` needs to merge with — a `tools` map keyed by
  *  id, matching {@link CompileWorkflowOptions.tools}'s shape. */
 export interface AppToolRegistry {

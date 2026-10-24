@@ -39,7 +39,7 @@ import { STORE_HTML_GENERATED } from "./panel.generated.js"
 
 /** The builtin's app id — how `app_catalog` reports the panel. Lives in this
  *  html-only entry (not ./index.ts) so a consumer that must NOT pull the
- *  app-kit dependency graph — the VS Code extension bundles with esbuild and
+ *  app dependency graph — the VS Code extension bundles with esbuild and
  *  chokes on its transitive native `.node` deps — can still name the panel
  *  from source. */
 export const STORE_APP_ID = "@agentproto/store"

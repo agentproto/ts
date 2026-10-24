@@ -22,7 +22,7 @@ import { createServer } from "node:net"
 import { createServer as createHttpServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import type { SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
-import { defineApp } from "@agentproto/app-kit"
+import { defineApp } from "@agentproto/app"
 import { defineAgent } from "@agentproto/agent"
 
 import { createGateway, type GatewayHandle } from "../index.js"

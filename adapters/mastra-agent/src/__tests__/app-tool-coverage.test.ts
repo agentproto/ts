@@ -4,7 +4,7 @@
  * `deliver-change` workflow's steps (`step.tool`) — resolves against this
  * adapter's workspace toolset. That's the pluggable-registry contract: an
  * app built for this adapter shouldn't silently drop tools (see
- * `packages/mastra/src/build-agent.ts` drop/throw behavior when a tool ref
+ * `packages/bridge/src/build-agent.ts` drop/throw behavior when a tool ref
  * doesn't resolve).
  *
  * media-viewer's `cataloger` agent is the app that shipped the original bug
@@ -23,7 +23,7 @@
  */
 import { codeTeam } from "@agentproto/apps/code-team"
 import { mediaViewer } from "@agentproto/apps/media-viewer"
-import { refKey } from "@agentproto/app-kit"
+import { refKey } from "@agentproto/app"
 import { describe, expect, it } from "vitest"
 import { makeWorkspaceTools } from "../workspace-tools.js"
 
