@@ -9,7 +9,7 @@
  * @see https://agentproto.sh/docs/aip-43
  */
 
-export const SPEC_NAME = "agentregistry/v1" as const
+export const SPEC_NAME = "registry/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { createRegistry } from "./create-registry.js"

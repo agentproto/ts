@@ -10,7 +10,7 @@
  *   - MD:  `parseIoManifest(src) → ioFromManifest({...})` → `IoHandle`
  */
 
-export const SPEC_NAME = "agentio/v1" as const
+export const SPEC_NAME = "io/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineIo } from "./define-io.js"

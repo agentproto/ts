@@ -30,7 +30,11 @@
  *                                        snapshot (fixes curation drift)
  */
 
-export { defineAuthProvider } from "./define-auth-provider.js"
+import { defineAuthProvider } from "./define-auth-provider.js"
+
+export { defineAuthProvider }
+/** Alias for `defineAuthProvider`, the AIP-70 registry name. */
+export const defineAuth = defineAuthProvider
 export {
   parseAuthProviderManifest,
   parseAuthProviderManifestRaw,
@@ -149,5 +153,5 @@ export type {
   DiscoveredEndpoints,
 } from "./types.js"
 
-export const SPEC_NAME = "agentauth"
+export const SPEC_NAME = "auth/v1"
 export const SPEC_VERSION = "v1"
