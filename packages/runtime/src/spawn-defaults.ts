@@ -198,6 +198,17 @@ export interface SpawnDefaultsConfig {
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
   }
+  /** Task-ledger policy. */
+  tasks?: {
+    /** Sessions that keep operator rights on the task ledger while still
+     *  being attributed under their own id (owner / `sessions[]` /
+     *  `createdBy`). Entries follow `allowPromptFrom`'s rules: an exact
+     *  session id, `label:<operatorLabel>`, or `label:<prefix>*` against
+     *  the immutable `operatorLabel` (never the mutable `label`). Default
+     *  []: a root `/mcp` caller attributed by `?callerSessionId=` is a
+     *  plain session caller. */
+    operatorDelegates?: string[]
+  }
   /** Daemon-wide MCP gateway policy. See {@link McpDefaultsConfig}. */
   mcp?: McpDefaultsConfig
   /** Spawn-shape defaults applied when neither the `agent_start` call, its

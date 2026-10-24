@@ -72,6 +72,7 @@ describe("agentprotoConfigSchema", () => {
         traceRedactor: "secrets",
         agentPromptInterrupt: false,
         messaging: { allowSiblings: false, agentInterrupt: "deny" },
+        tasks: { operatorDelegates: ["label:pygmalion-brain-persistent"] },
         mcp: { deferredTools: true },
         spawn: { browser: "headless" },
       },

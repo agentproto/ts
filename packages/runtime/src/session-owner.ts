@@ -44,6 +44,34 @@ export function promptCallerLabel(callerSessionId: string | undefined): PromptCa
   return callerSessionId ?? "operator"
 }
 
+/**
+ * Does a grant list (`allowPromptFrom`, `defaults.tasks.operatorDelegates`, …)
+ * name this session? Exact session ids match directly; `label:` entries match
+ * ONLY the caller's immutable operator-assigned `operatorLabel` — an exact
+ * `label:<label>` or a `label:<prefix>*` wildcard — and `label:` / `label:*`
+ * (empty prefix) match nothing. The mutable `label` never matches.
+ */
+export function matchesSessionGrant(
+  entries: readonly string[],
+  sessionId: string,
+  operatorLabelOf: (id: string) => string | undefined,
+): boolean {
+  if (entries.includes(sessionId)) return true
+  const callerLabel = operatorLabelOf(sessionId)
+  if (!callerLabel) return false
+  for (const entry of entries) {
+    if (!entry.startsWith("label:")) continue
+    const pattern = entry.slice("label:".length)
+    if (pattern.endsWith("*")) {
+      const prefix = pattern.slice(0, -1)
+      if (prefix !== "" && callerLabel.startsWith(prefix)) return true
+    } else if (pattern !== "" && callerLabel === pattern) {
+      return true
+    }
+  }
+  return false
+}
+
 /** Why the owner gate refused (or passed) a call. */
 export type OwnerGateResult =
   | { ok: true }
@@ -107,19 +135,7 @@ export function checkSessionOwnerGate(input: {
   const allow = target.allowPromptFrom ?? []
   if (allow.includes("any") || allow.includes(callerSessionId)) return { ok: true }
   if (operatorLabelOf && !parentOf?.(callerSessionId)) {
-    const callerLabel = operatorLabelOf(callerSessionId)
-    if (callerLabel) {
-      for (const entry of allow) {
-        if (!entry.startsWith("label:")) continue
-        const pattern = entry.slice("label:".length)
-        if (pattern.endsWith("*")) {
-          const prefix = pattern.slice(0, -1)
-          if (prefix !== "" && callerLabel.startsWith(prefix)) return { ok: true }
-        } else if (pattern !== "" && callerLabel === pattern) {
-          return { ok: true }
-        }
-      }
-    }
+    if (matchesSessionGrant(allow, callerSessionId, operatorLabelOf)) return { ok: true }
   }
   const owner =
     target.parentSessionId ??
