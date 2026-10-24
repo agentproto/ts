@@ -271,9 +271,13 @@ export interface SandboxBootOpts {
  *  while the box was still booting. The caller must not register a session
  *  for it; the box is expected to be cleaned up by the failed-boot path. */
 export class SandboxBootCancelledError extends Error {
-  constructor(message = "sandbox boot cancelled") {
+  /** The provider box id, when it was known before the cancel was observed. */
+  readonly sandboxId?: string
+
+  constructor(message = "sandbox boot cancelled", sandboxId?: string) {
     super(message)
     this.name = "SandboxBootCancelledError"
+    if (sandboxId !== undefined) this.sandboxId = sandboxId
   }
 }
 

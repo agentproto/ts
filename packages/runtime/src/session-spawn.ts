@@ -4817,6 +4817,8 @@ export async function spawnAgentSession(
         ...(input.title ? { title: input.title } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+        ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       })
       sandboxPendingId = pendingSandbox.id
       const booted = await bootSandboxAgentSession({
@@ -6336,6 +6338,18 @@ export async function bootSandboxAgentSession(opts: {
       })
     }
     if (isSandboxBootCancelledError(err)) {
+      // The provider should have reclaimed its own box. If it handed us the
+      // id, stamp the ledger too so a provider that could not finish the
+      // cleanup still leaves a GC-able row instead of a silent orphan.
+      if (typeof err.sandboxId === "string" && err.sandboxId !== "") {
+        markFailedBootLedger({
+          sandboxId: err.sandboxId,
+          provider: providerSlug,
+          state: "stopped",
+          ...(opts.label ? { label: opts.label } : {}),
+          ...(boxCwd ? { cwd: boxCwd } : {}),
+        })
+      }
       return {
         ok: false,
         code: "sandbox_boot_cancelled",

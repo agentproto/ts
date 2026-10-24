@@ -71,6 +71,11 @@ export interface FakeControllerOptions {
   createErrorExtra?: Record<string, unknown>
   /** `Retry-After` header sent with a create error. */
   createRetryAfter?: string
+  /** Delay the create response by this many ms (deadline/cancel tests). A
+   *  request aborted during the delay creates nothing. */
+  createDelayMs?: number
+  /** Called after a computer is created and registered, before the reply. */
+  onCreate?: (id: string) => void
   /** Body served by `GET /v1/capacity`: the tenant's total/per-resource
    *  budget. Defaults to a roomy host so a capacity error is retryable
    *  unless a test opts into "can never fit". */
@@ -220,6 +225,12 @@ export class FakeController {
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
       assertContract(createComputerRequestSchema, parsed)
+      if (this.options.createDelayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, this.options.createDelayMs))
+        // The client aborted while waiting: do not provision a box nobody
+        // is left to reclaim.
+        if (req.destroyed || res.destroyed) return
+      }
       this.createBodies.push(parsed)
       const id = `cmp-${(this.nextId++).toString().padStart(3, "0")}`
       const state = this.nextStateSnapshot ?? this.lastCreateState
@@ -234,6 +245,7 @@ export class FakeController {
         ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
       }
       assertContract(createComputerResponseSchema, responseBody)
+      this.options.onCreate?.(id)
       return reply(res, 201, responseBody)
     }
 

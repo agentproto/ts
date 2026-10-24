@@ -674,8 +674,8 @@ export function resolveAlias(sandboxId: string): string {
 /** Throw when the caller killed the session while this boot is in flight.
  *  Checked between phases, never mid-request: a create already in flight is
  *  allowed to resolve so its box id is known and can be reclaimed. */
-function throwIfBootCancelled(signal: AbortSignal | undefined): void {
-  if (signal?.aborted) throw new SandboxBootCancelledError()
+function throwIfBootCancelled(signal: AbortSignal | undefined, sandboxId?: string): void {
+  if (signal?.aborted) throw new SandboxBootCancelledError("sandbox boot cancelled", sandboxId)
 }
 
 async function sleep(ms: number): Promise<void> {
@@ -878,7 +878,11 @@ async function bootOnClient(
     )
 
   /** Bound one boot phase by what is LEFT of the single boot deadline. */
-  const withinDeadline = async <T>(phase: string, run: () => Promise<T>): Promise<T> => {
+  const withinDeadline = async <T>(
+    phase: string,
+    run: () => Promise<T>,
+    opts?: { onTimeout?: () => void },
+  ): Promise<T> => {
     const remaining = deadlineLeft()
     if (remaining <= 0) throw timeoutError(phase)
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -886,7 +890,13 @@ async function bootOnClient(
       return await Promise.race([
         run(),
         new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(timeoutError(phase)), remaining)
+          timer = setTimeout(() => {
+            // Cancel the underlying request where the client supports it, so
+            // a controller is less likely to finish provisioning after we
+            // stopped waiting for it.
+            opts?.onTimeout?.()
+            reject(timeoutError(phase))
+          }, remaining)
         }),
       ])
     } finally {
@@ -916,19 +926,26 @@ async function bootOnClient(
       `${config.memoryMiB !== undefined ? `, ${config.memoryMiB} MiB` : ""})`,
   )
   try {
-    created = await withinDeadline("create", () =>
-      client.createComputer({
-        template,
-        tenantId: resolveClientConfig(spec, config).tenantId,
-        ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
-        ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
-        ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
-        ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
-        ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
-        ...(config.egress ? { egress: { allow: config.egress } } : {}),
-        ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
-        env: createEnv,
-      }),
+    const createAbort = new AbortController()
+    created = await withinDeadline(
+      "create",
+      () =>
+        client.createComputer(
+          {
+            template,
+            tenantId: resolveClientConfig(spec, config).tenantId,
+            ...(config.cpus !== undefined ? { cpus: config.cpus } : {}),
+            ...(config.memoryMiB !== undefined ? { memoryMiB: config.memoryMiB } : {}),
+            ...(config.rootDiskMiB !== undefined ? { rootDiskMiB: config.rootDiskMiB } : {}),
+            ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
+            ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
+            ...(config.egress ? { egress: { allow: config.egress } } : {}),
+            ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
+            env: createEnv,
+          },
+          { signal: createAbort.signal },
+        ),
+      { onTimeout: () => createAbort.abort() },
     )
   } catch (err) {
     if (err instanceof ComputerApiError) {
@@ -944,12 +961,14 @@ async function bootOnClient(
     throw err
   }
   sandboxId = created.id
-  throwIfBootCancelled(opts.signal)
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
   let status: ComputerStatus
 
   try {
+    // Post-create cancellation MUST stay inside this try: the box id is now
+    // known, so the catch below can reclaim it.
+    throwIfBootCancelled(opts.signal, sandboxId)
     // An explicit `waitReadyTimeoutMs` still caps the running phase; when it
     // is left at its default, the single boot deadline is the only bound.
     const runningTimeout =
@@ -960,12 +979,12 @@ async function bootOnClient(
     bootLog(`computer ${sandboxId} running`)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
-    throwIfBootCancelled(opts.signal)
+    throwIfBootCancelled(opts.signal, sandboxId)
     daemonToken = await withinDeadline("daemon healthy", () =>
       daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin),
     )
     bootLog(`computer ${sandboxId} daemon healthy`)
-    throwIfBootCancelled(opts.signal)
+    throwIfBootCancelled(opts.signal, sandboxId)
     await withinDeadline("attach", () => attachController(client, sandboxId as string, config.sessionHolder))
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
@@ -1108,7 +1127,7 @@ async function waitRunning(
 ): Promise<ComputerStatus> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    throwIfBootCancelled(signal)
+    throwIfBootCancelled(signal, id)
     const status = await client.getComputer(id)
     if (status === null) throw new SandboxBoxGoneError(id)
     if (status.state === "running") return status

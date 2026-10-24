@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { SandboxSpec } from "@agentproto/sandbox"
 import { computerSandboxProvider } from "../provider.js"
 import { ComputerSandboxError } from "../errors.js"
+import { isSandboxBootCancelledError } from "@agentproto/sandbox"
 import { FakeController } from "./fake-controller.js"
 
 const SERVICE_TOKEN = "svc-secret-capacity-deadline-0123456789abcdef"
@@ -100,6 +101,37 @@ describe("computerSandboxProvider boot deadline", () => {
   afterEach(async () => {
     vi.useRealTimers()
     await controller.stop()
+  })
+
+  it("aborts a create that exceeds the deadline instead of provisioning a leaked box", async () => {
+    controller.options.createDelayMs = 250
+
+    const err = await computerSandboxProvider
+      .boot(spec(controller.url, { bootDeadlineMs: 50 }), bootOpts)
+      .catch((e: unknown) => e)
+
+    expect(err).toMatchObject({ code: "sandbox_boot_timeout", phase: "create" })
+    // The in-flight request was aborted, so the fake controller never
+    // registered a computer. No box exists to reclaim.
+    expect(controller.createBodies).toHaveLength(0)
+    expect(controller.states.size).toBe(0)
+  })
+
+  it("reclaims the box when the cancel lands right after create resolves", async () => {
+    const abort = new AbortController()
+    let createdId: string | undefined
+    controller.options.onCreate = id => {
+      createdId = id
+      abort.abort()
+    }
+
+    const err = await computerSandboxProvider
+      .boot(spec(controller.url), { env: {}, signal: abort.signal })
+      .catch((e: unknown) => e)
+
+    expect(isSandboxBootCancelledError(err)).toBe(true)
+    expect(err).toMatchObject({ sandboxId: createdId })
+    expect(controller.removed).toContain(createdId)
   })
 
   it("fails at the deadline naming the stuck phase when the box never reaches running", async () => {

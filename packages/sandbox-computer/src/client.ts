@@ -172,6 +172,7 @@ export class ComputerControllerClient {
     path: string,
     schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false } },
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<T> {
     let res: Response
     try {
@@ -179,6 +180,7 @@ export class ComputerControllerClient {
         method,
         headers: this.headers(),
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(signal !== undefined ? { signal } : {}),
       })
     } catch (err) {
       throw new ComputerApiError(
@@ -245,7 +247,10 @@ export class ComputerControllerClient {
 
   /** `POST /v1/computers`. Rejects with 400 (validation / unknown template),
    *  429 (capacity), 500 (msb create failure). */
-  async createComputer(input: CreateComputerInput): Promise<CreateComputerResponse> {
+  async createComputer(
+    input: CreateComputerInput,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<CreateComputerResponse> {
     // Outbound bodies are contract-checked too: a mistyped input fails
     // locally, wrapped in a redacted ComputerApiError, not as a
     // controller 400 or a raw ZodError.
@@ -261,7 +266,7 @@ export class ComputerControllerClient {
         ),
       )
     }
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data)
+    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data, opts.signal)
   }
 
   /** `GET /v1/computers` - every computer the controller holds for the

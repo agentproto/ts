@@ -11553,6 +11553,13 @@ export function createSessionsRegistry(opts?: {
         Object.assign(pendingRt.desc, desc, { startedAt, status: "running" })
         delete pendingRt.desc.provisioning
         pendingRt.provisionCancel = undefined
+        // Runtime-only policy fields live on the SessionRuntime, not the
+        // descriptor, so adopting the placeholder must copy them across or
+        // a sandbox spawn silently loses its cost caps and usage reader.
+        pendingRt.maxCostUsd = input.maxCostUsd
+        pendingRt.costBudget = input.costBudget
+        pendingRt.readUsage = input.readUsage
+        if (input.permissionHold) pendingRt.permissionHold = true
         desc = pendingRt.desc
         resetContextWindowForModel(desc, desc.model)
       }
