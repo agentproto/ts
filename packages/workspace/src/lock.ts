@@ -25,14 +25,14 @@ const lockedPackSchema = z
   .object({
     name: z.string(),
     version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/),
-    digest: z.string().regex(/^agentproto-pack-digest\/v1:.+$/),
+    digest: z.string().regex(/^(?:review\.pack-digest\/v1|agentproto-pack-digest\/v1):.+$/),
     attach: z.string().regex(idPattern),
   })
   .strict()
 
 export const agentprotoLockSchema = z
   .object({
-    lockfile: z.literal("agentproto-lock/v1"),
+    lockfile: z.enum(["workspace.lock/v1", "agentproto-lock/v1"]),
     generated: z.string().datetime({ offset: true }),
     apps: z.array(lockedAppSchema).default([]),
     packs: z.array(lockedPackSchema).default([]),
@@ -58,5 +58,14 @@ export function parseLock(source: string): AgentprotoLock {
 
 export function writeLock(lock: AgentprotoLockInput): string {
   const parsed = agentprotoLockSchema.parse(lock)
-  return stringify(parsed)
+  // Writers keep emitting the legacy tags until the next major. Old readers
+  // in the field only know agentproto-lock/v1 and agentproto-pack-digest/v1.
+  return stringify({
+    ...parsed,
+    lockfile: "agentproto-lock/v1",
+    packs: parsed.packs.map((pack) => ({
+      ...pack,
+      digest: pack.digest.replace(/^review\.pack-digest\/v1:/, "agentproto-pack-digest/v1:"),
+    })),
+  })
 }

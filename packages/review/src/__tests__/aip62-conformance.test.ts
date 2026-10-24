@@ -285,3 +285,42 @@ describe("git pack refs (AIP-62: the pin starts at the first '#')", () => {
     },
   )
 })
+
+describe("AIP-70 document tags", () => {
+  const att = () => JSON.parse(EXAMPLE_ATTESTATION)
+
+  it("parses an attestation carrying the canonical review.attestation/v1 tag", () => {
+    const parsed = attestationFrontmatterSchema.safeParse({ ...att(), schema: "review.attestation/v1" })
+    expect(parsed.success).toBe(true)
+  })
+
+  it("still parses the legacy agentproto.review.attestation/v1 tag", () => {
+    const parsed = attestationFrontmatterSchema.safeParse(att())
+    expect(parsed.success).toBe(true)
+    expect(parsed.success && parsed.data.schema).toBe("agentproto.review.attestation/v1")
+  })
+
+  it("accepts the canonical review.pack-digest/v1 recipe tag", () => {
+    const raw = att()
+    const parsed = attestationFrontmatterSchema.safeParse({
+      ...raw,
+      packs: [{ ...raw.packs[0], alg: "review.pack-digest/v1" }],
+    })
+    expect(parsed.success).toBe(true)
+  })
+
+  it("buildAttestation keeps writing the legacy tags", () => {
+    const built = buildAttestation({
+      runId: "review-6f0b9a52-3f43-4c1c-a4d5-0f3f6c1f5a10",
+      reviewId: "demo",
+      manifestSha: manifestSha(EXAMPLE_PUSH_GATE),
+      binding: "local",
+      target: { repoRemote: "github.com/acme/repo", baseSha: "a".repeat(40), headSha: "c".repeat(40) },
+      lanes: [{ id: "types", kind: "command", status: "pass", blocking: true, findings: [], durationMs: 10 }],
+      attestor: { daemon: "host:18790", presets: ["kimi"] },
+      packs: [{ ref: "./pack", id: "pack", version: "1.0.0", alg: "agentproto-pack-digest/v1", sha256: "a".repeat(64) }],
+    })
+    expect(built.schema).toBe("agentproto.review.attestation/v1")
+    expect(built.packs?.[0]?.alg).toBe("agentproto-pack-digest/v1")
+  })
+})

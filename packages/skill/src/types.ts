@@ -39,7 +39,7 @@ export interface SkillExecution {
 /** AIP-3 extensions to the agentskills.io baseline. Lives under `metadata.aip3`. */
 export interface Aip3Extensions {
   /** Schema dispatch tag. Required for AIP-3 conformance. */
-  schema: "skills/v1"
+  schema: "skill/v1" | "skills/v1"
   /** Skill variant. Defaults to "instruction" when omitted. */
   variant?: SkillVariant
   /** Semver. */

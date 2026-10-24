@@ -75,8 +75,10 @@ const executionSchema = z
 export const aip3ExtensionsSchema = z
   .object({
     schema: z
-      .literal("skills/v1")
-      .describe("Schema dispatch tag. Required for AIP-3 conformance."),
+      .enum(["skill/v1", "skills/v1"])
+      .describe(
+        "Schema dispatch tag. Required for AIP-3 conformance. `skills/v1` is accepted as a legacy alias (AIP-70).",
+      ),
     variant: z
       .enum(["instruction", "executable", "composite"])
       .default("instruction")
