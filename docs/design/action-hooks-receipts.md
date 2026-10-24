@@ -780,11 +780,12 @@ export function createReactionReceiptStore(opts?: ReactionReceiptStoreOptions): 
 Proposed file: `packages/runtime/src/action-hooks/reaction-runner.ts`.
 
 ```ts
-import type { SessionEventBus, SessionEvent } from "../session-event-bus.js"
-import type { ReactionReceiptStore, ReactionReceipt } from "./receipt-store.js"
+import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
+import type { ReactionReceipt, ReactionReceiptStore } from "./receipt-store.js"
 
 export interface ReactionTarget {
   readonly actionId: string
+  /** true: re-running the same occurrence is safe because the target dedupes by its own durable ledger. */
   readonly idempotent: boolean
   run(input: ReactionTargetInput): Promise<ReactionTargetOutcome>
 }
@@ -814,32 +815,55 @@ export interface ReactionBinding {
   maxAttempts: number
   reactionDepth: number
   target: ReactionTarget
+  /** The AIP-71 occurrence id of this event for this binding, or undefined to ignore the event. */
+  occurrenceIdOf(event: SessionEvent): string | undefined
+  /** Optional filter evaluated BEFORE any receipt exists: false (or a throw, which is logged) means "this binding does not apply to this event", no receipt is created. Omitted means applies. Live events only, never consulted at boot reconciliation. */
+  shouldHandle?(event: SessionEvent): boolean | Promise<boolean>
+  /** Boot reconciliation only: is the trigger of a still `pending` receipt valid? Omitted means valid. false marks the receipt dead with reason "stale_trigger" and never runs it. */
+  isTriggerValid?(receipt: ReactionReceipt): boolean | Promise<boolean>
 }
 
 export interface ReactionRunnerOptions {
   bus: SessionEventBus
   store: ReactionReceiptStore
   bindings: readonly ReactionBinding[]
+  /** Default Date.now. */
   nowMs?: () => number
+  /** Default 4. */
   maxReactionDepth?: number
+  /** Default 4. */
   maxConcurrent?: number
+  /** Default min(30_000 * 2 ** (attempt - 1), 600_000), deterministic, no jitter. */
+  backoffMs?: (attempt: number) => number
+  /** Default 30_000: period of the retry/sweep tick started by start(). */
+  retryIntervalMs?: number
+  /** Injectable for tests. */
+  setInterval?: typeof setInterval
+  /** Injectable for tests. */
+  clearInterval?: typeof clearInterval
+  /** Default console.warn; prefix "[reaction-runner]". */
   log?: (line: string) => void
-}
-
-export interface ReactionRunner {
-  start(): void
-  stop(): void
-  handleEvent(event: SessionEvent, occurrenceId: string): Promise<void>
-  reconcileOnBoot(): Promise<void>
-  status(): ReactionRunnerStatus[]
 }
 
 export interface ReactionRunnerStatus {
   bindingId: string
   pending: number
   running: number
+  failed: number
   dead: number
   lastError?: string
+}
+
+export interface ReactionRunner {
+  /** Idempotent: subscribe each binding's event on the bus and start the retry tick. */
+  start(): void
+  /** Idempotent: unsubscribe and clear the tick; never throws. */
+  stop(): void
+  handleEvent(event: SessionEvent, occurrenceId: string): Promise<void>
+  /** Re-run `failed` receipts whose nextAttemptAt is due, then store.sweep(). */
+  retryDue(): Promise<void>
+  reconcileOnBoot(): Promise<void>
+  status(): ReactionRunnerStatus[]
 }
 
 export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunner
