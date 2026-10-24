@@ -15,11 +15,12 @@
  *                    runtime, cli, driver core, sandbox family, auth,
  *                    model-catalog, and everything else that is not one of
  *                    the more specific tiers below.
- *   spec-reference — spec-only / doctype-only packages: reference
+ *   spec-reference - spec-only / doctype-only packages: reference
  *                    implementations of AIP file formats whose workspace
  *                    dependencies are limited to the doctype meta-factory
- *                    (@agentproto/define-doctype), generic doctype verbs
- *                    (@agentproto/manifest) and build tooling
+ *                    (@agentproto/doctype, with the deprecated
+ *                    @agentproto/define-doctype shim counted too), generic
+ *                    doctype verbs (@agentproto/manifest) and build tooling
  *                    (@agentproto/tooling). This is computed as a transitive
  *                    closure, so doctype packages layered on top of other
  *                    doctype packages (e.g. workspace -> work) qualify too.
@@ -82,8 +83,12 @@ const CORE_NAMES = new Set([
 // spec-reference classification (they ship build macros, not runtime deps).
 const TOOLING_DEPS = new Set(["@agentproto/tooling"]);
 
-// Seed of the spec-reference closure: the AIP doctype meta-factory.
-const DOCTYPE_SEED = "@agentproto/define-doctype";
+// Seed of the spec-reference closure: the AIP doctype meta-factory and its
+// deprecated shim name.
+const DOCTYPE_SEEDS = new Set([
+  "@agentproto/doctype",
+  "@agentproto/define-doctype",
+]);
 
 function workspaceDirs(root = process.cwd()) {
   const dirs = [];
@@ -139,14 +144,15 @@ export function computeStatus(root = process.cwd()) {
 
   // Spec-reference closure: every package that is a doctype/AIP file-format
   // implementation qualifies if (a) it directly uses the doctype meta-factory
-  // (@agentproto/define-doctype — manifest/tooling/seed itself count too) and
-  // (b) each of its workspace dependencies, other than build tooling, is
-  // itself a spec-reference package. Runtime packages depending on doctypes
-  // plus real services (registry, relay, provider-kit, ...) fail (b).
-  const spec = new Set([DOCTYPE_SEED]);
+  // (@agentproto/doctype, plus the deprecated @agentproto/define-doctype shim,
+  // and manifest/tooling/seed itself count too) and (b) each of its workspace
+  // dependencies, other than build tooling, is itself a spec-reference
+  // package. Runtime packages depending on doctypes plus real services
+  // (registry, relay, provider-kit, ...) fail (b).
+  const spec = new Set(DOCTYPE_SEEDS);
   const inSpec = (name) =>
     spec.has(name) ||
-    name === DOCTYPE_SEED ||
+    DOCTYPE_SEEDS.has(name) ||
     name === "@agentproto/tooling" ||
     name === "@agentproto/manifest";
   let changed = true;
@@ -161,8 +167,8 @@ export function computeStatus(root = process.cwd()) {
       )
         continue;
       const usesDoctype =
-        e.deps.includes(DOCTYPE_SEED) ||
-        e.name === DOCTYPE_SEED ||
+        e.deps.some((d) => DOCTYPE_SEEDS.has(d)) ||
+        DOCTYPE_SEEDS.has(e.name) ||
         e.name === "@agentproto/manifest";
       const runtimeDeps = e.deps.filter((d) => !TOOLING_DEPS.has(d));
       if (usesDoctype && runtimeDeps.every((d) => inSpec(d))) {
@@ -230,7 +236,7 @@ A snapshot of every pnpm workspace package (\`${entries.length}\` \`package.json
 1. Packages on the explicit dead-package override list in \`scripts/gen-status.mjs\` (verified zero-dependent in the workspace) → \`archived\`. The override wins over the \`adapters/**\` path rule.
 2. \`adapters/**\` (not on the override list) → \`adapters\`.
 3. The core runtime family — \`runtime\`, \`cli\`, \`driver\` (core), the \`sandbox\` family, \`auth\`, \`model-catalog\` and their runtime neighbours — → \`core\`.
-4. Spec-only / doctype-only packages — reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory \`@agentproto/define-doctype\`, the generic doctype verbs \`@agentproto/manifest\` and build tooling \`@agentproto/tooling\` — → \`spec-reference\`.
+4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory \`@agentproto/doctype\` (plus the deprecated \`@agentproto/define-doctype\` shim), the generic doctype verbs \`@agentproto/manifest\` and build tooling \`@agentproto/tooling\` -> \`spec-reference\`.
 5. Everything else → \`core\`.
 
 Each package appears exactly once; tiers are applied in the order above.
