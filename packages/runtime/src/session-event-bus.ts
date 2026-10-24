@@ -23,6 +23,7 @@ export type SessionEventType =
   | "session:permission-request"
   | "session:permission-resolved"
   | "session:exited"
+  | "session:outcome-recorded"
   | "session:reaped"
   | "session:stalled"
   | "session:stall-cleared"
@@ -44,6 +45,7 @@ export type SessionEventType =
   | "session:artifact-pinned-changed"
   | "session:message"
   | "session:prompt"
+  | "agentproto:session-completed"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -297,6 +299,47 @@ export interface SessionExitedEvent {
    *  `session_monitor`) tell WHY this exit happened rather than just that it
    *  did. Absent for a plain natural exit or an ordinary turn error. */
   reason?: SessionEndReason
+}
+
+/**
+ * Emitted when a terminal session's Level-2 outcome is written: a steward
+ * close (`closeWithOutcome`), an operator/judge resolution on an
+ * already-ended row (`resolveOutcome`), or the "mark as completed" / declared
+ * outcome paths in `kill`. These writes land AFTER `session:exited` (the row
+ * is flipped terminal before its outcome is layered), so this is the trigger
+ * that lets `agentproto:session-completed` observe a completion verdict that
+ * did not exist yet at exit time. The Level-1 derived outcome recorded by the
+ * exit funnel does NOT emit this event; `session:exited` already covers it.
+ */
+export interface SessionOutcomeRecordedEvent {
+  type: "session:outcome-recorded"
+  sessionId: string
+  /** The row's terminal timestamp, when it has one. */
+  endedAt?: string
+  ts: string
+}
+
+/**
+ * Emitted at most once per terminal transition of a session, AFTER
+ * `session:exited`, when the session reached a terminal outcome: either its
+ * descriptor's outcome says completed or a `policy:passed` event was recorded
+ * for it. A completion verdict written after the exit (a steward close, an
+ * operator "mark as completed") is picked up via
+ * `session:outcome-recorded`. A plain kill, an error exit, an idle reap and an
+ * explicit archive do not count on their own; a raw process exit and
+ * `turn-end` are not completion. The occurrence id is `exit:<endedAt>`, stable
+ * for one terminal transition (AIP-71).
+ */
+export interface SessionCompletedEvent {
+  type: "agentproto:session-completed"
+  sessionId: string
+  /** `exit:<endedAt>`: stable for one terminal transition, the AIP-71 occurrence id. */
+  occurrenceId: string
+  /** What established the terminal outcome. */
+  basis: "outcome" | "policy"
+  endedAt: string
+  label?: string
+  ts: string
 }
 
 /**
@@ -1230,6 +1273,8 @@ export type SessionEvent =
   | SessionPermissionRequestEvent
   | SessionPermissionResolvedEvent
   | SessionExitedEvent
+  | SessionOutcomeRecordedEvent
+  | SessionCompletedEvent
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
