@@ -29,6 +29,7 @@ import {
   type AgentCliRuntime,
 } from "@agentproto/driver-agent-cli"
 import type { AuthStore, CapabilityStrategy, CredSource } from "@agentproto/provider-kit"
+import { geminiNativeHooks } from "./native-hooks.js"
 
 export const gemini: AgentCliHandle = defineAgentCli({
   name: "gemini",
@@ -141,6 +142,7 @@ export const gemini: AgentCliHandle = defineAgentCli({
     // The Gemini CLI implements ACP session lifecycle (newSession / loadSession).
     resumable: true,
     bidirectional: true,
+    hooks: geminiNativeHooks,
   },
   options: [
     {
