@@ -7,7 +7,8 @@
  * An approve writes an AIP-7 `signature` on the pinned payload bytes and
  * appends a hash-chained audit event; a deny appends an audit event with no
  * signature. See `.plans/pygmalion/lanes/E1a.md` for the spec this
- * implements and `./AIP-7-AMENDMENT.md` for the AIP-7 amendment draft.
+ * implements and AIP-7 (https://agentproto.dev/docs/aip-7) for the
+ * accepted specification.
  */
 
 export const APPROVAL_STATUSES = [

@@ -10,7 +10,7 @@
  *   - MD:  `parsePolicyManifest(src) → policyFromManifest({...})` → `PolicyHandle`
  */
 
-export const SPEC_NAME = "agentpolicy/v1" as const
+export const SPEC_NAME = "policy/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { definePolicy } from "./define-policy.js"

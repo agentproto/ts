@@ -10,7 +10,7 @@
  * @see https://agentproto.sh/docs/aip-57
  */
 
-export const SPEC_NAME = "modelrouting/v1" as const
+export const SPEC_NAME = "model-routing/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export type {

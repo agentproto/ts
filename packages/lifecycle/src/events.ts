@@ -1,6 +1,6 @@
 /** AIP-37 lifecycle event vocabulary and helpers. */
 
-export const SPEC_NAME = "agentlifecycle/v1" as const
+export const SPEC_NAME = "lifecycle/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export const LIFECYCLE_EVENTS = [

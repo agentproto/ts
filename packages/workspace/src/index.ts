@@ -21,7 +21,7 @@
  *                       single manifest can't check on its own.
  */
 
-export const SPEC_NAME = "agentworkspace/v2" as const
+export const SPEC_NAME = "workspace/v2" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineWorkspace } from "./define-workspace.js"

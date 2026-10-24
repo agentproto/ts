@@ -10,7 +10,7 @@
  *   - MD:  `parseExtensionManifest(src) → extensionFromManifest({...})` → `ExtensionHandle`
  */
 
-export const SPEC_NAME = "agentextension/v1" as const
+export const SPEC_NAME = "extension/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineExtension } from "./define-extension.js"
