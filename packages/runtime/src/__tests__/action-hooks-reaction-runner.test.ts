@@ -810,6 +810,7 @@ describe("reaction runner", () => {
     const fresh = openStore(file, c)
     expect(fresh.get(keyOf("exit:first"))?.status).toBe("running")
     expect(fresh.get(keyOf("exit:second"))?.status).toBe("pending")
+    expect(store.get(keyOf("exit:second"))?.status).toBe("pending")
 
     release?.()
     await Promise.all([first, second])
@@ -927,5 +928,37 @@ describe("reaction runner", () => {
     })
     expect(() => plainRunner.start()).not.toThrow()
     plainRunner.stop()
+  })
+
+  it("runs the target once when two runners deliver the same occurrence concurrently", async () => {
+    const c = clock()
+    const file = join(tmp(), "receipts.json")
+    const store = openStore(file, c)
+    await store.insertPending(pendingInput({ occurrenceId: "exit:shared" }))
+    const firstTarget = makeTarget(true, async () => ({ ok: true, outcomeRef: "first" }))
+    const secondTarget = makeTarget(true, async () => ({ ok: true, outcomeRef: "second" }))
+    const firstRunner = createReactionRunner({
+      bus: createSessionEventBus(),
+      store,
+      bindings: [makeBinding({ target: firstTarget.target })],
+      nowMs: c.now,
+      log: () => {},
+    })
+    const secondRunner = createReactionRunner({
+      bus: createSessionEventBus(),
+      store,
+      bindings: [makeBinding({ target: secondTarget.target })],
+      nowMs: c.now,
+      log: () => {},
+    })
+    const event = completed({ occurrenceId: "exit:shared" })
+
+    await Promise.all([
+      firstRunner.handleEvent(event, "exit:shared"),
+      secondRunner.handleEvent(event, "exit:shared"),
+    ])
+
+    expect(firstTarget.run.mock.calls.length + secondTarget.run.mock.calls.length).toBe(1)
+    expect(store.get(keyOf("exit:shared"))?.status).toBe("done")
   })
 })
