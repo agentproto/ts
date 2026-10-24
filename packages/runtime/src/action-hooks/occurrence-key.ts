@@ -8,6 +8,7 @@ const FORBIDDEN = /[\s\u0000-\u001f\u007f-\u009f]/
 
 /** True for an AIP-39 action id (qualified or unqualified). */
 export function isActionKind(value: string): boolean {
+  if (typeof value !== "string") return false
   if (value.length < 2 || value.length > 80) return false
   return ACTION_ID_RE.test(value)
 }
