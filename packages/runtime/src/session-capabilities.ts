@@ -12,6 +12,7 @@
  * parallel session-chat UI build codes against these exact field names.
  */
 
+import type { HookCapabilityView } from "@agentproto/provider-kit"
 import type { SessionDescriptor } from "./sessions.js"
 import { CANONICAL_POSTURES, postureEnforcement, type PostureEnforcement } from "./canonical-posture.js"
 import type { CanonicalPosture } from "./session-config.js"
@@ -92,6 +93,12 @@ export interface SessionCapabilities {
   skills: string[]
   skillsApplied: boolean
   permissionHold: boolean
+  /**
+   * Native hook callbacks this session's harness declares (AIP-71).
+   * Present only when non-empty; metadata only, no handler is installed.
+   * Ownership (harness vs host) is resolved elsewhere.
+   */
+  hooks?: { native: readonly HookCapabilityView[] }
   pendingPermissions: number
 }
 
@@ -175,6 +182,9 @@ export function buildSessionCapabilities(
     skillsApplied: desc.adapterSlug !== undefined && SKILLS_APPLYING_ADAPTERS.has(desc.adapterSlug),
     permissionHold: desc.permissionHold === true,
     pendingPermissions,
+    ...(desc.nativeHooks !== undefined && desc.nativeHooks.length > 0
+      ? { hooks: { native: desc.nativeHooks } }
+      : {}),
   }
 }
 

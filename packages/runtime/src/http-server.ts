@@ -193,7 +193,7 @@ import type {
   OrchestratorScope,
   OrchestratorMcpServerFactory,
 } from "./orchestrator-gateway.js"
-import type { HarnessCapabilities } from "@agentproto/provider-kit"
+import type { HarnessCapabilities, HookCapabilityView } from "@agentproto/provider-kit"
 import {
   loadImportedMcps,
   saveImportedMcps,
@@ -729,6 +729,14 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    * restart even when a native resume id is available.
    */
   nativeTerminalResume?: boolean
+  /**
+   * Manifest-declared `capabilities.hooks` (AIP-71): native hook
+   * callbacks. Threaded onto {@link SessionDescriptor.nativeHooks} at spawn
+   * and restart time so `session_capabilities` can echo them. Metadata only.
+   * Omitted when the harness declares none. Not the AIP-68 clerk `hooks`
+   * option (`agent_start.hooks.clerk`).
+   */
+  nativeHooks?: readonly HookCapabilityView[]
   /**
    * Manifest-declared `capabilities.nativeToolSearch` (AIP-45) — the
    * harness defers mounted MCP tools behind its own search tool, so the

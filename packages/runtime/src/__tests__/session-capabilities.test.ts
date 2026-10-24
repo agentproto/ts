@@ -50,6 +50,45 @@ describe("capabilities.steering", () => {
   })
 })
 
+describe("hooks in session_capabilities", () => {
+  const hooks = [
+    {
+      event: "tool.call" as const,
+      native_event: "PreToolUse",
+      path: "admission" as const,
+      can_block: true,
+      handlers: ["command" as const],
+    },
+  ]
+
+  it("reports the session harness's declared hooks under hooks.native", () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: "/tmp",
+      agentSession: agent({}),
+      adapterSlug: "mock",
+      nativeHooks: hooks,
+    })
+    const body = buildSessionCapabilities(registry.get(desc.id)!, 0)
+    expect(body.hooks).toEqual({ native: hooks })
+    registry.shutdown()
+  })
+
+  it("omits the hooks key when the harness declares none", () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const desc = registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: "/tmp",
+      agentSession: agent({}),
+      adapterSlug: "mock",
+    })
+    const body = buildSessionCapabilities(registry.get(desc.id)!, 0)
+    expect("hooks" in body).toBe(false)
+    registry.shutdown()
+  })
+})
+
 describe("posture enforcement in session_capabilities", () => {
   const modes = [
     { id: "build", name: "Build" },

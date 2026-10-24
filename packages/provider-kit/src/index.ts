@@ -62,6 +62,7 @@ export type {
   HarnessManifestView,
   DiscoverCtx,
   CapabilityStrategy,
+  HookCapabilityView,
 } from "./capability.js"
 
 // wizard

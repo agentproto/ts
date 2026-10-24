@@ -111,6 +111,35 @@ describe("deriveDeclaredCapabilities", () => {
     expect(serialized).not.toContain('"fingerprint"')
     expect(serialized).not.toContain('"last4"')
   })
+
+  it("copies declared hooks onto the record", () => {
+    const def: HarnessManifestView = {
+      id: "hooked",
+      capabilities: {
+        hooks: [
+          {
+            event: "tool.call",
+            native_event: "PreToolUse",
+            path: "admission",
+            can_block: true,
+            handlers: ["command", "mcp"],
+            async: true,
+            context: "append",
+          },
+        ],
+      },
+    }
+    const caps = deriveDeclaredCapabilities(def)
+    expect(caps.hooks).toEqual(def.capabilities?.hooks)
+    expect(caps.hooks).not.toBe(def.capabilities?.hooks)
+  })
+
+  it("omits the hooks key when none are declared or the list is empty", () => {
+    const absent = deriveDeclaredCapabilities({ id: "no-hooks" })
+    expect("hooks" in absent).toBe(false)
+    const empty = deriveDeclaredCapabilities({ id: "empty-hooks", capabilities: { hooks: [] } })
+    expect("hooks" in empty).toBe(false)
+  })
 })
 
 describe("discoverCapabilities", () => {
@@ -135,6 +164,31 @@ describe("discoverCapabilities", () => {
     const caps = await discoverCapabilities(def, strategy, makeCtx())
     expect(caps.source).toBe("discovered")
     expect(caps.discoverable).toBe("live")
+  })
+
+  it("keeps hooks from the manifest when a strategy succeeds", async () => {
+    const hooks = [
+      {
+        event: "tool.call" as const,
+        native_event: "PreToolUse",
+        path: "admission" as const,
+        can_block: true,
+        handlers: ["command" as const],
+      },
+    ]
+    const def: HarnessManifestView = { id: "live-hooked", capabilities: { hooks } }
+    const strategy: CapabilityStrategy = async (d) => ({
+      adapter: d.id,
+      source: "discovered",
+      discoverable: "live",
+      authStores: [],
+      providers: [],
+      models: { mechanism: "file-cache" },
+      endpointCompat: {},
+      application: { modelApply: "config", postureApply: "none", coupled: false },
+    })
+    const caps = await discoverCapabilities(def, strategy, makeCtx())
+    expect(caps.hooks).toEqual(hooks)
   })
 
   it("catches a throwing strategy and falls back to the declared projection, warning once", async () => {
