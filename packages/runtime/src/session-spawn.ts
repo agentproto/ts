@@ -165,6 +165,13 @@ import {
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
 import { touchUserPreset, type UserPreset } from "./user-presets.js"
+import {
+  defaultPresetFor,
+  resolveSessionConfig,
+  SessionPresetResolutionError,
+  type HarnessPresetOverlay,
+  type SessionConfigAxes,
+} from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
   HEADLESS_BROWSER_PROMPT_HINT,
@@ -250,6 +257,7 @@ function additionalReadPathsForAgentsMd(
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
+  isSandboxBootCancelledError,
   isSandboxBoxGoneError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
@@ -1573,8 +1581,12 @@ export interface SpawnAgentSessionInput {
   posture?: Posture
   contextProfile?: ContextProfile
   /** A preloaded user preset. Callers resolve its id at their boundary so a
-   * preset can also provide the adapter before this core is invoked. */
+   *  preset can also provide the adapter before this core is invoked. */
   preset?: UserPreset
+  /** The full user preset store, so this core can also apply the harness's
+   *  `defaultFor` preset and a named preset's `extends` chain. Callers that
+   *  only pass `preset` keep working (the chain is then just that preset). */
+  sessionPresets?: readonly UserPreset[]
   /**
    * Deterministic billing-auth mode + EXPLICIT credential for adapters that
    * declare it (an `authSubscription` login and/or an API-key `provider`
@@ -1885,6 +1897,7 @@ export type SpawnAgentSessionResult =
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
+        | "sandbox_boot_cancelled"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
         | "device_spawn_unreachable"
@@ -1907,6 +1920,7 @@ export type SpawnAgentSessionResult =
         | "agent_manifest_unresolved"
         | "agent_manifest_unreadable"
         | "model_policy_refused"
+        | "session_preset_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -2173,49 +2187,50 @@ export async function spawnAgentSession(
     }
   }
 
-  // Presets are a lower-precedence layer than an explicit spawn request. Do
-  // this once, at the common core, so HTTP, MCP and future clients have the
-  // same semantics rather than each expanding a preset slightly differently.
-  // The preset's `browser` sits BELOW the role default (see
-  // `resolveBrowserMode`), so it is kept aside instead of folded into input.
-  const presetBrowser = input.preset?.browser
-  if (input.preset) {
-    const { preset, ...explicit } = input
-    input = {
-      ...explicit,
-      model: explicit.model ?? preset.model,
-      route: explicit.route ?? preset.route,
-      access: explicit.access ?? preset.access,
-      posture: explicit.posture ?? preset.posture,
-      effort: explicit.effort ?? preset.effort,
-      contextProfile: explicit.contextProfile ?? preset.contextProfile,
-      // A preset `cwd` pins the favorite to a fixed repo — it feeds the same
-      // slot an explicit request would, so the cwd ladder below treats it as
-      // caller-named (and the worktree guard sees a real repo, not a fallback).
-      cwd: explicit.cwd ?? preset.cwd,
-      skills: explicit.skills ?? preset.skills,
-      bundles: explicit.bundles ?? preset.bundles,
-      // `turnRetry: null` is an explicit opt-out, not an omission: an
-      // explicit value (null included) wins over a preset turnRetry.
-      turnRetry: explicit.turnRetry !== undefined ? explicit.turnRetry : preset.turnRetry,
-    }
-    // Best-effort recency stamp — a favorite just got resolved and used for
-    // this spawn. Never let the write (or its absence, for a since-deleted
-    // preset) affect the spawn itself.
-    await touchUserPreset(preset.id).catch(() => {})
+  // Session config resolution (AIP-46): manifest -> host -> definition ->
+  // harness preset -> preset (the harness's `defaultFor` preset, then the
+  // named preset after its `extends` chain) -> request. One pure resolver
+  // does the merge so HTTP, MCP and future clients cannot drift.
+  //
+  // The harness default preset (`harness-presets.json`) ranks BELOW a
+  // `defaultFor` session preset. It is loaded first and handed to the
+  // resolver as its own layer, preserving the existing rule that an explicit
+  // access pin skips it and that a cloud spawn never resolves host billing.
+  const namedPreset = input.preset
+  const sessionPresets = input.sessionPresets ?? (namedPreset ? [namedPreset] : [])
+  const resolveWith = (harnessPreset?: HarnessPresetOverlay) =>
+    resolveSessionConfig({
+      request: input as SessionConfigAxes,
+      presets: sessionPresets,
+      harness: input.harness ?? input.adapter,
+      ...(namedPreset ? { presetId: namedPreset.id } : {}),
+      ...(harnessPreset ? { harnessPreset } : {}),
+    })
+  // The harness default is a billing fallback: when the request or a session
+  // preset (named, its extends chain, or the defaultFor preset) already pins a
+  // profile, it is not loaded at all, so neither its profile gate nor its
+  // default model can leak next to another profile.
+  // A preset whose extends chain is broken (missing target, cycle) refuses
+  // the spawn with a typed error instead of throwing out of agent_start.
+  const presetRefusal = (err: unknown) =>
+    err instanceof SessionPresetResolutionError
+      ? {
+          ok: false as const,
+          code: "session_preset_invalid" as const,
+          message: `agent_start: ${err.message}`,
+          details: { presetCode: err.code },
+        }
+      : undefined
+  let pinnedProfile: string | undefined
+  try {
+    pinnedProfile = resolveWith().config.access?.profileRef
+  } catch (err) {
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
+    throw err
   }
-
-  // Harness default preset (`harness-presets.json`): when NEITHER an explicit
-  // request NOR a user preset pinned a billing profile, fall back to the
-  // harness's persisted default preset — its `profileRef` + `defaultModel`
-  // replace the legacy "first eligible profile" ambient resolution below. This
-  // is the lowest-precedence layer: it fills `access.profileRef` only when
-  // unset, and `model` only when the caller named none. A harness with no
-  // default preset (the common case, and every test that doesn't provision one)
-  // reads an empty store and leaves the spawn untouched.
-  // A cloud spawn (AIP-66) never resolves a host billing profile — the
-  // vendor owns auth/billing — so the preset layer is skipped for it.
-  if (!cloudResolved && !input.access?.profileRef) {
+  let harnessPreset: HarnessPresetOverlay | undefined
+  if (!cloudResolved && !pinnedProfile) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
     if (preset) {
       // A default preset that bills through a since-disabled (or deleted)
@@ -2235,16 +2250,58 @@ export async function spawnAgentSession(
             "harness_preset_set_default.",
         }
       }
-      input = {
-        ...input,
+      harnessPreset = {
+        id: preset.id,
         access: { profileRef: preset.profileRef },
-        model: input.model ?? preset.defaultModel,
-        // An explicit `turnRetry: null` must win over a preset turnRetry.
-        ...((input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry)
-          ? { turnRetry: input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry }
-          : {}),
+        model: preset.defaultModel,
+        turnRetry: preset.turnRetry,
       }
     }
+  }
+
+  let sessionConfig: SessionConfigAxes
+  try {
+    sessionConfig = resolveWith(harnessPreset).config
+  } catch (err) {
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
+    throw err
+  }
+  input = {
+    ...input,
+    ...(sessionConfig.model !== undefined ? { model: sessionConfig.model } : {}),
+    ...(sessionConfig.route !== undefined ? { route: sessionConfig.route } : {}),
+    ...(sessionConfig.access !== undefined ? { access: sessionConfig.access } : {}),
+    ...(sessionConfig.posture !== undefined ? { posture: sessionConfig.posture } : {}),
+    ...(sessionConfig.effort !== undefined ? { effort: sessionConfig.effort } : {}),
+    ...(sessionConfig.contextProfile !== undefined
+      ? { contextProfile: sessionConfig.contextProfile }
+      : {}),
+    // A preset `cwd` pins the favorite to a fixed repo; it feeds the same
+    // slot an explicit request would, so the cwd ladder below treats it as
+    // caller-named (and the worktree guard sees a real repo, not a fallback).
+    ...(sessionConfig.cwd !== undefined ? { cwd: sessionConfig.cwd } : {}),
+    ...(sessionConfig.skills !== undefined ? { skills: sessionConfig.skills } : {}),
+    ...(sessionConfig.bundles !== undefined ? { bundles: sessionConfig.bundles } : {}),
+    // `turnRetry: null` is an explicit opt-out, not an omission: an explicit
+    // value (null included) wins over a preset turnRetry.
+    ...(sessionConfig.turnRetry !== undefined ? { turnRetry: sessionConfig.turnRetry } : {}),
+    ...(sessionConfig.modelPolicy !== undefined ? { modelPolicy: sessionConfig.modelPolicy } : {}),
+    ...(sessionConfig.options !== undefined
+      ? { options: sessionConfig.options as SpawnAgentSessionInput["options"] }
+      : {}),
+  }
+  // A preset `browser` sits BELOW the role default (see `resolveBrowserMode`),
+  // so it is kept aside instead of folded into input.
+  const presetBrowser = sessionConfig.browser
+  const usedPresetId =
+    namedPreset?.id ??
+    defaultPresetFor(input.harness ?? input.adapter, sessionPresets)?.id
+  if (usedPresetId) {
+    // Best-effort recency stamp: a favorite just got resolved and used for
+    // this spawn. Never let the write (or its absence, for a since-deleted
+    // preset) affect the spawn itself.
+    await touchUserPreset(usedPresetId).catch(() => {})
   }
 
   // Reconcile `model` and `route` so callers cannot describe two different
@@ -4420,6 +4477,11 @@ export async function spawnAgentSession(
     settleClaim?.(result)
     return result
   }
+  // A sandbox spawn registers a `starting` row BEFORE booting the box, so a
+  // slow (or wedged) boot is visible in `session_list` instead of looking
+  // like the spawn never arrived. Cleared once `registry.spawnAgent` adopts
+  // the placeholder, and cleaned up on any earlier failure.
+  let sandboxPendingId: string | undefined
   try {
     // Independent of cwd/the worktree — safe to resolve before either the
     // async or the synchronous provisioning branch below needs it.
@@ -4788,11 +4850,38 @@ export async function spawnAgentSession(
       // `boxLoginDeclFor`). Resolved ONCE here so the boot below and the auth
       // block it stamps agree on the same declaration.
       const boxLogin = boxLoginDeclFor(resolved?.authDescriptor, authSpec, authEcho?.provider)
+      // Register the row NOW: `bootSandboxAgentSession` can spend minutes in
+      // box create / workspace clone / inner `agent_start`, and a caller
+      // polling `session_list` must see the spawn as `starting` during that
+      // whole window instead of nothing at all. `registry.spawnAgent` below
+      // adopts this same row once the driver session exists.
+      // Killing the placeholder mid-boot aborts the boot: the phases below
+      // check this signal and a cancelled boot tears its box down instead of
+      // registering a session.
+      const bootAbort = new AbortController()
+      const pendingSandbox = registry.spawnAgentPending({
+        id: mintedSessionId,
+        workspaceSlug: resolvedSlug,
+        cwd,
+        adapterSlug: input.adapter,
+        harness: input.harness ?? input.adapter,
+        depth: recordedDepth,
+        provisioningPhase: "sandbox",
+        onCancel: () => bootAbort.abort(),
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.model ? { model: input.model } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
+        ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
+        ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
+      })
+      sandboxPendingId = pendingSandbox.id
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
         adapter: input.adapter,
         sessionHolder: mintedSessionId,
+        signal: bootAbort.signal,
         checkpointConfig,
         // CRASH RESUME - the checkpoint of the DEAD session this spawn
         // continues, restored onto the new checkout (`git restore
@@ -4900,7 +4989,30 @@ export async function spawnAgentSession(
         // clear "no recorded parent" error).
         ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
       })
-      if (!booted.ok) return booted
+      if (!booted.ok) {
+        // The boot never produced a session: remove the placeholder so the
+        // failure path looks exactly like it did before the placeholder
+        // existed (no orphaned `starting` row).
+        registry.forget(pendingSandbox.id)
+        sandboxPendingId = undefined
+        return booted
+      }
+      // Belt and braces for a kill that landed between the boot's final
+      // cancellation check and this point: never adopt a row that is no
+      // longer `starting`, and never leave its box running.
+      const liveRow = registry.get(mintedSessionId)
+      if (bootAbort.signal.aborted || liveRow === undefined || liveRow.status !== "starting") {
+        await booted.agentSession.close().catch(() => undefined)
+        registry.forget(mintedSessionId)
+        sandboxPendingId = undefined
+        return finish({
+          ok: false,
+          code: "sandbox_boot_cancelled",
+          message:
+            `agent_start: sandbox boot cancelled because session "${mintedSessionId}" was ` +
+            "ended while it was still starting",
+        })
+      }
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
@@ -5269,6 +5381,9 @@ export async function spawnAgentSession(
       ...(input.permissionHold && input.sandbox === undefined ? { permissionHold: true } : {}),
       ...(input.keepAlive ? { keepAlive: true } : {}),
     })
+    // The placeholder (if any) is now the live row: `spawnAgent` adopted it in
+    // place, so the error path must not try to remove it as an orphan.
+    sandboxPendingId = undefined
     // Stamp the title from the caller's ask BEFORE anything else can name
     // this session from the composed prompt instead: `spawnAgent` above,
     // when `initialPrompt` was passed, already ran the first turn's
@@ -5412,6 +5527,13 @@ export async function spawnAgentSession(
       ...(spawnWarnings.length ? { warnings: spawnWarnings } : {}),
     })
   } catch (err) {
+    // A sandbox boot that threw before `spawnAgent` adopted the placeholder
+    // must not leave a `starting` row behind: this is the same shape as the
+    // pre-placeholder failure path (no row at all).
+    if (sandboxPendingId !== undefined) {
+      registry.forget(sandboxPendingId)
+      sandboxPendingId = undefined
+    }
     return finish({
       ok: false,
       code: "agent_spawn_failed",
@@ -5557,6 +5679,7 @@ export type SandboxBootResult =
       code:
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
+        | "sandbox_boot_cancelled"
         | "sandbox_reconnect_failed"
         | "sandbox_reuse_ambiguous"
         | "sandbox_reuse_workspace_mismatch"
@@ -5972,6 +6095,11 @@ export async function bootSandboxAgentSession(opts: {
    *  mirror's seed walk still matches rather than re-merging the turn.
    *  Ignored for every non-device provider. */
   initialPrompt?: string | Record<string, unknown> | unknown[]
+  /** Aborted when the session row is killed while it is still `starting`.
+   *  Checked between boot phases; a boot that completes after this fires is
+   *  torn down through the failed-boot path and reported as
+   *  `sandbox_boot_cancelled` instead of registering a session. */
+  signal?: AbortSignal
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -6210,6 +6338,11 @@ export async function bootSandboxAgentSession(opts: {
       // `defaultProcessEnvResolver` fallback `@agentproto/sandbox` would
       // otherwise apply when `resolver` is omitted.
       secrets: { slugs, resolver: resolveSecret },
+      // The daemon's own log stream: one line per provider boot phase, so a
+      // slow create/running/daemon-healthy boot is traceable from
+      // `daemon.log` instead of silent until it fails.
+      log: (line: string) => console.warn(line),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })
   } catch (err) {
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
@@ -6258,6 +6391,27 @@ export async function bootSandboxAgentSession(opts: {
         ...(opts.label ? { label: opts.label } : {}),
         ...(boxCwd ? { cwd: boxCwd } : {}),
       })
+    }
+    if (isSandboxBootCancelledError(err)) {
+      // The provider should have reclaimed its own box. If it handed us the
+      // id, stamp the ledger too so a provider that could not finish the
+      // cleanup still leaves a GC-able row instead of a silent orphan.
+      if (typeof err.sandboxId === "string" && err.sandboxId !== "") {
+        markFailedBootLedger({
+          sandboxId: err.sandboxId,
+          provider: providerSlug,
+          state: "stopped",
+          ...(opts.label ? { label: opts.label } : {}),
+          ...(boxCwd ? { cwd: boxCwd } : {}),
+        })
+      }
+      return {
+        ok: false,
+        code: "sandbox_boot_cancelled",
+        message:
+          `agent_start: sandbox boot cancelled (provider "${providerSlug}") because the ` +
+          "session was ended while it was still starting",
+      }
     }
     return reuseSandboxId !== undefined
       ? {
@@ -6311,6 +6465,25 @@ export async function bootSandboxAgentSession(opts: {
     if (!opts.sessionId) return false
     return recordSessionDetach(host.sandboxId, opts.sessionId).length > 0
   }
+
+  /** The session was killed while still `starting`: tear the box down through
+   *  the same path a failed boot uses and report a typed cancellation, so no
+   *  descriptor is ever registered for it. */
+  const cancelBoot = async (): Promise<SandboxBootResult> => {
+    if (!(await detachOnBootFailure())) {
+      await host.stop().catch(() => undefined)
+      recordSandboxState(host.sandboxId, "stopped")
+    }
+    return {
+      ok: false,
+      code: "sandbox_boot_cancelled",
+      message:
+        `agent_start: sandbox boot cancelled (provider "${providerSlug}", sandbox ` +
+        `"${host.sandboxId}") because the session was ended while it was still starting`,
+    }
+  }
+  const bootCancelled = (): boolean => opts.signal?.aborted === true
+  if (bootCancelled()) return cancelBoot()
 
   let deliveryTarget: SandboxDeliveryTarget | undefined
   const deliverySessionId = opts.sessionId
@@ -6399,6 +6572,11 @@ export async function bootSandboxAgentSession(opts: {
       }
     }
   }
+
+  // One daemon-log line per boot phase, with the box id once known. The
+  // provider logs create/running/daemon-healthy itself; the workspace and
+  // agent phases live here.
+  console.warn(`[sandbox] boot: workspace ready (${providerSlug} ${host.sandboxId})`)
 
   if (opts.boxCwdRequest !== undefined && handle.defaultCwd) {
     const landed = resolveBoxCwdRequest({
@@ -6492,6 +6670,10 @@ export async function bootSandboxAgentSession(opts: {
   const remoteParent = mintRemoteParentForBox(opts.parentRelay)
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
+  if (bootCancelled()) {
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    return cancelBoot()
+  }
   try {
     const startArgs = {
       adapter: opts.adapter,
@@ -6542,6 +6724,11 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
+    console.warn(`[sandbox] boot: agent started (${providerSlug} ${host.sandboxId}, session ${remoteSessionId})`)
+    if (bootCancelled()) {
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      return cancelBoot()
+    }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
@@ -6652,6 +6839,11 @@ export async function bootSandboxAgentSession(opts: {
         })
       : undefined
   const onBeforeTeardown = composeTeardownHooks(trackedDeliveryOpts?.onBeforeTeardown, appGithubPushHook)
+
+  if (bootCancelled()) {
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    return cancelBoot()
+  }
 
   return {
     ok: true,

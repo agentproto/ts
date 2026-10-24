@@ -1174,7 +1174,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Sandbox checkpoint interval (ms)",
-    help: "Spacing of periodic checkpoints while a sandbox session runs; 0 turns the timer and the per-turn checkpoint off.",
+    help: "Spacing of periodic checkpoints while a sandbox session runs (default 3 minutes); 0 turns the timer and the per-turn checkpoint off.",
     default: DEFAULT_CHECKPOINT_INTERVAL_MS,
   },
   {
@@ -1184,7 +1184,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Sandbox checkpoint interval (ms)",
-    help: "Spacing of the periodic in-turn checkpoint timer (the on: [\"interval\"] trigger); wins over minIntervalMs. 0 turns the timer off.",
+    help: "Spacing of the periodic in-turn checkpoint timer (the on: [\"interval\"] trigger; default 3 minutes); wins over minIntervalMs. 0 turns the timer off.",
     default: DEFAULT_CHECKPOINT_INTERVAL_MS,
   },
   {

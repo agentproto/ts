@@ -755,7 +755,7 @@ export interface SessionProvisioningEvent {
   type: "session:provisioning"
   sessionId: string
   kind: "queued" | "started" | "phase" | "done"
-  phase?: "worktree" | "clone" | "deps" | "copy" | "setup"
+  phase?: "worktree" | "clone" | "deps" | "copy" | "setup" | "sandbox"
   position?: number
   outcome?: "ok" | "failed" | "cancelled"
   label?: string

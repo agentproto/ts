@@ -145,6 +145,40 @@ describe("spawnAgentSession — harness default preset fallback", () => {
     expect(getDefaultHarnessPreset).toHaveBeenCalledWith("hermes")
   })
 
+  it("a session preset that pins a profile skips the harness default entirely", async () => {
+    // The harness default bills through a disabled profile: consulting it
+    // would refuse the spawn, and its defaultModel would ride along with the
+    // preset's profile.
+    presetState.value = {
+      id: "hm-cheap",
+      harnessSlug: "hermes",
+      name: "Cheap",
+      profileRef: "openrouter-cheap",
+      defaultModel: "z-ai/glm-5.2",
+      isDefault: true,
+    }
+    authProfileState.profiles["openrouter-cheap"] = eligibleProfile({ disabled: true })
+    authProfileState.profiles["openrouter-pinned"] = eligibleProfile({
+      id: "openrouter-pinned",
+      credentialRef: "or/pinned",
+    })
+    authProfileState.keychain["or/pinned"] = "sk-or-pinned"
+
+    const startSession = vi.fn(async () => fakeAgentSession())
+    const deps = depsWithProvider("openrouter", startSession)
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "hermes",
+      cwd: "/tmp",
+      preset: { id: "pinned", label: "Pinned", access: { profileRef: "openrouter-pinned" } },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error(`expected spawn, got ${result.code}`)
+    expect(result.descriptor.accessProfile).toMatchObject({ profileRef: "openrouter-pinned" })
+    expect(startSession).not.toHaveBeenCalledWith(expect.objectContaining({ model: "z-ai/glm-5.2" }))
+    expect(getDefaultHarnessPreset).not.toHaveBeenCalled()
+  })
+
   it("an explicit access.profileRef wins — the harness default is never consulted", async () => {
     presetState.value = {
       id: "hm-cheap",

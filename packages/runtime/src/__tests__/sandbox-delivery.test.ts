@@ -436,17 +436,44 @@ describe("uncommitted-work snapshot", () => {
     expect(isFullyDelivered({ ...noKey, push: { status: "failed" }, bundle: { status: "skipped" } })).toBe(false)
   })
 
-  it("resolves the checkpoint interval from the env, 0 turning it off", () => {
-    expect(resolveCheckpointIntervalMs({})).toBe(10 * 60_000)
-    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "60000" })).toBe(60_000)
-    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" })).toBe(0)
-    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(10 * 60_000)
+  it("defaults the periodic checkpoint interval to three minutes", () => {
+    expect(DEFAULT_CHECKPOINT_INTERVAL_MS).toBe(3 * 60_000)
+    expect(resolveCheckpointIntervalMs({})).toBe(180_000)
+    expect(resolveSandboxCheckpointConfig(undefined, undefined, {}).intervalMs).toBe(180_000)
   })
 
-  it("the default checkpoint interval leaves room for a default-deadline checkpoint to finish", () => {
-    // A periodic checkpoint may legitimately run up to its deadline; the
-    // interval must exceed the deadline or the loop re-fires mid-flight.
-    expect(DEFAULT_CHECKPOINT_INTERVAL_MS).toBeGreaterThan(DEFAULT_CHECKPOINT_DEADLINE_MS)
+  it("resolves the checkpoint interval from the env, 0 turning it off", () => {
+    expect(resolveCheckpointIntervalMs({})).toBe(180_000)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "60000" })).toBe(60_000)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "0" })).toBe(0)
+    expect(resolveCheckpointIntervalMs({ AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS: "soon" })).toBe(180_000)
+  })
+
+  it("a checkpoint may outlive the interval; the next tick joins the in-flight run instead of overlapping", () => {
+    // A periodic checkpoint may legitimately run up to its deadline (5 min),
+    // longer than the 3-minute interval. `createSandboxCheckpointer` serializes
+    // runs, so a tick that lands mid-run coalesces instead of starting a second
+    // probe/push against the same snapshot ref.
+    expect(DEFAULT_CHECKPOINT_INTERVAL_MS).toBeLessThan(DEFAULT_CHECKPOINT_DEADLINE_MS)
+  })
+
+  it("two periodic ticks over an unchanged box push only once", async () => {
+    const outDir = await mkdtemp(join(tmpdir(), "agentproto-checkpoint-quiet-"))
+    const probe = `ahead=0\nuncommitted=1\nhead=${HEAD}\nsnapshot=${SNAP}\ntree=${TREE}\n`
+    let pushes = 0
+    const exec = async (o: SandboxExecOpts): Promise<SandboxExecResult> => {
+      if (o.command.includes("rev-list")) return result(0, probe)
+      if (o.command.includes(" push ")) {
+        pushes++
+        return result(0)
+      }
+      return result(1)
+    }
+    const checkpointer = createSandboxCheckpointer({ exec, target, outDir })
+    await checkpointer.run()
+    await checkpointer.run()
+    expect(pushes).toBe(1)
+    await rm(outDir, { recursive: true, force: true })
   })
 
   it("stamps the turn number onto the snapshot commit message and the record", async () => {

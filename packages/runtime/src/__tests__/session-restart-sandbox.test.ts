@@ -35,6 +35,7 @@ import {
   adapterStoreArchivePath,
 } from "../sandbox-adapter-store.js"
 import { clearParentRelayGrants, relayTokenForSession, resolveParentRelayGrant } from "../parent-relay.js"
+import { readSandboxLedger, recordSandboxBoot } from "../sandbox-ledger.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -314,6 +315,42 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(result.desc.command).toBe("sandbox:fake → fake-cli")
     expect(result.desc.cwd).toBe("/home/user")
     expect(result.desc.adapterSlug).toBe("fake-cli")
+  })
+
+  it("registers the RESUMED session on the live box's ledger row (gc must not reap it)", async () => {
+    const savedLedger = process.env.AGENTPROTO_SANDBOX_LEDGER
+    const ledgerDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-ledger-"))
+    process.env.AGENTPROTO_SANDBOX_LEDGER = join(ledgerDir, "sandboxes.json")
+    try {
+      const { resolver, providerResolver } = await setup()
+      // The incident's ledger shape: the box's origin is the session about to
+      // die, and no other session is attached.
+      recordSandboxBoot({
+        sandboxId: "sbx_prev_1",
+        provider: "fake",
+        state: "connected",
+        originSessionId: prev.id,
+        sessionId: prev.id,
+        expiresAt: "2027-01-01T00:00:00.000Z",
+      })
+
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: providerResolver,
+      })
+
+      const entry = readSandboxLedger().find(r => r.sandboxId === "sbx_prev_1")
+      expect(entry?.originSessionId).toBe(result.desc.id)
+      expect(entry?.attachedSessions).toContain(result.desc.id)
+      // The dead predecessor no longer holds the box; it must not keep a
+      // stale refcount alive (which would stop teardown from ever running).
+      expect(entry?.attachedSessions).not.toContain(prev.id)
+      // The re-attach keeps the row's idle window.
+      expect(entry?.expiresAt).toBe("2027-01-01T00:00:00.000Z")
+    } finally {
+      if (savedLedger === undefined) delete process.env.AGENTPROTO_SANDBOX_LEDGER
+      else process.env.AGENTPROTO_SANDBOX_LEDGER = savedLedger
+      await rm(ledgerDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+    }
   })
 
   it("replays the persisted sessionHolder (and non-secret config) on the live-box re-attach", async () => {
@@ -692,6 +729,64 @@ describe("restartAgentSession on a sandboxed session", () => {
     const { commands, desc } = await restartCloseAndCollectCommands({ sandboxCheckpointOverride: false })
     expect(commands.some(c => c.includes("commit-tree"))).toBe(false)
     expect(desc.sandboxCheckpointOverride).toBe(false)
+  })
+
+  it("arms the periodic checkpoint timer on a restart onto a LIVE box, one interval after the resume", async () => {
+    const sessionsDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-sessions-"))
+    setDefaultSessionsBaseDir(sessionsDir)
+    try {
+      const target: SandboxDeliveryTarget = {
+        checkoutDir: "/home/user/proj",
+        branch: "wt/resume-live",
+        baseSha: "c".repeat(40),
+      }
+      const { resolver, providerResolver } = await setup({ deliveryTarget: target })
+      const commands: string[] = []
+      const inner = box.provider
+      const withExec: (slug: string) => Promise<SandboxProviderHandle | null> = async slug => {
+        const handle = await providerResolver(slug)
+        if (!handle) return null
+        return {
+          ...handle,
+          provider: {
+            boot: inner.boot.bind(inner),
+            async connect(
+              sandboxId: string,
+              spec: SandboxSpec,
+              connectOpts: Parameters<NonNullable<typeof inner.connect>>[2],
+            ) {
+              const booted = await inner.connect!(sandboxId, spec, connectOpts)
+              return {
+                ...booted,
+                async exec(o: { command: string }) {
+                  commands.push(o.command)
+                  return { exitCode: 0, stdout: "ahead=0\nuncommitted=0\n", stderr: "", durationMs: 1 }
+                },
+              }
+            },
+          },
+        }
+      }
+      const result = await restartAgentSession(registry, resolver, prev, {
+        resolveSandboxProvider: withExec,
+        loadDefaultsConfig: async () => ({ sandbox: { checkpoint: { intervalMs: 25 } } }),
+      })
+      // The interval is armed at proxy creation (the resume), so the first
+      // checkpoint lands one interval after the restart even though no turn
+      // has started and the box was already up before the restart.
+      await vi.waitFor(
+        () => {
+          expect(
+            commands.some(c => c.includes("wt/resume-live") && c.includes("rev-list")),
+          ).toBe(true)
+        },
+        { timeout: 2_000 },
+      )
+      expect(registry.get(result.desc.id)?.sandboxCheckpoint).toBeDefined()
+    } finally {
+      setDefaultSessionsBaseDir(undefined)
+      await rm(sessionsDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+    }
   })
 
   it("a session with no work branch restarts without any delivery hook", async () => {

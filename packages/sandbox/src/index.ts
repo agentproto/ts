@@ -32,6 +32,8 @@ export {
   SandboxPortExposureUnsupportedError,
   SandboxBoxGoneError,
   isSandboxBoxGoneError,
+  SandboxBootCancelledError,
+  isSandboxBootCancelledError,
   SandboxHostBootFailedError,
   type SandboxSpec,
   type BootedSandbox,

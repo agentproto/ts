@@ -965,8 +965,15 @@ export function createSandboxCheckpointer(
  *  knob — {@link SandboxCheckpointConfig.minIntervalMs} is the config-object
  *  equivalent and wins when set; this env var remains the ultimate fallback
  *  (see {@link resolveSandboxCheckpointConfig}) so an existing deployment
- *  that only ever touched it keeps behaving identically. */
-export const DEFAULT_CHECKPOINT_INTERVAL_MS = 10 * 60_000
+ *  that only ever touched it keeps behaving identically.
+ *
+ *  3 minutes: a lost box must cost at most a few minutes of work, not the
+ *  ten a longer period left exposed (incident sess_44919aee, 2026-10-23: a
+ *  resumed box was deleted ~4 minutes in and its only checkpoint ran at
+ *  teardown, after the box was already gone). A checkpoint may still run up
+ *  to its own 5-minute deadline; overlapping ticks coalesce onto that run
+ *  (see {@link createSandboxCheckpointer}). */
+export const DEFAULT_CHECKPOINT_INTERVAL_MS = 3 * 60_000
 export const CHECKPOINT_INTERVAL_ENV = "AGENTPROTO_SANDBOX_CHECKPOINT_INTERVAL_MS"
 
 export function resolveCheckpointIntervalMs(env: NodeJS.ProcessEnv = process.env): number {

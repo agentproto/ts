@@ -5738,6 +5738,10 @@ export type SpawnAgentPendingInput = Omit<
    *  that aborts the provisioner so a killed spawn leaves no queued entry
    *  and no orphaned install. Never invoked after a successful settle. */
   onCancel?: () => void
+  /** Which provisioning phase the placeholder reports while it waits.
+   *  Default "worktree"; a sandbox boot passes "sandbox" so a `starting` row
+   *  does not claim a worktree it will never create. */
+  provisioningPhase?: WorktreeProvisionPhase
 }
 
 /** The deferred outcome `settlePendingAgent` resolves a placeholder with —
@@ -11407,7 +11411,7 @@ export function createSessionsRegistry(opts?: {
         candidate => isSlugTaken(candidate),
         id,
       )
-      const desc: SessionDescriptor = {
+      let desc: SessionDescriptor = {
         id,
         kind: "agent-cli",
         slug,
@@ -11542,23 +11546,62 @@ export function createSessionsRegistry(opts?: {
       if (input.trace ?? opts?.langfuseTracingDefault ?? false) {
         tracedSessions.add(id)
       }
-      const rt: SessionRuntime = {
-        desc,
-        adapterSlug: input.adapterSlug,
-        recentLines: [],
-        recentBytes: [],
-        recentBytesSize: 0,
-        emitter: new EventEmitter(),
-        busy: false,
-        textBuf: "",
-        thoughtBuf: "",
-        maxCostUsd: input.maxCostUsd,
-        costBudget: input.costBudget,
-        readUsage: input.readUsage,
-        ...(input.permissionHold ? { permissionHold: true } : {}),
+      // ADOPT a pre-registered placeholder of the SAME id. A sandbox spawn
+      // registers a `starting` row BEFORE it boots the box (so the row is
+      // visible during a long boot), then lands the real session here. Mutate
+      // that row in place; replacing it would orphan any listener already
+      // attached to the placeholder and hide the boot time from `startedAt`.
+      const pendingRt = sessions.get(id)
+      const adoptingPending = pendingRt !== undefined && pendingRt.desc.status === "starting"
+      if (pendingRt !== undefined && !adoptingPending) {
+        // NEVER resurrect an id that already reached a terminal status: a
+        // placeholder killed mid-boot must stay dead even if the boot
+        // finishes afterwards. Close the just-started driver session so its
+        // box is torn down and refuse to register it.
+        void input.agentSession.close().catch(() => undefined)
+        throw new Error(
+          `spawnAgent: refusing to resurrect session "${id}" (status "${pendingRt.desc.status}")`,
+        )
       }
-      rt.emitter.setMaxListeners(50)
-      sessions.set(id, rt)
+      if (pendingRt !== undefined && adoptingPending) {
+        const startedAt = pendingRt.desc.startedAt
+        Object.assign(pendingRt.desc, desc, { startedAt, status: "running" })
+        delete pendingRt.desc.provisioning
+        pendingRt.provisionCancel = undefined
+        // Runtime-only policy fields live on the SessionRuntime, not the
+        // descriptor, so adopting the placeholder must copy them across or
+        // a sandbox spawn silently loses its cost caps and usage reader.
+        pendingRt.maxCostUsd = input.maxCostUsd
+        pendingRt.costBudget = input.costBudget
+        pendingRt.readUsage = input.readUsage
+        if (input.permissionHold) pendingRt.permissionHold = true
+        desc = pendingRt.desc
+        resetContextWindowForModel(desc, desc.model)
+      }
+      const rt: SessionRuntime = adoptingPending && pendingRt !== undefined
+        ? pendingRt
+        : {
+            desc,
+            adapterSlug: input.adapterSlug,
+            recentLines: [],
+            recentBytes: [],
+            recentBytesSize: 0,
+            emitter: new EventEmitter(),
+            busy: false,
+            textBuf: "",
+            thoughtBuf: "",
+            maxCostUsd: input.maxCostUsd,
+            costBudget: input.costBudget,
+            readUsage: input.readUsage,
+            ...(input.permissionHold ? { permissionHold: true } : {}),
+          }
+      if (adoptingPending) {
+        // The placeholder's listeners were attached while it was `starting`.
+        rt.emitter.emit("status", rt.desc.status)
+      } else {
+        rt.emitter.setMaxListeners(50)
+        sessions.set(id, rt)
+      }
       linkContinuedTo(input.resumedFrom, id)
       // Bind the agent session onto `rt` BEFORE the consumers below that read
       // `rt.agentSession` (`bindOutOfTurnEvents`, `stampCapabilities`,
@@ -11579,14 +11622,18 @@ export function createSessionsRegistry(opts?: {
       // `parentSessionId` without waiting for its next snapshot poll. Rides the
       // same fan-out (EventRing → session_events_poll, webhook notifier) as
       // every other lifecycle event; best-effort, so a bus-less registry no-ops.
-      sessionEvents?.emit({
-        type: "session:spawned",
-        sessionId: id,
-        ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
-        ...(desc.label ? { label: desc.label } : {}),
-        depth: desc.depth ?? 0,
-        ts: new Date().toISOString(),
-      })
+      // An adopted placeholder ALREADY emitted this at registration; a second
+      // `session:spawned` for the same id would double-count it downstream.
+      if (!adoptingPending) {
+        sessionEvents?.emit({
+          type: "session:spawned",
+          sessionId: id,
+          ...(desc.parentSessionId ? { parentSessionId: desc.parentSessionId } : {}),
+          ...(desc.label ? { label: desc.label } : {}),
+          depth: desc.depth ?? 0,
+          ts: new Date().toISOString(),
+        })
+      }
       appendLine(
         rt,
         `── ${input.adapterSlug} agent session ${input.agentSession.sessionId} (cwd ${input.cwd}) ──`,
@@ -11751,8 +11798,12 @@ export function createSessionsRegistry(opts?: {
       // Provisioning is under way from the first instant: the cheap prep
       // (`git worktree add`) runs unthrottled, so the row starts as `running`
       // in the `worktree` phase and flips to `queued` only if the heavy
-      // segment has to wait for a slot.
-      desc.provisioning = { state: "running", phase: "worktree", startedAt: desc.startedAt }
+      // segment has to wait for a slot. A sandbox boot passes its own phase.
+      desc.provisioning = {
+        state: "running",
+        phase: input.provisioningPhase ?? "worktree",
+        startedAt: desc.startedAt,
+      }
       rt.emitter.setMaxListeners(50)
       sessions.set(id, rt)
       // `continuedTo` on the prior row is stamped by `settlePendingAgent` once

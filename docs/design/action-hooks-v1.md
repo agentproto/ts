@@ -1,8 +1,10 @@
 # Action hooks v1: contract and compatibility inventory
 
 Status: PR 1 contract freeze. No runtime dispatcher is wired in this change.
-The TypeScript surface is the `hooks/v1` contract module in
+The TypeScript surface is the `action-hooks/v1` contract module in
 `@agentproto/lifecycle` (`src/hooks.ts`, re-exported from the package root).
+The AIP-71 reference implementation is the daemon runtime; this package holds
+the contract parser and the AIP-37 event names.
 
 This document freezes terminology and records the surfaces that later PRs
 must connect. It deliberately does not add an outbox, a prompt queue, a
@@ -10,14 +12,14 @@ second action registry, or a new capability tool.
 
 ## Why three paths instead of one callback
 
-`hooks/v1` names three execution paths. They have different timing,
+`action-hooks/v1` names three execution paths. They have different timing,
 different failure semantics, and different config sources. Collapsing them
 into one callback would force admission to be asynchronous, or reactions to
 be best-effort, which is wrong for both.
 
 | Path | When it runs | Result | Durability |
 | --- | --- | --- | --- |
-| `admission` | Before a daemon-owned action is invoked | Synchronous allow or deny | No receipt; the action either proceeds or does not |
+| `admission` | Before a daemon-owned action is invoked | Authorization (allow or deny) is an AIP-38 policy decision over the AIP-39 action id and runs first; an admission hook can only narrow it, and the host may also return `reuse` or `defer`; a native harness hook can express only allow and deny | No receipt; the action either proceeds or does not |
 | `lifecycle` | After a state transition | Non-blocking event emission | Best-effort; observers may miss it |
 | `reaction` | After an event is accepted | Invokes an action | Best-effort by default; durable only when the host has a durable store and the action is idempotent or otherwise safe to replay |
 
@@ -53,7 +55,7 @@ Host-specific events are namespaced, for example
 `agentproto:child-housekeeping`. They are nonportable and must be registered
 explicitly before a config may reference them. An unregistered namespaced
 event is a contract error, not a silently accepted typo. AIP-37 also permits
-hosts to fire additional bare event names; hooks/v1 preserves those as custom
+hosts to fire additional bare event names; `action-hooks/v1` preserves those as custom
 portable references.
 
 The runtime's `SessionEventType` union uses transport-local names such as
@@ -75,7 +77,7 @@ because the intent is ambiguous.
 ## AIP-42 `on:` is the agent-manifest configuration layer
 
 `AGENT.md` already defines `on:` as "AIP-37 event name -> action-ref(s) to
-invoke". `hooks/v1` treats that map as its agent-manifest configuration
+invoke". `action-hooks/v1` treats that map as its agent-manifest configuration
 layer. It is not a competing hook system.
 
 Example:
@@ -131,7 +133,7 @@ enabled: true
 ```
 
 The same parsing function must preserve non-action event routines, such as
-those targeting a tool or workflow. `hooks/v1` only freezes the action-target
+those targeting a tool or workflow. `action-hooks/v1` only freezes the action-target
 shape; it does not invalidate other AIP-41 targets.
 
 ## Existing `.agentproto/hooks.json` is not this contract
@@ -141,7 +143,7 @@ engine at the ACP permission seam. Its actions are `log`, `allow`, `hold`,
 `deny`, and `gate`; rules carry `plane` and `intent`. That engine is
 admission-adjacent, but it is a separate, existing surface.
 
-Do not rename it to `hooks/v1`, do not make it the universal reaction
+Do not rename it to `action-hooks/v1`, do not make it the universal reaction
 dispatcher, and do not merge its rule shape into AIP-42 `on:` in PR 1.
 The daemon's `clerk-turn-end` hook documented in `docs/clerk-hook.md` is
 also unchanged.
@@ -178,14 +180,14 @@ Consequences:
 ## Context emergency rescue remains core
 
 Context emergency rescue (`session:context-rescue`) stays a core daemon
-behavior. `hooks/v1` does not move it behind admission, does not require a
+behavior. `action-hooks/v1` does not move it behind admission, does not require a
 reaction receipt for it, and does not make its operation conditional on a
 hook config. Deleting the context ladder is a separate migration and is out
 of scope for this contract.
 
 ## Compatibility inventory
 
-| Surface | Current behavior | hooks/v1 relationship |
+| Surface | Current behavior | action-hooks/v1 relationship |
 | --- | --- | --- |
 | `packages/lifecycle/src/index.ts` | AIP-37 event vocabulary, aliases, templated names | Source of portable event refs |
 | `packages/action/src/schema.ts` | AIP-39 `<target-kind>:<verb>` action ids | Source of action-ref shape |

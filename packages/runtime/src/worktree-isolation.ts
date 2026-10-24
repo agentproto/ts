@@ -126,7 +126,7 @@ export interface WorktreeProvisionRequest {
 
 /** Phases of a worktree provisioning. `worktree` is the unthrottled
  *  `git worktree add` step; the rest are the throttled heavy ones. */
-export type WorktreeProvisionPhase = "worktree" | "clone" | "deps" | "copy" | "setup"
+export type WorktreeProvisionPhase = "worktree" | "clone" | "deps" | "copy" | "setup" | "sandbox"
 
 /** Structural mirror of `@agentproto/worktree`'s `ProvisionProgress` (the
  *  runtime deliberately takes no dependency on that package). */
