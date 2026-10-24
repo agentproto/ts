@@ -442,6 +442,27 @@ describe("ReactionReceiptStore", () => {
     expect(store.rows()[0]!.status).toBe("pending")
   })
 
+  it("persists by default to the AGENTPROTO_HOME receipt file without an explicit filePath", async () => {
+    const dir = tmp()
+    const previous = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = dir
+    try {
+      const store = createReactionReceiptStore({
+        nowMs: clock().now,
+        debounceMs: 60_000,
+        log: () => {},
+      })
+      await store.insertPending(input())
+      const expected = join(dir, "reaction-receipts.json")
+      expect(store.path).toBe(expected)
+      expect(existsSync(expected)).toBe(true)
+      expect(readRows(expected)[keyOf()]!.status).toBe("pending")
+    } finally {
+      if (previous === undefined) delete process.env.AGENTPROTO_HOME
+      else process.env.AGENTPROTO_HOME = previous
+    }
+  })
+
   it("persist:false never creates the file", async () => {
     const dir = tmp()
     const file = join(dir, "receipts.json")

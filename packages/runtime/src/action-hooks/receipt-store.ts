@@ -97,7 +97,7 @@ export interface ReactionReceiptStoreOptions {
   nowMs?: () => number
   /** Debounce interval for the non-critical transitions. Default 1500 ms. */
   debounceMs?: number
-  /** Disable disk persistence. Default: `filePath !== undefined`. */
+  /** Disable disk persistence. Default true. */
   persist?: boolean
   /** Default `console.warn`. */
   log?: (line: string) => void
@@ -154,7 +154,7 @@ export function createReactionReceiptStore(opts: ReactionReceiptStoreOptions = {
   const nowMs = opts.nowMs ?? Date.now
   const debounceMs = opts.debounceMs ?? PERSIST_DEBOUNCE_MS
   const log = opts.log ?? ((line: string): void => console.warn(line))
-  const persist = opts.persist ?? opts.filePath !== undefined
+  const persist = opts.persist ?? true
   const doneReapMs = opts.doneReapMs ?? DONE_REAP_MS
   const nonTerminalAgeOutMs = opts.nonTerminalAgeOutMs ?? NON_TERMINAL_AGE_OUT_MS
   const rowCap = opts.rowCap ?? ROW_CAP
