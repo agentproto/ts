@@ -1,5 +1,5 @@
 /**
- * @agentproto/quota — unified, provider-neutral quota status.
+ * @agentproto/quota: unified, provider-neutral quota status.
  *
  * One QuotaStatus shape with a mandatory `basis`, a never-throw QuotaReader
  * contract, and a reader registry. Unknown is omitted, never fabricated.
