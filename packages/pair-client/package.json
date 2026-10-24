@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/pair-client",
   "version": "1.0.5",
-  "description": "@agentproto/pair-client — browser-safe client for agentproto E2E daemon pairing. Pair from an offer QR, keep the credential in IndexedDB, and reach the daemon with a WHATWG fetch (streamed bodies, SSE) multiplexed over one rendezvous WebSocket, with reconnect and a typed revocation error.",
+  "description": "DEPRECATED: renamed @agentproto/pairing. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",
     "aip-59",
@@ -52,19 +52,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/acp": "workspace:*",
-    "@agentproto/secrets": "workspace:*"
+    "@agentproto/pairing": "workspace:*"
   },
   "devDependencies": {
-    "@agentproto/rendezvous": "workspace:*",
-    "@agentproto/runtime": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.9",
-    "@types/ws": "^8.18.2",
-    "esbuild": "^0.28.2",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.7",
-    "ws": "^8.22.0"
+    "vitest": "^3.2.7"
   }
 }

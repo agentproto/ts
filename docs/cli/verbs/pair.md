@@ -70,7 +70,7 @@ This window can close.
   `https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…&id=…&pk=…&sk=…&s=…&exp=…`
   (the query string of the `agentproto://` URL, verbatim, after the `#`). A URL fragment
   is never sent to a server, so the page's host never sees the token. The page
-  runs the same handshake in the browser (`@agentproto/pair-client`) and shows
+  runs the same handshake in the browser (`@agentproto/pairing`) and shows
   the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
   printed for `pair accept`, and either form is accepted by both clients.
 - `--pair-page <url|template>` (with `--qr`) picks the pair page for this

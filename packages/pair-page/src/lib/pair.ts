@@ -40,13 +40,13 @@ export function controlCenterUrl(id: string): string {
   return `/d/${id}${CONTROL_CENTER_PATH}`
 }
 
-/** Tunnel state as the worker reports it: the pair-client `ConnectionState`
+/** Tunnel state as the worker reports it: the pairing `ConnectionState`
  *  (`outdated` = the pairing predates the current pairing protocol), plus
  *  `not_paired` when no credential is stored for the scope. */
 export type PairState = "connecting" | "open" | "offline" | "revoked" | "closed" | "not_paired" | "outdated"
 
 /** The offer or the stored credential predates the current pairing protocol
- *  (pair-client's `protocol_outdated`, the daemon's `pairing_protocol_outdated`
+ *  (pairing's `protocol_outdated`, the daemon's `pairing_protocol_outdated`
  *  underneath): it can never work again, only a fresh pairing can. */
 export function isOutdatedPairingError(err: unknown): boolean {
   for (let e = err, depth = 0; e && typeof e === "object" && depth < 4; depth++) {
