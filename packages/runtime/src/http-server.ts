@@ -7072,6 +7072,26 @@ async function handleSessions(
       })
       return true
     }
+    // Operator-assigned label (`SessionDescriptor.operatorLabel`): the HTTP
+    // twin of `agent_start`'s "Operator-assigned label" block
+    // (agent-tools.ts) — same rule, stamped ONLY on an operator spawn (no
+    // caller session identity, no `parentSessionId`) that created a fresh
+    // session. It is what `label:` entries in `allowPromptFrom` match on, and
+    // Pygmalion launches its persistent agents through this route with
+    // `label`, so its `label:pygmalion-brain-persistent` grants were inert
+    // without it. Same discipline as `allowPromptFrom` below: a failure is a
+    // warning, never a failed spawn.
+    const operatorLabel = typeof b.label === "string" ? b.label.trim() : undefined
+    let operatorLabelWarning: string | undefined
+    const callerSessionId = resolveCallerSessionIdFor?.(req)
+    const hasParent = typeof b.parentSessionId === "string" && b.parentSessionId.length > 0
+    if (operatorLabel && !result.deduped && !hasParent && !callerSessionId) {
+      try {
+        registry.setOperatorLabel(result.descriptor.id, operatorLabel)
+      } catch (err) {
+        operatorLabelWarning = `operatorLabel apply failed: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
     // The HTTP twin of `agent_start.allowPromptFrom`: applied post-spawn,
     // same as the MCP tool handler (agent-tools.ts) — `allowPromptFrom` is
     // never a `spawnAgentSession` field, only a registry row mutated after
@@ -7094,8 +7114,14 @@ async function handleSessions(
     }
     json(201, {
       ...sessionDescriptorForHttp(result.descriptor),
-      ...(result.warnings || allowPromptFromWarning
-        ? { warnings: [...(result.warnings ?? []), ...(allowPromptFromWarning ? [allowPromptFromWarning] : [])] }
+      ...(result.warnings || operatorLabelWarning || allowPromptFromWarning
+        ? {
+            warnings: [
+              ...(result.warnings ?? []),
+              ...(operatorLabelWarning ? [operatorLabelWarning] : []),
+              ...(allowPromptFromWarning ? [allowPromptFromWarning] : []),
+            ],
+          }
         : {}),
       ...(result.deduped ? { deduped: true } : {}),
       ...(result.dedupeSource ? { dedupeSource: result.dedupeSource } : {}),
