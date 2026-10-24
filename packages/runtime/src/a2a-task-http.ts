@@ -33,7 +33,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import { loadAppHandle } from "@agentproto/app-kit"
+import { loadAppHandle } from "@agentproto/app"
 import type { AppRegistry } from "./app-registry.js"
 import { writeSseHead } from "./sse-headers.js"
 import { createA2aPushService, getA2aPushService, type A2aPushDeps } from "./a2a-push.js"
@@ -80,7 +80,7 @@ export interface A2aTaskHttpConfig {
    *  Defaults to `~/.agentproto`, next to `apps.json`. */
   stateDir?: string
   /** Reads `accepts` / `exposes` for an installed app dir. Defaults to
-   *  app-kit's `loadAppHandle`. */
+   *  app's `loadAppHandle`. */
   loadHandle?: (dir: string) => Promise<A2aAppHandleLike>
   /** Poll cadence of the SSE task streams (`SendStreamingMessage`,
    *  `SubscribeToTask`). Defaults to 1000 ms. */

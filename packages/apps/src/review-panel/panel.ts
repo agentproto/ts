@@ -46,7 +46,7 @@ import { REVIEW_PANEL_HTML_GENERATED } from "./panel.generated.js"
 
 /** The builtin's app id — how `app_catalog` reports the panel. Lives in this
  *  html-only entry (not ./index.ts) so a consumer that must NOT pull the
- *  app-kit dependency graph can still name the panel from source (mirrors
+ *  app dependency graph can still name the panel from source (mirrors
  *  work-board/panel.ts's `WORK_BOARD_APP_ID`). */
 export const REVIEW_PANEL_APP_ID = "@agentproto/review-panel"
 

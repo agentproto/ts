@@ -13,7 +13,7 @@ export default createTsupConfig({
   },
   format: ["esm"],
   splitting: false,
-  // dts emitted by `tsc -p tsconfig.build.json` (same split app-kit uses).
+  // dts emitted by `tsc -p tsconfig.build.json` (same split app uses).
   dts: false,
   external: ["react", "react/jsx-runtime", "@tanstack/react-query"],
   noExternal: [],

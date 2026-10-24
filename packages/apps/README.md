@@ -1,7 +1,7 @@
 # @agentproto/apps
 
 Ready-made agentproto **apps** — *teams* of agents plus the workflows they run,
-each declared with [`@agentproto/app-kit`](../app-kit). Import a team, use any
+each declared with [`@agentproto/app`](../app). Import a team, use any
 subset of its agents/workflows from your own host.
 
 ```ts

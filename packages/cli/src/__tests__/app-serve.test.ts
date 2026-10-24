@@ -781,7 +781,7 @@ describe("app serve UI-root resolution (regression: ui.path was ignored)", () =>
 
     // Mirror runAppServe's exact resolution, then serve from the resolved
     // root through the same handler factory runAppServe uses.
-    const { resolveAppUIRoot } = await import("@agentproto/app-kit")
+    const { resolveAppUIRoot } = await import("@agentproto/app")
     const uiRoot = (await resolveAppUIRoot(dir)) ?? join(dir, ".agentproto", "ui")
     expect(uiRoot).toBe(join(dir, "ui"))
 

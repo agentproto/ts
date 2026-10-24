@@ -3,7 +3,7 @@
  * agents, the AIP-15 workflows they run, and any other AIP artifacts into
  * one cross-linked, frozen handle.
  *
- * The only new invariant app-kit adds is *attachment*: the agents and the
+ * The only new invariant app adds is *attachment*: the agents and the
  * bundled workflows must reference each other. Everything else (field
  * validation) already ran when the caller built the handles with
  * `defineAgent` / `defineWorkflow`, so `defineApp` validates the coupling,
@@ -21,7 +21,7 @@
 import { isAbsolute } from "node:path"
 import { defineWorkspace } from "@agentproto/workspace"
 import type { AgentHandle, AnyRef } from "@agentproto/agent"
-import type { BuildMastraAgentResult } from "@agentproto/mastra"
+import type { BuildMastraAgentResult } from "@agentproto/bridge"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type {
@@ -45,7 +45,7 @@ import { normalizeManifestFields } from "./manifest-fields.js"
 
 export class AppDefinitionError extends Error {
   constructor(message: string) {
-    super(`defineApp (app-kit): ${message}`)
+    super(`defineApp (app): ${message}`)
     this.name = "AppDefinitionError"
   }
 }
@@ -212,7 +212,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   // carries it. This never spawns anything: `entry` is a plain string the
   // LATER install-time service-owner (performInstall, a separate work item)
   // runs, one keep-alive session per entry. `dev.launch` above is likewise
-  // validation-only and is NEVER executed by app-kit (define-app.ts:62-64 /
+  // validation-only and is NEVER executed by app (define-app.ts:62-64 /
   // no execution path). Conformance is asserted in __tests__: a `services`
   // entry whose `entry` would be destructive if run MUST NOT cause
   // defineApp/emit/load to execute it.
@@ -220,7 +220,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ? Object.freeze(fields.services.map(s => Object.freeze({ ...s })))
     : undefined
   // AIP-53 `setup[]` — the post-install configuration pipeline. Rule 10
-  // runs PURELY here (no I/O; app-kit never executes a step — see
+  // runs PURELY here (no I/O; app never executes a step — see
   // manifest-fields.ts's setupList for the shape half), then the array is
   // deep-frozen onto the handle and carried verbatim by emit/load.
   if (fields.setup !== undefined) {
@@ -376,13 +376,13 @@ function selectAgents(
 }
 
 async function buildOne(entry: AgentEntry, opts: ToMastraAgentOptions): Promise<BuildMastraAgentResult> {
-  // Dynamic import, not a static top-level one: `@agentproto/mastra` pulls in
+  // Dynamic import, not a static top-level one: `@agentproto/bridge` pulls in
   // `@mastra/core` (a documented peer dependency — see index.ts), which a
   // bundler would otherwise inline into ANY host that merely calls
   // `defineApp()` without ever calling `toMastraAgent(s)` (e.g. a UI-only app
   // consumer). Loading it lazily, only from the one place it's actually used,
   // keeps `defineApp()`/the rest of this module free of that cost.
-  const { buildMastraAgent } = await import("@agentproto/mastra")
+  const { buildMastraAgent } = await import("@agentproto/bridge")
   // `entry.body` (the AGENT.md body) wins as instructions; an explicit
   // `opts.body` still overrides, matching buildMastraAgent's contract.
   return buildMastraAgent(entry.agent, { body: entry.body, ...opts })
@@ -480,7 +480,7 @@ function setupPersistOf(step: AppSetupStep): AppSetupPersist | undefined {
 
 /**
  * AIP-53 conformance rule 10 — the `setup[]` pipeline invariants, checked
- * PURELY on the shape-validated array (no I/O; app-kit never executes a
+ * PURELY on the shape-validated array (no I/O; app never executes a
  * step). Every violation names the offending step id:
  *
  *   1. the array is non-empty when present;
@@ -826,7 +826,7 @@ function normalizeOpenAIMentions(
 }
 
 /** Deep-freeze the normalized OpenAI extension tree — same immutability
- *  discipline the rest of app-kit applies to top-level handle fields. */
+ *  discipline the rest of app applies to top-level handle fields. */
 function freezeDeep(value: unknown): unknown {
   if (Array.isArray(value)) return Object.freeze(value.map(freezeDeep))
   if (typeof value === "object" && value !== null) {

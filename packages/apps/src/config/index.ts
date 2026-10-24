@@ -16,7 +16,7 @@
  * muted "needs a newer agentproto daemon" note for that one control).
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { CONFIG_HTML, CONFIG_TOOLS } from "./ui.js"
 
 export const configApp: AppHandle = defineApp({

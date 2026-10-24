@@ -27,7 +27,7 @@ import {
 } from "../app-service-process.js"
 import { SESSION_ID_ENV, APP_ID_ENV, createSessionsRegistry } from "../sessions.js"
 import type { SessionsRegistry } from "../sessions.js"
-import type { AppService } from "@agentproto/app-kit"
+import type { AppService } from "@agentproto/app"
 
 const APP_ID = "@test/proc-app"
 
