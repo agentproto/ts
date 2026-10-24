@@ -8,6 +8,13 @@
  * id `exit:<endedAt>` names that transition. The same pure derivation is what
  * boot reconciliation will call later to check that a pending receipt's
  * trigger is still valid.
+ *
+ * The exit funnel flips the row terminal and emits `session:exited` BEFORE a
+ * terminal path layers its Level-2 (judged/declared/operator) outcome, so the
+ * exit-time read sees no completion verdict for the primary completion paths
+ * (a steward close, an operator "mark as completed"). The wiring therefore
+ * also subscribes to `session:outcome-recorded` and re-derives from the now
+ * updated descriptor; the occurrence id deduplicates the two triggers.
  */
 
 import type {
@@ -15,6 +22,7 @@ import type {
   SessionEventBus,
   PolicyPassedEvent,
   SessionExitedEvent,
+  SessionOutcomeRecordedEvent,
 } from "../session-event-bus.js"
 import { isOutcomeCompleted } from "../session-outcome.js"
 
@@ -63,7 +71,16 @@ export interface SessionCompletionWiring {
   log?: (line: string) => void
 }
 
-/** Subscribe to the bus and return the unsubscribe function. */
+/**
+ * Subscribe to the bus and return the unsubscribe function.
+ *
+ * Emission is synchronous inside the triggering dispatch. A `session:exited`
+ * listener that was registered BEFORE this wiring runs before
+ * `agentproto:session-completed`; one registered AFTER it runs after the
+ * completion event, even though completion is logically "after the exit".
+ * Register any strict after-exit work before wiring this, or subscribe to
+ * `agentproto:session-completed` instead.
+ */
 export function wireSessionCompletion(w: SessionCompletionWiring): () => void {
   const now = w.now ?? (() => new Date())
   const log = w.log ?? ((line: string) => console.warn(line))
@@ -110,12 +127,20 @@ export function wireSessionCompletion(w: SessionCompletionWiring): () => void {
     }
   }
 
+  // A terminal transition consumes any policy latch for this session — keyed
+  // by session id, it must never survive into a later revival. Delete BEFORE
+  // the lookup so an unknown session cannot leave a stale latch behind.
+  const consumePolicy = (sessionId: string): boolean => {
+    const passed = rememberPolicy.has(sessionId)
+    rememberPolicy.delete(sessionId)
+    return passed
+  }
+
   const onExited = (ev: SessionExitedEvent): void => {
+    const policyPassed = consumePolicy(ev.sessionId)
     try {
       const facts = w.getSession(ev.sessionId)
       if (!facts) return
-      const policyPassed = rememberPolicy.has(ev.sessionId)
-      rememberPolicy.delete(ev.sessionId)
       emitIfNew(ev.sessionId, facts, policyPassed)
     } catch (err) {
       log(
@@ -125,10 +150,29 @@ export function wireSessionCompletion(w: SessionCompletionWiring): () => void {
     }
   }
 
-  const onPolicyPassed = (ev: PolicyPassedEvent): void => {
+  // The exit funnel fires before a terminal path layers its Level-2 outcome,
+  // so this is where a steward close / operator "mark as completed" is seen.
+  const onOutcomeRecorded = (ev: SessionOutcomeRecordedEvent): void => {
+    const policyPassed = consumePolicy(ev.sessionId)
     try {
       const facts = w.getSession(ev.sessionId)
       if (!facts) return
+      emitIfNew(ev.sessionId, facts, policyPassed)
+    } catch (err) {
+      log(
+        `[session-completion] handling outcome write of ${ev.sessionId} failed: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  const onPolicyPassed = (ev: PolicyPassedEvent): void => {
+    try {
+      const facts = w.getSession(ev.sessionId)
+      if (!facts) {
+        rememberPolicy.delete(ev.sessionId)
+        return
+      }
       if (TERMINAL_STATUSES.has(facts.status)) {
         emitIfNew(ev.sessionId, facts, true)
       } else {
@@ -143,9 +187,11 @@ export function wireSessionCompletion(w: SessionCompletionWiring): () => void {
   }
 
   const unsubExit = w.bus.on("session:exited", onExited)
+  const unsubOutcome = w.bus.on("session:outcome-recorded", onOutcomeRecorded)
   const unsubPolicy = w.bus.on("policy:passed", onPolicyPassed)
   return () => {
     unsubExit()
+    unsubOutcome()
     unsubPolicy()
   }
 }

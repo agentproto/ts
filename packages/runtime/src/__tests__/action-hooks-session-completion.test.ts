@@ -3,7 +3,10 @@
  * for `agentproto:session-completed`.
  */
 
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import {
   deriveSessionCompletion,
@@ -13,6 +16,11 @@ import {
 } from "../action-hooks/index.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import type { SessionCompletedEvent, SessionExitedEvent } from "../session-event-bus.js"
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type AgentStreamEvent,
+} from "../sessions.js"
 
 const ENDED_AT = "2026-10-24T01:02:03.000Z"
 
@@ -303,5 +311,103 @@ describe("wireSessionCompletion", () => {
     const unsubscribe = bus.on("agentproto:session-completed", handler)
     expect(typeof unsubscribe).toBe("function")
     unsubscribe()
+  })
+})
+
+function liveAgentSession(sessionId: string): AgentSessionLike {
+  return {
+    sessionId,
+    // eslint-disable-next-line require-yield
+    async *send(): AsyncIterable<AgentStreamEvent> {
+      await new Promise(() => {}) // never resolves — keeps the session "running"
+    },
+    async cancel() {},
+    async close() {},
+  }
+}
+
+describe("wireSessionCompletion with the sessions registry", () => {
+  let tmp: string
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), "session-completion-"))
+  })
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true })
+  })
+
+  function harness(): {
+    bus: ReturnType<typeof createSessionEventBus>
+    seen: SessionCompletedEvent[]
+    reg: ReturnType<typeof createSessionsRegistry>
+  } {
+    const bus = createSessionEventBus()
+    const seen = collect(bus)
+    const reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, sessionEvents: bus })
+    wireSessionCompletion({ bus, getSession: id => reg.get(id) })
+    return { bus, seen, reg }
+  }
+
+  function spawn(reg: ReturnType<typeof createSessionsRegistry>, id: string) {
+    return reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: liveAgentSession(id),
+      adapterSlug: "claude-code",
+    })
+  }
+
+  it("fires for a live steward close, whose verdict is written after session:exited", () => {
+    const { seen, reg } = harness()
+    const desc = spawn(reg, "acp-close-1")
+
+    expect(reg.closeWithOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(true)
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ type: "agentproto:session-completed", sessionId: desc.id, basis: "outcome" })
+    expect(seen[0]?.occurrenceId).toBe(`exit:${reg.get(desc.id)?.endedAt}`)
+    reg.shutdown()
+  })
+
+  it("fires when resolveOutcome marks an already-ended row complete", () => {
+    const { seen, reg } = harness()
+    const desc = spawn(reg, "acp-resolve-1")
+    expect(reg.kill(desc.id)).toBe(true)
+    expect(seen).toHaveLength(0)
+
+    expect(reg.resolveOutcome(desc.id, { verdict: "done", source: "declared" })).toBe(true)
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ sessionId: desc.id, basis: "outcome" })
+    reg.shutdown()
+  })
+
+  it("fires when kill(operator-completed) relabels an already-ended row", () => {
+    const { seen, reg } = harness()
+    const desc = spawn(reg, "acp-kill-1")
+    expect(reg.kill(desc.id)).toBe(true)
+    expect(seen).toHaveLength(0)
+
+    expect(reg.kill(desc.id, "SIGTERM", "operator-completed")).toBe(true)
+
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({ sessionId: desc.id, basis: "outcome" })
+    reg.shutdown()
+  })
+})
+
+describe("rememberPolicy latch", () => {
+  it("is cleared by an exit even when the session is unknown, so a revived row cannot reuse it", () => {
+    const bus = createSessionEventBus()
+    const seen = collect(bus)
+    let facts: SessionCompletionFacts | undefined = { status: "running", endedAt: ENDED_AT }
+    wireSessionCompletion({ bus, getSession: () => facts })
+
+    bus.emit(policyPassed("s1"))
+    facts = undefined
+    bus.emit(exited("s1", "killed"))
+    facts = { status: "killed", endedAt: ENDED_AT }
+    bus.emit(exited("s1", "killed"))
+
+    expect(seen).toHaveLength(0)
   })
 })
