@@ -164,6 +164,7 @@ describe("matchEventFilter", () => {
 
   it("does not resolve __proto__ or constructor as own paths", () => {
     expect(matchEventFilter({ "__proto__.polluted": true }, {})).toBe(false)
+    expect(matchEventFilter({ "__proto__.__proto__": null }, {})).toBe(false)
     expect(matchEventFilter({ "constructor.name": "Object" }, {})).toBe(false)
   })
 
