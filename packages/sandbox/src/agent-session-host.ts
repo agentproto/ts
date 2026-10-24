@@ -250,6 +250,41 @@ export interface SandboxBootOpts {
    * Providers with no such concept simply ignore this.
    */
   keepAlive?: boolean
+  /**
+   * Optional progress logger for the daemon's own log. Providers that have
+   * long, multi-phase boots call this once per phase (e.g. "create
+   * requested", "running", "daemon healthy") so an operator can see where a
+   * slow boot is stuck. Absent means the provider must stay silent; its
+   * package is not a logger.
+   */
+  log?: (line: string) => void
+  /**
+   * Aborts a boot whose session was killed while it was still `starting`.
+   * Providers with a multi-phase boot should check it between phases and
+   * throw `SandboxBootCancelledError`; the caller then tears the box down
+   * through its normal failed-boot path instead of adopting the session.
+   */
+  signal?: AbortSignal
+}
+
+/** Thrown by a provider's boot/connect when the caller cancelled a spawn
+ *  while the box was still booting. The caller must not register a session
+ *  for it; the box is expected to be cleaned up by the failed-boot path. */
+export class SandboxBootCancelledError extends Error {
+  /** The provider box id, when it was known before the cancel was observed. */
+  readonly sandboxId?: string
+
+  constructor(message = "sandbox boot cancelled", sandboxId?: string) {
+    super(message)
+    this.name = "SandboxBootCancelledError"
+    if (sandboxId !== undefined) this.sandboxId = sandboxId
+  }
+}
+
+/** Structural check (name-based, so it works across package boundaries and
+ *  with mocked errors). */
+export function isSandboxBootCancelledError(err: unknown): err is SandboxBootCancelledError {
+  return err instanceof Error && err.name === "SandboxBootCancelledError"
 }
 
 /**
@@ -386,6 +421,12 @@ export interface CreateSandboxAgentSessionHostOpts {
   /** Reconnect to this existing sandbox id instead of booting a fresh box —
    *  requires `provider.connect`; throws a clear error otherwise. */
   sandboxId?: string
+  /** Optional per-phase boot logger forwarded to the provider; see
+   *  `SandboxBootOpts.log`. Absent keeps the provider silent. */
+  log?: (line: string) => void
+  /** Abort a boot whose session was killed mid-provision; see
+   *  `SandboxBootOpts.signal`. */
+  signal?: AbortSignal
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -460,9 +501,17 @@ export async function createSandboxAgentSessionHost(
           "but this provider has no connect() — it can only boot fresh sandboxes.",
       )
     }
-    booted = await opts.provider.connect(opts.sandboxId, opts.spec, { env })
+    booted = await opts.provider.connect(opts.sandboxId, opts.spec, {
+      env,
+      ...(opts.log ? { log: opts.log } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
   } else {
-    booted = await opts.provider.boot(opts.spec, { env })
+    booted = await opts.provider.boot(opts.spec, {
+      env,
+      ...(opts.log ? { log: opts.log } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)
   // gates its daemon with a per-box bearer; Box's private path gates with a

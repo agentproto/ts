@@ -10,6 +10,7 @@
 
 import {
   attachRequestSchema,
+  capacityResponseSchema,
   computerListResponseSchema,
   computerStatusSchema,
   createComputerRequestSchema,
@@ -19,6 +20,7 @@ import {
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  type CapacityResponse,
   type ComputerListEntry,
   type ComputerStatus,
   type CreateComputerResponse,
@@ -74,12 +76,14 @@ export class ComputerApiError extends Error {
   readonly resource: string | undefined
   readonly requested: number | undefined
   readonly available: number | undefined
+  /** The tenant's total budget for `resource`, when the controller sent it. */
+  readonly budget: number | undefined
 
   constructor(
     status: number,
     message: string,
     code?: string,
-    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number } = {},
+    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number } = {},
   ) {
     super(message)
     this.name = "ComputerApiError"
@@ -89,6 +93,7 @@ export class ComputerApiError extends Error {
     this.resource = details.resource
     this.requested = details.requested
     this.available = details.available
+    this.budget = details.budget
   }
 }
 
@@ -167,6 +172,7 @@ export class ComputerControllerClient {
     path: string,
     schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false } },
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<T> {
     let res: Response
     try {
@@ -174,6 +180,7 @@ export class ComputerControllerClient {
         method,
         headers: this.headers(),
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(signal !== undefined ? { signal } : {}),
       })
     } catch (err) {
       throw new ComputerApiError(
@@ -215,6 +222,7 @@ export class ComputerControllerClient {
           resource: typeof fields?.resource === "string" ? fields.resource : undefined,
           requested: numberField("requested"),
           available: numberField("available"),
+          budget: numberField("budget") ?? numberField("total"),
         },
       )
     }
@@ -239,7 +247,10 @@ export class ComputerControllerClient {
 
   /** `POST /v1/computers`. Rejects with 400 (validation / unknown template),
    *  429 (capacity), 500 (msb create failure). */
-  async createComputer(input: CreateComputerInput): Promise<CreateComputerResponse> {
+  async createComputer(
+    input: CreateComputerInput,
+    opts: { signal?: AbortSignal } = {},
+  ): Promise<CreateComputerResponse> {
     // Outbound bodies are contract-checked too: a mistyped input fails
     // locally, wrapped in a redacted ComputerApiError, not as a
     // controller 400 or a raw ZodError.
@@ -255,7 +266,7 @@ export class ComputerControllerClient {
         ),
       )
     }
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data)
+    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data, opts.signal)
   }
 
   /** `GET /v1/computers` - every computer the controller holds for the
@@ -264,6 +275,13 @@ export class ComputerControllerClient {
   async listComputers(): Promise<ComputerListEntry[]> {
     const body = await this.request("GET", "/v1/computers", computerListResponseSchema)
     return body.computers
+  }
+
+  /** `GET /v1/capacity` - the tenant's whole host budget per resource
+   *  (`budget`), what is committed, and what is currently free. `budget` is
+   *  the ceiling a request can never exceed, regardless of free space. */
+  async getCapacity(): Promise<CapacityResponse> {
+    return this.request("GET", "/v1/capacity", capacityResponseSchema)
   }
 
   /** `GET /v1/computers/:id`. `null` on 404 (never mind why) — callers map

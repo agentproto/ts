@@ -619,6 +619,35 @@ describe("turn-granular maxCostUsd cap", () => {
     expect(after?.endedReason).toBe("cost-cap-exceeded")
     reg.shutdown()
   })
+
+  it("keeps the cost cap when spawnAgent adopts a pre-registered placeholder", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const pending = reg.spawnAgentPending({
+      id: "sess_adopted_cap",
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      adapterSlug: "fake",
+      label: "adopted label",
+      title: "adopted title",
+    })
+    const desc = reg.spawnAgent({
+      id: pending.id,
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: overBudgetAgentSession(),
+      adapterSlug: "fake",
+      maxCostUsd: 1,
+    })
+
+    expect(desc.id).toBe(pending.id)
+    expect(desc.label).toBe("adopted label")
+    expect(desc.title).toBe("adopted title")
+    await reg.sendPrompt(desc.id, "go")
+    const after = reg.get(desc.id)
+    expect(after?.status).toBe("killed")
+    expect(after?.endedReason).toBe("cost-cap-exceeded")
+    reg.shutdown()
+  })
 })
 
 // ── Provider/subscription usage-cap error classification ───────────────────
