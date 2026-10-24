@@ -8,8 +8,8 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "learning/v1",
-      "description": "Spec identifier. Must be the literal string 'learning/v1'."
+      "enum": ["lesson/v1", "learning/v1"],
+      "description": "Spec identifier. Must be the canonical string 'lesson/v1'. `learning/v1` is accepted as a legacy alias (AIP-70)."
     },
     "slug": {
       "type": "string",

@@ -16,7 +16,8 @@
   "additionalProperties": false,
   "properties": {
     "schema": {
-      "const": "playbooks/v1"
+      "enum": ["playbook/v1", "playbooks/v1"],
+      "description": "`playbooks/v1` is accepted as a legacy alias (AIP-70)."
     },
     "slug": {
       "type": "string",

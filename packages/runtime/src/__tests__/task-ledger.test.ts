@@ -243,6 +243,47 @@ describe("board resolution", () => {
   })
 })
 
+// ── Operator delegates ────────────────────────────────────────────────
+
+describe("operator delegates", () => {
+  const DELEGATE: TaskCaller = {
+    kind: "session",
+    sessionId: "delegate",
+    actsAsOperator: true,
+  }
+
+  it("a delegate manages an operator task and defaults to ws:<slug>", () => {
+    const { ledger } = harness({
+      operatorWorkspaceSlug: "w1",
+      sessions: { delegate: { status: "running", workspaceSlug: "w" } },
+    })
+    const t = mustOk(ledger.create({ title: "operator task" }, OPERATOR))
+    expect(t.boardId).toBe("ws:w1")
+    expect(ledger.resolveBoardId(DELEGATE)).toBe("ws:w1")
+
+    const reassigned = mustOk(
+      ledger.update({ taskId: t.taskId, rev: 0, owner: "other" }, DELEGATE),
+    )
+    expect(reassigned.owner).toBe("other")
+
+    const cancelled = mustOk(
+      ledger.update({ taskId: t.taskId, rev: reassigned.rev, status: "cancelled" }, DELEGATE),
+    )
+    expect(cancelled.status).toBe("cancelled")
+  })
+
+  it("the same session WITHOUT actsAsOperator is refused", () => {
+    const { ledger } = harness({ operatorWorkspaceSlug: "w1" })
+    const t = mustOk(ledger.create({ title: "operator task" }, OPERATOR))
+    expect(
+      mustError(
+        ledger.update({ taskId: t.taskId, rev: 0, status: "cancelled" }, session("delegate")),
+      ),
+    ).toContain("owner")
+    expect(ledger.resolveBoardId(session("delegate"))).toBe("tree:delegate")
+  })
+})
+
 // ── State machine ─────────────────────────────────────────────────────
 
 describe("state machine", () => {

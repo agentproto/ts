@@ -173,6 +173,12 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    tasks: z
+      .object({
+        operatorDelegates: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
     mcp: mcpDefaultsConfigSchema.optional(),
     spawn: z.object({ browser: spawnBrowserModeSchema.optional() }).passthrough().optional(),
     sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
@@ -1258,6 +1264,18 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Pending prompt staleness (minutes)",
     help: "How long a prompt may sit queued behind a running turn before its sender is notified it is stuck and it is flagged stale in session_list/session_recap pendingPrompts. Takes effect on the next sweep.",
     default: 5,
+  },
+
+  // ── defaults: tasks ──
+  {
+    path: "defaults.tasks.operatorDelegates",
+    schema: strArray,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Task operator delegates",
+    help: "Sessions attributed under their own id but granted the task ledger's operator rights (manage, cancel, reassign, reopen any task, default board `ws:<slug>`): an exact session id, `label:<operatorLabel>`, or `label:<prefix>*` against the immutable operatorLabel (never the mutable label). Empty (the default) = a root `/mcp` caller attributed by `?callerSessionId=` is a plain session caller. Takes effect on the next call.",
+    default: [],
   },
 
   // ── harnesses: per-adapter defaults ──

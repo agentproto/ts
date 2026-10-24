@@ -28,11 +28,10 @@
  */
 
 import { createHash } from "node:crypto"
-import { readFileSync } from "node:fs"
 import { resolve, join } from "node:path"
 import { homedir } from "node:os"
 
-import { writeFileDurable, writeFileDurableSync } from "./durable-file.js"
+import { createDurableRowFile, oldestTerminalKey } from "./durable-row-file.js"
 
 import {
   callbackHost,
@@ -223,101 +222,36 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
 
   const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}`
 
-  // ── Load-on-construct ────────────────────────────────────────────────
-
-  const load = (): Map<string, PersistedOutboxRow> => {
-    const out = new Map<string, PersistedOutboxRow>()
-    if (!persist) return out
-    let raw: string
-    try {
-      raw = readFileSync(filePath, "utf8")
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-        log(`[sentinel-webhook-outbox] read failed, starting empty: ${err instanceof Error ? err.message : String(err)}`)
+  // All writes ride one serialized chain. Enqueue awaits its write (durable
+  // before ack) through insertDurable; status transitions use the debounced,
+  // best effort schedulePersist, and losing one only re-delivers a row
+  // (at-least-once), never loses it. The mechanics live in
+  // durable-row-file.ts.
+  const durable = createDurableRowFile<PersistedOutboxRow>({
+    filePath,
+    persist,
+    debounceMs,
+    log,
+    logPrefix: "[sentinel-webhook-outbox]",
+    acceptLoaded: value => {
+      const row = value as PersistedOutboxRow
+      if (typeof row?.sentinelId === "string" && typeof row?.eventId === "string") {
+        return [rowKey(row.sentinelId, row.eventId), row]
       }
-      return out
-    }
-    try {
-      const parsed = JSON.parse(raw) as Record<string, PersistedOutboxRow>
-      for (const row of Object.values(parsed)) {
-        if (typeof row?.sentinelId === "string" && typeof row?.eventId === "string") {
-          out.set(rowKey(row.sentinelId, row.eventId), row)
-        }
-      }
-    } catch (err) {
-      log(`[sentinel-webhook-outbox] corrupt file, starting empty: ${err instanceof Error ? err.message : String(err)}`)
-    }
-    return out
-  }
+      return undefined
+    },
+  })
 
-  const rows = load()
-
-  // ── Persistence (atomic tmp+fsync+rename+dir fsync, 0600) ────────────
-  //
-  // All writes ride ONE serialized chain so a slow older snapshot can never
-  // land after a newer one; each write snapshots the rows when it STARTS.
-  // `enqueue` awaits its write (durable-before-ack); status transitions use
-  // the debounced, best-effort variant — losing one only re-delivers a row
-  // (at-least-once), never loses it.
-
-  const snapshot = (): Record<string, PersistedOutboxRow> => {
-    const out: Record<string, PersistedOutboxRow> = {}
-    for (const [key, row] of rows.entries()) out[key] = row
-    return out
-  }
-
-  let persistTimer: ReturnType<typeof setTimeout> | null = null
-  let writeTail: Promise<void> = Promise.resolve()
-  /** Bumped by `flushSync` so an in-flight async write that started earlier
-   *  cannot rename an older snapshot over the newer synchronous one. */
-  let syncGeneration = 0
-
-  const persistNow = (): Promise<void> => {
-    if (!persist) return Promise.resolve()
-    const run = async (): Promise<void> => {
-      const generation = syncGeneration
-      const body = JSON.stringify(snapshot(), null, 2) + "\n"
-      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })
-    }
-    const next = writeTail.then(run, run)
-    writeTail = next.catch(() => undefined)
-    return next
-  }
-
-  const schedulePersist = (): void => {
-    if (!persist) return
-    if (persistTimer) clearTimeout(persistTimer)
-    persistTimer = setTimeout(() => {
-      persistTimer = null
-      persistNow().catch(err => {
-        log(`[sentinel-webhook-outbox] persist failed: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    }, debounceMs)
-  }
-
-  const flushSync = (): void => {
-    if (!persist) return
-    if (persistTimer) {
-      clearTimeout(persistTimer)
-      persistTimer = null
-    }
-    syncGeneration++
-    try {
-      writeFileDurableSync(filePath, JSON.stringify(snapshot(), null, 2) + "\n")
-    } catch {
-      // best-effort — never throw in the shutdown path
-    }
-  }
+  const rows = durable.rows
 
   // ── Dispatch worker (serialized; one POST in flight) ────────────────
 
-  const oldestTerminalRowKey = (): string | undefined => {
-    const terminal = [...rows.values()]
-      .filter(row => row.status === "delivered" || row.status === "dead")
-      .sort((a, b) => (a.terminalAt ?? a.createdAt) - (b.terminalAt ?? b.createdAt))
-      .at(0)
-    return terminal ? rowKey(terminal.sentinelId, terminal.eventId) : undefined
-  }
+  const oldestTerminalRowKey = (): string | undefined =>
+    oldestTerminalKey(
+      rows,
+      row => row.status === "delivered" || row.status === "dead",
+      row => row.terminalAt ?? row.createdAt,
+    )
 
   const reapDelivered = (): void => {
     const now = nowMs()
@@ -335,7 +269,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       row.deadReason = "sentinel_expired"
       row.terminalAt = nowMs()
       opts.onTerminal(row.sentinelId, row)
-      schedulePersist()
+      durable.schedulePersist()
       return
     }
     const replay = opts.secretsFor(row.sentinelId)
@@ -346,7 +280,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       row.deadReason = "sentinel_removed"
       row.terminalAt = nowMs()
       opts.onTerminal(row.sentinelId, row)
-      schedulePersist()
+      durable.schedulePersist()
       return
     }
     try {
@@ -382,7 +316,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       row.status = "pending"
       deliveryLog(row, callbackHost(replay.callbackUrl), "dispatch failed, row left pending")
     }
-    schedulePersist()
+    durable.schedulePersist()
     if (row.status === "delivered" || row.status === "dead") {
       opts.onTerminal(row.sentinelId, row)
     }
@@ -395,7 +329,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       const pending = [...rows.values()].filter(row => row.status === "pending")
       for (const row of pending) await dispatchRow(row)
       reapDelivered()
-      schedulePersist()
+      durable.schedulePersist()
     }
     workTail = workTail.then(run, run).catch(() => undefined)
   }
@@ -417,7 +351,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         }
         // A pending duplicate may be the in-flight enqueue of the same event
         // whose write has not landed: the caller must not ack before it does.
-        await writeTail
+        await durable.settled()
         if (rows.get(key) !== existing) {
           throw new Error(`webhook outbox row ${key} was not persisted`)
         }
@@ -438,28 +372,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         event,
       }
 
-      // Bounded file: evict beyond the cap.
-      let evicted: [string, PersistedOutboxRow] | undefined
-      if (rows.size >= ROW_CAP) {
-        const oldest = oldestTerminalRowKey()
-        const evictedRow = oldest ? rows.get(oldest) : undefined
-        if (oldest && evictedRow) {
-          evicted = [oldest, evictedRow]
-          rows.delete(oldest)
-        }
-      }
-
-      rows.set(key, row)
-      try {
-        await persistNow()
-      } catch (err) {
-        // Not durable ⇒ not accepted: roll back so nothing dispatches a row
-        // the disk does not hold, and let the caller leave the upstream
-        // un-acked.
-        if (rows.get(key) === row) rows.delete(key)
-        if (evicted && !rows.has(evicted[0])) rows.set(evicted[0], evicted[1])
-        throw err
-      }
+      await durable.insertDurable(key, row, { cap: ROW_CAP, oldestTerminalKey: oldestTerminalRowKey })
       enqueueDispatch()
       return row
     },
@@ -484,7 +397,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
           row.deadReason = "age_out"
           row.terminalAt = now
           opts.onTerminal(row.sentinelId, row)
-          schedulePersist()
+          durable.schedulePersist()
         }
       }
       reapDelivered()
@@ -521,6 +434,6 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       }
     },
 
-    flushSync,
+    flushSync: durable.flushSync,
   }
 }

@@ -68,6 +68,11 @@
           "$ref": "#/$defs/identityRefEntry",
           "description": "AIP-23 identity-ref. Schemes: operator://, user://, org://, guild://, bot://, group://, role://, *."
         },
+        "effect": {
+          "enum": ["allow", "deny"],
+          "default": "allow",
+          "description": "Grant effect. A matching `deny` wins over any allow in any composed policy (added 2026-10-23). Default `allow`."
+        },
         "actions": {
           "type": "array",
           "minItems": 1,
@@ -131,11 +136,12 @@
       "type": "object",
       "required": ["kind", "value"],
       "additionalProperties": true,
+      "not": { "required": ["per", "window"] },
       "properties": {
         "kind": {
           "type": "string",
           "minLength": 1,
-          "description": "Limit kind. Standard: `max-concurrent-sandboxes`, `rate-tool-calls`, `max-egress-bytes-per-day`. Host-extensible."
+          "description": "Limit kind. Standard: `max-concurrent-sandboxes`, `rate-tool-calls`, `max-egress-bytes-per-day`, `spend-usd`. Host-extensible. For `spend-usd`, the USD ceiling accumulates the `costUsd` (AIP-46) of each `model:invoke` in the window."
         },
         "value": {
           "type": "number",
@@ -143,11 +149,16 @@
         },
         "scope": {
           "type": "string",
-          "description": "Per what? `user`, `workspace`, `org`, host-specific."
+          "description": "Per what? `user`, `workspace`, `org`, `session`, `auth-profile`, host-specific. For `spend-usd`, `session` aggregates over the session lineage (successor declared via `succeeds`, or continue-fresh handoff); `auth-profile` is the hard cap across all sessions."
         },
         "per": {
           "enum": ["second", "minute", "hour", "day"],
-          "description": "For rate-style limits."
+          "description": "For rate-style limits. Mutually exclusive with `window`."
+        },
+        "window": {
+          "type": "string",
+          "pattern": "^P(?=.)(\\d+Y)?(\\d+M)?(\\d+W)?(\\d+D)?(T(?=\\d)(\\d+H)?(\\d+M)?(\\d+(?:\\.\\d+)?S)?)?$",
+          "description": "Rolling window as an ISO-8601 duration, e.g. `PT5H` or `P7D`. ISO-8601 is canonical; a host MAY accept shorthand input (`5h`, `7d`) but MUST normalize before storing or evaluating. Mutually exclusive with `per` (added 2026-10-23)."
         },
         "applies_to": {
           "type": "array",
