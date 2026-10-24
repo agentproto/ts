@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/redaction",
   "version": "0.2.4",
-  "description": "agentproto/redaction — vendor-neutral Redactor port + built-in redactors (none, deny-list, truncate, chain) and a catalog/resolver so any egress boundary can scrub outbound payloads before they leave the process.",
+  "description": "DEPRECATED: renamed @agentproto/processor. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",
     "redaction",
@@ -11,7 +11,7 @@
     "open-standard",
     "agentic"
   ],
-  "homepage": "https://agentproto.sh/docs/redaction",
+  "homepage": "https://agentproto.sh/docs/processor",
   "repository": {
     "type": "git",
     "url": "https://github.com/agentproto/ts",
@@ -48,6 +48,9 @@
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@agentproto/processor": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

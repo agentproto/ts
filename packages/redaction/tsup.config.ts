@@ -1,16 +1,18 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const entry = {
+  index: "src/index.ts",
+}
+
 export default createTsupConfig({
   banner: `/**
- * @agentproto/redaction v0.1.0
- * Vendor-neutral Redactor port + built-in redactors + catalog/resolver.
+ * @agentproto/redaction v0.2.4 (deprecated shim)
+ * Re-exports @agentproto/processor unchanged.
  */`,
-  entry: {
-    index: "src/index.ts",
-  },
+  entry,
   format: ["esm"],
   splitting: false,
-  dts: true,
-  external: [],
+  dts: { entry },
+  external: ["@agentproto/processor", "@agentproto/processor/*"],
   noExternal: [],
 })

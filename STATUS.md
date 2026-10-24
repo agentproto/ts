@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`156` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`157` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 89 |
+| core | 90 |
 | adapters | 25 |
 | spec-reference | 32 |
 | archived | 10 |
@@ -115,6 +115,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/plugin | `packages/plugin` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/plugin-local-browser | `packages/plugin-local-browser` | 0.3.6 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pr-outcome | `packages/pr-outcome` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
+@agentproto/processor | `packages/processor` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/product | `packages/product` | 1.0.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/provider-kit | `packages/provider-kit` | 0.4.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/provider-presets | `packages/provider-presets` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
