@@ -1,5 +1,12 @@
 # @agentproto/sandbox-e2b
 
+## 0.9.2
+
+### Patch Changes
+
+- Updated dependencies [804db17]
+  - @agentproto/sandbox@0.14.0
+
 ## 0.9.1
 
 ### Patch Changes

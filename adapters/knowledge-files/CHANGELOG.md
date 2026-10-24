@@ -1,5 +1,12 @@
 # @agentproto/adapter-knowledge-files
 
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies [76003b9]
+  - @agentproto/provider-kit@0.5.0
+
 ## 0.3.4
 
 ### Patch Changes

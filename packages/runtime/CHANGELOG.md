@@ -1,5 +1,113 @@
 # @agentproto/runtime
 
+## 5.30.0
+
+### Minor Changes
+
+- bcb6a8c: Keep sandbox gc off boxes a live successor or paused teardown holds
+- a68476e: Discover Chrome browser UUID, fail loudly, add key/select/wait tools
+- 8d53429: Add model lists with selectors, ordering and composition. A seeded `zero-cost` list (catalog price 0/0) replaces the free-model predicates, and the runtime enforces one generic `modelPolicy` (`allow`/`block` over list ids, set on `agent_start`) at spawn, `setModel`, restart and rotation instead of any free-versus-paid rule. Also, `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools.
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+- 8c4169e: Make `allowPromptFrom` and `operatorLabel` survive restart/continue-fresh and the HTTP spawn path.
+
+  - New MCP tool `agent_set_operator_label`: lets the human operator stamp a
+    session's operator-assigned `operatorLabel` directly, without a fresh root
+    spawn.
+    Needed for a lineage that has lived by resume/continue-fresh since before
+    it ever got a label, so there was never a prior label for the existing
+    carry-forward logic to propagate.
+  - `session_restart` and `session_continue_fresh` now also carry forward
+    `allowPromptFrom` from the replaced session to its successor, the same way
+    they already carry forward `operatorLabel`. Previously a permanent agent's
+    drive grants (e.g. a `label:` grant) were silently dropped at the next
+    restart/continuation.
+  - `POST /sessions/agent` now applies `allowPromptFrom` post-spawn, the same
+    way the `agent_start` MCP tool handler already does. Previously the HTTP
+    spawn path (used by non-MCP callers such as Pygmalion's `EngineClient`)
+    silently accepted and dropped the field.
+  - New route `POST /sessions/:id/prompt-policy`, the HTTP twin of
+    `agent_set_prompt_policy`: (re-)grants `allowPromptFrom` on a session
+    that is ALREADY LIVE, for a non-MCP caller. The spawn-time field above
+    only reaches a fresh spawn, so a permanent `keepAlive` agent already
+    running before a grant was added would otherwise never pick it up until
+    it happens to restart.
+
+- 5a429e0: Corrective bump for PR #2177: beyond the reliability fixes already covered by
+  `.changeset/follow-sentinel-message-reliability.md` (bumped `patch`), this PR
+  adds new public exports from `@agentproto/runtime` — `PROTECTED_MESSAGE_KINDS`,
+  `isProtectedMessage`, `isNoiseMessage`, and `effectiveMessageUrgency` — via
+  `export * from "./session-message.js"` in `index.ts`, plus behavior changes
+  (blocker/question urgency upgrade, noise-first inbox eviction, the default
+  7-day `expiresAt` backstop on follows and session-target sentinels, and the new
+  `sweepWiringLifecycle` pass). Repo bump rules make added exports and behavior
+  changes a `minor`; combined with the committed patch changeset the release
+  resolves to `minor`.
+- 8c4169e: Carry `allowPromptFrom` forward across `session_restart` / `session_continue_fresh`, apply it on the HTTP `POST /sessions/agent` spawn path, and add the operator-only `agent_set_operator_label` MCP tool for stamping a session's `operatorLabel` without a fresh root spawn.
+- 8d53429: Add model lists with selectors, ordering and composition. The new `zero-cost` list (seed: catalog price 0/0) replaces every free-model predicate in the runtime, and `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools. `@agentproto/model-intel` reuses an internal `isZeroPriced` helper for the same rule.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy`,
+  nested `config` and key-merged `options` on the user preset store; one pure
+  session-config resolver shared by the spawn path and exposed as
+  `agentproto preset resolve` / `user_preset_resolve`; preset model policies
+  compose with the request's so both apply.
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy` and
+  an optional nested `config` on the user preset store; one pure session-config
+  resolver used by the spawn path and exposed as `agentproto preset resolve` /
+  `user_preset_resolve`; preset model policies compose with the request's.
+
+### Patch Changes
+
+- b60089c: Add the internal action-hooks contract types for the action envelope, admission decisions, hook owner, and occurrence keys.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and use it from the sentinel webhook outbox, with no behavior change.
+- 5a429e0: Harden blocker delivery, inbox eviction, and follow/sentinel lifetimes.
+
+  - `blocker` and `question` messages are never downgraded to `fyi`: an
+    explicit `fyi` is applied as `next-turn`, so the recipient wakes (or the
+    message parks with the inbox's non-loss guarantee).
+  - A full inbox now evicts noise (`notice`/`fyi`) first and never drops an
+    un-consumed `blocker`/`question`. When every entry is protected, a new
+    noisy message is refused instead; a new protected message may exceed the
+    soft cap rather than lose a blocker.
+  - Follows and sentinels now carry an `expiresAt` (defaulted to 7 days,
+    matching the cron scheduler's owned-job backstop) and a periodic wiring
+    sweep removes expired records and those whose recipient is gone or retired
+    (relinking to a live successor when one exists). The sweep runs at boot and
+    every 60 seconds, cleaning up orphans left by an older daemon.
+
+- 1ac9090: Checkpoint sandbox work every 3 minutes by default instead of 10
+- 0f880f5: Stamp `operatorLabel` on operator spawns via `POST /sessions/agent`, matching `agent_start` so `label:` entries in `allowPromptFrom` apply.
+- 2391104: Keep box sessions alive across a dropped relay stream
+- c2a17e4: Quiesce active workflow runs (cancel, wait for lease release, flush persistence) before tmpdir teardown in the workflow-retry tests, deflaking teardown against late asynchronous writes.
+- 2391104: Keep box sessions alive across a dropped relay stream: re-open the structured `/events/stream` from the last consumed transcript seq with a bounded retry budget instead of declaring the box dead, reconstruct live tool-call phase state from flattened relay `[tool]` lines, and surface ring-buffer output on long-poll timeouts so long-running box builds don't trip the stall watchdog.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and rewire the sentinel webhook outbox to use it, with no behavior change.
+- 0f880f5: Stamp `operatorLabel` on operator spawns made through `POST /sessions/agent`, matching the `agent_start` MCP tool so `label:` entries in `allowPromptFrom` apply to sessions that Pygmalion launches over HTTP.
+- 0aa32f3: Surface the PR's head branch name (`headRefName`) in `review_pr`'s status
+  snapshot and in `local-gh` sentinel events, so a watching session can read
+  who opened a PR directly from the event's `data` instead of GitHub's
+  `author` field — which is always the same bot account for every PR we open,
+  and so cannot distinguish which agent/role opened it. The branch's own
+  prefix convention (`pm-brain/...`, `mainteneur/...`, `fix-pr-<n>-...`) does.
+- 34216fc: Attribute task tools called on the root `/mcp` via `?callerSessionId=` to that session instead of the operator, and add `defaults.tasks.operatorDelegates` to keep the ledger's operator rights for explicitly listed sessions.
+- Updated dependencies [a68476e]
+- Updated dependencies [8d53429]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+- Updated dependencies [804db17]
+  - @agentproto/adapter-browser@0.9.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/model-intel@0.3.1
+  - @agentproto/driver-agent-cli@2.16.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/sandbox@0.14.0
+  - @agentproto/providers-store@0.4.1
+  - @agentproto/driver-browser@0.3.2
+  - @agentproto/eval-reporters@0.2.29
+  - @agentproto/llm-endpoint@0.11.16
+  - @agentproto/workspace-brain@0.5.5
+  - @agentproto/plugin-local-browser@0.3.7
+
 ## 5.29.0
 
 ### Minor Changes

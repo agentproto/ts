@@ -1,5 +1,12 @@
 # @agentproto/sandbox-instabox
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [804db17]
+  - @agentproto/sandbox@0.14.0
+
 ## 0.2.3
 
 ### Patch Changes

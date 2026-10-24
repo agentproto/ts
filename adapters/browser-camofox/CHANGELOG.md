@@ -1,5 +1,11 @@
 # @agentproto/adapter-browser-camofox
 
+## 0.2.5
+
+### Patch Changes
+
+- @agentproto/driver-browser@0.3.2
+
 ## 0.2.4
 
 ### Patch Changes

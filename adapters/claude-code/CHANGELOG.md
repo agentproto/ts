@@ -1,5 +1,19 @@
 # @agentproto/adapter-claude-code
 
+## 2.6.0
+
+### Minor Changes
+
+- 0fcc582: Declare the native hook capabilities of the Codex and Claude Code harnesses under `capabilities.hooks`.
+
+### Patch Changes
+
+- Updated dependencies [8d53429]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/driver-agent-cli@2.16.0
+
 ## 2.5.15
 
 ### Patch Changes

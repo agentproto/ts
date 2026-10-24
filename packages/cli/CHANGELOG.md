@@ -1,5 +1,41 @@
 # @agentproto/cli
 
+## 1.31.0
+
+### Minor Changes
+
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy`,
+  nested `config` and key-merged `options` on the user preset store; one pure
+  session-config resolver shared by the spawn path and exposed as
+  `agentproto preset resolve` / `user_preset_resolve`; preset model policies
+  compose with the request's so both apply.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy` and
+  an optional nested `config` on the user preset store; one pure session-config
+  resolver used by the spawn path and exposed as `agentproto preset resolve` /
+  `user_preset_resolve`; preset model policies compose with the request's.
+
+### Patch Changes
+
+- bcb6a8c: Keep sandbox gc off boxes a live successor or paused teardown holds
+- Updated dependencies [e1fa90e]
+- Updated dependencies [a68476e]
+- Updated dependencies [8d53429]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+- Updated dependencies [804db17]
+- Updated dependencies [e1fa90e]
+  - @agentproto/worktree@0.19.1
+  - @agentproto/adapter-browser@0.9.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/driver-agent-cli@2.16.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/sandbox-computer@0.5.0
+  - @agentproto/sandbox-box@0.2.37
+  - @agentproto/sandbox-e2b@0.9.2
+  - @agentproto/sandbox-instabox@0.2.4
+  - @agentproto/llm-endpoint@0.11.16
+
 ## 1.30.0
 
 ### Minor Changes

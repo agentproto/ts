@@ -1,5 +1,12 @@
 # @agentproto/adapter-copilot-cli
 
+## 0.3.11
+
+### Patch Changes
+
+- Updated dependencies [76003b9]
+  - @agentproto/driver-agent-cli@2.16.0
+
 ## 0.3.10
 
 ### Patch Changes

@@ -1,5 +1,12 @@
 # @agentproto/model-catalog
 
+## 0.14.0
+
+### Minor Changes
+
+- 8d53429: Add model lists with selectors, ordering and composition. A seeded `zero-cost` list (catalog price 0/0) replaces the free-model predicates, and the runtime enforces one generic `modelPolicy` (`allow`/`block` over list ids, set on `agent_start`) at spawn, `setModel`, restart and rotation instead of any free-versus-paid rule. Also, `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools.
+- 8d53429: Add model lists with selectors, ordering and composition. The new `zero-cost` list (seed: catalog price 0/0) replaces every free-model predicate in the runtime, and `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools. `@agentproto/model-intel` reuses an internal `isZeroPriced` helper for the same rule.
+
 ## 0.13.2
 
 ### Patch Changes

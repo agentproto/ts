@@ -1,5 +1,11 @@
 # @agentproto/provider-kit
 
+## 0.5.0
+
+### Minor Changes
+
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+
 ## 0.4.7
 
 ### Patch Changes

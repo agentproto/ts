@@ -1,5 +1,16 @@
 # @agentproto/adapter-codex
 
+## 2.1.0
+
+### Minor Changes
+
+- 0fcc582: Declare the native hook capabilities of the Codex and Claude Code harnesses under `capabilities.hooks`.
+
+### Patch Changes
+
+- Updated dependencies [76003b9]
+  - @agentproto/driver-agent-cli@2.16.0
+
 ## 2.0.31
 
 ### Patch Changes

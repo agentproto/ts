@@ -1,5 +1,17 @@
 # @agentproto/adapter-opencode
 
+## 1.9.4
+
+### Patch Changes
+
+- eec7251: Give confined opencode spawns a writable state home so the MCP mount stays alive
+- eec7251: Give confined opencode spawns a writable state home (`XDG_STATE_HOME` pointed at the per-session config dir) so the MCP client's state store can be created under an app boundary and the daemon MCP mount stays alive.
+- Updated dependencies [8d53429]
+- Updated dependencies [76003b9]
+- Updated dependencies [8d53429]
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/driver-agent-cli@2.16.0
+
 ## 1.9.3
 
 ### Patch Changes
