@@ -49,7 +49,6 @@
     "ts:aip-61:package",
     "ts:aip-65:package",
     "ts:aip-66:package",
-    "ts:aip-67:package",
     "ts:aip-68:package",
     "ts:aip-6:spec-name",
     "ts:aip-7:define",
@@ -60,7 +59,6 @@
     "ts:package:@agentproto/catalog:unregistered",
     "ts:package:@agentproto/corpus:unregistered",
     "ts:package:@agentproto/driver-agent-cli:unregistered",
-    "ts:package:@agentproto/eval:unregistered",
-    "ts:package:@agentproto/model-intel:unregistered"
+    "ts:package:@agentproto/eval:unregistered"
   ]
 }
