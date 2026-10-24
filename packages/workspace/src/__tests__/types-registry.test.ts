@@ -25,6 +25,21 @@ describe("TYPES.md round-trip", () => {
     expect(parsed.types.root?.requires_files).toEqual([])
   })
 
+  it("parses the canonical workspace.types/v1 tag", () => {
+    const md = "---\nschema: workspace.types/v1\ntypes:\n  root:\n    parents: []\n---\n"
+    expect(parseTypesManifest(md).schema).toBe("workspace.types/v1")
+  })
+
+  it("still parses the legacy workspace-types/v1 tag", () => {
+    const md = "---\nschema: workspace-types/v1\ntypes:\n  root:\n    parents: []\n---\n"
+    expect(parseTypesManifest(md).schema).toBe("workspace-types/v1")
+  })
+
+  it("keeps writing the legacy tag even when handed the canonical one", () => {
+    const md = writeTypesManifest({ schema: "workspace.types/v1", types: { root: { parents: [] } } })
+    expect(md).toContain("schema: workspace-types/v1")
+  })
+
   it("rejects an invalid type key", () => {
     expect(() =>
       writeTypesManifest({ schema: "workspace-types/v1", types: { "Not_Valid": { parents: [] } } }),
