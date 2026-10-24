@@ -335,6 +335,15 @@ describe("session_capabilities", () => {
       cwd: process.cwd(),
       adapterSlug: "claude-code",
       agentSession: fakeAcpAgentSession(),
+      hooks: [
+        {
+          event: "tool.call",
+          native_event: "PreToolUse",
+          path: "admission",
+          can_block: true,
+          handlers: ["command"],
+        },
+      ],
     })
     desc.availableCommands = [{ name: "/compact", description: "Compact context" }]
 
@@ -381,6 +390,7 @@ describe("session_capabilities", () => {
       expect(body).toEqual(buildSessionCapabilities(registry.get(desc.id)!, 0))
       expect(body.arm).toBe("acp")
       expect(body.commands).toEqual([{ name: "/compact", description: "Compact context" }])
+      expect(body.hooks).toEqual({ native: desc.hooks })
 
       expect((await fetch(`${base}/sessions/sess_nope/capabilities`)).status).toBe(404)
     } finally {

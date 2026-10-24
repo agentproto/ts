@@ -57,6 +57,7 @@ import type {
   RouteSpec,
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
+import type { HookCapabilityView } from "@agentproto/provider-kit"
 import type { ResolvedSessionSkill } from "./skill-imports.js"
 import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
 import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
@@ -2120,6 +2121,13 @@ export interface SessionDescriptor {
    * as false.
    */
   nativeTerminalResume?: boolean
+  /**
+   * Manifest-declared `capabilities.hooks` (AIP-71) for this session's
+   * adapter, stamped from the resolver at spawn/restart time. Metadata only,
+   * echoed by `session_capabilities`; ownership resolution is not done here.
+   * Omitted when the adapter declares none, or for pty/command kinds.
+   */
+  hooks?: readonly HookCapabilityView[]
   /**
    * Canonical harness slug for agent-cli sessions — the same identity as
    *  `adapterSlug`, recorded under the canonical axis name. Falls back to
@@ -5500,6 +5508,9 @@ export interface SpawnAgentInput {
   /** Manifest-declared native-terminal resume capability, recorded verbatim
    *  onto {@link SessionDescriptor.nativeTerminalResume} — see that field's doc. */
   nativeTerminalResume?: boolean
+  /** Manifest-declared `capabilities.hooks` (AIP-71), recorded verbatim onto
+   *  {@link SessionDescriptor.hooks} — see that field's doc. */
+  hooks?: readonly HookCapabilityView[]
   /** Canonical harness slug — recorded on the descriptor; defaults to adapterSlug. */
   harness?: string
   /** Manifest-declared `routeSelection` (AIP-45) — recorded verbatim onto
@@ -5737,6 +5748,7 @@ export type PendingAgentOutcome =
       commandPreview?: string
       resumable?: boolean
       nativeTerminalResume?: boolean
+      hooks?: readonly HookCapabilityView[]
       readUsage?: () => Promise<import("./usage.js").UsageReadResult | null>
       /** Dispatched now that the tree + driver session both exist — never
        *  passed to `spawnAgentPending`, which would race the tree. A plain
@@ -11409,6 +11421,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.nativeTerminalResume !== undefined
           ? { nativeTerminalResume: input.nativeTerminalResume }
           : {}),
+        ...(input.hooks !== undefined && input.hooks.length > 0 ? { hooks: input.hooks } : {}),
         harness: input.harness ?? input.adapterSlug,
         ...(input.routeSelection !== undefined
           ? { routeSelection: input.routeSelection }
@@ -11830,6 +11843,7 @@ export function createSessionsRegistry(opts?: {
       if (outcome.nativeTerminalResume !== undefined) {
         rt.desc.nativeTerminalResume = outcome.nativeTerminalResume
       }
+      if (outcome.hooks !== undefined && outcome.hooks.length > 0) rt.desc.hooks = outcome.hooks
       rt.desc.status = "running"
       rt.emitter.emit("status", rt.desc.status)
       linkContinuedTo(rt.desc.resumedFrom, id)

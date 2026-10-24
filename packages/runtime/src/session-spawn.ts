@@ -4672,6 +4672,9 @@ export async function spawnAgentSession(
             ...(resolved?.nativeTerminalResume !== undefined
               ? { nativeTerminalResume: resolved.nativeTerminalResume }
               : {}),
+            ...(resolved?.hooks !== undefined && resolved.hooks.length > 0
+              ? { hooks: resolved.hooks }
+              : {}),
             ...(readUsage ? { readUsage } : {}),
             ...(asyncPrompt ? { initialPrompt: asyncPrompt } : {}),
             ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
@@ -5136,6 +5139,9 @@ export async function spawnAgentSession(
       ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved?.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
+        : {}),
+      ...(resolved?.hooks !== undefined && resolved.hooks.length > 0
+        ? { hooks: resolved.hooks }
         : {}),
       harness: input.harness ?? input.adapter,
       ...(resolved?.routeSelection !== undefined

@@ -608,6 +608,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         ...(adapter.handle.capabilities?.nativeTerminalResume === true
           ? { nativeTerminalResume: true }
           : {}),
+        ...(adapter.handle.capabilities?.hooks !== undefined &&
+        adapter.handle.capabilities.hooks.length > 0
+          ? { hooks: adapter.handle.capabilities.hooks }
+          : {}),
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }
           : {}),

@@ -1497,6 +1497,9 @@ export async function restartAgentSession(
       ...(resolved.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
         : {}),
+      ...(resolved.hooks !== undefined && resolved.hooks.length > 0
+        ? { hooks: resolved.hooks }
+        : {}),
       harness: effHarness,
       ...(resolved.routeSelection !== undefined
         ? { routeSelection: resolved.routeSelection }
@@ -2252,6 +2255,9 @@ export async function restartAgentSession(
       ...(resolved?.resumable !== undefined ? { resumable: resolved.resumable } : {}),
       ...(resolved?.nativeTerminalResume !== undefined
         ? { nativeTerminalResume: resolved.nativeTerminalResume }
+        : {}),
+      ...(resolved?.hooks !== undefined && resolved.hooks.length > 0
+        ? { hooks: resolved.hooks }
         : {}),
       harness: effHarness,
       ...(resolved?.routeSelection !== undefined
