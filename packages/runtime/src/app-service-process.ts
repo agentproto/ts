@@ -29,7 +29,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, type WriteStream } from "node:fs"
 import { dirname, join, resolve as nodeResolve } from "node:path"
-import type { AppService } from "@agentproto/app-kit"
+import type { AppService } from "@agentproto/app"
 import { mintSessionId, APP_ID_ENV, SESSION_ID_ENV, type SessionsRegistry } from "./sessions.js"
 import { serviceOwnerLabel } from "./app-services.js"
 

@@ -2397,7 +2397,7 @@ export async function createGateway(
     }),
   )
 
-  // Single-sidecar registry for the @agentproto/llm-endpoint proxy — gated
+  // Single-sidecar registry for the @agentproto/inference-endpoint proxy — gated
   // behind `opts.llmEndpoint` (default false). When off, no registry is
   // created, no MCP tools are registered, and the route is absent too
   // (`registerBuiltinRoutes` above already skipped it).
@@ -3743,7 +3743,7 @@ export async function createGateway(
       version: opts.version ?? "0.1.0-alpha",
     })
     // AIP-42 manifest authoring: render a valid `agent/v1` AGENT.md into the
-    // caller's workspace `.agents/<id>/AGENT.md` via the shared app-kit
+    // caller's workspace `.agents/<id>/AGENT.md` via the shared app
     // renderer (same path `emitApp` and `agentproto agent create` use).
     registerCreateAgentTool(rawServer, { workspace })
     // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
@@ -4155,7 +4155,7 @@ export async function createGateway(
       // never severs the parent→child graph the BFS walks.
       resolveSubtree: sessionId => [...collectSubtree(sessionId, sessions.list({ includeArchived: true }))],
     })
-    // @agentproto/app-kit app lifecycle — install/list/run/status/stop
+    // @agentproto/app app lifecycle — install/list/run/status/stop
     // (app-tools.ts). `resolveAgentAdapter` gates the adapter-resolves check
     // (app_install) and the spawn (app_run) the same way it gates
     // `workflowRunner` above; `listRegisteredToolIds` is always wired (the
@@ -4319,7 +4319,7 @@ export async function createGateway(
           ]
         : []),
     ]
-    // Dynamic UI panels for installed `@agentproto/app-kit` apps that ship
+    // Dynamic UI panels for installed `@agentproto/app` apps that ship
     // a `ui` block (app-ui-apps.ts) — appended after the built-in panels so
     // their tool ids can be checked for collisions against them. Never
     // throws: a bad app record is skipped with a `console.warn` instead of

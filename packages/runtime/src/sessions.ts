@@ -963,7 +963,7 @@ export const PARENT_SESSION_ID_ENV = "AGENTPROTO_PARENT_SESSION_ID"
  *  http-server.ts), and only when the query carries no id.
  */
 export const CALLER_SESSION_ID_HEADER = "x-agentproto-caller-session-id"
-/** Set only for a spawn made on behalf of an installed `@agentproto/app-kit`
+/** Set only for a spawn made on behalf of an installed `@agentproto/app`
  *  app (`app_run` → `spawnAgentSession({appId})`) — the id a daemon-tool
  *  proxy (mastra-agent's `daemon-mcp-tools.ts`, P7) auto-injects into an
  *  `app_*` tool call that omits one, since the model driving the session has

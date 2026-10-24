@@ -1,6 +1,6 @@
 /**
  * Build an installed app's UI bundle on demand, per APP.md's declared
- * `ui.build` (`@agentproto/app-kit`'s `AppUiBuildConfig`) — the piece that
+ * `ui.build` (`@agentproto/app`'s `AppUiBuildConfig`) — the piece that
  * lets a repo declare "how to build the UI" instead of committing the
  * generated `.agentproto/ui/index.html`.
  *
@@ -43,7 +43,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import type { Dirent, Stats } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path"
-import type { AppUiBuildConfig } from "@agentproto/app-kit"
+import type { AppUiBuildConfig } from "@agentproto/app"
 
 /**
  * Deliberately NOT `command-tools.ts`'s `runCommand` — that pulls in

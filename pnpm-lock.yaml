@@ -699,12 +699,12 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../../packages/agent
+      '@agentproto/bridge':
+        specifier: workspace:*
+        version: link:../../packages/bridge
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../../packages/driver/agent-cli
-      '@agentproto/mastra':
-        specifier: workspace:*
-        version: link:../../packages/mastra
       '@agentproto/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -730,9 +730,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
-      '@agentproto/app-kit':
+      '@agentproto/app':
         specifier: workspace:*
-        version: link:../../packages/app-kit
+        version: link:../../packages/app
       '@agentproto/apps':
         specifier: workspace:*
         version: link:../../packages/apps
@@ -1194,6 +1194,58 @@ importers:
 
   packages/agentproto-placeholder: {}
 
+  packages/app:
+    dependencies:
+      '@agentproto/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agentproto/bridge':
+        specifier: workspace:*
+        version: link:../bridge
+      '@agentproto/driver':
+        specifier: workspace:*
+        version: link:../driver/core
+      '@agentproto/driver-cli':
+        specifier: workspace:*
+        version: link:../driver/cli
+      '@agentproto/driver-http':
+        specifier: workspace:*
+        version: link:../driver/http
+      '@agentproto/tool':
+        specifier: workspace:*
+        version: link:../tool
+      '@agentproto/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+      '@agentproto/workflow-loader':
+        specifier: workspace:*
+        version: link:../workflow-loader
+      '@agentproto/workspace':
+        specifier: workspace:*
+        version: link:../workspace
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@mastra/core':
+        specifier: 1.66.0
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(@opentelemetry/api@1.9.1)(ai@6.0.309(zod@4.6.7))(bufferutil@4.1.0)(express@5.3.0)(zod@4.6.7)
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/app-client:
     devDependencies:
       '@agentproto/tooling':
@@ -1260,36 +1312,9 @@ importers:
 
   packages/app-kit:
     dependencies:
-      '@agentproto/agent':
+      '@agentproto/app':
         specifier: workspace:*
-        version: link:../agent
-      '@agentproto/driver':
-        specifier: workspace:*
-        version: link:../driver/core
-      '@agentproto/driver-cli':
-        specifier: workspace:*
-        version: link:../driver/cli
-      '@agentproto/driver-http':
-        specifier: workspace:*
-        version: link:../driver/http
-      '@agentproto/mastra':
-        specifier: workspace:*
-        version: link:../mastra
-      '@agentproto/tool':
-        specifier: workspace:*
-        version: link:../tool
-      '@agentproto/workflow':
-        specifier: workspace:*
-        version: link:../workflow
-      '@agentproto/workflow-loader':
-        specifier: workspace:*
-        version: link:../workflow-loader
-      '@agentproto/workspace':
-        specifier: workspace:*
-        version: link:../workspace
-      gray-matter:
-        specifier: ^4.0.3
-        version: 4.0.3
+        version: link:../app
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -1315,12 +1340,12 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/app':
+        specifier: workspace:*
+        version: link:../app
       '@agentproto/app-client':
         specifier: workspace:*
         version: link:../app-client
-      '@agentproto/app-kit':
-        specifier: workspace:*
-        version: link:../app-kit
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
@@ -1328,9 +1353,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
-      '@agentproto/mastra':
+      '@agentproto/bridge':
         specifier: workspace:*
-        version: link:../mastra
+        version: link:../bridge
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
@@ -1424,6 +1449,34 @@ importers:
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
+  packages/bridge:
+    dependencies:
+      '@agentproto/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@agentproto/corpus':
+        specifier: workspace:*
+        version: link:../corpus
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@mastra/core':
+        specifier: 1.66.0
+        version: 1.66.0(@bufbuild/protobuf@2.16.0)(@opentelemetry/api@1.9.1)(ai@6.0.309(zod@4.6.7))(bufferutil@4.1.0)(express@5.3.0)(zod@4.6.7)
       '@types/node':
         specifier: ^25.9.9
         version: 25.9.9
@@ -1562,12 +1615,12 @@ importers:
       '@agentproto/adapter-browser':
         specifier: workspace:*
         version: link:../../adapters/browser
+      '@agentproto/app':
+        specifier: workspace:*
+        version: link:../app
       '@agentproto/app-client':
         specifier: workspace:*
         version: link:../app-client
-      '@agentproto/app-kit':
-        specifier: workspace:*
-        version: link:../app-kit
       '@agentproto/apps':
         specifier: workspace:*
         version: link:../apps
@@ -1580,9 +1633,9 @@ importers:
       '@agentproto/driver-agent-cli':
         specifier: workspace:*
         version: link:../driver/agent-cli
-      '@agentproto/llm-endpoint':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../llm-endpoint
+        version: link:../inference-endpoint
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
@@ -2645,6 +2698,40 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/inference-endpoint:
+    dependencies:
+      '@agentproto/auth':
+        specifier: workspace:*
+        version: link:../auth
+      '@agentproto/batch':
+        specifier: workspace:*
+        version: link:../batch
+      '@agentproto/providers-store':
+        specifier: workspace:*
+        version: link:../providers-store
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/intent:
     dependencies:
       '@agentproto/define-doctype':
@@ -2836,18 +2923,9 @@ importers:
 
   packages/llm-endpoint:
     dependencies:
-      '@agentproto/auth':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../auth
-      '@agentproto/batch':
-        specifier: workspace:*
-        version: link:../batch
-      '@agentproto/providers-store':
-        specifier: workspace:*
-        version: link:../providers-store
-      zod:
-        specifier: ^4.6.7
-        version: 4.6.7
+        version: link:../inference-endpoint
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -2858,9 +2936,6 @@ importers:
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
-      tsx:
-        specifier: ^4.23.15
-        version: 4.23.15
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -2895,12 +2970,9 @@ importers:
 
   packages/mastra:
     dependencies:
-      '@agentproto/agent':
+      '@agentproto/bridge':
         specifier: workspace:*
-        version: link:../agent
-      '@agentproto/corpus':
-        specifier: workspace:*
-        version: link:../corpus
+        version: link:../bridge
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -3396,9 +3468,9 @@ importers:
         specifier: workspace:*
         version: link:../ref
     devDependencies:
-      '@agentproto/app-kit':
+      '@agentproto/app':
         specifier: workspace:*
-        version: link:../app-kit
+        version: link:../app
       '@agentproto/pack':
         specifier: workspace:*
         version: link:../pack
@@ -3764,12 +3836,12 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
+      '@agentproto/app':
+        specifier: workspace:*
+        version: link:../app
       '@agentproto/app-client':
         specifier: workspace:*
         version: link:../app-client
-      '@agentproto/app-kit':
-        specifier: workspace:*
-        version: link:../app-kit
       '@agentproto/apps':
         specifier: workspace:*
         version: link:../apps
@@ -3800,9 +3872,9 @@ importers:
       '@agentproto/governance-engine':
         specifier: workspace:*
         version: link:../governance/engine
-      '@agentproto/llm-endpoint':
+      '@agentproto/inference-endpoint':
         specifier: workspace:*
-        version: link:../llm-endpoint
+        version: link:../inference-endpoint
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest

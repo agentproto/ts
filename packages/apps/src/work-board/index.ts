@@ -31,7 +31,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import {
   WORK_BOARD_APP_ID,
   WORK_BOARD_HTML,

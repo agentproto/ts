@@ -190,7 +190,7 @@ describe("app pack --release --entry with a store listing", () => {
     ])
     for (const m of media) expect(existsSync(m)).toBe(true)
 
-    const { unpackApp } = await import("@agentproto/app-kit")
+    const { unpackApp } = await import("@agentproto/app")
     const { manifest } = await unpackApp({ file: bundle, dest: join(root, "restored") })
     expect(manifest.files.some((f) => f.startsWith("store/"))).toBe(false)
   })

@@ -25,7 +25,7 @@
  */
 
 import { z } from "zod"
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import {
   STORE_APP_ID,
   STORE_HTML,

@@ -8,7 +8,7 @@
  * `.plans/agentproto-onboarding/SESSION-INFERENCE-BINDING.md`.
  *
  * A configured endpoint's ctx/model list comes from
- * `@agentproto/llm-endpoint`'s connectors (`connectorById(...).listModels`) —
+ * `@agentproto/inference-endpoint`'s connectors (`connectorById(...).listModels`) —
  * the SAME probe `agentproto llm endpoints test`/`doctor` already use, never
  * reimplemented per-runtime here. A `<endpointId>@<device>` reference (a
  * paired host's own shared endpoint, DEVICES-PLAN item 2) is resolved through
@@ -16,7 +16,7 @@
  * against `/devices/:id/exec-stream/device-inference/v1/models`) — that route
  * only ever returns model IDS, never loaded ctx (the gateway's aggregate
  * `/v1/models` merges named-endpoint models by id only — see
- * `packages/llm-endpoint/src/index.ts`'s `probeFileEndpointModels`), so a
+ * `packages/inference-endpoint/src/index.ts`'s `probeFileEndpointModels`), so a
  * device-routed harness's fit check is always `unknown` (warn, never block)
  * — an OFFLINE/unreachable device is a distinct, harder failure (the
  * endpoint can't be resolved at all), surfaced as `ok:false`.
@@ -30,7 +30,7 @@ import {
   type ConnectorModel,
   type EndpointConfig,
   type FitCheckResult,
-} from "@agentproto/llm-endpoint"
+} from "@agentproto/inference-endpoint"
 
 export interface InferenceBindingRequest {
   /** A configured endpoint id, or `<endpointId>@<device>` for a paired
@@ -43,7 +43,7 @@ export interface InferenceBindingRequest {
   force?: boolean
   /** Headroom percentage (0-95) held back from the endpoint's loaded ctx for
    *  the fit check — the wire form of {@link DEFAULT_HEADROOM_RATIO} from
-   *  `@agentproto/llm-endpoint`. Converted to a 0-1 ratio by the caller
+   *  `@agentproto/inference-endpoint`. Converted to a 0-1 ratio by the caller
    *  before reaching {@link fitCheckForTarget}. */
   headroomPct?: number
 }
@@ -94,7 +94,7 @@ export interface InferenceBindingOk {
   target: ResolvedInferenceTarget
   /** The gateway-wire model string: `<endpointId>/<modelId>` (local) or
    *  `<remoteEndpointId>@<device>/<modelId>` (device) — see
-   *  `packages/llm-endpoint/src/index.ts`'s `DEVICE_PROVIDER_RE`. */
+   *  `packages/inference-endpoint/src/index.ts`'s `DEVICE_PROVIDER_RE`. */
   gatewayModelId: string
   /** A human label for error/doctor messages, e.g. `"lmstudio"` or `"ollama@work-mac"`. */
   label: string

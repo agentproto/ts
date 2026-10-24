@@ -586,7 +586,7 @@ jobs:
           # implicit package.json/README/LICENSE/CHANGELOG, and `src/**` for
           # any package with a `src/` dir — see the script) land in the
           # tarball. A docs-only change under a public package's `files[]`
-          # exclusions (e.g. `packages/llm-endpoint/docs/*.md`, PR #690) does
+          # exclusions (e.g. `packages/inference-endpoint/docs/*.md`, PR #690) does
           # NOT require one; a change to README, LICENSE, or shipped source
           # does. See scripts/list-published-changes.mjs for the exact rule.
           PUBLISHABLE_CHANGES=$(echo "$PKG_CHANGES" | node scripts/list-published-changes.mjs)

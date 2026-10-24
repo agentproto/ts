@@ -1,14 +1,14 @@
 {
   "name": "@agentproto/apps",
   "version": "0.24.1",
-  "description": "@agentproto/apps — a home for ready-made agentproto apps (teams of agents + their workflows), declared with @agentproto/app-kit. Import a team (code-team, content-team, …) and use any of its agents/workflows from your own host: in-process via toMastraAgents(), or emit its manifests to disk.",
+  "description": "@agentproto/apps — a home for ready-made agentproto apps (teams of agents + their workflows), declared with @agentproto/app. Import a team (code-team, content-team, …) and use any of its agents/workflows from your own host: in-process via toMastraAgents(), or emit its manifests to disk.",
   "keywords": [
     "agentproto",
     "app",
     "agents",
     "team",
     "code-team",
-    "app-kit",
+    "app",
     "open-standard"
   ],
   "homepage": "https://agentproto.sh/docs/aip-53",
@@ -195,7 +195,7 @@
   "dependencies": {
     "@agentproto/agent": "workspace:*",
     "@agentproto/app-client": "workspace:*",
-    "@agentproto/app-kit": "workspace:*",
+    "@agentproto/app": "workspace:*",
     "@agentproto/workflow": "workspace:*",
     "zod": "^4.6.7"
   },
@@ -203,7 +203,7 @@
     "@mastra/core": ">=1.0.0"
   },
   "devDependencies": {
-    "@agentproto/mastra": "workspace:*",
+    "@agentproto/bridge": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@mastra/core": "1.66.0",
     "@types/node": "^25.9.9",

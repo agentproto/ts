@@ -6,7 +6,7 @@
  * with a simple, useful real-world task.
  */
 
-import { defineApp, type AppHandle } from "@agentproto/app-kit"
+import { defineApp, type AppHandle } from "@agentproto/app"
 import { triager } from "./agents/triager.js"
 import { triageInbox } from "./workflows/triage-inbox.js"
 import { MAIL_TRIAGE_HTML, MAIL_TRIAGE_TOOLS } from "./ui.js"

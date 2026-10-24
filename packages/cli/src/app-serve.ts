@@ -59,7 +59,7 @@ import {
   type EncodedRepresentation,
   type RepresentationCache,
 } from "@agentproto/runtime/app-ui-delivery"
-import { peekAppUi } from "@agentproto/app-kit"
+import { peekAppUi } from "@agentproto/app"
 import { ensureAppUiBuilt } from "@agentproto/runtime/app-ui-build"
 import { APP_UI_DISCOVERY_TOOLS, RUNNER_SELECT_SCRIPT } from "@agentproto/app-client/runner-select"
 import { pathExists } from "./commands/skill-install/shared.js"
@@ -580,8 +580,8 @@ export async function readDeclaredUITools(appDir: string): Promise<string[] | un
 
 /**
  * Extract the app's declared `category` from `<dir>/.agentproto/APP.md`
- * frontmatter — the coarse catalog/tree grouping `@agentproto/app-kit`'s
- * `defineApp({ category })` writes (`packages/app-kit/src/emit.ts`). Returns
+ * frontmatter — the coarse catalog/tree grouping `@agentproto/app`'s
+ * `defineApp({ category })` writes (`packages/app/src/emit.ts`). Returns
  * undefined when absent/unparseable — never throws on a hand-edited APP.md.
  */
 export async function readDeclaredCategory(appDir: string): Promise<string | undefined> {
@@ -600,7 +600,7 @@ export async function readDeclaredCategory(appDir: string): Promise<string | und
  * Extract the book ids declared in `<dir>/.agentproto/APP.md`
  * frontmatter's `library.books` — a convention some apps (e.g. the
  * `create-agentproto-app --template book` scaffold) hand-write directly
- * into their APP.md frontmatter; `@agentproto/app-kit` has no typed
+ * into their APP.md frontmatter; `@agentproto/app` has no typed
  * support for it. Returns an empty array when the app declares no library
  * block, an empty one, or the file is missing/unparseable — never throws.
  */

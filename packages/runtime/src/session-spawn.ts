@@ -210,7 +210,7 @@ import {
   unenforceableWarning,
   type AppBoundary,
 } from "./app-boundary.js"
-import { syncPiModels } from "@agentproto/llm-endpoint"
+import { syncPiModels } from "@agentproto/inference-endpoint"
 import {
   fitCheckForTarget,
   projectInferenceBinding,
@@ -336,7 +336,7 @@ import {
   buildGhShimEnv,
 } from "./gh-provenance-shim.js"
 import { prefixPrompt } from "./agent-projection.js"
-import { stripOwner } from "@agentproto/app-kit"
+import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
