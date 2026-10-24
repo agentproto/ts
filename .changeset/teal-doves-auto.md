@@ -10,3 +10,4 @@ Make computer sandbox boot visible, bounded, and honest about impossible capacit
 - give the whole provider boot one deadline and fail with a typed `sandbox_boot_timeout` naming the stuck phase
 - log one daemon line per boot phase
 - register a `starting` session row before the box boots and adopt it once the driver session exists
+- abort a boot whose starting row is killed, tearing the box down so a killed spawn can never resurrect

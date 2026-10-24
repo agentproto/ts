@@ -11538,6 +11538,16 @@ export function createSessionsRegistry(opts?: {
       // attached to the placeholder and hide the boot time from `startedAt`.
       const pendingRt = sessions.get(id)
       const adoptingPending = pendingRt !== undefined && pendingRt.desc.status === "starting"
+      if (pendingRt !== undefined && !adoptingPending) {
+        // NEVER resurrect an id that already reached a terminal status: a
+        // placeholder killed mid-boot must stay dead even if the boot
+        // finishes afterwards. Close the just-started driver session so its
+        // box is torn down and refuse to register it.
+        void input.agentSession.close().catch(() => undefined)
+        throw new Error(
+          `spawnAgent: refusing to resurrect session "${id}" (status "${pendingRt.desc.status}")`,
+        )
+      }
       if (pendingRt !== undefined && adoptingPending) {
         const startedAt = pendingRt.desc.startedAt
         Object.assign(pendingRt.desc, desc, { startedAt, status: "running" })

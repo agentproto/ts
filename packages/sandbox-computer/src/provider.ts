@@ -50,7 +50,7 @@ import type {
   SandboxProvider,
   SandboxProviderBox,
 } from "@agentproto/sandbox"
-import { SandboxBoxGoneError } from "@agentproto/sandbox"
+import { SandboxBoxGoneError, SandboxBootCancelledError } from "@agentproto/sandbox"
 import {
   ComputerApiError,
   ComputerControllerClient,
@@ -671,6 +671,13 @@ export function resolveAlias(sandboxId: string): string {
   return current
 }
 
+/** Throw when the caller killed the session while this boot is in flight.
+ *  Checked between phases, never mid-request: a create already in flight is
+ *  allowed to resolve so its box id is known and can be reclaimed. */
+function throwIfBootCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new SandboxBootCancelledError()
+}
+
 async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -897,6 +904,7 @@ async function bootOnClient(
     if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
   }
 
+  throwIfBootCancelled(opts.signal)
   let created
   const template = config.template ?? DEFAULT_TEMPLATE
   // No direct logging: the provider stays silent unless the daemon passes
@@ -936,6 +944,7 @@ async function bootOnClient(
     throw err
   }
   sandboxId = created.id
+  throwIfBootCancelled(opts.signal)
   let daemonToken: string | undefined
   let published: readonly PortPublish[] = []
   let status: ComputerStatus
@@ -947,14 +956,16 @@ async function bootOnClient(
       config.waitReadyTimeoutMs !== undefined
         ? Math.min(config.waitReadyTimeoutMs, Math.max(1, deadlineLeft()))
         : Math.max(1, deadlineLeft())
-    status = await waitRunning(client, sandboxId, runningTimeout)
+    status = await waitRunning(client, sandboxId, runningTimeout, opts.signal)
     bootLog(`computer ${sandboxId} running`)
     published = created.ports?.length ? created.ports : (status.ports ?? [])
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
+    throwIfBootCancelled(opts.signal)
     daemonToken = await withinDeadline("daemon healthy", () =>
       daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin),
     )
     bootLog(`computer ${sandboxId} daemon healthy`)
+    throwIfBootCancelled(opts.signal)
     await withinDeadline("attach", () => attachController(client, sandboxId as string, config.sessionHolder))
   } catch (err) {
     // A failed boot must never leak a computer (same never-leak contract as
@@ -1093,9 +1104,11 @@ async function waitRunning(
   client: ComputerControllerClient,
   id: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ComputerStatus> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
+    throwIfBootCancelled(signal)
     const status = await client.getComputer(id)
     if (status === null) throw new SandboxBoxGoneError(id)
     if (status.state === "running") return status

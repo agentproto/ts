@@ -235,6 +235,53 @@ describe("agent_start sandbox — boot box + proxy session", () => {
     expect(registry.list().map(row => row.status)).toEqual(["running"])
   })
 
+  it("does not resurrect a starting session killed while the box is booting", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const stopSpy = vi.fn(async () => {})
+    const gatedProvider: SandboxProvider = {
+      async boot() {
+        await gate
+        return {
+          mcpUrl: `${box.gateway.url}/mcp`,
+          sandboxId: "sbx_cancelled_1",
+          stop: stopSpy,
+        }
+      },
+    }
+    const original = await resolveSandboxProviderSpy("fake")
+    deps.resolveSandboxProvider = vi.fn(async (slug: string) =>
+      slug === "fake" && original ? { ...original, provider: gatedProvider } : null,
+    )
+
+    const spawn = spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: "fake",
+    })
+
+    for (let i = 0; i < 200 && registry.list().length === 0; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const starting = registry.list()
+    expect(starting).toHaveLength(1)
+    const id = starting[0]!.id
+    expect(registry.kill(id)).toBe(true)
+
+    // The create was still pending. Now let it finish: the boot must notice
+    // the cancellation, tear the box down, and never register the session.
+    release()
+    const result = await spawn
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("sandbox_boot_cancelled")
+    expect(registry.get(id)).toBeUndefined()
+    expect(stopSpy).toHaveBeenCalled()
+  })
+
   it("round-trips a prompt through the proxy: agent_prompt/agent_output reach the box and come back", async () => {
     const result = await spawnAgentSession(deps, {
       adapter: "fake-cli",

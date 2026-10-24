@@ -258,6 +258,29 @@ export interface SandboxBootOpts {
    * package is not a logger.
    */
   log?: (line: string) => void
+  /**
+   * Aborts a boot whose session was killed while it was still `starting`.
+   * Providers with a multi-phase boot should check it between phases and
+   * throw `SandboxBootCancelledError`; the caller then tears the box down
+   * through its normal failed-boot path instead of adopting the session.
+   */
+  signal?: AbortSignal
+}
+
+/** Thrown by a provider's boot/connect when the caller cancelled a spawn
+ *  while the box was still booting. The caller must not register a session
+ *  for it; the box is expected to be cleaned up by the failed-boot path. */
+export class SandboxBootCancelledError extends Error {
+  constructor(message = "sandbox boot cancelled") {
+    super(message)
+    this.name = "SandboxBootCancelledError"
+  }
+}
+
+/** Structural check (name-based, so it works across package boundaries and
+ *  with mocked errors). */
+export function isSandboxBootCancelledError(err: unknown): err is SandboxBootCancelledError {
+  return err instanceof Error && err.name === "SandboxBootCancelledError"
 }
 
 /**
@@ -397,6 +420,9 @@ export interface CreateSandboxAgentSessionHostOpts {
   /** Optional per-phase boot logger forwarded to the provider; see
    *  `SandboxBootOpts.log`. Absent keeps the provider silent. */
   log?: (line: string) => void
+  /** Abort a boot whose session was killed mid-provision; see
+   *  `SandboxBootOpts.signal`. */
+  signal?: AbortSignal
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -474,9 +500,14 @@ export async function createSandboxAgentSessionHost(
     booted = await opts.provider.connect(opts.sandboxId, opts.spec, {
       env,
       ...(opts.log ? { log: opts.log } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })
   } else {
-    booted = await opts.provider.boot(opts.spec, { env, ...(opts.log ? { log: opts.log } : {}) })
+    booted = await opts.provider.boot(opts.spec, {
+      env,
+      ...(opts.log ? { log: opts.log } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)
   // gates its daemon with a per-box bearer; Box's private path gates with a

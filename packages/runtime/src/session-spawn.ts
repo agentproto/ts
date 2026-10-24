@@ -250,6 +250,7 @@ function additionalReadPathsForAgentsMd(
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
+  isSandboxBootCancelledError,
   isSandboxBoxGoneError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
@@ -1885,6 +1886,7 @@ export type SpawnAgentSessionResult =
         | "agent_spawn_failed"
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
+        | "sandbox_boot_cancelled"
         | "sandbox_reconnect_failed"
         | "sandbox_proxy_failed"
         | "device_spawn_unreachable"
@@ -4798,6 +4800,10 @@ export async function spawnAgentSession(
       // polling `session_list` must see the spawn as `starting` during that
       // whole window instead of nothing at all. `registry.spawnAgent` below
       // adopts this same row once the driver session exists.
+      // Killing the placeholder mid-boot aborts the boot: the phases below
+      // check this signal and a cancelled boot tears its box down instead of
+      // registering a session.
+      const bootAbort = new AbortController()
       const pendingSandbox = registry.spawnAgentPending({
         id: mintedSessionId,
         workspaceSlug: resolvedSlug,
@@ -4806,6 +4812,7 @@ export async function spawnAgentSession(
         harness: input.harness ?? input.adapter,
         depth: recordedDepth,
         provisioningPhase: "sandbox",
+        onCancel: () => bootAbort.abort(),
         ...(input.label ? { label: input.label } : {}),
         ...(input.title ? { title: input.title } : {}),
         ...(input.model ? { model: input.model } : {}),
@@ -4817,6 +4824,7 @@ export async function spawnAgentSession(
         resolveSandboxProvider,
         adapter: input.adapter,
         sessionHolder: mintedSessionId,
+        signal: bootAbort.signal,
         checkpointConfig,
         // CRASH RESUME - the checkpoint of the DEAD session this spawn
         // continues, restored onto the new checkout (`git restore
@@ -4931,6 +4939,22 @@ export async function spawnAgentSession(
         registry.forget(pendingSandbox.id)
         sandboxPendingId = undefined
         return booted
+      }
+      // Belt and braces for a kill that landed between the boot's final
+      // cancellation check and this point: never adopt a row that is no
+      // longer `starting`, and never leave its box running.
+      const liveRow = registry.get(mintedSessionId)
+      if (bootAbort.signal.aborted || liveRow === undefined || liveRow.status !== "starting") {
+        await booted.agentSession.close().catch(() => undefined)
+        registry.forget(mintedSessionId)
+        sandboxPendingId = undefined
+        return finish({
+          ok: false,
+          code: "sandbox_boot_cancelled",
+          message:
+            `agent_start: sandbox boot cancelled because session "${mintedSessionId}" was ` +
+            "ended while it was still starting",
+        })
       }
       agentSession = booted.agentSession
       commandPreview = booted.commandPreview
@@ -5598,6 +5622,7 @@ export type SandboxBootResult =
       code:
         | "sandbox_provider_not_found"
         | "sandbox_boot_failed"
+        | "sandbox_boot_cancelled"
         | "sandbox_reconnect_failed"
         | "sandbox_reuse_ambiguous"
         | "sandbox_reuse_workspace_mismatch"
@@ -6013,6 +6038,11 @@ export async function bootSandboxAgentSession(opts: {
    *  mirror's seed walk still matches rather than re-merging the turn.
    *  Ignored for every non-device provider. */
   initialPrompt?: string | Record<string, unknown> | unknown[]
+  /** Aborted when the session row is killed while it is still `starting`.
+   *  Checked between boot phases; a boot that completes after this fires is
+   *  torn down through the failed-boot path and reported as
+   *  `sandbox_boot_cancelled` instead of registering a session. */
+  signal?: AbortSignal
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
   if (!opts.resolveSandboxProvider) {
@@ -6255,6 +6285,7 @@ export async function bootSandboxAgentSession(opts: {
       // slow create/running/daemon-healthy boot is traceable from
       // `daemon.log` instead of silent until it fails.
       log: (line: string) => console.warn(line),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     })
   } catch (err) {
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
@@ -6303,6 +6334,15 @@ export async function bootSandboxAgentSession(opts: {
         ...(opts.label ? { label: opts.label } : {}),
         ...(boxCwd ? { cwd: boxCwd } : {}),
       })
+    }
+    if (isSandboxBootCancelledError(err)) {
+      return {
+        ok: false,
+        code: "sandbox_boot_cancelled",
+        message:
+          `agent_start: sandbox boot cancelled (provider "${providerSlug}") because the ` +
+          "session was ended while it was still starting",
+      }
     }
     return reuseSandboxId !== undefined
       ? {
@@ -6356,6 +6396,25 @@ export async function bootSandboxAgentSession(opts: {
     if (!opts.sessionId) return false
     return recordSessionDetach(host.sandboxId, opts.sessionId).length > 0
   }
+
+  /** The session was killed while still `starting`: tear the box down through
+   *  the same path a failed boot uses and report a typed cancellation, so no
+   *  descriptor is ever registered for it. */
+  const cancelBoot = async (): Promise<SandboxBootResult> => {
+    if (!(await detachOnBootFailure())) {
+      await host.stop().catch(() => undefined)
+      recordSandboxState(host.sandboxId, "stopped")
+    }
+    return {
+      ok: false,
+      code: "sandbox_boot_cancelled",
+      message:
+        `agent_start: sandbox boot cancelled (provider "${providerSlug}", sandbox ` +
+        `"${host.sandboxId}") because the session was ended while it was still starting`,
+    }
+  }
+  const bootCancelled = (): boolean => opts.signal?.aborted === true
+  if (bootCancelled()) return cancelBoot()
 
   let deliveryTarget: SandboxDeliveryTarget | undefined
   const deliverySessionId = opts.sessionId
@@ -6542,6 +6601,10 @@ export async function bootSandboxAgentSession(opts: {
   const remoteParent = mintRemoteParentForBox(opts.parentRelay)
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
+  if (bootCancelled()) {
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    return cancelBoot()
+  }
   try {
     const startArgs = {
       adapter: opts.adapter,
@@ -6593,6 +6656,10 @@ export async function bootSandboxAgentSession(opts: {
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
     console.warn(`[sandbox] boot: agent started (${providerSlug} ${host.sandboxId}, session ${remoteSessionId})`)
+    if (bootCancelled()) {
+      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      return cancelBoot()
+    }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
@@ -6703,6 +6770,11 @@ export async function bootSandboxAgentSession(opts: {
         })
       : undefined
   const onBeforeTeardown = composeTeardownHooks(trackedDeliveryOpts?.onBeforeTeardown, appGithubPushHook)
+
+  if (bootCancelled()) {
+    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    return cancelBoot()
+  }
 
   return {
     ok: true,
