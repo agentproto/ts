@@ -1,0 +1,60 @@
+{
+  "name": "@agentproto/doctype",
+  "version": "0.1.4",
+  "description": "agentproto/doctype - meta-factory for AIP `defineX(definition)` constructors. Centralises the cross-spec invariants every define-* shares (id shape, description length, top-level freeze, error-message prefix); leaves spec-specific defaulting + nested freezing to per-AIP `build()`. Used by @agentproto/tool, @agentproto/driver, and any future AIP doctype implementation.",
+  "keywords": [
+    "agentproto",
+    "aip-56",
+    "aip-70",
+    "doctype",
+    "defineX",
+    "scaffold",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs/aip-56",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/doctype"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.9",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
