@@ -70,6 +70,7 @@ describe("app registry: partial / malformed records", () => {
     expect(app.dataDir).toBe(join(root, "gone", "data"))
     expect(reg.listIssues()).toEqual([
       { kind: "incomplete", appId: "@t/bare", dir: join(root, "gone"), problems: ["missing agents", "missing workflows"] },
+      { kind: "dir-missing", appId: "@t/bare", dir: join(root, "gone"), problems: [`dir no longer exists: ${join(root, "gone")}`] },
     ])
   })
 
@@ -86,10 +87,10 @@ describe("app registry: partial / malformed records", () => {
   })
 
   it("a clean registry reports no issues, and re-installing clears a flagged record", async () => {
-    await writeFile(persistPath, JSON.stringify({ apps: [{ appId: "@t/bare", dir: "/nowhere" }] }))
+    await writeFile(persistPath, JSON.stringify({ apps: [{ appId: "@t/bare", dir: root }] }))
     const reg = createAppRegistry({ persistPath })
     expect(reg.listIssues()).toHaveLength(1)
-    reg.upsertApp({ appId: "@t/bare", dir: "/nowhere", agents: [], workflows: [], unvalidatedAgentTools: [] })
+    reg.upsertApp({ appId: "@t/bare", dir: root, agents: [], workflows: [], unvalidatedAgentTools: [] })
     expect(reg.listIssues()).toEqual([])
     expect(createAppRegistry({ persistPath }).listIssues()).toEqual([])
   })
@@ -138,6 +139,49 @@ describe("app registry: partial / malformed records", () => {
     await writeFile(persistPath, JSON.stringify({ apps: [{ appId: "@t/lost", dir: join(root, "missing") }] }))
     const reg = createAppRegistry({ persistPath })
     expect(await repairIncompleteApps(reg, async () => [])).toEqual([])
-    expect(reg.listIssues()).toHaveLength(1)
+    expect(reg.listIssues().map(i => i.kind)).toEqual(["incomplete", "dir-missing"])
+  })
+})
+
+// Incident 2026-10-24: an app installed from a PR worktree (app_install
+// upserts the global record by appId) kept pointing at that worktree after
+// it was removed, and workflow_run_file then failed with a bare
+// "has no adapter" error that hid the missing AGENT.md.
+describe("app registry: installed app whose dir was removed", () => {
+  async function installThenRemove(): Promise<{ reg: ReturnType<typeof createAppRegistry>; dir: string }> {
+    const dir = join(root, "worktree", "packages", "apps", "fx")
+    await emitApp("@t/fx", dir, "maintain")
+    const reg = createAppRegistry({ persistPath })
+    reg.upsertApp({
+      appId: "@t/fx",
+      dir,
+      agents: [{ id: "worker", path: join(dir, ".agentproto/agents/worker/AGENT.md") }],
+      workflows: [{ id: "maintain", path: join(dir, ".agentproto/workflows/maintain/WORKFLOW.md") }],
+      unvalidatedAgentTools: [],
+    })
+    expect(reg.listIssues()).toEqual([])
+    await rm(join(root, "worktree"), { recursive: true, force: true })
+    return { reg, dir }
+  }
+
+  it("listIssues reports it live as dir-missing, without a daemon restart", async () => {
+    const { reg, dir } = await installThenRemove()
+    expect(reg.listIssues()).toEqual([
+      { kind: "dir-missing", appId: "@t/fx", dir, problems: [`dir no longer exists: ${dir}`] },
+    ])
+  })
+
+  it("resolveAgentRefsForWorkflow names the unreadable AGENT.md and the gone dir, not a missing adapter", async () => {
+    const { reg, dir } = await installThenRemove()
+    const err = await resolveAgentRefsForWorkflow(reg, "maintain").then(
+      () => undefined,
+      (e: unknown) => e as Error,
+    )
+    expect(err).toBeInstanceOf(Error)
+    expect(err!.message).not.toMatch(/has no adapter/)
+    expect(err!.message).toContain('agent "worker": could not read AGENT.md')
+    expect(err!.message).toMatch(/ENOENT/)
+    expect(err!.message).toContain(`installed app dir "${dir}" no longer exists`)
+    expect(err!.message).toContain('re-run app_install for "@t/fx"')
   })
 })
