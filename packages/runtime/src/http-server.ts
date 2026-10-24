@@ -5687,6 +5687,7 @@ export function buildSpawnSessionHttpArgs(
   b: Record<string, unknown>,
   adapter: string,
   preset?: UserPreset,
+  sessionPresets?: readonly UserPreset[],
 ): SpawnAgentSessionInput {
   // Spend caps — the HTTP twins of the MCP `agent_start` tool's `maxCostUsd`
   // (hard turn-end kill) and `costBudget` (windowed governance cap, never
@@ -6027,6 +6028,7 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { appServe: parsed } : {}
         })()
       : {}),
+    ...(sessionPresets && sessionPresets.length > 0 ? { sessionPresets } : {}),
   }
 }
 
@@ -6165,7 +6167,8 @@ function spawnFailureStatus(code: string): number {
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
-    code === "model_policy_refused"
+    code === "model_policy_refused" ||
+    code === "session_preset_invalid"
   ) {
     return 400
   }
@@ -7003,7 +7006,10 @@ async function handleSessions(
     }
     const b = body as Record<string, unknown>
     const presetId = typeof b.presetId === "string" && b.presetId.length > 0 ? b.presetId : undefined
-    const preset = presetId ? await getUserPreset(presetId) : undefined
+    const sessionPresets = await listUserPresets()
+    const preset = presetId
+      ? sessionPresets.find(entry => entry.id === presetId)
+      : undefined
     if (presetId && !preset) {
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
@@ -7033,7 +7039,7 @@ async function handleSessions(
       json(400, invalidSpawnField)
       return true
     }
-    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
     const result = await spawnAgentSession(
       {
         registry,
@@ -7119,7 +7125,10 @@ async function handleSessions(
       return true
     }
     const presetId = typeof b.presetId === "string" && b.presetId.length > 0 ? b.presetId : undefined
-    const preset = presetId ? await getUserPreset(presetId) : undefined
+    const sessionPresets = await listUserPresets()
+    const preset = presetId
+      ? sessionPresets.find(entry => entry.id === presetId)
+      : undefined
     if (presetId && !preset) {
       json(400, { error: "preset_not_found", message: `No user preset "${presetId}" found.` })
       return true
@@ -7139,7 +7148,7 @@ async function handleSessions(
       json(400, invalidSpawnField)
       return true
     }
-    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset)
+    const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
     const result = await spawnAgentSession(
       {
         registry,

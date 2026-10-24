@@ -148,7 +148,7 @@ Usage:
   agentproto remote    disable | status [--json]
   agentproto provider-preset list [--json]   provider gateway definitions + key-env status
   agentproto presets  list [--json]          deprecated alias for provider-preset
-  agentproto preset   <list|show|add|delete> saved user spawn configurations
+  agentproto preset   <list|show|resolve|add|delete> saved user spawn configurations
   agentproto mcp-bridge                    stdio MCP proxy to daemon /mcp endpoint
   agentproto mcp-app <appId>               stdio MCP server scoped to one installed app's tools
   agentproto install-mcp [--agent <name>...] [--all] [--yes] [--update] [--uninstall]

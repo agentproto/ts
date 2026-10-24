@@ -165,6 +165,13 @@ import {
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
 import { touchUserPreset, type UserPreset } from "./user-presets.js"
+import {
+  defaultPresetFor,
+  resolveSessionConfig,
+  SessionPresetResolutionError,
+  type HarnessPresetOverlay,
+  type SessionConfigAxes,
+} from "./session-preset-resolver.js"
 import { getDefaultHarnessPreset } from "./harness-preset-store.js"
 import {
   HEADLESS_BROWSER_PROMPT_HINT,
@@ -1574,8 +1581,12 @@ export interface SpawnAgentSessionInput {
   posture?: Posture
   contextProfile?: ContextProfile
   /** A preloaded user preset. Callers resolve its id at their boundary so a
-   * preset can also provide the adapter before this core is invoked. */
+   *  preset can also provide the adapter before this core is invoked. */
   preset?: UserPreset
+  /** The full user preset store, so this core can also apply the harness's
+   *  `defaultFor` preset and a named preset's `extends` chain. Callers that
+   *  only pass `preset` keep working (the chain is then just that preset). */
+  sessionPresets?: readonly UserPreset[]
   /**
    * Deterministic billing-auth mode + EXPLICIT credential for adapters that
    * declare it (an `authSubscription` login and/or an API-key `provider`
@@ -1909,6 +1920,7 @@ export type SpawnAgentSessionResult =
         | "agent_manifest_unresolved"
         | "agent_manifest_unreadable"
         | "model_policy_refused"
+        | "session_preset_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -2175,49 +2187,50 @@ export async function spawnAgentSession(
     }
   }
 
-  // Presets are a lower-precedence layer than an explicit spawn request. Do
-  // this once, at the common core, so HTTP, MCP and future clients have the
-  // same semantics rather than each expanding a preset slightly differently.
-  // The preset's `browser` sits BELOW the role default (see
-  // `resolveBrowserMode`), so it is kept aside instead of folded into input.
-  const presetBrowser = input.preset?.browser
-  if (input.preset) {
-    const { preset, ...explicit } = input
-    input = {
-      ...explicit,
-      model: explicit.model ?? preset.model,
-      route: explicit.route ?? preset.route,
-      access: explicit.access ?? preset.access,
-      posture: explicit.posture ?? preset.posture,
-      effort: explicit.effort ?? preset.effort,
-      contextProfile: explicit.contextProfile ?? preset.contextProfile,
-      // A preset `cwd` pins the favorite to a fixed repo — it feeds the same
-      // slot an explicit request would, so the cwd ladder below treats it as
-      // caller-named (and the worktree guard sees a real repo, not a fallback).
-      cwd: explicit.cwd ?? preset.cwd,
-      skills: explicit.skills ?? preset.skills,
-      bundles: explicit.bundles ?? preset.bundles,
-      // `turnRetry: null` is an explicit opt-out, not an omission: an
-      // explicit value (null included) wins over a preset turnRetry.
-      turnRetry: explicit.turnRetry !== undefined ? explicit.turnRetry : preset.turnRetry,
-    }
-    // Best-effort recency stamp — a favorite just got resolved and used for
-    // this spawn. Never let the write (or its absence, for a since-deleted
-    // preset) affect the spawn itself.
-    await touchUserPreset(preset.id).catch(() => {})
+  // Session config resolution (AIP-46): manifest -> host -> definition ->
+  // harness preset -> preset (the harness's `defaultFor` preset, then the
+  // named preset after its `extends` chain) -> request. One pure resolver
+  // does the merge so HTTP, MCP and future clients cannot drift.
+  //
+  // The harness default preset (`harness-presets.json`) ranks BELOW a
+  // `defaultFor` session preset. It is loaded first and handed to the
+  // resolver as its own layer, preserving the existing rule that an explicit
+  // access pin skips it and that a cloud spawn never resolves host billing.
+  const namedPreset = input.preset
+  const sessionPresets = input.sessionPresets ?? (namedPreset ? [namedPreset] : [])
+  const resolveWith = (harnessPreset?: HarnessPresetOverlay) =>
+    resolveSessionConfig({
+      request: input as SessionConfigAxes,
+      presets: sessionPresets,
+      harness: input.harness ?? input.adapter,
+      ...(namedPreset ? { presetId: namedPreset.id } : {}),
+      ...(harnessPreset ? { harnessPreset } : {}),
+    })
+  // The harness default is a billing fallback: when the request or a session
+  // preset (named, its extends chain, or the defaultFor preset) already pins a
+  // profile, it is not loaded at all, so neither its profile gate nor its
+  // default model can leak next to another profile.
+  // A preset whose extends chain is broken (missing target, cycle) refuses
+  // the spawn with a typed error instead of throwing out of agent_start.
+  const presetRefusal = (err: unknown) =>
+    err instanceof SessionPresetResolutionError
+      ? {
+          ok: false as const,
+          code: "session_preset_invalid" as const,
+          message: `agent_start: ${err.message}`,
+          details: { presetCode: err.code },
+        }
+      : undefined
+  let pinnedProfile: string | undefined
+  try {
+    pinnedProfile = resolveWith().config.access?.profileRef
+  } catch (err) {
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
+    throw err
   }
-
-  // Harness default preset (`harness-presets.json`): when NEITHER an explicit
-  // request NOR a user preset pinned a billing profile, fall back to the
-  // harness's persisted default preset — its `profileRef` + `defaultModel`
-  // replace the legacy "first eligible profile" ambient resolution below. This
-  // is the lowest-precedence layer: it fills `access.profileRef` only when
-  // unset, and `model` only when the caller named none. A harness with no
-  // default preset (the common case, and every test that doesn't provision one)
-  // reads an empty store and leaves the spawn untouched.
-  // A cloud spawn (AIP-66) never resolves a host billing profile — the
-  // vendor owns auth/billing — so the preset layer is skipped for it.
-  if (!cloudResolved && !input.access?.profileRef) {
+  let harnessPreset: HarnessPresetOverlay | undefined
+  if (!cloudResolved && !pinnedProfile) {
     const preset = await getDefaultHarnessPreset(input.harness ?? input.adapter)
     if (preset) {
       // A default preset that bills through a since-disabled (or deleted)
@@ -2237,16 +2250,58 @@ export async function spawnAgentSession(
             "harness_preset_set_default.",
         }
       }
-      input = {
-        ...input,
+      harnessPreset = {
+        id: preset.id,
         access: { profileRef: preset.profileRef },
-        model: input.model ?? preset.defaultModel,
-        // An explicit `turnRetry: null` must win over a preset turnRetry.
-        ...((input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry)
-          ? { turnRetry: input.turnRetry !== undefined ? input.turnRetry : preset.turnRetry }
-          : {}),
+        model: preset.defaultModel,
+        turnRetry: preset.turnRetry,
       }
     }
+  }
+
+  let sessionConfig: SessionConfigAxes
+  try {
+    sessionConfig = resolveWith(harnessPreset).config
+  } catch (err) {
+    const refusal = presetRefusal(err)
+    if (refusal) return refusal
+    throw err
+  }
+  input = {
+    ...input,
+    ...(sessionConfig.model !== undefined ? { model: sessionConfig.model } : {}),
+    ...(sessionConfig.route !== undefined ? { route: sessionConfig.route } : {}),
+    ...(sessionConfig.access !== undefined ? { access: sessionConfig.access } : {}),
+    ...(sessionConfig.posture !== undefined ? { posture: sessionConfig.posture } : {}),
+    ...(sessionConfig.effort !== undefined ? { effort: sessionConfig.effort } : {}),
+    ...(sessionConfig.contextProfile !== undefined
+      ? { contextProfile: sessionConfig.contextProfile }
+      : {}),
+    // A preset `cwd` pins the favorite to a fixed repo; it feeds the same
+    // slot an explicit request would, so the cwd ladder below treats it as
+    // caller-named (and the worktree guard sees a real repo, not a fallback).
+    ...(sessionConfig.cwd !== undefined ? { cwd: sessionConfig.cwd } : {}),
+    ...(sessionConfig.skills !== undefined ? { skills: sessionConfig.skills } : {}),
+    ...(sessionConfig.bundles !== undefined ? { bundles: sessionConfig.bundles } : {}),
+    // `turnRetry: null` is an explicit opt-out, not an omission: an explicit
+    // value (null included) wins over a preset turnRetry.
+    ...(sessionConfig.turnRetry !== undefined ? { turnRetry: sessionConfig.turnRetry } : {}),
+    ...(sessionConfig.modelPolicy !== undefined ? { modelPolicy: sessionConfig.modelPolicy } : {}),
+    ...(sessionConfig.options !== undefined
+      ? { options: sessionConfig.options as SpawnAgentSessionInput["options"] }
+      : {}),
+  }
+  // A preset `browser` sits BELOW the role default (see `resolveBrowserMode`),
+  // so it is kept aside instead of folded into input.
+  const presetBrowser = sessionConfig.browser
+  const usedPresetId =
+    namedPreset?.id ??
+    defaultPresetFor(input.harness ?? input.adapter, sessionPresets)?.id
+  if (usedPresetId) {
+    // Best-effort recency stamp: a favorite just got resolved and used for
+    // this spawn. Never let the write (or its absence, for a since-deleted
+    // preset) affect the spawn itself.
+    await touchUserPreset(usedPresetId).catch(() => {})
   }
 
   // Reconcile `model` and `route` so callers cannot describe two different

@@ -26,6 +26,11 @@ import {
   type UserPreset,
 } from "./user-presets.js"
 import type { SessionsRegistry } from "./sessions.js"
+import { getDefaultHarnessPreset } from "./harness-preset-store.js"
+import {
+  resolveSessionConfig,
+  type HarnessPresetOverlay,
+} from "./session-preset-resolver.js"
 
 function text(value: object): { content: Array<{ type: "text"; text: string }> } {
   return { content: [{ type: "text", text: JSON.stringify(value) }] }
@@ -82,6 +87,53 @@ export function registerUserPresetTools(server: McpServer, deps: UserPresetTools
         ? deriveRecentSpawnConfigs(registry?.list() ?? [])
         : undefined
       return text({ presets, ...(recent ? { recent } : {}) })
+    },
+  )
+
+  // ── user_preset_resolve ─────────────────────────────────────────
+  server.tool(
+    "user_preset_resolve",
+    "Resolve a saved session preset into its effective config and report, " +
+      "for every axis, the layer that produced it (manifest, host, " +
+      "definition, harness-preset, preset:<id>, preset-default:<id>, request). " +
+      "Applies the preset's `extends` chain, the harness's `defaultFor` preset " +
+      "and the harness preset default in precedence order. Read-only; the spawn " +
+      "path uses the same resolver. " +
+      'Details: tool_help {name:"user_preset_resolve"}',
+    {
+      id: z.string().describe("The saved session preset id to resolve."),
+      harness: z
+        .string()
+        .optional()
+        .describe("Harness slug to resolve for; defaults to the preset's harness/adapter."),
+    },
+    async ({ id, harness: requestedHarness }) => {
+      const presets = await listUserPresets()
+      const preset = presets.find(entry => entry.id === id)
+      if (!preset) return errorText(`user_preset_resolve: no preset "${id}".`)
+      const harness = requestedHarness ?? preset.harness ?? preset.adapter
+      const harnessPreset = harness ? await getDefaultHarnessPreset(harness) : undefined
+      const overlay: HarnessPresetOverlay | undefined = harnessPreset
+        ? {
+            id: harnessPreset.id,
+            access: { profileRef: harnessPreset.profileRef },
+            model: harnessPreset.defaultModel,
+            turnRetry: harnessPreset.turnRetry,
+          }
+        : undefined
+      try {
+        const resolution = resolveSessionConfig({
+          presets,
+          presetId: id,
+          ...(harness ? { harness } : {}),
+          ...(overlay ? { harnessPreset: overlay } : {}),
+        })
+        return text({ preset: id, ...resolution })
+      } catch (err) {
+        return errorText(
+          `user_preset_resolve failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
     },
   )
 

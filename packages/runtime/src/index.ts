@@ -575,6 +575,24 @@ export {
   deleteUserPreset,
 } from "./user-presets.js"
 export type { UserPreset, UserPresetsFile } from "./user-presets.js"
+export { UserPresetValidationError, normalizeUserPreset } from "./user-presets.js"
+export {
+  resolveSessionConfig,
+  presetChain,
+  defaultPresetFor,
+  presetAxes,
+  SessionPresetResolutionError,
+} from "./session-preset-resolver.js"
+export type {
+  SessionConfigAxis,
+  SessionConfigLayer,
+  SessionConfigAxes,
+  SessionConfigResolution,
+  HarnessPresetOverlay,
+  ResolveSessionConfigInput,
+} from "./session-preset-resolver.js"
+export { composeModelPolicies } from "./model-policy.js"
+export type { ModelPolicy, PolicyVerdict } from "./model-policy.js"
 export {
   harnessPresetsPath,
   loadHarnessPresets,

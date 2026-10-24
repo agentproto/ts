@@ -66,7 +66,7 @@ import {
 } from "./session-spawn.js"
 import type { CompletionPolicySupervisor } from "./supervisor.js"
 import { parsePostureInput } from "./canonical-posture.js"
-import { getUserPreset } from "./user-presets.js"
+import { listUserPresets } from "./user-presets.js"
 import { listRoles, spawnableRolesFor } from "./role.js"
 import type { RoleProfile } from "./role.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -696,7 +696,10 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      const preset = input.presetId ? await getUserPreset(input.presetId) : undefined
+      const sessionPresets = await listUserPresets()
+      const preset = input.presetId
+        ? sessionPresets.find(entry => entry.id === input.presetId)
+        : undefined
       if (input.presetId && !preset) {
         return {
           content: [{ type: "text", text: `agent_start: no user preset "${input.presetId}" found.` }],
@@ -793,6 +796,7 @@ export function registerAgentTools(
           ...(callerSessionId ? { autoParentSessionId: callerSessionId } : {}),
           ...(rawPosture ? { posture: parsePostureInput(rawPosture) } : {}),
           ...(preset ? { preset } : {}),
+          ...(sessionPresets.length > 0 ? { sessionPresets } : {}),
         },
       )
       if (result.ok) {
