@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`165` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 97 |
+| core | 98 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 9 |
@@ -134,6 +134,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/review | `packages/review` | 0.6.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/review-pack-core | `packages/review-pack-core` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/role | `packages/role` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
+@agentproto/run | `packages/run` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/runtime | `packages/runtime` | 5.29.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/runtime-profile-standard | `packages/runtime-profile-standard` | 0.1.4 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox | `packages/sandbox` | 0.13.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
