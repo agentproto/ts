@@ -139,8 +139,10 @@ export interface ReconcileResult {
   removed: string[]
   /** Files that failed to parse/validate or register — collected, not fatal to the rest of the scan. */
   errors: Array<{ file: string; error: string }>
-  /** Bindings resolved from enabled event routines; nothing fires them yet. */
+  /** Bindings resolved from enabled event routines; the reaction runner fires them. */
   eventBindings?: ResolvedEventBinding[]
+  /** What the reaction wiring made live and refused for this pass, when a hook is installed. */
+  reactions?: { active: string[]; refused: Array<{ bindingId: string; error: string }> }
 }
 
 export interface RoutineRegistrar {
@@ -183,6 +185,10 @@ export function createRoutineRegistrar(opts: {
   workspace: string
   cronScheduler: CronScheduler
   dispatchTool: (name: string, inputs: Record<string, unknown>) => Promise<unknown>
+  /** Called last on every reconcile; its return value is attached as `reactions`. */
+  onReconciled?: (
+    result: ReconcileResult,
+  ) => { active: string[]; refused: Array<{ bindingId: string; error: string }> } | void
 }): RoutineRegistrar {
   const { workspace, cronScheduler, dispatchTool } = opts
   const routinesDir = join(workspace, ".routines")
@@ -252,7 +258,7 @@ export function createRoutineRegistrar(opts: {
             continue
           }
           eventBindings.push(binding)
-          skipped.push({ id, reason: "schedule.kind 'event' resolved to a reaction binding; nothing fires it yet" })
+          skipped.push({ id, reason: "schedule.kind 'event' resolved to a reaction binding; fired by the reaction runner" })
           continue
         }
         if (!isScheduleCron(frontmatter.schedule)) {
@@ -324,7 +330,18 @@ export function createRoutineRegistrar(opts: {
       }
 
       lastEventBindings = eventBindings.slice()
-      return { registered, skipped, removed, errors, eventBindings }
+      const result: ReconcileResult = { registered, skipped, removed, errors, eventBindings }
+      if (opts.onReconciled) {
+        try {
+          const reactions = opts.onReconciled(result)
+          if (reactions !== undefined) result.reactions = reactions
+        } catch (err) {
+          console.warn(
+            `[routine-registrar] onReconciled failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+      }
+      return result
     },
 
     async trigger(routineId) {

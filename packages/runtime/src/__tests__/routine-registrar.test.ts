@@ -1054,7 +1054,7 @@ describe("event routines", () => {
     expect(result.eventBindings).toHaveLength(1)
     expect(result.eventBindings![0]!.bindingId).toBe("routine:event-fire")
     expect(result.skipped).toEqual([
-      { id: "event-fire", reason: "schedule.kind 'event' resolved to a reaction binding; nothing fires it yet" },
+      { id: "event-fire", reason: "schedule.kind 'event' resolved to a reaction binding; fired by the reaction runner" },
     ])
     expect(cronScheduler.list()).toHaveLength(0)
     expect(registrar.eventBindings()).toEqual(result.eventBindings)
