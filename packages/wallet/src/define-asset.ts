@@ -11,7 +11,7 @@
  * leaks value), and convert edges must not point at the asset itself.
  */
 
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import type { AssetDeclaration } from "./asset.js"
 import { assetDeclarationSchema } from "./schema.js"
 

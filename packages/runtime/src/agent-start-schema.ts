@@ -16,7 +16,7 @@ import { z } from "zod"
 import { jsonTolerant } from "./json-tolerant.js"
 import { turnRetryInputSchema } from "./turn-retry-policy.js"
 import { modelPolicyInputSchema } from "./model-policy.js"
-import { clerkHooksInputSchema } from "./clerk-hook-config.js"
+import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { sandboxCheckpointOverrideSchema } from "./sandbox-checkpoint-schema.js"
 import {

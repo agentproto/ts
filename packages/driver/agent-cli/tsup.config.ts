@@ -15,7 +15,7 @@ export default createTsupConfig({
   external: [
     "zod",
     "gray-matter",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "@agentproto/acp",
     "node:child_process",
     "node:stream/web",

@@ -918,9 +918,9 @@ importers:
       '@agentclientprotocol/sdk':
         specifier: ^0.21.1
         version: 0.21.1(zod@4.6.7)
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -952,9 +952,9 @@ importers:
 
   packages/action:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
@@ -1104,9 +1104,9 @@ importers:
 
   packages/agency:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1154,9 +1154,9 @@ importers:
 
   packages/agent:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
@@ -1408,9 +1408,9 @@ importers:
 
   packages/assembly:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1436,9 +1436,9 @@ importers:
 
   packages/auth:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1560,9 +1560,9 @@ importers:
 
   packages/canvakit:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1609,6 +1609,28 @@ importers:
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
+  packages/clerk:
+    dependencies:
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -1834,9 +1856,9 @@ importers:
 
   packages/code:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1899,9 +1921,9 @@ importers:
 
   packages/collection:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -1945,9 +1967,9 @@ importers:
 
   packages/company:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2187,9 +2209,9 @@ importers:
 
   packages/design:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2276,9 +2298,9 @@ importers:
       '@agentproto/command-sandbox':
         specifier: workspace:*
         version: link:../../command-sandbox
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../../define-doctype
+        version: link:../../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2304,9 +2326,9 @@ importers:
 
   packages/driver/browser:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../../define-doctype
+        version: link:../../doctype
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../../provider-kit
@@ -2363,9 +2385,9 @@ importers:
 
   packages/driver/core:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../../define-doctype
+        version: link:../../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../../manifest
@@ -2596,9 +2618,9 @@ importers:
 
   packages/extension:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
@@ -2627,9 +2649,9 @@ importers:
 
   packages/governance/core:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../../define-doctype
+        version: link:../../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2716,9 +2738,9 @@ importers:
 
   packages/identity:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2778,9 +2800,9 @@ importers:
 
   packages/intent:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2806,9 +2828,9 @@ importers:
 
   packages/io:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2834,9 +2856,9 @@ importers:
 
   packages/knowledge:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2921,9 +2943,9 @@ importers:
 
   packages/lesson:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -2989,9 +3011,9 @@ importers:
 
   packages/manifest:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3073,9 +3095,9 @@ importers:
       '@agentproto/agent':
         specifier: workspace:*
         version: link:../agent
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
@@ -3184,9 +3206,9 @@ importers:
 
   packages/office:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3212,9 +3234,9 @@ importers:
 
   packages/operator:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3240,9 +3262,9 @@ importers:
 
   packages/pack:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3383,9 +3405,9 @@ importers:
 
   packages/persona:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3411,9 +3433,9 @@ importers:
 
   packages/playbook:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3483,9 +3505,9 @@ importers:
 
   packages/policy:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3786,9 +3808,9 @@ importers:
 
   packages/review:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/workflow':
         specifier: workspace:*
         version: link:../workflow
@@ -3822,9 +3844,9 @@ importers:
 
   packages/role:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/registry':
         specifier: workspace:*
         version: link:../registry
@@ -3878,9 +3900,9 @@ importers:
 
   packages/routine:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
@@ -3907,11 +3929,33 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/run:
+    dependencies:
+      '@agentproto/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@20.14.6(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+
   packages/runner:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3961,6 +4005,9 @@ importers:
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
+      '@agentproto/clerk':
+        specifier: workspace:*
+        version: link:../clerk
       '@agentproto/command-sandbox':
         specifier: workspace:*
         version: link:../command-sandbox
@@ -4030,6 +4077,9 @@ importers:
       '@agentproto/routine':
         specifier: workspace:*
         version: link:../routine
+      '@agentproto/run':
+        specifier: workspace:*
+        version: link:../run
       '@agentproto/sandbox':
         specifier: workspace:*
         version: link:../sandbox
@@ -4143,9 +4193,9 @@ importers:
 
   packages/sandbox:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
@@ -4283,9 +4333,9 @@ importers:
       '@agentproto/auth':
         specifier: workspace:*
         version: link:../auth
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -4314,9 +4364,9 @@ importers:
 
   packages/skill:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -4369,9 +4419,9 @@ importers:
 
   packages/storage:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/policy':
         specifier: workspace:*
         version: link:../policy
@@ -4471,9 +4521,9 @@ importers:
 
   packages/tool:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
@@ -4606,9 +4656,9 @@ importers:
 
   packages/wallet:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -4631,9 +4681,9 @@ importers:
 
   packages/work:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -4659,9 +4709,9 @@ importers:
 
   packages/workflow:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -4820,9 +4870,9 @@ importers:
 
   packages/workspace:
     dependencies:
-      '@agentproto/define-doctype':
+      '@agentproto/doctype':
         specifier: workspace:*
-        version: link:../define-doctype
+        version: link:../doctype
       '@agentproto/work':
         specifier: workspace:*
         version: link:../work

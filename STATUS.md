@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (each `package.json` under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier. Totals are not written here, so two pull requests that each add a package merge without leaving this file stale; run `node scripts/gen-status.mjs --stats` for the counts.
 
 ## Classification rule
 
@@ -13,15 +13,6 @@ A snapshot of every pnpm workspace package (`164` `package.json` files under the
 5. Everything else → `core`.
 
 Each package appears exactly once; tiers are applied in the order above.
-
-## Tier counts
-
-| Tier | Count |
-|---|---|
-| core | 97 |
-| adapters | 25 |
-| spec-reference | 33 |
-| archived | 9 |
 
 ## Package table
 
@@ -80,6 +71,7 @@ agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime 
 @agentproto/browser-process | `packages/browser-process` | 0.2.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/browser-profiles | `packages/browser-profiles` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/catalog-sync | `packages/catalog-sync` | 0.8.10 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/clerk | `packages/clerk` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/cli | `packages/cli` | 1.30.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/cli-exec | `packages/cli-exec` | 0.1.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/code-brain | `packages/code-brain` | 0.3.9 | core | product runtime package consumed by the runtime/cli |
@@ -134,6 +126,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/review | `packages/review` | 0.6.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/review-pack-core | `packages/review-pack-core` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/role | `packages/role` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
+@agentproto/run | `packages/run` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/runtime | `packages/runtime` | 5.29.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/runtime-profile-standard | `packages/runtime-profile-standard` | 0.1.4 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox | `packages/sandbox` | 0.13.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |

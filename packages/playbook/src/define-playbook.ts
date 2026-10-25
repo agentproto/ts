@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { playbookFrontmatterSchema } from "./schema.js"
 import type { PlaybookDefinition, PlaybookHandle } from "./types.js"
 
