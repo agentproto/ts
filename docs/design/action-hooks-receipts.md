@@ -520,13 +520,11 @@ Receipts generalize this from one process lifetime to durable state: the
 plus a lease timestamp is the durable single-flight marker. An in-memory set
 may still coalesce within a process, but it is not the source of truth.
 
-Recursion cap: a reaction target may itself cause an event. The runner derives
-each receipt's `reactionDepth` and `causedByEventId` from the completed
-session's facts: a session spawned inside a reaction carries the running
-receipt's depth plus one and that receipt's key. When depth reaches the
-configured cap, for example 4, the receipt is created in `dead` with reason
-`recursion_cap` and the target is not run. This keeps every arm bounded,
-including a tool or workflow arm that starts sessions.
+Recursion cap: a reaction target may itself cause an event. Each receipt
+carries `reactionDepth`, copied from the causing event's depth plus one. When
+depth reaches the configured cap, for example 4, the receipt is created in
+`dead` with reason `recursion_cap` and the target is not run. This keeps a
+reaction that emits `turn-end` from creating an unbounded chain.
 
 While a target runs, the runner enters an async reaction context carrying the
 binding id, the depth a spawned session carries and the receipt key. Any spawn
@@ -901,16 +899,19 @@ under binding id `*`.
 
 The documented `session.<field>` filter paths are `session.kind`,
 `session.isChild`, `session.workspaceSlug`, `session.origin`, `session.adapter`
-(the descriptor `adapterSlug`), `session.label`, `session.reactionDepth` and
-`session.causedByEventId`. Undefined fields are omitted, so a filter on one
-never matches.
+(the descriptor `adapterSlug`) and `session.label`. Undefined fields are omitted,
+so a filter on one never matches.
+The additional filter paths `session.reactionDepth` and
+`session.causedByEventId` follow the same rule.
 
-Known limits: a session started by a detached process that does not inherit the
-async reaction context, for example a spawn done by a separate OS process, is
-not stamped, so a chain through that process is not bounded by the depth cap;
-the action registry is empty, so `action` arms are refused until a handler is
-registered; an event arriving between runner start and the first reconcile only
-reaches builtin bindings.
+Known limits: no event context for tool, workflow or agent arms;
+(only a registered action handler receives the occurrence); a session started by a
+detached process that does not inherit the async reaction context, for example
+a spawn done by a separate OS process, is not stamped, so a chain through that
+process is not bounded by the depth cap; the action
+registry is empty, so `action` arms are refused until a handler is registered;
+an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
 

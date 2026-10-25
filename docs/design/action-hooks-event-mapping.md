@@ -230,11 +230,13 @@ completion derives its receipt depth from those facts, so the depth cap bounds
 a tool or workflow arm that starts sessions (for example `agent_start` or
 `workflow_run_file`) as well as the agent arm.
 
-Known limits in this version: a session started by a detached process that does
-not inherit the async reaction context, for example a spawn done by a separate
-OS process, is not stamped; the action registry is empty, so `action` arms are
-refused until a handler is registered; and an event arriving between runner
-start and the first reconcile only reaches builtin bindings.
+Known limits in this version: tool, workflow and agent arms get no event context;
+only a registered action handler receives the occurrence; a session started
+by a detached process that does not inherit the async reaction context, for
+example a spawn done by a separate OS process, is not stamped; the action
+registry is empty, so `action` arms are refused until a handler is registered;
+and an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`. The
 binding disappears on the next refresh; its receipts are left untouched.
