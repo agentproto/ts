@@ -2049,8 +2049,14 @@ async function executeRunWorkflow(
     for (const step of stage.steps) delete step.phase
   }
 
-  // Drain the ledger append queue before the run's terminal state is
-  // persisted, so the file reflects the run by the time status() flips.
+  // Persist the terminal transition BEFORE the (possibly slow) ledger drain:
+  // `status()`/`waitStatus` can observe the in-memory terminal status as soon
+  // as it is set, and `flush()` must then see the run-file write and lease
+  // removal already queued. Persisting only in the caller's `.then()` left a
+  // window where `flush()` resolved with the lease sidecar still present.
+  persist?.()
+
+  // Drain the ledger append queue so the persisted record reflects it too.
   if (ledger) await ledger.flush()
 
   fireNotifyUrl(state.run)
