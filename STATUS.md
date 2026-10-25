@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`165` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 97 |
+| core | 98 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 9 |
@@ -80,6 +80,7 @@ agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime 
 @agentproto/browser-process | `packages/browser-process` | 0.2.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/browser-profiles | `packages/browser-profiles` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/catalog-sync | `packages/catalog-sync` | 0.8.10 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/clerk | `packages/clerk` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/cli | `packages/cli` | 1.30.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/cli-exec | `packages/cli-exec` | 0.1.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/code-brain | `packages/code-brain` | 0.3.9 | core | product runtime package consumed by the runtime/cli |

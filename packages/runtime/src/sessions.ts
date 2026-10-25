@@ -196,7 +196,7 @@ import type { TurnRetryPolicy } from "./turn-retry-policy.js"
 import type { ModelPolicy } from "./model-policy.js"
 import { checkModelPolicy } from "./model-policy.js"
 import { getModelListSource } from "./model-list-store.js"
-import type { ClerkHookConfig } from "./clerk-hook-config.js"
+import type { ClerkHookConfig } from "@agentproto/clerk"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,

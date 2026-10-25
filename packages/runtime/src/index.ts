@@ -295,13 +295,13 @@ import { getAuthProfile } from "@agentproto/auth"
 import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
 import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
-import { createClerkTurnEndController } from "./clerk-turn-end.js"
-import { createClerkPassRunner } from "./clerk-pass-runner.js"
+import { createClerkTurnEndController } from "@agentproto/clerk"
+import { createClerkPassRunner } from "@agentproto/clerk"
 import {
   loadDaemonClerkHook,
   loadWorkspaceClerkHook,
   resolveClerkHookConfig,
-} from "./clerk-hook-config.js"
+} from "@agentproto/clerk"
 import { createDaemonToolRegistry, mergeAppAndDaemonToolRegistry } from "./workflow-tool-registry.js"
 export type {
   WatcherStartInput,
@@ -431,8 +431,8 @@ export {
   type ClerkTurnEndControllerOptions,
   type ClerkPassInput,
   type ClerkSessionLike,
-} from "./clerk-turn-end.js"
-export { createClerkPassRunner, spawnClerkCommand } from "./clerk-pass-runner.js"
+} from "@agentproto/clerk"
+export { createClerkPassRunner, spawnClerkCommand } from "@agentproto/clerk"
 export {
   CLERK_HOOK_DEFAULTS,
   CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
@@ -450,7 +450,7 @@ export {
   type ClerkHookRun,
   type ClerkHookSource,
   type ResolvedClerkHookConfig,
-} from "./clerk-hook-config.js"
+} from "@agentproto/clerk"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,
