@@ -39,7 +39,7 @@ import type {
   AdapterModelRow,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
-import { CLOUD_ADAPTER_PLACEHOLDER } from "./cloud-vendors.js"
+import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"

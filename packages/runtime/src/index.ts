@@ -202,7 +202,7 @@ import {
   restartPreferInPlace,
 } from "./session-restart-core.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
-import { cloudMetaOf } from "./cloud-vendors.js"
+import { cloudMetaOf } from "@agentproto/cloud-agent"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"

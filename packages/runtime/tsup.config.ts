@@ -52,6 +52,7 @@ export default createTsupConfig({
     "@agentproto/agent",
     "@agentproto/sentinel",
     "@agentproto/clerk",
+    "@agentproto/cloud-agent",
     "@agentproto/decision",
     "@agentproto/manifest",
     "@agentproto/mcp-server",

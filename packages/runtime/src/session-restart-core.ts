@@ -72,7 +72,7 @@ import {
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
   resolveCloudResumeId,
-} from "./cloud-vendors.js"
+} from "@agentproto/cloud-agent"
 import type { AgentAdapterResolver, CatalogModelsLister } from "./http-server.js"
 import {
   decideRestartStrategy,
@@ -101,7 +101,7 @@ import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.j
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { recordSandboxBoot, recordSessionDetach } from "./sandbox-ledger.js"
 import { createBoxLoginRefresher, type BoxLoginRefreshOutcome } from "./box-login-bridge.js"
-import { findWorkspace, loadWorkspacesConfig } from "./workspaces-config.js"
+import { findWorkspace, loadWorkspacesConfig, workspaceRemotePort } from "./workspaces-config.js"
 import { SANDBOX_BRANCH_PREFIX, resolveSharedBoxWorktreeTeardown } from "./sandbox-workspace-remote.js"
 import { stripOwnCallerStamp } from "./session-continue-fresh.js"
 import {
@@ -329,6 +329,7 @@ export async function cloudRelayEnv(input: {
           findWorkspace(await loadWorkspacesConfig(), input.workspaceSlug)?.remote,
           input.configDir,
           async ref => (await new KeychainStore().read({ path: ref }))?.value,
+          workspaceRemotePort,
         )
       : {}),
   }

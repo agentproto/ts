@@ -30,7 +30,7 @@ import type { FSWatcher } from "node:fs"
 import { RESUME_STRATEGIES } from "./resume-strategies.js"
 import { computeAgentRoleRefresh, renderRoleUpdateNotice } from "./agent-role-refresh.js"
 import type { AgentManifestRefError } from "./spawn-agent-manifest.js"
-import { encodeCloudSessionMeta, resolveCloudResumeId } from "./cloud-vendors.js"
+import { encodeCloudSessionMeta, resolveCloudResumeId } from "@agentproto/cloud-agent"
 import {
   CONVERSATION_STORES,
   conversationTerminalSlugFor,
