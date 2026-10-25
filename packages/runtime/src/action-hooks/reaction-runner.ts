@@ -19,6 +19,7 @@ import {
   ReceiptTransitionError,
   buildReactionReceiptKey,
 } from "./receipt-store.js"
+import { runInReactionContext } from "./reaction-context.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -55,6 +56,12 @@ export interface ReactionBinding {
   maxAttempts: number
   /** Depth stamped on the receipt (0 for a reaction to a root event). */
   reactionDepth: number
+  /**
+   * Optional causation of the incoming event. A finite depth replaces the
+   * static `reactionDepth` for the inserted receipt and the cap check; a
+   * throw is logged and treated as undefined.
+   */
+  causation?(event: SessionEvent): { reactionDepth: number; causedByEventId?: string } | undefined
   target: ReactionTarget
   /** The AIP-71 occurrence id of this event for this binding, or undefined to ignore the event. */
   occurrenceIdOf(event: SessionEvent): string | undefined
@@ -236,7 +243,14 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     const key = receipt.receiptKey
     let outcome: ReactionTargetOutcome
     try {
-      outcome = await binding.target.run(targetInput(receipt))
+      outcome = await runInReactionContext(
+        {
+          bindingId: binding.bindingId,
+          reactionDepth: receipt.reactionDepth + 1,
+          causedByEventId: receipt.receiptKey,
+        },
+        () => binding.target.run(targetInput(receipt)),
+      )
     } catch (err) {
       await markFailedSafe(key, binding, receipt, messageOf(err))
       return
@@ -330,6 +344,15 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         return
       }
 
+      let cause: { reactionDepth: number; causedByEventId?: string } | undefined
+      try {
+        cause = binding.causation?.(event)
+      } catch (err) {
+        logLine(`causation ${binding.bindingId} failed: ${messageOf(err)}`)
+        cause = undefined
+      }
+      const reactionDepth = cause?.reactionDepth ?? binding.reactionDepth
+
       let inserted: ReactionReceipt
       try {
         inserted = await store.insertPending({
@@ -340,7 +363,10 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
           actionId: binding.actionId,
           configRevision: binding.configRevision,
           maxAttempts: binding.maxAttempts,
-          reactionDepth: binding.reactionDepth,
+          reactionDepth,
+          ...(cause?.causedByEventId !== undefined
+            ? { causedByEventId: cause.causedByEventId }
+            : {}),
         })
       } catch (err) {
         logLine(`insertPending ${key} (${binding.bindingId}) failed: ${messageOf(err)}`)
@@ -348,7 +374,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
       }
 
       const current = store.get(key) ?? inserted
-      if (binding.reactionDepth >= maxReactionDepth) {
+      if (reactionDepth >= maxReactionDepth) {
         if (current.status !== "done" && current.status !== "dead") {
           await markDeadSafe(key, "recursion_cap")
         }
