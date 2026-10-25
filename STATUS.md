@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`163` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
