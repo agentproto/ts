@@ -266,7 +266,7 @@ export function createRoutineRegistrar(opts: {
             frontmatter.schedule && typeof frontmatter.schedule === "object"
               ? String((frontmatter.schedule as { kind?: unknown }).kind ?? "unknown")
               : "unknown"
-          skipped.push({ id, reason: `schedule.kind '${kind}' not yet supported by the runtime registrar — only 'cron' fires today` })
+          skipped.push({ id, reason: `schedule.kind '${kind}' not yet supported by the runtime registrar — only 'cron' schedules a job and 'event' resolves a reaction` })
           continue
         }
         desiredIds.add(id)

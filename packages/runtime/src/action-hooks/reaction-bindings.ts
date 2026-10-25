@@ -282,13 +282,23 @@ export function toReactionBinding(
   }
 
   let guardLogged = false
+  let missingFactsLogged = false
 
   const shouldHandle = async (event: SessionEvent): Promise<boolean> => {
     if (agentArm) {
       const sessionIdOf = (event as { sessionId?: unknown }).sessionId
       if (typeof sessionIdOf === "string") {
         const facts = deps.getSessionFacts(sessionIdOf)
-        const origin = facts?.origin
+        if (facts === undefined) {
+          if (!missingFactsLogged) {
+            missingFactsLogged = true
+            logLine(
+              `cannot read the session facts, not starting an agent for ${resolved.bindingId}`,
+            )
+          }
+          return false
+        }
+        const origin = facts.origin
         if (typeof origin === "string" && origin.startsWith("reaction:")) {
           if (!guardLogged) {
             guardLogged = true

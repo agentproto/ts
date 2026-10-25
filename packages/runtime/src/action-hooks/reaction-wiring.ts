@@ -15,9 +15,8 @@ import type { ResolvedEventBinding } from "./event-bindings.js"
 import {
   toReactionBinding,
   type ReactionBindingDeps,
-  type ReactionBinding,
 } from "./reaction-bindings.js"
-import type { ReactionRunner } from "./reaction-runner.js"
+import type { ReactionBinding, ReactionRunner } from "./reaction-runner.js"
 
 const LOG_PREFIX = "[reaction-wiring]"
 

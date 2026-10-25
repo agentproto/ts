@@ -258,11 +258,14 @@ import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import {
+  createActionRegistry,
   createBrainIngestReaction,
   createReactionReceiptStore,
+  createReactionWiring,
   reactionReceiptsPathForBucket,
   createReactionRunner,
   readBrainIngestOwnedWorkspaces,
+  sessionFactsOf,
   wireSessionCompletion,
 } from "./action-hooks/index.js"
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
@@ -2539,6 +2542,7 @@ export async function createGateway(
     brains: workspaceBrains,
     ownedWorkspaces: readBrainIngestOwnedWorkspaces,
   })
+  const actionRegistry = createActionRegistry()
   const reactionRunner = createReactionRunner({
     bus: sessionEvents,
     store: reactionReceiptStore,
@@ -3138,6 +3142,27 @@ export async function createGateway(
   // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
   // dispatchable tool ids, not a dispatcher. Wired to the real internal
   // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
+  // AIP-41 event routines: the registrar resolves them, the wiring converts
+  // each one to a reaction binding and swaps the runner's live set on every
+  // reconcile. The registrar is created below, so the box breaks the ordering
+  // cycle without module-level state. Builtins stay live from runner creation,
+  // so an event arriving before the first reconcile still reaches them.
+  const routineRegistrarBox: { registrar?: ReturnType<typeof createRoutineRegistrar> } = {}
+  const reactionWiring = createReactionWiring({
+    runner: reactionRunner,
+    builtin: [brainIngestReaction.binding],
+    eventBindings: () => routineRegistrarBox.registrar?.eventBindings() ?? [],
+    conversion: {
+      registry: actionRegistry,
+      dispatchTool,
+      getSessionFacts: id => {
+        const desc = sessions.get(id)
+        return desc ? sessionFactsOf(desc) : undefined
+      },
+      workspaceRoot: workspace,
+    },
+  })
+
   const listToolIdsBox: { fn?: () => Promise<string[]> } = {}
   const listRegisteredToolIds = async (): Promise<string[]> => {
     if (!listToolIdsBox.fn) {
@@ -3185,7 +3210,9 @@ export async function createGateway(
     workspace,
     cronScheduler,
     dispatchTool,
+    onReconciled: () => reactionWiring.refresh(),
   })
+  routineRegistrarBox.registrar = routineRegistrar
 
   // AIP-68 clerk hook - a daemon subscriber that runs ONE clerk pass
   // (steward/secretary) after a session's turn ends, debounced on the
