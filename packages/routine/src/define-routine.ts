@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { routineFrontmatterSchema } from "./schema.js"
 import type { RoutineDefinition, RoutineHandle } from "./types.js"
 

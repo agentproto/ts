@@ -12,29 +12,42 @@ import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createSessionEventBus, type SessionTurnEndEvent } from "../session-event-bus.js"
-import { createClerkTurnEndController } from "../clerk-turn-end.js"
-import { createClerkPassRunner } from "../clerk-pass-runner.js"
 import {
   CLERK_HOOK_DEFAULTS,
+  createClerkPassRunner,
+  createClerkTurnEndController,
   loadWorkspaceClerkHook,
   parseAgentClerkHook,
   resolveClerkHookConfig,
   type ClerkHookConfig,
-} from "../clerk-hook-config.js"
+  type ClerkTurnEndEvent,
+} from "../index.js"
 
 const MIN = 60_000
+
+function createSessionEventBus() {
+  const handlers = new Map<string, Set<(ev: ClerkTurnEndEvent) => void>>()
+  return {
+    on(type: "session:turn-end", handler: (ev: ClerkTurnEndEvent) => void): () => void {
+      const set = handlers.get(type) ?? new Set()
+      set.add(handler)
+      handlers.set(type, set)
+      return () => set.delete(handler)
+    },
+    emit(ev: ClerkTurnEndEvent): void {
+      for (const handler of handlers.get(ev.type) ?? []) handler(ev)
+    },
+  }
+}
 
 function enabledConfig(overrides: Partial<ClerkHookConfig> = {}): ClerkHookConfig {
   return { ...CLERK_HOOK_DEFAULTS, enabled: true, debounceMs: 10 * MIN, ...overrides }
 }
 
-function turnEnd(sessionId: string, extra: Partial<SessionTurnEndEvent> = {}): SessionTurnEndEvent {
+function turnEnd(sessionId: string, extra: Partial<ClerkTurnEndEvent> = {}): ClerkTurnEndEvent {
   return {
     type: "session:turn-end",
     sessionId,
-    awaitingInput: false,
-    ts: new Date(0).toISOString(),
     ...extra,
   }
 }

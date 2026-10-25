@@ -286,7 +286,7 @@ import {
   type RestartOverrides,
 } from "./session-restart-core.js"
 import { parsePostureInput } from "./canonical-posture.js"
-import { clerkHooksInputSchema } from "./clerk-hook-config.js"
+import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
 import {
   deleteUserPreset,

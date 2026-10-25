@@ -12,7 +12,7 @@ export default createTsupConfig({
   external: [
     "zod",
     "@agentproto/agent",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "@agentproto/extension",
     "@agentproto/manifest",
     "@agentproto/routine",

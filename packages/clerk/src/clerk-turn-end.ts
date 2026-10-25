@@ -45,8 +45,26 @@
  * `clerk-hook-config.ts` for the shapes and the precedence table.
  */
 
-import type { SessionEventBus, SessionTurnEndEvent } from "./session-event-bus.js"
 import type { ClerkHookConfig } from "./clerk-hook-config.js"
+
+/** The slice of a `session:turn-end` event this controller reads. Structural
+ *  on purpose: the clerk package must not depend on the daemon's event bus,
+ *  and the daemon's `SessionTurnEndEvent` is a superset of this shape. */
+export interface ClerkTurnEndEvent {
+  type: "session:turn-end"
+  sessionId: string
+  empty?: boolean
+  interrupted?: boolean
+}
+
+/** The slice of the session-event bus this controller subscribes to. The
+ *  daemon's `SessionEventBus` satisfies it structurally. */
+export interface ClerkSessionEventBus {
+  on(
+    type: "session:turn-end",
+    handler: (ev: ClerkTurnEndEvent) => void,
+  ): () => void
+}
 
 /** The slice of a session descriptor this controller reads. Structural on
  *  purpose: the controller never imports `sessions.ts` (that would be an
@@ -75,7 +93,7 @@ export interface ClerkTurnEndControllerOptions {
   /** Registry lookup (the daemon's `SessionsRegistry.get`). */
   registry: { get(id: string): ClerkSessionLike | undefined }
   /** The session-event bus to subscribe to. */
-  sessionEvents: SessionEventBus
+  sessionEvents: ClerkSessionEventBus
   /**
    * Resolve the EFFECTIVE configuration for a session. The daemon wires
    * this to the three-level resolution (agent > workspace > daemon
@@ -174,7 +192,7 @@ export function createClerkTurnEndController(
     }
   }
 
-  const unsubscribe = opts.sessionEvents.on("session:turn-end", (ev: SessionTurnEndEvent) => {
+  const unsubscribe = opts.sessionEvents.on("session:turn-end", (ev: ClerkTurnEndEvent) => {
     // Everything below is synchronous and cheap: the handler must never
     // slow a turn down.
     const session = opts.registry.get(ev.sessionId)

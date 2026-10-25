@@ -526,6 +526,9 @@ depth reaches the configured cap, for example 4, the receipt is created in
 `dead` with reason `recursion_cap` and the target is not run. This keeps a
 reaction that emits `turn-end` from creating an unbounded chain.
 
+In this version `causedByEventId` is not set and `reactionDepth` is the static
+per-binding value; chain depth and causation come with the durable arms task.
+
 ## 6. Proposal: boot reconciliation
 
 Boot reconciliation is a pass that runs after the session registry has loaded
@@ -543,8 +546,9 @@ just been revived.
 
 Which receipts are re-driven:
 
-- `pending` receipts whose target is declared idempotent. They never started,
-  so re-driving is safe.
+- Every `pending` receipt, regardless of target idempotency: a persisted
+  `pending` row never started, because the `running` transition is durable
+  before any target runs. Only `running` rows depend on `idempotent`.
 - `running` receipts whose target is declared idempotent and whose idempotency
   is proven by a durable target ledger, as the brain ledger is. The receipt key
   and the target's own dedupe both apply.
