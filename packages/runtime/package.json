@@ -240,6 +240,7 @@
     "@agentproto/apps": "workspace:*",
     "@agentproto/auth": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
+    "@agentproto/decision": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/driver-browser": "workspace:*",

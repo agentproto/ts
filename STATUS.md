@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`163` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`165` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 96 |
+| core | 97 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 10 |
@@ -91,6 +91,7 @@ agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime 
 @agentproto/corpus-cli | `packages/corpus-cli` | 0.11.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/corpus-presets | `packages/corpus-presets` | 0.2.16 | core | product runtime package consumed by the runtime/cli |
 create-agentproto-app | `packages/create-agentproto-app` | 0.3.8 | core | product runtime package consumed by the runtime/cli |
+@agentproto/decision | `packages/decision` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-agent-cli | `packages/driver/agent-cli` | 2.15.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-browser | `packages/driver/browser` | 0.3.1 | core | product runtime package consumed by the runtime/cli |

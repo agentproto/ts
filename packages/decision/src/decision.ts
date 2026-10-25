@@ -33,9 +33,17 @@
 
 import type { DecisionPolicy, DecisionWhen } from "./decision-policy.js"
 import { decisionPolicyHash, hashStable, stableStringify } from "./decision-policy.js"
-import type { JevChoiceQuestion } from "./jev-client.js"
 
 // ── deps (injected — the primitive stays free of network/config coupling) ─
+
+/** A typed choice question a classifier answers. Structural on purpose: the
+ *  decision core must not depend on the daemon's Jev client. */
+export interface JevChoiceQuestion {
+  readonly type: "choice"
+  readonly instructions: string
+  /** Option key → what that option means. */
+  readonly criteria: Readonly<Record<string, string>>
+}
 
 export type ClassifierOutcome =
   | {
