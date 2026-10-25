@@ -113,6 +113,8 @@ export interface ReactionRunner {
   /** Re-run `failed` receipts whose nextAttemptAt is due, then store.sweep(). */
   retryDue(): Promise<void>
   reconcileOnBoot(): Promise<void>
+  /** Swap the live binding set. A run already in flight keeps the binding it started with. */
+  replaceBindings(next: readonly ReactionBinding[]): void
   status(): ReactionRunnerStatus[]
 }
 
@@ -137,7 +139,7 @@ function defaultBackoffMs(attempt: number): number {
 // ── Factory ───────────────────────────────────────────────────────────
 
 export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunner {
-  const { bus, store, bindings } = opts
+  const { bus, store } = opts
   const nowMs = opts.nowMs ?? Date.now
   const maxReactionDepth = opts.maxReactionDepth ?? DEFAULT_MAX_REACTION_DEPTH
   const maxConcurrent = Math.max(1, opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT)
@@ -153,15 +155,17 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
 
   const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
-  const bindingById = new Map<string, ReactionBinding>()
-  for (const binding of bindings) bindingById.set(binding.bindingId, binding)
+  let currentBindings: readonly ReactionBinding[] = []
+  let bindingById = new Map<string, ReactionBinding>()
 
-  const groups = new Map<string, ReactionBinding[]>()
-  for (const binding of bindings) {
-    const group = groups.get(binding.event)
-    if (group) group.push(binding)
-    else groups.set(binding.event, [binding])
+  const applyBindings = (next: readonly ReactionBinding[]): void => {
+    const byId = new Map<string, ReactionBinding>()
+    for (const binding of next) byId.set(binding.bindingId, binding)
+    bindingById = byId
+    currentBindings = next.slice()
   }
+
+  applyBindings(opts.bindings)
 
   // ── Concurrency limiter ─────────────────────────────────────────────
 
@@ -373,9 +377,20 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
   let started = false
   let tick: ReturnType<typeof setInterval> | null = null
   const unsubscribers: Array<() => void> = []
+  const subscribedEvents = new Set<string>()
 
-  const onBusEvent = (group: readonly ReactionBinding[], event: SessionEvent): void => {
-    for (const binding of group) {
+  const subscribe = (eventType: string): void => {
+    if (subscribedEvents.has(eventType)) return
+    subscribedEvents.add(eventType)
+    const unsubscribe = bus.on(eventType as SessionEventType, event => {
+      onBusEvent(event)
+    })
+    unsubscribers.push(unsubscribe)
+  }
+
+  const onBusEvent = (event: SessionEvent): void => {
+    for (const binding of currentBindings) {
+      if (binding.event !== event.type) continue
       try {
         const occurrenceId = binding.occurrenceIdOf(event)
         if (occurrenceId === undefined) continue
@@ -392,12 +407,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     start(): void {
       if (started) return
       started = true
-      for (const [eventType, group] of groups) {
-        const unsubscribe = bus.on(eventType as SessionEventType, event => {
-          onBusEvent(group, event)
-        })
-        unsubscribers.push(unsubscribe)
-      }
+      for (const binding of currentBindings) subscribe(binding.event)
       tick = setIntervalFn(() => {
         runner.retryDue().catch(err => {
           logLine(`retryDue failed: ${messageOf(err)}`)
@@ -409,6 +419,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
     stop(): void {
       if (!started) return
       started = false
+      subscribedEvents.clear()
       for (const unsubscribe of unsubscribers.splice(0)) {
         try {
           unsubscribe()
@@ -431,7 +442,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         logLine(`ignoring ${event.type}: event has no sessionId`)
         return
       }
-      const matching = bindings.filter(binding => binding.event === event.type)
+      const matching = currentBindings.filter(binding => binding.event === event.type)
       await Promise.all(matching.map(binding => runBinding(binding, event, occurrenceId)))
     },
 
@@ -535,9 +546,22 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
       }
     },
 
+    replaceBindings(next: readonly ReactionBinding[]): void {
+      const previous = currentBindings
+      applyBindings(next)
+      const nextIds = new Set(next.map(binding => binding.bindingId))
+      const removed = previous
+        .map(binding => binding.bindingId)
+        .filter(bindingId => !nextIds.has(bindingId))
+      if (removed.length > 0) logLine(`bindings removed: ${removed.join(", ")}`)
+      if (started) {
+        for (const binding of currentBindings) subscribe(binding.event)
+      }
+    },
+
     status(): ReactionRunnerStatus[] {
       const stats = new Map<string, ReactionRunnerStatus>()
-      for (const binding of bindings) {
+      for (const binding of currentBindings) {
         stats.set(binding.bindingId, {
           bindingId: binding.bindingId,
           pending: 0,
@@ -572,7 +596,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         }
       }
 
-      return bindings.map(binding => {
+      return currentBindings.map(binding => {
         const entry = stats.get(binding.bindingId)
         if (entry) return entry
         return { bindingId: binding.bindingId, pending: 0, running: 0, failed: 0, dead: 0 }
