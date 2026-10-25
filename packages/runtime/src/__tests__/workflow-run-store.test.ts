@@ -35,11 +35,26 @@ import {
   runStoreDir,
   spillFilePath,
   applyOutputCeilings,
+  writeLeaseFile,
 } from "@agentproto/run"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+
+// Optional gate so a test can hold the app-ledger drain open and prove that
+// the run's terminal write (and lease removal) no longer waits behind it.
+const ledgerGate = vi.hoisted(() => ({ wait: undefined as Promise<void> | undefined }))
+vi.mock("../app-state.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../app-state.js")>()
+  return {
+    ...actual,
+    appendAppStateEvent: async (...args: Parameters<typeof actual.appendAppStateEvent>) => {
+      if (ledgerGate.wait) await ledgerGate.wait
+      return actual.appendAppStateEvent(...args)
+    },
+  }
+})
 
 const tmpBase = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "node_modules")
 
@@ -303,6 +318,39 @@ describe("per-run files, dirty-only writes", () => {
     expect(existsSync(leaseA)).toBe(false)
   })
 
+  it("flush waits for the terminal lease removal even while the app ledger drain is held", async () => {
+    let release!: () => void
+    ledgerGate.wait = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const runner = makeRunner(approvalWorkflow, { heartbeatIntervalMs: 60_000 })
+    try {
+      const started = await runner.startFromFile({ path: writeWorkflowMd() })
+      await waitStatus(runner, started.runId, "awaiting-approval")
+      await runner.flush()
+
+      const dir = runStoreDir(persistPath)
+      const lease = leaseFilePath(dir, started.runId)!
+      await writeLeaseFile(dir, started.runId, { ownerId: "test", heartbeatAt: new Date().toISOString() })
+      expect(existsSync(lease)).toBe(true)
+
+      runner.resolveApproval(started.runId, { approved: true, who: "t" })
+      await waitStatus(runner, started.runId, "done")
+
+      // `done` is visible while executeRunWorkflow is still parked on the
+      // (held) ledger drain. The terminal write and lease removal must
+      // already be queued, so flush() cannot resolve with the lease intact.
+      await runner.flush()
+      expect(existsSync(lease)).toBe(false)
+    } finally {
+      ledgerGate.wait = undefined
+      release()
+    }
+    // Let the released ledger drain finish before afterEach removes the dir.
+    await new Promise(res => setTimeout(res, 25))
+    await runner.flush()
+  })
+
   it("a heartbeat that lands after the done flush does not recreate a finished run's lease sidecar", async () => {
     const realSetInterval = globalThis.setInterval
     const heartbeats: Array<() => void> = []
@@ -321,12 +369,19 @@ describe("per-run files, dirty-only writes", () => {
       // A heartbeat while parked still rewrites the lease sidecar.
       heartbeats[0]!()
       await runner.flush()
-      const lease = leaseFilePath(runStoreDir(persistPath), started.runId)!
+      const dir = runStoreDir(persistPath)
+      const lease = leaseFilePath(dir, started.runId)!
+      await writeLeaseFile(dir, started.runId, { ownerId: "test", heartbeatAt: new Date().toISOString() })
       expect(existsSync(lease)).toBe(true)
 
       runner.resolveApproval(started.runId, { approved: true, who: "t" })
       await waitStatus(runner, started.runId, "done")
-      await runner.flush()
+      // `done` is visible before the terminal state is queued for persistence,
+      // so a single flush can run too early: flush until the lease is gone.
+      for (let i = 0; i < 50 && existsSync(lease); i++) {
+        await runner.flush()
+        await new Promise(res => setTimeout(res, 20))
+      }
       expect(existsSync(lease)).toBe(false)
 
       // A heartbeat that fires after the done flush must not resurrect the sidecar.

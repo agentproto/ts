@@ -66,7 +66,7 @@ export {
   type DecisionPolicyFrontmatter,
   type DecisionPolicyParse,
   type DecisionWhen,
-} from "./decision-policy.js"
+} from "@agentproto/decision"
 export {
   buildEscalationPacket,
   clearDecisionCache,
@@ -80,7 +80,7 @@ export {
   type DecisionOutcome,
   type DecisionSource,
   type EscalationOutcome,
-} from "./decision.js"
+} from "@agentproto/decision"
 export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,

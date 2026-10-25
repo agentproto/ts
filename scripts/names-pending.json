@@ -2,6 +2,7 @@
   "pending": [
     "ts:aip-45:define",
     "ts:aip-46:package",
+    "ts:aip-60:package",
     "ts:aip-65:package",
     "ts:aip-66:package",
     "ts:package:@agentproto/agencies:unregistered",

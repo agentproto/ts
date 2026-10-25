@@ -12,7 +12,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { registerDecisionTools } from "../decision-tools.js"
-import { clearDecisionCache } from "../decision.js"
+import { clearDecisionCache } from "@agentproto/decision"
 import { setJevConfigLoader } from "../jev-client.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
 
