@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`167` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (each `package.json` under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier. Totals are not written here, so two pull requests that each add a package merge without leaving this file stale; run `node scripts/gen-status.mjs --stats` for the counts.
 
 ## Classification rule
 
@@ -13,15 +13,6 @@ A snapshot of every pnpm workspace package (`167` `package.json` files under the
 5. Everything else → `core`.
 
 Each package appears exactly once; tiers are applied in the order above.
-
-## Tier counts
-
-| Tier | Count |
-|---|---|
-| core | 100 |
-| adapters | 25 |
-| spec-reference | 33 |
-| archived | 9 |
 
 ## Package table
 
