@@ -1008,3 +1008,101 @@ describe("orchestration list pagination — minimal page-walks (PR-7)", () => {
     await client.close()
   })
 })
+
+describe("event routines", () => {
+  let tmpDirs: string[] = []
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true }) } catch { /* ignore */ }
+    }
+    tmpDirs = []
+  })
+
+  function setup() {
+    const workspace = makeTmpWorkspace()
+    tmpDirs.push(workspace)
+    const cronScheduler = makeFakeCronScheduler()
+    const dispatchTool = async (name: string, inputs: Record<string, unknown>) => ({
+      content: [{ type: "text", text: `dispatched ${name} ${JSON.stringify(inputs)}` }],
+    })
+    const registrar = createRoutineRegistrar({ workspace, cronScheduler, dispatchTool })
+    return { workspace, cronScheduler, registrar }
+  }
+
+  function writeEventRoutine(workspace: string, id: string, on: string): void {
+    writeRoutine(
+      workspace,
+      id,
+      [
+        "schema: routine/v1",
+        `id: ${id}`,
+        "description: test",
+        "schedule:",
+        "  kind: event",
+        `  on: ${on}`,
+        "target:",
+        "  tool: worktree_gc",
+      ].join("\n"),
+    )
+  }
+
+  it("resolves an enabled event routine, skips it honestly, and creates no cron job", async () => {
+    const { workspace, cronScheduler, registrar } = setup()
+    writeEventRoutine(workspace, "event-fire", "turn-end")
+
+    const result = await registrar.reconcile()
+    expect(result.eventBindings).toHaveLength(1)
+    expect(result.eventBindings![0]!.bindingId).toBe("routine:event-fire")
+    expect(result.skipped).toEqual([
+      { id: "event-fire", reason: "schedule.kind 'event' resolved to a reaction binding; nothing fires it yet" },
+    ])
+    expect(cronScheduler.list()).toHaveLength(0)
+    expect(registrar.eventBindings()).toEqual(result.eventBindings)
+  })
+
+  it("reports an unregistered host event as an error and still processes the other routines", async () => {
+    const { workspace, registrar } = setup()
+    writeEventRoutine(workspace, "bad-event", "agentproto:typo")
+    writeRoutine(
+      workspace,
+      "good-cron",
+      "schema: routine/v1\nid: good-cron\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
+    )
+
+    const result = await registrar.reconcile()
+    expect(result.errors).toHaveLength(1)
+    expect(result.errors[0]!.file).toContain("bad-event")
+    expect(result.errors[0]!.error).toMatch(/^routine 'bad-event': event binding not resolved: .*host-specific/)
+    expect(result.registered).toEqual(["good-cron"])
+    expect(result.eventBindings).toEqual([])
+  })
+
+  it("removes the cron job when a routine changes from cron to event", async () => {
+    const { workspace, cronScheduler, registrar } = setup()
+    writeRoutine(
+      workspace,
+      "switcher",
+      "schema: routine/v1\nid: switcher\ndescription: test\nschedule:\n  kind: cron\n  cron: \"0 4 * * *\"\ntarget:\n  tool: worktree_gc",
+    )
+    await registrar.reconcile()
+    const jobId = cronScheduler.list()[0]!.id
+
+    writeEventRoutine(workspace, "switcher", "turn-end")
+    const result = await registrar.reconcile()
+    expect(result.removed).toEqual([jobId])
+    expect(cronScheduler.list()).toHaveLength(0)
+    expect(result.eventBindings!.map(binding => binding.bindingId)).toEqual(["routine:switcher"])
+  })
+
+  it("replaces the stored bindings on a second reconcile when the routine file is deleted", async () => {
+    const { workspace, registrar } = setup()
+    writeEventRoutine(workspace, "vanishing", "turn-end")
+    await registrar.reconcile()
+    expect(registrar.eventBindings()).toHaveLength(1)
+
+    rmSync(join(workspace, ".routines", "vanishing"), { recursive: true })
+    const result = await registrar.reconcile()
+    expect(result.eventBindings).toEqual([])
+    expect(registrar.eventBindings()).toEqual([])
+  })
+})

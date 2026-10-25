@@ -248,6 +248,7 @@
     "@agentproto/governance": "workspace:*",
     "@agentproto/governance-engine": "workspace:*",
     "@agentproto/inference-endpoint": "workspace:*",
+    "@agentproto/lifecycle": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
