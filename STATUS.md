@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`165` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 97 |
+| core | 98 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 9 |
@@ -142,6 +142,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/sandbox-e2b | `packages/sandbox-e2b` | 0.9.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox-instabox | `packages/sandbox-instabox` | 0.2.3 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/secrets | `packages/secrets` | 2.1.1 | core | product runtime package consumed by the runtime/cli |
+@agentproto/sentinel | `packages/sentinel` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/skill-pack-agentproto | `packages/skill-pack-agentproto` | 0.9.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/skill-pack-agentpush | `packages/skill-pack-agentpush` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/skill-pack-bureau | `packages/skill-pack-bureau` | 0.3.2 | core | product runtime package consumed by the runtime/cli |
