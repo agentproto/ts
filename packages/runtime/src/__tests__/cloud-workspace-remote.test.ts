@@ -22,11 +22,11 @@ import {
   CLOUD_REPO_URL_ENV,
   CLOUD_SESSION_META_FILE_ENV,
   CloudSpawnError,
+  GIT_TOKEN_ENV,
   cloudRepoCheckoutDir,
   cloudRepoSpawnEnv,
   encodeCloudSessionMeta,
 } from "@agentproto/cloud-agent"
-import { GIT_TOKEN_ENV } from "../sandbox-workspace-remote.js"
 import { workspaceRemotePort, type WorkspacesConfig } from "../workspaces-config.js"
 
 const FAKE_TOKEN = "ghp_fake_cloud_token_0001"

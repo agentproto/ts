@@ -8,9 +8,9 @@
 import { describe, it, expect } from "vitest"
 import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
 
+import { GIT_TOKEN_ENV } from "@agentproto/cloud-agent"
 import {
   GH_TOKEN_ENV,
-  GIT_TOKEN_ENV,
   withGhTokenAlias,
   planSandboxWorkspace,
   resolveBoxCwdRequest,

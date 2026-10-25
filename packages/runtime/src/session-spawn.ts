@@ -19,6 +19,7 @@ import {
   cloudRepoSpawnEnv,
   cloudSessionMetaFilePath,
   encodeCloudSessionMeta,
+  GIT_TOKEN_ENV,
   resolveCloudResumeId,
   resolveCloudSpawn,
   watchCloudSessionMeta,
@@ -121,7 +122,6 @@ import {
 } from "./sandbox-secret-resolver.js"
 import {
   GH_TOKEN_ENV,
-  GIT_TOKEN_ENV,
   SANDBOX_BRANCH_PREFIX,
   withGhTokenAlias,
   withoutReservedSandboxEnv,
