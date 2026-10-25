@@ -3988,6 +3988,9 @@ importers:
       '@agentproto/inference-endpoint':
         specifier: workspace:*
         version: link:../inference-endpoint
+      '@agentproto/lifecycle':
+        specifier: workspace:*
+        version: link:../lifecycle
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
