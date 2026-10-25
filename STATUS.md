@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`163` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`164` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,10 +18,10 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 96 |
+| core | 97 |
 | adapters | 25 |
 | spec-reference | 33 |
-| archived | 10 |
+| archived | 9 |
 
 ## Package table
 
@@ -59,7 +59,6 @@ Package | Path | Version | Tier | Reason (one line) |
 @agentproto/driver-sdk | `packages/driver/sdk` | 0.1.13 | archived | dead: zero workspace dependents (override list) |
 @agentproto/egress | `packages/egress` | 0.1.18 | archived | dead: zero workspace dependents (override list) |
 @agentproto/identity | `packages/identity` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
-@agentproto/lifecycle | `packages/lifecycle` | 0.1.2 | archived | dead: zero workspace dependents (override list) |
 @agentproto/role-catalog | `packages/role-catalog` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
 @agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | 0.1.22 | archived | dead: zero workspace dependents (override list) |
 @agentproto/a2a | `packages/a2a` | 0.2.2 | core | product runtime package consumed by the runtime/cli |
@@ -106,6 +105,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/inference-endpoint | `packages/inference-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
+@agentproto/lifecycle | `packages/lifecycle` | 0.1.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mastra | `packages/mastra` | 0.2.20 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mcp-app-host | `packages/mcp-app-host` | 0.1.4 | core | product runtime package consumed by the runtime/cli |

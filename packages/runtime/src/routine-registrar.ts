@@ -24,6 +24,7 @@ import { isAbsolute, join, resolve } from "node:path"
 import { parseRoutineManifest, type RoutineFrontmatter } from "@agentproto/routine"
 import type { CronScheduler, CronAction } from "./cron-scheduler.js"
 import { toAgentStartCall } from "./agent-start-schema.js"
+import { resolveRoutineEventBinding, type ResolvedEventBinding } from "./action-hooks/event-bindings.js"
 
 const JOB_LABEL_PREFIX = "routine:"
 
@@ -138,6 +139,8 @@ export interface ReconcileResult {
   removed: string[]
   /** Files that failed to parse/validate or register — collected, not fatal to the rest of the scan. */
   errors: Array<{ file: string; error: string }>
+  /** Bindings resolved from enabled event routines; nothing fires them yet. */
+  eventBindings?: ResolvedEventBinding[]
 }
 
 export interface RoutineRegistrar {
@@ -156,6 +159,8 @@ export interface RoutineRegistrar {
   trigger(routineId: string): Promise<{ ok: boolean; summary: string }>
   /** Routine frontmatters known from the last `reconcile()` (parse errors excluded). */
   list(): RoutineFrontmatter[]
+  /** Event bindings resolved by the last `reconcile()` (empty before the first call). */
+  eventBindings(): ResolvedEventBinding[]
 }
 
 function scanRoutineFiles(routinesDir: string): Array<{ id: string; file: string }> {
@@ -183,6 +188,7 @@ export function createRoutineRegistrar(opts: {
   const routinesDir = join(workspace, ".routines")
 
   let lastParsed: ParsedRoutine[] = []
+  let lastEventBindings: ResolvedEventBinding[] = []
 
   const parseAll = (): { parsed: ParsedRoutine[]; errors: ReconcileResult["errors"] } => {
     const parsed: ParsedRoutine[] = []
@@ -207,6 +213,7 @@ export function createRoutineRegistrar(opts: {
       const registered: string[] = []
       const skipped: ReconcileResult["skipped"] = []
       const removed: string[] = []
+      const eventBindings: ResolvedEventBinding[] = []
 
       // routineId → existing job, from cron jobs this registrar owns (label prefix).
       const existingByRoutineId = new Map<string, ReturnType<CronScheduler["list"]>[number]>()
@@ -222,6 +229,30 @@ export function createRoutineRegistrar(opts: {
         const id = frontmatter.id
         if (!frontmatter.enabled) {
           skipped.push({ id, reason: "enabled: false" })
+          continue
+        }
+        if (
+          frontmatter.schedule &&
+          typeof frontmatter.schedule === "object" &&
+          (frontmatter.schedule as { kind?: unknown }).kind === "event"
+        ) {
+          let binding: ResolvedEventBinding
+          try {
+            const resolved = resolveRoutineEventBinding(frontmatter)
+            if (!resolved) {
+              skipped.push({ id, reason: "schedule.kind 'event' did not resolve to a binding" })
+              continue
+            }
+            binding = resolved
+          } catch (err) {
+            errors.push({
+              file,
+              error: `routine '${id}': event binding not resolved: ${err instanceof Error ? err.message : String(err)}`,
+            })
+            continue
+          }
+          eventBindings.push(binding)
+          skipped.push({ id, reason: "schedule.kind 'event' resolved to a reaction binding; nothing fires it yet" })
           continue
         }
         if (!isScheduleCron(frontmatter.schedule)) {
@@ -292,7 +323,8 @@ export function createRoutineRegistrar(opts: {
         }
       }
 
-      return { registered, skipped, removed, errors }
+      lastEventBindings = eventBindings.slice()
+      return { registered, skipped, removed, errors, eventBindings }
     },
 
     async trigger(routineId) {
@@ -317,6 +349,10 @@ export function createRoutineRegistrar(opts: {
 
     list() {
       return lastParsed.map(p => p.frontmatter)
+    },
+
+    eventBindings() {
+      return lastEventBindings.slice()
     },
   }
 }
