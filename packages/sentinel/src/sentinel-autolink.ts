@@ -1,0 +1,173 @@
+/**
+ * Sentinel auto-link (AIP-60 §6, step 4) — when a session's opened PR is
+ * newly recorded (`sessions.ts`'s `recordOpenedPr`, fed by
+ * `command_execute`'s stamper AND both `pr-provenance-reconciler.ts` lanes —
+ * all three funnel through that one registry call, so this hook fires for
+ * every lane without being wired into each separately), create a sentinel
+ * watching it for the owning session, unless one already exists.
+ *
+ * Records from the reconciler's output-scan lane (`OUTPUT_SCAN_ADAPTER`) are
+ * skipped entirely: that lane only sees a PR url MENTIONED in the session's
+ * output, which is no proof the session created it — a supervisor reporting
+ * a child's PR must not be woken by every CI/review event on it.
+ *
+ * Gated by (in order): the per-spawn opt-out
+ * (`SessionDescriptor.sentinelAutoWatch === false`), then
+ * `config.sentinel.autoWatchPrs` (resolved fresh per call, same
+ * read-per-call discipline as `messaging-defaults.ts` — a `config_set`
+ * takes effect on the very next PR, no restart).
+ *
+ * Idempotent: `recordOpenedPr` itself only fires this hook once per
+ * genuinely NEW `(adapter, url)` pair (its own dedupe guard), and this
+ * module additionally checks the store for an existing sentinel on the same
+ * `(subject, sessionId)` before creating one — belt-and-braces against a
+ * race or a sentinel someone already created by hand for the same PR.
+ *
+ * Strictly best-effort: a missing `gh`, an unavailable provider, or a
+ * `create()` failure is logged and swallowed — auto-link must never affect
+ * the PR-recording it hangs off of, nor the session's own turn.
+ *
+ * Superseded session note: a PR can be recorded on a row a restart/continue
+ * already retired (the old row's exit-time reconcile, or a sandboxed session
+ * moved to a fresh box under a new id). `resolveTargetSession` maps such an id
+ * to the live end of its `continuedTo` chain, so the sentinel lands on the
+ * successor — and the idempotency check runs against the successor, so the
+ * successor re-recording the same PR doesn't watch it twice. Sentinels that
+ * already existed when the row was retired are re-pointed by
+ * `retirement-cleanup.ts`.
+ *
+ * Dead session note: if the owning session later exits for good (not
+ * resumable), this sentinel is NOT cancelled — same as every sentinel, its
+ * provider-side watch keeps running (design §2: "the PR is still real").
+ * The next event `sentinel-runtime.ts` observes for it hits the same
+ * dead-session path every sentinel does: resume via `isSessionAlive`/
+ * `restartSession` if possible, else park to `sentinels-parked.jsonl` and
+ * mark the sentinel `orphaned` — `sentinel_list` still shows it.
+ */
+
+import { sentinelPlatform } from "./platform.js"
+import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
+import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
+import {
+  deliveryPreferenceFor,
+  singleMatch,
+  type SentinelProviderHandle,
+  type SentinelSpec,
+} from "./sentinel-providers/types.js"
+import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+import type { SentinelPublicUrl } from "./sentinel-public-url.js"
+import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
+import type { MessageUrgency } from "./local-types.js"
+import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "./local-types.js"
+
+/** The slice of `SessionDescriptor` this module reads — structural so tests
+ *  don't need to construct a full descriptor. The real `SessionDescriptor`
+ *  satisfies this. */
+export interface AutoLinkSession {
+  sentinelAutoWatch?: boolean
+}
+
+export interface SentinelAutoLinkOptions {
+  store: SentinelStore
+  resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  /** Resolves `config.sentinel.autoWatchPrs` (with the local-gh-availability
+   *  default baked in) — called fresh on every opened PR, never cached. */
+  autoWatchPrs: () => Promise<boolean>
+  /** Resolves `config.sentinel.autoWatchUrgency` — urgency the auto-created
+   *  sentinel delivers at. Called fresh per PR. Defaults to `"next-turn"`. */
+  autoWatchUrgency?: () => Promise<MessageUrgency>
+  activeIntervalMs?: number
+  /** Public-URL source for provider auto-selection (webhook needs a stable
+   *  one). Defaults to the daemon-wired resolver. */
+  publicUrl?: () => SentinelPublicUrl | undefined
+  log?: (line: string) => void
+  /** Maps the recording session to the session the sentinel should target —
+   *  the daemon wires the end of the `continuedTo` chain (see the module
+   *  doc). Defaults to identity. */
+  resolveTargetSession?: (sessionId: string) => string
+}
+
+export interface SentinelAutoLinker {
+  /** Wire this as `createSessionsRegistry`'s `onOpenedPr` option. */
+  onOpenedPr: (sessionId: string, input: RecordOpenedPrInput, desc: AutoLinkSession) => void
+  /** Same logic as `onOpenedPr`, awaitable — for tests and any caller that
+   *  wants to know when auto-link finished rather than fire-and-forget. */
+  linkNow: (sessionId: string, input: RecordOpenedPrInput, desc: AutoLinkSession) => Promise<void>
+}
+
+export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): SentinelAutoLinker {
+  const log = opts.log ?? ((line: string): void => console.warn(line))
+
+  const alreadyWatching = (subject: string, sessionId: string): boolean =>
+    opts.store
+      .list()
+      .some(
+        s =>
+          s.spec.target.kind === "session" &&
+          s.spec.target.sessionId === sessionId &&
+          s.spec.match.some(m => m.subject === subject),
+      )
+
+  const link = async (recordedOn: string, input: RecordOpenedPrInput, desc: AutoLinkSession): Promise<void> => {
+    if (desc.sentinelAutoWatch === false) return
+    if (input.adapter === OUTPUT_SCAN_ADAPTER) return
+    const sessionId = opts.resolveTargetSession?.(recordedOn) ?? recordedOn
+
+    const enabled = await opts.autoWatchPrs()
+    if (!enabled) return
+
+    const parsed = sentinelPlatform().github.parsePrUrl(input.url)
+    if (!parsed) return // not a github.com PR url — local-gh has nothing to watch
+
+    const subject = `github:${parsed.repo}#${parsed.number}`
+    if (alreadyWatching(subject, sessionId)) return
+
+    const urgency = (await opts.autoWatchUrgency?.()) ?? "next-turn"
+
+    // Same order as `sentinel_watch` (agentpush > webhook > local-gh). A
+    // best-effort auto-link never leaves a PR unwatched just because the
+    // preferred backend is down: on any failure it retries once on local-gh.
+    const selected = await autoSelectProviderSlug({
+      resolveProvider: opts.resolveProvider,
+      ...(opts.publicUrl ? { publicUrl: opts.publicUrl } : {}),
+    })
+    const candidates = selected === LOCAL_GH_SLUG ? [LOCAL_GH_SLUG] : [selected, LOCAL_GH_SLUG]
+
+    for (const slug of candidates) {
+      const provider = await opts.resolveProvider(slug)
+      if (!provider) {
+        log(`[sentinel-autolink] provider "${slug}" unavailable — not watching ${subject} via it`)
+        continue
+      }
+      const spec: SentinelSpec = {
+        match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
+        until: { kind: "subject_terminal" },
+        target: { kind: "session", sessionId, urgency },
+        provider: slug,
+        label: `auto:pr#${parsed.number}`,
+        group: sessionId,
+      }
+      const id = mintSentinelId()
+      try {
+        const handle = await provider.create(
+          spec,
+          deliveryPreferenceFor(provider, opts.activeIntervalMs ?? 15_000),
+          { sentinelId: id },
+        )
+        opts.store.create({ id, spec, provider: slug, handle })
+        return
+      } catch (err) {
+        log(`[sentinel-autolink] failed to auto-watch ${subject} via ${slug}: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+  }
+
+  return {
+    onOpenedPr(sessionId, input, desc) {
+      void link(sessionId, input, desc).catch(err =>
+        log(`[sentinel-autolink] unhandled error for ${sessionId}: ${err instanceof Error ? err.message : String(err)}`),
+      )
+    },
+    linkNow: link,
+  }
+}

@@ -4,6 +4,8 @@
  * readiness reporting.
  */
 
+import "../sentinel-platform.js"
+
 import { createHmac } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -12,13 +14,13 @@ import { makeSetupLedger } from "@agentproto/provider-kit"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { INBOUND_PROVIDERS, normalizeInbound, verifyInboundSignature } from "../inbound-adapters.js"
-import { makeSentinelCredsStore, makeSentinelLister, type SentinelAdapterInfo } from "../sentinel-adapters.js"
+import { makeSentinelCredsStore, makeSentinelLister, type SentinelAdapterInfo } from "@agentproto/sentinel"
 import {
   makePublicUrlResolver,
   publicUrlFromEnv,
   resolveSentinelPublicUrl,
   setSentinelPublicUrlSource,
-} from "../sentinel-public-url.js"
+} from "@agentproto/sentinel"
 
 describe("sentinel public URL", () => {
   it("AGENTPROTO_PUBLIC_URL wins, is normalized to an origin, and counts as stable", () => {

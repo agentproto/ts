@@ -11,6 +11,8 @@
  * notices.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -36,7 +38,7 @@ import { makeRestartForRouting } from "../index.js"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionFollowStore } from "../session-follow-store.js"
-import { createSentinelStore } from "../sentinel-store.js"
+import { createSentinelStore } from "@agentproto/sentinel"
 import { wireRetirementCleanup, sweepWiringLifecycle } from "../retirement-cleanup.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 

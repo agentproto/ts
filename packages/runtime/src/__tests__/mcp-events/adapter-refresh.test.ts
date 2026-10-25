@@ -7,9 +7,9 @@ import { describe, expect, it } from "vitest"
 
 import { DEFAULT_TTL_MS, eventsSubscribe, type EventsSubscribeContext } from "../../mcp-events/adapter.js"
 import { daemonBearerPrincipal } from "../../mcp-events/events-registry.js"
-import { createSentinelStore } from "../../sentinel-store.js"
-import { createFakeSentinelProvider, type FakeSentinelProvider } from "../../sentinel-providers/fake.js"
-import { SentinelBackingExpiredError } from "../../sentinel-providers/types.js"
+import { createSentinelStore } from "@agentproto/sentinel"
+import { createFakeSentinelProvider, type FakeSentinelProvider } from "@agentproto/sentinel"
+import { SentinelBackingExpiredError } from "@agentproto/sentinel"
 
 const CALLBACK = "https://receiver.example.com/mcp-events/cb"
 const SECRET = "whsec_" + Buffer.from(new Uint8Array(32).fill(7)).toString("base64")
