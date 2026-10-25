@@ -12,7 +12,7 @@
  *
  * Known limits in this version: causedByEventId is not stamped and
  * reactionDepth is the static value 0; the only cycle guard is the self-chain
- * guard of agent arms, a workflow arm that spawns sessions is not covered; both
+ * guard of agent arms, a tool or workflow arm that starts sessions is not covered; both
  * come with the daemon wiring task.
  */
 

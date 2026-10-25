@@ -50,8 +50,8 @@ export function sessionFactsOf(desc: SessionDescriptor): Record<string, unknown>
   const facts: Record<string, unknown> = {
     kind: desc.kind,
     isChild: desc.parentSessionId !== undefined,
-    workspaceSlug: desc.workspaceSlug,
   }
+  if (desc.workspaceSlug !== undefined) facts.workspaceSlug = desc.workspaceSlug
   if (desc.origin !== undefined) facts.origin = desc.origin
   if (desc.adapterSlug !== undefined) facts.adapter = desc.adapterSlug
   if (desc.label !== undefined) facts.label = desc.label

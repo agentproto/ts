@@ -3138,10 +3138,6 @@ export async function createGateway(
     return dispatchToolBox.fn(name, inputs)
   }
 
-  // Same forward-reference trick as `dispatchToolBox` above, for `app_install`'s
-  // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
-  // dispatchable tool ids, not a dispatcher. Wired to the real internal
-  // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
   // AIP-41 event routines: the registrar resolves them, the wiring converts
   // each one to a reaction binding and swaps the runner's live set on every
   // reconcile. The registrar is created below, so the box breaks the ordering
@@ -3163,6 +3159,10 @@ export async function createGateway(
     },
   })
 
+  // Same forward-reference trick as `dispatchToolBox` above, for `app_install`'s
+  // WORKFLOW.md tool-step validation (app-tools.ts) — it needs the SET of
+  // dispatchable tool ids, not a dispatcher. Wired to the real internal
+  // McpServer's `_registeredTools` keys alongside `dispatchToolBox.fn` below.
   const listToolIdsBox: { fn?: () => Promise<string[]> } = {}
   const listRegisteredToolIds = async (): Promise<string[]> => {
     if (!listToolIdsBox.fn) {

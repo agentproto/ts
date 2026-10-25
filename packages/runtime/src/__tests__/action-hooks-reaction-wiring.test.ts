@@ -177,4 +177,13 @@ describe("sessionFactsOf", () => {
       label: "worker",
     })
   })
+
+  it("omits workspaceSlug when the descriptor has none", () => {
+    const facts = sessionFactsOf({
+      ...base,
+      workspaceSlug: undefined,
+    } as unknown as SessionDescriptor)
+    expect("workspaceSlug" in facts).toBe(false)
+    expect(facts.kind).toBe("agent-cli")
+  })
 })

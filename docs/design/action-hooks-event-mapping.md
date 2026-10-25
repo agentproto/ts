@@ -206,7 +206,7 @@ The `session.<field>` filter paths are the flat facts from `sessionFactsOf`:
 | --- | --- |
 | `session.kind` | the descriptor `kind` |
 | `session.isChild` | true when `parentSessionId` is set, false otherwise |
-| `session.workspaceSlug` | the descriptor `workspaceSlug` |
+| `session.workspaceSlug` | the descriptor `workspaceSlug`, omitted when undefined |
 | `session.origin` | the descriptor `origin`, omitted when undefined |
 | `session.adapter` | the descriptor `adapterSlug`, omitted when undefined |
 | `session.label` | the descriptor `label`, omitted when undefined |
@@ -221,8 +221,11 @@ The `reconcile()` result and the `routine_reconcile` tool output carry
 id.
 
 Known limits in this version: tool, workflow and agent arms get no event context;
-`causedByEventId` and a per-chain `reactionDepth` are not propagated; a workflow
-arm that spawns sessions is not covered by the self-chain guard; the action
+`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
+workflow arm that starts sessions (for example `agent_start` or
+`workflow_run_file`) is not covered by the self-chain guard and can chain
+without bound until origin and depth propagation lands; use the agent arm to
+start a session from an event routine; the action
 registry is empty, so `action` arms are refused until a handler is registered;
 and an event arriving between runner start and the first reconcile only reaches
 builtin bindings.

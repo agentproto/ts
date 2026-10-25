@@ -879,8 +879,8 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
 it, and `handleEvent`, `retryDue`, `reconcileOnBoot` and `status` read the
 current set. A run already in flight keeps the binding it started with, and a
 receipt whose binding is no longer present is left untouched. If that binding
-returns later, its pending and failed receipts resume at the next boot
-reconcile.
+returns later, its pending receipts resume at the next boot reconcile and
+its failed receipts resume at the next retry tick.
 
 The daemon builds the list from `brainIngestReaction.binding` plus every enabled
 AIP-41 event routine, in input order. `createReactionWiring.refresh()` refuses a
@@ -896,8 +896,11 @@ The documented `session.<field>` filter paths are `session.kind`,
 so a filter on one never matches.
 
 Known limits: no event context for tool, workflow or agent arms;
-`causedByEventId` and a per-chain `reactionDepth` are not propagated; a workflow
-arm that spawns sessions is not covered by the self-chain guard; the action
+`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
+workflow arm that starts sessions (for example `agent_start` or
+`workflow_run_file`) is not covered by the self-chain guard and can chain
+without bound until origin and depth propagation lands; use the agent arm to
+start a session from an event routine; the action
 registry is empty, so `action` arms are refused until a handler is registered;
 an event arriving between runner start and the first reconcile only reaches
 builtin bindings.
