@@ -326,7 +326,12 @@ describe("per-run files, dirty-only writes", () => {
 
       runner.resolveApproval(started.runId, { approved: true, who: "t" })
       await waitStatus(runner, started.runId, "done")
-      await runner.flush()
+      // `done` is visible before the terminal state is queued for persistence,
+      // so a single flush can run too early: flush until the lease is gone.
+      for (let i = 0; i < 50 && existsSync(lease); i++) {
+        await runner.flush()
+        await new Promise(res => setTimeout(res, 20))
+      }
       expect(existsSync(lease)).toBe(false)
 
       // A heartbeat that fires after the done flush must not resurrect the sidecar.
