@@ -88,8 +88,9 @@ from source before writing any code:
    `z.any()`: only `target` was in-scope for tightening per the brief, and a
    `ScheduleCron`-only zod schema would reject the four other schedule kinds
    the type already documents. Instead, `routine-registrar.ts` runtime-guards
-   `schedule.kind === "cron"` at the point of use and reports the other four
-   kinds as a clear "not yet supported" skip, not a validation failure at
+   `schedule.kind === "cron"` at the point of use for cron jobs and resolves
+   `schedule.kind === "event"` to a reaction binding; the remaining kinds are
+   reported as a clear "not yet supported" skip, not a validation failure at
    parse time.
 4. **Dispatch mechanism — one shared `dispatchTool`, not four bespoke
    wrappers.** `createGateway` (`index.ts`) builds ONE lazily-constructed,
@@ -111,10 +112,13 @@ from source before writing any code:
    `label:"routine:<id>"`; a routine that disappears or turns
    `enabled:false` has its tagged job deleted; a routine whose resolved
    `{schedule, action}` changed gets its old job deleted and a new one
-   created (delete+recreate — `CronScheduler` has no `update()`). Called
-   once at gateway boot; re-callable on demand (no file-watcher in this
-   pass — noted as a follow-up, not silently dropped). Per-file parse/target
-   errors are collected and skip only that file, not the whole scan.
+   created (delete+recreate, `CronScheduler` has no `update()`). An
+   `enabled:true` + `schedule.kind:"event"` routine is resolved to a reaction
+   binding instead, and the reaction wiring reloads the runner's binding set
+   on every pass. Called once at gateway boot; re-callable on demand (no
+   file-watcher in this pass, noted as a follow-up, not silently dropped).
+   Per-file parse/target errors are collected and skip only that file, not
+   the whole scan.
    A `target.workflow` target is bound to that same workspace: a relative
    `file` resolves under it, the dispatched `workflow_run_file` call runs
    with `cwd` set to it, and `input.repoRoot` defaults to it unless the
