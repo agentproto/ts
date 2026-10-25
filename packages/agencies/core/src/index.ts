@@ -25,7 +25,13 @@
  * identified by {@link AGENCIES_FORMAT}.
  */
 
-/** Internal data-format id (not an AIP registry spec name); see AIP-70. */
+/**
+ * Internal data-format id (not an AIP registry spec name); see AIP-70.
+ *
+ * Kept as `agentagencies/v1` because that literal is the required on-disk
+ * `schema` tag in AIP-8 doctype frontmatter (see `SCHEMA_NAME`), not a claim
+ * to an AIP registry spec name.
+ */
 export const AGENCIES_FORMAT = "agentagencies/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 

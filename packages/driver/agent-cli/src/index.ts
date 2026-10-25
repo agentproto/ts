@@ -17,7 +17,7 @@
  */
 
 /** Internal data-format id (not an AIP registry spec name); see AIP-70. */
-export const AGENT_CLI_FORMAT = "agentcli-interactive/v1" as const
+export const AGENT_CLI_FORMAT = "agentproto.agent-cli/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
 
 /**
