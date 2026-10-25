@@ -17,8 +17,8 @@ import type { AgentAdapterResolver } from "../http-server.js"
 // Optional gate so a test can hold a runner's async persist open and prove
 // `dispose()` drains it before teardown deletes the persist directory.
 const writeGate = vi.hoisted(() => ({ wait: undefined as Promise<void> | undefined }))
-vi.mock("../workflow-run-store.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../workflow-run-store.js")>()
+vi.mock("@agentproto/run", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@agentproto/run")>()
   return {
     ...actual,
     writeFileAtomic: async (...args: Parameters<typeof actual.writeFileAtomic>) => {
