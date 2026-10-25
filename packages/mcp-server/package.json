@@ -50,7 +50,7 @@
   },
   "dependencies": {
     "@agentproto/agent": "workspace:*",
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/extension": "workspace:*",
     "@agentproto/manifest": "workspace:*",

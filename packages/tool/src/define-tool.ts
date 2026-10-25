@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import Ajv from "ajv"
 import type { ZodType } from "zod"
 import { ToolError } from "./errors.js"
@@ -29,7 +29,7 @@ const PROVIDER_KINDS: readonly DriverKind[] = [
  * hints. Bodies live on AIP-30 PROVIDER manifests; invocation goes
  * through provider-runtime's resolver.
  *
- * Built on `createDoctype` from `@agentproto/define-doctype`: the
+ * Built on `createDoctype` from `@agentproto/doctype`: the
  * id-pattern + description-length validation and the top-level
  * `Object.freeze` are shared with every other AIP defineX. The
  * spec-14-specific parts (migration guard for `execute`, defaulting

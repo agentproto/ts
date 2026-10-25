@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import type {
   ExecuteFn,
   ImplementsEntry,
@@ -13,7 +13,7 @@ import type {
  * (`resolveDriver`) and runners (`runTool`) consume this shape and
  * dispatch contract calls to the per-tool execute bodies.
  *
- * Built on `createDoctype` from `@agentproto/define-doctype`: the
+ * Built on `createDoctype` from `@agentproto/doctype`: the
  * id-pattern + description-length validation and the top-level
  * `Object.freeze` are shared with every other AIP defineX. The
  * spec-30-specific parts (implements vs execute consistency, merging

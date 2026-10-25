@@ -58,7 +58,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {

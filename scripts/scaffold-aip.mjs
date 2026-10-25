@@ -8,7 +8,7 @@
  * never a sibling `../agentproto` checkout) and emits a
  * `packages/<slug>/` skeleton wired up to:
  *
- *   - @agentproto/define-doctype (the meta-factory)
+ *   - @agentproto/doctype (the meta-factory)
  *   - tsup + tsconfig matching the existing tool/ + driver/core layout
  *   - vitest with a smoke test
  *   - manifest subpath (parseXManifest + xFromManifest)
@@ -287,7 +287,7 @@ write(
         prepublishOnly: "pnpm build",
       },
       dependencies: {
-        "@agentproto/define-doctype": "workspace:*",
+        "@agentproto/doctype": "workspace:*",
         "gray-matter": "^4.0.3",
         zod: "^4.3.6",
       },
@@ -339,7 +339,7 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod", "gray-matter", "@agentproto/define-doctype"],
+  external: ["zod", "gray-matter", "@agentproto/doctype"],
   noExternal: [],
 })
 `,
@@ -440,7 +440,7 @@ const validateParam = "def"
 
 write(
   `src/define-${SLUG}.ts`,
-  `import { createDoctype } from "@agentproto/define-doctype"${validateImport}
+  `import { createDoctype } from "@agentproto/doctype"${validateImport}
 import type { ${PASCAL}Definition, ${PASCAL}Handle } from "./types.js"
 
 /**
