@@ -77,11 +77,11 @@ describe("createBrainIngestReaction", () => {
     expect(await reaction.binding.shouldHandle!(completed())).toBe(true)
   })
 
-  it("shouldHandle is true for an unresolved workspace", async () => {
+  it("shouldHandle is false for an unresolved workspace (the legacy subscriber skips it too)", async () => {
     const { brains, resolveWorkspace } = fakes()
     const reaction = createBrainIngestReaction({ brains, ownedWorkspaces: () => ["ws-a"] })
     resolveWorkspace.mockResolvedValueOnce(undefined)
-    expect(await reaction.binding.shouldHandle!(completed())).toBe(true)
+    expect(await reaction.binding.shouldHandle!(completed())).toBe(false)
   })
 
   it("an empty owned list is false without resolving anything, owned or unresolved", async () => {
@@ -157,13 +157,13 @@ describe("createBrainIngestReaction", () => {
     expect(ingestSession).not.toHaveBeenCalled()
   })
 
-  it("an unresolved workspace is retryable", async () => {
+  it("an unresolved workspace is a non-retryable failure", async () => {
     const { brains, resolveWorkspace } = fakes()
     resolveWorkspace.mockResolvedValueOnce(undefined)
     const reaction = createBrainIngestReaction({ brains, ownedWorkspaces: () => ["ws-a"] })
     expect(await reaction.binding.target.run(targetInput())).toEqual({
       ok: false,
-      retryable: true,
+      retryable: false,
       error: "workspace_unresolved",
     })
   })

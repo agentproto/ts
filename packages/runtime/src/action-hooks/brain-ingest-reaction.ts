@@ -75,7 +75,9 @@ export function createBrainIngestReaction(opts: BrainIngestReactionOptions): Bra
       const owned = await ownedWorkspaces()
       if (owned.length === 0) return false
       const workspace = await opts.brains.resolveWorkspace((event as SessionCompletedEvent).sessionId)
-      if (workspace === undefined) return true
+      // The legacy subscriber skips an unresolvable session too, so claiming it
+      // here would only produce a receipt that retries into `dead`.
+      if (workspace === undefined) return false
       return owned.includes(workspace)
     },
 
@@ -85,7 +87,7 @@ export function createBrainIngestReaction(opts: BrainIngestReactionOptions): Bra
       async run(input): Promise<ReactionTargetOutcome> {
         const workspace = await opts.brains.resolveWorkspace(input.sessionId)
         if (workspace === undefined) {
-          return { ok: false, retryable: true, error: "workspace_unresolved" }
+          return { ok: false, retryable: false, error: "workspace_unresolved" }
         }
         if (!(await owns(workspace))) {
           return { ok: true, outcomeRef: "skipped:not-owner" }

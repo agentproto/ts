@@ -107,6 +107,7 @@ import { loadModelListSource } from "./model-list-store.js"
 import { registerCredentialDiscoveryTools } from "./credential-discovery.js"
 import { registerWebSearchTools } from "./web-search-tools.js"
 import { registerMcpApps } from "./mcp-apps-adapter.js"
+import { DEFAULT_BUCKET, resolveBucketSlug } from "./workspace-buckets.js"
 import { makeBuiltinPanelApps } from "./builtin-apps.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 import { resolvePublicAppOrigins } from "./public-origins.js"
@@ -116,6 +117,7 @@ import { registerAppPullTools } from "./app-pull-tools.js"
 import {
   loadWorkspacesConfig,
   findWorkspace,
+  findWorkspaceByPath,
   getActiveWorkspace,
 } from "./workspaces-config.js"
 import {
@@ -258,6 +260,7 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import {
   createBrainIngestReaction,
   createReactionReceiptStore,
+  reactionReceiptsPathForBucket,
   createReactionRunner,
   readBrainIngestOwnedWorkspaces,
   wireSessionCompletion,
@@ -2518,7 +2521,20 @@ export async function createGateway(
   // via the workspace_brain_* MCP tools. Same wiring discipline as the
   // webhook notifier — a brain failure never throws into the exit path.
   const workspaceBrains = createWorkspaceBrains()
-  const reactionReceiptStore = createReactionReceiptStore()
+  // Receipts are scoped to the bucket this daemon serves (same rule as the
+  // resume passes in serve.ts), so two daemons on one AGENTPROTO_HOME never
+  // rewrite or replay each other's receipts.
+  const reactionBucket = await loadWorkspacesConfig()
+    .then(cfg =>
+      resolveBucketSlug(
+        findWorkspaceByPath(cfg, opts.workspace)?.slug,
+        new Set(cfg.workspaces.map(w => w.slug)),
+      ),
+    )
+    .catch(() => DEFAULT_BUCKET)
+  const reactionReceiptStore = createReactionReceiptStore({
+    filePath: reactionReceiptsPathForBucket(reactionBucket),
+  })
   const brainIngestReaction = createBrainIngestReaction({
     brains: workspaceBrains,
     ownedWorkspaces: readBrainIngestOwnedWorkspaces,
