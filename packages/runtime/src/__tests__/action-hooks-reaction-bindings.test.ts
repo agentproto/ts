@@ -423,7 +423,7 @@ describe("shouldHandle", () => {
     const noOrigin = makeDeps()
     const noOriginBinding = toReactionBinding(resolved({ target: agentTarget }), noOrigin.deps)
     expect(noOriginBinding.ok).toBe(true)
-    if (noOriginBinding.ok) expect(await noOriginBinding.binding.shouldHandle!(completed())).toBe(true)
+    if (noOriginBinding.ok) expect(await noOriginBinding.binding.shouldHandle!(completed())).toBe(false)
 
     const toolBinding = toReactionBinding(resolved(), reactionFacts.deps)
     expect(toolBinding.ok).toBe(true)
