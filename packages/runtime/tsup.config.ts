@@ -50,6 +50,7 @@ export default createTsupConfig({
     "zod",
     "gray-matter",
     "@agentproto/agent",
+    "@agentproto/clerk",
     "@agentproto/manifest",
     "@agentproto/mcp-server",
     "@agentproto/model-catalog",
