@@ -9128,6 +9128,23 @@ export function createSessionsRegistry(opts?: {
     return agentSession.availableModes.some(m => m.id.toLowerCase() === "compact")
   }
 
+  /** The slash command this session's harness compacts with. */
+  function compactCommandFor(rt: SessionRuntime): "/compact" | "/compress" {
+    return (rt.desc.harness ?? rt.desc.adapterSlug ?? "").includes("hermes") ? "/compress" : "/compact"
+  }
+
+  /**
+   * Whether the session can be compacted by PROMPT: its harness advertises
+   * the exact slash command the runtime would send. The ACP adapters list
+   * compaction as a command (claude-code's `available_commands_update`
+   * carries `compact`), never as a session mode, so a mode-only check is
+   * false for every real session.
+   */
+  function harnessAdvertisesCompactCommand(rt: SessionRuntime): boolean {
+    const name = compactCommandFor(rt).slice(1)
+    return (rt.desc.availableCommands ?? []).some(c => c.name.toLowerCase() === name)
+  }
+
 
   /**
    * Write a checkpoint (goal, plan, decisions, changed files, tests, errors,
@@ -9551,7 +9568,7 @@ export function createSessionsRegistry(opts?: {
       )
     }
     const harness = rt.desc.harness ?? rt.desc.adapterSlug ?? ""
-    const cmd = harness.includes("hermes") ? "/compress" : "/compact"
+    const cmd = compactCommandFor(rt)
     // Harness support for a compact ARGUMENT (the instructions that tell
     // the summary where the full transcript is):
     //   - claude-code: its CLI accepts `/compact <instructions>`, and the
@@ -9631,8 +9648,9 @@ export function createSessionsRegistry(opts?: {
     if (rt.desc.status !== "running" && rt.desc.status !== "starting") return
     // A harness that does not advertise compact support would be sent
     // `/compact` again on every growth re-arm — a repeated-prompt loop. Stay
-    // silent instead, like `attemptContextCompact` (which also gates on this).
-    if (!adapterSupportsCompact(rt.agentSession)) return
+    // silent instead. Autocompact compacts by prompt, so the advertised
+    // slash command is what counts; a `compact` mode is still accepted.
+    if (!harnessAdvertisesCompactCommand(rt) && !adapterSupportsCompact(rt.agentSession)) return
     const controller = (rt.autoCompact ??= createAutoCompactController({
       readTokens: () => rt.desc.contextUsed,
       readThreshold: () =>
