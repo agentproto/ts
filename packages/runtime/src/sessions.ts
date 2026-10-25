@@ -12700,18 +12700,32 @@ export function createSessionsRegistry(opts?: {
               coalescedCount: (existing.coalescedCount ?? 1) + 1,
             }
             // A merge replaces the older digest's inbox copy too, so the
-            // inbox holds one digest rather than N. The fresh envelope (with
-            // the merged text) keeps its own id.
+            // inbox holds one digest rather than N.
             if (merged) {
+              const toRemove = new Set<string>()
               const superseded = existing.envelope?.id
               if (superseded !== undefined && superseded !== finalEnvelope?.id) {
-                removeFromInbox(rtPre, new Set([superseded]))
+                toRemove.add(superseded)
               }
-              if (finalEnvelope && envelope && finalEnvelope.text !== envelope.text) {
-                setInbox(
-                  rtPre,
-                  (rtPre.desc.inbox ?? []).map(m => (m.id === finalEnvelope.id ? finalEnvelope : m)),
-                )
+              if (envelope?.id && envelope.id !== finalEnvelope?.id) {
+                toRemove.add(envelope.id)
+              }
+              if (toRemove.size > 0) {
+                removeFromInbox(rtPre, toRemove)
+              }
+              if (finalEnvelope) {
+                if (envelope && finalEnvelope.id === envelope.id && finalEnvelope.text !== envelope.text) {
+                  setInbox(
+                    rtPre,
+                    (rtPre.desc.inbox ?? []).map(m => (m.id === finalEnvelope.id ? finalEnvelope : m)),
+                  )
+                } else if (!envelope || finalEnvelope.id !== envelope.id) {
+                  // Replace fresh/stale inbox copy with the merged envelope.
+                  setInbox(
+                    rtPre,
+                    (rtPre.desc.inbox ?? []).filter(m => m.id !== finalEnvelope.id).concat([finalEnvelope]),
+                  )
+                }
               }
             }
             const next = [...waiting]
