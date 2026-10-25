@@ -191,6 +191,48 @@ These are candidates only. This document does not choose among them.
    after a terminal status is proven at
    `packages/runtime/src/sessions.ts:13912` `const isAlive = rt.desc.status === "running" || rt.desc.status === "starting"`.
 
+## Live event routine wiring (AIP-41)
+
+An enabled routine with `schedule.kind: "event"` is now live. `routineRegistrar.reconcile()`
+resolves the binding, calls `onReconciled`, and `createReactionWiring` converts it
+with `toReactionBinding` before handing the full list to
+`ReactionRunner.replaceBindings`. Every reconcile refreshes the runner's binding
+set, so an edited or removed routine takes effect on the next `routine_reconcile`
+or daemon boot.
+
+The `session.<field>` filter paths are the flat facts from `sessionFactsOf`:
+
+| Path | Value |
+| --- | --- |
+| `session.kind` | the descriptor `kind` |
+| `session.isChild` | true when `parentSessionId` is set, false otherwise |
+| `session.workspaceSlug` | the descriptor `workspaceSlug`, omitted when undefined |
+| `session.origin` | the descriptor `origin`, omitted when undefined |
+| `session.adapter` | the descriptor `adapterSlug`, omitted when undefined |
+| `session.label` | the descriptor `label`, omitted when undefined |
+
+An undefined field is omitted, so a filter on it never matches. An agent arm
+treats unreadable session facts as "do not fire"; it also refuses a session whose
+`origin` starts with `reaction:`.
+
+The `reconcile()` result and the `routine_reconcile` tool output carry
+`reactions.active` and `reactions.refused` (each refusal has `bindingId` and
+`error`). A refused binding is not live. Builtin bindings always win a duplicate
+id.
+
+Known limits in this version: tool, workflow and agent arms get no event context;
+`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
+workflow arm that starts sessions (for example `agent_start` or
+`workflow_run_file`) is not covered by the self-chain guard and can chain
+without bound until origin and depth propagation lands; use the agent arm to
+start a session from an event routine; the action
+registry is empty, so `action` arms are refused until a handler is registered;
+and an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
+
+Rollback: set `enabled: false` on the routine and run `routine_reconcile`. The
+binding disappears on the next refresh; its receipts are left untouched.
+
 ## Part 3: migration rules
 
 The column "Candidate binding" is a proposal, not an implemented config. The

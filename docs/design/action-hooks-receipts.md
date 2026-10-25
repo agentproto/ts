@@ -873,7 +873,41 @@ export interface ReactionRunner {
 export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunner
 ```
 
-## 10. Open questions and everything NOT VERIFIED
+## 10. Implemented wiring: event routines and the live binding set
+
+`ReactionRunner` no longer has a fixed binding set. `replaceBindings(next)` swaps
+it, and `handleEvent`, `retryDue`, `reconcileOnBoot` and `status` read the
+current set. A run already in flight keeps the binding it started with, and a
+receipt whose binding is no longer present is left untouched. If that binding
+returns later, its pending receipts resume at the next boot reconcile and
+its failed receipts resume at the next retry tick.
+
+The daemon builds the list from `brainIngestReaction.binding` plus every enabled
+AIP-41 event routine, in input order. `createReactionWiring.refresh()` refuses a
+routine that cannot convert or whose id is already taken, reports it under
+`reactions.refused` in the `reconcile()` result (and in `routine_reconcile`
+output), and logs each distinct refusal once. `refresh()` never throws: a
+throwing scan or runner keeps the previous live set and reports the failure
+under binding id `*`.
+
+The documented `session.<field>` filter paths are `session.kind`,
+`session.isChild`, `session.workspaceSlug`, `session.origin`, `session.adapter`
+(the descriptor `adapterSlug`) and `session.label`. Undefined fields are omitted,
+so a filter on one never matches.
+
+Known limits: no event context for tool, workflow or agent arms;
+`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
+workflow arm that starts sessions (for example `agent_start` or
+`workflow_run_file`) is not covered by the self-chain guard and can chain
+without bound until origin and depth propagation lands; use the agent arm to
+start a session from an event routine; the action
+registry is empty, so `action` arms are refused until a handler is registered;
+an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
+
+Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
+
+## 11. Open questions and everything NOT VERIFIED
 
 Open questions:
 
