@@ -14,6 +14,20 @@ import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry, SessionDescriptor } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 
+// Optional gate so a test can hold a runner's async persist open and prove
+// `dispose()` drains it before teardown deletes the persist directory.
+const writeGate = vi.hoisted(() => ({ wait: undefined as Promise<void> | undefined }))
+vi.mock("@agentproto/run", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@agentproto/run")>()
+  return {
+    ...actual,
+    writeFileAtomic: async (...args: Parameters<typeof actual.writeFileAtomic>) => {
+      if (writeGate.wait) await writeGate.wait
+      return actual.writeFileAtomic(...args)
+    },
+  }
+})
+
 // ── Minimal mock registry ─────────────────────────────────────────────
 
 function makeMockRegistry(overrides: Partial<SessionsRegistry> = {}): SessionsRegistry {
@@ -72,13 +86,22 @@ function waitNextTick(): Promise<void> {
   return new Promise(res => setTimeout(res, 0))
 }
 
+// Suites that persist to a temp dir register their runners here so teardown
+// can drain every queued write before removing it.
+let trackedRunners: ReturnType<typeof createWorkflowRunner>[] | undefined
+function createRunner(opts: Parameters<typeof createWorkflowRunner>[0]): ReturnType<typeof createWorkflowRunner> {
+  const runner = createWorkflowRunner(opts)
+  trackedRunners?.push(runner)
+  return runner
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 describe("WorkflowRunner", () => {
   it("start() returns immediately with status=running", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -122,7 +145,7 @@ describe("WorkflowRunner", () => {
       ),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -177,7 +200,7 @@ describe("WorkflowRunner", () => {
       get: vi.fn((id) => ({ id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" })),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -222,7 +245,7 @@ describe("WorkflowRunner", () => {
       get: vi.fn((id) => (id === "sess_producer" ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" } : undefined)),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -272,7 +295,7 @@ describe("WorkflowRunner", () => {
       ),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -308,7 +331,7 @@ describe("WorkflowRunner", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: vi.fn(async () => ({
@@ -379,7 +402,7 @@ describe("WorkflowRunner", () => {
       }),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -471,7 +494,7 @@ describe("WorkflowRunner", () => {
       }),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       // The adapter boot (`startSession`) blocks on `spawnGate` — this is the
@@ -516,7 +539,7 @@ describe("WorkflowRunner", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const isolated = join(mkdtempSync(join(tmpdir(), "workflow-list-")), "runs.json")
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -536,7 +559,7 @@ describe("WorkflowRunner — AIP-58 §3(a) run.requestInput", () => {
   it("recordInputRequest on a session not owned by a running workflow step is a tool error, no side effect", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+    const runner = createRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
     const result = runner.recordInputRequest("sess_unknown", { prompt: "what?" })
     expect(result).toEqual({ ok: false, error: "session_not_in_workflow_step" })
   })
@@ -586,7 +609,7 @@ describe("WorkflowRunner — AIP-58 §3(a) run.requestInput", () => {
       ),
     })
 
-    runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
+    runner = createRunner({ registry, sessionEvents: bus, resolveAgentAdapter: makeMockAdapter() })
 
     const run = await runner.start({
       workflowId: "pricing-brief",
@@ -652,16 +675,22 @@ describe("WorkflowRunner persistence", () => {
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "workflow-runner-test-"))
     persistPath = join(tmpDir, "workflow-runs.json")
+    trackedRunners = []
   })
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+  afterEach(async () => {
+    // Every runner this suite created drains its queued writes before the
+    // directory goes away; `dispose()` also clears its timers and listeners.
+    await Promise.all((trackedRunners ?? []).map(runner => runner.dispose()))
+    trackedRunners = undefined
+    // Secondary guard only: the drain above is what makes this race-free.
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   })
 
   it("persists runs to disk on start()", async () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -684,7 +713,7 @@ describe("WorkflowRunner persistence", () => {
       }),
     })
 
-    const runner1 = createWorkflowRunner({
+    const runner1 = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -699,7 +728,7 @@ describe("WorkflowRunner persistence", () => {
       await new Promise(res => setTimeout(res, 10))
     }
 
-    const runner2 = createWorkflowRunner({
+    const runner2 = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -740,7 +769,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -798,7 +827,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -834,7 +863,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([stuckRun], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -876,7 +905,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([fakeRun, fakeRun2], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -906,7 +935,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([suspendedRun], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -949,7 +978,7 @@ describe("WorkflowRunner persistence", () => {
     }
     writeFileSync(persistPath, JSON.stringify([escalatedRun], null, 2), "utf8")
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -965,7 +994,7 @@ describe("WorkflowRunner persistence", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
 
-    const runner1 = createWorkflowRunner({
+    const runner1 = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -974,13 +1003,70 @@ describe("WorkflowRunner persistence", () => {
     expect(runner1.list()).toHaveLength(0)
 
     writeFileSync(persistPath, "not valid json", "utf8")
-    const runner2 = createWorkflowRunner({
+    const runner2 = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
       persistPath,
     })
     expect(runner2.list()).toHaveLength(0)
+  })
+
+  it("dispose() drains a late suspend-resume write before teardown removes the dir", async () => {
+    const bus = createSessionEventBus()
+    const registry = makeMockRegistry()
+
+    const suspendedRun = {
+      runId: "wfrun_dispose_drain1",
+      workflowId: "suspend-run",
+      status: "awaiting-input",
+      startedAt: new Date().toISOString(),
+      stages: [{ index: 0, status: "done", steps: [{ index: 0, label: "setup", status: "done" }] }],
+      result: { sessionIds: [] },
+      awaitingSuspend: { stepId: "wait", on: ["human:ack"], since: new Date().toISOString() },
+    }
+    writeFileSync(persistPath, JSON.stringify([suspendedRun], null, 2), "utf8")
+
+    // Hold the resume's persist open so it is definitely still in flight when
+    // teardown would otherwise remove the directory.
+    let releaseWrite!: () => void
+    writeGate.wait = new Promise<void>(resolve => {
+      releaseWrite = resolve
+    })
+
+    try {
+      const runner = createRunner({
+        registry,
+        sessionEvents: bus,
+        resolveAgentAdapter: makeMockAdapter(),
+        persistPath,
+      })
+      expect(runner.resumeSuspend("wfrun_dispose_drain1", { payload: "go" }).ok).toBe(true)
+
+      let disposed = false
+      let simultaneouslyDisposed = false
+      const disposal = runner.dispose().then(() => {
+        disposed = true
+      })
+      // A concurrent second dispose must share the drain, not resolve early.
+      const concurrentDisposal = runner.dispose().then(() => {
+        simultaneouslyDisposed = true
+      })
+      await waitNextTick()
+      expect(disposed).toBe(false)
+      expect(simultaneouslyDisposed).toBe(false)
+
+      releaseWrite()
+      await Promise.all([disposal, concurrentDisposal])
+      expect(disposed).toBe(true)
+      expect(simultaneouslyDisposed).toBe(true)
+
+      const persisted = readRunFull(runFilePath(runStoreDir(persistPath), "wfrun_dispose_drain1")!)
+      expect(persisted?.status).toBe("failed")
+    } finally {
+      writeGate.wait = undefined
+      releaseWrite?.()
+    }
   })
 })
 
@@ -1057,7 +1143,7 @@ describe("WorkflowRunner.startFromFile", () => {
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const { tools, candidates } = makeStubTools()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1115,7 +1201,7 @@ steps:
       const bus = createSessionEventBus()
       const registry = makeMockRegistry()
       const { tools, candidates } = makeStubTools()
-      const runner = createWorkflowRunner({
+      const runner = createRunner({
         registry,
         sessionEvents: bus,
         resolveAgentAdapter: makeMockAdapter(),
@@ -1184,7 +1270,7 @@ steps:
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const { tools, candidates } = makeStubTools()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1236,7 +1322,7 @@ steps:
     const bus = createSessionEventBus()
     const registry = makeMockRegistry()
     const { tools, candidates } = makeStubTools()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1318,7 +1404,7 @@ steps:
           : undefined
       ),
     })
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1412,7 +1498,7 @@ steps:
       workflows: [{ id: "review-wf-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-cwd", "WORKFLOW.md") }],
       unvalidatedAgentTools: [],
     })
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1498,7 +1584,7 @@ steps:
       workflows: [{ id: "review-wf-explicit-cwd", path: join(tmpDir, ".agentproto", "workflows", "review-wf-explicit-cwd", "WORKFLOW.md") }],
       unvalidatedAgentTools: [],
     })
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1555,7 +1641,7 @@ steps:
     const gateReportEvents: unknown[] = []
     bus.on("workflow:gate-report", (ev) => gateReportEvents.push(ev))
     const registry = makeMockRegistry()
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1634,7 +1720,7 @@ steps:
       get: vi.fn((id) => ({ id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" })),
     })
 
-    const runner = createWorkflowRunner({
+    const runner = createRunner({
       registry,
       sessionEvents: bus,
       resolveAgentAdapter: makeMockAdapter(),
@@ -1720,7 +1806,7 @@ describe("WorkflowRunner agent step model", () => {
       },
       commandPreview: "mock-adapter",
     }))
-    const runner = createWorkflowRunner({ registry, sessionEvents: bus, resolveAgentAdapter })
+    const runner = createRunner({ registry, sessionEvents: bus, resolveAgentAdapter })
     return { runner }
   }
 
