@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { secretsFrontmatterSchema } from "./schema.js"
 import type { SecretsDefinition, SecretsHandle } from "./types.js"
 

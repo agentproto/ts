@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest"
 import { compactWorkflowRunStatus, COMPACT_OUTPUT_VALUE_MAX_CHARS } from "../orchestration-tools.js"
-import type { RoutineStepState } from "../step-run-types.js"
+import type { RoutineStepState } from "@agentproto/run"
 import type { WorkflowRun } from "../workflow-runner.js"
 
 const ITEM_STEPS = ["reviewWorktreeAdd", "reviewOne", "verdictCheck", "nudge", "reviewSettled", "reviewWorktreeRemove"]

@@ -35,7 +35,7 @@ import {
   runStoreDir,
   spillFilePath,
   applyOutputCeilings,
-} from "../workflow-run-store.js"
+} from "@agentproto/run"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry } from "../sessions.js"
@@ -344,7 +344,7 @@ describe("memory: summaries and lazy load", () => {
     const dir = runStoreDir(persistPath)
     const seed = makeRunner(transformWorkflow({}), {})
     await seed.flush()
-    const { serializeRunFile, writeFileAtomicSync } = await import("../workflow-run-store.js")
+    const { serializeRunFile, writeFileAtomicSync } = await import("@agentproto/run")
     for (let i = 0; i < 40; i++) {
       const run = syntheticRun(i)
       applyOutputCeilings(run, DEFAULT_OUTPUT_LIMITS, () => {})

@@ -18,7 +18,7 @@
  * pipeline.
  */
 
-import { filterSerializable } from "@agentproto/define-doctype"
+import { filterSerializable } from "@agentproto/doctype"
 import matter from "gray-matter"
 import type { Dirent } from "node:fs"
 import { access, copyFile, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises"

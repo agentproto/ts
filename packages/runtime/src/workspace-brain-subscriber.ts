@@ -22,6 +22,11 @@ export interface WorkspaceBrainSubscriberOptions {
   readonly brains: WorkspaceBrains
   /** Debounce window for batching consecutive exits. Default 5000ms. */
   debounceMs?: number
+  /** Returns true when another owner (the brain-ingest reaction) handles this
+   *  workspace, so the legacy subscriber must skip it. A throw is caught by the
+   *  existing per-ingest try/catch: the ingest is then skipped like any other
+   *  failure. */
+  skipWorkspace?: (workspace: string) => boolean | Promise<boolean>
 }
 
 export interface WorkspaceBrainSubscriber {
@@ -38,6 +43,7 @@ export function createWorkspaceBrainSubscriber(
 ): WorkspaceBrainSubscriber {
   const { bus, brains } = opts
   const debounceMs = opts.debounceMs ?? 5_000
+  const skipWorkspace = opts.skipWorkspace
 
   const pending = new Set<string>()
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -61,6 +67,12 @@ export function createWorkspaceBrainSubscriber(
         if (!workspace) {
           console.warn(
             `[workspace-brain] skipping ingest of ${sessionId}: could not resolve its workspace`,
+          )
+          return
+        }
+        if (skipWorkspace && (await skipWorkspace(workspace))) {
+          console.log(
+            `[workspace-brain] skipping ingest of ${sessionId}: workspace "${workspace}" is owned by the brain-ingest reaction`,
           )
           return
         }

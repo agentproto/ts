@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { skillFrontmatterSchema } from "./schema.js"
 import type { SkillDefinition, SkillHandle } from "./types.js"
 

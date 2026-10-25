@@ -345,7 +345,7 @@ import {
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
-import { parseAgentClerkHook, type ClerkHookConfig } from "./clerk-hook-config.js"
+import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See

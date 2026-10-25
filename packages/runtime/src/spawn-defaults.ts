@@ -198,6 +198,16 @@ export interface SpawnDefaultsConfig {
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
   }
+  /** Action hook reactions (AIP-71). */
+  reactions?: {
+    /** Completed sessions of these workspace slugs are ingested into the
+     *  workspace brain by the durable brain-ingest reaction instead of the
+     *  legacy exit subscriber. Default []: every workspace stays with the
+     *  legacy subscriber. */
+    brainIngest?: {
+      workspaces?: string[]
+    }
+  }
   /** Task-ledger policy. */
   tasks?: {
     /** Sessions that keep operator rights on the task ledger while still

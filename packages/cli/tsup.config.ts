@@ -151,7 +151,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     "@agentproto/manifest",
     "@agentproto/mcp-server",
     "@agentproto/extension",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
   ],
   // The stage board module is a plain-JS asset served verbatim by
   // `app serve` / `app dev` (see src/stageboard/serve.ts) — esbuild only
