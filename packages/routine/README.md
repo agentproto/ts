@@ -112,11 +112,11 @@ from source before writing any code:
    `label:"routine:<id>"`; a routine that disappears or turns
    `enabled:false` has its tagged job deleted; a routine whose resolved
    `{schedule, action}` changed gets its old job deleted and a new one
-   created (delete+recreate — `CronScheduler` has no `update()`). An
+   created (delete+recreate, `CronScheduler` has no `update()`). An
    `enabled:true` + `schedule.kind:"event"` routine is resolved to a reaction
    binding instead, and the reaction wiring reloads the runner's binding set
    on every pass. Called once at gateway boot; re-callable on demand (no
-   file-watcher in this pass — noted as a follow-up, not silently dropped).
+   file-watcher in this pass, noted as a follow-up, not silently dropped).
    Per-file parse/target errors are collected and skip only that file, not
    the whole scan.
    A `target.workflow` target is bound to that same workspace: a relative
