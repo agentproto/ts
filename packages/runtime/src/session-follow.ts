@@ -41,7 +41,13 @@ import { readTranscriptTail } from "./session-index.js"
 import { createSessionMessage, type SessionMessage } from "./session-message.js"
 import type { SessionEvent, SessionEventBus } from "./session-event-bus.js"
 import type { FollowEvent, FollowUrgency, SessionFollow, SessionFollowStore } from "./session-follow-store.js"
-import { SessionNotAliveError, type SessionDescriptor } from "./sessions.js"
+import {
+  SessionNotAliveError,
+  type DigestEntry,
+  type QueuedDigest,
+  type QueuedPrompt,
+  type SessionDescriptor,
+} from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import {
@@ -59,6 +65,8 @@ import {
 export const FOLLOW_EXCERPT_MAX = 300
 /** Max event lines in one digest; the rest collapse into a "+N more" line. */
 export const FOLLOW_DIGEST_MAX_LINES = 40
+/** Cap on retained events when queued digests merge (newest wins). */
+export const FOLLOW_DIGEST_MERGE_MAX_ENTRIES = 50
 const ANCESTOR_WALK_CAP = 32
 const SEEN_PR_CAP = 500
 
@@ -66,7 +74,20 @@ const SEEN_PR_CAP = 500
  *  `SupervisorNotifyRegistry`). */
 export interface SessionFollowRegistry {
   get(id: string): SessionDescriptor | undefined
-  sendMessage(msg: SessionMessage, opts?: { source?: string; origin?: string }): Promise<unknown>
+  sendMessage(
+    msg: SessionMessage,
+    opts?: {
+      source?: string
+      origin?: string
+      coalesceKey?: string
+      digest?: QueuedDigest
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
+    },
+  ): Promise<unknown>
 }
 
 export interface WireSessionFollowOptions {
@@ -353,18 +374,26 @@ export function excerptOf(text: string | undefined): string | undefined {
 /** Compose the digest text. Exported for tests. `mode:"fyi"` renders the
  *  header of a digest that must NOT wake the follower. */
 export function formatFollowDigest(
-  entries: readonly BatchEntry[],
-  resolveText: (entry: BatchEntry) => string | undefined,
+  entries: readonly DigestEntry[],
+  resolveText: (entry: DigestEntry) => string | undefined,
   desc: (id: string) => SessionDescriptor | undefined,
   mode: "wake" | "fyi" = "wake",
+  omitted = 0,
+  coalesced = 1,
 ): string {
+  const coalescedNote =
+    coalesced > 1 ? ` Coalesced from ${coalesced} queued digests.` : ""
   const header =
-    mode === "fyi"
+    (mode === "fyi"
       ? `[session-follow] automatic digest (for your information only — no action expected) — ` +
         `${entries.length} event${entries.length === 1 ? "" : "s"} from sessions you follow.`
       : `[session-follow] automatic digest — ${entries.length} event${entries.length === 1 ? "" : "s"} ` +
         `from sessions you follow. Decide whether anything needs the human's attention; ` +
-        `if not, no reply is needed.`
+        `if not, no reply is needed.`) + coalescedNote
+  const omittedLine =
+    omitted > 0
+      ? `[session-follow] ${omitted} earlier event${omitted === 1 ? "" : "s"} omitted`
+      : undefined
   const lines = entries.slice(0, FOLLOW_DIGEST_MAX_LINES).map(entry => {
     if (entry.boardId !== undefined) {
       const parts = [`[session-follow] board ${entry.boardId} task ${entry.taskId ?? "?"} ${entry.event}`]
@@ -385,7 +414,20 @@ export function formatFollowDigest(
   if (entries.length > FOLLOW_DIGEST_MAX_LINES) {
     lines.push(`[session-follow] … and ${entries.length - FOLLOW_DIGEST_MAX_LINES} more event(s)`)
   }
-  return [header, ...lines].join("\n")
+  return [header, ...(omittedLine ? [omittedLine] : []), ...lines].join("\n")
+}
+
+/** Union two queued digest payloads, keeping the newest
+ *  {@link FOLLOW_DIGEST_MERGE_MAX_ENTRIES} events and counting the rest as
+ *  `omitted`. */
+export function mergeQueuedDigests(existing: QueuedDigest | undefined, incoming: QueuedDigest): QueuedDigest {
+  const all = [...(existing?.entries ?? []), ...incoming.entries]
+  const retained = all.slice(-FOLLOW_DIGEST_MERGE_MAX_ENTRIES)
+  const overflow = all.length - retained.length
+  return {
+    entries: retained,
+    omitted: (existing?.omitted ?? 0) + incoming.omitted + overflow,
+  }
 }
 
 // ── Wiring ───────────────────────────────────────────────────────────
@@ -600,7 +642,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     }
   }
 
-  const textFor = (entry: BatchEntry): string | undefined => {
+  const textFor = (entry: DigestEntry): string | undefined => {
     const d = registry.get(entry.sessionId)
     if (entry.event === "pr-opened" || entry.event === "pr-merged") return entry.detail
     if (entry.event === "crashed") {
@@ -615,10 +657,64 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return d ? readLastOutput(d) : undefined
   }
 
-  async function sendOnce(to: string, text: string, followerId: string, urgency: FollowUrgency): Promise<void> {
+  /** Capture everything `formatFollowDigest` needs for these events at
+   *  classification time. A later merge re-renders from these plain entries
+   *  only, never from a live session or transcript. */
+  const digestEntriesFor = (entries: readonly BatchEntry[]): DigestEntry[] =>
+    entries.map(entry => {
+      const text = textFor(entry)
+      return {
+        sessionId: entry.sessionId,
+        event: entry.event,
+        ts: entry.ts,
+        ...(entry.label ? { label: entry.label } : {}),
+        ...(entry.cwd ? { cwd: entry.cwd } : {}),
+        ...(entry.detail ? { detail: entry.detail } : {}),
+        ...(entry.key ? { key: entry.key } : {}),
+        ...(entry.boardId ? { boardId: entry.boardId } : {}),
+        ...(entry.taskId ? { taskId: entry.taskId } : {}),
+        ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
+        ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
+        ...(entry.reason ? { reason: entry.reason } : {}),
+        ...(text ? { text } : {}),
+      }
+    })
+
+  async function sendOnce(
+    to: string,
+    text: string,
+    followerId: string,
+    urgency: FollowUrgency,
+    digest?: QueuedDigest,
+  ): Promise<void> {
+    // fyi digests only ever land in the inbox, never the prompt queue, so
+    // they carry no merge payload.
+    const queuedDigest = urgency === "fyi" ? undefined : digest
+    const merge = queuedDigest
+      ? (existing: QueuedPrompt): { message: string; digest: QueuedDigest } => {
+          const merged = mergeQueuedDigests(existing.digest, queuedDigest)
+          return {
+            message: formatFollowDigest(
+              merged.entries,
+              entry => entry.text,
+              id => registry.get(id),
+              "wake",
+              merged.omitted,
+              (existing.coalescedCount ?? 1) + 1,
+            ),
+            digest: merged,
+          }
+        }
+      : undefined
     await registry.sendMessage(
       createSessionMessage({ to, from: { relation: "system" }, text, kind: "notice", urgency }),
-      { source: "session-follow", origin: `follow:${followerId}` },
+      {
+        source: "session-follow",
+        origin: `follow:${followerId}`,
+        ...(queuedDigest
+          ? { coalesceKey: `follow-digest:${followerId}`, digest: queuedDigest, merge: merge! }
+          : {}),
+      },
     )
   }
 
@@ -660,11 +756,12 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     text: string,
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
+    digest?: QueuedDigest,
   ): Promise<void> {
     const replacement = findLiveReplacement(followerId, followIds)
     if (replacement) {
       try {
-        await sendOnce(replacement, text, replacement, urgency)
+        await sendOnce(replacement, text, replacement, urgency, digest)
       } catch (err) {
         park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
       }
@@ -680,7 +777,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       try {
         const resumed = await reviveOnce(headId)
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
-        await sendOnce(resumed, text, resumed, urgency)
+        await sendOnce(resumed, text, resumed, urgency, digest)
       } catch (err) {
         park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
       }
@@ -708,7 +805,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       if (resumed !== followerId) {
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
       }
-      await sendOnce(resumed, text, resumed, urgency)
+      await sendOnce(resumed, text, resumed, urgency, digest)
     } catch (err) {
       park(followerId, text, `could not resume follower: ${describeError(err)}`)
     }
@@ -719,6 +816,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     text: string,
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
+    digest?: QueuedDigest,
   ): Promise<void> {
     const desc = registry.get(followerId)
     if (!desc) {
@@ -726,14 +824,14 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       return
     }
     if (!isAlive(desc)) {
-      await reviveAndSend(followerId, text, followIds, urgency)
+      await reviveAndSend(followerId, text, followIds, urgency, digest)
       return
     }
     try {
-      await sendOnce(followerId, text, followerId, urgency)
+      await sendOnce(followerId, text, followerId, urgency, digest)
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
-        await reviveAndSend(followerId, text, followIds, urgency)
+        await reviveAndSend(followerId, text, followIds, urgency, digest)
         return
       }
       log(`[session-follow] delivery to ${followerId} failed: ${describeError(err)}`)
@@ -754,6 +852,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     const triage = triageConfigFor(follows)
     const digestId = randomUUID()
     let text: string
+    let deliveredEntries: BatchEntry[] = entries
     let urgency: FollowUrgency = batch.urgency
     if (triage.enabled) {
       // Deterministic triage BEFORE the wake: every event is classified,
@@ -775,9 +874,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
             return
           }
           text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
+          deliveredEntries = fyiEntries
           urgency = "fyi"
         } else {
           text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
+          deliveredEntries = wakeEntries
           if (fyiEntries.length > 0) {
             text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
           }
@@ -788,6 +889,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         // batch (an awaiting-input or a crash must still reach the follower).
         log(`[session-follow] triage failed for ${followerId}: ${describeError(err)}`)
         text = formatFollowDigest(entries, textFor, id => registry.get(id))
+        deliveredEntries = entries
         urgency = batch.urgency
       }
     } else {
@@ -804,7 +906,8 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       }
       text = formatFollowDigest(entries, textFor, id => registry.get(id))
     }
-    const p = deliver(followerId, text, batch.followIds, urgency)
+    const digest = { entries: digestEntriesFor(deliveredEntries), omitted: 0 }
+    const p = deliver(followerId, text, batch.followIds, urgency, digest)
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
