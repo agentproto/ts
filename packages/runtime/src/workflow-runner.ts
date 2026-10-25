@@ -165,10 +165,13 @@ export interface WorkflowRunner {
   flush(): Promise<void>
   /** Stop this runner and drain persistence: clears its trailing-flush and
    *  lease-heartbeat timers, unsubscribes its bus listeners, removes its
-   *  process-exit drain, then awaits every queued write. After it resolves,
-   *  nothing more is written by this runner. Idempotent. Production daemons
-   *  that live for the process lifetime need not call it; tests that delete
-   *  a persist directory MUST. */
+   *  process-exit drain, awaits every queued write, and removes lease
+   *  sidecars. After it resolves, nothing more is written by this runner and
+   *  further writes are dropped, so call it only when no run is actively
+   *  executing (a shutdown path should stop or await those runs first).
+   *  Concurrent calls share one disposal promise. Production daemons that
+   *  live for the process lifetime need not call it; tests that delete a
+   *  persist directory MUST. */
   dispose(): Promise<void>
 
   /** AIP-58 §5/§9 `run.events` — events with `seq > sinceSeq`, in order.
@@ -2207,6 +2210,7 @@ export function createWorkflowRunner(opts: {
   // then compaction — a pointer never lands before its target.
   let writeChain: Promise<void> = Promise.resolve()
   let disposed = false
+  let disposal: Promise<void> | undefined
   const enqueue = (job: () => Promise<void> | void): void => {
     if (disposed) return
     writeChain = writeChain.then(job).catch((err: unknown) => {
@@ -2925,25 +2929,35 @@ export function createWorkflowRunner(opts: {
       await writeChain
     },
 
-    dispose: async () => {
-      if (disposed) return
-      if (trailingFlush) {
-        clearTimeout(trailingFlush)
-        trailingFlush = undefined
-      }
-      for (const state of runs.values()) {
-        if (state.heartbeatTimer) {
-          clearInterval(state.heartbeatTimer)
-          state.heartbeatTimer = undefined
+    dispose: () => {
+      if (disposal) return disposal
+      disposal = (async () => {
+        if (trailingFlush) {
+          clearTimeout(trailingFlush)
+          trailingFlush = undefined
         }
-      }
-      for (const unsubscribe of unsubscribers) unsubscribe()
-      if (onExit) process.removeListener("exit", onExit)
-      // Queue whatever is still dirty BEFORE closing the enqueue gate, so it
-      // lands in the chain we await below.
-      flushDirty()
-      disposed = true
-      await writeChain
+        for (const state of runs.values()) {
+          if (state.heartbeatTimer) {
+            clearInterval(state.heartbeatTimer)
+            state.heartbeatTimer = undefined
+          }
+        }
+        for (const unsubscribe of unsubscribers) unsubscribe()
+        if (onExit) process.removeListener("exit", onExit)
+        // Queue whatever is still dirty BEFORE closing the enqueue gate, so it
+        // lands in the chain we await below.
+        flushDirty()
+        disposed = true
+        await writeChain
+        // A run's lease sidecar outlives its heartbeat timer; remove it so a
+        // restart cannot observe a live-looking lease from a stopped runner.
+        await Promise.all(
+          [...runs.values()]
+            .filter(state => state.run.lease !== undefined)
+            .map(state => removeLeaseFile(storeDir, state.run.runId)),
+        )
+      })()
+      return disposal
     },
 
     // AIP-58 §2 owner liveness — see the interface doc comment. A run this

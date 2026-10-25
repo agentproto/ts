@@ -1044,15 +1044,22 @@ describe("WorkflowRunner persistence", () => {
       expect(runner.resumeSuspend("wfrun_dispose_drain1", { payload: "go" }).ok).toBe(true)
 
       let disposed = false
+      let simultaneouslyDisposed = false
       const disposal = runner.dispose().then(() => {
         disposed = true
       })
+      // A concurrent second dispose must share the drain, not resolve early.
+      const concurrentDisposal = runner.dispose().then(() => {
+        simultaneouslyDisposed = true
+      })
       await waitNextTick()
       expect(disposed).toBe(false)
+      expect(simultaneouslyDisposed).toBe(false)
 
       releaseWrite()
-      await disposal
+      await Promise.all([disposal, concurrentDisposal])
       expect(disposed).toBe(true)
+      expect(simultaneouslyDisposed).toBe(true)
 
       const persisted = readRunFull(runFilePath(runStoreDir(persistPath), "wfrun_dispose_drain1")!)
       expect(persisted?.status).toBe("failed")
