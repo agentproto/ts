@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { companyFrontmatterSchema } from "./schema.js"
 import type { CompanyDefinition, CompanyHandle } from "./types.js"
 

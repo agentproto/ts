@@ -59,7 +59,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/work": "workspace:*",
     "gray-matter": "^4.0.3",
     "yaml": "^2.9.1",

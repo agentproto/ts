@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { intentFrontmatterSchema } from "./schema.js"
 import type { IntentDefinition, IntentHandle } from "./types.js"
 

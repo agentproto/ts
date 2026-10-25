@@ -54,7 +54,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/workflow-runtime": "workspace:*",
     "@agentproto/worktree": "workspace:*",
