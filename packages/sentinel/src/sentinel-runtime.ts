@@ -35,9 +35,7 @@ import { mkdirSync, appendFileSync } from "node:fs"
 
 import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
 import { sentinelPlatform } from "./platform.js"
-import { isExpiresAtReached } from "./local-types.js"
-import { DELIBERATE_END_REASONS } from "./local-types.js"
-import { isRetired, type RetirementFields } from "./local-types.js"
+import type { RetirementFields } from "./local-types.js"
 import type {
   Sentinel,
   SentinelStatus,
@@ -85,9 +83,6 @@ const DEFAULT_ACTIVE_INTERVAL_MS = 15_000
 const DEFAULT_IDLE_INTERVAL_MS = 60_000
 const DEFAULT_HOT_WINDOW_MS = 10 * 60 * 1000
 const POLL_BATCH_LIMIT = 50
-
-// Defined in session-end-reason.ts (cycle-free) so sessions.ts can share it.
-export { DELIBERATE_END_REASONS }
 
 const CLOSED_SUBJECTS_CAP = 500
 
@@ -311,7 +306,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   function isExpiredSpec(sentinel: Sentinel): boolean {
     // The record's own hard cap (the wiring sweep also removes it): a
     // persisted `expiresAt` gates delivery exactly like `until.at`.
-    if (isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
+    if (sentinelPlatform().lifecycle.isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
     return sentinel.spec.until.kind === "at" && nowMs() >= sentinel.spec.until.ms
   }
 
@@ -502,7 +497,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       let to = successorId
       if (!opts.isSessionAlive(successorId)) {
         const succInfo = opts.sessionInfo?.(successorId)
-        if (!succInfo || isRetired(succInfo)) {
+        if (!succInfo || sentinelPlatform().lifecycle.isRetired(succInfo)) {
           parkEvent(sentinel, event, `session ${sessionId} superseded by ${successorId}, which is not alive`)
           markOrphaned(sentinel)
           return
@@ -531,7 +526,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const sessionId = target.sessionId
 
     const info = opts.sessionInfo?.(sessionId)
-    if (info && isRetired(info)) {
+    if (info && sentinelPlatform().lifecycle.isRetired(info)) {
       // Retired (closed on purpose / archived / superseded): never revived,
       // in place or under a new id. Its notices go to the successor when
       // there is one, else to the parent / the parking journal.

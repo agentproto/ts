@@ -20,6 +20,8 @@
  * tool calls become a real use case.
  */
 
+import "./sentinel-platform.js"
+
 import { buildLabeledStatsReport } from "./process-stats.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"

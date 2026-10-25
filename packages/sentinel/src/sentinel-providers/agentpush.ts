@@ -35,7 +35,6 @@
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
-import { verifyInboundSignature } from "../signature.js"
 import { sentinelPlatform } from "../platform.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "../sentinel-github-normalize.js"
 import { resolveSentinelPublicUrl, type SentinelPublicUrl } from "../sentinel-public-url.js"
@@ -601,7 +600,7 @@ export function agentpushSentinelProvider(opts: AgentpushProviderOptions = {}): 
         if (st.signature === "v2") return { ok: false, reason: "legacy_signature_rejected" }
         // Legacy header: HMAC of the body alone (no timestamp), kept by
         // agentpush for existing routes until they migrate.
-        const legacy = verifyInboundSignature("agentpush", {
+        const legacy = sentinelPlatform().webhookDelivery.verifyInboundSignature("agentpush", {
           rawBody: req.rawBody,
           headers: req.headers,
           secret: st.callbackSecret,

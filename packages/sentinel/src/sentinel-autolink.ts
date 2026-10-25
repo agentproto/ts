@@ -45,7 +45,7 @@
  * mark the sentinel `orphaned` — `sentinel_list` still shows it.
  */
 
-import { parsePrUrl } from "./signature.js"
+import { sentinelPlatform } from "./platform.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import {
@@ -116,7 +116,7 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
     const enabled = await opts.autoWatchPrs()
     if (!enabled) return
 
-    const parsed = parsePrUrl(input.url)
+    const parsed = sentinelPlatform().github.parsePrUrl(input.url)
     if (!parsed) return // not a github.com PR url — local-gh has nothing to watch
 
     const subject = `github:${parsed.repo}#${parsed.number}`

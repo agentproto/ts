@@ -7,6 +7,8 @@
  * re-subscribe is never cancelled by the old tombstone.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, describe, expect, it } from "vitest"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"

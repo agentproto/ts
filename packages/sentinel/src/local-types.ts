@@ -7,20 +7,10 @@
  * actually reads.
  */
 
-import { randomBytes } from "node:crypto"
-
-export function ulid(now: number = Date.now()): string {
-  const time = now.toString(32).padStart(10, "0")
-  const rand = randomBytes(10).toString("hex").slice(0, 16)
-  return (time + rand).toUpperCase()
-}
-
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
 export type MessageRelation = "child" | "parent" | "sibling" | "peer" | "human" | "system"
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
-
-export const MESSAGE_URGENCIES: readonly MessageUrgency[] = ["fyi", "next-turn", "steer", "interrupt"]
 
 export interface SessionMessageFrom {
   sessionId?: string
@@ -62,39 +52,11 @@ export interface RecordOpenedPrInput {
   url: string
 }
 
-export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
-  "operator-completed",
-  "operator-stopped",
-  "steward-completed",
-  "steward-abandoned",
-  "restarted",
-])
-
 export interface RetirementFields {
   archived?: boolean
   endedReason?: string
   continuedTo?: string
   retiredAt?: string
-}
-
-export function isRetired(desc: Omit<RetirementFields, "endedReason"> & { endedReason?: string }): boolean {
-  return (
-    desc.archived === true ||
-    desc.continuedTo !== undefined ||
-    desc.retiredAt !== undefined ||
-    (desc.endedReason !== undefined && DELIBERATE_END_REASONS.has(desc.endedReason))
-  )
-}
-
-export function normalizeExpiresAt(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length === 0) return undefined
-  return Number.isNaN(Date.parse(value)) ? undefined : value
-}
-
-export function isExpiresAtReached(expiresAt: string | undefined, nowMs: number): boolean {
-  if (expiresAt === undefined) return false
-  const ms = Date.parse(expiresAt)
-  return Number.isNaN(ms) || ms <= nowMs
 }
 
 const TRIAGE_DECISIONS = ["wake", "fyi", "drop"] as const

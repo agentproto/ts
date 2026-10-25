@@ -25,8 +25,7 @@
 import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
-import { ulid } from "./local-types.js"
-import { isExpiresAtReached, normalizeExpiresAt } from "./local-types.js"
+import { sentinelPlatform } from "./platform.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
@@ -220,7 +219,7 @@ let tmpSeq = 0
 /** `sen_<ulid>` — minted before provider `create` when the provider needs to
  *  stamp the id remotely, then passed to `SentinelStore.create({id})`. */
 export function mintSentinelId(nowMs: number = Date.now()): string {
-  return `sen_${ulid(nowMs)}`
+  return `sen_${sentinelPlatform().ids.ulid(nowMs)}`
 }
 
 /** Only `routine` is still frozen (AIP-41 event binding, out of W-B scope);
@@ -423,7 +422,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
     const t = target as SentinelTarget & { secret?: string; secretRef?: string }
     if (typeof t.secretRef === "string" && t.secretRef.length > 0) return spec
     if (typeof t.secret === "string" && t.secret.length > 0) {
-      const secretRef = `swsec_${ulid(nowMs())}`
+      const secretRef = `swsec_${sentinelPlatform().ids.ulid(nowMs())}`
       secrets.set(secretRef, { secret: t.secret })
       scheduleSecretsPersist()
       return { ...spec, target: toAtRestWebhookTarget({ kind: "webhook", url: target.url, secretRef }) }
@@ -447,7 +446,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       const spec = denatureWebhookTarget(input.spec)
       const id = input.id ?? mintSentinelId(nowMs())
       const createdTs = nowMs()
-      const normalizedExpiresAt = normalizeExpiresAt(input.expiresAt)
+      const normalizedExpiresAt = sentinelPlatform().lifecycle.normalizeExpiresAt(input.expiresAt)
       if (input.expiresAt !== undefined && normalizedExpiresAt === undefined) {
         console.warn(
           `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(input.expiresAt)}; using the default TTL`,
@@ -484,7 +483,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       // goes through the same sidecar denaturing as create (rotation path).
       const nextPatch: SentinelUpdatePatch = { ...patch }
       if (patch.expiresAt !== undefined) {
-        const normalized = normalizeExpiresAt(patch.expiresAt)
+        const normalized = sentinelPlatform().lifecycle.normalizeExpiresAt(patch.expiresAt)
         if (normalized === undefined) {
           console.warn(
             `[sentinel-store] ignoring unparseable expiresAt ${JSON.stringify(patch.expiresAt)}; keeping the existing expiry`,
@@ -564,7 +563,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       if (!sentinel) return false
       // Mirrors the runtime's `isExpiredSpec`: the record's own `expiresAt`
       // backstop gates exactly like `until.at`.
-      if (isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
+      if (sentinelPlatform().lifecycle.isExpiresAtReached(sentinel.expiresAt, nowMs())) return true
       return sentinel.spec.until.kind === "at" ? nowMs() >= sentinel.spec.until.ms : false
     },
 
@@ -573,7 +572,7 @@ export function createSentinelStore(opts?: SentinelStoreOptions): SentinelStore 
       const t = target as SentinelTarget & { secret?: string; secretRef?: string }
       if (typeof t.secretRef === "string" && t.secretRef.length > 0) return t.secretRef
       if (typeof t.secret === "string" && t.secret.length > 0) {
-        const secretRef = `swsec_${ulid(nowMs())}`
+        const secretRef = `swsec_${sentinelPlatform().ids.ulid(nowMs())}`
         secrets.set(secretRef, { secret: t.secret })
         scheduleSecretsPersist()
         return secretRef

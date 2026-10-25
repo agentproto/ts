@@ -23,6 +23,8 @@
  * the persisted secret), TTL expiry (no delivery after `until.at`).
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createHmac, timingSafeEqual } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
@@ -45,20 +47,15 @@ import {
   type EventsUnsubscribeInput,
 } from "../mcp-events/adapter.js"
 import { daemonBearerPrincipal } from "../mcp-events/events-registry.js"
-import { configureSentinelPlatform, createSentinelStore, type SentinelStore } from "@agentproto/sentinel"
+import { createSentinelStore, type SentinelStore } from "@agentproto/sentinel"
 import { createSentinelRuntime, type SentinelRuntime, type SentinelRuntimeRegistry } from "@agentproto/sentinel"
 import { createFakeSentinelProvider, makeFakeEvent, type FakeSentinelProvider } from "@agentproto/sentinel"
-import { callbackHost, deliverEventEnvelope, redactUrls, serializeEnvelope } from "../webhook-egress/delivery.js"
 import { resetChallengeCacheForTests } from "../webhook-egress/challenge.js"
 import { setEgressDispatcherForTests } from "../webhook-egress/ssrf-fetch.js"
 import type { SentinelEvent, SentinelProviderHandle } from "@agentproto/sentinel"
 import type { SessionMessage } from "../session-message.js"
 
 vi.setConfig({ testTimeout: 30_000 })
-
-configureSentinelPlatform({
-  webhookDelivery: { deliverEventEnvelope, serializeEnvelope, callbackHost, redactUrls },
-})
 
 const SECRET = "whsec_" + Buffer.from(new Uint8Array(32).fill(7)).toString("base64")
 const SECRET_WRONG = "whsec_" + Buffer.from(new Uint8Array(32).fill(9)).toString("base64")

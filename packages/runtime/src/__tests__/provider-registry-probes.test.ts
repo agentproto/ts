@@ -6,6 +6,8 @@
  * tunnel and sandbox families alike.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, describe, expect, it } from "vitest"
 
 import { createProviderProbeCache, type ProviderModule } from "../provider-probes.js"

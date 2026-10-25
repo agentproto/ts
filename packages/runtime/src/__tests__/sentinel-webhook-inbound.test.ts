@@ -6,6 +6,8 @@
  * by the tunnel bearer).
  */
 
+import "../sentinel-platform.js"
+
 import { createHmac } from "node:crypto"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"

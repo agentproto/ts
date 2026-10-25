@@ -18,6 +18,8 @@
  * serialized behind an in-process async mutex.
  */
 
+import "../sentinel-platform.js"
+
 import { decodeWhsecSecret } from "../webhook-egress/signing.js"
 import { verifyCallback, type ChallengeFailureReason, type ChallengeOutcome } from "../webhook-egress/challenge.js"
 import {

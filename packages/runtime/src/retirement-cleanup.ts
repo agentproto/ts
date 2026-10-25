@@ -14,6 +14,8 @@
  *     periodically, mirroring the cron scheduler's owner lifecycle.
  */
 
+import "./sentinel-platform.js"
+
 import type { SentinelStore } from "@agentproto/sentinel"
 import type { SessionFollowStore } from "./session-follow-store.js"
 import { isExpiresAtReached } from "./expires-at.js"

@@ -11,6 +11,8 @@
  * notices.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"

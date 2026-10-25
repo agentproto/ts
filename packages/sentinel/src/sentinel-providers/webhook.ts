@@ -26,7 +26,6 @@
 import { randomBytes } from "node:crypto"
 import { execFile } from "node:child_process"
 
-import { verifyInboundSignature } from "../signature.js"
 import type { GhRunner } from "../local-types.js"
 import { sentinelPlatform } from "../platform.js"
 import { GITHUB_DEFAULT_PR_TYPES, normalizeGithubEvent } from "../sentinel-github-normalize.js"
@@ -402,7 +401,7 @@ export function webhookSentinelProvider(opts: WebhookProviderOptions = {}): Sent
       const rec = hookKey ? hooks().getByKey(hookKey) : undefined
       if (!rec) return { ok: false, reason: "unknown_hook" }
 
-      const verified = verifyInboundSignature("sentinel", {
+      const verified = sentinelPlatform().webhookDelivery.verifyInboundSignature("sentinel", {
         rawBody: req.rawBody,
         headers: req.headers,
         secret: rec.secret,

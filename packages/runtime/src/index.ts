@@ -230,15 +230,6 @@ import {
 } from "./mcp-events/adapter.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
 import { createSentinelAutoLinker } from "@agentproto/sentinel"
-import { configureSentinelPlatform } from "@agentproto/sentinel"
-import { execGh, fetchPrStatus, prRef, PrLookupError } from "./review-pr.js"
-import { sharedAdapterDiscovery, sharedProviderProbe } from "./provider-probes.js"
-import { loadImportedMcps } from "./mcp-imports.js"
-import { writeFileDurable, writeFileDurableSync, appendLineDurableSync } from "./durable-file.js"
-import { createDurableRowFile, oldestTerminalKey } from "./durable-row-file.js"
-import { deliverEventEnvelope, serializeEnvelope, callbackHost, redactUrls } from "./webhook-egress/delivery.js"
-import { createSessionMessage, MAX_MESSAGE_DATA_BYTES } from "./session-message.js"
-import { SessionNotAliveError } from "./sessions.js"
 import { createEventsSurfaceServer } from "./mcp-events-surface.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
@@ -1107,21 +1098,7 @@ import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 import { DELEGATION_TOOL_NAMES } from "./role.js"
 
-configureSentinelPlatform({
-  github: { execGh, fetchPrStatus, prRef, PrLookupError },
-  discovery: {
-    discover: () => sharedAdapterDiscovery.discover(),
-    probe: specifier => sharedProviderProbe.probe(specifier),
-  },
-  mcpImports: { loadImportedMcps: () => loadImportedMcps() },
-  webhookDelivery: { deliverEventEnvelope, serializeEnvelope, callbackHost, redactUrls },
-  durable: { writeFileDurable, writeFileDurableSync, appendLineDurableSync, createDurableRowFile, oldestTerminalKey },
-  messages: {
-    createSessionMessage,
-    maxMessageDataBytes: MAX_MESSAGE_DATA_BYTES,
-    isSessionNotAlive: err => err instanceof SessionNotAliveError,
-  },
-})
+import "./sentinel-platform.js"
 
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
 export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./heartbeat.js"

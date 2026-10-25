@@ -4,6 +4,8 @@
  * readiness reporting.
  */
 
+import "../sentinel-platform.js"
+
 import { createHmac } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"

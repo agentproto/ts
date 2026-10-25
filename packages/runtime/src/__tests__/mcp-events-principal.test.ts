@@ -1,3 +1,5 @@
+import "../sentinel-platform.js"
+
 import { describe, expect, it } from "vitest"
 
 import {

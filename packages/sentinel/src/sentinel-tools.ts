@@ -24,8 +24,8 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
-import { MESSAGE_URGENCIES, type MessageUrgency } from "./local-types.js"
-import { parsePrUrl } from "./signature.js"
+import type { MessageUrgency } from "./local-types.js"
+import { sentinelPlatform } from "./platform.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 import { parseSessionSubject, SESSION_SLUG } from "./sentinel-providers/session.js"
@@ -110,7 +110,7 @@ export async function createSentinelWatch(
   let types = input.types
   const prSugar = input.prUrl !== undefined
   if (input.prUrl) {
-    const parsed = parsePrUrl(input.prUrl)
+    const parsed = sentinelPlatform().github.parsePrUrl(input.prUrl)
     if (!parsed) {
       return { ok: false, error: "invalid_pr_url", message: `could not parse a github.com PR URL from "${input.prUrl}"` }
     }
@@ -320,11 +320,11 @@ const fail = (code: string, message: string): ToolResult => ({
   isError: true,
 })
 
-const urgencyField = z.enum(MESSAGE_URGENCIES as [MessageUrgency, ...MessageUrgency[]])
 const untilField = z.enum(["subject_terminal", "never"])
 
 export function registerSentinelTools(server: McpServer, opts: RegisterSentinelToolsOptions): void {
   const { store, runtime, resolveProvider, isSessionAlive, callerSessionId, activeIntervalMs, tombstones } = opts
+  const urgencyField = z.enum(sentinelPlatform().messages.urgencies as [MessageUrgency, ...MessageUrgency[]])
 
   server.tool(
     "sentinel_watch",
