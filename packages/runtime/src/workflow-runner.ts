@@ -312,6 +312,13 @@ export interface WorkflowRunner {
    *  asynchronous and dirty-run-only; await this where a test or a shutdown
    *  path needs durability. */
   flush(): Promise<void>
+  /** Stop this runner and drain persistence: clears its trailing-flush and
+   *  lease-heartbeat timers, unsubscribes its bus listeners, removes its
+   *  process-exit drain, then awaits every queued write. After it resolves,
+   *  nothing more is written by this runner. Idempotent. Production daemons
+   *  that live for the process lifetime need not call it; tests that delete
+   *  a persist directory MUST. */
+  dispose(): Promise<void>
 
   /** AIP-58 §5/§9 `run.events` — events with `seq > sinceSeq`, in order.
    *  `undefined` when `runId` is unknown; an empty array is a known run
@@ -2348,7 +2355,9 @@ export function createWorkflowRunner(opts: {
   // Serial async write chain: spills, then run files, then lease sidecars,
   // then compaction — a pointer never lands before its target.
   let writeChain: Promise<void> = Promise.resolve()
+  let disposed = false
   const enqueue = (job: () => Promise<void> | void): void => {
+    if (disposed) return
     writeChain = writeChain.then(job).catch((err: unknown) => {
       console.warn(`[workflow-runner] persist failed: ${err instanceof Error ? err.message : String(err)}`)
     })
@@ -2473,9 +2482,10 @@ export function createWorkflowRunner(opts: {
     }
   }
 
+  let onExit: (() => void) | undefined
   if (shouldPersist) {
     // Last-chance synchronous drain: dirty runs and any spill still queued.
-    process.once("exit", () => {
+    onExit = () => {
       try {
         for (const [file, text] of pendingWrites) writeFileAtomicSync(file, storeDir, text)
         for (const state of dirty.values()) {
@@ -2491,7 +2501,8 @@ export function createWorkflowRunner(opts: {
       } catch {
         // Best-effort at exit.
       }
-    })
+    }
+    process.once("exit", onExit)
   }
 
   const loadFull = (runId: string): WorkflowRun | undefined => {
@@ -2722,20 +2733,22 @@ export function createWorkflowRunner(opts: {
     }
   }
 
-  sessionEvents.on("workflow:approval-requested", (ev) => {
-    notifyCaller(ev.runId, "approval", {
-      text: `Workflow run ${ev.runId} is waiting for approval at step "${ev.stepId}": ${clip(ev.prompt)}`,
-      data: { stepId: ev.stepId, approvalId: ev.approvalId },
-    })
-  })
-  sessionEvents.on("workflow:suspended", (ev) => {
-    notifyCaller(ev.runId, "input", {
-      text:
-        `Workflow run ${ev.runId} is suspended at step "${ev.stepId}"` +
-        (ev.prompt ? `, waiting for input: ${clip(ev.prompt)}` : ev.on?.length ? `, waiting for: ${ev.on.join(", ")}` : "."),
-      data: { stepId: ev.stepId },
-    })
-  })
+  const unsubscribers = [
+    sessionEvents.on("workflow:approval-requested", (ev) => {
+      notifyCaller(ev.runId, "approval", {
+        text: `Workflow run ${ev.runId} is waiting for approval at step "${ev.stepId}": ${clip(ev.prompt)}`,
+        data: { stepId: ev.stepId, approvalId: ev.approvalId },
+      })
+    }),
+    sessionEvents.on("workflow:suspended", (ev) => {
+      notifyCaller(ev.runId, "input", {
+        text:
+          `Workflow run ${ev.runId} is suspended at step "${ev.stepId}"` +
+          (ev.prompt ? `, waiting for input: ${clip(ev.prompt)}` : ev.on?.length ? `, waiting for: ${ev.on.join(", ")}` : "."),
+        data: { stepId: ev.stepId },
+      })
+    }),
+  ]
 
   // ── Public interface ───────────────────────────────────────────────
 
@@ -3058,6 +3071,27 @@ export function createWorkflowRunner(opts: {
 
     flush: async () => {
       flushDirty()
+      await writeChain
+    },
+
+    dispose: async () => {
+      if (disposed) return
+      if (trailingFlush) {
+        clearTimeout(trailingFlush)
+        trailingFlush = undefined
+      }
+      for (const state of runs.values()) {
+        if (state.heartbeatTimer) {
+          clearInterval(state.heartbeatTimer)
+          state.heartbeatTimer = undefined
+        }
+      }
+      for (const unsubscribe of unsubscribers) unsubscribe()
+      if (onExit) process.removeListener("exit", onExit)
+      // Queue whatever is still dirty BEFORE closing the enqueue gate, so it
+      // lands in the chain we await below.
+      flushDirty()
+      disposed = true
       await writeChain
     },
 
