@@ -18,7 +18,7 @@
  * illustrative names in the plan's task text. See `GITHUB_SCHEME` below.
  */
 
-import type { SentinelMatchClause } from "../sentinel-providers/types.js"
+import type { SentinelMatchClause } from "@agentproto/sentinel"
 
 // ── Principal (frozen: exactly two constructors) ─────────────────────────
 

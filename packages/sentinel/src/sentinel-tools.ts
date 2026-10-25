@@ -1,0 +1,411 @@
+/**
+ * MCP surface for the sentinel primitive (AIP-60 §6): `sentinel_watch`,
+ * `sentinel_list`, `sentinel_unwatch`, `sentinel_poll_now`.
+ *
+ * `sentinel_watch`'s `sessionId` defaults to the calling session — same
+ * "trusted `?callerSessionId=`" pattern `message-tools.ts` uses — so a
+ * session watching its own PR doesn't need to know its own id.
+ *
+ * Provider auto-select (design §5, `sentinel-provider-select.ts`): with no
+ * explicit `provider`, `agentpush` when it is set up, else `webhook` when a
+ * STABLE public URL exists and it is ready, else `local-gh`. An explicit
+ * `provider` is never second-guessed (and never silently falls back — a
+ * not-ready `webhook` fails `create` with its setup error).
+ *
+ * `createSentinelWatch`/`cancelSentinelWatch`/`sentinelView` are exported so
+ * `http-server.ts`'s `POST/GET/DELETE /sentinels` routes (the daemon-HTTP
+ * surface `agentproto sentinel` talks to) share the exact same
+ * validation/sugar-resolution logic as this MCP surface — same pattern as
+ * `TunnelRegistry` backing both `tunnel_create` and `POST /tunnels`, except
+ * here the shared logic is a plain function rather than a stateful registry
+ * method, since sentinel creation also needs the provider handle.
+ */
+
+import { z } from "zod"
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+
+import type { MessageUrgency } from "./local-types.js"
+import { sentinelPlatform } from "./platform.js"
+import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
+import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+import { parseSessionSubject, SESSION_SLUG } from "./sentinel-providers/session.js"
+import type { SentinelPublicUrl } from "./sentinel-public-url.js"
+import {
+  deliveryPreferenceFor,
+  singleMatch,
+  type SentinelHandle,
+  type SentinelMatchClause,
+  type SentinelProviderHandle,
+  type SentinelSpec,
+  type SentinelTarget,
+  type SentinelUntil,
+} from "./sentinel-providers/types.js"
+import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
+import type { SentinelDeliveryStatus } from "./sentinel-webhook-outbox.js"
+import { mintSentinelId, type Sentinel, type SentinelStatus, type SentinelStore } from "./sentinel-store.js"
+
+// ── Shared create/cancel/view (MCP + HTTP) ───────────────────────────────
+
+export interface SentinelWatchInput {
+  subject?: string
+  prUrl?: string
+  sessionId?: string
+  types?: string[]
+  urgency?: MessageUrgency
+  until?: "subject_terminal" | "never"
+  provider?: string
+  /** ISO timestamp after which the sentinel is cancelled/removed. Defaulted
+   *  for session-target sentinels. */
+  expiresAt?: string
+}
+
+export interface SentinelWatchDeps {
+  store: SentinelStore
+  resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  isSessionAlive: (sessionId: string) => boolean
+  /** Default `target.sessionId` when `input.sessionId` is omitted (the MCP
+   *  caller's own session; HTTP callers have no equivalent and must always
+   *  pass `sessionId` explicitly). */
+  defaultSessionId?: string
+  /** Poll cadence handed to a provider's `create()` as its
+   *  `DeliveryPreference`. Default 15s (matches `sentinel-runtime.ts`'s
+   *  `activeIntervalMs`). */
+  activeIntervalMs?: number
+  /** Public-URL source for provider auto-select. Defaults to the
+   *  daemon-wired resolver (`sentinel-public-url.ts`). */
+  publicUrl?: () => SentinelPublicUrl | undefined
+}
+
+export type SentinelWatchResult =
+  | { ok: true; sentinel: Sentinel }
+  | { ok: false; error: string; message: string }
+
+function resolveUntil(input: "subject_terminal" | "never" | undefined, defaultsToTerminal: boolean): SentinelUntil {
+  if (input === "never") return { kind: "never" }
+  if (input === "subject_terminal") return { kind: "subject_terminal" }
+  // No explicit `until` — `prUrl` sugar and a `session:<id>` subject both
+  // default to watching until the subject's terminal event (PR closed /
+  // session exited); any other raw `subject` defaults to "never" (the
+  // caller presumably wants `sentinel_unwatch` to be the only way out).
+  return defaultsToTerminal ? { kind: "subject_terminal" } : { kind: "never" }
+}
+
+/** The shared create path: resolve `prUrl` sugar / a raw `subject`, default
+ *  `sessionId`/`until`, resolve the provider, call its `create()`, then
+ *  persist the record. Never throws — every failure comes back as
+ *  `{ok:false, error, message}` so both an MCP tool result and an HTTP JSON
+ *  body can be built from it directly. */
+export async function createSentinelWatch(
+  deps: SentinelWatchDeps,
+  input: SentinelWatchInput,
+): Promise<SentinelWatchResult> {
+  if (!input.subject && !input.prUrl) {
+    return { ok: false, error: "missing_subject", message: "provide either `subject` or `prUrl`" }
+  }
+  if (input.subject && input.prUrl) {
+    return { ok: false, error: "ambiguous_subject", message: "provide only one of `subject` or `prUrl`" }
+  }
+
+  let subject: string
+  let types = input.types
+  const prSugar = input.prUrl !== undefined
+  if (input.prUrl) {
+    const parsed = sentinelPlatform().github.parsePrUrl(input.prUrl)
+    if (!parsed) {
+      return { ok: false, error: "invalid_pr_url", message: `could not parse a github.com PR URL from "${input.prUrl}"` }
+    }
+    subject = `github:${parsed.repo}#${parsed.number}`
+    if (!types) types = [...GITHUB_DEFAULT_PR_TYPES]
+  } else {
+    subject = input.subject!
+  }
+  const sessionSubject = !prSugar && parseSessionSubject(subject) !== undefined
+  const until = resolveUntil(input.until, prSugar || sessionSubject)
+
+  const sessionId = input.sessionId ?? deps.defaultSessionId
+  if (!sessionId) {
+    return {
+      ok: false,
+      error: "no_caller_identity",
+      message:
+        "no `sessionId` given and no calling session identity to default to " +
+        "(this needs gateway access attributed to a session, or an explicit sessionId).",
+    }
+  }
+  if (!deps.isSessionAlive(sessionId)) {
+    return { ok: false, error: "session_not_alive", message: `session "${sessionId}" is not alive` }
+  }
+
+  // A `session:<id>` subject always resolves to the `session` provider when
+  // no explicit `provider` is given — `autoSelectProviderSlug` only knows
+  // about the GitHub-shaped providers (local-gh/webhook/agentpush), none of
+  // which understand this scheme, so routing it through there would pick a
+  // provider that creates a dead watch (or, for agentpush's `subjects:
+  // ["*"]`, a bogus remote subscription for a scheme it has no hosted
+  // source for).
+  const providerSlug =
+    input.provider ??
+    (sessionSubject
+      ? SESSION_SLUG
+      : await autoSelectProviderSlug({
+          resolveProvider: deps.resolveProvider,
+          ...(deps.publicUrl ? { publicUrl: deps.publicUrl } : {}),
+        }))
+  const provider = await deps.resolveProvider(providerSlug)
+  if (!provider) {
+    return { ok: false, error: "unknown_provider", message: `provider "${providerSlug}" is not available` }
+  }
+
+  const spec: SentinelSpec = {
+    match: singleMatch(subject, types),
+    until,
+    target: { kind: "session", sessionId, urgency: input.urgency ?? "next-turn" },
+    provider: providerSlug,
+  }
+
+  // Minted before `create` so a provider that stamps the id remotely
+  // (agentpush's consumerRef) names the same sentinel the store records.
+  const id = mintSentinelId()
+  let handle: SentinelHandle
+  try {
+    handle = await provider.create(spec, deliveryPreferenceFor(provider, deps.activeIntervalMs ?? 15_000), { sentinelId: id })
+  } catch (err) {
+    return { ok: false, error: "provider_create_failed", message: err instanceof Error ? err.message : String(err) }
+  }
+
+  try {
+    const sentinel = deps.store.create({
+      id,
+      spec,
+      provider: providerSlug,
+      handle,
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+    })
+    return { ok: true, sentinel }
+  } catch (err) {
+    return { ok: false, error: "create_failed", message: err instanceof Error ? err.message : String(err) }
+  }
+}
+
+/** The shared stop path: record a persisted cancel tombstone for the backing
+ *  remote (retried by the runtime sweep until the provider confirms), drop the
+ *  record, then attempt the remote delete. `false` only means "no such
+ *  sentinel" — a failed or unreachable provider never blocks the record's
+ *  removal (a stuck provider-side resource must not strand
+ *  `sentinel_unwatch`/`DELETE /sentinels/:id`). Without `tombstones` it
+ *  degrades to the old best-effort cancel. */
+export async function cancelSentinelWatch(
+  deps: Pick<SentinelWatchDeps, "store" | "resolveProvider"> & { tombstones?: CancelTombstoneStore },
+  id: string,
+): Promise<boolean> {
+  const sentinel = deps.store.get(id)
+  if (!sentinel) return false
+  if (deps.tombstones) {
+    try {
+      await deps.tombstones.cancel(sentinel.handle, () => deps.store.remove(id))
+      return true
+    } catch {
+      // The tombstone could not be made durable; fall through to the
+      // best-effort path so the operator is never stranded.
+    }
+  }
+  const provider = await deps.resolveProvider(sentinel.provider)
+  if (provider) {
+    try {
+      await provider.cancel(sentinel.handle)
+    } catch {
+      // Best-effort — see doc comment above.
+    }
+  }
+  deps.store.remove(id)
+  return true
+}
+
+/** The wire view of a target: for a `webhook` target this is the REDACTED
+ *  shape — `url` yes, plus `hasSecret:true`/`secretRedacted:true`. The
+ *  secret material (or even its `secretRef` handle) NEVER crosses a
+ *  listing/get view (plan §4 W-B task 4 — code-verified leak closed here). */
+export type SentinelTargetView =
+  | Exclude<SentinelTarget, { kind: "webhook" }>
+  | { kind: "webhook"; url: string; hasSecret: true; secretRedacted: true }
+
+/** Compact wire view of a sentinel for tool/HTTP results — the internal-only
+ *  fields (`handle`, `seen`, `terminalSubjects`) and any secret material
+ *  never leave the daemon. */
+export interface SentinelView {
+  id: string
+  provider: string
+  status: SentinelStatus
+  match: SentinelMatchClause[]
+  until: SentinelUntil
+  target: SentinelTargetView
+  group?: string
+  label?: string
+  createdTs: number
+  eventCount: number
+  lastEventTs?: number
+  lastError?: string
+  /** Hard expiry, when one is set (defaulted for session-target sentinels). */
+  expiresAt?: string
+  /** Webhook-target sentinels only, once the outbox holds a row for it. */
+  deliveryStatus?: SentinelDeliveryStatus
+}
+
+function targetView(target: SentinelTarget): SentinelTargetView {
+  if (target.kind === "webhook") {
+    return { kind: "webhook", url: target.url, hasSecret: true, secretRedacted: true }
+  }
+  return target
+}
+
+export function sentinelView(s: Sentinel): SentinelView {
+  return {
+    id: s.id,
+    provider: s.provider,
+    status: s.status,
+    match: s.spec.match,
+    until: s.spec.until,
+    target: targetView(s.spec.target),
+    ...(s.spec.group ? { group: s.spec.group } : {}),
+    ...(s.spec.label ? { label: s.spec.label } : {}),
+    createdTs: s.createdTs,
+    eventCount: s.eventCount,
+    ...(s.lastEventTs !== undefined ? { lastEventTs: s.lastEventTs } : {}),
+    ...(s.lastError ? { lastError: s.lastError } : {}),
+    ...(s.expiresAt ? { expiresAt: s.expiresAt } : {}),
+  }
+}
+
+/** `sentinelView` plus the outbox-derived `deliveryStatus` (when present).
+ *  Separate from `sentinelView` so `.map(sentinelView)` stays valid. */
+export function sentinelViewWithDelivery(s: Sentinel, deliveryStatus?: SentinelDeliveryStatus): SentinelView {
+  return deliveryStatus ? { ...sentinelView(s), deliveryStatus } : sentinelView(s)
+}
+
+// ── MCP tools ─────────────────────────────────────────────────────────
+
+export interface SentinelRuntimeLike {
+  pollOnce(): Promise<void>
+}
+
+export interface RegisterSentinelToolsOptions {
+  store: SentinelStore
+  runtime: SentinelRuntimeLike
+  /** Persisted remote-cancel store (the runtime's `cancelTombstones`). */
+  tombstones?: CancelTombstoneStore
+  resolveProvider: (slug: string) => Promise<SentinelProviderHandle | null>
+  isSessionAlive: (sessionId: string) => boolean
+  /** The trusted `?callerSessionId=` of the connecting `/mcp` client — the
+   *  default target session for `sentinel_watch` when the caller omits
+   *  `sessionId`. Absent for a human/root `/mcp` call. */
+  callerSessionId?: string
+  /** Poll cadence handed to a provider's `create()` as its
+   *  `DeliveryPreference` — matches `sentinel-runtime.ts`'s
+   *  `activeIntervalMs`. Default 15s. */
+  activeIntervalMs?: number
+  /** Per-sentinel webhook delivery health (the runtime's outbox). */
+  deliveryStatus?: (sentinelId: string) => SentinelDeliveryStatus | undefined
+}
+
+type ToolResult = {
+  content: Array<{ type: "text"; text: string }>
+  isError?: boolean
+}
+
+const ok = (body: Record<string, unknown>): ToolResult => ({
+  content: [{ type: "text", text: JSON.stringify({ ok: true, ...body }) }],
+})
+const fail = (code: string, message: string): ToolResult => ({
+  content: [{ type: "text", text: JSON.stringify({ ok: false, error: code, message }) }],
+  isError: true,
+})
+
+const untilField = z.enum(["subject_terminal", "never"])
+
+export function registerSentinelTools(server: McpServer, opts: RegisterSentinelToolsOptions): void {
+  const { store, runtime, resolveProvider, isSessionAlive, callerSessionId, activeIntervalMs, tombstones } = opts
+  const urgencyField = z.enum(sentinelPlatform().messages.urgencies as [MessageUrgency, ...MessageUrgency[]])
+
+  server.tool(
+    "sentinel_watch",
+    "Watch a subject — a GitHub PR/repo (default) or ANOTHER SESSION's own " +
+      "lifecycle — and deliver matching events as a `system`/`notice` message " +
+      "into a session's AIP-46 inbox. Provide either `prUrl` (sugar: " +
+      "`https://github.com/o/r/pull/N` -> subject `github:o/r#N`, the default " +
+      "PR type set, and `until: subject_terminal`) or a raw `subject`: a GitHub " +
+      "one (`github:o/r#N`, `github:o/r`), or `session:<id>` to watch another " +
+      "session — woken on its turn-end, awaiting-input, or exit, even if it " +
+      "never calls `message_parent`, with the watch self-expiring once it " +
+      "exits (`until` defaults to `subject_terminal` for this scheme too). " +
+      "Prefer this over `session_follow` for a single, known target that should " +
+      "auto-expire on exit; prefer `session_follow` for a broad selector " +
+      "(`all`/`cwdPrefix`) with coalesced digests across many sessions. " +
+      "`sessionId` (the DELIVERY target) defaults to the calling session — " +
+      "distinct from the `<id>` inside a `session:<id>` subject (the WATCHED " +
+      "session). `provider` picks the backend: `local-gh` (poll every ~15-60s " +
+      "over the host's authenticated `gh` CLI, zero infra), `webhook` " +
+      "(near-real-time push via a GitHub repo hook; needs a public daemon URL " +
+      "— a named tunnel or AGENTPROTO_PUBLIC_URL — and a `gh` token with " +
+      "admin:repo_hook), `agentpush` (hosted, durable subscription: events " +
+      "queue server-side across daemon downtime; needs an agentpush API key; " +
+      "one subject per sentinel) or `session` (in-process, zero infra, no " +
+      "credentials — the only backend that understands a `session:<id>` " +
+      "subject, and picked automatically for one); see `list_sentinel_adapters` " +
+      "for readiness. Omitted for a GitHub subject, it defaults to `agentpush` " +
+      "when set up, else `webhook` when a stable public URL exists and webhook " +
+      "is ready, else `local-gh`.",
+    {
+      subject: z.string().optional().describe("Raw subject, e.g. \"github:owner/repo#42\" or \"session:sess_abc123\". Mutually exclusive with prUrl."),
+      prUrl: z.string().optional().describe("https://github.com/owner/repo/pull/N — sugar for subject+types+until."),
+      sessionId: z.string().optional().describe("Delivery target session. Defaults to the calling session."),
+      types: z.array(z.string()).optional().describe("Type globs. Defaults to the provider's defaultTypes(subject)."),
+      urgency: urgencyField.optional().describe("Inbox delivery urgency. Default \"next-turn\"."),
+      until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl and for a \"session:<id>\" subject, \"never\" for any other raw subject."),
+      provider: z.string().optional().describe("Provider slug: \"local-gh\", \"webhook\", \"agentpush\" or \"session\". Default for a GitHub subject: \"agentpush\" when set up, else \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\". A \"session:<id>\" subject always defaults to \"session\"."),
+      expiresAt: z.string().optional().describe("ISO timestamp after which the sentinel is cancelled and removed. Defaulted to 7 days for session-target sentinels; an unparseable value falls back to that default. An update that omits it keeps the existing expiry."),
+    },
+    async (input: SentinelWatchInput) => {
+      const result = await createSentinelWatch(
+        { store, resolveProvider, isSessionAlive, ...(callerSessionId ? { defaultSessionId: callerSessionId } : {}), ...(activeIntervalMs !== undefined ? { activeIntervalMs } : {}) },
+        input,
+      )
+      return result.ok
+        ? ok({ sentinel: sentinelView(result.sentinel) })
+        : fail(result.error, `sentinel_watch: ${result.message}`)
+    },
+  )
+
+  server.tool(
+    "sentinel_list",
+    "List every sentinel this daemon is tracking, with status, match " +
+      "clauses, target, and event counters (webhook targets also report `deliveryStatus`). Credentials are never returned.",
+    {},
+    async () => ok({ sentinels: store.list().map(s => sentinelViewWithDelivery(s, opts.deliveryStatus?.(s.id))) }),
+  )
+
+  server.tool(
+    "sentinel_unwatch",
+    "Stop a sentinel: best-effort cancels the provider-side watch, then " +
+      "removes the record. Idempotent-ish: an unknown id is reported, not thrown.",
+    { id: z.string().describe("Sentinel id (sen_...).") },
+    async ({ id }: { id: string }) => {
+      const removed = await cancelSentinelWatch({ store, resolveProvider, ...(tombstones ? { tombstones } : {}) }, id)
+      if (!removed) return fail("not_found", `sentinel_unwatch: no sentinel "${id}"`)
+      return ok({ removed: true, id })
+    },
+  )
+
+  server.tool(
+    "sentinel_poll_now",
+    "Force an immediate poll tick across every poll-capable sentinel " +
+      "(there is no per-sentinel targeted poll yet — `id`, when given, only " +
+      "selects what's echoed back in the result, not what gets polled).",
+    { id: z.string().optional().describe("Echo this sentinel's post-poll state in the result.") },
+    async ({ id }: { id?: string }) => {
+      if (id && !store.get(id)) return fail("not_found", `sentinel_poll_now: no sentinel "${id}"`)
+      await runtime.pollOnce()
+      const sentinel = id ? store.get(id) : undefined
+      return ok({ polled: true, ...(sentinel ? { sentinel: sentinelView(sentinel) } : {}) })
+    },
+  )
+}

@@ -7,18 +7,20 @@
  * re-subscribe is never cancelled by the old tombstone.
  */
 
+import "../sentinel-platform.js"
+
 import { afterEach, describe, expect, it } from "vitest"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { createCancelTombstoneStore } from "../sentinel-cancel-tombstones.js"
+import { createCancelTombstoneStore } from "@agentproto/sentinel"
 import { eventsSubscribe, eventsUnsubscribe, type EventsUnsubscribeContext } from "../mcp-events/adapter.js"
 import { daemonBearerPrincipal } from "../mcp-events/events-registry.js"
-import { createSentinelStore } from "../sentinel-store.js"
-import { cancelSentinelWatch } from "../sentinel-tools.js"
-import { createFakeSentinelProvider, type FakeSentinelProvider } from "../sentinel-providers/fake.js"
-import type { SentinelHandle, SentinelProviderHandle } from "../sentinel-providers/types.js"
+import { createSentinelStore } from "@agentproto/sentinel"
+import { cancelSentinelWatch } from "@agentproto/sentinel"
+import { createFakeSentinelProvider, type FakeSentinelProvider } from "@agentproto/sentinel"
+import type { SentinelHandle, SentinelProviderHandle } from "@agentproto/sentinel"
 
 const dirs: string[] = []
 const tmp = (): string => {
