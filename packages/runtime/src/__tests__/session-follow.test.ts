@@ -456,7 +456,13 @@ describe("session-follow", () => {
       expect(msg.from).toEqual({ relation: "system" })
       expect(msg.kind).toBe("notice")
       expect(msg.urgency).toBe("next-turn")
-      expect(sendMessage.mock.calls[0]![1]).toEqual({ source: "session-follow", origin: "follow:chief" })
+      expect(sendMessage.mock.calls[0]![1]).toEqual(
+        expect.objectContaining({
+          source: "session-follow",
+          origin: "follow:chief",
+          coalesceKey: "follow-digest:chief",
+        }),
+      )
       const [header, ...lines] = msg.text.split("\n")
       expect(header).toMatch(/^\[session-follow\] automatic digest — 3 events/)
       expect(header).toContain("needs the human's attention")

@@ -1136,6 +1136,34 @@ export interface SessionWatcherInfo {
   since: string
 }
 
+/** One event in a coalesced follow digest, as plain JSON. Everything
+ *  `formatFollowDigest` needs is captured at classification time:
+ *  identifiers plus the already-resolved excerpt text, so a merged digest
+ *  never has to re-read a live session or its transcript after a restart. */
+export interface DigestEntry {
+  sessionId: string
+  event: string
+  ts: string
+  label?: string
+  cwd?: string
+  detail?: string
+  key?: string
+  boardId?: string
+  taskId?: string
+  awaitingInput?: boolean
+  empty?: boolean
+  reason?: string
+  /** Already-resolved excerpt text for this event. */
+  text?: string
+}
+
+/** The persisted body of a follow digest queued behind a busy follower. */
+export interface QueuedDigest {
+  entries: DigestEntry[]
+  /** Events dropped by the merge cap, oldest first. */
+  omitted: number
+}
+
 /** One prompt waiting in `SessionDescriptor.promptQueue` — see that
  *  field's doc for the FIFO/force ordering contract. */
 export interface QueuedPrompt {
@@ -1189,6 +1217,9 @@ export interface QueuedPrompt {
   /** How many enqueues have collapsed into this item (absent ⇒ 1 — never
    *  coalesced). Lets a queue UI show "x3". */
   coalescedCount?: number
+  /** Follow-digest payload carried across a replace-in-place merge. Plain
+   *  JSON so it survives the promptQueue persist/restore round-trip. */
+  digest?: QueuedDigest
 }
 
 /** What `enqueuePrompt` resolved to — lets a caller (e.g. MCP `agent_prompt`)
@@ -4525,6 +4556,16 @@ export interface SessionsRegistry {
        *  key is REPLACED in place (newest message wins, id + position kept,
        *  `coalescedCount` incremented) instead of a second item being pushed. */
       coalesceKey?: string
+      /** Digest payload for a freshly queued item (follow digests). */
+      digest?: QueuedDigest
+      /** On replacement only: synchronously merge with the item actually
+       *  still waiting under `coalesceKey`. Returned `message`/`envelope`
+       *  replace the fresh ones and `digest` becomes the queued payload. */
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
     }
   ): Promise<EnqueuePromptResult>
   /** One pass over every prompt queue: force-deliver items past their
@@ -4572,6 +4613,14 @@ export interface SessionsRegistry {
        *  (sentinel notices use this so a burst about one PR/commit becomes
        *  one queued item). */
       coalesceKey?: string
+      /** Follow-digest payload for a freshly queued item. */
+      digest?: QueuedDigest
+      /** Merge callback carried through to `enqueuePrompt`'s queue arm. */
+      merge?: (existing: QueuedPrompt) => {
+        message: string
+        envelope?: SessionMessage
+        digest: QueuedDigest
+      }
     },
   ): Promise<SendMessageResult>
   /** Block until a message matching `filter` is in `id`'s inbox (returns at
@@ -12630,18 +12679,45 @@ export function createSessionsRegistry(opts?: {
           const idx = waiting.findIndex(p => p.coalesceKey === coalesceKey)
           if (idx !== -1) {
             const existing = waiting[idx]!
+            const merged = opts.merge?.(existing)
+            const replacingEnvelope = merged?.envelope ?? envelope
+            const replacingMessage = merged?.message ?? (envelope ? envelope.text : message)
+            const finalEnvelope: SessionMessage | undefined = replacingEnvelope
+              ? replacingEnvelope.text === replacingMessage
+                ? replacingEnvelope
+                : {
+                    ...replacingEnvelope,
+                    text: typeof replacingMessage === "string" ? replacingMessage : replacingEnvelope.text,
+                  }
+              : undefined
             const replaced: QueuedPrompt = {
               ...existing,
-              message: envelope ? envelope.text : message,
+              message: replacingMessage,
               queuedAt: new Date().toISOString(),
-              ...(envelope ? { envelope } : {}),
+              ...(finalEnvelope ? { envelope: finalEnvelope } : {}),
+              ...(merged?.digest ? { digest: merged.digest } : {}),
               coalesceKey,
               coalescedCount: (existing.coalescedCount ?? 1) + 1,
+            }
+            // A merge replaces the older digest's inbox copy too, so the
+            // inbox holds one digest rather than N. The fresh envelope (with
+            // the merged text) keeps its own id.
+            if (merged) {
+              const superseded = existing.envelope?.id
+              if (superseded !== undefined && superseded !== finalEnvelope?.id) {
+                removeFromInbox(rtPre, new Set([superseded]))
+              }
+              if (finalEnvelope && envelope && finalEnvelope.text !== envelope.text) {
+                setInbox(
+                  rtPre,
+                  (rtPre.desc.inbox ?? []).map(m => (m.id === finalEnvelope.id ? finalEnvelope : m)),
+                )
+              }
             }
             const next = [...waiting]
             next[idx] = replaced
             rtPre.desc.promptQueue = next
-            if (envelope) emitSessionMessage(envelope)
+            if (finalEnvelope) emitSessionMessage(finalEnvelope)
             schedulePersist()
             return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: existing.id }
           }
@@ -12656,6 +12732,7 @@ export function createSessionsRegistry(opts?: {
           ...(envelope ? { envelope } : {}),
           ...(steerable ? { steer: true } : {}),
           ...(coalesceKey !== undefined ? { coalesceKey } : {}),
+          ...(opts.digest ? { digest: opts.digest } : {}),
           ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
             ? {
                 deliverBy: new Date(Date.now() + opts.deliverWithinMs).toISOString(),
@@ -12792,6 +12869,8 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.origin ? { origin: opts.origin } : {}),
         ...(opts?.coalesceKey ? { coalesceKey: opts.coalesceKey } : {}),
+        ...(opts?.digest ? { digest: opts.digest } : {}),
+        ...(opts?.merge ? { merge: opts.merge } : {}),
       })
       return {
         messageId: msg.id,
