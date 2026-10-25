@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 97 |
+| core | 98 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 9 |
