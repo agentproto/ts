@@ -1,6 +1,6 @@
 /**
  * AIP-7 POLICY.md — `definePolicy` constructor + `policyFromManifest`
- * markdown-authored entry. Built on `@agentproto/define-doctype`.
+ * markdown-authored entry. Built on `@agentproto/doctype`.
  *
  * Policies are the AIP-7 doctype that declares "what an autonomous
  * actor may do without further approval, and what threshold of
@@ -24,7 +24,7 @@
  *     lives in `name`. We skip the description length check entirely.
  */
 
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import matter from "gray-matter"
 import { EMITTED_SPEC_NAME } from "../spec/names.js"
 import {

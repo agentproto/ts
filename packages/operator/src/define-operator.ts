@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import type { OperatorDefinition, OperatorHandle } from "./types.js"
 
 /**

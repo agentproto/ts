@@ -21,7 +21,7 @@ export default createTsupConfig({
     "zod",
     "gray-matter",
     "yaml",
-    "@agentproto/define-doctype",
+    "@agentproto/doctype",
     "node:crypto",
     "node:fs",
     "node:fs/promises",

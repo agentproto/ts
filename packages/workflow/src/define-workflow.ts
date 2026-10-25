@@ -1,4 +1,4 @@
-import { createDoctype } from "@agentproto/define-doctype"
+import { createDoctype } from "@agentproto/doctype"
 import { harnessSchema, workflowFrontmatterSchema } from "./schema.js"
 import type { WorkflowDefinition, WorkflowHandle } from "./types.js"
 

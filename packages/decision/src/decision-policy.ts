@@ -16,7 +16,7 @@
  * Lives next to `jev-client.ts` (its only runtime consumer): DECISION.md is
  * specified by AIP-65 (Draft) — the typed question / judge-ladder /
  * escalation primitive this file parses and validates. It is not an
- * AIP-scaffolded doctype (`@agentproto/define-doctype` is the factory for
+ * AIP-scaffolded doctype (`@agentproto/doctype` is the factory for
  * AIP `defineX` constructors with a generated schema.ts); AIP-65 has no
  * vendored JSON Schema under `specs/resources/`, so this file's shape is
  * hand-written against the spec prose instead of generated from a draft.

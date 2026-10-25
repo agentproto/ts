@@ -91,7 +91,7 @@ export interface ReactionReceiptStore {
 }
 
 export interface ReactionReceiptStoreOptions {
-  /** Default `~/.agentproto/reaction-receipts.json`. */
+  /** Default `~/.agentproto/reaction-receipts.json` (the gateway passes a per-bucket file). */
   filePath?: string
   /** Injectable clock. Every timestamp comes from it. Default `Date.now`. */
   nowMs?: () => number
@@ -115,6 +115,11 @@ const LOG_PREFIX = "[reaction-receipts]"
 
 function agentprotoHome(): string {
   return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+}
+
+/** One receipt file per served workspace bucket, so daemons serving different buckets never share a file. */
+export function reactionReceiptsPathForBucket(bucket: string): string {
+  return resolve(agentprotoHome(), "reaction-receipts", `${bucket}.json`)
 }
 
 const PERSIST_DEBOUNCE_MS = 1_500

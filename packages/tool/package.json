@@ -54,7 +54,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/define-doctype": "workspace:*",
+    "@agentproto/doctype": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "ajv": "^8.20.0",
     "gray-matter": "^4.0.3",

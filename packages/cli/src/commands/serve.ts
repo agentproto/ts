@@ -59,6 +59,7 @@ import {
 } from "./worktree.js"
 import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
 import { installDaemonLogTimestamps } from "./_log-timestamps.js"
+import { reconcileReactionsAtBoot } from "./serve-boot-reactions.js"
 import { systemPromptCapsFor } from "./system-prompt-caps.js"
 import { loadConfig } from "@agentproto/runtime/config"
 import {
@@ -1083,6 +1084,13 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // both would race to resume the same sessions out of a shared bucket. No-op
   // (enabled:false) unless daemon.resumeSessionsOnBoot is set. Best-effort:
   // a failure here must never gate the daemon being up.
+  let bootBuckets:
+    | {
+        registeredSlugs: ReadonlySet<string>
+        servedBucket: string
+        otherLiveBuckets: ReadonlySet<string> | undefined
+      }
+    | undefined
   try {
     const wsConfig = await loadWorkspacesConfig()
     const registeredSlugs = new Set(wsConfig.workspaces.map(w => w.slug))
@@ -1131,6 +1139,23 @@ export async function runServe(args: readonly string[]): Promise<number> {
         `${color.dim}${reattached.unserved} detached row(s) belong to other workspaces (not served by this daemon)${color.reset}\n`,
       )
     }
+    bootBuckets = { registeredSlugs, servedBucket, otherLiveBuckets }
+  } catch (err) {
+    process.stderr.write(
+      `${color.dim}eager resume-on-boot skipped — ${
+        err instanceof Error ? err.message : String(err)
+      }${color.reset}\n`,
+    )
+  }
+
+  // Reaction receipt crash recovery: runs even when the config load above
+  // failed (see serve-boot-reactions.ts).
+  await reconcileReactionsAtBoot(gateway, bootBuckets, line =>
+    process.stderr.write(`${color.dim}${line}${color.reset}\n`),
+  )
+
+  if (bootBuckets !== undefined) try {
+    const { registeredSlugs, servedBucket } = bootBuckets
     const eager = await gateway.resumeSessionsOnBoot({
       isServed: desc =>
         resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
