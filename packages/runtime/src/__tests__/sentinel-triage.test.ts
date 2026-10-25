@@ -80,6 +80,103 @@ describe("classifySentinelEvent", () => {
     })
   })
 
+  it("failure: a failing verdict on the same head as an earlier pending tick still wakes", () => {
+    const recent = new RecentKeys()
+    const pending = makeEvent({
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: null },
+    })
+    expect(classifySentinelEvent(pending, input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(pending, input(recent, 0))
+
+    const failure = makeEvent({
+      id: "evt_2",
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: "failure" },
+    })
+    expect(classifySentinelEvent(failure, input(recent, 60_000))).toEqual({
+      decision: "wake",
+      rule: "failure",
+    })
+    recordSentinelTriageKey(failure, input(recent, 60_000))
+    expect(
+      classifySentinelEvent(
+        makeEvent({
+          id: "evt_3",
+          type: "github.check_suite.completed",
+          data: { headSha: "sha1", conclusion: "failure" },
+        }),
+        input(recent, 120_000),
+      ),
+    ).toEqual({ decision: "wake", rule: "failure" })
+  })
+
+  it("failure: a state or conclusion meaning failure, error, cancelled or timed_out wakes", () => {
+    for (const data of [
+      { headSha: "sha1", conclusion: "failure" },
+      { headSha: "sha1", conclusion: "timed_out" },
+      { headSha: "sha1", conclusion: "cancelled" },
+      { headSha: "sha1", state: "error" },
+    ]) {
+      const result = classifySentinelEvent(
+        makeEvent({ type: "github.check_suite.completed", data }),
+        input(new RecentKeys(), 0),
+      )
+      expect(result).toEqual({ decision: "wake", rule: "failure" })
+    }
+  })
+
+  it("fixed window: repeats do not refresh the first-seen time", () => {
+    const recent = new RecentKeys()
+    const first = makeEvent({
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: null },
+    })
+    expect(classifySentinelEvent(first, input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(first, input(recent, 0))
+
+    const second = makeEvent({
+      id: "evt_2",
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: null },
+    })
+    expect(classifySentinelEvent(second, input(recent, 9 * 60_000))).toEqual({
+      decision: "fyi",
+      rule: "coalesced-repeat",
+    })
+    recordSentinelTriageKey(second, input(recent, 9 * 60_000))
+
+    const third = makeEvent({
+      id: "evt_3",
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: null },
+    })
+    expect(classifySentinelEvent(third, input(recent, 11 * 60_000))).toEqual({
+      decision: "wake",
+      rule: "default",
+    })
+  })
+
+  it("different verdict on the same head is not a repeat", () => {
+    const recent = new RecentKeys()
+    const pending = makeEvent({
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: null },
+    })
+    expect(classifySentinelEvent(pending, input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
+    recordSentinelTriageKey(pending, input(recent, 0))
+
+    const success = makeEvent({
+      id: "evt_2",
+      type: "github.check_suite.completed",
+      data: { headSha: "sha1", conclusion: "success" },
+    })
+    expect(classifySentinelEvent(success, input(recent, 60_000))).toEqual({
+      decision: "wake",
+      rule: "default",
+    })
+  })
+
   it("default: an event without a coalesce key always wakes", () => {
     const recent = new RecentKeys()
     const event = makeEvent({ type: "github.pull_request.closed" })
@@ -164,6 +261,48 @@ describe("writeSentinelTriageLedger", () => {
         type: "github.pull_request.synchronize",
         subject: "github:acme/widgets#42",
         urgency: "next-turn",
+      })
+      expect(raw).not.toContain("summary")
+      expect(raw).not.toContain("data")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("appends eventTs and key when available, and still no summary or data", () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-"))
+    const filePath = join(dir, "sentinel-triage.jsonl")
+    try {
+      writeSentinelTriageLedger(filePath, {
+        ts: "2026-10-01T00:05:00.000Z",
+        decision: "wake",
+        rule: "failure",
+        target: "sess_1",
+        sentinelId: "sen_1",
+        eventId: "evt_1",
+        type: "github.check_suite.completed",
+        subject: "github:acme/widgets#42",
+        urgency: "next-turn",
+        eventTs: "2026-10-01T00:00:00.000Z",
+        key: "sentinel:github-ci:ci:github:acme/widgets#42:sha1|failure",
+      })
+
+      const raw = readFileSync(filePath, "utf8")
+      const line = JSON.parse(raw.trim())
+      expect(line).toEqual({
+        ts: "2026-10-01T00:05:00.000Z",
+        source: "sentinel",
+        applied: false,
+        decision: "wake",
+        rule: "failure",
+        target: "sess_1",
+        sentinelId: "sen_1",
+        eventId: "evt_1",
+        type: "github.check_suite.completed",
+        subject: "github:acme/widgets#42",
+        urgency: "next-turn",
+        eventTs: "2026-10-01T00:00:00.000Z",
+        key: "sentinel:github-ci:ci:github:acme/widgets#42:sha1|failure",
       })
       expect(raw).not.toContain("summary")
       expect(raw).not.toContain("data")

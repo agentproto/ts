@@ -75,6 +75,7 @@ import {
   RecentKeys,
   classifySentinelEvent,
   recordSentinelTriageKey,
+  sentinelTriageKeyFor,
   writeSentinelTriageLedger,
 } from "./sentinel-triage.js"
 import {
@@ -593,6 +594,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         now,
         recent: recentTriageKeys,
       })
+      const triageKey = sentinelTriageKeyFor(event)
+      const eventTs = typeof event.time === "string" && event.time.length > 0 ? event.time : undefined
       writeSentinelTriageLedger(triagePath, {
         ts: new Date(now).toISOString(),
         decision: triage.decision,
@@ -603,6 +606,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         type: event.type,
         subject: event.subject,
         urgency: target.urgency,
+        ...(eventTs !== undefined ? { eventTs } : {}),
+        ...(triageKey !== undefined ? { key: triageKey } : {}),
       })
     } catch (err) {
       // Observation only: triage must never block delivery.

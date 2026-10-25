@@ -193,7 +193,53 @@ describe("SentinelRuntime", () => {
         type: "fake.widget.created",
         subject: "fake:widget-1",
         urgency: "next-turn",
+        eventTs: expect.any(String),
       })
+      expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")
+      expect(lines[0]).not.toContain("SECRET_DATA_VALUE")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("ledger line carries the event timestamp and triage key, still never summary or data", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-runtime-key-"))
+    const triagePath = join(dir, "sentinel-triage.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      const subject = "github:acme/widgets#42"
+      const sentinel = newSentinel(store, { subject, match: singleMatch(subject, ["github.*"]) })
+      const eventTs = "2026-10-01T00:00:00.000Z"
+      const event = makeFakeEvent({
+        id: "evt_1",
+        type: "github.check_suite.completed",
+        subject,
+        time: eventTs,
+        summary: "SECRET_SUMMARY_TEXT",
+        data: { headSha: "sha1", conclusion: "failure", secret: "SECRET_DATA_VALUE" },
+      })
+      provider.emit(event)
+
+      const registry = stubRegistry(async () => okResult())
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        triagePath,
+      })
+
+      await runtime.pollOnce()
+
+      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      const line = JSON.parse(lines[0]!)
+      expect(line.eventTs).toBe(eventTs)
+      expect(line.key).toBe(`sentinel:github-ci:ci:${subject}:sha1|failure`)
+      expect(line).not.toHaveProperty("summary")
+      expect(line).not.toHaveProperty("data")
       expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")
       expect(lines[0]).not.toContain("SECRET_DATA_VALUE")
     } finally {
