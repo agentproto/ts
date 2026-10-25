@@ -210,7 +210,7 @@ The `session.<field>` filter paths are the flat facts from `sessionFactsOf`:
 | `session.origin` | the descriptor `origin`, omitted when undefined |
 | `session.adapter` | the descriptor `adapterSlug`, omitted when undefined |
 | `session.label` | the descriptor `label`, omitted when undefined |
-| `session.reactionDepth` | the descriptor `meta.reactionDepth`, omitted when undefined or not a finite number |
+| `session.reactionDepth` | the descriptor `meta.reactionDepth` read as a number, omitted unless it is a decimal integer string |
 | `session.causedByEventId` | the descriptor `meta.causedByEventId`, omitted when undefined |
 
 An undefined field is omitted, so a filter on it never matches. An agent arm
