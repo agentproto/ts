@@ -31,6 +31,7 @@
  * events are not silently lost. The follow record is always kept.
  */
 
+import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
@@ -567,6 +568,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     entries: readonly BatchEntry[],
     results: readonly TriageResult[],
     applied: boolean,
+    digestId: string,
   ): void {
     try {
       mkdirSync(dirname(triagePath), { recursive: true })
@@ -584,6 +586,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
             ...(entry.label ? { label: entry.label } : {}),
             decision: result.decision,
             rule: result.rule,
+            eventTs: entry.ts,
+            ...(entry.key ? { key: entry.key } : {}),
+            ...(entry.taskId ? { taskId: entry.taskId } : {}),
+            digestId,
           })
         })
         .filter((line): line is string => line !== null)
@@ -746,34 +752,43 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       .map(id => store.get(id))
       .filter((f): f is SessionFollow => f !== undefined)
     const triage = triageConfigFor(follows)
+    const digestId = randomUUID()
     let text: string
     let urgency: FollowUrgency = batch.urgency
     if (triage.enabled) {
       // Deterministic triage BEFORE the wake: every event is classified,
       // every decision is logged, and only the `wake` ones (plus a count of
       // the informational ones) make it into a digest that may wake.
-      const facts = factsFor(entries)
-      const results: TriageResult[] = []
-      for (const entry of entries) {
-        results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
-      }
-      writeTriageLedger(followerId, entries, results, true)
-      const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
-      const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
-      if (wakeEntries.length === 0) {
-        if (fyiEntries.length === 0) {
-          // Everything was dropped: nothing to deliver, nothing to wake.
-          log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
-          return
+      try {
+        const facts = factsFor(entries)
+        const results: TriageResult[] = []
+        for (const entry of entries) {
+          results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
         }
-        text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
-        urgency = "fyi"
-      } else {
-        text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
-        if (fyiEntries.length > 0) {
-          text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
+        writeTriageLedger(followerId, entries, results, true, digestId)
+        const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
+        const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
+        if (wakeEntries.length === 0) {
+          if (fyiEntries.length === 0) {
+            // Everything was dropped: nothing to deliver, nothing to wake.
+            log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
+            return
+          }
+          text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
+          urgency = "fyi"
+        } else {
+          text = formatFollowDigest(wakeEntries, textFor, id => registry.get(id))
+          if (fyiEntries.length > 0) {
+            text += `\n[session-follow] ${fyiEntries.length} other event(s) in info (not shown)`
+          }
+          urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
         }
-        urgency = batch.urgency === "fyi" ? "fyi" : "next-turn"
+      } catch (err) {
+        // Fail open: triage is an optimisation, never a reason to lose the
+        // batch (an awaiting-input or a crash must still reach the follower).
+        log(`[session-follow] triage failed for ${followerId}: ${describeError(err)}`)
+        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+        urgency = batch.urgency
       }
     } else {
       // Triage off still records the rules' verdict for every event, marked
@@ -783,7 +798,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         const results = entries.map(entry =>
           classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
         )
-        writeTriageLedger(followerId, entries, results, false)
+        writeTriageLedger(followerId, entries, results, false, digestId)
       } catch (err) {
         log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
       }

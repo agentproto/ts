@@ -350,6 +350,89 @@ describe("follow-triage", () => {
       expect(sent).toHaveLength(0)
     })
 
+    it("fails open and delivers the whole digest when triage throws", async () => {
+      const logs: string[] = []
+      const { sent } = setup(
+        [running("chief"), running("w"), running("x")],
+        { selector: { sessionIds: ["w", "x"] }, triage: { enabled: true } },
+        {
+          triageFacts: {
+            reportedRecently: () => {
+              throw new Error("boom")
+            },
+          },
+          log: line => logs.push(line),
+        },
+      )
+      bus.emit({
+        type: "session:awaiting-input",
+        sessionId: "w",
+        ts: T0,
+        question: { text: "which one?", source: "structured" },
+      } as never)
+      turnEnd("x")
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.text).toContain("(w) awaiting-input")
+      expect(sent[0]!.text).toContain("(x) turn-end")
+      expect(sent[0]!.urgency).toBe("next-turn")
+      expect(logs.some(line => line.startsWith("[session-follow] triage failed for chief:"))).toBe(true)
+      expect(logs.join("\n")).not.toContain("which one?")
+    })
+
+    it("identifies every ledger line with eventTs and a per-flush digestId", async () => {
+      const { sent } = setup([running("chief"), running("w")], {
+        selector: { sessionIds: ["w"] },
+        triage: { enabled: true },
+      })
+      exited("w", { ts: at(1_000), reason: "operator-stopped" })
+      turnEnd("w", { ts: at(2_000) })
+      await handle!.flush()
+      const first = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .map(l => JSON.parse(l) as Record<string, unknown>)
+      expect(first).toHaveLength(2)
+      expect(first[0]).toMatchObject({ event: "exited", eventTs: at(1_000), digestId: expect.any(String) })
+      expect(first[1]).toMatchObject({ event: "turn-end", eventTs: at(2_000), digestId: expect.any(String) })
+      expect(new Set(first.map(line => line.digestId)).size).toBe(1)
+
+      exited("w", { ts: at(3_000), reason: "operator-stopped" })
+      await handle!.flush()
+      const second = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+        .trim()
+        .split("\n")
+        .slice(first.length)
+        .map(l => JSON.parse(l) as Record<string, unknown>)
+      expect(second).toHaveLength(1)
+      expect(second[0]).toMatchObject({ event: "exited", eventTs: at(3_000), digestId: expect.any(String) })
+      expect(second[0]!.digestId).not.toBe(first[0]!.digestId)
+
+      for (const line of [...first, ...second]) {
+        expect(line).not.toHaveProperty("detail")
+        expect(line).not.toHaveProperty("text")
+      }
+      expect(sent).toHaveLength(2)
+    })
+
+    it("records the event key and task id on a board line", async () => {
+      const { sent } = setup([running("chief")], {
+        selector: { boardId: "board-1" },
+        triage: { enabled: true },
+      })
+      taskChanged("worker", "board-1", "t1")
+      await handle!.flush()
+      const line = JSON.parse(readFileSync(join(tmp, "triage.jsonl"), "utf8").trim()) as Record<string, unknown>
+      expect(line).toMatchObject({
+        event: "task-changed",
+        eventTs: T0,
+        key: "board-1:t1",
+        taskId: "t1",
+        digestId: expect.any(String),
+      })
+      expect(sent).toHaveLength(1)
+    })
+
     it("writes one JSONL line per triaged event", async () => {
       const { sent } = setup([running("chief"), running("w")], {
         selector: { sessionIds: ["w"] },
@@ -404,6 +487,13 @@ describe("follow-triage", () => {
         decision: "fyi",
         rule: "operator-exit",
       })
+      expect(lines[0]).toMatchObject({ eventTs: T0, digestId: expect.any(String) })
+      expect(lines[1]).toMatchObject({ eventTs: T0, digestId: expect.any(String) })
+      expect(new Set(lines.map(line => line.digestId)).size).toBe(1)
+      for (const line of lines) {
+        expect(line).not.toHaveProperty("detail")
+        expect(line).not.toHaveProperty("text")
+      }
       // Delivery is unchanged: the disabled ledger never filters the digest.
       expect(sent).toHaveLength(1)
       expect(sent[0]!.text).toContain("2 events")
