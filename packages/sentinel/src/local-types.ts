@@ -147,6 +147,6 @@ export type SessionEvent =
     }
 
 export interface SessionEventBus {
-  emit(ev: SessionEvent): void
-  onAny(handler: (ev: SessionEvent) => void): () => void
+  emit(ev: any): void
+  onAny(handler: (ev: any) => void): () => void
 }

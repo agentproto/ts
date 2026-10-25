@@ -43,7 +43,7 @@ export interface SentinelGitHubPort {
 }
 
 export interface SentinelProviderDiscoveryPort {
-  discover: () => Promise<Array<{ slug: string; packageName: string }>>
+  discover: () => Promise<ReadonlyArray<{ slug: string; packageName: string }>>
   probe: (specifier: string) => Promise<Record<string, unknown> | null>
 }
 

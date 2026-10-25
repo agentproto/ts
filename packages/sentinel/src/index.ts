@@ -233,3 +233,20 @@ export type {
   SessionMessage,
   SessionMessageFrom,
 } from "./local-types.js"
+
+export { createFakeSentinelProvider, makeFakeEvent } from "./sentinel-providers/fake.js"
+export type {
+  CreateFakeSentinelProviderOptions,
+  FakeSentinelProvider,
+} from "./sentinel-providers/fake.js"
+
+export {
+  WEBHOOK_HOOKS_FILE_PATH,
+  createWebhookHookStore,
+  getSharedWebhookHookStore,
+} from "./sentinel-providers/webhook-hooks.js"
+export type {
+  WebhookHookRecord,
+  WebhookHookStore,
+  WebhookHookStoreOptions,
+} from "./sentinel-providers/webhook-hooks.js"
