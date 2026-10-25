@@ -51,6 +51,7 @@ export default createTsupConfig({
     "gray-matter",
     "@agentproto/agent",
     "@agentproto/clerk",
+    "@agentproto/decision",
     "@agentproto/manifest",
     "@agentproto/mcp-server",
     "@agentproto/model-catalog",

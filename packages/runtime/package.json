@@ -241,6 +241,7 @@
     "@agentproto/auth": "workspace:*",
     "@agentproto/clerk": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
+    "@agentproto/decision": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/driver-browser": "workspace:*",

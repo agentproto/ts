@@ -20,8 +20,8 @@ import {
   projectTier1Evidence,
   type ClassifierOutcome,
   type EscalationOutcome,
-} from "../decision.js"
-import { decisionPolicyHash, parseDecisionPolicy } from "../decision-policy.js"
+} from "@agentproto/decision"
+import { decisionPolicyHash, parseDecisionPolicy } from "@agentproto/decision"
 import { jevClassifierIdentity, makeJevDecisionClassifier } from "../decision-tools.js"
 import { setJevConfigLoader } from "../jev-client.js"
 import { setMcpCredentialDeps } from "../mcp-credential-deps.js"
