@@ -194,7 +194,7 @@ of scope for this contract.
 | `packages/agent/src/schema.ts` | AIP-42 `on:` map, values currently loose after zod generation | Agent-manifest config layer; opt-in strict parser in this PR |
 | `packages/agent/src/load-agent.ts` | Loads and validates AGENT.md | Unchanged; no dispatcher call added |
 | `packages/routine/src/schema.ts` | AIP-41 schedule and target validation | Event-routine config layer |
-| `packages/runtime/src/routine-registrar.ts` | Registers cron only; event routines and `target.action` skipped | Documented gap, not changed |
+| `packages/runtime/src/routine-registrar.ts` | Registers cron jobs; event routines resolve to reaction bindings; `target.action` is skipped without a registered handler | Event routines now fire through the reaction runner; `action` arms remain the documented gap |
 | `packages/runtime/src/session-event-bus.ts` | In-memory `SessionEventType` pub/sub | Transport for lifecycle and reaction paths; not portable config names |
 | `packages/runtime/src/hooks-config.ts` | Existing semantic ACP permission hook engine | Separate surface; not renamed or merged |
 | `packages/runtime/src/capabilities-inventory.ts` | Existing MCP/skill inventory | Future host-level hook capability advertisement would extend existing capabilities surfaces |

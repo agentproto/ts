@@ -32,7 +32,7 @@ function builtinBinding(bindingId = "builtin:test"): ReactionBinding {
 function resolved(over: Partial<ResolvedEventBinding> = {}): ResolvedEventBinding {
   return {
     bindingId: "routine:notify",
-    event: { event: EVENT, host: "agentproto", portability: "nonportable" },
+    event: { raw: EVENT, event: EVENT, kind: "host", portable: false, host: "agentproto" },
     target: { tool: "notify", inputs: { message: "hi" } },
     source: { kind: "routine", routineId: "notify" },
     configRevision: "cfg-1",
