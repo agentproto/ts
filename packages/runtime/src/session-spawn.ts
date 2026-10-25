@@ -337,6 +337,7 @@ import {
   type SpawnAdmissionCheck,
   type SpawnDedupeSource,
 } from "./action-hooks/spawn-admission.js"
+import { reactionSpawnStamp } from "./action-hooks/reaction-context.js"
 import type { AdmissionDecision } from "./action-hooks/types.js"
 import {
   loadProvenanceWrapGh,
@@ -4601,6 +4602,7 @@ export async function spawnAgentSession(
       // exit funnel): a queued provisioning drops out of the daemon-wide
       // queue, a running one has its install's process tree killed.
       const provisionAbort = new AbortController()
+      const reactionStamp = reactionSpawnStamp(input.origin)
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
         ...resumeLineageFields,
@@ -4639,10 +4641,10 @@ export async function spawnAgentSession(
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId || input.workflowOwner
-          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
+        ...(input.boardId || input.workflowOwner || reactionStamp
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner), ...(reactionStamp ? (reactionStamp.meta as unknown as Record<string, string>) : {}) } }
           : {}),
-        ...(input.origin ? { origin: input.origin } : {}),
+        ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
@@ -5347,6 +5349,7 @@ export async function spawnAgentSession(
           ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
         }
       : undefined
+    const reactionStamp = reactionSpawnStamp(input.origin)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       ...resumeLineageFields,
@@ -5419,7 +5422,8 @@ export async function spawnAgentSession(
       input.workflowOwner ||
       cloudMeta ||
       callerAgentId ||
-      callerAgentManifestPath
+      callerAgentManifestPath ||
+      reactionStamp
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
@@ -5438,10 +5442,11 @@ export async function spawnAgentSession(
               // for a hot role refresh at all.
               ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
               ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
+              ...(reactionStamp ? (reactionStamp.meta as unknown as Record<string, string>) : {}),
             },
           }
         : {}),
-      ...(input.origin ? { origin: input.origin } : {}),
+      ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),

@@ -10,10 +10,8 @@
  * bus, writes a receipt or touches the daemon: this module is pure and every
  * dependency is injected.
  *
- * Known limits in this version: causedByEventId is not stamped and
- * reactionDepth is the static value 0; the only cycle guard is the self-chain
- * guard of agent arms, a tool or workflow arm that starts sessions is not covered; both
- * come with the daemon wiring task.
+ * The causation of each receipt comes from the completed session's facts, so
+ * every arm carries the reaction depth and caused event id of the chain.
  */
 
 import type { SessionEvent } from "../session-event-bus.js"
@@ -318,6 +316,19 @@ export function toReactionBinding(
     return matchEventFilter(resolved.filter, payload)
   }
 
+  const causation = (event: SessionEvent): { reactionDepth: number; causedByEventId?: string } | undefined => {
+    const sessionIdOf = (event as { sessionId?: unknown }).sessionId
+    if (typeof sessionIdOf !== "string") return undefined
+    const facts = deps.getSessionFacts(sessionIdOf)
+    if (facts === undefined) return undefined
+    const depth = facts.reactionDepth
+    const cause = facts.causedByEventId
+    return {
+      reactionDepth: typeof depth === "number" && Number.isFinite(depth) ? depth : 0,
+      ...(typeof cause === "string" ? { causedByEventId: cause } : {}),
+    }
+  }
+
   const binding: ReactionBinding = {
     bindingId: resolved.bindingId,
     event: eventName,
@@ -325,6 +336,7 @@ export function toReactionBinding(
     configRevision: resolved.configRevision,
     maxAttempts: deps.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
     reactionDepth: 0,
+    causation,
     target: reactionTarget,
     occurrenceIdOf: event => support.occurrenceIdOf(event),
     shouldHandle,
