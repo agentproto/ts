@@ -36,15 +36,15 @@ import {
 } from "@agentproto/review"
 import { z } from "zod"
 
-import { decide, type ClassifierOutcome, type DecisionOutcome } from "./decision.js"
-import { collectEvidence, type CollectedEvidence, type GitRunner } from "./decision-evidence.js"
+import { decide, type ClassifierOutcome, type DecisionOutcome } from "@agentproto/decision"
+import { collectEvidence, type CollectedEvidence, type GitRunner } from "@agentproto/decision"
 import {
   createBoundedEscalation,
   type EscalationHost,
   type EscalationRecord,
   type EscalationWait,
 } from "./decision-escalation.js"
-import { parseDecisionPolicy, type DecisionPolicy } from "./decision-policy.js"
+import { parseDecisionPolicy, type DecisionPolicy } from "@agentproto/decision"
 import {
   resolveAndValidateTarget,
   resolveExecProfile,

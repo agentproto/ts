@@ -14,20 +14,16 @@
  */
 
 import { z } from "zod"
+import type { JevChoiceQuestion } from "@agentproto/decision"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { loadConfig } from "./config.js"
 import type { JevConfig } from "./config.js"
 
+export type { JevChoiceQuestion } from "@agentproto/decision"
+
 export const JEV_DEFAULT_URL = "https://api.typesafe.ai/v1/systemone"
 export const JEV_DEFAULT_MODEL = "jev-latest"
 export const JEV_API_KEY_ENV = "JEV_API_KEY"
-
-export interface JevChoiceQuestion {
-  readonly type: "choice"
-  readonly instructions: string
-  /** Option key → what that option means. */
-  readonly criteria: Readonly<Record<string, string>>
-}
 
 const jevChoiceAnswerSchema = z.object({
   type: z.literal("choice"),
