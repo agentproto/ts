@@ -219,6 +219,29 @@ test("status table has exactly one row per package in STATUS.md", () => {
   }
 });
 
+test("adding a package changes STATUS.md by exactly one added table row", () => {
+  // Two PRs that each add a package must merge into a correct STATUS.md.
+  // That only holds if no line depends on the whole package set (totals,
+  // tier counts): each PR then contributes one row and git merges them.
+  const entries = computeStatus(REPO_ROOT);
+  const extra = {
+    name: "@agentproto/zz-fake",
+    dir: "packages/zz-fake",
+    version: "0.0.0",
+    tier: "core",
+    reason: "product runtime package consumed by the runtime/cli",
+  };
+  const before = generateStatusFile(entries).split("\n");
+  const after = generateStatusFile([...entries, extra]).split("\n");
+  assert.equal(after.length, before.length + 1);
+  const removed = before.filter((line) => !after.includes(line));
+  const added = after.filter((line) => !before.includes(line));
+  assert.deepStrictEqual(removed, []);
+  assert.deepStrictEqual(added, [
+    "@agentproto/zz-fake | `packages/zz-fake` | 0.0.0 | core | product runtime package consumed by the runtime/cli |",
+  ]);
+});
+
 test("generateStatusFile output matches committed STATUS.md (no drift)", () => {
   const entries = computeStatus(REPO_ROOT);
   const expected = generateStatusFile(entries);
