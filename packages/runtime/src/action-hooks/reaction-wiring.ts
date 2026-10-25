@@ -57,8 +57,9 @@ export function sessionFactsOf(desc: SessionDescriptor): Record<string, unknown>
   if (desc.label !== undefined) facts.label = desc.label
   const meta = desc.meta
   if (meta !== undefined) {
-    if (typeof meta.reactionDepth === "number" && Number.isFinite(meta.reactionDepth)) {
-      facts.reactionDepth = meta.reactionDepth
+    if (typeof meta.reactionDepth === "string" && /^\d+$/.test(meta.reactionDepth)) {
+      const depth = Number(meta.reactionDepth)
+      if (Number.isSafeInteger(depth)) facts.reactionDepth = depth
     }
     if (typeof meta.causedByEventId === "string") {
       facts.causedByEventId = meta.causedByEventId
