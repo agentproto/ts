@@ -43,15 +43,16 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-async function waitFor(predicate: () => boolean, rounds = 500): Promise<void> {
-  for (let i = 0; i < rounds; i++) {
-    if (predicate()) return
-    await new Promise<void>(resolve => setImmediate(resolve))
+async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms`)
+    await new Promise<void>(resolve => setTimeout(resolve, 5))
   }
 }
 
-async function turn(rounds = 40): Promise<void> {
-  for (let i = 0; i < rounds; i++) await new Promise<void>(resolve => setImmediate(resolve))
+async function turn(ms = 50): Promise<void> {
+  await new Promise<void>(resolve => setTimeout(resolve, ms))
 }
 
 const completed = (over: Partial<SessionCompletedEvent> = {}): SessionCompletedEvent => ({
