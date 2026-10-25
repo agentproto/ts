@@ -24,7 +24,7 @@ import {
   watchCloudSessionMeta,
   type CloudSessionMeta,
   type ResolvedCloudSpawn,
-} from "./cloud-vendors.js"
+} from "@agentproto/cloud-agent"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import {
@@ -48,6 +48,7 @@ import {
   findWorkspaceByPath,
   getActiveWorkspace,
   type WorkspaceRemote,
+  workspaceRemotePort,
 } from "./workspaces-config.js"
 import { loadConfig } from "./config.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
@@ -3259,6 +3260,7 @@ export async function spawnAgentSession(
         cloudWorkspaceRemote,
         resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
         async ref => (await new KeychainStore().read({ path: ref }))?.value,
+        workspaceRemotePort,
       )
     } catch (err) {
       if (err instanceof CloudSpawnError) {

@@ -25,9 +25,9 @@ import {
   cloudRepoCheckoutDir,
   cloudRepoSpawnEnv,
   encodeCloudSessionMeta,
-} from "../cloud-vendors.js"
+} from "@agentproto/cloud-agent"
 import { GIT_TOKEN_ENV } from "../sandbox-workspace-remote.js"
-import type { WorkspacesConfig } from "../workspaces-config.js"
+import { workspaceRemotePort, type WorkspacesConfig } from "../workspaces-config.js"
 
 const FAKE_TOKEN = "ghp_fake_cloud_token_0001"
 const REMOTE_URL = "https://github.com/acme/repo"
@@ -98,11 +98,11 @@ beforeEach(() => {
 
 describe("cloudRepoSpawnEnv", () => {
   it("is empty when the workspace declares no remote", async () => {
-    expect(await cloudRepoSpawnEnv(undefined, "/cfg", async () => undefined)).toEqual({})
+    expect(await cloudRepoSpawnEnv(undefined, "/cfg", async () => undefined, workspaceRemotePort)).toEqual({})
   })
 
   it("carries url, default branch and the checkout dir inside the config dir", async () => {
-    expect(await cloudRepoSpawnEnv({ url: REMOTE_URL }, "/cfg", async () => undefined)).toEqual({
+    expect(await cloudRepoSpawnEnv({ url: REMOTE_URL }, "/cfg", async () => undefined, workspaceRemotePort)).toEqual({
       [CLOUD_REPO_URL_ENV]: REMOTE_URL,
       [CLOUD_REPO_BRANCH_ENV]: "main",
       [CLOUD_REPO_DIR_ENV]: cloudRepoCheckoutDir("/cfg"),
@@ -114,12 +114,13 @@ describe("cloudRepoSpawnEnv", () => {
       { url: REMOTE_URL, defaultBranch: "develop", credentialRef: "git/acme" },
       "/cfg",
       async ref => (ref === "git/acme" ? FAKE_TOKEN : undefined),
+      workspaceRemotePort,
     )
     expect(env[GIT_TOKEN_ENV]).toBe(FAKE_TOKEN)
     expect(env[CLOUD_REPO_BRANCH_ENV]).toBe("develop")
 
     await expect(
-      cloudRepoSpawnEnv({ url: REMOTE_URL, credentialRef: "git/gone" }, "/cfg", async () => undefined),
+      cloudRepoSpawnEnv({ url: REMOTE_URL, credentialRef: "git/gone" }, "/cfg", async () => undefined, workspaceRemotePort),
     ).rejects.toBeInstanceOf(CloudSpawnError)
   })
 })
@@ -131,7 +132,7 @@ describe("cloudRepoSpawnEnv — a hand-edited remote is re-validated", () => {
     ["an ssh url", { url: "git@github.com:acme/repo.git" }, "workspace.remote.url"],
     ["a hostile branch", { url: REMOTE_URL, defaultBranch: "main; rm -rf /" }, "workspace.remote.defaultBranch"],
   ])("refuses %s with the offending field", async (_what, remote, field) => {
-    await expect(cloudRepoSpawnEnv(remote, "/cfg", async () => undefined)).rejects.toMatchObject({
+    await expect(cloudRepoSpawnEnv(remote, "/cfg", async () => undefined, workspaceRemotePort)).rejects.toMatchObject({
       name: "CloudSpawnError",
       field,
     })

@@ -202,7 +202,7 @@ import {
   restartPreferInPlace,
 } from "./session-restart-core.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
-import { cloudMetaOf } from "./cloud-vendors.js"
+import { cloudMetaOf } from "@agentproto/cloud-agent"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
@@ -451,6 +451,39 @@ export {
   type ClerkHookSource,
   type ResolvedClerkHookConfig,
 } from "@agentproto/clerk"
+// AIP-66 managed cloud agents - the vendor registry, pure spawn resolver,
+// meta.cloud identity helpers and the declared-remote spawn env.
+export {
+  CLOUD_ADAPTER_PLACEHOLDER,
+  CLOUD_REFUSED_SPAWN_FIELDS,
+  CLOUD_REPO_BRANCH_ENV,
+  CLOUD_REPO_DIR_ENV,
+  CLOUD_REPO_URL_ENV,
+  CLOUD_SESSION_META_FILE,
+  CLOUD_SESSION_META_FILE_ENV,
+  CLOUD_VENDORS,
+  CloudSpawnError,
+  cloudHarnessFor,
+  cloudMetaOf,
+  cloudRepoCheckoutDir,
+  cloudRepoSpawnEnv,
+  cloudSessionIdOf,
+  cloudSessionMetaFilePath,
+  decodeCloudSessionMeta,
+  encodeCloudSessionMeta,
+  GIT_TOKEN_ENV,
+  readCloudSessionMetaFile,
+  resolveCloudResumeId,
+  resolveCloudSpawn,
+  watchCloudSessionMeta,
+  type CloudRefusedSpawnField,
+  type CloudRemotePort,
+  type CloudSessionMeta,
+  type CloudSpawnInput,
+  type CloudVendor,
+  type CloudWorkspaceRemote,
+  type ResolvedCloudSpawn,
+} from "@agentproto/cloud-agent"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,

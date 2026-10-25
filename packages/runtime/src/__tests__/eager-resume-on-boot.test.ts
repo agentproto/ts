@@ -12,7 +12,7 @@ import {
 import { runEagerResumePass } from "../eager-resume.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createCompletionPolicySupervisor } from "../supervisor.js"
-import { cloudMetaOf, encodeCloudSessionMeta } from "../cloud-vendors.js"
+import { cloudMetaOf, encodeCloudSessionMeta } from "@agentproto/cloud-agent"
 
 /**
  * Opt-in eager resume-on-boot (session-survivability plan §5, PR-4).

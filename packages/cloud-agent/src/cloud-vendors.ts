@@ -22,13 +22,7 @@
 
 import { join } from "node:path"
 import { readFile } from "node:fs/promises"
-import { GIT_TOKEN_ENV } from "./sandbox-workspace-remote.js"
-import {
-  DEFAULT_REMOTE_BRANCH,
-  validateRemoteBranch,
-  validateRemoteUrl,
-  type WorkspaceRemote,
-} from "./workspaces-config.js"
+import { GIT_TOKEN_ENV } from "./git-token.js"
 
 /** One managed cloud vendor: the harnesses it runs and the adapter that
  *  relays to it (AIP-66 §2 `CloudVendor`). */
@@ -325,18 +319,40 @@ export function cloudRepoCheckoutDir(configDir: string): string {
   return join(configDir, "repo")
 }
 
+/** The remote fields a cloud spawn reads, structurally satisfied by the
+ *  runtime's `WorkspaceRemote`, without importing its config module. */
+export interface CloudWorkspaceRemote {
+  /** `https://` clone URL, never carrying userinfo. */
+  url: string
+  /** Branch new work branches from; the port supplies the default. */
+  defaultBranch?: string
+  /** Keychain slot holding the git PAT. */
+  credentialRef?: string
+}
+
+/** The validation port the caller passes in: the runtime's own
+ *  `workspaces.json` validators and default branch, so cloud-agent does
+ *  not copy that logic. */
+export interface CloudRemotePort {
+  readonly defaultBranch: string
+  validateUrl(raw: string): string
+  validateBranch(raw: string): string
+}
+
 /**
- * Spawn env for a cloud session on a workspace with a declared `remote`
- * (`workspaces.json`): url, branch, checkout dir, and — when the remote has
- * a `credentialRef` — the git token under {@link GIT_TOKEN_ENV}, the same
- * name a sandbox clone uses. `readSecret` resolves the keychain slot; a ref
- * that resolves to nothing throws a field-named {@link CloudSpawnError}
- * rather than cloning anonymously. Returns `{}` when no remote is declared.
+ * Spawn env for a cloud session on a workspace with a declared `remote`:
+ * url, branch, checkout dir, and, when the remote has a `credentialRef`,
+ * the git token under {@link GIT_TOKEN_ENV}, the same name a sandbox clone
+ * uses. `readSecret` resolves the keychain slot; a ref that resolves to
+ * nothing throws a field-named {@link CloudSpawnError} rather than cloning
+ * anonymously. Returns `{}` when no remote is declared. `port` supplies the
+ * runtime's validators and default branch.
  */
 export async function cloudRepoSpawnEnv(
-  remote: WorkspaceRemote | undefined,
+  remote: CloudWorkspaceRemote | undefined,
   configDir: string,
   readSecret: (ref: string) => Promise<string | undefined>,
+  port: CloudRemotePort,
 ): Promise<Record<string, string>> {
   if (!remote) return {}
   // `workspaces.json` is hand-editable, so the same validators the sandbox
@@ -344,7 +360,7 @@ export async function cloudRepoSpawnEnv(
   let url: string
   let branch: string
   try {
-    url = validateRemoteUrl(remote.url)
+    url = port.validateUrl(remote.url)
   } catch (err) {
     throw new CloudSpawnError(
       `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,
@@ -352,7 +368,7 @@ export async function cloudRepoSpawnEnv(
     )
   }
   try {
-    branch = validateRemoteBranch(remote.defaultBranch ?? DEFAULT_REMOTE_BRANCH)
+    branch = port.validateBranch(remote.defaultBranch ?? port.defaultBranch)
   } catch (err) {
     throw new CloudSpawnError(
       `the workspace remote is invalid: ${err instanceof Error ? err.message : String(err)}`,

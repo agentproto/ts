@@ -2,7 +2,7 @@
 
 # STATUS — package tiers
 
-A snapshot of every pnpm workspace package (`165` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
+A snapshot of every pnpm workspace package (`167` `package.json` files under the workspace globs in `pnpm-workspace.yaml`), classified into exactly one tier.
 
 ## Classification rule
 
@@ -18,7 +18,7 @@ Each package appears exactly once; tiers are applied in the order above.
 
 | Tier | Count |
 |---|---|
-| core | 98 |
+| core | 100 |
 | adapters | 25 |
 | spec-reference | 33 |
 | archived | 9 |
@@ -83,6 +83,7 @@ agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime 
 @agentproto/clerk | `packages/clerk` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/cli | `packages/cli` | 1.30.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/cli-exec | `packages/cli-exec` | 0.1.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/cloud-agent | `packages/cloud-agent` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/code-brain | `packages/code-brain` | 0.3.9 | core | product runtime package consumed by the runtime/cli |
 @agentproto/command-sandbox | `packages/command-sandbox` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/computer-api | `packages/computer-api` | 0.3.0 | core | product runtime package consumed by the runtime/cli |

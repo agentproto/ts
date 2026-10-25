@@ -20,10 +20,13 @@
 import { posix } from "node:path"
 import type { SandboxExecOpts, SandboxExecResult, SandboxSpec } from "@agentproto/sandbox"
 import { DEFAULT_REMOTE_BRANCH, validateRemoteBranch, type WorkspaceRemote } from "./workspaces-config.js"
+import { GIT_TOKEN_ENV } from "@agentproto/cloud-agent"
 import { planCheckpointResumeRestore } from "./checkpoint-resume.js"
 
-/** Env var the box sees the git token under. */
-export const GIT_TOKEN_ENV = "AGENTPROTO_GIT_TOKEN"
+/** Env var the box sees the git token under. Re-exported from
+ *  `@agentproto/cloud-agent` so the sandbox and cloud paths share one
+ *  definition. */
+export { GIT_TOKEN_ENV }
 
 /** Env var `gh` reads its token from. In the box it carries the same
  *  workspace git token as {@link GIT_TOKEN_ENV}, so `gh pr create` works. */
