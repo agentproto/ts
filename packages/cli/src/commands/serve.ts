@@ -1131,6 +1131,12 @@ export async function runServe(args: readonly string[]): Promise<number> {
         `${color.dim}${reattached.unserved} detached row(s) belong to other workspaces (not served by this daemon)${color.reset}\n`,
       )
     }
+    const reactions = await gateway.reconcileReactionsOnBoot()
+    if (reactions.total > 0) {
+      process.stderr.write(
+        `${color.dim}reaction receipts: ${reactions.total} (pending ${reactions.pending}, running ${reactions.running}, failed ${reactions.failed}, dead ${reactions.dead})${color.reset}\n`,
+      )
+    }
     const eager = await gateway.resumeSessionsOnBoot({
       isServed: desc =>
         resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,

@@ -255,7 +255,13 @@ import { registerAppExternalTools } from "./app-external.js"
 import { createAppRegistry } from "./app-registry.js"
 import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
-import { wireSessionCompletion } from "./action-hooks/index.js"
+import {
+  createBrainIngestReaction,
+  createReactionReceiptStore,
+  createReactionRunner,
+  readBrainIngestOwnedWorkspaces,
+  wireSessionCompletion,
+} from "./action-hooks/index.js"
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
@@ -2162,6 +2168,15 @@ export interface GatewayHandle {
   reattachSandboxSessionsOnBoot(opts?: {
     isServed?: (desc: SessionDescriptor) => boolean
   }): Promise<SandboxReattachSummary>
+  /** Run the reaction receipt boot reconciliation pass and return the post-pass
+   *  tally. Never throws: a failure is logged and reported as zeros. */
+  reconcileReactionsOnBoot(): Promise<{
+    total: number
+    pending: number
+    running: number
+    failed: number
+    dead: number
+  }>
   stop(): Promise<void>
 }
 
@@ -2503,9 +2518,21 @@ export async function createGateway(
   // via the workspace_brain_* MCP tools. Same wiring discipline as the
   // webhook notifier — a brain failure never throws into the exit path.
   const workspaceBrains = createWorkspaceBrains()
+  const reactionReceiptStore = createReactionReceiptStore()
+  const brainIngestReaction = createBrainIngestReaction({
+    brains: workspaceBrains,
+    ownedWorkspaces: readBrainIngestOwnedWorkspaces,
+  })
+  const reactionRunner = createReactionRunner({
+    bus: sessionEvents,
+    store: reactionReceiptStore,
+    bindings: [brainIngestReaction.binding],
+  })
+  reactionRunner.start()
   const brainSubscriber = createWorkspaceBrainSubscriber({
     bus: sessionEvents,
     brains: workspaceBrains,
+    skipWorkspace: workspace => brainIngestReaction.owns(workspace),
   })
   brainSubscriber.start()
 
@@ -5112,6 +5139,28 @@ export async function createGateway(
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },
+    async reconcileReactionsOnBoot() {
+      try {
+        await reactionRunner.reconcileOnBoot()
+        let pending = 0
+        let running = 0
+        let failed = 0
+        let dead = 0
+        for (const entry of reactionRunner.status()) {
+          pending += entry.pending
+          running += entry.running
+          failed += entry.failed
+          dead += entry.dead
+        }
+        return { total: reactionReceiptStore.rows().length, pending, running, failed, dead }
+      } catch (err) {
+        console.warn(
+          `[reaction-runner] boot reconciliation failed: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        )
+        return { total: 0, pending: 0, running: 0, failed: 0, dead: 0 }
+      }
+    },
     async continueInterruptedOnBoot(passOpts) {
       if (!opts.continueInterruptedOnBoot) {
         return { enabled: false, eligible: 0, sent: 0, skipped: 0, failed: 0 }
@@ -5195,6 +5244,10 @@ export async function createGateway(
       // `sessions`).
       sentinelRuntime.stop()
       sentinelStore.flushSync()
+      // Stop the reaction runner and persist its receipts; a `running` row
+      // lost in the debounce window is a re-drive the target dedupes anyway.
+      reactionRunner.stop()
+      reactionReceiptStore.flushSync()
       // Flush the orchestrator scope-token registry so a token minted /
       // bound / revoked just before a restart isn't lost inside the
       // debounce window — same reasoning as the sentinel flush above.
