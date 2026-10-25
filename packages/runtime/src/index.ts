@@ -265,7 +265,7 @@ import { createReviewLedger } from "./review-ledger.js"
 import { createDaemonReviewerHost } from "./review-reviewer-host.js"
 import { registerReviewTools, reviewLedgerView } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
-import { createFileStepCache } from "./workflow-step-cache.js"
+import { createFileStepCache } from "@agentproto/run"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
@@ -1405,7 +1405,7 @@ export {
   type LocatedConversationByPath,
   type ResolveNativeLinkInput,
 } from "./conversation-index.js"
-export { createFileStepCache } from "./workflow-step-cache.js"
+export { createFileStepCache } from "@agentproto/run"
 export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,

@@ -262,6 +262,7 @@
     "@agentproto/quota": "workspace:*",
     "@agentproto/review": "workspace:*",
     "@agentproto/routine": "workspace:*",
+    "@agentproto/run": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
     "@agentproto/secrets": "workspace:*",
     "@agentproto/storage-github": "workspace:*",

@@ -35,7 +35,7 @@ import {
   runStoreDir,
   spillFilePath,
   applyOutputCeilings,
-} from "../workflow-run-store.js"
+} from "@agentproto/run"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createAppRegistry } from "../app-registry.js"
 import type { SessionsRegistry } from "../sessions.js"
