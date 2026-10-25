@@ -135,6 +135,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/review | `packages/review` | 0.6.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/review-pack-core | `packages/review-pack-core` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/role | `packages/role` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
+@agentproto/run | `packages/run` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/runtime | `packages/runtime` | 5.29.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/runtime-profile-standard | `packages/runtime-profile-standard` | 0.1.4 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/sandbox | `packages/sandbox` | 0.13.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |

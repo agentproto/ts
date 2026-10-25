@@ -35,7 +35,7 @@ import {
 import { mkdir, rename, rm, writeFile } from "node:fs/promises"
 import { StringDecoder } from "node:string_decoder"
 import { join } from "node:path"
-import type { WorkflowRun } from "./workflow-runner.js"
+import type { WorkflowRun } from "./run-types.js"
 
 // ── Output ceilings ──────────────────────────────────────────────────
 
