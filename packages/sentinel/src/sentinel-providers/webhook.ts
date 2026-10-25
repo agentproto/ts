@@ -26,8 +26,9 @@
 import { randomBytes } from "node:crypto"
 import { execFile } from "node:child_process"
 
-import { verifyInboundSignature } from "../inbound-adapters.js"
-import { PrLookupError, type GhRunner } from "../review-pr.js"
+import { verifyInboundSignature } from "../signature.js"
+import type { GhRunner } from "../local-types.js"
+import { sentinelPlatform } from "../platform.js"
 import { GITHUB_DEFAULT_PR_TYPES, normalizeGithubEvent } from "../sentinel-github-normalize.js"
 import { resolveSentinelPublicUrl, type SentinelPublicUrl } from "../sentinel-public-url.js"
 import { getSharedWebhookHookStore, type WebhookHookRecord, type WebhookHookStore } from "./webhook-hooks.js"
@@ -58,10 +59,10 @@ export const execGhWebhook: WebhookGhRunner = (args, opts) =>
     const child = execFile("gh", [...args], { maxBuffer: 16 * 1024 * 1024, timeout: 30_000 }, (err, stdout, stderr) => {
       if (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-          reject(new PrLookupError("gh_unavailable", "the GitHub CLI (`gh`) is not installed or not on the daemon's PATH"))
+          reject(new (sentinelPlatform().github.PrLookupError)("gh_unavailable", "the GitHub CLI (`gh`) is not installed or not on the daemon's PATH"))
           return
         }
-        reject(new PrLookupError("gh_failed", `gh ${args.join(" ")} failed: ${String(stderr || err.message).trim()}`))
+        reject(new (sentinelPlatform().github.PrLookupError)("gh_failed", `gh ${args.join(" ")} failed: ${String(stderr || err.message).trim()}`))
         return
       }
       resolvePromise(stdout)
@@ -293,7 +294,7 @@ export function webhookSentinelProvider(opts: WebhookProviderOptions = {}): Sent
         return {
           ready: false,
           reason:
-            err instanceof PrLookupError && err.code === "gh_unavailable"
+            err instanceof sentinelPlatform().github.PrLookupError && (err as { code?: string }).code === "gh_unavailable"
               ? "the GitHub CLI (`gh`) is not installed or not on the daemon's PATH"
               : `gh is not authenticated or GitHub is unreachable (${errMsg(err).slice(0, 200)}) — run \`gh auth login\``,
         }

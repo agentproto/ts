@@ -17,7 +17,7 @@ import { createSentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel
 import { createSentinelQuarantine } from "../sentinel-quarantine.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
 import { singleMatch, type SentinelMalformedItem } from "../sentinel-providers/types.js"
-import type { SessionMessage } from "../session-message.js"
+import type { SessionMessage } from "../local-types.js"
 
 const dirs: string[] = []
 const tmp = (): string => {

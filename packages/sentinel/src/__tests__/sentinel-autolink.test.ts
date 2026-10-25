@@ -14,7 +14,7 @@ import { createSentinelStore } from "../sentinel-store.js"
 import { createFakeSentinelProvider } from "../sentinel-providers/fake.js"
 import { LOCAL_GH_SLUG } from "../sentinel-providers/local-gh.js"
 import type { SentinelProviderHandle } from "../sentinel-providers/types.js"
-import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "../sessions.js"
+import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "../local-types.js"
 
 const OPENED: RecordOpenedPrInput = {
   adapter: "claude-code",

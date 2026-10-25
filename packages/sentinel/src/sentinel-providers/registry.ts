@@ -8,17 +8,22 @@
  * GitHub repo hooks, push) and `agentpush` (step 10 — hosted subscriptions).
  */
 
-import {
-  sharedAdapterDiscovery,
-  sharedProviderProbe,
-  type AdapterDiscoverer,
-  type ProviderProbe,
-} from "../provider-probes.js"
+import { sentinelPlatform } from "../platform.js"
 import { agentpushSentinelProvider, AGENTPUSH_SLUG } from "./agentpush.js"
 import { localGhSentinelProvider, LOCAL_GH_SLUG } from "./local-gh.js"
 import { webhookSentinelProvider, WEBHOOK_SLUG } from "./webhook.js"
 import { sessionSentinelProvider, SESSION_SLUG, type SessionSentinelDeps } from "./session.js"
 import type { SentinelProviderHandle } from "./types.js"
+
+type ProviderModule = Record<string, unknown>
+
+export type AdapterDiscoverer = (opts?: {
+  start?: string
+}) => Promise<ReadonlyArray<{ slug: string; packageName: string }>>
+
+export interface ProviderProbe {
+  probe: (specifier: string) => Promise<ProviderModule | null>
+}
 
 /** Per-slug credentials, as stored by the creds store / setup tool. */
 export type SentinelCreds = Record<string, string>
@@ -85,7 +90,7 @@ const slugToCamel = (slug: string): string =>
   slug.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())
 
 /** Default discovered-package source: the shared 60s-bounded discovery cache. */
-const defaultDiscover: AdapterDiscoverer = () => sharedAdapterDiscovery.discover()
+const defaultDiscover: AdapterDiscoverer = () => sentinelPlatform().discovery.discover()
 
 /** Duck-type a value as a sentinel provider handle (no secrets touched). */
 function isSentinelProvider(x: unknown): x is SentinelProviderHandle {
@@ -173,7 +178,7 @@ export async function resolveSentinelProvider(
     match.packageName,
     slug,
     opts?.creds ?? null,
-    opts?.probe ?? sharedProviderProbe,
+    opts?.probe ?? sentinelPlatform().discovery,
   )
 }
 
@@ -194,7 +199,7 @@ export async function discoverSentinelHandles(
   opts?: DiscoverSentinelHandlesOpts,
 ): Promise<SentinelProviderHandle[]> {
   const pkgs = await (opts?.discover ?? defaultDiscover)()
-  const probe = opts?.probe ?? sharedProviderProbe
+  const probe = opts?.probe ?? sentinelPlatform().discovery
   const out: SentinelProviderHandle[] = []
   for (const pkg of pkgs) {
     if (catalogSlugs.has(pkg.slug)) continue

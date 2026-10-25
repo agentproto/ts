@@ -45,7 +45,7 @@
  * mark the sentinel `orphaned` — `sentinel_list` still shows it.
  */
 
-import { parsePrUrl } from "./review-pr.js"
+import { parsePrUrl } from "./signature.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
 import {
@@ -57,8 +57,8 @@ import {
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 import type { SentinelPublicUrl } from "./sentinel-public-url.js"
 import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
-import type { MessageUrgency } from "./session-message.js"
-import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "./sessions.js"
+import type { MessageUrgency } from "./local-types.js"
+import { OUTPUT_SCAN_ADAPTER, type RecordOpenedPrInput } from "./local-types.js"
 
 /** The slice of `SessionDescriptor` this module reads — structural so tests
  *  don't need to construct a full descriptor. The real `SessionDescriptor`

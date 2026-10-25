@@ -13,7 +13,7 @@ import {
   discoverSentinelHandles,
   resolveSentinelProvider,
   type SentinelCreds,
-} from "../sentinel-providers/registry.js"
+} from "@agentproto/sentinel"
 import {
   discoverTunnelHandles,
   resolveTunnelProvider,

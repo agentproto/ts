@@ -15,7 +15,7 @@
  */
 
 import type { AdapterHandle, SetupField } from "@agentproto/provider-kit"
-import type { MessageUrgency } from "../session-message.js"
+import type { MessageUrgency } from "../local-types.js"
 
 // ── Event envelope (AIP-60 §4 — CloudEvents 1.0 profile) ────────────────
 

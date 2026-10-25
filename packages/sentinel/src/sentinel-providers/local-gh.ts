@@ -47,8 +47,8 @@
  */
 
 import { createHash } from "node:crypto"
-import { execGh, fetchPrStatus, prRef, type GhRunner } from "../review-pr.js"
-import type { PrStatusSnapshot } from "../review-ledger.js"
+import type { GhRunner, PrStatusSnapshot } from "../local-types.js"
+import { sentinelPlatform } from "../platform.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "../sentinel-github-normalize.js"
 import type {
   DeliveryPreference,
@@ -634,7 +634,7 @@ export interface LocalGhProviderOptions {
 }
 
 export function localGhSentinelProvider(opts?: LocalGhProviderOptions): SentinelProviderHandle {
-  const gh = opts?.gh ?? execGh
+  const gh = opts?.gh ?? sentinelPlatform().github.execGh
   const nowMs = opts?.nowMs ?? Date.now
   const backoffBaseMs = opts?.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS
   const backoffCapMs = opts?.backoffCapMs ?? DEFAULT_BACKOFF_CAP_MS
@@ -756,7 +756,7 @@ export function localGhSentinelProvider(opts?: LocalGhProviderOptions): Sentinel
       const subject = `github:${identity.repo}#${identity.number}`
       let snapshot: PrStatusSnapshot
       try {
-        snapshot = await fetchPrStatus(gh, prRef(identity.repo, identity.number), () => new Date(nowMs()))
+        snapshot = await sentinelPlatform().github.fetchPrStatus(gh, sentinelPlatform().github.prRef(identity.repo, identity.number), () => new Date(nowMs()))
       } catch (err) {
         const failures = cursorState.consecutiveFailures + 1
         const backoffMs = Math.min(backoffBaseMs * 2 ** (failures - 1), backoffCapMs)

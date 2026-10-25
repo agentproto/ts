@@ -25,8 +25,8 @@
 import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, promises as fsp } from "node:fs"
-import { ulid } from "./app-state.js"
-import { isExpiresAtReached, normalizeExpiresAt } from "./expires-at.js"
+import { ulid } from "./local-types.js"
+import { isExpiresAtReached, normalizeExpiresAt } from "./local-types.js"
 import type { SentinelHandle, SentinelSpec, SentinelTarget } from "./sentinel-providers/types.js"
 
 // ── Types ─────────────────────────────────────────────────────────────

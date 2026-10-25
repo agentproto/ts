@@ -24,8 +24,8 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
-import { MESSAGE_URGENCIES, type MessageUrgency } from "./session-message.js"
-import { parsePrUrl } from "./review-pr.js"
+import { MESSAGE_URGENCIES, type MessageUrgency } from "./local-types.js"
+import { parsePrUrl } from "./signature.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
 import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
 import { parseSessionSubject, SESSION_SLUG } from "./sentinel-providers/session.js"

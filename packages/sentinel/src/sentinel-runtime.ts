@@ -33,17 +33,11 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, appendFileSync } from "node:fs"
 
-import {
-  createSessionMessage,
-  MAX_MESSAGE_DATA_BYTES,
-  type MessageUrgency,
-  type SessionMessage,
-} from "./session-message.js"
-
-import { SessionNotAliveError, type SendMessageResult } from "./sessions.js"
-import { isExpiresAtReached } from "./expires-at.js"
-import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
-import { isRetired, type RetirementFields } from "./session-retirement.js"
+import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
+import { sentinelPlatform } from "./platform.js"
+import { isExpiresAtReached } from "./local-types.js"
+import { DELIBERATE_END_REASONS } from "./local-types.js"
+import { isRetired, type RetirementFields } from "./local-types.js"
 import type {
   Sentinel,
   SentinelStatus,
@@ -69,7 +63,7 @@ import {
   type SentinelWebhookOutbox,
   type SentinelWebhookOutboxRow,
 } from "./sentinel-webhook-outbox.js"
-import type { DeliveryReplay } from "./webhook-egress/delivery.js"
+import type { DeliveryReplay } from "./platform.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
 import {
   RecentKeys,
@@ -163,10 +157,11 @@ function eventMatchesSpec(
  *  identity stub. */
 function trimEventForEnvelope(event: SentinelEvent): Record<string, unknown> {
   const byteSize = (v: unknown): number => Buffer.byteLength(JSON.stringify(v), "utf8")
+  const maxBytes = sentinelPlatform().messages.maxMessageDataBytes
   const full: Record<string, unknown> = { ...event }
-  if (byteSize(full) <= MAX_MESSAGE_DATA_BYTES) return full
+  if (byteSize(full) <= maxBytes) return full
   const trimmed = { ...full, data: { truncated: true } }
-  if (byteSize(trimmed) <= MAX_MESSAGE_DATA_BYTES) return trimmed
+  if (byteSize(trimmed) <= maxBytes) return trimmed
   return { id: event.id, type: event.type, subject: event.subject, summary: event.summary, truncated: true }
 }
 
@@ -449,7 +444,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // "anything on this exact PR/issue/etc", regardless of which clause's
     // wildcard let it through.
     const scheme = event.subject.split(":")[0] || sentinel.provider
-    return createSessionMessage({
+    return sentinelPlatform().messages.createSessionMessage({
       to: sessionId,
       from: { relation: "system" },
       kind: "notice",
@@ -480,7 +475,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         )
         return
       } catch (err) {
-        if (!(err instanceof SessionNotAliveError)) throw err
+        if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
       }
     }
     parkEvent(
@@ -628,7 +623,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         log(`[sentinel-runtime] triage record failed: ${describeError(err)}`)
       }
     } catch (err) {
-      if (err instanceof SessionNotAliveError) {
+      if (sentinelPlatform().messages.isSessionNotAlive(err)) {
         await handleDeadSession(sentinel, event, msg)
         return
       }

@@ -9,13 +9,14 @@
  */
 
 import { describe, expect, it } from "vitest"
-import type { GhRunner } from "../review-pr.js"
+import type { GhRunner } from "../local-types.js"
 import { localGhSentinelProvider, LOCAL_GH_SLUG } from "../sentinel-providers/local-gh.js"
 import { singleMatch, type SentinelHandle, type SentinelSpec } from "../sentinel-providers/types.js"
 import { createSentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel-runtime.js"
-import { SessionNotAliveError, type SendMessageResult } from "../sessions.js"
-import type { SessionMessage } from "../session-message.js"
+import type { SendMessageResult } from "../local-types.js"
+import { SessionNotAliveError } from "./test-support.js"
+import type { SessionMessage } from "../local-types.js"
 
 // ── Fake gh ──────────────────────────────────────────────────────────
 

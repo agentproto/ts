@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { writeFileDurable } from "./durable-file.js"
+import { sentinelPlatform } from "./platform.js"
 import type { SentinelHandle, SentinelProviderHandle } from "./sentinel-providers/types.js"
 
 export interface CancelTombstone {
@@ -112,7 +112,7 @@ export function createCancelTombstoneStore(opts: CancelTombstoneOptions): Cancel
     if (!opts.filePath) return Promise.resolve()
     const filePath = opts.filePath
     const run = (): Promise<void> =>
-      writeFileDurable(filePath, JSON.stringify({ version: 1, tombstones: [...rows.values()] }, null, 2))
+      sentinelPlatform().durable.writeFileDurable(filePath, JSON.stringify({ version: 1, tombstones: [...rows.values()] }, null, 2))
     const next = writeTail.then(run, run)
     writeTail = next.catch(() => undefined)
     return next

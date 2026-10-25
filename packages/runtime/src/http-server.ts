@@ -76,7 +76,7 @@ import { decide, type PermissionContext, type Principal } from "./permissions.js
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
-import { mintSentinelId, type SentinelStore } from "./sentinel-store.js"
+import { mintSentinelId, type SentinelStore } from "@agentproto/sentinel"
 import {
   deliveryPreferenceFor,
   singleMatch,
@@ -85,19 +85,19 @@ import {
   type SentinelTarget,
   type SentinelProviderHandle,
   type SentinelUntil,
-} from "./sentinel-providers/types.js"
-import { GITHUB_DEFAULT_PR_TYPES } from "./sentinel-github-normalize.js"
-import { autoSelectProviderSlug } from "./sentinel-provider-select.js"
+} from "@agentproto/sentinel"
+import { GITHUB_DEFAULT_PR_TYPES } from "@agentproto/sentinel"
+import { autoSelectProviderSlug } from "@agentproto/sentinel"
 import { parsePrUrl } from "./review-pr.js"
 import { decodeWhsecSecret, encodeWhsecSecret } from "./webhook-egress/signing.js"
-import { handleSentinelInbound, type SentinelInboundDeps } from "./sentinel-inbound.js"
+import { handleSentinelInbound, type SentinelInboundDeps } from "@agentproto/sentinel"
 import {
   createSentinelWatch,
   cancelSentinelWatch,
   sentinelView,
   sentinelViewWithDelivery,
   type SentinelWatchInput,
-} from "./sentinel-tools.js"
+} from "@agentproto/sentinel"
 import {
   followView,
   removeSessionFollow,
@@ -122,8 +122,8 @@ export interface SentinelHttpDeps {
    *  that path falls through to the ordinary inbound-endpoint lookup. */
   runtime?: SentinelInboundDeps["runtime"]
 }
-import type { CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
-import type { SentinelDeliveryStatus } from "./sentinel-webhook-outbox.js"
+import type { CancelTombstoneStore } from "@agentproto/sentinel"
+import type { SentinelDeliveryStatus } from "@agentproto/sentinel"
 import type { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import type { RemoteController, EnableInput } from "./remote-controller.js"
 import type { PairingRegistry } from "./pairing-registry.js"

@@ -16,9 +16,10 @@ import { createSentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime } from "../sentinel-runtime.js"
 import { toWebhookEnvelope, type PersistedOutboxRow } from "../sentinel-webhook-outbox.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
-import { serializeEnvelope, type DeliveryOutcome, type DeliveryReplay } from "../webhook-egress/delivery.js"
-import { signWebhook } from "../webhook-egress/signing.js"
-import type { SessionMessage } from "../session-message.js"
+import { serializeEnvelope } from "./test-support.js"
+import type { DeliveryOutcome, DeliveryReplay } from "../platform.js"
+import { signWebhook } from "./test-support.js"
+import type { SessionMessage } from "../local-types.js"
 
 const okResult = () => ({
   messageId: "msg_test",

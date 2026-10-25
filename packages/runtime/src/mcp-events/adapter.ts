@@ -27,9 +27,9 @@ import {
   type SentinelProviderHandle,
   type SentinelSpec,
   type SentinelUntil,
-} from "../sentinel-providers/types.js"
-import type { CancelTombstoneStore } from "../sentinel-cancel-tombstones.js"
-import type { SentinelStore } from "../sentinel-store.js"
+} from "@agentproto/sentinel"
+import type { CancelTombstoneStore } from "@agentproto/sentinel"
+import type { SentinelStore } from "@agentproto/sentinel"
 import type { McpEventEnvelope } from "../webhook-egress/delivery.js"
 import { subscriptionId } from "./subscription-id.js"
 import {

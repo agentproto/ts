@@ -204,14 +204,14 @@ import { cloudMetaOf } from "./cloud-vendors.js"
 import { createTransmitterBindingStore } from "./transmitter-bindings.js"
 import { createInboundEndpointStore } from "./inbound-endpoints.js"
 import { routeInboundMessage } from "./inbound-router.js"
-import { createSentinelStore } from "./sentinel-store.js"
-import { createSentinelRuntime } from "./sentinel-runtime.js"
-import { resolveSentinelProvider, configureSessionSentinelProvider } from "./sentinel-providers/registry.js"
-import { makePublicUrlResolver, setSentinelPublicUrlSource } from "./sentinel-public-url.js"
+import { createSentinelStore } from "@agentproto/sentinel"
+import { createSentinelRuntime } from "@agentproto/sentinel"
+import { resolveSentinelProvider, configureSessionSentinelProvider } from "@agentproto/sentinel"
+import { makePublicUrlResolver, setSentinelPublicUrlSource } from "@agentproto/sentinel"
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
-import { LOCAL_GH_SLUG } from "./sentinel-providers/local-gh.js"
-import { AGENTPUSH_SLUG } from "./sentinel-providers/agentpush.js"
-import { registerSentinelTools, cancelSentinelWatch } from "./sentinel-tools.js"
+import { LOCAL_GH_SLUG } from "@agentproto/sentinel"
+import { AGENTPUSH_SLUG } from "@agentproto/sentinel"
+import { registerSentinelTools, cancelSentinelWatch } from "@agentproto/sentinel"
 import { createSessionFollowStore } from "./session-follow-store.js"
 import { wireSessionFollow } from "./session-follow.js"
 import {
@@ -229,7 +229,16 @@ import {
   type EventsUnsubscribeInput,
 } from "./mcp-events/adapter.js"
 import { daemonBearerPrincipal, sessionPrincipal } from "./mcp-events/events-registry.js"
-import { createSentinelAutoLinker } from "./sentinel-autolink.js"
+import { createSentinelAutoLinker } from "@agentproto/sentinel"
+import { configureSentinelPlatform } from "@agentproto/sentinel"
+import { execGh, fetchPrStatus, prRef, PrLookupError } from "./review-pr.js"
+import { sharedAdapterDiscovery, sharedProviderProbe } from "./provider-probes.js"
+import { loadImportedMcps } from "./mcp-imports.js"
+import { writeFileDurable, writeFileDurableSync, appendLineDurableSync } from "./durable-file.js"
+import { createDurableRowFile, oldestTerminalKey } from "./durable-row-file.js"
+import { deliverEventEnvelope, serializeEnvelope, callbackHost, redactUrls } from "./webhook-egress/delivery.js"
+import { createSessionMessage, MAX_MESSAGE_DATA_BYTES } from "./session-message.js"
+import { SessionNotAliveError } from "./sessions.js"
 import { createEventsSurfaceServer } from "./mcp-events-surface.js"
 import { makeTelegramBotCredsStore, registerTelegramBotTools } from "./telegram-bot-creds.js"
 import type { InboundMessage, InboundRouteMode } from "./inbound-router.js"
@@ -1082,7 +1091,7 @@ import {
 import {
   registerSentinelAdapterTools,
   makeSentinelCredsStore,
-} from "./sentinel-adapters.js"
+} from "@agentproto/sentinel"
 import {
   registerSandboxAdapterTools,
   makeSandboxResolver,
@@ -1098,6 +1107,22 @@ import { registerPresetTools } from "./preset-tools.js"
 import { createWorkspaceFs, type WorkspaceFs } from "./workspace-fs.js"
 import { DELEGATION_TOOL_NAMES } from "./role.js"
 
+configureSentinelPlatform({
+  github: { execGh, fetchPrStatus, prRef, PrLookupError },
+  discovery: {
+    discover: () => sharedAdapterDiscovery.discover(),
+    probe: specifier => sharedProviderProbe.probe(specifier),
+  },
+  mcpImports: { loadImportedMcps: () => loadImportedMcps() },
+  webhookDelivery: { deliverEventEnvelope, serializeEnvelope, callbackHost, redactUrls },
+  durable: { writeFileDurable, writeFileDurableSync, appendLineDurableSync, createDurableRowFile, oldestTerminalKey },
+  messages: {
+    createSessionMessage,
+    maxMessageDataBytes: MAX_MESSAGE_DATA_BYTES,
+    isSessionNotAlive: err => err instanceof SessionNotAliveError,
+  },
+})
+
 export type { ConversationStore, ConversationMeta, ConversationTurn } from "./conversations.js"
 export type { HeartbeatRunner, BuildHeartbeatAgent, HeartbeatAgent } from "./heartbeat.js"
 export type { RuntimeEvent, RuntimeEvents } from "./events.js"
@@ -1107,21 +1132,21 @@ export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.j
 export { TunnelStartAbortedError } from "./remote-providers/types.js"
 export { buildSessionLink } from "./tunnel-links.js"
 export type { AppTunnelResult } from "./app-tunnel-tools.js"
-export type { SentinelStatus } from "./sentinel-store.js"
+export type { SentinelStatus } from "@agentproto/sentinel"
 export type {
   SentinelSpec,
   SentinelMatchClause,
   SentinelUntil,
   SentinelTarget,
-} from "./sentinel-providers/types.js"
-export type { SentinelView } from "./sentinel-tools.js"
+} from "@agentproto/sentinel"
+export type { SentinelView } from "@agentproto/sentinel"
 export type {
   SentinelMalformedItem,
   SentinelPollResult,
-} from "./sentinel-providers/types.js"
-export { SentinelBackingExpiredError } from "./sentinel-providers/types.js"
-export type { SentinelQuarantine, SentinelQuarantineRecord } from "./sentinel-quarantine.js"
-export type { CancelTombstone, CancelTombstoneStore } from "./sentinel-cancel-tombstones.js"
+} from "@agentproto/sentinel"
+export { SentinelBackingExpiredError } from "@agentproto/sentinel"
+export type { SentinelQuarantine, SentinelQuarantineRecord } from "@agentproto/sentinel"
+export type { CancelTombstone, CancelTombstoneStore } from "@agentproto/sentinel"
 // Session-follow (wake a session on other sessions' events).
 export {
   createSessionFollowStore,
@@ -1252,7 +1277,7 @@ export {
   type SentinelWebhookOutboxRow,
   type SentinelWebhookOutboxStatus,
   type PersistedOutboxRow,
-} from "./sentinel-webhook-outbox.js"
+} from "@agentproto/sentinel"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,

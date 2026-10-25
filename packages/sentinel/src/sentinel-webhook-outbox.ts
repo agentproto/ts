@@ -31,20 +31,14 @@ import { createHash } from "node:crypto"
 import { resolve, join } from "node:path"
 import { homedir } from "node:os"
 
-import { createDurableRowFile, oldestTerminalKey } from "./durable-row-file.js"
-
 import {
-  callbackHost,
-  deliverEventEnvelope,
-  redactUrls,
-  serializeEnvelope,
+  sentinelPlatform,
   type DeliverEventDeps,
   type DeliveryOutcome,
   type DeliveryReplay,
   type McpEventEnvelope,
-} from "./webhook-egress/delivery.js"
+} from "./platform.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
-import { toMcpEvent } from "./mcp-events/adapter.js"
 
 // ── Types ─────────────────────────────────────────────────────────────
 
@@ -189,7 +183,13 @@ export function webhookRequestId(sentinelId: string, eventId: string): `sub_${st
  *  restarts. `data` gains `subject`/`summary` so the 256 KiB clamp's
  *  `{summary, subject}` replacement never goes blind. */
 export function toWebhookEnvelope(event: SentinelEvent): McpEventEnvelope {
-  return toMcpEvent(event)
+  return {
+    eventId: event.id,
+    name: event.type,
+    timestamp: event.time,
+    data: { ...event.data, subject: event.subject, summary: event.summary },
+    cursor: null,
+  }
 }
 
 // ── Factory ───────────────────────────────────────────────────────────
@@ -208,8 +208,8 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   const deliverEvent =
     opts.deliverEvent ??
     (async (input: { replay: DeliveryReplay; row: PersistedOutboxRow }) => {
-      const host = callbackHost(input.replay.callbackUrl)
-      return deliverEventEnvelope(input.replay, input.row.envelope as McpEventEnvelope, {
+      const host = sentinelPlatform().webhookDelivery.callbackHost(input.replay.callbackUrl)
+      return sentinelPlatform().webhookDelivery.deliverEventEnvelope(input.replay, input.row.envelope as McpEventEnvelope, {
         ...opts.deliverDeps,
         onAttempt: a =>
           deliveryLog(
@@ -227,7 +227,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   // best effort schedulePersist, and losing one only re-delivers a row
   // (at-least-once), never loses it. The mechanics live in
   // durable-row-file.ts.
-  const durable = createDurableRowFile<PersistedOutboxRow>({
+  const durable = sentinelPlatform().durable.createDurableRowFile<PersistedOutboxRow>({
     filePath,
     persist,
     debounceMs,
@@ -247,7 +247,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
   // ── Dispatch worker (serialized; one POST in flight) ────────────────
 
   const oldestTerminalRowKey = (): string | undefined =>
-    oldestTerminalKey(
+    sentinelPlatform().durable.oldestTerminalKey(
       rows,
       row => row.status === "delivered" || row.status === "dead",
       row => row.terminalAt ?? row.createdAt,
@@ -300,7 +300,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       row.terminalAt = nowMs()
       deliveryLog(
         row,
-        callbackHost(replay.callbackUrl),
+        sentinelPlatform().webhookDelivery.callbackHost(replay.callbackUrl),
         `final=${row.status} attempts=${outcome.delivery.attempts}` +
           (outcome.ok ? "" : ` reason=${outcome.reason}`),
       )
@@ -310,11 +310,11 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
       // `resumeDeliveries()` re-runs it by exact bytes next startup.
       row.deliveryState = {
         ...(row.deliveryState ?? { attempts: 0 }),
-        lastError: redactUrls(err instanceof Error ? err.message : String(err)),
+        lastError: sentinelPlatform().webhookDelivery.redactUrls(err instanceof Error ? err.message : String(err)),
         lastAt: new Date(nowMs()).toISOString(),
       }
       row.status = "pending"
-      deliveryLog(row, callbackHost(replay.callbackUrl), "dispatch failed, row left pending")
+      deliveryLog(row, sentinelPlatform().webhookDelivery.callbackHost(replay.callbackUrl), "dispatch failed, row left pending")
     }
     durable.schedulePersist()
     if (row.status === "delivered" || row.status === "dead") {
@@ -363,7 +363,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         sentinelId,
         requestId: webhookRequestId(sentinelId, event.id),
         eventId: event.id,
-        bodyBytes: Buffer.from(serializeEnvelope(envelope)).toString("base64"),
+        bodyBytes: Buffer.from(sentinelPlatform().webhookDelivery.serializeEnvelope(envelope)).toString("base64"),
         cursor: null,
         deliveryState: { attempts: 0 },
         status: "pending",
@@ -428,7 +428,7 @@ export function createSentinelWebhookOutbox(opts: SentinelWebhookOutboxOptions):
         active,
         ...(latest.deliveryState.lastAt ? { lastDeliveryAt: latest.deliveryState.lastAt } : {}),
         lastStatus: latest.status,
-        ...(lastError && latest.status !== "delivered" ? { lastError: redactUrls(lastError) } : {}),
+        ...(lastError && latest.status !== "delivered" ? { lastError: sentinelPlatform().webhookDelivery.redactUrls(lastError) } : {}),
         attempts: latest.deliveryState.attempts,
         dead,
       }

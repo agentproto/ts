@@ -264,6 +264,7 @@
     "@agentproto/routine": "workspace:*",
     "@agentproto/sandbox": "workspace:*",
     "@agentproto/secrets": "workspace:*",
+    "@agentproto/sentinel": "workspace:*",
     "@agentproto/storage-github": "workspace:*",
     "@agentproto/telemetry-langfuse": "workspace:*",
     "@agentproto/tool": "workspace:*",

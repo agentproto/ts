@@ -35,8 +35,8 @@
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
-import { verifyInboundSignature } from "../inbound-adapters.js"
-import { loadImportedMcps } from "../mcp-imports.js"
+import { verifyInboundSignature } from "../signature.js"
+import { sentinelPlatform } from "../platform.js"
 import { GITHUB_DEFAULT_PR_TYPES } from "../sentinel-github-normalize.js"
 import { resolveSentinelPublicUrl, type SentinelPublicUrl } from "../sentinel-public-url.js"
 import { WEBHOOK_ROUTE_PREFIX } from "./webhook.js"
@@ -258,7 +258,7 @@ function defaultTypesFor(subject: string): string[] {
 /** agentpush's `Authorization` bearer from an imported `agentpush` MCP alias. */
 async function importedAliasBearer(): Promise<string | undefined> {
   try {
-    const config = await loadImportedMcps()
+    const config = await sentinelPlatform().mcpImports.loadImportedMcps()
     const entry = config.imports.find(e => e.alias === AGENTPUSH_MCP_ALIAS)
     const headers = entry?.snapshot.headers
     if (!headers) return undefined

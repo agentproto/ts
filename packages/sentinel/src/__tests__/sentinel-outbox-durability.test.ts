@@ -13,9 +13,9 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { createSentinelWebhookOutbox, type PersistedOutboxRow } from "../sentinel-webhook-outbox.js"
-import { writeFileDurable } from "../durable-file.js"
+import { writeFileDurable } from "./test-support.js"
 import { makeFakeEvent } from "../sentinel-providers/fake.js"
-import type { DeliveryOutcome, DeliveryReplay } from "../webhook-egress/delivery.js"
+import type { DeliveryOutcome, DeliveryReplay } from "../platform.js"
 
 const whsec = "whsec_" + Buffer.from(new Uint8Array(32).fill(5)).toString("base64")
 const replay = (): DeliveryReplay => ({ subId: "sub_x", callbackUrl: "https://cb.example/hook", secrets: [whsec] })

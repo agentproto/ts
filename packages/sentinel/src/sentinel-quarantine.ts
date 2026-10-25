@@ -18,7 +18,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 
-import { appendLineDurableSync } from "./durable-file.js"
+import { sentinelPlatform } from "./platform.js"
 import type { SentinelMalformedItem } from "./sentinel-providers/types.js"
 
 export interface SentinelQuarantineRecord {
@@ -108,7 +108,7 @@ export function createSentinelQuarantine(opts: SentinelQuarantineOptions = {}): 
         ...(item.digest !== undefined ? { digest: item.digest } : {}),
         ...(item.bytes !== undefined ? { bytes: item.bytes } : {}),
       }
-      if (opts.filePath) appendLineDurableSync(opts.filePath, JSON.stringify(rec))
+      if (opts.filePath) sentinelPlatform().durable.appendLineDurableSync(opts.filePath, JSON.stringify(rec))
       records.set(key, rec)
       return rec
     },

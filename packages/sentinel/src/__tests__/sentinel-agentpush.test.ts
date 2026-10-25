@@ -36,8 +36,8 @@ import {
   type SentinelProviderHandle,
   type SentinelSpec,
 } from "../sentinel-providers/types.js"
-import type { SessionMessage } from "../session-message.js"
-import type { SendMessageResult } from "../sessions.js"
+import type { SessionMessage } from "../local-types.js"
+import type { SendMessageResult } from "../local-types.js"
 
 // ── Fake agentpush server (behind an injected fetch) ──────────────────
 

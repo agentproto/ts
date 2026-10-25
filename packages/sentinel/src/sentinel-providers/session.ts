@@ -54,7 +54,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto"
-import type { SessionEvent, SessionEventBus } from "../session-event-bus.js"
+import type { SessionEvent, SessionEventBus } from "../local-types.js"
 import type {
   DeliveryPreference,
   SentinelEvent,

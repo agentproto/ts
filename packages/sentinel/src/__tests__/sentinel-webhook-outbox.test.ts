@@ -16,7 +16,8 @@ import {
   webhookRequestId,
   type PersistedOutboxRow,
 } from "../sentinel-webhook-outbox.js"
-import { serializeEnvelope, type DeliveryOutcome, type DeliveryReplay } from "../webhook-egress/delivery.js"
+import { serializeEnvelope } from "./test-support.js"
+import type { DeliveryOutcome, DeliveryReplay } from "../platform.js"
 import { makeFakeEvent } from "../sentinel-providers/fake.js"
 
 const whsecSecret = "whsec_" + Buffer.from(new Uint8Array(32).fill(5)).toString("base64")

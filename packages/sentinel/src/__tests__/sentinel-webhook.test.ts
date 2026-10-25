@@ -22,8 +22,8 @@ import { createFakeSentinelProvider } from "../sentinel-providers/fake.js"
 import { deliveryPreferenceFor, singleMatch, type SentinelProviderHandle, type SentinelSpec } from "../sentinel-providers/types.js"
 import { createSentinelWatch } from "../sentinel-tools.js"
 import type { SentinelPublicUrl } from "../sentinel-public-url.js"
-import type { SessionMessage } from "../session-message.js"
-import type { SendMessageResult } from "../sessions.js"
+import type { SessionMessage } from "../local-types.js"
+import type { SendMessageResult } from "../local-types.js"
 
 // ── Fake gh ──────────────────────────────────────────────────────────
 

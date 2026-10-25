@@ -36,7 +36,7 @@ import { makeRestartForRouting } from "../index.js"
 import { createCronScheduler } from "../cron-scheduler.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createSessionFollowStore } from "../session-follow-store.js"
-import { createSentinelStore } from "../sentinel-store.js"
+import { createSentinelStore } from "@agentproto/sentinel"
 import { wireRetirementCleanup, sweepWiringLifecycle } from "../retirement-cleanup.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 

@@ -22,9 +22,9 @@
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
-import type { TriageDecision } from "./follow-triage.js"
+import type { TriageDecision } from "./local-types.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import type { MessageUrgency } from "./session-message.js"
+import type { MessageUrgency } from "./local-types.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a

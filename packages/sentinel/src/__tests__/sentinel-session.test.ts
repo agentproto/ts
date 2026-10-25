@@ -12,7 +12,8 @@
 
 import { describe, expect, it } from "vitest"
 
-import { createSessionEventBus, type SessionEventBus } from "../session-event-bus.js"
+import { createSessionEventBus } from "./test-support.js"
+import type { SessionEventBus } from "../local-types.js"
 import {
   sessionSentinelProvider,
   parseSessionSubject,
@@ -24,8 +25,8 @@ import { singleMatch, type SentinelSpec } from "../sentinel-providers/types.js"
 import { createSentinelStore, type SentinelStore } from "../sentinel-store.js"
 import { createSentinelRuntime, type SentinelRuntimeRegistry } from "../sentinel-runtime.js"
 import { createSentinelWatch, type SentinelWatchDeps } from "../sentinel-tools.js"
-import type { SendMessageResult } from "../sessions.js"
-import type { SessionMessage } from "../session-message.js"
+import type { SendMessageResult } from "../local-types.js"
+import type { SessionMessage } from "../local-types.js"
 
 // ── Fakes ────────────────────────────────────────────────────────────
 

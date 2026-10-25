@@ -21,8 +21,9 @@ import {
 } from "../sentinel-runtime.js"
 import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
 import { singleMatch, type SentinelMatchClause, type SentinelProviderHandle } from "../sentinel-providers/types.js"
-import { SessionNotAliveError, type SendMessageResult } from "../sessions.js"
-import type { SessionMessage } from "../session-message.js"
+import type { SendMessageResult } from "../local-types.js"
+import { SessionNotAliveError } from "./test-support.js"
+import type { SessionMessage } from "../local-types.js"
 
 // ── Test doubles ─────────────────────────────────────────────────────
 
