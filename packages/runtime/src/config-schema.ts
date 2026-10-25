@@ -173,6 +173,17 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    reactions: z
+      .object({
+        brainIngest: z
+          .object({
+            workspaces: z.array(z.string().min(1)).optional(),
+          })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
     tasks: z
       .object({
         operatorDelegates: z.array(z.string()).optional(),
@@ -498,6 +509,9 @@ const strArray = z.array(z.string())
  *  must be a non-empty string (an empty slug would never match a session's
  *  workspace and only widens the config's surface). */
 const peerGroupsSchema = z.array(z.array(z.string().min(1)))
+/** `defaults.reactions.brainIngest.workspaces` - workspace slugs whose
+ *  completed sessions are ingested by the durable brain-ingest reaction. */
+const brainIngestWorkspacesSchema = z.array(z.string().min(1))
 
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   // ── daemon ──
@@ -1264,6 +1278,18 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Pending prompt staleness (minutes)",
     help: "How long a prompt may sit queued behind a running turn before its sender is notified it is stuck and it is flagged stale in session_list/session_recap pendingPrompts. Takes effect on the next sweep.",
     default: 5,
+  },
+
+  // ── defaults: reactions ──
+  {
+    path: "defaults.reactions.brainIngest.workspaces",
+    schema: brainIngestWorkspacesSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest reaction workspaces",
+    help: "Workspace slugs whose completed sessions are ingested into the workspace brain by a durable reaction instead of the legacy exit subscriber. Empty (the default) = every workspace stays with the legacy subscriber. Takes effect on the next completion.",
+    default: [],
   },
 
   // ── defaults: tasks ──
