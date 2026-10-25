@@ -2097,6 +2097,7 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  const reactionStamp = reactionSpawnStamp(input.origin)
   // CONTROLLER marker (issue #1647) — read ONCE here, then stripped from
   // the rest of the spawn. Nothing downstream (descriptor, registry rows,
   // adapter options) ever sees it: a `spawnAgentSession` input field is not
@@ -4602,7 +4603,6 @@ export async function spawnAgentSession(
       // exit funnel): a queued provisioning drops out of the daemon-wide
       // queue, a running one has its install's process tree killed.
       const provisionAbort = new AbortController()
-      const reactionStamp = reactionSpawnStamp(input.origin)
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
         ...resumeLineageFields,
@@ -4642,7 +4642,7 @@ export async function spawnAgentSession(
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         ...(input.boardId || input.workflowOwner || reactionStamp
-          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner), ...(reactionStamp ? (reactionStamp.meta as unknown as Record<string, string>) : {}) } }
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner), ...(reactionStamp ? reactionStamp.meta : {}) } }
           : {}),
         ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
@@ -5349,7 +5349,6 @@ export async function spawnAgentSession(
           ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
         }
       : undefined
-    const reactionStamp = reactionSpawnStamp(input.origin)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       ...resumeLineageFields,
@@ -5442,7 +5441,7 @@ export async function spawnAgentSession(
               // for a hot role refresh at all.
               ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
               ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
-              ...(reactionStamp ? (reactionStamp.meta as unknown as Record<string, string>) : {}),
+              ...(reactionStamp ? reactionStamp.meta : {}),
             },
           }
         : {}),

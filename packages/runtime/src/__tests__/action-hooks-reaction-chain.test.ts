@@ -143,7 +143,7 @@ function setup(routineId: string, target: string[]) {
       ...(stamp
         ? {
             origin: stamp.origin,
-            meta: stamp.meta as unknown as Record<string, string>,
+            meta: stamp.meta,
           }
         : {}),
     })

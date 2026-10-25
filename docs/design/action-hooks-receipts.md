@@ -532,7 +532,9 @@ While a target runs, the runner enters an async reaction context carrying the
 binding id, the depth a spawned session carries and the receipt key. Any spawn
 made inside that context is stamped with origin `reaction:<binding-id>` (or the
 author-set origin) and `meta.reactionDepth`/`meta.causedByEventId`, so the next
-completion derives the next depth. The remaining limit is a session started by
+completion derives the next depth. The descriptor meta is string valued, so the
+depth is stored as a decimal string and read back as a number in the session
+facts. The remaining limit is a session started by
 a detached process that does not inherit the async context, for example a spawn
 done by a separate OS process: that session is not stamped.
 

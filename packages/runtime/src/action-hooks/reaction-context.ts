@@ -31,11 +31,11 @@ export function currentReactionContext(): ReactionContext | undefined {
 /** Pure: what a spawn started inside a reaction must carry, or undefined outside one. */
 export function reactionSpawnStamp(
   explicitOrigin: string | undefined,
-): { origin: string; meta: { reactionDepth: number; causedByEventId: string } } | undefined {
+): { origin: string; meta: { reactionDepth: string; causedByEventId: string } } | undefined {
   const ctx = storage.getStore()
   if (ctx === undefined) return undefined
   return {
     origin: explicitOrigin ?? `reaction:${ctx.bindingId}`,
-    meta: { reactionDepth: ctx.reactionDepth, causedByEventId: ctx.causedByEventId },
+    meta: { reactionDepth: String(ctx.reactionDepth), causedByEventId: ctx.causedByEventId },
   }
 }

@@ -9,6 +9,7 @@ import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.
 import {
   createSessionsRegistry,
   type AgentSessionLike,
+  type SessionDescriptor,
   type SessionsRegistry,
 } from "../sessions.js"
 import { cdContractLine } from "../agents-md.js"
@@ -64,7 +65,7 @@ describe("reaction spawn stamping", () => {
 
     expect(result.descriptor.origin).toBe("reaction:bind-a")
     expect(result.descriptor.meta).toMatchObject({
-      reactionDepth: 2,
+      reactionDepth: "2",
       causedByEventId: "receipt:bind-a",
     })
   })
@@ -90,7 +91,7 @@ describe("reaction spawn stamping", () => {
     expect(result.descriptor.origin).toBe("author")
     expect(result.descriptor.meta).toMatchObject({
       boardId: "b-1",
-      reactionDepth: 2,
+      reactionDepth: "2",
       causedByEventId: "receipt:bind-a",
     })
   })
@@ -116,9 +117,56 @@ describe("reaction spawn stamping", () => {
 
     expect(result.descriptor.origin).toBe("reaction:bind-a")
     expect(result.descriptor.meta).toMatchObject({
-      reactionDepth: 2,
+      reactionDepth: "2",
       causedByEventId: "receipt:bind-a",
     })
+  })
+
+  it("keeps the stamp on the final descriptor of the async worktree spawn", async () => {
+    const { registry, deps } = baseDeps()
+    const provisionWorktree: WorktreeProvisioner = vi.fn(async () => {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      return {
+        isolated: true,
+        cwd: "/tmp/worktree",
+        branch: "wt/test",
+      } satisfies WorktreeProvisionOutcome
+    })
+    const result = await runInReactionContext(ctx("bind-a", 2), async () =>
+      spawnAgentSession(
+        { ...deps, provisionWorktree, resolveWorktreeIsolation: async () => "on-request" },
+        { adapter: "mock", cwd: "/tmp", worktree: { async: true } },
+      ),
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+
+    await vi.waitFor(
+      () => expect(registry.get(result.descriptor.id)?.cwd).toBe("/tmp/worktree"),
+      { timeout: 5_000 },
+    )
+    const final = registry.get(result.descriptor.id)
+    expect(final?.origin).toBe("reaction:bind-a")
+    expect(final?.meta).toMatchObject({
+      reactionDepth: "2",
+      causedByEventId: "receipt:bind-a",
+    })
+  })
+
+  it("omits the reaction depth fact for a malformed meta depth", () => {
+    for (const malformed of ["abc", "-1", "1.5"]) {
+      const desc = {
+        id: "sess-malformed",
+        kind: "agent-cli",
+        command: "agent",
+        pid: 1,
+        status: "exited",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        meta: { reactionDepth: malformed },
+      } as unknown as SessionDescriptor
+      const facts = sessionFactsOf(desc)
+      expect("reactionDepth" in facts).toBe(false)
+    }
   })
 
   it("derives reaction facts from the descriptor meta", async () => {

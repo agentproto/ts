@@ -65,11 +65,11 @@ describe("reaction context", () => {
     return Promise.all([stamp, explicit]).then(([generated, kept]) => {
       expect(generated).toEqual({
         origin: "reaction:bind-a",
-        meta: { reactionDepth: 2, causedByEventId: "receipt:bind-a" },
+        meta: { reactionDepth: "2", causedByEventId: "receipt:bind-a" },
       })
       expect(kept).toEqual({
         origin: "author",
-        meta: { reactionDepth: 2, causedByEventId: "receipt:bind-a" },
+        meta: { reactionDepth: "2", causedByEventId: "receipt:bind-a" },
       })
     })
   })
