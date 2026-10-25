@@ -1,6 +1,6 @@
 /**
- * @agentproto/driver-agent-cli — AIP-45 AGENT-CLI.md `defineAgentCli`
- * reference impl.
+ * @agentproto/driver-agent-cli: `defineAgentCli` implementation for
+ * AIP-45 AGENT-CLI.md.
  *
  * Spec: https://agentproto.sh/docs/aip-45
  *
@@ -11,10 +11,20 @@
  * Runtime: `createAgentCliRuntime(handle)` → spawn binary, dispatch
  * turns through the protocol arm (acp / mcp / proprietary), normalise
  * events to {@link StreamEvent}.
+ *
+ * This package is not itself an AIP registry spec; its data format is
+ * identified by {@link AGENT_CLI_FORMAT}.
  */
 
-export const SPEC_NAME = "agentcli-interactive/v1" as const
+/** Internal data-format id (not an AIP registry spec name); see AIP-70. */
+export const AGENT_CLI_FORMAT = "agentcli-interactive/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
+
+/**
+ * @deprecated Not an AIP spec name; use {@link AGENT_CLI_FORMAT} instead.
+ * Kept for backward compatibility.
+ */
+export const SPEC_NAME = "agentcli-interactive/v1" as const
 
 export {
   defineAgentCli,

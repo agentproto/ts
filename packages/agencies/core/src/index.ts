@@ -1,9 +1,9 @@
 /**
- * @agentproto/agencies — agentagencies/v1 spec implementation.
+ * @agentproto/agencies: operating layer for entities that exercise *agency*.
  *
- * Operating layer for entities that exercise *agency* — both in the business
- * sense (service businesses, consultancies, freelancers) and the philosophical
- * sense (any system that acts with intention, autonomy, decision-making).
+ * Agency here spans both the business sense (service businesses,
+ * consultancies, freelancers) and the philosophical sense (any system that
+ * acts with intention, autonomy, decision-making).
  *
  * Extends agentcompanies/v1 (org structure) + agentgovernance/v1 (audit + signing)
  * with operations doctypes: AGENCY, OPERATIONS, SERVICE, PROCEDURE, PRICING-MODEL,
@@ -20,10 +20,20 @@
  * `@agentproto/agencies-engine`. Spec stays pure: zero I/O, zero filesystem deps.
  *
  * Spec doc: ./AGENTAGENCIES.md (canonical, included in npm publish)
+ *
+ * This package is not itself an AIP registry spec; its data format is
+ * identified by {@link AGENCIES_FORMAT}.
  */
 
-export const SPEC_NAME = "agentagencies/v1" as const
+/** Internal data-format id (not an AIP registry spec name); see AIP-70. */
+export const AGENCIES_FORMAT = "agentagencies/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
+
+/**
+ * @deprecated Not an AIP spec name; use {@link AGENCIES_FORMAT} instead.
+ * Kept for backward compatibility.
+ */
+export const SPEC_NAME = "agentagencies/v1" as const
 
 export * from "./spec/doctypes/index.js"
 export * from "./spec/validators/index.js"
