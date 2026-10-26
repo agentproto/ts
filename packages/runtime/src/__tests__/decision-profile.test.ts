@@ -35,7 +35,7 @@ const lookups = (over: Partial<PresetLookups> = {}): PresetLookups => ({
     })[id as string] as never,
   getUserPreset: async id =>
     ({
-      "user-free": { id, label: id, adapter: "opencode", model: "opencode/minimax-m3.1-flash-free" },
+      "user-free": { id, label: id, adapter: "opencode", model: "opencode/deepseek-v4.1-flash-free" },
       "user-route": { id, label: id, adapter: "opencode", model: "opencode/glm-5.3-flash-free", route: "gateway" },
       "user-rotate-paid": {
         id,

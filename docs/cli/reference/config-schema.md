@@ -381,8 +381,8 @@ named model sets. Applied hot. An explicit `models.<role>` still wins.
 | `opus` | `claude-sonnet-5-5` | `claude-opus-5-5` (same as the built-in defaults) |
 | `sonnet` | `claude-sonnet-5-5` | `claude-sonnet-5-5` |
 | `haiku` | `claude-haiku-5-5` | `claude-haiku-5-5` |
-| `go-free` | `opencode-go/longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` |
-| `free-sonnet` | `opencode-go/longcat-2.5-preview-free` | `claude-sonnet-5-5` |
+| `go-free` | `opencode-go/beam-free` | `opencode-go/beam-free` |
+| `free-sonnet` | `opencode-go/beam-free` | `claude-sonnet-5-5` |
 
 ```bash
 agentproto config set modelRolePreset go-free
