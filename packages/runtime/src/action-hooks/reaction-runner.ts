@@ -786,7 +786,8 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
           orphans: Array.from(orphanCounts, ([bindingId, counts]) => ({ bindingId, counts })),
           totals,
         }
-      } catch {
+      } catch (err) {
+        logLine(`health failed: ${messageOf(err)}`)
         return {
           generatedAt: nowMs(),
           started,

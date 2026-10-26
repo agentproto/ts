@@ -904,6 +904,17 @@ so a filter on one never matches.
 The additional filter paths `session.reactionDepth` and
 `session.causedByEventId` follow the same rule.
 
+Known limits: no event context for tool, workflow or agent arms;
+(only a registered action handler receives the occurrence); a session started by a
+detached process that does not inherit the async reaction context, for example
+a spawn done by a separate OS process, is not stamped, so a chain through that
+process is not bounded by the depth cap; the action
+registry is empty, so `action` arms are refused until a handler is registered;
+an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
+
+Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
+
 ### Reaction health and trace lines
 
 `ReactionRunner.health()` is a synchronous, side-effect-free read of the
@@ -925,7 +936,10 @@ The runner writes one structured line per terminal transition it performs in
 [reaction-runner] receipt=<receiptKey> binding=<bindingId> status=<done|failed|dead> depth=<n> attempt=<n> latencyMs=<n> queueAgeMs=<n> retryAt=<epoch ms> reason=<text>
 ```
 
-`retryAt` is present only on `failed`, and `reason` only on `failed` and
+`latencyMs` is the time since the attempt that just ended started, and
+`queueAgeMs` is the time from receipt creation to the start of that attempt, so
+it includes the backoff of earlier attempts. `retryAt` is present only on
+`failed`, and `reason` only on `failed` and
 `dead`. The reason is the first 120 characters of the store-redacted
 `lastError`, with whitespace runs replaced by `_` so the line stays parseable.
 
@@ -934,21 +948,10 @@ The runner writes one structured line per terminal transition it performs in
 the option the route 404s. It is a read-only GET; no other method is handled by
 the route.
 
-Known limits: latency covers the last attempt only, not every attempt of a
+Limits of the health surface: latency covers the last attempt only, not every attempt of a
 retried receipt; the retained window is the receipt store's retention, with
 done rows reaped after 24 h; `skipped` is memory only and resets at boot; there
 is no MCP tool and no CLI command for this read model yet.
-
-Known limits: no event context for tool, workflow or agent arms;
-(only a registered action handler receives the occurrence); a session started by a
-detached process that does not inherit the async reaction context, for example
-a spawn done by a separate OS process, is not stamped, so a chain through that
-process is not bounded by the depth cap; the action
-registry is empty, so `action` arms are refused until a handler is registered;
-an event arriving between runner start and the first reconcile only reaches
-builtin bindings.
-
-Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
 
 ## 11. Open questions and everything NOT VERIFIED
 
