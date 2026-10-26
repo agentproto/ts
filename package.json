@@ -63,7 +63,7 @@
   "pnpm": {
     "overrides": {
       "vitest": ">=3.2.6 <4",
-      "happy-dom": ">=20.0.0 <21",
+      "happy-dom": ">=21.0.4 <22",
       "ws": ">=8.21.0 <9",
       "hono": ">=4.12.25 <5",
       "vite": ">=7.3.5 <8",
@@ -83,6 +83,8 @@
       "basic-ftp": ">=6.2.1 <7",
       "@modelcontextprotocol/sdk": ">=1.31.0 <2",
       "@modelcontextprotocol/client": ">=2.2.0 <3",
+      "@modelcontextprotocol/server": ">=2.3.0 <2.4.0",
+      "body-parser": ">=2.4.0 <3",
       "source-map-js": ">=1.2.2 <2",
       "shell-quote": ">=1.11.0 <2",
       "proxy-addr": ">=2.0.8 <3",
