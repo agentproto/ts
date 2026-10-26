@@ -137,7 +137,12 @@ What changes for a listed workspace:
 What does not change:
 
 - the controller stays the gate: its ignore rules, its per-session debounce
-  timer, its single-flight check and its config resolution are untouched;
+  timer and its config resolution are untouched;
+- single-flight per session still holds, but for a listed workspace it is
+  enforced inside the pass target rather than by the controller (the
+  controller returns as soon as the event is emitted): a second concurrent
+  pass for the same session is recorded as done with the outcome
+  `skipped:single_flight` and runs nothing;
 - the firing that reaches the reaction is already debounced, and ownership is
   read once for that firing, so a workspace never runs both paths for the
   same firing.
