@@ -915,6 +915,44 @@ builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
 
+### Reaction health and trace lines
+
+`ReactionRunner.health()` is a synchronous, side-effect-free read of the
+retained receipt rows plus the in-memory skip counters. It reports
+`generatedAt`, `started`, `maxReactionDepth`, `maxConcurrent`, per-live-binding
+counts (`pending`, `running`, `done`, `failed`, `dead`), `oldestQueuedAgeMs`
+(the oldest pending or failed row), `latencyMs` (`count`, `p50`, `p95`, `max`
+from completed done rows), `maxDepth`, `retries`, `deadReasons`, `lastError`
+and `skipped`; plus `orphans` grouped by a binding id that is no longer live
+and process-wide `totals`. Percentiles use nearest rank, so `p50` and `p95`
+are always members of the sample. Receipts whose binding was removed stay in
+the store and appear under `orphans`, not under `bindings`.
+
+The runner writes one structured line per terminal transition it performs in
+`invokeTarget` and in the recursion cap branch, on a separate `trace` channel
+(default `console.info`):
+
+```
+[reaction-runner] receipt=<receiptKey> binding=<bindingId> status=<done|failed|dead> depth=<n> attempt=<n> latencyMs=<n> queueAgeMs=<n> retryAt=<epoch ms> reason=<text>
+```
+
+`latencyMs` is the time since the attempt that just ended started, and
+`queueAgeMs` is the time from receipt creation to the start of that attempt, so
+it includes the backoff of earlier attempts. `retryAt` is present only on
+`failed`, and `reason` only on `failed` and
+`dead`. The reason is the first 120 characters of the store-redacted
+`lastError`, with whitespace runs replaced by `_` so the line stays parseable.
+
+`GET /reactions` returns the health object plus `wiring` (`active` and
+`refused`) when the HTTP server was built with the reactions option; without
+the option the route 404s. It is a read-only GET; no other method is handled by
+the route.
+
+Limits of the health surface: latency covers the last attempt only, not every attempt of a
+retried receipt; the retained window is the receipt store's retention, with
+done rows reaped after 24 h; `skipped` is memory only and resets at boot; there
+is no MCP tool and no CLI command for this read model yet.
+
 ## 11. Open questions and everything NOT VERIFIED
 
 Open questions:

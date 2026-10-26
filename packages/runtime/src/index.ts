@@ -4820,6 +4820,10 @@ export async function createGateway(
     },
     cronScheduler,
     routineRegistrar,
+    reactions: {
+      health: () => reactionRunner.health(),
+      wiring: () => reactionWiring.current(),
+    },
   })
 
   heartbeat.start()
