@@ -15155,7 +15155,10 @@ export function createSessionsRegistry(opts?: {
       const timer = setTimeout(() => {
         if (!daemonGatePermissions.delete(id)) return
         pendingPermissions.delete(id)
-        if (owner) refreshAwaitingPermission(owner)
+        if (owner) {
+          refreshAwaitingPermission(owner)
+          schedulePersist()
+        }
         sessionEvents?.emit({
           type: "session:permission-resolved",
           sessionId,

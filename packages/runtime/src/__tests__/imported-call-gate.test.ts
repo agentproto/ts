@@ -17,7 +17,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -117,6 +117,29 @@ describe("registry.requestToolPermission", () => {
     expect(outcome).toMatchObject({ decision: "cancelled", reason: "timeout" })
     expect(registry.listPendingPermissions()).toHaveLength(0)
     expect(events.find(e => e.type === "session:permission-resolved")).toMatchObject({ decision: "cancelled" })
+    registry.shutdown()
+  })
+
+  it("persists the cleared awaitingPermission flag when a gate times out", async () => {
+    const persistPath = join(tmp, "sessions.json")
+    const registry = createSessionsRegistry({ persistPath, transcriptDir: join(tmp, "s") })
+    const fake: AgentSessionLike = {
+      sessionId: "acp-t",
+      pid: 1,
+      async *send() {
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = registry.spawnAgent({ workspaceSlug: "default", cwd: tmp, agentSession: fake, adapterSlug: "claude-code" })
+    const outcome = await registry.requestToolPermission({ sessionId: desc.id, toolName: "send_message", text: "?", timeoutMs: 1800 })
+    expect(outcome).toMatchObject({ decision: "cancelled", reason: "timeout" })
+    expect(registry.get(desc.id)?.awaitingPermission).toBeFalsy()
+
+    await new Promise(r => setTimeout(r, 1900))
+    const onDisk = JSON.parse(readFileSync(persistPath, "utf8")) as { sessions: Array<{ id: string; awaitingPermission?: boolean }> }
+    expect(onDisk.sessions.find(s => s.id === desc.id)?.awaitingPermission).toBeFalsy()
     registry.shutdown()
   })
 
@@ -246,6 +269,40 @@ describe("createImportedCallGuard on McpProxyRegistry", () => {
     const out = await proxy.callTool("agentpush", "send_message", { text: "hi" })
     expect(out).toMatchObject({ ok: true })
     expect(registry.listPendingPermissions()).toHaveLength(0)
+  })
+
+  it("treats a deny rule as a human hold at this seam: parked, never auto-denied, never sent unless approved", async () => {
+    writeHooks(workspace, [{ ...HOLD_SEND_MESSAGE, id: "deny-send-message", action: "deny" }])
+    const call = proxy.callTool("agentpush", "send_message", { text: "hello" })
+    await waitForPending(registry)
+    expect(upstream).not.toHaveBeenCalled()
+    const [pending] = registry.listPendingPermissions()
+    expect(pending!.options.map(o => o.optionId)).toEqual(["allow_once", "reject_once"])
+
+    await registry.respondPermission(pending!.id, { decision: "deny" })
+    const out = await call
+    expect(out.ok).toBe(false)
+    expect(upstream).not.toHaveBeenCalled()
+  })
+
+  it("treats a gate rule as a human hold at this seam: the gate command is never run", async () => {
+    const marker = join(tmp, "gate-ran")
+    writeHooks(workspace, [
+      {
+        ...HOLD_SEND_MESSAGE,
+        id: "gate-send-message",
+        action: "gate",
+        gate: { command: "sh", args: ["-c", `touch ${marker}`] },
+      },
+    ])
+    const call = proxy.callTool("agentpush", "send_message", { text: "hello" })
+    await waitForPending(registry)
+    expect(upstream).not.toHaveBeenCalled()
+    const [pending] = registry.listPendingPermissions()
+    await registry.respondPermission(pending!.id, { decision: "approve" })
+    await expect(call).resolves.toMatchObject({ ok: true })
+    expect(upstream).toHaveBeenCalledTimes(1)
+    expect(existsSync(marker)).toBe(false)
   })
 
   it("reads the rule from the calling session's cwd, attributing the permission to that session", async () => {
