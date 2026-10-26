@@ -337,6 +337,7 @@ import {
   type SpawnAdmissionCheck,
   type SpawnDedupeSource,
 } from "./action-hooks/spawn-admission.js"
+import { reactionSpawnStamp } from "./action-hooks/reaction-context.js"
 import type { AdmissionDecision } from "./action-hooks/types.js"
 import {
   loadProvenanceWrapGh,
@@ -2096,6 +2097,7 @@ export async function spawnAgentSession(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
+  const reactionStamp = reactionSpawnStamp(input.origin)
   // CONTROLLER marker (issue #1647) — read ONCE here, then stripped from
   // the rest of the spawn. Nothing downstream (descriptor, registry rows,
   // adapter options) ever sees it: a `spawnAgentSession` input field is not
@@ -4639,10 +4641,10 @@ export async function spawnAgentSession(
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId || input.workflowOwner
-          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner) } }
+        ...(input.boardId || input.workflowOwner || reactionStamp
+          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner), ...(reactionStamp ? reactionStamp.meta : {}) } }
           : {}),
-        ...(input.origin ? { origin: input.origin } : {}),
+        ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
@@ -5419,7 +5421,8 @@ export async function spawnAgentSession(
       input.workflowOwner ||
       cloudMeta ||
       callerAgentId ||
-      callerAgentManifestPath
+      callerAgentManifestPath ||
+      reactionStamp
         ? {
             meta: {
               ...(input.boardId ? { boardId: input.boardId } : {}),
@@ -5438,10 +5441,11 @@ export async function spawnAgentSession(
               // for a hot role refresh at all.
               ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
               ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
+              ...(reactionStamp ? reactionStamp.meta : {}),
             },
           }
         : {}),
-      ...(input.origin ? { origin: input.origin } : {}),
+      ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
       ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),

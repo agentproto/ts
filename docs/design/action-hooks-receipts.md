@@ -526,8 +526,15 @@ depth reaches the configured cap, for example 4, the receipt is created in
 `dead` with reason `recursion_cap` and the target is not run. This keeps a
 reaction that emits `turn-end` from creating an unbounded chain.
 
-In this version `causedByEventId` is not set and `reactionDepth` is the static
-per-binding value; chain depth and causation come with the durable arms task.
+While a target runs, the runner enters an async reaction context carrying the
+binding id, the depth a spawned session carries and the receipt key. Any spawn
+made inside that context is stamped with origin `reaction:<binding-id>` (or the
+author-set origin) and `meta.reactionDepth`/`meta.causedByEventId`, so the next
+completion derives the next depth. The descriptor meta is string valued, so the
+depth is stored as a decimal string and read back as a number in the session
+facts. The remaining limit is a session started by
+a detached process that does not inherit the async context, for example a spawn
+done by a separate OS process: that session is not stamped.
 
 ## 6. Proposal: boot reconciliation
 
@@ -894,13 +901,14 @@ The documented `session.<field>` filter paths are `session.kind`,
 `session.isChild`, `session.workspaceSlug`, `session.origin`, `session.adapter`
 (the descriptor `adapterSlug`) and `session.label`. Undefined fields are omitted,
 so a filter on one never matches.
+The additional filter paths `session.reactionDepth` and
+`session.causedByEventId` follow the same rule.
 
 Known limits: no event context for tool, workflow or agent arms;
-`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
-workflow arm that starts sessions (for example `agent_start` or
-`workflow_run_file`) is not covered by the self-chain guard and can chain
-without bound until origin and depth propagation lands; use the agent arm to
-start a session from an event routine; the action
+(only a registered action handler receives the occurrence); a session started by a
+detached process that does not inherit the async reaction context, for example
+a spawn done by a separate OS process, is not stamped, so a chain through that
+process is not bounded by the depth cap; the action
 registry is empty, so `action` arms are refused until a handler is registered;
 an event arriving between runner start and the first reconcile only reaches
 builtin bindings.

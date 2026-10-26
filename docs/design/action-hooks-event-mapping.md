@@ -210,6 +210,8 @@ The `session.<field>` filter paths are the flat facts from `sessionFactsOf`:
 | `session.origin` | the descriptor `origin`, omitted when undefined |
 | `session.adapter` | the descriptor `adapterSlug`, omitted when undefined |
 | `session.label` | the descriptor `label`, omitted when undefined |
+| `session.reactionDepth` | the descriptor `meta.reactionDepth` read as a number, omitted unless it is a decimal integer string |
+| `session.causedByEventId` | the descriptor `meta.causedByEventId`, omitted when undefined |
 
 An undefined field is omitted, so a filter on it never matches. An agent arm
 treats unreadable session facts as "do not fire"; it also refuses a session whose
@@ -220,12 +222,18 @@ The `reconcile()` result and the `routine_reconcile` tool output carry
 `error`). A refused binding is not live. Builtin bindings always win a duplicate
 id.
 
+The runner carries the reaction causation through every arm: while a target
+runs it enters an async reaction context, and a session spawned inside that
+context is stamped with origin `reaction:<binding-id>` (or the author-set
+origin) plus `meta.reactionDepth` and `meta.causedByEventId`. The next
+completion derives its receipt depth from those facts, so the depth cap bounds
+a tool or workflow arm that starts sessions (for example `agent_start` or
+`workflow_run_file`) as well as the agent arm.
+
 Known limits in this version: tool, workflow and agent arms get no event context;
-`causedByEventId` and a per-chain `reactionDepth` are not propagated; a tool or
-workflow arm that starts sessions (for example `agent_start` or
-`workflow_run_file`) is not covered by the self-chain guard and can chain
-without bound until origin and depth propagation lands; use the agent arm to
-start a session from an event routine; the action
+only a registered action handler receives the occurrence; a session started
+by a detached process that does not inherit the async reaction context, for
+example a spawn done by a separate OS process, is not stamped; the action
 registry is empty, so `action` arms are refused until a handler is registered;
 and an event arriving between runner start and the first reconcile only reaches
 builtin bindings.

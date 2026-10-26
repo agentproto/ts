@@ -55,6 +55,16 @@ export function sessionFactsOf(desc: SessionDescriptor): Record<string, unknown>
   if (desc.origin !== undefined) facts.origin = desc.origin
   if (desc.adapterSlug !== undefined) facts.adapter = desc.adapterSlug
   if (desc.label !== undefined) facts.label = desc.label
+  const meta = desc.meta
+  if (meta !== undefined) {
+    if (typeof meta.reactionDepth === "string" && /^\d+$/.test(meta.reactionDepth)) {
+      const depth = Number(meta.reactionDepth)
+      if (Number.isSafeInteger(depth)) facts.reactionDepth = depth
+    }
+    if (typeof meta.causedByEventId === "string") {
+      facts.causedByEventId = meta.causedByEventId
+    }
+  }
   return facts
 }
 
