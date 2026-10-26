@@ -1,6 +1,6 @@
 # `@agentproto/session-presets` — design
 
-> Status: **shipped and implemented**. `@agentproto/session-presets` is published; the
+> Status: **shipped and implemented** as `@agentproto/session-presets`; the
 > current implementation docs live at `packages/session-presets/README.md`.
 
 A thin, typed library that lets a caller spin up a **pre-configured agent
