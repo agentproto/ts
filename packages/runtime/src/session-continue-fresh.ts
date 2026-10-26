@@ -193,33 +193,118 @@ export function stripContinuedSuffix(label: string): string {
  * A source session continues at most once. On 2026-10-26 an auto-compact turn
  * at 172k tokens re-entered this path and the daemon created two successors of
  * the same source 4.8 s apart (two checkpoints, two handoff prompts). Calls
- * are therefore memoised per `prev.id`: a duplicate or concurrent call gets
- * the first call's result (same checkpoint, same successor) instead of a
- * second spawn. The entry is kept after success, because the source is
- * retired and a later call would still fork the lineage; it is dropped on
- * rejection so a failed attempt can be retried. The map is bounded.
+ * are therefore memoised per `prev.id`: a duplicate or concurrent call with
+ * the SAME options gets the first call's result (same checkpoint, same
+ * successor) instead of a second spawn. A later call with DIFFERENT options
+ * is refused with `ContinueFreshSpawnError` (`already_continued`) rather than
+ * silently returning a successor that does not match the request.
+ *
+ * The entry is kept after success, because the source is retired and a later
+ * call would still fork the lineage — including an explicit handoff that
+ * leaves the source running (`performContextHandoff`): its source is linked
+ * via `continuedTo`, so it too gets no second continuation. It is dropped on
+ * rejection so a failed attempt can be retried. The map is bounded; only
+ * SETTLED entries are evicted (oldest first), never an in-flight attempt.
+ * This memo is process-local and does not survive a daemon restart; the
+ * registry's `continuedTo` link remains the durable record of the lineage.
  */
 export function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
   prev: SessionDescriptor,
   opts: ContinueAgentSessionFreshOptions = {},
 ): Promise<ContinueAgentSessionFreshResult> {
+  const requestKey = continuationRequestKey(opts)
   const existing = continuedSources.get(prev.id)
-  if (existing) return existing
-  const attempt = continueAgentSessionFreshOnce(deps, prev, opts)
-  continuedSources.set(prev.id, attempt)
-  if (continuedSources.size > CONTINUED_SOURCES_MAX) {
-    const oldest = continuedSources.keys().next().value
-    if (oldest !== undefined) continuedSources.delete(oldest)
+  if (existing) {
+    if (existing.requestKey === requestKey) return existing.promise
+    const target = existing.result ? ` as "${existing.result.descriptor.id}"` : " (still in progress)"
+    return Promise.reject(
+      new ContinueFreshSpawnError(
+        "already_continued",
+        `Session ${prev.id} was already continued fresh${target}; refusing a second continuation with different options.`,
+        {
+          continuedFrom: prev.id,
+          ...(existing.result
+            ? {
+                continuedTo: existing.result.descriptor.id,
+                checkpointId: existing.result.checkpoint.checkpointId,
+              }
+            : {}),
+        },
+      ),
+    )
   }
-  attempt.catch(() => {
-    if (continuedSources.get(prev.id) === attempt) continuedSources.delete(prev.id)
-  })
-  return attempt
+  const promise = continueAgentSessionFreshOnce(deps, prev, opts)
+  const entry: ContinuedSourceEntry = { promise, requestKey, settled: false }
+  continuedSources.set(prev.id, entry)
+  pruneSettledContinuedSources()
+  promise.then(
+    result => {
+      entry.settled = true
+      entry.result = result
+      pruneSettledContinuedSources()
+    },
+    () => {
+      if (continuedSources.get(prev.id) === entry) continuedSources.delete(prev.id)
+    },
+  )
+  return promise
 }
 
-const CONTINUED_SOURCES_MAX = 128
-const continuedSources = new Map<string, Promise<ContinueAgentSessionFreshResult>>()
+export const CONTINUED_SOURCES_MAX = 128
+const continuedSources = new Map<string, ContinuedSourceEntry>()
+
+interface ContinuedSourceEntry {
+  promise: Promise<ContinueAgentSessionFreshResult>
+  /** Canonical signature of the options that decide what the continuation
+   *  does; a cache hit with a different signature is a conflict, not a
+   *  duplicate. */
+  requestKey: string
+  settled: boolean
+  result?: ContinueAgentSessionFreshResult
+}
+
+/** Clear the per-source continuation memo. Test-only isolation hook. */
+export function resetContinueFreshMemoForTests(): void {
+  continuedSources.clear()
+}
+
+function pruneSettledContinuedSources(): void {
+  if (continuedSources.size <= CONTINUED_SOURCES_MAX) return
+  for (const [id, entry] of continuedSources) {
+    if (continuedSources.size <= CONTINUED_SOURCES_MAX) return
+    if (entry.settled) continuedSources.delete(id)
+  }
+}
+
+function continuationRequestKey(opts: ContinueAgentSessionFreshOptions): string {
+  return canonicalize({
+    adapter: opts.adapter ?? opts.harness,
+    harness: opts.harness ?? opts.adapter,
+    model: opts.model,
+    access: opts.access,
+    notes: opts.notes,
+    askSource: opts.askSource,
+    askTimeoutMs: opts.askTimeoutMs,
+    stampHandoff: opts.stampHandoff,
+    contextContinuity: opts.contextContinuity,
+    spawn: opts.spawn,
+  })
+}
+
+/** Stable JSON for option comparison — key order must not turn a duplicate
+ *  into a false conflict. `baseDir`, `sources` and `handoffAsker` are
+ *  deliberately not part of the signature: they are a storage location and
+ *  per-call dependency hooks, not a different target. */
+function canonicalize(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "undefined"
+  if (Array.isArray(value)) return `[${value.map(canonicalize).join(",")}]`
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record)
+    .filter(key => record[key] !== undefined)
+    .sort()
+  return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalize(record[key])}`).join(",")}}`
+}
 
 async function continueAgentSessionFreshOnce(
   deps: SpawnAgentSessionDeps,
