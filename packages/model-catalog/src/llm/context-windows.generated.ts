@@ -67,6 +67,8 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "kimi-k2.7-code": { contextWindow: 262144, provider: "moonshot" },
   "kimi-k2.7-code-highspeed": { contextWindow: 262144, provider: "moonshot" },
   "kimi-k3": { contextWindow: 1048576, provider: "moonshot" },
+  "kimi-k3.1-pro": { contextWindow: 1048576, provider: "moonshot" },
+  "kimi-k3.1-pro-highspeed": { contextWindow: 1048576, provider: "moonshot" },
   "labs-leanstral-1-5": { contextWindow: 262144, provider: "mistral" },
   "labs-leanstral-1-5-1": { contextWindow: 262144, provider: "mistral" },
   "llama-3.1-8b-instant": { contextWindow: 131072, maxOutput: 131072, provider: "groq" },
