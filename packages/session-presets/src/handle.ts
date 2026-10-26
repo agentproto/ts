@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — AgentHandle factory (WP2, STUB).
+ * @agentproto/session-presets — AgentHandle factory (WP2, STUB).
  *
  * `makeHandle` adapts a `HarnessClient` + a live session into the uniform
  * `AgentHandle` contract that every preset returns.

@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — WorkPackage type + supervisor prompt renderer (WP5).
+ * @agentproto/session-presets — WorkPackage type + supervisor prompt renderer (WP5).
  *
  * A WorkPackage describes a unit of work the supervisor assigns to a sub-agent.
  * `renderSupervisorPrompt` turns a list into a markdown orchestration brief.

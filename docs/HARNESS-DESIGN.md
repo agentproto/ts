@@ -1,7 +1,7 @@
-# `@agentproto/harness` — design
+# `@agentproto/session-presets` — design
 
-> Status: **shipped and implemented**. `@agentproto/harness` is published; the
-> current implementation docs live at `packages/harness/README.md`.
+> Status: **shipped and implemented**. `@agentproto/session-presets` is published; the
+> current implementation docs live at `packages/session-presets/README.md`.
 
 A thin, typed library that lets a caller spin up a **pre-configured agent
 session** — `coder`, `researcher`, `supervisor` — with one function call, the
@@ -103,7 +103,7 @@ via `AGENTPROTO_MCP_URL` / `~/.agentproto/config.json → daemon.port`;
 
 ---
 
-## 2. Proposed package: `@agentproto/harness`
+## 2. Proposed package: `@agentproto/session-presets`
 
 ### 2.1 Public shape
 
@@ -195,12 +195,12 @@ Each WP is scoped to a few files with an explicit gate. Order is dependency-froz
 
 | WP | Scope | Files | Gate |
 | --- | --- | --- | --- |
-| **WP1 — transport client** | Implement `HarnessClient`: connect over `StreamableHTTPClientTransport`, `callTool` helper that unwraps `content[0].text` → JSON, typed `start/prompt/output/kill/waitForAny`. Mirror `mcp-bridge.ts:30-58`. | `src/client.ts`, `src/types.ts` | `pnpm --filter @agentproto/harness check-types` |
-| **WP2 — AgentHandle + connect** | `connectHarness()` factory; `makeHandle(client, sessionId, meta)` implementing `send/waitForTurn/ask/output/kill` over WP1. `waitForTurn` = `session_monitor` with timeout→`{event:"timeout"}`. | `src/handle.ts`, `src/index.ts` | `pnpm --filter @agentproto/harness check-types` |
+| **WP1 — transport client** | Implement `HarnessClient`: connect over `StreamableHTTPClientTransport`, `callTool` helper that unwraps `content[0].text` → JSON, typed `start/prompt/output/kill/waitForAny`. Mirror `mcp-bridge.ts:30-58`. | `src/client.ts`, `src/types.ts` | `pnpm --filter @agentproto/session-presets check-types` |
+| **WP2 — AgentHandle + connect** | `connectHarness()` factory; `makeHandle(client, sessionId, meta)` implementing `send/waitForTurn/ask/output/kill` over WP1. `waitForTurn` = `session_monitor` with timeout→`{event:"timeout"}`. | `src/handle.ts`, `src/index.ts` | `pnpm --filter @agentproto/session-presets check-types` |
 | **WP3 — coder harness** | `createCoderHarness`: claude-code/hermes branch, model/effort defaults, render `CoderContext` (stack/conventions/gate cmds) into spawn prompt. | `src/harnesses/coder.ts`, `src/context.ts` | unit test: args snapshot for both engines (`vitest run`) |
 | **WP4 — researcher harness** | `createResearcherHarness`: hermes + GLM default, attach `searchMcp` to `mcpServers`, inject structured-output instruction + default schema. | `src/harnesses/researcher.ts` | unit test: `mcpServers` + schema present in args |
 | **WP5 — supervisor harness** | `createSupervisorHarness`: `orchestrator` wiring, render `WorkPackage[]` brief, `subtree()` + `waitForAnyChild()` helpers. | `src/harnesses/supervisor.ts`, `src/wp.ts` | unit test: `orchestrator` set + WP brief rendered |
-| **WP6 — model-routing verify + README** | Verify the real OpenRouter slugs for deepseek-v4-pro / glm-5.2 against a live hermes; lock preset defaults; write `README.md` with the three quick-starts. | `src/harnesses/*.ts` (defaults), `README.md` | `pnpm --filter @agentproto/harness build` green + README quick-starts run |
+| **WP6 — model-routing verify + README** | Verify the real OpenRouter slugs for deepseek-v4-pro / glm-5.2 against a live hermes; lock preset defaults; write `README.md` with the three quick-starts. | `src/harnesses/*.ts` (defaults), `README.md` | `pnpm --filter @agentproto/session-presets build` green + README quick-starts run |
 
 > Tests use `vitest` with a **mocked `HarnessClient`** (assert the args handed to
 > `agent_start`) — no live daemon required for WP3–WP5. WP6 is the only
@@ -216,8 +216,8 @@ tsconfig extends `@agentproto/tooling/typescript/node-library.json`, exports map
 of `dist/*.mjs` + `dist/*.d.ts`.
 
 ```
-packages/harness/
-  package.json          # @agentproto/harness, peer: @modelcontextprotocol/sdk, zod
+packages/session-presets/
+  package.json          # @agentproto/session-presets, peer: @modelcontextprotocol/sdk, zod
   tsconfig.json         # extends @agentproto/tooling/typescript/node-library.json
   tsup.config.ts        # createTsupConfig, esm, dts
   src/
@@ -231,7 +231,7 @@ packages/harness/
       supervisor.ts     # createSupervisorHarness stub (WP5)
 ```
 
-Dependency direction respected: `@agentproto/harness` depends only on
+Dependency direction respected: `@agentproto/session-presets` depends only on
 `@modelcontextprotocol/sdk` + `zod` (peer) — it talks to the daemon over the
 wire and imports **no** `@agentproto/runtime` internals, so it stays a clean leaf
 with no upward coupling.

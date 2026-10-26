@@ -31,7 +31,7 @@
 import { BoxApi, Configuration, type Box } from "@asciidev/box-sdk"
 import type { BootedSandbox, SandboxBootOpts, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
 
-/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
+/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 const DEFAULT_PORT = 18790
 /** Box's documented default login user / home directory. */
 const DEFAULT_WORKSPACE = "/home/user"
