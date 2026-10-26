@@ -271,6 +271,8 @@ import {
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
+import { createImportedCallGuard } from "./imported-call-gate.js"
+import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
 import { createReviewLedger } from "./review-ledger.js"
@@ -842,6 +844,8 @@ export type {
   RegisterSessionInput,
   PendingPermission,
   PermissionRespondInput,
+  ToolPermissionRequest,
+  ToolPermissionOutcome,
   PermissionRespondResult,
 } from "./sessions.js"
 // Value export (a class, used with `instanceof` at the HTTP/MCP boundary and by
@@ -3510,6 +3514,9 @@ export async function createGateway(
   // captures it so each /mcp request reuses the same upstream
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
+  // Per-call human approval for imported tools named by a `hold` rule in
+  // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
+  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace }))
 
   // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
   // session's chat. Its own config-keyed client pool: a harness alias is
@@ -4657,6 +4664,23 @@ export async function createGateway(
     buildAgent: opts.buildAgent ?? noopBuildAgent,
   })
 
+  // Telegram tap-to-approve for pending permissions. Off unless a chat id and
+  // at least one allowed user id are configured.
+  const permissionTelegramCfg = daemonConfig.approvals
+  const permissionTelegram =
+    permissionTelegramCfg?.permissionTelegramChatId && (permissionTelegramCfg.permissionTelegramUserIds?.length ?? 0) > 0
+      ? createPermissionTelegramBridge({
+          events: sessionEvents,
+          registry: sessions,
+          telegramCreds: telegramBotCreds,
+          alias: permissionTelegramCfg.permissionTelegramAlias ?? "default",
+          chatId: permissionTelegramCfg.permissionTelegramChatId,
+          allowedUserIds: permissionTelegramCfg.permissionTelegramUserIds!,
+          ...(permissionTelegramCfg.permissionTelegramTools ? { tools: permissionTelegramCfg.permissionTelegramTools } : {}),
+        })
+      : undefined
+  permissionTelegram?.start()
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
@@ -4741,6 +4765,14 @@ export async function createGateway(
     // this, every slug 404s as "unknown_inbound_endpoint" regardless of
     // what's registered, since the http layer never saw the store at all.
     endpointStore: inboundEndpointStore,
+    ...(permissionTelegram
+      ? {
+          permissionCallbacks: {
+            alias: permissionTelegramCfg?.permissionTelegramAlias ?? "default",
+            handleUpdate: (update: unknown) => permissionTelegram.handleUpdate(update),
+          },
+        }
+      : {}),
     routeInboundMessage: (msg: InboundMessage, mode: InboundRouteMode) =>
       routeInboundMessage(
         {
@@ -5288,6 +5320,7 @@ export async function createGateway(
       clerkTurnEnd.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
+      permissionTelegram?.stop()
       // Stop the sentinel poll loop and flush its store before sessions shut
       // down — same ordering reason as inboundWatcher above (delivery reads
       // `sessions`).

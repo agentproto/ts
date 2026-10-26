@@ -4282,7 +4282,30 @@ export interface PendingPermission {
    * Harness-shaped and untyped — don't assume a stable schema across adapters.
    */
   _meta?: unknown
+  /** Set on a permission the DAEMON raised itself (`requestToolPermission`,
+   *  e.g. the per-call gate on an imported MCP tool) rather than one an agent
+   *  driver parked. It has no driver RPC behind it: resolving it resumes the
+   *  daemon-side caller. Absent on every ACP-originated request. */
+  origin?: "daemon-gate"
 }
+
+/** Input to `SessionsRegistry.requestToolPermission`. */
+export interface ToolPermissionRequest {
+  /** Session the gated call is made on behalf of, when known. Absent for a
+   *  call with no session context (the permission is then attributed to the
+   *  pseudo-session `"daemon"`). */
+  sessionId?: string
+  toolName: string
+  text: string
+  rawInput?: unknown
+  /** Fail closed after this long with no human answer. Default 10 minutes. */
+  timeoutMs?: number
+}
+
+export type ToolPermissionOutcome =
+  | { decision: "approve"; optionId: string; feedback?: string }
+  | { decision: "deny"; optionId: string; feedback?: string }
+  | { decision: "cancelled"; reason: "timeout" | "session-ended" | "shutdown" }
 
 /** How a caller resolves a pending permission — an explicit `optionId` wins
  *  over the `decision`→option mapping (approve → an allow-flavored option,
@@ -5495,6 +5518,13 @@ export interface SessionsRegistry {
     id: string,
     input: PermissionRespondInput,
   ): Promise<PermissionRespondResult>
+  /** Raise a daemon-originated permission (no agent driver behind it) in the
+   *  same inbox + bus events as an ACP `session/request_permission`, and
+   *  resolve once a human answers via `respondPermission`. Offers only
+   *  `allow_once` / `reject_once` - there is no standing grant. Fails closed
+   *  (`cancelled`) on timeout, on the owning session's death, and on daemon
+   *  shutdown. */
+  requestToolPermission(input: ToolPermissionRequest): Promise<ToolPermissionOutcome>
   /** Stop tracking a session. A still-live session is torn down through
    *  `kill` first (same teardown as `agent_kill`), so forgetting never
    *  orphans a running process tree. */
@@ -6505,6 +6535,13 @@ export function createSessionsRegistry(opts?: {
   // Insertion order is preserved so `listPendingPermissions` reads oldest→
   // newest without a sort.
   const pendingPermissions = new Map<string, PendingPermission>()
+  /** Daemon-originated permissions (`requestToolPermission`): the settle
+   *  callback that resumes the awaiting daemon-side caller. Keyed like
+   *  `pendingPermissions`; an id present here has no driver RPC. */
+  const daemonGatePermissions = new Map<
+    string,
+    { settle: (outcome: ToolPermissionOutcome) => void; timer: ReturnType<typeof setTimeout> }
+  >()
   let persistTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonically-growing PTY-subscriber id. Detach is O(1) on
   // Map.delete(subId), so we never reuse — overflow at Number.MAX_-
@@ -6976,10 +7013,17 @@ export function createSessionsRegistry(opts?: {
     for (const [id, pending] of pendingPermissions) {
       if (pending.sessionId !== rt.desc.id) continue
       pendingPermissions.delete(id)
-      try {
-        void rt.agentSession?.respondPermission?.(id, { cancelled: true })
-      } catch {
-        // driver already gone — the RPC is moot
+      const gate = daemonGatePermissions.get(id)
+      if (gate) {
+        daemonGatePermissions.delete(id)
+        clearTimeout(gate.timer)
+        gate.settle({ decision: "cancelled", reason: "session-ended" })
+      } else {
+        try {
+          void rt.agentSession?.respondPermission?.(id, { cancelled: true })
+        } catch {
+          // driver already gone - the RPC is moot
+        }
       }
       if (sessionEvents) {
         sessionEvents.emit({
@@ -7025,6 +7069,50 @@ export function createSessionsRegistry(opts?: {
         error: "not_found",
         message: `no pending permission "${id}" (unknown or already resolved)`,
       }
+    }
+    const gate = daemonGatePermissions.get(id)
+    if (gate) {
+      const selected = selectPermissionOptionId(pending.options, input)
+      if (selected === null || "cancelled" in selected) {
+        return {
+          ok: false,
+          error: "no_matching_option",
+          message:
+            `permission "${id}" offers no matching option; pass an explicit optionId ` +
+            `(one of: ${pending.options.map(o => o.optionId).join(", ")})`,
+        }
+      }
+      daemonGatePermissions.delete(id)
+      clearTimeout(gate.timer)
+      pendingPermissions.delete(id)
+      const owner = sessions.get(pending.sessionId)
+      if (owner) refreshAwaitingPermission(owner)
+      const chosen = pending.options.find(o => o.optionId === selected.optionId)
+      const decision = chosen?.kind?.startsWith("allow") ? "approve" : "deny"
+      gate.settle({
+        decision,
+        optionId: selected.optionId,
+        ...(input.feedback ? { feedback: input.feedback } : {}),
+      })
+      sessionEvents?.emit({
+        type: "session:permission-resolved",
+        sessionId: pending.sessionId,
+        permissionId: id,
+        decision,
+        optionId: selected.optionId,
+        ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+        ts: new Date().toISOString(),
+      })
+      if (owner) {
+        transcriptWriter.recordEvent(pending.sessionId, {
+          kind: "permission-resolved",
+          toolCallId: id,
+          decision,
+          optionId: selected.optionId,
+        })
+      }
+      schedulePersist()
+      return { ok: true, permission: pending, decision, optionId: selected.optionId }
     }
     const rt = sessions.get(pending.sessionId)
     if (!rt || !rt.agentSession) {
@@ -14838,6 +14926,9 @@ export function createSessionsRegistry(opts?: {
     respondPermission(id, input) {
       return resolvePendingPermission(id, input)
     },
+    requestToolPermission(input) {
+      return requestToolPermissionImpl(input)
+    },
     forget(id) {
       const rt = sessions.get(id)
       if (!rt) return false
@@ -15035,11 +15126,73 @@ export function createSessionsRegistry(opts?: {
       }
     },
     shutdown() {
+      cancelDaemonGatePermissions("shutdown")
       shutdownImpl()
     },
   }
 
   return registry
+
+  function requestToolPermissionImpl(input: ToolPermissionRequest): Promise<ToolPermissionOutcome> {
+    const id = `gate_${randomUUID()}`
+    const owner = input.sessionId ? sessions.get(input.sessionId) : undefined
+    const sessionId = owner ? owner.desc.id : (input.sessionId ?? "daemon")
+    const pending: PendingPermission = {
+      id,
+      sessionId,
+      toolCallId: id,
+      toolName: input.toolName,
+      text: input.text,
+      options: [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      ],
+      requestedAt: new Date().toISOString(),
+      ...(input.rawInput !== undefined ? { rawInput: input.rawInput } : {}),
+      origin: "daemon-gate",
+    }
+    return new Promise<ToolPermissionOutcome>(resolve => {
+      const timer = setTimeout(() => {
+        if (!daemonGatePermissions.delete(id)) return
+        pendingPermissions.delete(id)
+        if (owner) refreshAwaitingPermission(owner)
+        sessionEvents?.emit({
+          type: "session:permission-resolved",
+          sessionId,
+          permissionId: id,
+          decision: "cancelled",
+          ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+          ts: new Date().toISOString(),
+        })
+        resolve({ decision: "cancelled", reason: "timeout" })
+      }, input.timeoutMs ?? 10 * 60_000)
+      timer.unref?.()
+      daemonGatePermissions.set(id, { settle: resolve, timer })
+      pendingPermissions.set(id, pending)
+      if (owner) {
+        owner.desc.awaitingPermission = true
+        schedulePersist()
+      }
+      sessionEvents?.emit({
+        type: "session:permission-request",
+        sessionId,
+        permissionId: id,
+        toolName: input.toolName,
+        text: input.text,
+        ...(owner?.desc.label ? { label: owner.desc.label } : {}),
+        ts: pending.requestedAt,
+      })
+    })
+  }
+
+  function cancelDaemonGatePermissions(reason: "shutdown"): void {
+    for (const [id, gate] of daemonGatePermissions) {
+      daemonGatePermissions.delete(id)
+      pendingPermissions.delete(id)
+      clearTimeout(gate.timer)
+      gate.settle({ decision: "cancelled", reason })
+    }
+  }
 
   /**
    * Detach a live provider-box session from this daemon: close its connection

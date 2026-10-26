@@ -1403,6 +1403,13 @@ export interface RuntimeHttpServerOptions {
    *  manifest loader; defaults suit a real daemon. Needs `appRegistry` and
    *  `appToolCallDeps.dispatchTool` to be wired. */
   a2aTasks?: A2aTaskHttpConfig
+  /** Telegram permission-tap interceptor (see `permission-telegram-bridge.ts`).
+   *  Consulted only on signed (`secret`) telegram inbound endpoints whose
+   *  alias equals `alias`; a handled update never reaches inbound routing. */
+  permissionCallbacks?: {
+    alias: string
+    handleUpdate: (update: unknown) => Promise<{ handled: boolean }>
+  }
   /** Optional — when wired, enables `POST /inbound`, the push-ingress
    *  counterpart to `inbound-watcher.ts`'s poll loop. A human reply
    *  (e.g. from agentpush's Telegram webhook) routes into the session
@@ -3077,6 +3084,7 @@ export async function startHttpServer(
                 }
               : {}),
             routeInboundMessage: opts.routeInboundMessage,
+            ...(opts.permissionCallbacks ? { permissionCallbacks: opts.permissionCallbacks } : {}),
             endpointStore: opts.endpointStore,
             checkSessionsToken,
             rejectUnauthorizedSession,
@@ -11809,6 +11817,7 @@ interface InboundHandlerDeps {
     req: { rawBody: string; headers: Record<string, string | string[] | undefined> },
   ) => ReturnType<typeof handleSentinelInbound>
   routeInboundMessage?: RuntimeHttpServerOptions["routeInboundMessage"]
+  permissionCallbacks?: RuntimeHttpServerOptions["permissionCallbacks"]
   endpointStore?: InboundEndpointStore
   checkSessionsToken: (req: IncomingMessage) => "ok" | "missing" | "bad"
   rejectUnauthorizedSession: (req: IncomingMessage, res: ServerResponse, reason: "missing" | "bad") => void
@@ -12020,6 +12029,20 @@ async function handleProviderInbound(
     res.writeHead(400, { "content-type": "application/json" })
     res.end(JSON.stringify({ error: "invalid_json" }))
     return
+  }
+
+  if (
+    deps.permissionCallbacks &&
+    endpoint.provider === "telegram" &&
+    endpoint.secret &&
+    endpoint.alias === deps.permissionCallbacks.alias
+  ) {
+    const outcome = await deps.permissionCallbacks.handleUpdate(parsed)
+    if (outcome.handled) {
+      res.writeHead(200, { "content-type": "application/json" })
+      res.end(JSON.stringify({ action: "permission_callback" }))
+      return
+    }
   }
 
   const normalized = normalizeInbound(endpoint.provider, parsed, {
