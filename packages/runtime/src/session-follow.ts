@@ -136,6 +136,8 @@ interface Signal {
   /** A turn-end that also left the session awaiting input. */
   awaitingInput: boolean
   empty: boolean
+  /** A turn-end the host recorded as an explicit no-op ack. */
+  silent?: boolean
   ts: string
   label?: string
   /** Event-specific excerpt source (error, question, reason, PR title). */
@@ -164,6 +166,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
         event: "turn-end",
         awaitingInput: ev.awaitingInput === true,
         empty: ev.empty === true,
+        silent: ev.silent === true,
         ts: ev.ts,
         ...(ev.label ? { label: ev.label } : {}),
         ...(detail ? { detail } : {}),
@@ -318,6 +321,7 @@ function followWants(follow: SessionFollow, signal: Signal): FollowEvent | undef
     if (signal.awaitingInput && wants("awaiting-input")) return "awaiting-input"
     if (!wants("turn-end")) return undefined
     if (signal.empty && follow.skipEmptyTurns && !signal.awaitingInput) return undefined
+    if (signal.silent && follow.skipEmptyTurns && !signal.awaitingInput) return undefined
     return "turn-end"
   }
   return wants(signal.event) ? signal.event : undefined
@@ -350,6 +354,8 @@ interface BatchEntry {
   awaitingInput?: boolean
   /** `turn-end`: the turn produced no output at all. */
   empty?: boolean
+  /** `turn-end`: the host recorded the agent's explicit no-op ack. */
+  silent?: boolean
   /** The turn-end / exit reason. */
   reason?: string
 }
@@ -675,6 +681,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         ...(entry.taskId ? { taskId: entry.taskId } : {}),
         ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
         ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
+        ...(entry.silent !== undefined ? { silent: entry.silent } : {}),
         ...(entry.reason ? { reason: entry.reason } : {}),
         ...(text ? { text } : {}),
       }
@@ -996,6 +1003,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           ...(signal.taskId ? { taskId: signal.taskId } : {}),
           ...(signal.awaitingInput ? { awaitingInput: true } : {}),
           ...(signal.empty ? { empty: true } : {}),
+          ...(signal.silent ? { silent: true } : {}),
           ...(signal.reason ? { reason: signal.reason } : {}),
         })
       }

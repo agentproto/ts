@@ -1152,6 +1152,8 @@ export interface DigestEntry {
   taskId?: string
   awaitingInput?: boolean
   empty?: boolean
+  /** `turn-end`: the agent acked its wake as an explicit no-op. */
+  silent?: boolean
   reason?: string
   /** Already-resolved excerpt text for this event. */
   text?: string
@@ -1807,6 +1809,14 @@ export interface SessionDescriptor {
    *  (absent, not `false`, on a productive turn) — never set by the
    *  abnormal (error/abort) turn-end path, matching the bus event. */
   lastTurnEmpty?: boolean
+  /** True when the LAST completed turn ended silent: the agent acked its wake
+   *  with `inbox_ack({ noop: true })`, made no other tool call, wrote no
+   *  assistant text, and was not interrupted, errored, awaiting input, or
+   *  started by a human prompt. Mirrors `SessionTurnEndEvent.silent`; see
+   *  that field's doc. Stamped every `turnCompleted` turn end (absent, not
+   *  `false`, on a turn that was not silent), never set by the abnormal
+   *  (error/abort) turn-end path, matching the bus event. */
+  lastTurnSilent?: boolean
   /** The LAST completed turn's `SessionTurnEndEvent.reason` (e.g.
    *  `"completed"`, `"error"`, `"aborted"`), when the adapter/daemon
    *  reported one. Twin of `lastTurnEmpty` — same reason for existing:
@@ -3232,6 +3242,14 @@ interface SessionRuntime {
   toolCallIdsThisTurn?: Set<string>
   /** Per-turn tool-call count surfaced by the read-time status projection. */
   toolCallsThisTurn?: number
+  /** Per-turn record of `inbox_ack({ noop: true })` calls that actually acked
+   *  at least one message. Keyed on the turn number the ack landed in (the
+   *  caller's `turnsCompleted + 1` at ack time) so a stale record from an
+   *  earlier turn can never make a later turn look silent. `count` is the
+   *  number of noop-ack tool calls this turn; `attention` is true when any
+   *  acked message was a `blocker` or `question`. In-memory only, cleared at
+   *  turn end. */
+  noopAcks?: { turn: number; count: number; attention: boolean }
   /** Per-turn counter of tool-calls started with `run_in_background: true`
    *  (see `SessionDescriptor.pendingBgTasks`). Reset at each turn start by
    *  `runAgentTurn`; read at turn-end to decide whether the session parked
@@ -4642,6 +4660,12 @@ export interface SessionsRegistry {
   /** Ack (remove) messages from `id`'s inbox — and from its prompt queue, so
    *  an acked-but-still-queued message is never delivered afterwards. */
   ackInbox(id: string, ids: readonly string[] | "all"): { acked: string[] }
+  /** Record that `id` acked messages with `inbox_ack({ noop: true })`, for
+   *  the turn currently in flight (`turnsCompleted + 1`). Multiple noop acks
+   *  in the same turn increment a per-turn count; any acked `blocker`/
+   *  `question` marks the turn as needing attention. The turn recorder reads
+   *  this to decide `silent` and clears it at turn end. */
+  recordNoopAck(id: string, acked: readonly SessionMessage[]): void
   /** Snapshot a session's prompt queue for inspection — the after-the-fact
    *  view of what's sitting in `SessionDescriptor.promptQueue` right now.
    *  Runs the shared preview + origin-label derivation so every consumer
@@ -10669,7 +10693,8 @@ export function createSessionsRegistry(opts?: {
       if (turnCompleted) {
         // Record that a turn finished so a late `session_monitor` (subscribed
         // after a fast turn already ended) can still fast-return.
-        rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        const turnNumber = (rt.desc.turnsCompleted ?? 0) + 1
+        rt.desc.turnsCompleted = turnNumber
 
         // ── Interrupted-turn contract (§4): a SUCCESSFUL turn-end clears the
         // daemon-restart interruption markers, so the derived `interrupted`
@@ -10790,6 +10815,26 @@ export function createSessionsRegistry(opts?: {
         // turn-end for real progress.
         const emptyTurn =
           !sawAssistantText && !sawToolCall && !(rt.desc.awaitingInput ?? false)
+        // ── Silent-turn detection (host-recorded explicit no-op) ─────
+        // An agent woken by a daemon/session/system prompt can look at its
+        // inbox and decide there is nothing to do. When it says so through
+        // `inbox_ack({ noop: true })`, the host records that fact per turn
+        // and turns the whole turn into a `silent` turn-end, deterministic,
+        // never inferred from prose. Every guard below is deliberate: an
+        // extra tool call, any assistant text, an error/interrupt, an
+        // awaiting-input stop, an acked blocker/question, or a human-origin
+        // prompt all make the turn NOT silent.
+        const noopAck = rt.noopAcks?.turn === turnNumber ? rt.noopAcks : undefined
+        const silentTurn =
+          noopAck !== undefined &&
+          !sawAssistantText &&
+          turnToolNames.size === noopAck.count &&
+          turnEndReason !== "error" &&
+          turnErrorMessage === undefined &&
+          interruptedBy === undefined &&
+          !(rt.desc.awaitingInput ?? false) &&
+          !noopAck.attention &&
+          isAutomatedPromptSource(turnOpts?.promptSource)
         if (emptyTurn) {
           appendLine(
             rt,
@@ -10807,6 +10852,11 @@ export function createSessionsRegistry(opts?: {
           rt.desc.lastTurnEmpty = true
         } else if (rt.desc.lastTurnEmpty !== undefined) {
           delete rt.desc.lastTurnEmpty
+        }
+        if (silentTurn) {
+          rt.desc.lastTurnSilent = true
+        } else if (rt.desc.lastTurnSilent !== undefined) {
+          delete rt.desc.lastTurnSilent
         }
         if (turnEndReason !== undefined) {
           rt.desc.lastTurnReason = turnEndReason
@@ -10857,6 +10907,7 @@ export function createSessionsRegistry(opts?: {
             ...(rt.desc.awaitingQuestion ? { question: rt.desc.awaitingQuestion } : {}),
             ...(turnEndReason ? { reason: turnEndReason } : {}),
             ...(emptyTurn ? { empty: true } : {}),
+            ...(silentTurn ? { silent: true } : {}),
             ...(turnErrorMessage !== undefined ? { error: turnErrorMessage } : {}),
             ...(interruptedBy ? { interrupted: true } : {}),
             ...(turnToolNames.size > 0 ? { toolCalls: [...turnToolNames.values()] } : {}),
@@ -10918,6 +10969,7 @@ export function createSessionsRegistry(opts?: {
         // needs to reach the sync fast-path the same way. See
         // `SessionDescriptor.lastTurnEmpty`/`lastTurnReason`'s doc.
         if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+        if (rt.desc.lastTurnSilent !== undefined) delete rt.desc.lastTurnSilent
         if (turnEndReason !== undefined) {
           rt.desc.lastTurnReason = turnEndReason
         } else if (rt.desc.lastTurnReason !== undefined) {
@@ -10947,6 +10999,9 @@ export function createSessionsRegistry(opts?: {
           })
         }
       }
+
+      // The per-turn noop-ack record belongs to the turn that just ended.
+      delete rt.noopAcks
 
       // A turn just ended (normal or abnormal) — refresh the sidecar on the
       // throttled trailing schedule, never per streaming frame.
@@ -11191,6 +11246,8 @@ export function createSessionsRegistry(opts?: {
     rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
     rt.desc.lastTurnReason = reason
     if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
+    if (rt.desc.lastTurnSilent !== undefined) delete rt.desc.lastTurnSilent
+    delete rt.noopAcks
     const usage = buildUsageSnapshot(rt)
     rt.desc.usageSource = usage.source
     rt.desc.costUsd = usage.costUsd
@@ -12970,6 +13027,19 @@ export function createSessionsRegistry(opts?: {
       removeFromInbox(rt, ackedSet)
       dropQueuedEnvelopes(rt, ackedSet)
       return { acked }
+    },
+    recordNoopAck(id, acked) {
+      const rt = sessions.get(id)
+      if (!rt || acked.length === 0) return
+      const turn = (rt.desc.turnsCompleted ?? 0) + 1
+      const prior = rt.noopAcks?.turn === turn ? rt.noopAcks : undefined
+      rt.noopAcks = {
+        turn,
+        count: (prior?.count ?? 0) + 1,
+        attention:
+          (prior?.attention ?? false) ||
+          acked.some(m => m.kind === "blocker" || m.kind === "question"),
+      }
     },
     removeQueuedPrompt(id, queueId) {
       const rt = sessions.get(id)

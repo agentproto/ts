@@ -157,6 +157,16 @@ export interface SessionTurnEndEvent {
    */
   empty?: boolean
   /**
+   * True when the agent explicitly acked its wake as a no-op
+   * (`inbox_ack({ noop: true })`) and the turn was otherwise silent: no
+   * assistant text, no tool call beyond those noop acks, completed normally,
+   * not interrupted or awaiting input, no acked `blocker`/`question`, and not
+   * started by a human prompt. The host decides this from recorded ack
+   * metadata, never from the final message text. Absent (not `false`) on
+   * every other turn.
+   */
+  silent?: boolean
+  /**
    * The in-band `error` stream event's message text observed during this
    * turn, when one occurred (see `SessionDescriptor.lastTurnErrorMessage`'s
    * doc). Present whenever `reason` is `"error"` AND the adapter emitted an

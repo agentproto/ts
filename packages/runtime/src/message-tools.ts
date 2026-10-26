@@ -342,16 +342,33 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     "inbox_ack",
     "Acknowledge (remove) messages from your inbox — by id, or \"all\". An acked " +
       "message still waiting to be delivered as a turn is dropped from that queue " +
-      "too. History stays in your transcript.",
+      "too. History stays in your transcript. Set `noop: true` when you looked and " +
+      "there is nothing to do: it lets the host record this wake as a silent turn " +
+      "instead of mistaking your ack for work.",
     {
       ids: z
         .union([z.literal("all"), z.array(z.string().min(1)).min(1)])
         .describe('Message ids to ack, or "all".'),
+      noop: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set true when you looked and there is nothing to do. Only meaningful ' +
+            'when this call actually acks at least one message; the host records ' +
+            'it, never the message text.',
+        ),
     },
     async input => {
       const self = resolveCaller("inbox_ack")
       if (isResult(self)) return self
-      return ok(registry.ackInbox(self.id, input.ids))
+      const noop = input.noop === true
+      const before = noop ? (registry.listInbox(self.id) ?? []) : []
+      const result = registry.ackInbox(self.id, input.ids)
+      if (noop && result.acked.length > 0) {
+        const acked = new Set(result.acked)
+        registry.recordNoopAck(self.id, before.filter(m => acked.has(m.id)))
+      }
+      return ok(result)
     },
   )
 
