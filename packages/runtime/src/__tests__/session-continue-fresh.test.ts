@@ -13,9 +13,12 @@ vi.mock("../session-spawn.js", async importOriginal => {
 
 import { spawnAgentSession } from "../session-spawn.js"
 
+// Unique id per call: continue-fresh is memoised per source id, so tests must
+// not share a source.
+let prevSeq = 0
 const makePrev = (): SessionDescriptor =>
   ({
-    id: "sess_prev",
+    id: `sess_prev_${++prevSeq}`,
     kind: "agent-cli",
     workspaceSlug: "ws",
     command: "claude",
@@ -170,7 +173,7 @@ describe("continueAgentSessionFresh", () => {
       {
         name: "agentproto",
         transport: "http",
-        ref: "http://127.0.0.1:18790/mcp?callerSessionId=sess_prev",
+        ref: `http://127.0.0.1:18790/mcp?callerSessionId=${prev.id}`,
       },
       {
         name: "pinned",
@@ -260,8 +263,8 @@ describe("continueAgentSessionFresh", () => {
       { baseDir: "/tmp/checkpoints" },
     )
 
-    expect(result.continuedFrom).toBe("sess_prev")
-    expect(newDesc.continuedFrom).toBe("sess_prev")
+    expect(result.continuedFrom).toBe(prev.id)
+    expect(newDesc.continuedFrom).toBe(prev.id)
     expect(newDesc.checkpointId).toBeDefined()
   })
 
@@ -382,6 +385,66 @@ describe("continueAgentSessionFresh", () => {
         prev,
       ),
     ).rejects.toThrow("agent_spawn_failed")
+  })
+
+  it("continues a source at most once: a sequential duplicate gets the first result and does not spawn again", async () => {
+    const prev = makePrev()
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const first = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    const second = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+
+    expect(spawnAgentSession).toHaveBeenCalledOnce()
+    expect(second.descriptor.id).toBe(first.descriptor.id)
+    expect(second.checkpoint.checkpointId).toBe(first.checkpoint.checkpointId)
+  })
+
+  it("continues a source at most once: concurrent calls share one spawn", async () => {
+    const prev = makePrev()
+    let release!: () => void
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    vi.mocked(spawnAgentSession).mockImplementation(async () => {
+      await gate
+      return { ok: true, descriptor: { id: "sess_new" } as SessionDescriptor }
+    })
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+
+    const a = continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    const b = continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+    release()
+    const [ra, rb] = await Promise.all([a, b])
+
+    expect(spawnAgentSession).toHaveBeenCalledOnce()
+    expect(rb.descriptor.id).toBe(ra.descriptor.id)
+    expect(rb.checkpoint.checkpointId).toBe(ra.checkpoint.checkpointId)
+  })
+
+  it("allows a retry after a failed continuation", async () => {
+    const prev = makePrev()
+    const deps = { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter }
+    vi.mocked(spawnAgentSession).mockResolvedValueOnce({
+      ok: false,
+      code: "agent_spawn_failed",
+      message: "adapter died",
+    })
+    await expect(continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })).rejects.toThrow(
+      "agent_spawn_failed",
+    )
+
+    vi.mocked(spawnAgentSession).mockResolvedValueOnce({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+    const retry = await continueAgentSessionFresh(deps, prev, { baseDir: "/tmp/checkpoints" })
+
+    expect(retry.descriptor.id).toBe("sess_new")
+    expect(spawnAgentSession).toHaveBeenCalledTimes(2)
   })
 
   it("throws when no adapter resolver is configured", async () => {

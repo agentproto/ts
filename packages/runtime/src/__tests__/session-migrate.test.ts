@@ -40,9 +40,11 @@ const record = (over: Partial<SandboxDeliveryRecord> = {}): SandboxDeliveryRecor
   ...over,
 })
 
+// Unique id per call: continue-fresh is memoised per source id.
+let prevSeq = 0
 const makePrev = (over: Partial<SessionDescriptor> = {}): SessionDescriptor =>
   ({
-    id: "sess_old",
+    id: `sess_old_${++prevSeq}`,
     kind: "agent-cli",
     remote: true,
     workspaceSlug: "repo",
@@ -203,7 +205,7 @@ describe("migrateSandboxSession", () => {
 
     expect(finalCheckpoint).toHaveBeenCalledOnce()
     expect(finalCheckpoint.mock.calls[0]?.[0]).toMatchObject({ branch: "wt/feat" })
-    expect(recordSandboxCheckpoint).toHaveBeenCalledWith("sess_old", expect.objectContaining({ key: "k1" }), expect.any(String))
+    expect(recordSandboxCheckpoint).toHaveBeenCalledWith(prevRow.id, expect.objectContaining({ key: "k1" }), expect.any(String))
 
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect(input).toMatchObject({
@@ -220,13 +222,13 @@ describe("migrateSandboxSession", () => {
     expect(input.prompt).toContain("agentproto-checkpoint/wt/feat")
     expect(input.turnRetry).toBeUndefined()
 
-    expect(kill).toHaveBeenCalledWith("sess_old", "SIGTERM", "restarted")
-    expect(result).toMatchObject({ ok: true, migratedFrom: "sess_old", oldSessionKilled: true })
+    expect(kill).toHaveBeenCalledWith(prevRow.id, "SIGTERM", "restarted")
+    expect(result).toMatchObject({ ok: true, migratedFrom: prevRow.id, oldSessionKilled: true })
     expect(result.restore).toMatchObject({ source: "live", snapshot: { sha: SHA }, branch: "wt/feat" })
     expect(prevRow.continuedTo).toBe("sess_new")
 
     expect(summarizeMigration(result)).toMatchObject({
-      migratedFrom: "sess_old",
+      migratedFrom: prevRow.id,
       migratedTo: "sess_new",
       sandboxId: "box_new",
       branch: "wt/feat",

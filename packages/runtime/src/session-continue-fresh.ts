@@ -189,11 +189,42 @@ export function stripContinuedSuffix(label: string): string {
  * being encoded in the label. The label and title are NOT renamed: they
  * pass through unchanged (minus a legacy " (continued)" tail, see
  * {@link stripContinuedSuffix}), to match a session that compacts in place.
+ *
+ * A source session continues at most once. On 2026-10-26 an auto-compact turn
+ * at 172k tokens re-entered this path and the daemon created two successors of
+ * the same source 4.8 s apart (two checkpoints, two handoff prompts). Calls
+ * are therefore memoised per `prev.id`: a duplicate or concurrent call gets
+ * the first call's result (same checkpoint, same successor) instead of a
+ * second spawn. The entry is kept after success, because the source is
+ * retired and a later call would still fork the lineage; it is dropped on
+ * rejection so a failed attempt can be retried. The map is bounded.
  */
-export async function continueAgentSessionFresh(
+export function continueAgentSessionFresh(
   deps: SpawnAgentSessionDeps,
   prev: SessionDescriptor,
   opts: ContinueAgentSessionFreshOptions = {},
+): Promise<ContinueAgentSessionFreshResult> {
+  const existing = continuedSources.get(prev.id)
+  if (existing) return existing
+  const attempt = continueAgentSessionFreshOnce(deps, prev, opts)
+  continuedSources.set(prev.id, attempt)
+  if (continuedSources.size > CONTINUED_SOURCES_MAX) {
+    const oldest = continuedSources.keys().next().value
+    if (oldest !== undefined) continuedSources.delete(oldest)
+  }
+  attempt.catch(() => {
+    if (continuedSources.get(prev.id) === attempt) continuedSources.delete(prev.id)
+  })
+  return attempt
+}
+
+const CONTINUED_SOURCES_MAX = 128
+const continuedSources = new Map<string, Promise<ContinueAgentSessionFreshResult>>()
+
+async function continueAgentSessionFreshOnce(
+  deps: SpawnAgentSessionDeps,
+  prev: SessionDescriptor,
+  opts: ContinueAgentSessionFreshOptions,
 ): Promise<ContinueAgentSessionFreshResult> {
   const registry = deps.registry
   const resolveAgentAdapter = deps.resolveAgentAdapter
