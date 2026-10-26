@@ -100,6 +100,8 @@ export interface ReactionRunnerOptions {
   clearInterval?: typeof clearInterval
   /** Default console.warn; prefix "[reaction-runner]". */
   log?: (line: string) => void
+  /** Default console.info; one line per terminal transition, separate from `log`. */
+  trace?: (line: string) => void
 }
 
 export interface ReactionRunnerStatus {
@@ -109,6 +111,36 @@ export interface ReactionRunnerStatus {
   failed: number
   dead: number
   lastError?: string
+}
+
+export interface ReactionBindingHealth {
+  bindingId: string
+  event: string
+  counts: { pending: number; running: number; done: number; failed: number; dead: number }
+  /** Age in ms (now minus createdAt) of the oldest receipt that is pending or failed; undefined when none. */
+  oldestQueuedAgeMs?: number
+  /** completedAt minus startedAt over the retained done receipts of this binding; undefined when there are none. */
+  latencyMs?: { count: number; p50: number; p95: number; max: number }
+  /** Highest reactionDepth over the retained receipts of this binding. */
+  maxDepth: number
+  /** Sum of (attempt - 1) over the retained receipts with attempt >= 1. */
+  retries: number
+  /** Dead receipts grouped by their lastError (the dead reason, for example recursion_cap, max_attempts, stale_trigger, age_out). */
+  deadReasons: Record<string, number>
+  lastError?: string
+  /** Events this binding's shouldHandle rejected since the process started (memory only, resets at boot). */
+  skipped: number
+}
+
+export interface ReactionHealth {
+  generatedAt: number
+  started: boolean
+  maxReactionDepth: number
+  maxConcurrent: number
+  bindings: ReactionBindingHealth[]
+  /** Retained receipts whose binding is not live any more (a routine disabled or deleted), grouped by binding id. */
+  orphans: Array<{ bindingId: string; counts: { pending: number; running: number; done: number; failed: number; dead: number } }>
+  totals: { receipts: number; pending: number; running: number; done: number; failed: number; dead: number }
 }
 
 export interface ReactionRunner {
@@ -123,6 +155,8 @@ export interface ReactionRunner {
   /** Swap the live binding set. A run already in flight keeps the binding it started with. */
   replaceBindings(next: readonly ReactionBinding[]): void
   status(): ReactionRunnerStatus[]
+  /** Synchronous, read-only health read model over the store rows and skip counters. */
+  health(): ReactionHealth
 }
 
 // ── Constants ─────────────────────────────────────────────────────────
@@ -155,6 +189,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
   const setIntervalFn = opts.setInterval ?? setInterval
   const clearIntervalFn = opts.clearInterval ?? clearInterval
   const log = opts.log ?? ((line: string): void => console.warn(line))
+  const trace = opts.trace ?? ((line: string): void => console.info(line))
 
   const logLine = (message: string): void => {
     log(`${LOG_PREFIX} ${message}`)
@@ -162,8 +197,60 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
 
   const messageOf = (err: unknown): string => (err instanceof Error ? err.message : String(err))
 
+  const EMPTY_COUNTS = (): { pending: number; running: number; done: number; failed: number; dead: number } => ({
+    pending: 0,
+    running: 0,
+    done: 0,
+    failed: 0,
+    dead: 0,
+  })
+
+  const incrementCount = (
+    counts: { pending: number; running: number; done: number; failed: number; dead: number },
+    status: ReactionReceipt["status"],
+  ): void => {
+    counts[status] += 1
+  }
+
+  const percentile = (sorted: readonly number[], p: number): number => {
+    if (sorted.length === 0) return 0
+    const rank = Math.ceil((p / 100) * sorted.length)
+    return sorted[Math.min(sorted.length, Math.max(1, rank)) - 1] as number
+  }
+
+  const sanitizeReason = (reason: string): string => reason.slice(0, 120).replace(/\s+/g, "_")
+
+  const emitTrace = (key: string): void => {
+    const row = store.get(key)
+    if (!row) return
+    if (row.status !== "done" && row.status !== "failed" && row.status !== "dead") return
+    const parts = [
+      `receipt=${row.receiptKey}`,
+      `binding=${row.bindingId}`,
+      `status=${row.status}`,
+      `depth=${row.reactionDepth}`,
+      `attempt=${row.attempt}`,
+    ]
+    if (row.startedAt !== undefined) {
+      parts.push(`latencyMs=${nowMs() - row.startedAt}`)
+      parts.push(`queueAgeMs=${row.startedAt - row.createdAt}`)
+    }
+    if (row.status === "failed" && row.nextAttemptAt !== undefined) {
+      parts.push(`retryAt=${row.nextAttemptAt}`)
+    }
+    if ((row.status === "failed" || row.status === "dead") && row.lastError !== undefined) {
+      parts.push(`reason=${sanitizeReason(row.lastError)}`)
+    }
+    try {
+      trace(`${LOG_PREFIX} ${parts.join(" ")}`)
+    } catch {
+      // a throwing trace must never break the run
+    }
+  }
+
   let currentBindings: readonly ReactionBinding[] = []
   let bindingById = new Map<string, ReactionBinding>()
+  const skipped = new Map<string, number>()
 
   const applyBindings = (next: readonly ReactionBinding[]): void => {
     const byId = new Map<string, ReactionBinding>()
@@ -253,6 +340,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
       )
     } catch (err) {
       await markFailedSafe(key, binding, receipt, messageOf(err))
+      emitTrace(key)
       return
     }
 
@@ -261,16 +349,20 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
         await store.markDone(key, outcome.outcomeRef)
       } catch (err) {
         logLine(`markDone ${key} (${binding.bindingId}) failed: ${messageOf(err)}`)
+        return
       }
+      emitTrace(key)
       return
     }
 
     if (outcome.retryable === false) {
       await markDeadSafe(key, outcome.error ?? "non_retryable")
+      emitTrace(key)
       return
     }
 
     await markFailedSafe(key, binding, receipt, outcome.error ?? "failed")
+    emitTrace(key)
   }
 
   const runReceipt = async (
@@ -328,7 +420,10 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
           logLine(`shouldHandle ${binding.bindingId} failed: ${messageOf(err)}`)
           return
         }
-        if (!applies) return
+        if (!applies) {
+          skipped.set(binding.bindingId, (skipped.get(binding.bindingId) ?? 0) + 1)
+          return
+        }
       }
 
       let key: string
@@ -377,6 +472,7 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
       if (reactionDepth >= maxReactionDepth) {
         if (current.status !== "done" && current.status !== "dead") {
           await markDeadSafe(key, "recursion_cap")
+          emitTrace(key)
         }
         return
       }
@@ -579,9 +675,135 @@ export function createReactionRunner(opts: ReactionRunnerOptions): ReactionRunne
       const removed = previous
         .map(binding => binding.bindingId)
         .filter(bindingId => !nextIds.has(bindingId))
+      for (const bindingId of removed) skipped.delete(bindingId)
       if (removed.length > 0) logLine(`bindings removed: ${removed.join(", ")}`)
       if (started) {
         for (const binding of currentBindings) subscribe(binding.event)
+      }
+    },
+
+    health(): ReactionHealth {
+      try {
+        const now = nowMs()
+        const rows = store.rows()
+        const liveIds = new Set(currentBindings.map(binding => binding.bindingId))
+        const grouped = new Map<string, ReactionReceipt[]>()
+        const orphanCounts = new Map<string, ReturnType<typeof EMPTY_COUNTS>>()
+        const totals = { receipts: 0, ...EMPTY_COUNTS() }
+
+        for (const row of rows) {
+          totals.receipts += 1
+          incrementCount(totals, row.status)
+          const group = grouped.get(row.bindingId)
+          if (group) group.push(row)
+          else grouped.set(row.bindingId, [row])
+          if (!liveIds.has(row.bindingId)) {
+            const counts = orphanCounts.get(row.bindingId) ?? EMPTY_COUNTS()
+            incrementCount(counts, row.status)
+            orphanCounts.set(row.bindingId, counts)
+          }
+        }
+
+        const bindings: ReactionBindingHealth[] = currentBindings.map(binding => {
+          const receipts = grouped.get(binding.bindingId) ?? []
+          const counts = EMPTY_COUNTS()
+          const deadReasons: Record<string, number> = {}
+          const durations: number[] = []
+          let oldestCreatedAt: number | undefined
+          let maxDepth = 0
+          let retries = 0
+          let lastError: string | undefined
+          let lastUpdated = Number.NEGATIVE_INFINITY
+
+          for (const receipt of receipts) {
+            incrementCount(counts, receipt.status)
+            maxDepth = Math.max(maxDepth, receipt.reactionDepth)
+            if (receipt.attempt >= 1) retries += receipt.attempt - 1
+
+            if (receipt.status === "pending" || receipt.status === "failed") {
+              if (oldestCreatedAt === undefined || receipt.createdAt < oldestCreatedAt) {
+                oldestCreatedAt = receipt.createdAt
+              }
+            }
+
+            if (
+              receipt.status === "done" &&
+              receipt.startedAt !== undefined &&
+              receipt.completedAt !== undefined &&
+              receipt.completedAt >= receipt.startedAt
+            ) {
+              durations.push(receipt.completedAt - receipt.startedAt)
+            }
+
+            if (receipt.status === "dead" && receipt.lastError !== undefined) {
+              deadReasons[receipt.lastError] = (deadReasons[receipt.lastError] ?? 0) + 1
+            }
+
+            if (
+              (receipt.status === "failed" || receipt.status === "dead") &&
+              receipt.lastError !== undefined
+            ) {
+              const updatedAt = Math.max(
+                receipt.completedAt ?? Number.NEGATIVE_INFINITY,
+                receipt.lastAttemptAt ?? Number.NEGATIVE_INFINITY,
+              )
+              if (updatedAt >= lastUpdated) {
+                lastUpdated = updatedAt
+                lastError = receipt.lastError
+              }
+            }
+          }
+
+          durations.sort((a, b) => a - b)
+          const health: ReactionBindingHealth = {
+            bindingId: binding.bindingId,
+            event: binding.event,
+            counts,
+            maxDepth,
+            retries,
+            deadReasons,
+            skipped: skipped.get(binding.bindingId) ?? 0,
+          }
+          if (oldestCreatedAt !== undefined) health.oldestQueuedAgeMs = now - oldestCreatedAt
+          if (durations.length > 0) {
+            health.latencyMs = {
+              count: durations.length,
+              p50: percentile(durations, 50),
+              p95: percentile(durations, 95),
+              max: durations[durations.length - 1] as number,
+            }
+          }
+          if (lastError !== undefined) health.lastError = lastError
+          return health
+        })
+
+        return {
+          generatedAt: now,
+          started,
+          maxReactionDepth,
+          maxConcurrent,
+          bindings,
+          orphans: Array.from(orphanCounts, ([bindingId, counts]) => ({ bindingId, counts })),
+          totals,
+        }
+      } catch {
+        return {
+          generatedAt: nowMs(),
+          started,
+          maxReactionDepth,
+          maxConcurrent,
+          bindings: currentBindings.map(binding => ({
+            bindingId: binding.bindingId,
+            event: binding.event,
+            counts: EMPTY_COUNTS(),
+            maxDepth: 0,
+            retries: 0,
+            deadReasons: {},
+            skipped: skipped.get(binding.bindingId) ?? 0,
+          })),
+          orphans: [],
+          totals: { receipts: 0, ...EMPTY_COUNTS() },
+        }
       }
     },
 
