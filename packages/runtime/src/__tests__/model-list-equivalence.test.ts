@@ -67,7 +67,7 @@ describe("zero-cost list equivalence with the old free predicate", () => {
       "big-pickle",
       "glm-5.3-flash-free",
       "opencode/big-pickle",
-      "opencode-go/minimax-m3.1-flash-free@opencode",
+      "opencode-go/beam-free@opencode",
       "opencode/glm-5.3-flash-free@opencode",
     ]) {
       expect(inModelList(form, ZERO_COST_LIST_ID, source), form).toBe(
@@ -76,9 +76,20 @@ describe("zero-cost list equivalence with the old free predicate", () => {
     }
   })
 
-  it("a zero-priced id without the suffix is now in the list, and fails the old predicate", () => {
-    const id = "prism-ml/Ternary-Bonsai-27B-AWQ-4bit@huggingface"
-    expect(oldIsOpencodeFreeModel(id)).toBe(false)
-    expect(inModelList(id, ZERO_COST_LIST_ID, source)).toBe(true)
-  })
+  // Picked from the live catalog instead of a pinned id: a pinned zero-priced
+  // router route (it was a huggingface one) disappears on the next upstream
+  // sync. When no such id exists the premise is empty, so the case is skipped
+  // — the first test above still proves the equivalence over every id.
+  const zeroPricedWithoutSuffix = [...catalogPricing()].find(
+    ([id, pricing]) => pricing?.inputPer1M === 0 && pricing.outputPer1M === 0 && !oldIsOpencodeFreeModel(id),
+  )?.[0]
+
+  it.skipIf(zeroPricedWithoutSuffix === undefined)(
+    "a zero-priced id without the suffix is now in the list, and fails the old predicate",
+    () => {
+      const id = zeroPricedWithoutSuffix!
+      expect(oldIsOpencodeFreeModel(id)).toBe(false)
+      expect(inModelList(id, ZERO_COST_LIST_ID, source)).toBe(true)
+    },
+  )
 })

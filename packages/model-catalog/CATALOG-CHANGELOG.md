@@ -425,3 +425,34 @@ for that.
 ### llm:huggingface
 - Added: BSC-LT/ALIA-40b-instruct-2606, XiaomiMiMo/MiMo-V2.6-Pro-RL, aisingapore/Nemotron-SEA-LION-v4.8-120B-A12B, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-v1.5-70B, zai-org/GLM-5.1, zai-org/GLM-5.1-FP8
 - Removed: CohereLabs/command-a-plus-05-2026-bf16, CohereLabs/command-a-plus-05-2026-fp8, CohereLabs/command-a-plus-05-2026-w4a4, Qwen/Qwen3-Coder-30B-A3B-Instruct, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8
+
+## 2026-10-26
+
+### llm:openrouter
+- Added: liquid/lfm-2.5-2.6b, minimax/minimax-m3.1-flash, moonshotai/kimi-k3.1-pro
+- Removed: google/gemini-2.5-flash-lite:batch, openai/gpt-3.5-turbo, openai/gpt-3.5-turbo-instruct, openai/gpt-3.5-turbo:batch
+
+### llm:requesty
+- Added: melious/clef, melious/clef-flash, moonshot/kimi-k3.1-pro, moonshot/kimi-k3.1-pro-highspeed, runware/deepseek-v4.1-flash-1017, tensorx/minimax-m3.1-flash
+- Removed: bedrock/claude-sonnet-4, bedrock/claude-sonnet-4@eu-central-1, bedrock/claude-sonnet-4@eu-north-1, bedrock/claude-sonnet-4@eu-west-1, bedrock/claude-sonnet-4@eu-west-3, bedrock/claude-sonnet-4@us-east-1, bedrock/claude-sonnet-4@us-east-2, bedrock/claude-sonnet-4@us-west-2
+
+### llm:opencode-go
+- Added: opencode-go/gemini-4-argon, opencode-go/iceman-contributor-free, opencode-go/kimi-k3.1-pro, opencode-go/minimax-m3.1-flash
+- Removed: opencode-go/gemini-4-argon-contributor, opencode-go/longcat-2.5-preview-free, opencode-go/minimax-m3.1-flash-free
+
+### llm:opencode-zen
+- Added: opencode/flint-40b-free, opencode/muse-wonder-1.0
+- Removed: opencode/claude-sonnet-4, opencode/deepseek-v4-flash-vision-exp, opencode/longcat-2.5-preview-free, opencode/minimax-m3.1-flash-free
+
+### llm:huggingface
+- Added: MiniMaxAI/MiniMax-M3.1-Flash, reflection/Beam-1.0-501B-A23B
+- Removed: aisingapore/Gemma-SEA-LION-v4-27B-IT, aisingapore/Qwen-SEA-LION-v4-32B-IT, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4, nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16, prism-ml/Ternary-Bonsai-27B-AWQ-4bit, prism-ml/Ternary-Bonsai-27B-gguf, stepfun-ai/Step-3.7-Flash, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+
+### llm:context-windows
+- Added: kimi-k3.1-pro, kimi-k3.1-pro-highspeed
+
+### llm:moonshot
+- Added: kimi-k3.1-pro, kimi-k3.1-pro-highspeed
+
+### llm:openai
+- Removed: gpt-3.5-turbo, gpt-3.5-turbo-instruct, gpt-3.5-turbo:batch

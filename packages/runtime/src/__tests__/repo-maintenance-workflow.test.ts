@@ -1301,7 +1301,7 @@ describe("repo-maintenance maintain workflow — reviewer models come from model
 
   // reviewPreset picks the model AND the adapter that model requires.
   it("go-free runs every reviewer on the opencode Go free model, on the opencode adapter", async () => {
-    const free = "opencode-go/longcat-2.5-preview-free"
+    const free = "opencode-go/beam-free"
     expect(await reviewerModels({ reviewPreset: "go-free" })).toEqual({ small: free, large: free, retry: free })
     expect(await reviewerAdapters({ reviewPreset: "go-free" })).toEqual({ small: "opencode", large: "opencode", retry: "opencode" })
   })

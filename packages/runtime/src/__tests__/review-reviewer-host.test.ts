@@ -599,7 +599,7 @@ describe("review lanes never bill OpenRouter (fail closed)", () => {
     expect(
       await reviewerOpenRouterViolation(
         "opencode-default-go",
-        { adapter: "opencode", model: "opencode-go/longcat-2.5-preview-free", access: { profileRef: "opencode-go-local" } },
+        { adapter: "opencode", model: "opencode-go/beam-free", access: { profileRef: "opencode-go-local" } },
         lookup,
       ),
     ).toBeUndefined()
