@@ -71,10 +71,9 @@ function harness(
   const emitted: SessionClerkDueEvent[] = []
   const logs: string[] = []
   const runPass = vi.fn(opts.runPass ?? (async () => ({ ok: true })))
-  const owned =
-    typeof opts.owned === "function"
-      ? opts.owned
-      : () => (opts.owned ?? ["ws-a"])
+  const ownedOption = opts.owned
+  const owned: () => Promise<readonly string[]> | readonly string[] =
+    typeof ownedOption === "function" ? ownedOption : () => ownedOption ?? ["ws-a"]
   const reaction = createClerkReaction({
     sessions: { get: id => sessions.get(id) },
     resolveConfig: () => ("config" in opts ? opts.config : clerkConfig()),

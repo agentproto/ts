@@ -260,13 +260,16 @@ import { createSessionEventBus } from "./session-event-bus.js"
 import {
   createActionRegistry,
   createBrainIngestReaction,
+  createClerkReaction,
   createReactionReceiptStore,
   createReactionWiring,
   reactionReceiptsPathForBucket,
   createReactionRunner,
   readBrainIngestOwnedWorkspaces,
+  readClerkReactionOwnedWorkspaces,
   sessionFactsOf,
   wireSessionCompletion,
+  type ClerkReaction,
 } from "./action-hooks/index.js"
 import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-session-observer.js"
 import { createEventRing } from "./event-ring.js"
@@ -300,6 +303,7 @@ import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createClerkTurnEndController } from "@agentproto/clerk"
 import { createClerkPassRunner } from "@agentproto/clerk"
+import type { ClerkSessionLike } from "@agentproto/clerk"
 import {
   loadDaemonClerkHook,
   loadWorkspaceClerkHook,
@@ -2545,10 +2549,12 @@ export async function createGateway(
     ownedWorkspaces: readBrainIngestOwnedWorkspaces,
   })
   const actionRegistry = createActionRegistry()
+  const builtinReactionBindings = [brainIngestReaction.binding]
+  const clerkReactionBox: { reaction?: ClerkReaction } = {}
   const reactionRunner = createReactionRunner({
     bus: sessionEvents,
     store: reactionReceiptStore,
-    bindings: [brainIngestReaction.binding],
+    bindings: builtinReactionBindings,
   })
   reactionRunner.start()
   const brainSubscriber = createWorkspaceBrainSubscriber({
@@ -3148,7 +3154,7 @@ export async function createGateway(
   const routineRegistrarBox: { registrar?: ReturnType<typeof createRoutineRegistrar> } = {}
   const reactionWiring = createReactionWiring({
     runner: reactionRunner,
-    builtin: [brainIngestReaction.binding],
+    builtin: builtinReactionBindings,
     eventBindings: () => routineRegistrarBox.registrar?.eventBindings() ?? [],
     conversion: {
       registry: actionRegistry,
@@ -3222,22 +3228,41 @@ export async function createGateway(
   // fire-and-forget: the pass can never slow a turn down. DISABLED unless
   // configured - the three levels (agent > workspace > daemon default) are
   // resolved per session; see `clerk-hook-config.ts`.
+  //
+  // The controller stays the gate and the debounce. Its firing goes through
+  // `clerkReaction.dispatch`: a workspace listed in
+  // `defaults.reactions.clerk.workspaces` takes the durable reaction path,
+  // every other workspace keeps the legacy pass runner. The runner and the
+  // wiring were created above, so a forward box carries the binding back.
+  const legacyClerkPassRunner = createClerkPassRunner({
+    triggerRoutine: routineId => routineRegistrar.trigger(routineId),
+    // The command arm is default-deny: same allowlist as `command_execute`.
+    allowCommand: async spec =>
+      isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
+    anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
+  })
+  const resolveClerkConfig = (session: ClerkSessionLike) =>
+    resolveClerkHookConfig({
+      daemon: loadDaemonClerkHook(daemonConfig),
+      workspace: loadWorkspaceClerkHook(workspace),
+      agent: session.clerkHook,
+    }).config
+  const clerkReaction = createClerkReaction({
+    sessions,
+    resolveConfig: resolveClerkConfig,
+    runPass: legacyClerkPassRunner,
+    ownedWorkspaces: readClerkReactionOwnedWorkspaces,
+    emit: event => sessionEvents.emit(event),
+  })
+  clerkReactionBox.reaction = clerkReaction
+  builtinReactionBindings.push(clerkReaction.binding)
+  reactionRunner.replaceBindings(builtinReactionBindings)
+  actionRegistry.register(clerkReaction.handler)
   const clerkTurnEnd = createClerkTurnEndController({
     registry: sessions,
     sessionEvents,
-    resolveConfig: session =>
-      resolveClerkHookConfig({
-        daemon: loadDaemonClerkHook(daemonConfig),
-        workspace: loadWorkspaceClerkHook(workspace),
-        agent: session.clerkHook,
-      }).config,
-    runPass: createClerkPassRunner({
-      triggerRoutine: routineId => routineRegistrar.trigger(routineId),
-      // The command arm is default-deny: same allowlist as `command_execute`.
-      allowCommand: async spec =>
-        isCommandAllowed(await loadAllowlistEntries(workspace), spec.command, spec.args),
-      anchorCwd: (sessionCwd, cwd) => makeCwdAnchor(sessionCwd)(cwd),
-    }),
+    resolveConfig: resolveClerkConfig,
+    runPass: clerkReaction.dispatch,
   })
 
   // Installed-app registry — singleton per daemon, shared between

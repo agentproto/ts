@@ -84,7 +84,8 @@ export function createClerkReaction(opts: ClerkReactionOptions): ClerkReaction {
 
   const dispatch = async (input: ClerkPassInput): Promise<void> => {
     const session = opts.sessions.get(input.sessionId) ?? input.session
-    const owned = await isOwnedSlug(session.workspaceSlug)
+    const slug = (session as { workspaceSlug?: string }).workspaceSlug
+    const owned = await isOwnedSlug(slug)
     if (!owned) {
       await opts.runPass(input)
       return
