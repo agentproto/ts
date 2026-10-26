@@ -188,8 +188,10 @@ export interface TriageFacts {
   isFollowerSession?: (sessionId: string, follower: string) => boolean
   /** Was this turn-end followed by a NEW turn of the same session? */
   supersededByNewTurn?: (event: TriageEvent) => boolean
-  /** Did this session's cron run finish OK? */
-  cronOk?: (sessionId: string) => boolean | undefined
+  /** Did this session's cron run finish OK? Receives the triaged event so a
+   *  provider can match a command cron by its `cron:<jobId>` label and the
+   *  exit time; one-argument providers remain valid. */
+  cronOk?: (sessionId: string, event?: TriageEvent) => boolean | undefined
 }
 
 /** The outcome of classifying one event. `rule` names the rule that fired
@@ -257,7 +259,7 @@ export function classifyFollowEvent(
   }
 
   // 4. A cron run that finished OK already reported itself.
-  if (rules.cronOk && event.event === "exited" && facts.cronOk?.(event.sessionId) === true) {
+  if (rules.cronOk && event.event === "exited" && facts.cronOk?.(event.sessionId, event) === true) {
     return { decision: "drop", rule: TRIAGE_RULES.cronOk }
   }
 

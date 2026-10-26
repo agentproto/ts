@@ -220,6 +220,7 @@ import {
   defaultFollowTriageConfig,
   resolveFollowTriageConfig,
   type FollowTriageInput,
+  type TriageEvent,
 } from "./follow-triage.js"
 import { registerSessionFollowTools } from "./session-follow-tools.js"
 import {
@@ -293,6 +294,7 @@ import { approvalCardResourceUri, renderApprovalCardHtml } from "./approvals/car
 import { wireSupervisorNotify } from "./supervisor-notify.js"
 import { createInboundWatcher } from "./inbound-watcher.js"
 import { createCronScheduler, DEFAULT_OBSERVE_TIMEOUT_MS } from "./cron-scheduler.js"
+import { cronJobIdFromLabel, resolveCronRunOk } from "./cron-run-triage.js"
 import { createSessionTurnObserver } from "./cron-turn-observer.js"
 import { getAuthProfile } from "@agentproto/auth"
 import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
@@ -3649,10 +3651,23 @@ export async function createGateway(
     triageFacts: {
       // "A cron run that finished OK already reported itself" — the cron
       // ledger is the only place that knows the run's real outcome.
-      cronOk: (sessionId: string): boolean | undefined => {
-        const runs = cronScheduler.runs({ limit: 200 }).runs
-        const run = runs.find(r => r.sessionId === sessionId)
-        return run ? run.ok : undefined
+      cronOk: (sessionId: string, event?: TriageEvent): boolean | undefined => {
+        const recent = cronScheduler.runs({ limit: 200 }).runs
+        const bySession = resolveCronRunOk({ runs: recent, sessionId })
+        if (bySession !== undefined) return bySession
+
+        const jobId = cronJobIdFromLabel(event?.label)
+        if (!jobId) return undefined
+        try {
+          return resolveCronRunOk({
+            runs: cronScheduler.runs({ jobId, limit: 200 }).runs,
+            sessionId,
+            ...(event?.label ? { label: event.label } : {}),
+            ...(event?.ts ? { at: event.ts } : {}),
+          })
+        } catch {
+          return undefined
+        }
       },
     },
   })
