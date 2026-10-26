@@ -889,8 +889,14 @@ receipt whose binding is no longer present is left untouched. If that binding
 returns later, its pending receipts resume at the next boot reconcile and
 its failed receipts resume at the next retry tick.
 
-The daemon builds the list from `brainIngestReaction.binding` plus every enabled
-AIP-41 event routine, in input order. `createReactionWiring.refresh()` refuses a
+The daemon builds the list from `brainIngestReaction.binding`, the builtin
+`clerkReaction.binding` and every enabled AIP-41 event routine, in input order.
+The clerk binding is bound to `agentproto:clerk-due`. Its target is not
+idempotent: a pass is dispatched at most once per firing, a failed pass is
+retried with backoff, a stale pending receipt dies at boot reconciliation, and a
+`running` receipt is not replayed. It is opt-in per workspace through
+`defaults.reactions.clerk.workspaces`, so with no slug set the legacy clerk
+dispatch remains the only owner. `createReactionWiring.refresh()` refuses a
 routine that cannot convert or whose id is already taken, reports it under
 `reactions.refused` in the `reconcile()` result (and in `routine_reconcile`
 output), and logs each distinct refusal once. `refresh()` never throws: a
@@ -908,10 +914,10 @@ Known limits: no event context for tool, workflow or agent arms;
 (only a registered action handler receives the occurrence); a session started by a
 detached process that does not inherit the async reaction context, for example
 a spawn done by a separate OS process, is not stamped, so a chain through that
-process is not bounded by the depth cap; the action
-registry is empty, so `action` arms are refused until a handler is registered;
-an event arriving between runner start and the first reconcile only reaches
-builtin bindings.
+process is not bounded by the depth cap; the daemon action registry contains
+only the builtin `session:clerk-pass` handler, so every other `action` arm is
+refused until a handler is registered; an event arriving between runner start
+and the first reconcile only reaches builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`.
 
