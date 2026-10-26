@@ -1350,6 +1350,13 @@ export interface RuntimeHttpServerOptions {
    *  `GET /routines` (routine DEFINITIONS). Without it `/routine-defs/*`
    *  404s and `GET /routines` 404s. */
   routineRegistrar?: import("./routine-registrar.js").RoutineRegistrar
+  /** Optional — when wired, exposes `GET /reactions` with the reaction
+   *  runner's health read model and the wiring's current live/refused set.
+   *  Without it the route 404s. */
+  reactions?: {
+    health(): import("./action-hooks/reaction-runner.js").ReactionHealth
+    wiring?(): { active: string[]; refused: Array<{ bindingId: string; error: string }> }
+  }
   /** Optional — when wired, exposes /workflows/* routes for starting and
    *  managing background workflow runs (stage-barrier parallel steps).
    *  Same service the MCP `workflow_start/status/cancel/
@@ -4796,6 +4803,12 @@ export async function startHttpServer(
         // Mirrors the MCP `routine_list` tool (orchestration-tools.ts).
         if (opts.routineRegistrar && path === "/routines") {
           const handled = await handleRoutinesListing(req, res, path, opts.routineRegistrar)
+          if (handled) return
+        }
+
+        // GET /reactions — reaction runner health plus the wiring accessor.
+        if (opts.reactions && path === "/reactions") {
+          const handled = await handleReactionsHealth(req, res, path, opts.reactions)
           if (handled) return
         }
 
@@ -10445,6 +10458,25 @@ async function handleRoutinesListing(
   if (path !== "/routines" || req.method !== "GET") return false
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify({ routines: routineRegistrar.list() }))
+  return true
+}
+
+/**
+ * GET /reactions → the reaction runner health read model, plus `wiring` when
+ * the wiring accessor is present. Returns `true` when it handled the request
+ * so the dispatcher skips the 404 path.
+ */
+async function handleReactionsHealth(
+  req: IncomingMessage,
+  res: ServerResponse,
+  path: string,
+  reactions: NonNullable<RuntimeHttpServerOptions["reactions"]>,
+): Promise<boolean> {
+  if (path !== "/reactions" || req.method !== "GET") return false
+  const health = reactions.health()
+  const wiring = reactions.wiring?.()
+  res.writeHead(200, { "content-type": "application/json" })
+  res.end(JSON.stringify(wiring === undefined ? health : { ...health, wiring }))
   return true
 }
 

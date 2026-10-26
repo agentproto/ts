@@ -39,6 +39,8 @@ export interface ReactionWiringResult {
 
 export interface ReactionWiring {
   refresh(): ReactionWiringResult
+  /** A copy of the last refresh result (or the builtin set before the first refresh). */
+  current(): ReactionWiringResult
 }
 
 function messageOf(err: unknown): string {
@@ -86,6 +88,13 @@ export function createReactionWiring(deps: ReactionWiringDeps): ReactionWiring {
   }
 
   return {
+    current(): ReactionWiringResult {
+      return {
+        active: lastResult.active.slice(),
+        refused: lastResult.refused.map(entry => ({ ...entry })),
+      }
+    },
+
     refresh(): ReactionWiringResult {
       try {
         const resolved = deps.eventBindings()
