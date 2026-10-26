@@ -207,6 +207,12 @@ export interface SpawnDefaultsConfig {
     brainIngest?: {
       workspaces?: string[]
     }
+    /** Debounced clerk passes for these workspace slugs are dispatched by the
+     *  durable clerk reaction instead of the legacy dispatch. Default []:
+     *  every workspace stays on the legacy dispatch. */
+    clerk?: {
+      workspaces?: string[]
+    }
   }
   /** Task-ledger policy. */
   tasks?: {

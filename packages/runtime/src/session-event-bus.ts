@@ -46,6 +46,7 @@ export type SessionEventType =
   | "session:message"
   | "session:prompt"
   | "agentproto:session-completed"
+  | "agentproto:clerk-due"
   | "policy:passed"
   | "policy:failed"
   | "policy:commit-ready"
@@ -349,6 +350,22 @@ export interface SessionCompletedEvent {
   basis: "outcome" | "policy"
   endedAt: string
   label?: string
+  ts: string
+}
+
+/**
+ * Emitted by the clerk turn-end controller when a debounce timer fires for a
+ * session whose workspace is owned by `defaults.reactions.clerk.workspaces`.
+ * The controller has already applied its ignore rules and debounce; this
+ * event hands that one firing to the durable reaction path. It is not emitted
+ * for legacy-owned workspace slugs and user routines cannot subscribe to it.
+ * The occurrence id is `due:<ISO timestamp>`: one timer per session makes it
+ * unique and the source event is never replayed.
+ */
+export interface SessionClerkDueEvent {
+  type: "agentproto:clerk-due"
+  sessionId: string
+  occurrenceId: string
   ts: string
 }
 
@@ -1285,6 +1302,7 @@ export type SessionEvent =
   | SessionExitedEvent
   | SessionOutcomeRecordedEvent
   | SessionCompletedEvent
+  | SessionClerkDueEvent
   | SessionReapedEvent
   | SessionStalledEvent
   | SessionStallClearedEvent
