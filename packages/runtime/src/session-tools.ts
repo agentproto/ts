@@ -4678,9 +4678,10 @@ export function registerSessionTools(
       includeDetached: mcpBool
         .optional()
         .describe(
-          "When true, a clean, idle detached worktree is reclaimed instead " +
-            "of held. Default false. This is the only flag that can promote " +
-            "an entry toward reclaim; no flag ever weakens a hold otherwise."
+          "Accepted for compatibility; it no longer widens anything. A clean, " +
+            "idle detached worktree is reclaimed only when its HEAD is proven " +
+            "in base (ancestor, squash, patch, or a merged PR's head), with or " +
+            "without this flag; otherwise it is held."
         ),
       noisePaths: z
         .array(z.string())

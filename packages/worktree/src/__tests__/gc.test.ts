@@ -151,16 +151,19 @@ describe("classifyForGc", () => {
   }
   const MIXED_PLANS_DIRTY = { state: "dirty" as const, modified: 0, staged: 0, untracked: 2, newestMtimeMs: null }
 
-  it("delegates to classify() when --include-detached is absent: clean+idle detached is hold", () => {
+  it("clean+idle detached with no proof of containment in base is hold, flag or not", () => {
     expect(classifyForGc(CLEAN, DETACHED, IDLE)).toBe("hold")
+    expect(classifyForGc(CLEAN, DETACHED, IDLE, { includeDetached: true })).toBe("hold")
+    expect(classifyForGc(CLEAN, DETACHED, IDLE, { includeDetached: true, detachedInBase: false })).toBe("hold")
   })
 
-  it("--include-detached moves a clean+idle detached worktree from hold to reclaim", () => {
-    expect(classifyForGc(CLEAN, DETACHED, IDLE, { includeDetached: true })).toBe("reclaim")
+  it("clean+idle detached whose sha is proven in base reclaims without any flag", () => {
+    expect(classifyForGc(CLEAN, DETACHED, IDLE, { detachedInBase: true })).toBe("reclaim")
   })
 
-  it("--include-detached does NOT reclaim a dirty detached worktree", () => {
-    expect(classifyForGc(DIRTY, DETACHED, IDLE, { includeDetached: true })).toBe("hold")
+  it("a proven detached worktree is still held when dirty or live", () => {
+    expect(classifyForGc(DIRTY, DETACHED, IDLE, { detachedInBase: true })).toBe("hold")
+    expect(classifyForGc(CLEAN, DETACHED, LIVE, { detachedInBase: true })).toBe("hold")
   })
 
   it("--include-detached has no effect on non-detached classes", () => {
@@ -1962,5 +1965,129 @@ describe("gc — recent-activity guard (git index mtime)", () => {
     expect(outcome.holdReason).toBe("recent-activity")
     expect(await stillRegistered(repo, wtPath)).toBe(true)
     expect(worktreeRemoveCalls()).toHaveLength(0)
+  })
+})
+
+// ── detached HEAD: reclaimed only when its sha is proven in base ─────────
+
+describe("gc — a detached HEAD is an anonymous branch: reclaimed only when proven in base", () => {
+  async function detachedWt(repo: string, commitish: string): Promise<string> {
+    const wtPath = join(repo, "..", `detached-${Math.random().toString(36).slice(2)}`)
+    cleanupPaths.push(wtPath)
+    await addWorktree(repo, wtPath, ["--detach"], commitish)
+    return wtPath
+  }
+
+  /** A commit on a side branch, then back on main: the sha is reachable only from that branch. */
+  async function unmergedSha(repo: string): Promise<string> {
+    await execGit(repo, ["checkout", "-b", "feat/unmerged"])
+    await writeFile(join(repo, "unique.ts"), "export const unique = 1\n")
+    await execGit(repo, ["add", "unique.ts"])
+    await execGit(repo, ["commit", "-m", "real work"])
+    const sha = await headSha(repo)
+    await execGit(repo, ["checkout", "main"])
+    return sha
+  }
+
+  const base = (repo: string, forge: ForgeClient, includeDetached?: boolean) => ({
+    repoRoot: repo,
+    repoName: "test-repo",
+    forge,
+    memo: new InMemoryVerdictMemoStore(),
+    defaultBranchRef: "main",
+    now: FROZEN_NOW,
+    ...(includeDetached === undefined ? {} : { includeDetached }),
+  })
+
+  it("clean + idle + unmerged commits holds, with or without --include-detached, and apply keeps the commit", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const sha = await unmergedSha(repo)
+    // The only ref left to the commit is the one the worktree's HEAD holds.
+    await execGit(repo, ["branch", "-D", "feat/unmerged"])
+    const wtPath = await detachedWt(repo, sha)
+
+    for (const includeDetached of [undefined, false, true]) {
+      const plan = await planGc(base(repo, new FakeForgeClient(), includeDetached))
+      const entry = plan.find((e) => e.path === wtPath)
+      expect(entry?.integration?.state).toBe("detached")
+      expect(entry?.tree?.state).toBe("clean")
+      expect(entry?.class).toBe("hold")
+    }
+
+    const plan = await planGc(base(repo, new FakeForgeClient(), true))
+    const outcomes = await applyGc(plan, base(repo, new FakeForgeClient(), true))
+    expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("held")
+    expect((await stat(wtPath)).isDirectory()).toBe(true)
+  })
+
+  it("clean + idle + unmerged commits held even when only an open PR's remote branch still references them", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const sha = await unmergedSha(repo)
+    const wtPath = await detachedWt(repo, sha)
+    const openForge = new FakeForgeClient([], [pr({ number: 991, headRefOid: sha, state: "open", merged: false, mergedAt: null })])
+    const plan = await planGc(base(repo, openForge, true))
+    expect(plan.find((e) => e.path === wtPath)?.class).toBe("hold")
+  })
+
+  it("clean + idle + an ancestor of base reclaims by default, without --force", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const sha = await headSha(repo)
+    await writeFile(join(repo, "later.txt"), "later\n")
+    await execGit(repo, ["add", "later.txt"])
+    await execGit(repo, ["commit", "-m", "base moved on"])
+    const wtPath = await detachedWt(repo, sha)
+
+    const forge = new FakeForgeClient()
+    const plan = await planGc(base(repo, forge))
+    expect(plan.find((e) => e.path === wtPath)).toMatchObject({ class: "reclaim" })
+
+    spawnSpy.mockClear()
+    const outcomes = await applyGc(plan, base(repo, forge))
+    expect(outcomes.find((o) => o.path === wtPath)?.result).toBe("reclaimed")
+    expect(forcedRemoveCalls()).toHaveLength(0)
+    await expect(stat(wtPath)).rejects.toThrow()
+  })
+
+  it("a detached HEAD whose content was squash-merged into base reclaims as squash-merged", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const sha = await unmergedSha(repo)
+    await writeFile(join(repo, "unique.ts"), "export const unique = 1\n")
+    await execGit(repo, ["add", "unique.ts"])
+    await execGit(repo, ["commit", "-m", "squash of feat/unmerged"])
+    const wtPath = await detachedWt(repo, sha)
+
+    const plan = await planGc(base(repo, new FakeForgeClient()))
+    expect(plan.find((e) => e.path === wtPath)).toMatchObject({ class: "reclaim", reclaimReason: "squash-merged" })
+  })
+
+  it("a detached HEAD that is exactly a merged PR's head reclaims; an unreachable forge proves nothing and holds", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const sha = await unmergedSha(repo)
+    // Base changed the same file differently, so neither squash nor patch tiers can prove it.
+    await writeFile(join(repo, "unique.ts"), "export const unique = 2\n")
+    await execGit(repo, ["add", "unique.ts"])
+    await execGit(repo, ["commit", "-m", "base reworked the file"])
+    const wtPath = await detachedWt(repo, sha)
+
+    const mergedForge = new FakeForgeClient([], [pr({ number: 7, headRefOid: sha })])
+    const plan = await planGc(base(repo, mergedForge))
+    expect(plan.find((e) => e.path === wtPath)?.class).toBe("reclaim")
+
+    const offline = await planGc(base(repo, new UnreachableForgeClient("offline")))
+    expect(offline.find((e) => e.path === wtPath)?.class).toBe("hold")
+  })
+
+  it("a dirty detached worktree on a base-contained sha is never reclaimed", async () => {
+    const repo = await makeRepo()
+    cleanupPaths.push(repo)
+    const wtPath = await detachedWt(repo, await headSha(repo))
+    await writeFile(join(wtPath, "README.md"), "edited\n")
+    const plan = await planGc(base(repo, new FakeForgeClient(), true))
+    expect(plan.find((e) => e.path === wtPath)?.class).toBe("hold")
   })
 })

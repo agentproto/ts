@@ -18,6 +18,7 @@ import { copyFile, mkdir, open, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { execArgv } from "./exec.js"
+import type { BranchDeletionDecision } from "./branch-deletion.js"
 import { computeProvenance, type ProvenanceInfo } from "./provenance.js"
 
 export const SALVAGE_ROOT = (): string => resolve(homedir(), ".agentproto", "worktree-salvage")
@@ -33,6 +34,8 @@ export interface SalvageManifest {
   /** Whether `changes.patch` has any content (tracked-file changes existed). */
   hasPatch: boolean
   provenance: ProvenanceInfo
+  /** What `archive` did with the branch (kept or deleted) and why. Absent for a detached HEAD or a gc salvage. */
+  branchDecision?: BranchDeletionDecision
 }
 
 export interface SalvageWorktreeInput {
@@ -44,6 +47,8 @@ export interface SalvageWorktreeInput {
   tipSha: string
   /** Identifies this worktree in the salvage directory name, e.g. its slug or branch. */
   slug: string
+  /** Recorded verbatim in MANIFEST.json. */
+  branchDecision?: BranchDeletionDecision
   sessionsPath?: string
   /** Injectable clock so tests can freeze `createdAt` / the directory name. */
   now?: () => string
@@ -143,6 +148,7 @@ export async function salvageWorktree(input: SalvageWorktreeInput): Promise<Salv
     untrackedFiles,
     hasPatch: patch.length > 0,
     provenance,
+    ...(input.branchDecision ? { branchDecision: input.branchDecision } : {}),
   }
   await writeFileSynced(join(dir, "MANIFEST.json"), JSON.stringify(manifest, null, 2) + "\n")
 

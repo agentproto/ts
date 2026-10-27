@@ -181,6 +181,12 @@ export {
   type DaemonClient,
 } from "./agent-session-host.js"
 export {
+  decideBranchDeletion,
+  type BranchDeletionAction,
+  type BranchDeletionDecision,
+  type DecideBranchDeletionInput,
+} from "./branch-deletion.js"
+export {
   classifyForGc,
   resolveGcClass,
   isMechanicalDepBumpRange,
