@@ -16,7 +16,14 @@
  */
 
 import { spawn } from "node:child_process"
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { dirname, resolve } from "node:path"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
@@ -73,20 +80,34 @@ export function cloudChildEnv(
  *
  * Best effort: a read-only or unparseable config must never turn a spawn
  * into a failure. The PTY answerer remains the fallback.
+ *
+ * The config is Claude Code's own live file, so it is only rewritten when a
+ * directory actually needs trust, always atomically (temp file + rename next
+ * to it), and never when an existing file cannot be parsed: overwriting a
+ * large concurrent config from a failed parse would wipe the user's settings.
  */
 export function trustClaudeFolder(cwd: string, env = process.env): void {
   const configDir = env.CLAUDE_CONFIG_DIR
   const configFile = configDir
     ? resolve(configDir, ".claude.json")
     : resolve(env.HOME ?? homedir(), ".claude.json")
-  let config: Record<string, unknown> = {}
+  let raw: string | undefined
   try {
-    const parsed = JSON.parse(readFileSync(configFile, "utf8")) as unknown
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      config = parsed as Record<string, unknown>
+    raw = readFileSync(configFile, "utf8")
+  } catch (err) {
+    // A missing config starts fresh; any other read error is best-effort.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return
+  }
+  let config: Record<string, unknown> = {}
+  if (raw !== undefined) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return
     }
-  } catch {
-    // Missing or malformed config: start from a minimal object.
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+    config = parsed as Record<string, unknown>
   }
   const existing = config.projects
   const projects =
@@ -99,6 +120,16 @@ export function trustClaudeFolder(cwd: string, env = process.env): void {
   } catch {
     // cwd need not exist yet in unit tests; trust the literal path.
   }
+  const isTrusted = (dir: string): boolean => {
+    const prior = projects[dir]
+    return (
+      !!prior &&
+      typeof prior === "object" &&
+      !Array.isArray(prior) &&
+      (prior as Record<string, unknown>).hasTrustDialogAccepted === true
+    )
+  }
+  if ([...dirs].every(isTrusted)) return
   for (const dir of dirs) {
     const prior = projects[dir]
     projects[dir] = {
@@ -110,11 +141,20 @@ export function trustClaudeFolder(cwd: string, env = process.env): void {
     }
   }
   config.projects = projects
+  const tempFile =
+    `${configFile}.${process.pid}.${Date.now()}.` +
+    `${Math.random().toString(36).slice(2)}.tmp`
   try {
     mkdirSync(dirname(configFile), { recursive: true })
-    writeFileSync(configFile, JSON.stringify(config, null, 2))
+    writeFileSync(tempFile, JSON.stringify(config, null, 2))
+    renameSync(tempFile, configFile)
   } catch {
     // Best effort: fall back to the PTY trust-prompt answer.
+    try {
+      unlinkSync(tempFile)
+    } catch {
+      // Temp file was never created or is already gone.
+    }
   }
 }
 
@@ -149,6 +189,12 @@ export function normalizePtyOutput(raw: string): string {
 
 /** The trust prompt only ever appears INTERLEAVED with cursor escapes. */
 const TRUST_PROMPT_RE = /Yes,\s*I\s*trust\s*this\s*folder/i
+
+/** How often to re-answer a trust dialog that is still on screen. */
+const TRUST_RETRY_MS = 1_500
+
+/** Cap on trust answers so a dialog that never accepts cannot spin forever. */
+const TRUST_MAX_ANSWERS = 5
 
 /** Cap on {@link ptyOutputTail}: enough to see the stalled screen, short
  *  enough that no incidental material can ride into a log. */
@@ -288,24 +334,51 @@ export function defaultCloudCliRunner(
         for (const data of pendingWrites) p.write(data)
         pendingWrites.length = 0
         let output = ""
-        let answeredTrustPrompt = false
+        // The latest screen since the last trust answer, not the whole
+        // transcript: a dialog that is re-rendered after a dropped keystroke
+        // must be recognized again, while a prompt that has scrolled away
+        // must not be answered from stale output.
+        let trustScreen = ""
+        let trustAnswers = 0
+        let trustTimer: ReturnType<typeof setTimeout> | null = null
+        const clearTrustTimer = () => {
+          if (trustTimer) {
+            clearTimeout(trustTimer)
+            trustTimer = null
+          }
+        }
+        const answerTrustPrompt = () => {
+          const screen = normalizePtyOutput(trustScreen)
+          const highlighted =
+            screen.split("\n").find(line => line.includes("❯")) ?? ""
+          // Down moves the DEFAULT "No, exit" highlight to "Yes"; when the
+          // dialog re-renders with Yes already highlighted, Enter alone is
+          // the answer (sending Down again would wrap back to No).
+          const yesSelected = TRUST_PROMPT_RE.test(highlighted)
+          trustScreen = ""
+          trustAnswers += 1
+          if (trustAnswers < TRUST_MAX_ANSWERS) {
+            trustTimer = setTimeout(() => {
+              trustTimer = null
+              maybeAnswerTrustPrompt()
+            }, TRUST_RETRY_MS)
+            trustTimer.unref?.()
+          }
+          p.write(yesSelected ? "\r" : "\x1b[B\r")
+        }
+        const maybeAnswerTrustPrompt = () => {
+          if (trustTimer || trustAnswers >= TRUST_MAX_ANSWERS) return
+          if (!TRUST_PROMPT_RE.test(normalizePtyOutput(trustScreen))) return
+          answerTrustPrompt()
+        }
         p.onData((chunk: string) => {
           output += chunk
+          trustScreen += chunk
           opts.onData?.(chunk)
-          // First run in a folder shows a trust prompt whose DEFAULT
-          // highlighted option is "No, exit" — Down + Enter picks
-          // "Yes, I trust this folder". The TUI renders it through cursor
-          // escapes, so match on the normalized transcript. Answer at most
-          // once.
-          if (
-            !answeredTrustPrompt &&
-            TRUST_PROMPT_RE.test(normalizePtyOutput(output))
-          ) {
-            answeredTrustPrompt = true
-            p.write("\x1b[B\r")
-          }
+          maybeAnswerTrustPrompt()
         })
         const timer = setTimeout(() => {
+          clearTrustTimer()
           try {
             p.kill("SIGKILL")
           } catch {
@@ -322,6 +395,7 @@ export function defaultCloudCliRunner(
         timer.unref?.()
         p.onExit(({ exitCode }: { exitCode: number }) => {
           clearTimeout(timer)
+          clearTrustTimer()
           resolveResult({ code: exitCode, output })
         })
       }
