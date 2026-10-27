@@ -20,6 +20,7 @@ import {
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  usageResponseSchema,
   type CapacityResponse,
   type ComputerListEntry,
   type ComputerStatus,
@@ -28,6 +29,7 @@ import {
   type ResumeResponse,
   type SessionsResponse,
   type SuspendResponse,
+  type UsageResponse,
 } from "@agentproto/computer-api"
 
 export interface ComputerClientConfig {
@@ -275,6 +277,14 @@ export class ComputerControllerClient {
   async listComputers(): Promise<ComputerListEntry[]> {
     const body = await this.request("GET", "/v1/computers", computerListResponseSchema)
     return body.computers
+  }
+
+  /** `GET /v1/usage?from&to[&endUser]` - the controller's usage ledger for
+   *  the calling tenant in the requested window. */
+  async getUsage(opts: { from: string; to: string; endUser?: string }): Promise<UsageResponse> {
+    const params = new URLSearchParams({ from: opts.from, to: opts.to })
+    if (opts.endUser !== undefined) params.set("endUser", opts.endUser)
+    return this.request("GET", `/v1/usage?${params.toString()}`, usageResponseSchema)
   }
 
   /** `GET /v1/capacity` - the tenant's whole host budget per resource

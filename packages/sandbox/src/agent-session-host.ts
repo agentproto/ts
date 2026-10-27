@@ -341,6 +341,85 @@ export interface SandboxProviderBox {
 }
 
 /**
+ * One box as the unified inventory surface reports it
+ * (`SandboxProvider.list`). Wider than `SandboxProviderBox`: identity,
+ * ownership, sizing and activity, as far as the provider's control plane
+ * knows them.
+ *
+ * Missing means UNKNOWN: a field the provider does not report stays
+ * `undefined` and is never inferred from another field (in particular a
+ * missing `tenantId`/`endUser` is not "the default tenant").
+ */
+export interface SandboxBox {
+  /** Provider-assigned box id - the same id `boot()` returned. */
+  id: string
+  /** Concrete provider that owns the box. */
+  provider: "computer" | "e2b"
+  /** Provider-reported state ("running", "stopped", …), when available. */
+  state?: string
+  /** Owning product tenant, when the provider reports it. */
+  tenantId?: string
+  /** End user inside the tenant, when the provider reports it. */
+  endUser?: string
+  /** Provider host identifier (the computer controller's `hostId`), when
+   *  reported. */
+  host?: string
+  /** Virtual CPUs allocated to the box, when reported. */
+  cpus?: number
+  /** Memory the box holds, in MiB - when reported. */
+  memoryMiB?: number
+  /** Creation timestamp (ISO-8601) - when reported. */
+  createdAt?: string
+  /** Start of the current active interval (ISO-8601) - when reported. */
+  activeSince?: string
+  /** Last activity timestamp (ISO-8601) - when reported. */
+  lastActivityAt?: string
+  /** Public egress address, `null` when the provider says the box has none,
+   *  `undefined` when the provider does not report egress. */
+  egressIp?: string | null
+  /** Session slots the provider still counts for this box, when reported. */
+  sessions?: number
+  /** Accumulated cost in EUR, when the provider reports it; `null` when it
+   *  knows the box but has no cost model. */
+  costEur?: number | null
+}
+
+/**
+ * One usage window, the exact W0 `UsageWindow` shape from
+ * `projects/computer/CONTRACT-SCALE.md` (camelCase JSON, ISO-8601 UTC
+ * times, integer seconds, EUR). Providers map their own ledger onto this
+ * without adding or renaming fields.
+ */
+export interface SandboxUsageWindow {
+  /** Box id the window belongs to. */
+  computer: string
+  /** Owning product tenant. */
+  tenantId: string
+  /** End user inside the tenant, when the ledger knows it. */
+  endUser?: string
+  /** Concrete provider that produced the window. */
+  provider: "computer" | "e2b"
+  /** Provider host identifier, when the provider reports it. */
+  host?: string
+  /** Window start (ISO-8601). */
+  from: string
+  /** Window end (ISO-8601). */
+  to: string
+  /** Seconds the box was active in the window. */
+  activeSec: number
+  /** `activeSec * cpus`. */
+  vcpuSec: number
+  /** `activeSec * memoryMiB / 1024`. */
+  gibSec: number
+  /** Cost for the window in EUR, from the provider's cost model; `null`
+   *  when the host has no price model, never `0`. */
+  costEur: number | null
+  /** Opening ledger event id, when the provider exposes one (the fleet
+   *  dedupes windows on it). */
+  eventId?: string
+}
+
+/**
  * Backend-agnostic sandbox lifecycle. Concrete implementations (e2b, modal,
  * daytona, blaxel, …) live in their own packages so this one stays free of
  * vendor SDK dependencies — see `@agentproto/sandbox-e2b`.
@@ -404,6 +483,22 @@ export interface SandboxProvider {
    * omit it, and the gc simply has no candidate for that provider.
    */
   listBoxes?(): Promise<SandboxProviderBox[]>
+  /**
+   * List the boxes for the unified inventory surface. Same control-plane
+   * read as `listBoxes`, with the ownership/sizing/activity fields the
+   * fleet and ops views need. Providers that cannot enumerate boxes omit
+   * it. `from`/`to` optionally scope a provider that can filter its view by
+   * time; providers with no such filter ignore them.
+   */
+  list?(opts?: { from?: string; to?: string }): Promise<SandboxBox[]>
+  /**
+   * Usage windows the provider's ledger covers for `[from, to]`, one per
+   * active interval, optionally restricted to one `endUser`. Providers
+   * without a usage ledger omit it. Windows are mapped exactly as
+   * `SandboxUsageWindow`; unknown fields stay absent rather than being
+   * filled in.
+   */
+  usage?(opts: { from: string; to: string; endUser?: string }): Promise<SandboxUsageWindow[]>
 }
 
 /** Which secrets to resolve into the sandbox's env, and how. */
