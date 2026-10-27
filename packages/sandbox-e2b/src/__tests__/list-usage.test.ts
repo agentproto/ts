@@ -160,6 +160,31 @@ describe("e2bSandboxProvider.usage", () => {
     expect(windows[0]?.activeSec).toBe(8 * 3600)
   })
 
+  it("counts a paused box through now, the documented overestimate", async () => {
+    sandboxListMock.mockReturnValue(
+      paginator([
+        [
+          info({
+            sandboxId: "sbx_paused",
+            state: "paused",
+            startedAt: new Date("2026-10-20T00:00:00.000Z"),
+            endAt: new Date("2026-11-27T00:00:00.000Z"),
+          }),
+        ],
+      ]),
+    )
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const [window] = await e2bSandboxProvider.usage!({
+      from: "2026-10-20T00:00:00.000Z",
+      to: "2026-10-27T00:00:00.000Z",
+    })
+
+    expect(window?.computer).toBe("sbx_paused")
+    expect(window?.to).toBe("2026-10-27T00:00:00.000Z")
+    expect(window?.activeSec).toBe(7 * 24 * 3600)
+  })
+
   it("uses the AGENTPROTO_E2B_PRICING override for costEur", async () => {
     vi.stubEnv("AGENTPROTO_E2B_PRICING", JSON.stringify(E2B_PRICING_OVERRIDE))
     sandboxListMock.mockReturnValue(paginator([[info()]]))

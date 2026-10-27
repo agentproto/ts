@@ -993,6 +993,15 @@ export const e2bSandboxProvider: SandboxProvider = {
    * `[startedAt, min(endAt, now)]` clamped to `[from, to]`. A box with no
    * overlap is omitted.
    *
+   * This is a live inventory estimate, not a billing history: e2b only
+   * lists boxes it still holds, so a killed box's past usage is gone. The
+   * fleet ledger is the record.
+   *
+   * A paused box is counted as active CPU and RAM through now, which
+   * OVERESTIMATES it: `SandboxInfo` carries `state: "paused"` but no pause
+   * timestamp (only `startedAt`/`endAt`), so the pause instant cannot be
+   * recovered from the control plane.
+   *
    * `tenantId` is the literal `"unknown"`: this provider writes no ownership
    * metadata at boot, and inventing a tenant would misattribute the cost.
    * For the same reason an `endUser` filter matches nothing (e2b does not
