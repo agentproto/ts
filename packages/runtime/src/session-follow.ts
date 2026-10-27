@@ -116,6 +116,10 @@ export interface WireSessionFollowOptions {
   /** Extra facts the triage rules need but the engine cannot see alone (e.g.
    *  "did this session's cron run finish OK?"). */
   triageFacts?: TriageFacts
+  /** Resolve, at EVENT time, whether a non-crashed exit is informational
+   *  rather than a wake. Called once per exit with the descriptor captured
+   *  then, so a later delete or rename cannot change the outcome. */
+  sourceUrgency?: (desc: SessionDescriptor) => "fyi" | undefined
   log?: (line: string) => void
 }
 
@@ -356,6 +360,8 @@ interface BatchEntry {
   empty?: boolean
   /** `turn-end`: the host recorded the agent's explicit no-op ack. */
   silent?: boolean
+  /** `exited`: the source declared this success informational (fyi). */
+  fyi?: boolean
   /** The turn-end / exit reason. */
   reason?: string
 }
@@ -682,6 +688,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
         ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
         ...(entry.silent !== undefined ? { silent: entry.silent } : {}),
+        ...(entry.fyi ? { fyi: true } : {}),
         ...(entry.reason ? { reason: entry.reason } : {}),
         ...(text ? { text } : {}),
       }
@@ -869,7 +876,14 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         const facts = factsFor(entries)
         const results: TriageResult[] = []
         for (const entry of entries) {
-          results.push(await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts))
+          const result = await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts)
+          // A source-declared fyi is already an explicit downgrade: triage may
+          // drop it, but never raise it back to a wake.
+          results.push(
+            entry.fyi && result.decision === "wake"
+              ? { decision: "fyi", rule: "source-fyi" }
+              : result,
+          )
         }
         writeTriageLedger(followerId, entries, results, true, digestId)
         const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
@@ -911,7 +925,14 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       } catch (err) {
         log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
       }
-      text = formatFollowDigest(entries, textFor, id => registry.get(id))
+      if (entries.every(entry => entry.fyi === true)) {
+        // Every event is informational: reuse the all-fyi path (inbox only).
+        text = formatFollowDigest(entries, textFor, id => registry.get(id), "fyi")
+        urgency = "fyi"
+      } else {
+        // A mixed digest keeps today's urgency and lists every line.
+        text = formatFollowDigest(entries, textFor, id => registry.get(id))
+      }
     }
     const digest = { entries: digestEntriesFor(deliveredEntries), omitted: 0 }
     const p = deliver(followerId, text, batch.followIds, urgency, digest)
@@ -954,6 +975,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const signal = signalOf(ev, seenPrs)
       if (!signal) return
       const desc = registry.get(signal.sessionId)
+      // Resolve the source's declared urgency ONCE, at event time. Only a
+      // non-crashed exit can be an informational success.
+      const sourceFyi =
+        signal.event === "exited" && desc !== undefined && opts.sourceUrgency?.(desc) === "fyi"
       const claimed = new Set<string>()
       for (const follow of follows) {
         const alreadyClaimed = claimed.has(follow.follower)
@@ -1004,6 +1029,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           ...(signal.awaitingInput ? { awaitingInput: true } : {}),
           ...(signal.empty ? { empty: true } : {}),
           ...(signal.silent ? { silent: true } : {}),
+          ...(sourceFyi ? { fyi: true } : {}),
           ...(signal.reason ? { reason: signal.reason } : {}),
         })
       }

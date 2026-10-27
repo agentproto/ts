@@ -31,7 +31,8 @@ Usage:
                       (--command <cmd> [--args <arg>...] [--cwd <dir>] [--timeout-ms <duration>]
 | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                         | --target-session <id> --prompt <text>)
-                      [--options-json <json|@file>] [--label <text>] [--once] [--json]
+                      [--options-json <json|@file>] [--label <text>] [--once]
+                      [--notify always|onFailure] [--json]
   agentproto cron list [--json]
   agentproto cron remove <id>
   agentproto cron run    <id> [--json]
@@ -46,6 +47,10 @@ Schedule is a 5-field cron expression in local time:
 By default jobs recur indefinitely. Pass --once to fire once then deactivate.
 
 Command jobs must be allowlisted in <workspace>/.agentproto/allowed-commands.json.
+
+--notify always|onFailure controls how loudly a successful command run is
+heard by followers. The default, always, wakes them. onFailure lands the
+success in their inbox as fyi and only a non-zero exit wakes them.
 
 Three action kinds:
   --command <cmd>         Run an allowlisted shell command.
@@ -126,6 +131,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
       "options-json":   { type: "string" },
       "timeout-ms":     { type: "string" },
       label:            { type: "string" },
+      notify:           { type: "string" },
       once:             { type: "boolean", default: false },
       json:             { type: "boolean", default: false },
     },
@@ -159,6 +165,10 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
     process.stderr.write(
       "agentproto cron add: --prompt is required when using --target-session\n\n" + USAGE,
     )
+    return 2
+  }
+  if (values.notify !== undefined && values.notify !== "always" && values.notify !== "onFailure") {
+    process.stderr.write("agentproto cron add: --notify must be always or onFailure\n\n" + USAGE)
     return 2
   }
 
@@ -288,6 +298,7 @@ async function runCronAdd(args: readonly string[]): Promise<number> {
         schedule: values.schedule,
         recurring: !values.once,
         ...(values.label ? { label: values.label } : {}),
+        ...(values.notify ? { notify: values.notify } : {}),
         action,
       },
       ep.token,
@@ -368,6 +379,7 @@ async function runCronList(args: readonly string[]): Promise<number> {
       `  ${String(j["id"])}\n` +
         `    Label:    ${String(j["label"] ?? "(none)")}\n` +
         `    Schedule: ${String(j["schedule"])}  (${recurring}, ${active})\n` +
+        `    Notify:    ${String(j["notify"] ?? "always")}\n` +
         `    Next run: ${String(j["nextRunAt"] ?? "\u2014")}\n` +
         `    Last run: ${String(j["lastRunAt"] ?? "\u2014")}\n` +
         (lr

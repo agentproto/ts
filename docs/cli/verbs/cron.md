@@ -6,7 +6,7 @@ agentproto cron add --schedule <cron-expr>
                      | --adapter <slug> --prompt <text> [--cwd <dir>] [--model <id>]
                                        [--options-json <json|@file>]
                      | --target-session <id> --prompt <text>)
-                    [--label <text>] [--once] [--json]
+                    [--label <text>] [--once] [--notify always|onFailure] [--json]
 agentproto cron list   [--json]
 agentproto cron remove <id>                    (aliases: delete, rm)
 agentproto cron run    <id> [--json]
@@ -15,6 +15,10 @@ agentproto cron run    <id> [--json]
 `--timeout-ms` accepts a duration string. Because the flag name already declares
 milliseconds, the value must be a bare integer or carry an `ms` suffix (`30s`
 and `5m` are rejected).
+
+`--notify` controls how loudly a successful command run is heard by sessions
+following it. The default, `always`, wakes them. `onFailure` delivers the
+success to their inbox as `fyi` instead, and only a non-zero exit wakes them.
 
 Manage durable cron jobs on the daemon — run a command, spawn an agent, or
 re-prompt a live session on a schedule. Jobs persist to
@@ -68,13 +72,14 @@ next run.
 | `--options-json <json\|@file>` | — | Extra `agent_start` spawn fields beyond the discrete flags (agent kind only). Inline JSON or `@<file>`. Discrete flags (`--cwd`, `--model`, `--adapter`) win on collision. A `kind` key is refused. |
 | `--timeout-ms <duration>` | — | Command timeout (command kind). Bare integer or explicit `ms` suffix only; `s`/`m`/`h` are rejected because the flag name already declares milliseconds. |
 | `--label <text>` | — | Human-readable label, shown by `list`. |
+| `--notify <mode>` | `always` | `always` wakes followers on success; `onFailure` makes a successful command run an `fyi` inbox entry and only a non-zero exit wakes. |
 | `--once` | `false` | Fire once, then deactivate. |
 | `--json` | `false` | Emit the created job as JSON. |
 
 ### `list`
 
 Lists every job via `GET /cron` — label, schedule, recurring/one-shot,
-active/inactive, next run, last run, and last result.
+active/inactive, notify mode, next run, last run, and last result.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -103,6 +108,10 @@ it records `lastResult`, and on a `--once` job it **consumes the single fire**
 ```bash
 # One-shot smoke test a minute from now
 agentproto cron add --schedule "* * * * *" --command echo --args hello --once
+
+# A quiet health check: success is fyi, only a failure wakes followers
+agentproto cron add --schedule "*/30 * * * *" --command curl --args -fsS http://localhost:8080/health \
+  --notify onFailure
 
 # Weekday-morning standup — a fresh agent session each time
 agentproto cron add --schedule "0 9 * * 1-5" \

@@ -455,3 +455,94 @@ describe("cron_create schema — agent action is agent_start's own shape", () =>
     expect(dispatchTool).toHaveBeenCalledWith("agent_start", { ...fields, origin: "cron:cron_legacy" })
   })
 })
+
+describe("cron notify", () => {
+  it("cron_create persists notify and the compact cron_list shows it", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "*/30 * * * *",
+      notify: "onFailure",
+      action: { kind: "command", command: "echo" },
+    })
+    expect(created.isError).toBe(false)
+    const { jobId } = JSON.parse(created.text) as { jobId: string }
+    expect(scheduler.get(jobId)?.notify).toBe("onFailure")
+
+    const listed = await call(client, "cron_list", {})
+    expect(listed.isError).toBe(false)
+    const { jobs } = JSON.parse(listed.text) as { jobs: Array<{ id: string; notify?: string }> }
+    expect(jobs.find(j => j.id === jobId)?.notify).toBe("onFailure")
+  })
+
+  it("defaults notify to always, and cron_update can set and clear it", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "*/30 * * * *",
+      action: { kind: "command", command: "echo" },
+    })
+    const { jobId } = JSON.parse(created.text) as { jobId: string }
+    const before = await call(client, "cron_list", {})
+    const beforeJobs = JSON.parse(before.text) as { jobs: Array<{ id: string; notify?: string }> }
+    expect(beforeJobs.jobs.find(j => j.id === jobId)?.notify).toBe("always")
+
+    const updated = await call(client, "cron_update", { jobId, notify: "onFailure" })
+    expect(updated.isError).toBe(false)
+    expect(JSON.parse(updated.text)).toMatchObject({ notify: "onFailure" })
+
+    const cleared = await call(client, "cron_update", { jobId, notify: null })
+    expect(cleared.isError).toBe(false)
+    expect(scheduler.get(jobId)?.notify).toBeUndefined()
+  })
+
+  it("rejects an invalid notify on create and update", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler)
+    const created = await call(client, "cron_create", {
+      schedule: "*/30 * * * *",
+      notify: "sometimes",
+      action: { kind: "command", command: "echo" },
+    })
+    expect(created.isError).toBe(true)
+    expect(scheduler.list()).toHaveLength(0)
+
+    const ok = await call(client, "cron_create", {
+      schedule: "*/30 * * * *",
+      action: { kind: "command", command: "echo" },
+    })
+    const { jobId } = JSON.parse(ok.text) as { jobId: string }
+    const badUpdate = await call(client, "cron_update", { jobId, notify: "sometimes" })
+    expect(badUpdate.isError).toBe(true)
+    expect(scheduler.get(jobId)?.notify).toBeUndefined()
+  })
+
+  it("loads a persisted legacy job without notify unchanged alongside one that has it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cron-parity-notify-"))
+    tmpDirs.push(dir)
+    const persistPath = join(dir, "cron-jobs.json")
+    const legacy = {
+      id: "cron_legacy_notify",
+      schedule: "0 9 * * 1-5",
+      recurring: true,
+      active: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      action: { kind: "command", command: "echo" },
+    }
+    const modern = {
+      ...legacy,
+      id: "cron_modern_notify",
+      notify: "onFailure",
+    }
+    writeFileSync(persistPath, JSON.stringify([legacy, modern]))
+    const { scheduler } = makeScheduler({ persistPath })
+    expect(scheduler.get("cron_legacy_notify")).toEqual(legacy)
+    expect(scheduler.get("cron_modern_notify")?.notify).toBe("onFailure")
+
+    const client = await buildClient(scheduler)
+    const listed = await call(client, "cron_list", {})
+    const { jobs } = JSON.parse(listed.text) as { jobs: Array<{ id: string; notify?: string }> }
+    expect(jobs.find(j => j.id === "cron_legacy_notify")?.notify).toBe("always")
+    expect(jobs.find(j => j.id === "cron_modern_notify")?.notify).toBe("onFailure")
+  })
+})

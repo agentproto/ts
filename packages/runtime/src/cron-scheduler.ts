@@ -61,6 +61,22 @@ import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-sc
 
 // ── Public types ─────────────────────────────────────────────────────
 
+/** How loudly a job's SUCCESS is heard by its followers. Absent means
+ *  `always` (the pre-existing behaviour). `onFailure` downgrades a successful
+ *  `kind:"command"` run to an fyi digest; a failing command still crashes and
+ *  wakes. */
+export type CronNotify = "always" | "onFailure"
+
+export function isCronNotify(value: unknown): value is CronNotify {
+  return value === "always" || value === "onFailure"
+}
+
+function normalizeCronNotify(value: unknown): CronNotify | undefined {
+  if (value === undefined || value === null) return undefined
+  if (isCronNotify(value)) return value
+  throw new Error(`cron notify must be "always" or "onFailure" (got ${JSON.stringify(value)})`)
+}
+
 export type CronAction =
   | {
       kind: "command"
@@ -254,6 +270,9 @@ export interface CronJob {
   /** When false, the job fires once then deactivates (one-shot). Default true. */
   recurring: boolean
   action: CronAction
+  /** How loudly this job's success is heard: absent means `always`. Only a
+   *  `kind:"command"` job's successful exit uses it. */
+  notify?: CronNotify
   createdAt: string
   /** When false, the job will not fire. */
   active: boolean
@@ -338,6 +357,8 @@ export interface CronUpdate {
   recurring?: boolean
   active?: boolean
   action?: CronAction
+  /** Set/replace; `null` clears it (back to `always`). */
+  notify?: CronNotify | null
   maxConsecutiveFailures?: number
   runTimeoutMs?: number
   /** Set/replace the expiry; `null` clears it (the job never expires). */
@@ -427,6 +448,8 @@ export interface CronScheduler {
     timezone?: string
     recurring?: boolean
     action: CronAction
+    /** Omitted means `always`. See {@link CronJob.notify}. */
+    notify?: CronNotify
     maxConsecutiveFailures?: number
     runTimeoutMs?: number
     /** Creating session id — see {@link CronJob.ownedBy}. Defaults the job's
@@ -581,6 +604,9 @@ function loadJobs(persistPath: string): Map<string, JobState> {
     // Ensure required fields have defaults for forward-compat.
     job.recurring = job.recurring ?? true
     job.active = job.active ?? true
+    // A persisted unknown notify value falls back to the absent (= always)
+    // meaning instead of making the whole job file suspect.
+    if (job.notify !== undefined && !isCronNotify(job.notify)) job.notify = undefined
     if (job.finished === undefined && !job.recurring && !job.active && !!job.lastRunAt) {
       job.finished = true
     }
@@ -1298,8 +1324,9 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action: rawAction, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
+    async create({ label, schedule, timezone, recurring = true, action: rawAction, notify: rawNotify, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
       assertCronActionAllowed(rawAction)
+      const notify = normalizeCronNotify(rawNotify)
       // Normalizes the `agent:<label>` spelling into the action's `agent`
       // field and refuses an action that names two (or zero) targets.
       const action = normalizeCronAction(rawAction)
@@ -1327,6 +1354,7 @@ export function createCronScheduler(opts: {
         ...(timezone ? { timezone } : {}),
         recurring,
         action,
+        ...(notify ? { notify } : {}),
         createdAt: createdAt.toISOString(),
         active: true,
         finished: false,
@@ -1370,6 +1398,8 @@ export function createCronScheduler(opts: {
       if (!state) throw new Error(`cron job not found: ${id}`)
       if (state.running) throw new Error(`cron job is running: ${id}`)
       const job = state.job
+      const notify =
+        patch.notify === undefined ? job.notify : (normalizeCronNotify(patch.notify) ?? undefined)
       const schedule = patch.schedule ?? job.schedule
       const timezone = patch.timezone === null ? undefined : (patch.timezone ?? job.timezone)
       const action = normalizeCronAction(patch.action ?? job.action)
@@ -1388,6 +1418,7 @@ export function createCronScheduler(opts: {
       job.schedule = schedule
       job.timezone = timezone
       job.action = action
+      job.notify = notify
       job.recurring = patch.recurring ?? job.recurring
       if (patch.label !== undefined) job.label = patch.label === null ? undefined : patch.label
       if (patch.maxConsecutiveFailures !== undefined) job.maxConsecutiveFailures = patch.maxConsecutiveFailures
