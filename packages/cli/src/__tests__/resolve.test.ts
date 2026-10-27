@@ -695,3 +695,56 @@ describe("_looksLikeStaleNegativePackageJsonCacheForTests — manual-walk gate",
     ).toBe(false)
   })
 })
+
+/**
+ * AIP-70 renamed "adapter" to "harness". Discovery (the `@agentproto` scope
+ * walkers behind `listInstalledAdapters`) accepts BOTH prefixes additively:
+ * an `@agentproto/harness-<slug>` dir is found, the bare `@agentproto/harness`
+ * package (no dash suffix) is never matched, and both `adapter-dup` and
+ * `harness-dup` is listed once.
+ */
+describe("listInstalledAdapters — harness- prefix alias", () => {
+  it("discovers @agentproto/harness-<slug> dirs alongside adapter-<slug>, ignoring the bare harness package", { timeout: 30_000 }, async () => {
+    _resetLastKnownGoodForTests()
+    const root = await fs.mkdtemp(join(tmpdir(), "agentproto-harness-discovery-"))
+    const restoreRoot = _setWorkspaceRootForTests(root)
+    try {
+      const nm = join(root, "node_modules", "@agentproto")
+      for (const name of [
+        "harness-foo",
+        "adapter-bar",
+        "harness", // bare, must never match
+        "adapter-dup",
+        "harness-dup",
+      ]) {
+        await fs.mkdir(join(nm, name), { recursive: true })
+        await fs.writeFile(
+          join(nm, name, "package.json"),
+          JSON.stringify({ name: `@agentproto/${name}`, version: "0.0.1", type: "module" })
+        )
+      }
+      for (const slug of ["foo", "bar", "dup"]) {
+        const distDir = join(root, "adapters", slug, "dist")
+        await fs.mkdir(distDir, { recursive: true })
+        await fs.writeFile(
+          join(distDir, "index.mjs"),
+          `export const handle = { name: "${slug}", protocol: "print", version: "0.0.1" };\n`
+        )
+      }
+
+      const adapters = await listInstalledAdapters({ searchRoot: root })
+      const slugs = adapters.map((a) => a.slug)
+
+      expect(slugs).toContain("foo")
+      expect(slugs).toContain("bar")
+      expect(slugs).toContain("dup")
+      expect(slugs).not.toContain("harness")
+
+      // The same slug cannot be listed twice when both prefixes exist on disk.
+      expect(slugs.filter((slug) => slug === "dup")).toHaveLength(1)
+    } finally {
+      restoreRoot()
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
+})

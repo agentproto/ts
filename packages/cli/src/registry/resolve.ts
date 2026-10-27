@@ -35,6 +35,7 @@ import {
   makeAdapterResolver,
   makeAdapterLister,
   makeSetupLedger,
+  adapterSlugFromDirEntry,
   collectAgentprotoNamespaceRoots,
   discoverCapabilities,
   type AdapterHandle,
@@ -954,9 +955,12 @@ export async function listInstalledAdapters(opts?: {
     } catch {
       continue
     }
-    for (const entry of entries) {
-      if (!entry.startsWith("adapter-")) continue
-      const slug = entry.slice("adapter-".length)
+    // Canonical `harness-` spelling must win over `adapter-` for the same
+    // slug even when it sorts later, so scan harness- prefixed entries first.
+    const rank = (entry: string) => (entry.startsWith("harness-") ? 0 : 1)
+    for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
+      const slug = adapterSlugFromDirEntry(entry)
+      if (slug === null) continue
       if (seen.has(slug)) continue
       seen.add(slug)
       try {
@@ -1204,9 +1208,12 @@ async function discoverExtraHandles(
   for (const root of roots) {
     let entries: string[] = []
     try { entries = await fs.readdir(root) } catch { continue }
-    for (const entry of entries) {
-      if (!entry.startsWith("adapter-")) continue
-      const slug = entry.slice("adapter-".length)
+    // Canonical `harness-` spelling must win over `adapter-` for the same
+    // slug even when it sorts later, so scan harness- prefixed entries first.
+    const rank = (entry: string) => (entry.startsWith("harness-") ? 0 : 1)
+    for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
+      const slug = adapterSlugFromDirEntry(entry)
+      if (slug === null) continue
       if (seen.has(slug)) continue
       seen.add(slug)
       try {

@@ -10,7 +10,9 @@
  * had no ngrok case at all, while the adapter half spoke slugs. They never
  * reconciled, so ngrok was listable-but-not-creatable. Routing everything
  * through one registry collapses that: a built-in OR a third-party
- * `@agentproto/adapter-<slug>` / `@<scope>/agentproto-adapter-<slug>` provider
+ * `@agentproto/adapter-<slug>` / `@agentproto/harness-<slug>` /
+ * `@<scope>/agentproto-adapter-<slug>` /
+ * `@<scope>/agentproto-harness-<slug>` provider
  * resolves the same way and works end to end.
  */
 
