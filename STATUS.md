@@ -16,175 +16,175 @@ Each package appears exactly once; tiers are applied in the order above.
 
 ## Package table
 
-Package | Path | Version | Tier | Reason (one line) |
-|---|---|---|---|---|
-@agentproto/adapter-antigravity | `adapters/antigravity` | 0.3.10 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-browser | `adapters/browser` | 0.8.0 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-browser-camofox | `adapters/browser-camofox` | 0.2.4 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-browser-chrome | `adapters/browser-chrome` | 0.7.0 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-browser-chromium | `adapters/browser-chromium` | 0.2.4 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-claude-code | `adapters/claude-code` | 2.5.15 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-claude-code-cloud | `adapters/claude-code-cloud` | 0.3.0 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-claude-sdk | `adapters/claude-sdk` | 0.7.30 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-code-brain-gbrain | `adapters/code-brain-gbrain` | 0.2.12 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-codex | `adapters/codex` | 2.0.31 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-copilot-cli | `adapters/copilot-cli` | 0.3.10 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-gemini | `adapters/gemini` | 0.2.32 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-grok-cli | `adapters/grok-cli` | 0.2.26 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-hermes | `adapters/hermes` | 0.5.6 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-jcode | `adapters/jcode` | 0.4.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-knowledge-corpus | `adapters/knowledge-corpus` | 0.4.4 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-knowledge-files | `adapters/knowledge-files` | 0.3.4 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-knowledge-gbrain-doc | `adapters/knowledge-gbrain-doc` | 0.3.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-knowledge-qdrant | `adapters/knowledge-qdrant` | 0.3.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-mastra-agent | `adapters/mastra-agent` | 0.7.44 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-mastracode | `adapters/mastracode` | 0.4.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-mastracode-inprocess | `adapters/mastracode-inprocess` | 0.5.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-openclaw | `adapters/openclaw` | 0.1.38 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-opencode | `adapters/opencode` | 1.9.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-pi | `adapters/pi` | 0.5.3 | adapters | under adapters/** — AIP-45 adapter or tool projection |
-@agentproto/adapter-ai-sdk | `adapters/ai-sdk` | 0.1.14 | archived | dead: zero workspace dependents (override list) |
-@agentproto/adapter-mastra | `adapters/mastra` | 0.1.16 | archived | dead: zero workspace dependents (override list) |
-@agentproto/adapter-kit | `packages/adapter-kit` | 0.3.10 | archived | dead: zero workspace dependents (override list) |
-@agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
-@agentproto/app-kit | `packages/app-kit` | 2.3.0 | archived | dead: zero workspace dependents (override list) |
-@agentproto/catalog | `packages/catalog` | 0.1.2 | archived | dead: zero workspace dependents (override list) |
-@agentproto/define-doctype | `packages/define-doctype` | 0.1.4 | archived | dead: zero workspace dependents (override list) |
-@agentproto/driver-agent-cli | `packages/driver/agent-cli` | 2.15.0 | archived | dead: zero workspace dependents (override list) |
-@agentproto/driver-sdk | `packages/driver/sdk` | 0.1.13 | archived | dead: zero workspace dependents (override list) |
-@agentproto/egress | `packages/egress` | 0.1.18 | archived | dead: zero workspace dependents (override list) |
-@agentproto/identity | `packages/identity` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
-@agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | archived | dead: zero workspace dependents (override list) |
-@agentproto/mastra | `packages/mastra` | 0.2.20 | archived | dead: zero workspace dependents (override list) |
-@agentproto/pair-client | `packages/pair-client` | 1.0.5 | archived | dead: zero workspace dependents (override list) |
-@agentproto/redaction | `packages/redaction` | 0.2.4 | archived | dead: zero workspace dependents (override list) |
-@agentproto/role-catalog | `packages/role-catalog` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
-@agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | 0.1.22 | archived | dead: zero workspace dependents (override list) |
-@agentproto/a2a | `packages/a2a` | 0.2.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/acp | `packages/acp` | 0.11.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/agencies | `packages/agencies/core` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
-@agentproto/agencies-engine | `packages/agencies/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
-@agentproto/agencies-mastra | `packages/agencies/mastra` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
-@agentproto/agent-runtime | `packages/agent-runtime` | 0.1.6 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/app | `packages/app` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/app-client | `packages/app-client` | 0.4.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/app-config | `packages/app-config` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/apps | `packages/apps` | 0.24.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/auth | `packages/auth` | 1.3.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/batch | `packages/batch` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/bridge | `packages/bridge` | 0.2.20 | core | product runtime package consumed by the runtime/cli |
-@agentproto/browser-process | `packages/browser-process` | 0.2.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/browser-profiles | `packages/browser-profiles` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/catalog-sync | `packages/catalog-sync` | 0.8.10 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/clerk | `packages/clerk` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/cli | `packages/cli` | 1.30.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/cli-exec | `packages/cli-exec` | 0.1.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/cloud-agent | `packages/cloud-agent` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/code-brain | `packages/code-brain` | 0.3.9 | core | product runtime package consumed by the runtime/cli |
-@agentproto/command-sandbox | `packages/command-sandbox` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/computer-api | `packages/computer-api` | 0.3.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/connector | `packages/connector` | 0.1.22 | core | product runtime package consumed by the runtime/cli |
-@agentproto/corpus | `packages/corpus` | 0.8.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/corpus-cli | `packages/corpus-cli` | 0.11.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/corpus-presets | `packages/corpus-presets` | 0.2.16 | core | product runtime package consumed by the runtime/cli |
-create-agentproto-app | `packages/create-agentproto-app` | 0.3.8 | core | product runtime package consumed by the runtime/cli |
-@agentproto/decision | `packages/decision` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package consumed by the runtime/cli |
-@agentproto/driver-browser | `packages/driver/browser` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/driver-cli | `packages/driver/cli` | 0.2.5 | core | product runtime package consumed by the runtime/cli |
-@agentproto/driver | `packages/driver/core` | 0.3.3 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/driver-http | `packages/driver/http` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
-@agentproto/driver-mcp | `packages/driver/mcp` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
-@agentproto/eval | `packages/eval` | 0.3.14 | core | product runtime package consumed by the runtime/cli |
-@agentproto/eval-reporters | `packages/eval-reporters` | 0.2.28 | core | product runtime package consumed by the runtime/cli |
-@agentproto/events-channel | `packages/events-channel` | 0.1.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/governance-engine | `packages/governance/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
-@agentproto/harness | `packages/harness` | 2.15.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/inference-endpoint | `packages/inference-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
-@agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
-@agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/lifecycle | `packages/lifecycle` | 0.1.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/mcp-app-host | `packages/mcp-app-host` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/mcp-server | `packages/mcp-server` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/model-catalog | `packages/model-catalog` | 0.13.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/model-intel | `packages/model-intel` | 0.3.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/model-routing | `packages/model-routing` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/pair-page | `packages/pair-page` | 0.0.14 | core | product runtime package consumed by the runtime/cli |
-@agentproto/pairing | `packages/pairing` | 1.0.5 | core | product runtime package consumed by the runtime/cli |
-@agentproto/pairing-host | `packages/pairing-host` | 0.2.10 | core | product runtime package consumed by the runtime/cli |
-@agentproto/plugin | `packages/plugin` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/plugin-local-browser | `packages/plugin-local-browser` | 0.3.6 | core | product runtime package consumed by the runtime/cli |
-@agentproto/pr-outcome | `packages/pr-outcome` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/processor | `packages/processor` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/product | `packages/product` | 1.0.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/provider-kit | `packages/provider-kit` | 0.4.7 | core | product runtime package consumed by the runtime/cli |
-@agentproto/provider-presets | `packages/provider-presets` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/providers-store | `packages/providers-store` | 0.4.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/quota | `packages/quota` | 0.0.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/ref | `packages/ref` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/registry | `packages/registry` | 0.1.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/relay | `packages/relay` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
-@agentproto/rendezvous | `packages/rendezvous` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/review | `packages/review` | 0.6.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/review-pack-core | `packages/review-pack-core` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/role | `packages/role` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
-@agentproto/run | `packages/run` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/runtime | `packages/runtime` | 5.29.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/runtime-profile-standard | `packages/runtime-profile-standard` | 0.1.4 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/sandbox | `packages/sandbox` | 0.13.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/sandbox-box | `packages/sandbox-box` | 0.2.36 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/sandbox-computer | `packages/sandbox-computer` | 0.4.0 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/sandbox-e2b | `packages/sandbox-e2b` | 0.9.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/sandbox-instabox | `packages/sandbox-instabox` | 0.2.3 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/secrets | `packages/secrets` | 2.1.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/sentinel | `packages/sentinel` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/session-presets | `packages/session-presets` | 0.6.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/skill-pack-agentproto | `packages/skill-pack-agentproto` | 0.9.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/skill-pack-agentpush | `packages/skill-pack-agentpush` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/skill-pack-bureau | `packages/skill-pack-bureau` | 0.3.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/storage-github | `packages/storage-github` | 0.2.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/telemetry | `packages/telemetry` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/telemetry-langfuse | `packages/telemetry-langfuse` | 0.2.26 | core | product runtime package consumed by the runtime/cli |
-@agentproto/tool-cli | `packages/tool-cli` | 0.2.10 | core | product runtime package consumed by the runtime/cli |
-@agentproto/tooling | `packages/tooling` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/transcript-fixtures | `packages/transcript-fixtures` | 0.3.2 | core | product runtime package consumed by the runtime/cli |
-agentproto-vscode | `packages/vscode` | 0.25.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/workflow-loader | `packages/workflow-loader` | 0.2.9 | core | product runtime package consumed by the runtime/cli |
-@agentproto/workflow-mastra | `packages/workflow-mastra` | 0.2.12 | core | product runtime package consumed by the runtime/cli |
-@agentproto/workflow-runtime | `packages/workflow-runtime` | 0.20.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
-@agentproto/workspace-brain | `packages/workspace-brain` | 0.5.4 | core | product runtime package consumed by the runtime/cli |
-@agentproto/worktree | `packages/worktree` | 0.19.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/worktree-agent-example | `packages/worktree-agent-example` | 0.0.37 | core | product runtime package consumed by the runtime/cli |
-@agentproto/action | `packages/action` | 0.1.7 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/agency | `packages/agency` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/agent | `packages/agent` | 0.4.1 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/assembly | `packages/assembly` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/canvakit | `packages/canvakit` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/code | `packages/code` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/collection | `packages/collection` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/company | `packages/company` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/design | `packages/design` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/doctype | `packages/doctype` | 0.1.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/extension | `packages/extension` | 0.2.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/governance | `packages/governance/core` | 0.1.6 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/intent | `packages/intent` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/io | `packages/io` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/knowledge | `packages/knowledge` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/lesson | `packages/lesson` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/manifest | `packages/manifest` | 0.2.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/office | `packages/office` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/operator | `packages/operator` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/pack | `packages/pack` | 0.2.6 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/persona | `packages/persona` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/playbook | `packages/playbook` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/policy | `packages/policy` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/routine | `packages/routine` | 0.3.3 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/runner | `packages/runner` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/skill | `packages/skill` | 0.2.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/storage | `packages/storage` | 0.3.1 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/tool | `packages/tool` | 0.5.2 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/wallet | `packages/wallet` | 0.2.0 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/work | `packages/work` | 0.2.0 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/workflow | `packages/workflow` | 0.7.2 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/workspace | `packages/workspace` | 1.0.2 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+Package | Path | Tier | Reason (one line) |
+|---|---|---|---|
+@agentproto/adapter-antigravity | `adapters/antigravity` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-browser | `adapters/browser` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-browser-camofox | `adapters/browser-camofox` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-browser-chrome | `adapters/browser-chrome` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-browser-chromium | `adapters/browser-chromium` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-claude-code | `adapters/claude-code` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-claude-code-cloud | `adapters/claude-code-cloud` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-claude-sdk | `adapters/claude-sdk` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-code-brain-gbrain | `adapters/code-brain-gbrain` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-codex | `adapters/codex` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-copilot-cli | `adapters/copilot-cli` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-gemini | `adapters/gemini` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-grok-cli | `adapters/grok-cli` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-hermes | `adapters/hermes` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-jcode | `adapters/jcode` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-knowledge-corpus | `adapters/knowledge-corpus` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-knowledge-files | `adapters/knowledge-files` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-knowledge-gbrain-doc | `adapters/knowledge-gbrain-doc` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-knowledge-qdrant | `adapters/knowledge-qdrant` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-mastra-agent | `adapters/mastra-agent` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-mastracode | `adapters/mastracode` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-mastracode-inprocess | `adapters/mastracode-inprocess` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-openclaw | `adapters/openclaw` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-opencode | `adapters/opencode` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-pi | `adapters/pi` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-ai-sdk | `adapters/ai-sdk` | archived | dead: zero workspace dependents (override list) |
+@agentproto/adapter-mastra | `adapters/mastra` | archived | dead: zero workspace dependents (override list) |
+@agentproto/adapter-kit | `packages/adapter-kit` | archived | dead: zero workspace dependents (override list) |
+@agentproto/agency-v2 | `packages/agency-v2` | archived | dead: zero workspace dependents (override list) |
+@agentproto/app-kit | `packages/app-kit` | archived | dead: zero workspace dependents (override list) |
+@agentproto/catalog | `packages/catalog` | archived | dead: zero workspace dependents (override list) |
+@agentproto/define-doctype | `packages/define-doctype` | archived | dead: zero workspace dependents (override list) |
+@agentproto/driver-agent-cli | `packages/driver/agent-cli` | archived | dead: zero workspace dependents (override list) |
+@agentproto/driver-sdk | `packages/driver/sdk` | archived | dead: zero workspace dependents (override list) |
+@agentproto/egress | `packages/egress` | archived | dead: zero workspace dependents (override list) |
+@agentproto/identity | `packages/identity` | archived | dead: zero workspace dependents (override list) |
+@agentproto/llm-endpoint | `packages/llm-endpoint` | archived | dead: zero workspace dependents (override list) |
+@agentproto/mastra | `packages/mastra` | archived | dead: zero workspace dependents (override list) |
+@agentproto/pair-client | `packages/pair-client` | archived | dead: zero workspace dependents (override list) |
+@agentproto/redaction | `packages/redaction` | archived | dead: zero workspace dependents (override list) |
+@agentproto/role-catalog | `packages/role-catalog` | archived | dead: zero workspace dependents (override list) |
+@agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | archived | dead: zero workspace dependents (override list) |
+@agentproto/a2a | `packages/a2a` | core | product runtime package consumed by the runtime/cli |
+@agentproto/acp | `packages/acp` | core | product runtime package consumed by the runtime/cli |
+@agentproto/agencies | `packages/agencies/core` | core | product runtime package consumed by the runtime/cli |
+@agentproto/agencies-engine | `packages/agencies/engine` | core | product runtime package consumed by the runtime/cli |
+@agentproto/agencies-mastra | `packages/agencies/mastra` | core | product runtime package consumed by the runtime/cli |
+@agentproto/agent-runtime | `packages/agent-runtime` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+agentproto | `packages/agentproto-placeholder` | core | product runtime package consumed by the runtime/cli |
+@agentproto/app | `packages/app` | core | product runtime package consumed by the runtime/cli |
+@agentproto/app-client | `packages/app-client` | core | product runtime package consumed by the runtime/cli |
+@agentproto/app-config | `packages/app-config` | core | product runtime package consumed by the runtime/cli |
+@agentproto/apps | `packages/apps` | core | product runtime package consumed by the runtime/cli |
+@agentproto/auth | `packages/auth` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/batch | `packages/batch` | core | product runtime package consumed by the runtime/cli |
+@agentproto/bridge | `packages/bridge` | core | product runtime package consumed by the runtime/cli |
+@agentproto/browser-process | `packages/browser-process` | core | product runtime package consumed by the runtime/cli |
+@agentproto/browser-profiles | `packages/browser-profiles` | core | product runtime package consumed by the runtime/cli |
+@agentproto/catalog-sync | `packages/catalog-sync` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/clerk | `packages/clerk` | core | product runtime package consumed by the runtime/cli |
+@agentproto/cli | `packages/cli` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/cli-exec | `packages/cli-exec` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/cloud-agent | `packages/cloud-agent` | core | product runtime package consumed by the runtime/cli |
+@agentproto/code-brain | `packages/code-brain` | core | product runtime package consumed by the runtime/cli |
+@agentproto/command-sandbox | `packages/command-sandbox` | core | product runtime package consumed by the runtime/cli |
+@agentproto/computer-api | `packages/computer-api` | core | product runtime package consumed by the runtime/cli |
+@agentproto/connector | `packages/connector` | core | product runtime package consumed by the runtime/cli |
+@agentproto/corpus | `packages/corpus` | core | product runtime package consumed by the runtime/cli |
+@agentproto/corpus-cli | `packages/corpus-cli` | core | product runtime package consumed by the runtime/cli |
+@agentproto/corpus-presets | `packages/corpus-presets` | core | product runtime package consumed by the runtime/cli |
+create-agentproto-app | `packages/create-agentproto-app` | core | product runtime package consumed by the runtime/cli |
+@agentproto/decision | `packages/decision` | core | product runtime package consumed by the runtime/cli |
+agentproto-desktop | `packages/desktop` | core | product runtime package consumed by the runtime/cli |
+@agentproto/driver-browser | `packages/driver/browser` | core | product runtime package consumed by the runtime/cli |
+@agentproto/driver-cli | `packages/driver/cli` | core | product runtime package consumed by the runtime/cli |
+@agentproto/driver | `packages/driver/core` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/driver-http | `packages/driver/http` | core | product runtime package consumed by the runtime/cli |
+@agentproto/driver-mcp | `packages/driver/mcp` | core | product runtime package consumed by the runtime/cli |
+@agentproto/eval | `packages/eval` | core | product runtime package consumed by the runtime/cli |
+@agentproto/eval-reporters | `packages/eval-reporters` | core | product runtime package consumed by the runtime/cli |
+@agentproto/events-channel | `packages/events-channel` | core | product runtime package consumed by the runtime/cli |
+@agentproto/governance-engine | `packages/governance/engine` | core | product runtime package consumed by the runtime/cli |
+@agentproto/harness | `packages/harness` | core | product runtime package consumed by the runtime/cli |
+@agentproto/inference-endpoint | `packages/inference-endpoint` | core | product runtime package consumed by the runtime/cli |
+@agentproto/knowledge-cascade | `packages/knowledge-cascade` | core | product runtime package consumed by the runtime/cli |
+@agentproto/knowledge-engine | `packages/knowledge-engine` | core | product runtime package consumed by the runtime/cli |
+@agentproto/lifecycle | `packages/lifecycle` | core | product runtime package consumed by the runtime/cli |
+@agentproto/mcp-app-host | `packages/mcp-app-host` | core | product runtime package consumed by the runtime/cli |
+@agentproto/mcp-server | `packages/mcp-server` | core | product runtime package consumed by the runtime/cli |
+@agentproto/model-catalog | `packages/model-catalog` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/model-intel | `packages/model-intel` | core | product runtime package consumed by the runtime/cli |
+@agentproto/model-routing | `packages/model-routing` | core | product runtime package consumed by the runtime/cli |
+@agentproto/pair-page | `packages/pair-page` | core | product runtime package consumed by the runtime/cli |
+@agentproto/pairing | `packages/pairing` | core | product runtime package consumed by the runtime/cli |
+@agentproto/pairing-host | `packages/pairing-host` | core | product runtime package consumed by the runtime/cli |
+@agentproto/plugin | `packages/plugin` | core | product runtime package consumed by the runtime/cli |
+@agentproto/plugin-local-browser | `packages/plugin-local-browser` | core | product runtime package consumed by the runtime/cli |
+@agentproto/pr-outcome | `packages/pr-outcome` | core | product runtime package consumed by the runtime/cli |
+@agentproto/processor | `packages/processor` | core | product runtime package consumed by the runtime/cli |
+@agentproto/product | `packages/product` | core | product runtime package consumed by the runtime/cli |
+@agentproto/provider-kit | `packages/provider-kit` | core | product runtime package consumed by the runtime/cli |
+@agentproto/provider-presets | `packages/provider-presets` | core | product runtime package consumed by the runtime/cli |
+@agentproto/providers-store | `packages/providers-store` | core | product runtime package consumed by the runtime/cli |
+@agentproto/quota | `packages/quota` | core | product runtime package consumed by the runtime/cli |
+@agentproto/ref | `packages/ref` | core | product runtime package consumed by the runtime/cli |
+@agentproto/registry | `packages/registry` | core | product runtime package consumed by the runtime/cli |
+@agentproto/relay | `packages/relay` | core | product runtime package consumed by the runtime/cli |
+@agentproto/rendezvous | `packages/rendezvous` | core | product runtime package consumed by the runtime/cli |
+@agentproto/review | `packages/review` | core | product runtime package consumed by the runtime/cli |
+@agentproto/review-pack-core | `packages/review-pack-core` | core | product runtime package consumed by the runtime/cli |
+@agentproto/role | `packages/role` | core | product runtime package consumed by the runtime/cli |
+@agentproto/run | `packages/run` | core | product runtime package consumed by the runtime/cli |
+@agentproto/runtime | `packages/runtime` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/runtime-profile-standard | `packages/runtime-profile-standard` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sandbox | `packages/sandbox` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sandbox-box | `packages/sandbox-box` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sandbox-computer | `packages/sandbox-computer` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sandbox-e2b | `packages/sandbox-e2b` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/sandbox-instabox | `packages/sandbox-instabox` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/secrets | `packages/secrets` | core | product runtime package consumed by the runtime/cli |
+@agentproto/sentinel | `packages/sentinel` | core | product runtime package consumed by the runtime/cli |
+@agentproto/session-presets | `packages/session-presets` | core | product runtime package consumed by the runtime/cli |
+@agentproto/skill-pack-agentproto | `packages/skill-pack-agentproto` | core | product runtime package consumed by the runtime/cli |
+@agentproto/skill-pack-agentpush | `packages/skill-pack-agentpush` | core | product runtime package consumed by the runtime/cli |
+@agentproto/skill-pack-bureau | `packages/skill-pack-bureau` | core | product runtime package consumed by the runtime/cli |
+@agentproto/storage-github | `packages/storage-github` | core | product runtime package consumed by the runtime/cli |
+@agentproto/telemetry | `packages/telemetry` | core | product runtime package consumed by the runtime/cli |
+@agentproto/telemetry-langfuse | `packages/telemetry-langfuse` | core | product runtime package consumed by the runtime/cli |
+@agentproto/tool-cli | `packages/tool-cli` | core | product runtime package consumed by the runtime/cli |
+@agentproto/tooling | `packages/tooling` | core | product runtime package consumed by the runtime/cli |
+@agentproto/transcript-fixtures | `packages/transcript-fixtures` | core | product runtime package consumed by the runtime/cli |
+agentproto-vscode | `packages/vscode` | core | product runtime package consumed by the runtime/cli |
+@agentproto/workflow-loader | `packages/workflow-loader` | core | product runtime package consumed by the runtime/cli |
+@agentproto/workflow-mastra | `packages/workflow-mastra` | core | product runtime package consumed by the runtime/cli |
+@agentproto/workflow-runtime | `packages/workflow-runtime` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
+@agentproto/workspace-brain | `packages/workspace-brain` | core | product runtime package consumed by the runtime/cli |
+@agentproto/worktree | `packages/worktree` | core | product runtime package consumed by the runtime/cli |
+@agentproto/worktree-agent-example | `packages/worktree-agent-example` | core | product runtime package consumed by the runtime/cli |
+@agentproto/action | `packages/action` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/agency | `packages/agency` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/agent | `packages/agent` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/assembly | `packages/assembly` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/canvakit | `packages/canvakit` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/code | `packages/code` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/collection | `packages/collection` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/company | `packages/company` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/design | `packages/design` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/doctype | `packages/doctype` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/extension | `packages/extension` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/governance | `packages/governance/core` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/intent | `packages/intent` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/io | `packages/io` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/knowledge | `packages/knowledge` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/lesson | `packages/lesson` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/manifest | `packages/manifest` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/office | `packages/office` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/operator | `packages/operator` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/pack | `packages/pack` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/persona | `packages/persona` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/playbook | `packages/playbook` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/policy | `packages/policy` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/routine | `packages/routine` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/runner | `packages/runner` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/skill | `packages/skill` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/storage | `packages/storage` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/tool | `packages/tool` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/wallet | `packages/wallet` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/work | `packages/work` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/workflow | `packages/workflow` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/workspace | `packages/workspace` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
