@@ -929,8 +929,14 @@ export interface AgentCliDefinition {
    * is pointed at an empty per-session data home (`<configDir>/auth-data`) so
    * the stored login cannot override the credential the spawn was handed.
    * Never applied to ambient spawns or file-based (external) subscriptions.
+   *
+   * Tool caches known to derive from `env` (pnpm's store under
+   * `$XDG_DATA_HOME`) are linked back to the operator's own location on an
+   * unconfined spawn (see `shared-tool-caches.ts`). `disposable` lists the
+   * CLI's own cache paths under that home (relative to it) that session GC may
+   * delete once the session is dead; never list what a resume reads.
    */
-  credentialDataHome?: { env: string }
+  credentialDataHome?: { env: string; disposable?: string[] }
   /**
    * For a CLI that runs an auxiliary "small model" for background chores
    * (opencode: session titles / summaries) and otherwise picks one itself —

@@ -113,6 +113,16 @@ describe("agentproto sessions gc", () => {
     expect(stdoutChunks.join("")).toContain("would delete 3 session dirs (scanned 40)")
   })
 
+  it("--adapter-caches --dry-run posts the adapter-cache body and prints a dry-run summary", async () => {
+    httpPostJson.mockResolvedValue({ count: 2, paths: 5, scanned: 30, dryRun: true, errors: 0 })
+    const code = await runSessions(["gc", "--adapter-caches", "--dry-run"])
+    expect(code).toBe(0)
+    const [url, body] = httpPostJson.mock.calls[0] as [string, Record<string, unknown>]
+    expect(url).toBe("http://127.0.0.1:18790/sessions/gc")
+    expect(body).toEqual({ adapterCaches: true, dryRun: true })
+    expect(stdoutChunks.join("")).toContain("would prune 5 cache paths in 2 adapter-config dirs (scanned 30)")
+  })
+
   it("--json prints the raw daemon result and still hits the same route", async () => {
     httpPostJson.mockResolvedValue({ mode: "archived", ids: ["a"], count: 1 })
     const code = await runSessions(["gc", "--json"])

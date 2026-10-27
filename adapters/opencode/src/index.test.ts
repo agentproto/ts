@@ -359,7 +359,10 @@ describe("readOpenCodeUsage", () => {
   })
 
   it("declares the credential data home so an engaged credential can't be overridden by opencode's stored console login", () => {
-    expect(opencode.credentialDataHome).toEqual({ env: "XDG_DATA_HOME" })
+    expect(opencode.credentialDataHome?.env).toBe("XDG_DATA_HOME")
+    // GC may drop caches, never the conversation store a resume reloads.
+    expect(opencode.credentialDataHome?.disposable).toEqual(["opencode/snapshot", "opencode/tool-output", "opencode/log"])
+    expect(opencode.credentialDataHome?.disposable?.some(p => p.includes("opencode.db"))).toBe(false)
   })
 
   it("returns null when the session id is not found", async () => {
