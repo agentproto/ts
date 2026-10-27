@@ -708,27 +708,49 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
     _resetLastKnownGoodForTests()
     const root = await fs.mkdtemp(join(tmpdir(), "agentproto-harness-discovery-"))
     const restoreRoot = _setWorkspaceRootForTests(root)
+    // Fake packages live in TWO places by design:
+    // - the scan root (tmp node_modules), so the namespace walker discovers
+    //   them as directory entries, and
+    // - packages/cli's own node_modules, so the `import()` inside
+    //   resolveAdapter can actually reach them (bare-specifier resolution
+    //   walks up from the importing module, not from the scan root).
+    // Each fake package gets a trivial importable dist entry so resolving
+    // never hangs. The bare `harness` no-match probe is scan-root only: the
+    // real @agentproto/harness workspace package is symlinked into
+    // packages/cli/node_modules and must not be touched.
+    const scanNm = join(root, "node_modules", "@agentproto")
+    const importNm = join(process.cwd(), "node_modules", "@agentproto")
+    const scanOnlyNames = ["harness"]
+    const importableNames = [
+      "harness-foo",
+      "adapter-bar",
+      "adapter-dup",
+      "harness-dup",
+    ]
     try {
-      const nm = join(root, "node_modules", "@agentproto")
-      for (const name of [
-        "harness-foo",
-        "adapter-bar",
-        "harness", // bare, must never match
-        "adapter-dup",
-        "harness-dup",
-      ]) {
-        await fs.mkdir(join(nm, name), { recursive: true })
+      for (const name of [...scanOnlyNames, ...importableNames]) {
+        const pkgDir = join(scanNm, name)
+        await fs.mkdir(join(pkgDir, "dist"), { recursive: true })
         await fs.writeFile(
-          join(nm, name, "package.json"),
+          join(pkgDir, "package.json"),
           JSON.stringify({ name: `@agentproto/${name}`, version: "0.0.1", type: "module" })
         )
       }
-      for (const slug of ["foo", "bar", "dup"]) {
-        const distDir = join(root, "adapters", slug, "dist")
-        await fs.mkdir(distDir, { recursive: true })
+      for (const name of importableNames) {
+        const pkgDir = join(importNm, name)
+        await fs.mkdir(join(pkgDir, "dist"), { recursive: true })
         await fs.writeFile(
-          join(distDir, "index.mjs"),
-          `export const handle = { name: "${slug}", protocol: "print", version: "0.0.1" };\n`
+          join(pkgDir, "package.json"),
+          JSON.stringify({
+            name: `@agentproto/${name}`,
+            version: "0.0.1",
+            type: "module",
+            exports: { ".": { import: "./dist/index.mjs" } },
+          })
+        )
+        await fs.writeFile(
+          join(pkgDir, "dist", "index.mjs"),
+          `export const handle = { name: "${name}", protocol: "print", version: "0.0.1" };\n`
         )
       }
 
@@ -740,11 +762,25 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
       expect(slugs).toContain("dup")
       expect(slugs).not.toContain("harness")
 
+      // The listed entry names the package that was actually imported: the
+      // harness- spelling for a harness-<slug>-only slug, the adapter-
+      // spelling for an adapter-<slug>-only one.
+      expect(adapters.find((a) => a.slug === "foo")?.packageName).toBe(
+        "@agentproto/harness-foo"
+      )
+      expect(adapters.find((a) => a.slug === "bar")?.packageName).toBe(
+        "@agentproto/adapter-bar"
+      )
+
       // The same slug cannot be listed twice when both prefixes exist on disk.
       expect(slugs.filter((slug) => slug === "dup")).toHaveLength(1)
     } finally {
       restoreRoot()
       await fs.rm(root, { recursive: true, force: true })
+      for (const name of importableNames) {
+        await fs.rm(join(importNm, name), { recursive: true, force: true })
+      }
+      _resetLastKnownGoodForTests()
     }
   })
 })

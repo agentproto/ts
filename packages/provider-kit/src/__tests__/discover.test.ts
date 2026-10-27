@@ -82,4 +82,28 @@ describe("discoverAdapterPackages — harness- prefix alias", () => {
       await fs.rm(root, { recursive: true, force: true })
     }
   })
+
+  it("third-party @x/agentproto-harness-<slug> cannot replace a first-party adapter, whichever order they are scanned", { timeout: 15_000 }, async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "agentproto-discover-hijack-"))
+    try {
+      const nm = join(root, "node_modules")
+      for (const name of [
+        "@agentproto/adapter-dup2",
+        "@x/agentproto-harness-dup2",
+      ]) {
+        await fs.mkdir(join(nm, name, "dist"), { recursive: true })
+        await fs.writeFile(
+          join(nm, name, "package.json"),
+          JSON.stringify({ name, version: "0.0.1", type: "module" })
+        )
+      }
+
+      const found = await discoverAdapterPackages({ start: root })
+      expect(found.find((a) => a.slug === "dup2")?.packageName).toBe(
+        "@agentproto/adapter-dup2"
+      )
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
 })

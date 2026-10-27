@@ -879,7 +879,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
 
   if (!candidate || typeof candidate !== "object" || !("name" in candidate)) {
     throw new Error(
-      `agentproto: adapter '${resolvedPackageName}' does not export an AgentCliHandle ` +
+      `agentproto: adapter '${packageName}' does not export an AgentCliHandle ` +
         `(looked for export '${camel}', 'default', or 'handle').`
     )
   }
@@ -889,7 +889,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     slug,
     handle: withResolvedProprietaryAdapter(candidate, proprietaryRewriteSpecifier),
     source: "npm",
-    packageName: resolvedPackageName,
+    packageName,
     ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
   }
   lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
