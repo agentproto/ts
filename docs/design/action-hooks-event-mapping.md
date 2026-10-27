@@ -232,8 +232,7 @@ the routine bindings and reports an invalid `on` map as a refusal under
 `<agent-id>/on`, alongside the existing per-binding refusals. To roll an entry
 back, remove it from the manifest (or remove the `AGENT.md`) and run
 `routine_reconcile`. A manifest that fails to load is logged and skipped, so its
-bindings go away on the next reconcile; the array form of an `on` value is such
-a failure today (see `docs/design/action-hooks-v1.md`).
+bindings go away on the next reconcile.
 
 ### Registered actions
 

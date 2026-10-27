@@ -119,14 +119,6 @@ retry (use a routine). An edit takes effect on the next reconcile (boot,
 workspace is scanned, and a failing target records a failed receipt without
 failing a turn.
 
-Known gap, checked on this branch: the multi-action array form of an `on` value
-cannot be used yet. The generated zod schema collapses `actionRef` to `z.any()`,
-so an array matches both branches of the `oneOf` and the whole `AGENT.md` fails
-to load with "Should pass single schema. Passed 2" (a string or an object
-loads). Write one action per event key until the schema is fixed. The same
-failure stops a spawn from that manifest, so it is visible before any binding
-could go live.
-
 ## AIP-41 event routines are a second configuration surface, not a second system
 
 AIP-41 permits `schedule.kind: "event"` with `schedule.on` and an optional
