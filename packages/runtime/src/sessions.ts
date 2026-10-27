@@ -1219,6 +1219,11 @@ export interface QueuedPrompt {
   /** How many enqueues have collapsed into this item (absent ⇒ 1 — never
    *  coalesced). Lets a queue UI show "x3". */
   coalescedCount?: number
+  /** Retry-safe admission key that queued this item (`enqueuePrompt`'s
+   *  `opts.dedupeKey`). Retained on the item so a duplicate result can
+   *  echo its `queueId` while it still waits; a later coalesce-in-place
+   *  merge keeps the original item's key untouched. */
+  dedupeKey?: string
   /** Follow-digest payload carried across a replace-in-place merge. Plain
    *  JSON so it survives the promptQueue persist/restore round-trip. */
   digest?: QueuedDigest
@@ -1237,7 +1242,9 @@ export interface EnqueuePromptResult {
   queued: boolean
   /** `delivered` — started as a turn (idle target, or an interrupt);
    *  `steered` — injected into the running turn; `queued-mid-turn` — parked
-   *  until the current turn ends (or a steer / `deliverWithin` fires).
+   *  until the current turn ends (or a steer / `deliverWithin` fires);
+   *  `duplicate`: a prompt with the same `dedupeKey` was already accepted
+   *  inside the window; nothing was delivered or queued.
    *  `delivery` / `pending` are always set by the registry; optional here so
    *  structural stand-ins that only know `queued` still type-check. */
   delivery?: PromptDelivery
@@ -1247,9 +1254,12 @@ export interface EnqueuePromptResult {
   pending?: boolean
   /** Id of the parked item (`delivery: "queued-mid-turn"`). */
   queueId?: string
+  /** `true` when a prompt with the same `dedupeKey` was already accepted
+   *  inside the window; nothing was delivered or queued. */
+  duplicate?: true
 }
 
-export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn"
+export type PromptDelivery = "delivered" | "steered" | "queued-mid-turn" | "duplicate"
 
 /**
  * Short text preview of a queued `QueuedPrompt.message` (raw string OR an
@@ -1335,6 +1345,13 @@ export const INBOX_CAP = 200
  *  (blocker/question) message — the soft cap may be exceeded up to here. */
 export const INBOX_HARD_CAP = INBOX_CAP * 2
 
+/** Bound on `SessionDescriptor.promptDedupe` (accepted prompt dedupe keys). */
+export const PROMPT_DEDUPE_MAX = 128
+
+/** Prompt dedupe keys older than this are ignored, and dropped on the next
+ *  record (`SessionDescriptor.promptDedupe`). 24 hours. */
+export const PROMPT_DEDUPE_TTL_MS = 86_400_000
+
 /** R3 — a burst of `steer` messages must not thrash a recipient: at most
  *  one steer per recipient per this window; the excess is delivered as
  *  `next-turn` (and coalesces with its neighbours at turn-end). */
@@ -1345,6 +1362,32 @@ export const STEER_MIN_INTERVAL_MS = 10_000
  *  CLI works, so a few seconds keeps `session_list` / `session_usage`
  *  near-real-time without hammering either store. */
 export const USAGE_REFRESH_INTERVAL_MS = 5_000
+
+/** True when `key` was accepted inside the window ending at `now`. */
+function findPromptDedupe(
+  entries: Array<{ key: string; at: string }> | undefined,
+  key: string,
+  now: number,
+): boolean {
+  if (!entries?.length) return false
+  return entries.some(entry => {
+    if (entry.key !== key) return false
+    const at = Date.parse(entry.at)
+    return Number.isFinite(at) && now - at <= PROMPT_DEDUPE_TTL_MS
+  })
+}
+
+/** Record an accepted key: drop TTL-expired entries, append, evict oldest
+ *  past the bound, then replace the descriptor field with a NEW array. */
+function recordPromptDedupe(desc: SessionDescriptor, key: string, now: number): void {
+  const kept = (desc.promptDedupe ?? []).filter(entry => {
+    const at = Date.parse(entry.at)
+    return Number.isFinite(at) && now - at <= PROMPT_DEDUPE_TTL_MS
+  })
+  kept.push({ key, at: new Date(now).toISOString() })
+  while (kept.length > PROMPT_DEDUPE_MAX) kept.shift()
+  desc.promptDedupe = kept
+}
 
 /** What `sendMessage` did with a message — truthful, per AIP-46. */
 export interface SendMessageResult {
@@ -1407,6 +1450,8 @@ export interface QueuedPromptView {
   /** How many enqueues collapsed into this item — absent when it was never
    *  coalesced (a UI can show "x3"). */
   coalescedCount?: number
+  /** Retry-safe key carried on the waiting item, when one was supplied. */
+  dedupeKey?: string
 }
 
 /** One prompt still waiting to reach a session, with its age — the
@@ -2670,6 +2715,21 @@ export interface SessionDescriptor {
    *  changes to the transcript panel. `[]` (not absent) once anything
    *  has ever been queued. */
   promptQueue?: QueuedPrompt[]
+  /** Bounded window of ACCEPTED `enqueuePrompt` `dedupeKey`s, newest last
+   *  (`{ key, at }`, ISO `at`), so a retried prompt (an MCP client that
+   *  timed out and calls again, or a replayed durable reaction) is delivered
+   *  at most once inside `PROMPT_DEDUPE_TTL_MS` (24 hours). Recording first
+   *  drops entries older than the TTL, then appends, then evicts the oldest
+   *  while the length exceeds `PROMPT_DEDUPE_MAX` (128); a lookup ignores an
+   *  entry older than the TTL. Always replaced with a NEW array on every
+   *  change, like `promptQueue`, and persisted with the descriptor through
+   *  `schedulePersist()`. Removing a waiting item with
+   *  `removeQueuedPrompt` does NOT free its key: dropping is an explicit
+   *  cancel, and a retry must not resurrect it. Residual: a daemon crash
+   *  between recording an idle session's key and its turn actually starting
+   *  loses that prompt (same as today without a key); a queued item is
+   *  persisted with its key in one step, so it is not lost. */
+  promptDedupe?: Array<{ key: string; at: string }>
   /** Best-effort context-handoff digest (Fix D), stashed on a descriptor
    *  whose resume degraded to a BLANK spawn — the adapter's own
    *  conversation store was missing, or the adapter declared `resumable:
@@ -4597,6 +4657,14 @@ export interface SessionsRegistry {
        *  key is REPLACED in place (newest message wins, id + position kept,
        *  `coalescedCount` incremented) instead of a second item being pushed. */
       coalesceKey?: string
+      /** Retry-safe admission key: once a prompt carrying this key is
+       *  ACCEPTED (queued or dispatched), a later `enqueuePrompt` with the
+       *  same key inside the 24 hour window returns `delivery: "duplicate"`
+       *  and delivers nothing. Trimmed; must be 1 to 200 characters. A
+       *  duplicate does not interrupt, resume, compact, trace, or touch the
+       *  inbox or queue. Dropping a waiting item keeps its key. Not
+       *  supported together with `envelope`. */
+      dedupeKey?: string
       /** Digest payload for a freshly queued item (follow digests). */
       digest?: QueuedDigest
       /** On replacement only: synchronously merge with the item actually
@@ -12775,6 +12843,31 @@ export function createSessionsRegistry(opts?: {
       if (!rtPre) {
         throw new Error(`enqueuePrompt: no session "${id}"`)
       }
+      const dedupeKey = opts?.dedupeKey?.trim()
+      if (dedupeKey !== undefined && (dedupeKey.length < 1 || dedupeKey.length > 200)) {
+        throw new Error("enqueuePrompt: dedupeKey must be 1 to 200 characters")
+      }
+      // A typed envelope message already has its own daemon-minted id, and it
+      // records a sender trace on acceptance that a duplicate answer could
+      // not take back. Refuse the combination instead of leaking the trace.
+      if (dedupeKey !== undefined && opts?.envelope) {
+        throw new Error("enqueuePrompt: dedupeKey is not supported with a typed envelope message")
+      }
+      // A duplicate does NOTHING else: no interrupt, resume, compaction,
+      // envelope trace, inbox write, queue change, or persist.
+      const duplicateResult = (): EnqueuePromptResult => {
+        const waiting = (rtPre.desc.promptQueue ?? []).find(p => p.dedupeKey === dedupeKey)
+        return {
+          queued: false,
+          delivery: "duplicate",
+          pending: false,
+          duplicate: true,
+          ...(waiting ? { queueId: waiting.id } : {}),
+        }
+      }
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
+      }
       assertCompactionAllowed(rtPre, message, opts?.source, "enqueuePrompt")
       // `interrupt` only ever changes behavior on a mid-turn session —
       // an idle session falls straight through to the normal admission
@@ -12876,6 +12969,7 @@ export function createSessionsRegistry(opts?: {
             const next = [...waiting]
             next[idx] = replaced
             rtPre.desc.promptQueue = next
+            if (dedupeKey !== undefined) recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
             if (finalEnvelope) emitSessionMessage(finalEnvelope)
             schedulePersist()
             return { queued: true, delivery: "queued-mid-turn", pending: true, queueId: existing.id }
@@ -12891,6 +12985,7 @@ export function createSessionsRegistry(opts?: {
           ...(envelope ? { envelope } : {}),
           ...(steerable ? { steer: true } : {}),
           ...(coalesceKey !== undefined ? { coalesceKey } : {}),
+          ...(dedupeKey !== undefined ? { dedupeKey } : {}),
           ...(opts.digest ? { digest: opts.digest } : {}),
           ...(opts.deliverWithinMs !== undefined && opts.deliverWithinMs > 0
             ? {
@@ -12903,6 +12998,7 @@ export function createSessionsRegistry(opts?: {
         rtPre.desc.promptQueue = opts.force
           ? [item, ...(rtPre.desc.promptQueue ?? [])]
           : [...(rtPre.desc.promptQueue ?? []), item]
+        if (dedupeKey !== undefined) recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
         schedulePersist()
         if (steerable) {
           await flushSteerableQueue(rtPre)
@@ -12926,7 +13022,21 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.forceResume ? { force: true } : {}),
       })
+      // The awaits above (resume attempt, reaped box move) leave a window in
+      // which a retry carrying the same key, sent while this call was still
+      // resuming, may already have been accepted. Check again in the same
+      // synchronous block as admission and the record below, so the retry
+      // answers duplicate instead of a mid-turn error.
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
+      }
       const rt = validateAgentTurn(id, "enqueuePrompt", { compaction: isCompactPrompt(message) })
+      // Admission succeeded: record the key before any turn is launched, and
+      // before the structured-answer branch.
+      if (dedupeKey !== undefined) {
+        recordPromptDedupe(rtPre.desc, dedupeKey, Date.now())
+        schedulePersist()
+      }
       if (envelope) {
         void runMessageTurn(rt, [envelope], interrupted ? "interrupt" : "turn", opts?.source).catch(err => {
           appendLine(rtPre, `[error] ${err instanceof Error ? err.message : String(err)}`, "stderr")
@@ -13151,6 +13261,7 @@ export function createSessionsRegistry(opts?: {
         queuedAt: p.queuedAt,
         position,
         ...(p.coalescedCount !== undefined ? { coalescedCount: p.coalescedCount } : {}),
+        ...(p.dedupeKey !== undefined ? { dedupeKey: p.dedupeKey } : {}),
       }))
     },
     readBackgroundTaskTail(id, taskId) {
