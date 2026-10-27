@@ -134,6 +134,23 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
   },
 ]
 
+/** Slugs of the concrete box-owning providers, in catalog order. `local` is a
+ *  same-filesystem passthrough with no control plane to enumerate, and `auto`
+ *  is a selector rather than an owner, so neither is ever swept or listed by
+ *  default. Placeholders still resolve to null and are reported as not
+ *  scanned by the caller. */
+export const DEFAULT_SANDBOX_PROVIDER_SLUGS: readonly string[] = SANDBOX_CATALOG.map(
+  entry => entry.slug,
+).filter(slug => slug !== "local" && slug !== "auto")
+
+/** Providers a bare `sandbox_gc` sweeps. Only the `computer` controller
+ *  scopes its boxes to this daemon's tenant, so only it can be swept by
+ *  default: a shared account (e2b) holds boxes from other daemons, machines,
+ *  CI and tools, and every one of those would look like an orphan here.
+ *  `sandbox_list` still defaults to every concrete provider because reading
+ *  is safe; sweeping is not. */
+export const DEFAULT_SANDBOX_GC_PROVIDER_SLUGS: readonly string[] = ["computer"]
+
 /** Extract the safe descriptor from a resolved handle. No secrets. */
 export function toSandboxInfo(handle: SandboxProviderHandle): SandboxAdapterInfo {
   return { capabilities: handle.capabilities }

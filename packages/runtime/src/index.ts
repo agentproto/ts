@@ -721,6 +721,8 @@ export {
   type SandboxExecResult,
 } from "./sandbox-exec.js"
 export {
+  DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
+  DEFAULT_SANDBOX_PROVIDER_SLUGS,
   makeSandboxResolver,
   makeSandboxCredsStore,
 } from "./sandbox-adapters.js"
@@ -767,6 +769,15 @@ export {
   type SandboxOrphanScan,
   type SandboxOrphanScanDeps,
 } from "./sandbox-orphan-gc.js"
+export {
+  collectSandboxInventory,
+  type CollectSandboxInventoryOpts,
+  type SandboxInventory,
+  type SandboxInventoryProvider,
+  type SandboxInventoryProviderInput,
+  type SandboxInventorySource,
+  type SandboxInventoryTotals,
+} from "./sandbox-inventory.js"
 export {
   reconcileSandboxLedger,
   type SandboxReconcileDeps,
