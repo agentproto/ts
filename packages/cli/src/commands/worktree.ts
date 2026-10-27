@@ -63,6 +63,8 @@ import {
   repoLabel,
   detectDefaultBranch,
   salvageWorktree,
+  decideBranchDeletion,
+  type BranchDeletionDecision,
   WorktreeNotRemovableError,
   planGc,
   applyGc,
@@ -101,10 +103,10 @@ Usage:
   agentproto worktree ls      [--repo <dir>] [--status] [--json]
   agentproto worktree new     <slug> [--repo <dir>] [--base <ref>]
                                      [--branch <name>] [--no-setup] [--json]
-  agentproto worktree rm      <path|slug> [--repo <dir>] [--base <ref>] [--keep-branch]
+  agentproto worktree rm      <path|slug> [--repo <dir>] [--base <ref>] [--keep-branch] [--force]
                                      [--discard-untracked] [--discard-modified] [--json]
   agentproto worktree archive <path|slug> [--repo <dir>] [--base <ref>]
-                                     [--keep-branch] [--json]
+                                     [--keep-branch] [--force] [--json]
   agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
                                      [--include-detached] [--noise <path,...>]
                                      [--active-minutes <n>] [--json]
@@ -123,13 +125,21 @@ Usage:
   rm        Stop the worktree's services, run its agentproto.json teardown
             hooks, then remove it. Refuses if the tree has modified tracked
             files or unignored untracked files, unless --discard-modified /
-            --discard-untracked authorizes it. Also deletes its branch
-            unless --keep-branch. --base picks the ref whose committed
-            teardown hooks run (default origin/main).
-  archive   Snapshot the worktree's uncommitted state under
+            --discard-untracked authorizes it. Also deletes its branch, but
+            only when the branch is proven merged into origin/<default>
+            (ancestor, squash, patch or content); an unmerged branch is kept
+            and the output says so. --keep-branch always keeps it, --force
+            deletes it anyway. --base picks the ref whose committed teardown
+            hooks run (default origin/main).
+  archive   Snapshot the worktree's UNCOMMITTED state only under
             ~/.agentproto/worktree-salvage/ (changes.patch + a copy of every
-            untracked file + MANIFEST.json), then run the same removal as
-            \`rm\` with both discard flags granted — nothing on disk is lost.
+            untracked file + MANIFEST.json, which also records the tip sha and
+            whether the branch was kept), then run the same removal as \`rm\`
+            with both discard flags granted. Commits are not copied: the
+            branch is deleted only when proven merged into origin/<default>,
+            and kept otherwise (--force deletes it anyway, --keep-branch
+            always keeps it). A detached HEAD has no branch to keep, so
+            archive its unmerged commits elsewhere first.
   gc        Classify every linked worktree into reclaim ((merged|fresh)+clean+idle) /
             salvage (merged+dirty, and not written to in the last 15m) /
             hold (everything else — including a fresh or merged branch with
@@ -145,7 +155,10 @@ Usage:
             (default 60) counts as recently active and is held too — someone
             working in it right now is never reclaimed or salvaged, plan-time
             or at apply time. --active-minutes 0 disables that guard.
-            --include-detached also reclaims clean, idle detached worktrees.
+            A clean, idle detached worktree is reclaimed only when its HEAD
+            is proven in base (ancestor, squash, patch, or a merged PR's head);
+            otherwise it is held. --include-detached is accepted for
+            compatibility and no longer widens anything.
             A clean, idle worktree whose branch no merged PR contains is still
             reclaimed when its content is provably in base (squash-, patch- or
             content-merged, the \`branch gc\` ladder). --noise lists worktree-
@@ -1028,6 +1041,7 @@ async function runRm(args: readonly string[]): Promise<number> {
       repo: { type: "string" },
       base: { type: "string" },
       "keep-branch": { type: "boolean" },
+      force: { type: "boolean" },
       "discard-untracked": { type: "boolean" },
       "discard-modified": { type: "boolean" },
       json: { type: "boolean" },
@@ -1038,6 +1052,10 @@ async function runRm(args: readonly string[]): Promise<number> {
   if (!resolved) return 2
   const { repoRoot, cwd, branch } = resolved
 
+  const branchDecision = branch
+    ? await decideBranchFate({ repoRoot, cwd, branch, keepBranch: Boolean(values["keep-branch"]), force: Boolean(values.force) })
+    : null
+
   try {
     await runTool({
       tool: cleanupWorktreeTool,
@@ -1046,7 +1064,7 @@ async function runRm(args: readonly string[]): Promise<number> {
         repoRoot,
         cwd,
         ...(branch ? { branch } : {}),
-        deleteBranch: !values["keep-branch"],
+        deleteBranch: branchDecision ? branchDecision.action === "deleted" : false,
         discardUntracked: Boolean(values["discard-untracked"]),
         discardModified: Boolean(values["discard-modified"]),
         ...(values.base !== undefined ? { base: values.base } : {}),
@@ -1062,11 +1080,46 @@ async function runRm(args: readonly string[]): Promise<number> {
   }
 
   if (values.json) {
-    process.stdout.write(JSON.stringify({ removed: cwd, branch: branch ?? null }, null, 2) + "\n")
+    process.stdout.write(
+      JSON.stringify({ removed: cwd, branch: branch ?? null, branchDecision: branchDecision ?? null }, null, 2) + "\n",
+    )
   } else {
     process.stdout.write(`worktree removed  ${cwd}${branch ? `  (branch ${branch})` : ""}\n`)
+    if (branch && branchDecision) process.stdout.write(formatBranchDecision(branch, branchDecision) + "\n")
   }
   return 0
+}
+
+/** Tip of the worktree's HEAD, then the shared keep-unless-proven-merged guard (`decideBranchDeletion`). */
+async function decideBranchFate(input: {
+  repoRoot: string
+  cwd: string
+  branch: string
+  keepBranch: boolean
+  force: boolean
+}): Promise<BranchDeletionDecision> {
+  const tipRes = spawnSync("git", ["-C", input.cwd, "rev-parse", "HEAD"], { encoding: "utf8" })
+  const tipSha = tipRes.status === 0 ? tipRes.stdout.trim() : ""
+  const defaultBranch = await detectDefaultBranch(input.repoRoot)
+  const originRef = `origin/${defaultBranch}`
+  const hasOrigin = spawnSync("git", ["-C", input.repoRoot, "rev-parse", "--verify", "--quiet", `${originRef}^{commit}`]).status === 0
+  if (!tipSha) {
+    return input.keepBranch || !input.force
+      ? { action: "kept", reason: input.keepBranch ? "--keep-branch" : "could not resolve HEAD; pass --force to delete it anyway", commitsNotOnAnyRemote: null }
+      : { action: "deleted", reason: "could not resolve HEAD; deleted because of --force", commitsNotOnAnyRemote: null }
+  }
+  return decideBranchDeletion({
+    repoRoot: input.repoRoot,
+    baseRef: hasOrigin ? originRef : defaultBranch,
+    branch: input.branch,
+    tipSha,
+    keepBranch: input.keepBranch,
+    force: input.force,
+  })
+}
+
+function formatBranchDecision(branch: string, decision: BranchDeletionDecision): string {
+  return `branch ${branch} ${decision.action === "kept" ? "kept" : "deleted"}: ${decision.reason}`
 }
 
 // ── archive ─────────────────────────────────────────────────────────────
@@ -1081,6 +1134,7 @@ async function runArchive(args: readonly string[]): Promise<number> {
       repo: { type: "string" },
       base: { type: "string" },
       "keep-branch": { type: "boolean" },
+      force: { type: "boolean" },
       json: { type: "boolean" },
     },
   })
@@ -1096,6 +1150,10 @@ async function runArchive(args: readonly string[]): Promise<number> {
   }
   const tipSha = tipRes.stdout.trim()
 
+  const branchDecision = branch
+    ? await decideBranchFate({ repoRoot, cwd, branch, keepBranch: Boolean(values["keep-branch"]), force: Boolean(values.force) })
+    : null
+
   let salvageDir: string
   try {
     const result = await salvageWorktree({
@@ -1105,6 +1163,7 @@ async function runArchive(args: readonly string[]): Promise<number> {
       branch: branch ?? null,
       tipSha,
       slug: branch ?? basename(cwd),
+      ...(branchDecision ? { branchDecision } : {}),
     })
     salvageDir = result.dir
   } catch (err) {
@@ -1122,7 +1181,7 @@ async function runArchive(args: readonly string[]): Promise<number> {
         repoRoot,
         cwd,
         ...(branch ? { branch } : {}),
-        deleteBranch: !values["keep-branch"],
+        deleteBranch: branchDecision ? branchDecision.action === "deleted" : false,
         discardUntracked: true,
         discardModified: true,
         ...(values.base !== undefined ? { base: values.base } : {}),
@@ -1136,9 +1195,12 @@ async function runArchive(args: readonly string[]): Promise<number> {
   }
 
   if (values.json) {
-    process.stdout.write(JSON.stringify({ archived: cwd, branch: branch ?? null, salvageDir }, null, 2) + "\n")
+    process.stdout.write(
+      JSON.stringify({ archived: cwd, branch: branch ?? null, salvageDir, branchDecision: branchDecision ?? null }, null, 2) + "\n",
+    )
   } else {
     process.stdout.write(`worktree archived  ${cwd}${branch ? `  (branch ${branch})` : ""}  (salvaged to ${salvageDir})\n`)
+    if (branch && branchDecision) process.stdout.write(formatBranchDecision(branch, branchDecision) + "\n")
   }
   return 0
 }
