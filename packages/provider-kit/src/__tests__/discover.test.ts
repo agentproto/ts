@@ -24,6 +24,10 @@ describe("discoverAdapterPackages — harness- prefix alias", () => {
         "@x/agentproto-harness-baz",
         "@agentproto/adapter-dup",
         "@agentproto/harness-dup",
+        // first-party adapter- must NOT be displaced by a third-party
+        // harness- package carrying the same slug
+        "@agentproto/adapter-dup2",
+        "@x/agentproto-harness-dup2",
       ]) {
         await fs.mkdir(join(nm, name, "dist"), { recursive: true })
         await fs.writeFile(

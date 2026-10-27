@@ -196,15 +196,20 @@ export async function discoverAdapterPackages(opts?: {
         }
         if (!slug || !packageName) continue
         const existing = bySlug.get(slug)
-        // Precedence: canonical harness- beats adapter- within a tier;
-        // first-party @agentproto still wins over third-party.
-        if (
+        // Precedence tiers (checked in order): (a) nothing there yet, or
+        // (b) first-party @agentproto moving in over a third-party package,
+        // or (c) within the SAME tier the canonical harness- spelling beats
+        // adapter-. A third-party harness- name must never displace a
+        // first-party adapter- one.
+        const newFirstParty = packageName.startsWith("@agentproto/")
+        const existingFirstParty = existing?.packageName.startsWith("@agentproto/")
+        const replaces =
           !existing ||
-          (isHarnessPackageName(packageName) &&
-            !isHarnessPackageName(existing.packageName)) ||
-          (scope === "@agentproto" &&
-            !existing.packageName.startsWith("@agentproto/"))
-        ) {
+          (newFirstParty && !existingFirstParty) ||
+          (newFirstParty === existingFirstParty &&
+            isHarnessPackageName(packageName) &&
+            !isHarnessPackageName(existing.packageName))
+        if (replaces) {
           bySlug.set(slug, { slug, packageName })
         }
       }
