@@ -29,6 +29,22 @@ import { HANDOFF_PROMPT_OPENER } from "../handoff-markers.js"
 import { sessionTranscriptDir } from "../transcript-writer.js"
 import type { ContextCheckpoint } from "../context-checkpoint.js"
 
+/** Every transcript stream this file's registries open, in order. A
+ *  terminal session must open exactly one, not one per write after its
+ *  transcript was closed. */
+const openedStreams = vi.hoisted(() => ({ paths: [] as string[] }))
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...actual,
+    createWriteStream: (...args: Parameters<typeof actual.createWriteStream>) => {
+      openedStreams.paths.push(String(args[0]))
+      return actual.createWriteStream(...args)
+    },
+  }
+})
+
 const HANDOFF_REPLY = JSON.stringify({
   goal: "pick the storage engine",
   decisions: ["Use Postgres, not SQLite: we need concurrent writers"],
@@ -108,11 +124,16 @@ describe("context-losing paths checkpoint first", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "ctx-loss-"))
+    openedStreams.paths.length = 0
     reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, contextRescueSettleMs: 100 })
   })
   afterEach(async () => {
+    // `shutdown()` is sync and starts the transcript closes without awaiting
+    // them. Drain those writes before removing the dir they land in, or the
+    // rm races a late flush and fails with ENOTEMPTY.
     reg.shutdown()
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    await reg.settlePendingWrites()
+    rmSync(tmp, { recursive: true, force: true })
   })
 
   const dirOf = (id: string): string => sessionTranscriptDir(id, tmp)
@@ -374,6 +395,18 @@ describe("context-losing paths checkpoint first", () => {
       await vi.waitFor(() => expect(reg.get(id)?.status).toBe("killed"))
 
       expect(outputOf(id).join("\n")).toMatch(/stopping WITHOUT a checkpoint/)
+    })
+
+    it("writes its final notice to the one transcript stream, never reopening it", async () => {
+      const { id } = spawn(95, { mode: "manual" }, 95)
+      breakCheckpointDir(id)
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() =>
+        expect(outputOf(id).join("\n")).toMatch(/neither compaction nor a fresh continuation/),
+      )
+
+      const opened = openedStreams.paths.filter(path => path.includes(id))
+      expect(opened).toHaveLength(1)
     })
   })
 

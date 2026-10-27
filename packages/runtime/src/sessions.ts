@@ -9630,7 +9630,15 @@ export function createSessionsRegistry(opts?: {
           ? `[context] auto-compaction could not free the window (${pctBefore}%${after}); the session was continued fresh`
           : `[context-hard-stop] context at ${pctBefore}% and neither compaction nor a fresh continuation was possible; the session was ended`
     appendLine(rt, text, outcome === "hard-stopped" ? "stderr" : "stdout")
-    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    // The rescue announces AFTER `performContextHardStop` (which used to close
+    // the transcript), so recording the notice there reopened a writer for a
+    // session that was already terminal. Write the notice first and let THIS
+    // be the one close for a dead session: one stream, no write to reopen.
+    try {
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    } finally {
+      if (outcome !== "compacted") trackWrite(transcriptWriter.close(rt.desc.id))
+    }
     sessionEvents?.emit({
       type: "session:context-rescue",
       sessionId: rt.desc.id,
@@ -9734,8 +9742,9 @@ export function createSessionsRegistry(opts?: {
     rt.desc.status = "killed"
     rt.desc.endedAt = new Date().toISOString()
     rt.desc.endedReason = "context-hard-stop"
+    // The transcript stays open for `announceContextRescue`'s final notice;
+    // that function closes it (once) for every terminal rescue outcome.
     void rt.agentSession?.close().catch(() => undefined)
-    void transcriptWriter.close(rt.desc.id)
     tracedSessions.delete(rt.desc.id)
     schedulePersist()
     emitExited(rt)
@@ -9771,8 +9780,9 @@ export function createSessionsRegistry(opts?: {
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.contextContinuityHardStopped = true
+      // Closed by `announceContextRescue` after its final notice, same as the
+      // hard stop: the rescue announces only after this function returns.
       void rt.agentSession?.close().catch(() => undefined)
-      void transcriptWriter.close(rt.desc.id)
       tracedSessions.delete(rt.desc.id)
       schedulePersist()
       emitExited(rt)
