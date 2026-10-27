@@ -23,8 +23,11 @@
  * Safety rails (all fail closed) sit between the capacity refusal and the
  * e2b call: residency, daily box/EUR caps, an explicit secret allowlist, a
  * template CLI-version parity check, and a `timeoutMs` ceiling priced from
- * `maxEurPerBox`. A refusal is a typed `sandbox_overflow_refused` error that
- * records the choice and keeps the computer error as its cause.
+ * `maxEurPerBox`. The per-box EUR cap is a CUMULATIVE wall-clock deadline
+ * shared by boot, every `extendTimeout` re-arm, and a resume in the same
+ * daemon process. Daily caps are best-effort and daemon-global. A refusal is
+ * a typed `sandbox_overflow_refused` error that records the choice and keeps
+ * the computer error as its cause.
  *
  * Secrets: the caller's `SandboxBootOpts.env` (already broker-resolved by
  * `@agentproto/sandbox`) is forwarded to the computer leg unchanged; the e2b
@@ -57,7 +60,9 @@ export interface AutoOverflowConfig {
   maxBoxesPerDay?: number
   /** EUR already spent on e2b today (UTC) before refusing another. */
   maxEurPerDay?: number
-  /** Per-box EUR budget, converted into an e2b `timeoutMs` ceiling. */
+  /** Per-box EUR budget. Converted into a CUMULATIVE e2b lifetime ceiling:
+   *  the initial `timeoutMs`, every `extendTimeout` re-arm, and a resume all
+   *  share one deadline (per daemon process, see `capBootedLifetime`). */
   maxEurPerBox?: number
   /** Master switch for forwarding any broker-resolved secret to e2b. */
   allowSecrets?: boolean
@@ -130,6 +135,9 @@ export interface AutoSandboxProviderDeps {
   now?: () => Date
   /** Environment, only for the residency default. Injectable for tests. */
   env?: NodeJS.ProcessEnv
+  /** e2b metadata/pricing loader, injectable for tests. Defaults to the
+   *  lazy dynamic import of the optional `@agentproto/sandbox-e2b` package. */
+  loadE2bLimits?: () => Promise<E2bLimitsModule>
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -254,15 +262,19 @@ interface E2bSizeLike {
   cpuCount: number
   memoryMb: number
   id: string | null
+  alias?: string
   baked: { cli: string | null }
 }
 
 interface E2bTemplateLike {
   id: string | null
+  alias?: string
   baked: { cli: string | null }
 }
 
-interface E2bLimitsModule {
+/** The slice of `@agentproto/sandbox-e2b` the rails need. Exported so tests
+ *  can inject a synthetic pricing/template table without the real package. */
+export interface E2bLimitsModule {
   DEFAULT_SIZE: string
   DEFAULT_TEMPLATE: string
   DEFAULT_SANDBOX_TIMEOUT_MS: number
@@ -276,7 +288,14 @@ interface E2bLimitsModule {
 const loadE2bLimits = async (): Promise<E2bLimitsModule> =>
   (await import("@agentproto/sandbox-e2b")) as unknown as E2bLimitsModule
 
-/** The size preset the box will be created at, when it can be priced. */
+/** The size preset the box will be created at, when it can be priced.
+ *
+ *  Named templates are allowed for overflow ONLY when they map to a known
+ *  published image whose size is known: a size preset (by id or alias), the
+ *  default channel template (built at `DEFAULT_SIZE`), or a named channel
+ *  (`stable`/`dev`, also built at `DEFAULT_SIZE`). An arbitrary custom
+ *  template has no recorded size, so it cannot be priced against
+ *  `maxEurPerBox` and is refused rather than run uncapped. */
 const resolveSize = (
   config: AutoSandboxConfig,
   limits: E2bLimitsModule,
@@ -284,27 +303,62 @@ const resolveSize = (
   if (!limits.SIZES) return null
   const explicitSize = config.e2b?.size
   if (explicitSize !== undefined) return limits.SIZES[explicitSize] ?? null
-  if (config.e2b?.template === undefined) {
+  const template = config.e2b?.template
+  if (template === undefined) return limits.SIZES[limits.DEFAULT_SIZE] ?? null
+  if (template === limits.DEFAULT_TEMPLATE) {
     return limits.SIZES[limits.DEFAULT_SIZE] ?? null
   }
-  const byId = Object.values(limits.SIZES).find(
-    entry => entry.id !== null && entry.id === config.e2b?.template,
+  const sizePreset = Object.values(limits.SIZES).find(
+    entry =>
+      (entry.id !== null && entry.id === template) ||
+      (entry.alias !== undefined && entry.alias === template),
   )
-  return byId ?? null
+  if (sizePreset !== undefined) return sizePreset
+  const namedChannel = limits.TEMPLATES
+    ? Object.values(limits.TEMPLATES).find(
+        entry =>
+          (entry.id !== null && entry.id === template) ||
+          (entry.alias !== undefined && entry.alias === template),
+      )
+    : undefined
+  // Both named channels are built at DEFAULT_SIZE (templates/workstation).
+  return namedChannel !== undefined
+    ? (limits.SIZES[limits.DEFAULT_SIZE] ?? null)
+    : null
+}
+
+/** The template id the e2b provider will ACTUALLY boot, mirroring its own
+ *  `resolveTemplate`: explicit template, else the size preset, else the bare
+ *  default template. Exported for the template-default parity test. */
+export const templateIdForParity = (
+  config: AutoSandboxConfig,
+  limits: E2bLimitsModule,
+): string | undefined => {
+  if (config.e2b?.template !== undefined) return config.e2b.template
+  if (config.e2b?.size !== undefined) {
+    return resolveSize(config, limits)?.id ?? undefined
+  }
+  return limits.DEFAULT_TEMPLATE
 }
 
 /** Cap the e2b lifetime so the box cannot spend more than `maxEurPerBox`.
- *  Pricing or size that cannot be resolved refuses the overflow. */
+ *  Pricing or size that cannot be resolved refuses the overflow.
+ *
+ *  Returns both the initial `timeoutMs` (never above the cap) and
+ *  `maxLifetimeMs`, the CUMULATIVE wall-clock ceiling the returned sandbox is
+ *  wrapped with. Wall clock is a conservative proxy for billed running time:
+ *  it also counts paused intervals, so the cap can only under-spend. */
 const capTimeoutMs = async (
   config: AutoSandboxConfig,
   overflow: AutoOverflowConfig,
-): Promise<{ timeoutMs: number } | { reason: string }> => {
+  loadLimits: () => Promise<E2bLimitsModule>,
+): Promise<{ timeoutMs: number; maxLifetimeMs: number } | { reason: string }> => {
   const capEur = readCap(overflow.maxEurPerBox, DEFAULT_MAX_EUR_PER_BOX)
   if (capEur === null) return { reason: "maxEurPerBox is not a positive number" }
 
   let limits: E2bLimitsModule
   try {
-    limits = await loadE2bLimits()
+    limits = await loadLimits()
   } catch {
     return { reason: "e2b pricing is unavailable" }
   }
@@ -352,14 +406,16 @@ const capTimeoutMs = async (
     config.e2b.timeoutMs > 0
       ? config.e2b.timeoutMs
       : defaultTimeout
-  return { timeoutMs: Math.min(requested, maxMs) }
+  return { timeoutMs: Math.min(requested, maxMs), maxLifetimeMs: maxMs }
 }
 
-/** Compare the e2b template's recorded CLI bake with the CLI pin the caller
- *  expects (the controller's `cliVersion`, else e2b's own). A template with no
- *  recorded bake is unknown and refuses, never "assume it matches". */
+/** Compare the recorded CLI bake of the template the provider will actually
+ *  boot with the CLI pin the caller expects (the controller's `cliVersion`,
+ *  else e2b's own). A template with no recorded bake is unknown and refuses,
+ *  never "assume it matches". */
 const templateParityIssue = async (
   config: AutoSandboxConfig,
+  loadLimits: () => Promise<E2bLimitsModule>,
 ): Promise<string | undefined> => {
   const computerConfig = isRecord(config.computer) ? config.computer : {}
   const e2bCliVersion =
@@ -375,17 +431,15 @@ const templateParityIssue = async (
 
   let limits: E2bLimitsModule
   try {
-    limits = await loadE2bLimits()
+    limits = await loadLimits()
   } catch {
     return "e2b template metadata is unavailable"
   }
   if (!limits.TEMPLATES || !limits.SIZES) {
     return "e2b template metadata is unavailable"
   }
-  const templateId =
-    config.e2b?.template ??
-    resolveSize(config, limits)?.id ??
-    limits.DEFAULT_TEMPLATE
+  const templateId = templateIdForParity(config, limits)
+  if (templateId === undefined) return "e2b template CLI version is unknown"
   const entries: Array<E2bSizeLike | E2bTemplateLike> = [
     ...Object.values(limits.TEMPLATES),
     ...Object.values(limits.SIZES),
@@ -432,8 +486,39 @@ const selectOverflowSecrets = (
   return { env: selected }
 }
 
+/** Wrap a booted e2b box so EVERY `extendTimeout` re-arm is clamped to one
+ *  cumulative deadline. Without this the initial `timeoutMs` cap would only
+ *  bound one arm; the session proxy re-arms on prompt dispatch and every 10
+ *  minutes, which could spend far past `maxEurPerBox`. */
+const capBootedLifetime = (
+  booted: BootedSandbox,
+  deadlineMs: number,
+  clock: () => Date,
+): BootedSandbox => {
+  const extend = booted.extendTimeout
+  if (!extend) return booted
+  return {
+    ...booted,
+    lifetimeMs: Math.max(0, deadlineMs - clock().getTime()),
+    async extendTimeout(ms: number): Promise<void> {
+      const remaining = deadlineMs - clock().getTime()
+      if (remaining <= 0) {
+        throw new SandboxOverflowRefusedError("maxEurPerBox lifetime exhausted")
+      }
+      await extend.call(booted, Math.min(ms, remaining))
+    },
+  }
+}
+
 /** Daily box-count and EUR caps, read from the e2b usage ledger. An absent or
- *  failing usage source refuses the overflow. */
+ *  failing usage source refuses the overflow.
+ *
+ *  BEST EFFORT, DAEMON-GLOBAL: this is a read-then-boot check, so two
+ *  concurrent spawns can both pass under the cap. It counts the e2b usage
+ *  ledger, which omits paused boxes and reports `tenantId: "unknown"`, so the
+ *  cap is per daemon (not per tenant/end user) and may undercount historical
+ *  spend. Both limits fail closed on unknown cost but neither is a
+ *  transactional quota. */
 const checkDailyCaps = async (
   e2b: SandboxProviderHandle,
   overflow: AutoOverflowConfig,
@@ -515,6 +600,18 @@ export function createAutoSandboxProviderHandle(
   const ledger = deps.ledger ?? (() => readSandboxLedger())
   const now = deps.now ?? (() => new Date())
   const env = deps.env ?? process.env
+  const loadLimits = deps.loadE2bLimits ?? loadE2bLimits
+  // Per-box cumulative deadline, so a boot -> pause -> connect in the same
+  // daemon process cannot reset the maxEurPerBox ceiling.
+  const lifetimeDeadlines = new Map<string, number>()
+  const rememberDeadline = (sandboxId: string, maxLifetimeMs: number): number => {
+    const at = now().getTime()
+    const existing = lifetimeDeadlines.get(sandboxId)
+    const deadline =
+      existing === undefined ? at + maxLifetimeMs : Math.min(existing, at + maxLifetimeMs)
+    lifetimeDeadlines.set(sandboxId, deadline)
+    return deadline
+  }
 
   const resolve = async (slug: AutoConcreteProvider): Promise<SandboxProviderHandle> => {
     const handle = await deps.resolveProvider(slug)
@@ -619,10 +716,10 @@ export function createAutoSandboxProviderHandle(
       const secrets = selectOverflowSecrets(opts.env, overflow)
       if ("reason" in secrets) return refuse(secrets.reason)
 
-      const parityIssue = await templateParityIssue(config)
+      const parityIssue = await templateParityIssue(config, loadLimits)
       if (parityIssue !== undefined) return refuse(parityIssue)
 
-      const timeout = await capTimeoutMs(config, overflow)
+      const timeout = await capTimeoutMs(config, overflow, loadLimits)
       if ("reason" in timeout) return refuse(timeout.reason)
 
       const reason = capacityReason(computerErr)
@@ -641,7 +738,8 @@ export function createAutoSandboxProviderHandle(
           at,
         }
         log(choiceLine(choice))
-        return { ...booted, provider: "e2b", choice }
+        const deadline = rememberDeadline(booted.sandboxId, timeout.maxLifetimeMs)
+        return capBootedLifetime({ ...booted, provider: "e2b", choice }, deadline, now)
       } catch (e2bErr) {
         throw withComputerError(withBootProvider(e2bErr, "e2b"), computerErr)
       }
@@ -669,53 +767,38 @@ export function createAutoSandboxProviderHandle(
         )
       }
       const overflow = config.overflow ?? {}
+      const refuse = (why: string): never => {
+        throw new SandboxOverflowRefusedError(why, {
+          choice: {
+            requested: "auto",
+            provider: "e2b",
+            from: "ledger",
+            reason: `overflow refused: ${why}`,
+            at: now().toISOString(),
+          },
+        })
+      }
       let connectOpts = opts
       let connectSpec = specFor(spec, slug, config)
+      let e2bDeadline: number | undefined
       if (slug === "e2b") {
-        if (config.overflow?.enabled === true) {
-          const secrets = selectOverflowSecrets(opts.env, overflow)
-          if ("reason" in secrets) {
-            throw new SandboxOverflowRefusedError(secrets.reason, {
-              choice: {
-                requested: "auto",
-                provider: "e2b",
-                from: "ledger",
-                reason: `overflow refused: ${secrets.reason}`,
-                at: now().toISOString(),
-              },
-            })
-          }
-          connectOpts = { ...opts, env: secrets.env }
-        } else if (overflow.allowSecrets !== true) {
-          connectOpts = { ...opts, env: {} }
-        } else {
-          const secrets = selectOverflowSecrets(opts.env, overflow)
-          if ("reason" in secrets) {
-            throw new SandboxOverflowRefusedError(secrets.reason, {
-              choice: {
-                requested: "auto",
-                provider: "e2b",
-                from: "ledger",
-                reason: `overflow refused: ${secrets.reason}`,
-                at: now().toISOString(),
-              },
-            })
-          }
-          connectOpts = { ...opts, env: secrets.env }
-        }
-        const timeout = await capTimeoutMs(config, overflow)
-        if ("reason" in timeout) {
-          throw new SandboxOverflowRefusedError(timeout.reason, {
-            choice: {
-              requested: "auto",
-              provider: "e2b",
-              from: "ledger",
-              reason: `overflow refused: ${timeout.reason}`,
-              at: now().toISOString(),
-            },
-          })
-        }
-        connectSpec = specFor(spec, slug, config, timeout.timeoutMs)
+        // The allowlist and the EUR ceiling apply for the whole box lifetime,
+        // not just the initial overflow boot.
+        const secrets = selectOverflowSecrets(opts.env, overflow)
+        if ("reason" in secrets) return refuse(secrets.reason)
+        const timeout = await capTimeoutMs(config, overflow, loadLimits)
+        if ("reason" in timeout) return refuse(timeout.reason)
+
+        connectOpts = { ...opts, env: secrets.env }
+        e2bDeadline = rememberDeadline(sandboxId, timeout.maxLifetimeMs)
+        const remaining = e2bDeadline - now().getTime()
+        if (remaining <= 0) return refuse("maxEurPerBox lifetime exhausted")
+        connectSpec = specFor(
+          spec,
+          slug,
+          config,
+          Math.min(timeout.timeoutMs, remaining),
+        )
       }
       let booted: BootedSandbox
       try {
@@ -735,7 +818,10 @@ export function createAutoSandboxProviderHandle(
         at: now().toISOString(),
       }
       opts.log?.(choiceLine(choice))
-      return { ...booted, provider: slug, choice }
+      const connected = { ...booted, provider: slug, choice }
+      return e2bDeadline === undefined
+        ? connected
+        : capBootedLifetime(connected, e2bDeadline, now)
     },
   }
 
