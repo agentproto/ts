@@ -2,4 +2,4 @@
 "@agentproto/runtime": patch
 ---
 
-Keep a hard-stopped session's transcript to one stream: the final context-rescue notice is written before the close instead of reopening the writer afterwards.
+Close the transcript exactly once on context hard stop and continue fresh, including the standalone turn-boundary and structured-answer paths.

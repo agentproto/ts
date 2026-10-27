@@ -9700,7 +9700,8 @@ export function createSessionsRegistry(opts?: {
           return
         }
         if (resolveAgentAdapter) {
-          await performContextContinueFresh(rt)
+          // The rescue owns the final notice, so it also owns the one close.
+          await performContextContinueFresh(rt, false)
           if (!isSessionAlive(rt)) {
             announceContextRescue(rt, "continued", pctBefore, pctAfter)
             return
@@ -9750,7 +9751,10 @@ export function createSessionsRegistry(opts?: {
     emitExited(rt)
   }
 
-  async function performContextContinueFresh(rt: SessionRuntime): Promise<void> {
+  async function performContextContinueFresh(
+    rt: SessionRuntime,
+    closeTranscript = true,
+  ): Promise<void> {
     if (!resolveAgentAdapter) {
       appendLine(
         rt,
@@ -9761,6 +9765,7 @@ export function createSessionsRegistry(opts?: {
         rt,
         computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100,
       )
+      if (closeTranscript) trackWrite(transcriptWriter.close(rt.desc.id))
       return
     }
     try {
@@ -9780,13 +9785,16 @@ export function createSessionsRegistry(opts?: {
       rt.desc.status = "killed"
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.contextContinuityHardStopped = true
-      // Closed by `announceContextRescue` after its final notice, same as the
-      // hard stop: the rescue announces only after this function returns.
       void rt.agentSession?.close().catch(() => undefined)
       tracedSessions.delete(rt.desc.id)
       schedulePersist()
       emitExited(rt)
       retireRow(rt, "continued", result.descriptor.id)
+      // The rescue path passes `false` and lets `announceContextRescue` write
+      // its notice before closing. The standalone callers (turn-boundary
+      // action, structured-question answer) have no rescue notice, so they
+      // close here.
+      if (closeTranscript) trackWrite(transcriptWriter.close(rt.desc.id))
     } catch (err) {
       appendLine(
         rt,
