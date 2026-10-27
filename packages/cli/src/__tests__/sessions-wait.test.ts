@@ -486,12 +486,39 @@ describe("agentproto sessions wait — idle short-circuit (exit 5)", () => {
     expect(calledUrl).toContain("/sessions/sess_1")
   })
 
+  it("does not treat a freshly spawned session as idle before its first turn has run", async () => {
+    // The release/CI lane spawns a cloud session WITH an opening prompt, then
+    // waits for the first turn-end. The spawn response can land (and a
+    // pre-flight GET /sessions/:id can read it) before that first turn has
+    // started, so busy/awaitingInput are clear and turnsCompleted is still 0.
+    // That snapshot is not "idle with nothing to wait for": the first turn is
+    // exactly what the caller is waiting on. The wait must fall through to the
+    // blocking /wait endpoint, not short-circuit to exit 5.
+    httpGetJson
+      .mockResolvedValueOnce({
+        id: "sess_1",
+        status: "running",
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 0,
+      })
+      .mockResolvedValueOnce({ event: "turn-end", sessionId: "sess_1", status: "running" })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end"])
+
+    expect(code).toBe(0)
+    expect(httpGetJson).toHaveBeenCalledTimes(2)
+    const waitUrl = (httpGetJson.mock.calls[1] as [string])[0]
+    expect(waitUrl).toContain("/sessions/sess_1/wait")
+  })
+
   it("does not print the up-front 'waiting up to' budget-echo line — nothing is being waited on", async () => {
     httpGetJson.mockResolvedValueOnce({
       id: "sess_1",
       status: "running",
       busy: false,
       awaitingInput: false,
+      turnsCompleted: 1,
     })
 
     const code = await runSessions(["wait", "sess_1", "--until", "any"])
@@ -506,6 +533,7 @@ describe("agentproto sessions wait — idle short-circuit (exit 5)", () => {
       status: "running",
       busy: false,
       awaitingInput: false,
+      turnsCompleted: 1,
     })
 
     const code = await runSessions(["wait", "sess_1", "--until", "awaiting-input"])
@@ -523,6 +551,7 @@ describe("agentproto sessions wait — idle short-circuit (exit 5)", () => {
       status: "running",
       busy: false,
       awaitingInput: false,
+      turnsCompleted: 1,
     })
 
     const code = await runSessions(["wait", "sess_1", "--until", "turn-end", "--json"])

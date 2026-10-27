@@ -2785,17 +2785,21 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      precedent (sessions-registry-agent-host.ts) so a caller can't
  *      mistake a bare "turn-end: success" for one that actually did
  *      something.
- *   5  the session is IDLE right now — no turn in flight, not awaiting
- *      input, nothing queued to run — for an `--until turn-end` /
- *      `awaiting-input` / `any` wait. Distinct from a timeout: this is a
- *      pre-flight read of the session's current descriptor, decided BEFORE
- *      ever blocking, because the daemon's own already-finished-turn check
- *      (`monitorSessionWait`) requires a `since` cursor a fresh CLI process
- *      never has — without this short-circuit an idle session burns the
- *      whole `--timeout` budget waiting for a turn-end that will never come
- *      (nothing new is running) and then reports a lying "timed out...
- *      still running?" message. Exit 5 tells the caller the truth instead:
- *      there's nothing to wait for.
+ *   5  the session is IDLE right now: at least one turn has completed (or
+ *      the session is terminal), no turn is in flight, not awaiting input,
+ *      nothing queued to run, for an `--until turn-end` / `awaiting-input`
+ *      / `any` wait. A freshly spawned session with `turnsCompleted` still
+ *      0 is NOT idle here: its opening turn may start after this pre-flight
+ *      read, and that turn is exactly what the caller is waiting for.
+ *      Distinct from a timeout: this is a pre-flight read of the session's
+ *      current descriptor, decided BEFORE ever blocking, because the
+ *      daemon's own already-finished-turn check (`monitorSessionWait`)
+ *      requires a `since` cursor a fresh CLI process never has; without
+ *      this short-circuit an idle session burns the whole `--timeout` budget
+ *      waiting for a turn-end that will never come (nothing new is running)
+ *      and then reports a lying "timed out... still running?" message.
+ *      Exit 5 tells the caller the truth instead: there's nothing to wait
+ *      for.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -2958,13 +2962,24 @@ async function runWaitSession(opts: {
     }
     // Nothing this wait could ever resolve on by blocking: no turn in
     // flight, not awaiting input (that would be a real match, not idleness —
-    // left to the loop below), nothing queued to run next, and not still
-    // spinning up.
+    // left to the loop below), nothing queued to run next, not still
+    // spinning up, and at least one turn has ALREADY run to completion.
+    //
+    // The `turnsCompleted` gate is load-bearing for a prompted spawn: the
+    // spawn response can land, and this pre-flight read can see the session,
+    // before its opening turn has started (busy false, nothing queued,
+    // turnsCompleted 0). That snapshot is not "idle with nothing to wait
+    // for": the first turn is exactly what the caller is waiting on. A
+    // terminal session is still short-circuited regardless: no turn can
+    // start there.
+    const terminalStatus =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
     const idle =
       desc.busy !== true &&
       desc.awaitingInput !== true &&
       !desc.queuedPrompts &&
-      desc.status !== "starting"
+      desc.status !== "starting" &&
+      ((desc.turnsCompleted ?? 0) > 0 || terminalStatus)
     if (idle) {
       return emitWaitIdle(json, {
         sessionId: desc.id,
