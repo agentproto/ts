@@ -1,5 +1,5 @@
 ---
-"@agentproto/harness": major
+"@agentproto/harness": minor
 "@agentproto/driver-agent-cli": minor
 "@agentproto/adapter-antigravity": patch
 "@agentproto/adapter-claude-code-cloud": patch

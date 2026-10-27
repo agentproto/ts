@@ -39,7 +39,7 @@ independent axes today:
   file edits, anything that never touches an MCP tool). This is the
   keystone that makes Plane 2 harness-agnostic: it binds the process
   boundary an in-process tool runs inside, which Plane 1 can never see.
-  Shipped as of `@agentproto/driver-agent-cli@2.1.0`; controlled by the
+  Shipped as of `@agentproto/harness`; controlled by the
   `adapterSpawn` key in `.agentproto/command-sandbox.json` and the
   `agent_start.commandSandbox` MCP field (`"off" | "workspace" | "strict"`).
   See "Config surfaces" below.

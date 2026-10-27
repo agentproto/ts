@@ -57,6 +57,16 @@ const ARCHIVED = new Set([
   "@agentproto/role-catalog", // packages/role-catalog
   "@agentproto/adapter-ai-sdk", // adapters/ai-sdk
   "@agentproto/adapter-mastra", // adapters/mastra
+  // AIP-70 rename shims: deprecated re-export packages with no workspace
+  // dependents, classified like adapter-kit.
+  "@agentproto/agency-v2", // packages/agency-v2
+  "@agentproto/app-kit", // packages/app-kit
+  "@agentproto/define-doctype", // packages/define-doctype
+  "@agentproto/driver-agent-cli", // packages/driver/agent-cli
+  "@agentproto/llm-endpoint", // packages/llm-endpoint
+  "@agentproto/mastra", // packages/mastra
+  "@agentproto/pair-client", // packages/pair-client
+  "@agentproto/redaction", // packages/redaction
 ]);
 
 // Core runtime family: named regardless of doctype-only dependency closure.

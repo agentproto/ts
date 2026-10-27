@@ -18,83 +18,83 @@ attempt. The AIP-71 local dedupe key is
 
 ### File and role
 
-The durable precedent is `packages/runtime/src/sentinel-webhook-outbox.ts`. It
+The durable precedent is `packages/sentinel/src/sentinel-webhook-outbox.ts`. It
 exists for `webhook` sentinel events whose delivery is external to the daemon:
-`packages/runtime/src/sentinel-webhook-outbox.ts:2` ` * SentinelWebhookOutbox`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` ` * SentinelWebhookOutbox`.
 The module doc states the core invariant, that a row is appended durably before
-the upstream is acknowledged: `packages/runtime/src/sentinel-webhook-outbox.ts:5` ` * Why an outbox: the runtime's `processEvents` marks an event `seen` the`.
+the upstream is acknowledged: `packages/sentinel/src/sentinel-webhook-outbox.ts` ` * Why an outbox: the runtime's `processEvents` marks an event `seen` the`.
 
 ### Public API
 
 The public surface is declared on one interface:
-`packages/runtime/src/sentinel-webhook-outbox.ts:104` `export interface SentinelWebhookOutbox {`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export interface SentinelWebhookOutbox {`.
 It provides `enqueue` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:118` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`,
 `dispatch` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:122` `  dispatch(): Promise<void>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  dispatch(): Promise<void>`,
 `resumeDeliveries` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:125` `  resumeDeliveries(): Promise<void>`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  resumeDeliveries(): Promise<void>`,
 `sweep` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:128` `  sweep(): void`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  sweep(): void`,
 `rows` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:129` `  rows(): PersistedOutboxRow[]`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  rows(): PersistedOutboxRow[]`
 and `flushSync` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:131` `  flushSync(): void`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  flushSync(): void`.
 
 ### Record shape
 
 The persisted row is `SentinelWebhookOutboxRow` plus the envelope and original
 event. The base type starts at
-`packages/runtime/src/sentinel-webhook-outbox.ts:54` `export interface SentinelWebhookOutboxRow {`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export interface SentinelWebhookOutboxRow {`
 and carries `requestId` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:59` `  requestId: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  requestId: string`,
 `eventId` at
-`packages/runtime/src/sentinel-webhook-outbox.ts:60` `  eventId: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  eventId: string`,
 the exact wire body at
-`packages/runtime/src/sentinel-webhook-outbox.ts:63` `  bodyBytes: string`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  bodyBytes: string`,
 an always-null cursor at
-`packages/runtime/src/sentinel-webhook-outbox.ts:65` `  cursor: null`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  cursor: null`,
 attempt state at
-`packages/runtime/src/sentinel-webhook-outbox.ts:67` `  deliveryState: { attempts: number; lastError?: string; lastAt?: string }`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  deliveryState: { attempts: number; lastError?: string; lastAt?: string }`,
 status at
-`packages/runtime/src/sentinel-webhook-outbox.ts:68` `  status: SentinelWebhookOutboxStatus`,
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  status: SentinelWebhookOutboxStatus`,
 creation time at
-`packages/runtime/src/sentinel-webhook-outbox.ts:74` `  createdAt: number`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  createdAt: number`
 and terminal time at
-`packages/runtime/src/sentinel-webhook-outbox.ts:76` `  terminalAt?: number`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  terminalAt?: number`.
 The persisted extension at
-`packages/runtime/src/sentinel-webhook-outbox.ts:83` `export type PersistedOutboxRow = SentinelWebhookOutboxRow & {`
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `export type PersistedOutboxRow = SentinelWebhookOutboxRow & {`
 keeps the full `envelope` and the original `event` alongside the row.
 
 Rows are keyed in memory by a string built from sentinel and event:
-`packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``.
 The persisted JSON is a map keyed by that same string, loaded at construction:
-`packages/runtime/src/sentinel-webhook-outbox.ts:265` `    for (const [key, row] of rows.entries()) out[key] = row`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `    for (const [key, row] of rows.entries()) out[key] = row`.
 
 ### Storage format and location
 
 The default file is `~/.agentproto/sentinel-webhook-outbox.json`:
-`packages/runtime/src/sentinel-webhook-outbox.ts:199` `  const filePath = opts.filePath ?? resolve(agentprotoHome(), "sentinel-webhook-outbox.json")`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  const filePath = opts.filePath ?? resolve(agentprotoHome(), "sentinel-webhook-outbox.json")`.
 The body is pretty-printed JSON with a trailing newline:
-`packages/runtime/src/sentinel-webhook-outbox.ts:279` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
 
 ### Atomicity and locking
 
 Writes use the shared durable file writer:
-`packages/runtime/src/sentinel-webhook-outbox.ts:280` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
 That helper is documented as tmp plus fsync plus rename plus parent directory
 fsync: `packages/runtime/src/durable-file.ts:2` ` * Crash-durable file writes: tmp file → fsync → rename → fsync of the parent`.
 It defaults to mode `0o600`:
 `packages/runtime/src/durable-file.ts:42` `  const mode = opts.mode ?? 0o600`.
 The outbox serializes all writes through one promise chain:
-`packages/runtime/src/sentinel-webhook-outbox.ts:257` `  // All writes ride ONE serialized chain so a slow older snapshot can never`
-and `packages/runtime/src/sentinel-webhook-outbox.ts:270` `  let writeTail: Promise<void> = Promise.resolve()`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  // All writes ride ONE serialized chain so a slow older snapshot can never`
+and `packages/sentinel/src/sentinel-webhook-outbox.ts` `  let writeTail: Promise<void> = Promise.resolve()`.
 Enqueue awaits its own write, so durability precedes the caller's ack:
-`packages/runtime/src/sentinel-webhook-outbox.ts:463` `      enqueueDispatch()` is reached only after the awaited persist, and a failed
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      enqueueDispatch()` is reached only after the awaited persist, and a failed
 persist rolls the row back and rejects, cited in the interface contract at
-`packages/runtime/src/sentinel-webhook-outbox.ts:118` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  enqueue(input: { sentinelId: string; event: SentinelEvent }): Promise<SentinelWebhookOutboxRow | undefined>`.
 Status transitions use a debounced write, while enqueue never debounces:
-`packages/runtime/src/sentinel-webhook-outbox.ts:139` `  /** Debounce interval for the non-critical (status-transition) disk writes.`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  /** Debounce interval for the non-critical (status-transition) disk writes.`.
 
 ### Retry and backoff
 
@@ -108,26 +108,26 @@ The loop sleeps between attempts:
 `packages/runtime/src/webhook-egress/delivery.ts:165` `    if (attempt > 0) await sleep(deliveryBackoffDelay(attempt))`.
 A thrown dispatch is treated as crash-shaped: the row stays `pending`, the
 event stays unacked, and startup re-dispatches it:
-`packages/runtime/src/sentinel-webhook-outbox.ts:376` `      // `resumeDeliveries()` re-runs it by exact bytes next startup.`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      // `resumeDeliveries()` re-runs it by exact bytes next startup.`.
 A final negative outcome is terminal per the retry cap:
-`packages/runtime/src/sentinel-webhook-outbox.ts:362` `        row.status = "dead"`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `        row.status = "dead"`.
 
 ### Retention and compaction
 
 Delivered rows are reaped after 24 hours:
-`packages/runtime/src/sentinel-webhook-outbox.ts:171` `const DELIVERED_REAP_MS = 24 * 60 * 60 * 1000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const DELIVERED_REAP_MS = 24 * 60 * 60 * 1000`.
 Pending rows age out after 7 days:
-`packages/runtime/src/sentinel-webhook-outbox.ts:175` `const PENDING_AGE_OUT_MS = 7 * 24 * 60 * 60 * 1000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const PENDING_AGE_OUT_MS = 7 * 24 * 60 * 60 * 1000`.
 The file is capped at 2000 rows:
-`packages/runtime/src/sentinel-webhook-outbox.ts:178` `const ROW_CAP = 2_000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const ROW_CAP = 2_000`.
 Sweep marks an old pending row dead with reason `age_out`:
-`packages/runtime/src/sentinel-webhook-outbox.ts:483` `          row.status = "dead"`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `          row.status = "dead"`.
 Sweep also reaps delivered rows and trims beyond the cap, starting at
-`packages/runtime/src/sentinel-webhook-outbox.ts:482` `        if (row.status === "pending" && now - row.createdAt >= PENDING_AGE_OUT_MS) {`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `        if (row.status === "pending" && now - row.createdAt >= PENDING_AGE_OUT_MS) {`.
 Terminal eviction picks the oldest terminal row:
-`packages/runtime/src/sentinel-webhook-outbox.ts:334` `      row.status = "dead"` is the expiry path, while the cap eviction helper
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `      row.status = "dead"` is the expiry path, while the cap eviction helper
 is `oldestTerminalRowKey`, cited through the enqueue cap branch at
-`packages/runtime/src/sentinel-webhook-outbox.ts:178` `const ROW_CAP = 2_000`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `const ROW_CAP = 2_000`.
 
 ### How callers use it
 
@@ -416,7 +416,7 @@ the prompt, the transcript, or credentials.
 Redaction rule: before writing any error or outcome reference, apply the same
 URL-redaction discipline the outbox uses for delivery errors. The outbox's
 delivery status is documented as carrying no URL, body or secret:
-`packages/runtime/src/sentinel-webhook-outbox.ts:88` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `/** Per-sentinel delivery health, derived from the outbox rows. Carries no`.
 Receipts persist only a redacted reason string and an opaque reference.
 
 ### Relationship to the existing outbox: share the mechanics, keep two stores
@@ -469,10 +469,10 @@ The receipt store owns, and the outbox never sees:
 The outbox keeps, unchanged:
 
 - Its key, built from sentinel and event:
-  `packages/runtime/src/sentinel-webhook-outbox.ts:224` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
+  `packages/sentinel/src/sentinel-webhook-outbox.ts` `  const rowKey = (sentinelId: string, eventId: string): string =>`.
 - Its row shape (`bodyBytes`, `cursor`, `envelope`, `event`, `deliveryState`)
   and its status vocabulary, which is `pending | delivered | dead`
-  (`packages/runtime/src/sentinel-webhook-outbox.ts:52` `export type SentinelWebhookOutboxStatus = "pending"`).
+  (`packages/sentinel/src/sentinel-webhook-outbox.ts` `export type SentinelWebhookOutboxStatus = "pending"`).
   The receipt status is a different vocabulary, `pending | running | done |
   failed | dead`: `done` plays the role of the outbox `delivered`, and
   `running` and `failed` exist only in receipts.
