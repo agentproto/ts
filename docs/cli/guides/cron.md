@@ -13,7 +13,8 @@ Status: Stable
 - Jobs persist to `~/.agentproto/cron-jobs.json` and survive daemon restarts.
 - Exactly one action kind per job: `--adapter` spawns a brand-new agent session
   and prompts it, `--command` runs an allowlisted shell command, and
-  `--target-session` re-prompts an existing, already-running session in place.
+  `--target-session` re-prompts an existing session in place (a session id, or
+  `agent:<label>` resolved to a session at fire time).
 - Fires missed during downtime are not backfilled: after a restart a recurring
   job resumes from "now" rather than catching up on what it slept through.
 
@@ -40,7 +41,7 @@ The flags you will actually touch (verified against `cron add --help`):
 | `--schedule <expr>` | Required. 5-field cron expression, local time. |
 | `--adapter <slug>` + `--prompt <text>` | Spawn a fresh agent session each fire. |
 | `--command <cmd>` + `--args <arg>` | Run an allowlisted shell command (repeat `--args` for more). |
-| `--target-session <id>` + `--prompt <text>` | Re-prompt a live session in place; no new session is spawned. |
+| `--target-session <id>` + `--prompt <text>` | Re-prompt a session in place (id or `agent:<label>`); no new session is spawned. |
 | `--label <text>` | Human-readable name shown by `cron list`. |
 | `--once` | Fire a single time, then deactivate (the job stays listed, inactive). |
 | `--model <id>` / `--cwd <dir>` | Model override and working directory (agent kind). |
