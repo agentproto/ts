@@ -36,6 +36,7 @@ export const OPS_PANEL_TOOLS = [
   "session_restart",
   "session_archive",
   "session_gc",
+  "sandbox_list",
   "cron_list",
   "cron_create",
   "cron_delete",
@@ -142,6 +143,19 @@ td.actions button{margin-left:4px}
 #toast{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:8px 14px;font-size:11.5px;display:none;max-width:80%;z-index:10}
 #toast.err{border-color:var(--red);color:var(--red)}
 .empty{color:var(--text3);font-size:11.5px;padding:8px}
+
+.sbx-bar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.sbx-bar label{font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em}
+.sbx-bar select{background:var(--bg3);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:3px 8px;font-size:11px;font-family:inherit}
+.sbx-totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:10px}
+.sbx-totals .card{padding:10px}
+.sbx-totals .card .ct{font-size:12px}
+.sbx-totals .meta{font-size:10.5px;color:var(--text2);margin-top:5px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.sbx-totals .nums{display:flex;gap:14px;margin-top:6px}
+.sbx-totals .num{display:flex;flex-direction:column}
+.sbx-totals .num b{font-size:16px;font-weight:700}
+.sbx-totals .num span{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.04em}
+.sbx-note{color:var(--text3);font-size:10.5px;margin-top:6px}
 </style>
 </head>
 <body>
@@ -160,6 +174,19 @@ td.actions button{margin-left:4px}
     <div class="sect">
       <h2>Sessions <span class="count" id="sess-count"></span></h2>
       <div id="sessions"></div>
+    </div>
+    <div class="sect">
+      <h2>Sandboxes <span class="count" id="sandbox-count"></span></h2>
+      <div class="sbx-bar">
+        <label for="sandbox-provider">Provider</label>
+        <select id="sandbox-provider">
+          <option value="">all providers</option>
+          <option value="computer">computer</option>
+          <option value="e2b">e2b</option>
+        </select>
+      </div>
+      <div class="sbx-totals" id="sandbox-totals"></div>
+      <div id="sandboxes"></div>
     </div>
     <div class="sect">
       <h2>Housekeeping</h2>
@@ -253,7 +280,9 @@ function confirmClick(key, btn, fn) {
 
 var sessions = [];
 var crons = [];
+var sandboxes = null;
 var wsFilter = "";
+var sandboxProviderFilter = "";
 var pollTimer = null;
 var busyActions = false;
 
@@ -315,16 +344,26 @@ function callAppPaged(tool, args, listKey) {
 
 function loadAll() {
   return Promise.all([
-    callAppPaged("session_list", { kind: "all" }, "sessions").then(function (rows) {
+    callAppPaged("session_list", { kind: "all", full: true }, "sessions").then(function (rows) {
       sessions = Array.isArray(rows) ? rows : [];
     }),
     callApp("cron_list", {}).then(function (d) {
       crons = Array.isArray(d) ? d : (d && d.jobs) || [];
     }).catch(function () { crons = []; }),
+    callApp("sandbox_list", { includeUsage: true }).then(function (d) {
+      sandboxes = d || null;
+    }).catch(function (e) {
+      sandboxes = {
+        boxes: [], usage: [], totals: null,
+        errors: [{ provider: "sandbox_list", error: e && e.message ? e.message : String(e) }],
+        notScanned: [],
+      };
+    }),
   ]).then(function () {
     renderWorkspaces();
     renderSpecials();
     renderSessions();
+    renderSandboxes();
     renderCrons();
     updateHousekeepingNums();
   });
@@ -561,6 +600,208 @@ function renderSessions() {
   }
 }
 
+function fmtDuration(sec) {
+  if (sec == null || !isFinite(Number(sec))) return "";
+  var s = Math.round(Number(sec));
+  if (s < 60) return s + "s";
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + "m";
+  var h = Math.floor(m / 60);
+  var rm = m % 60;
+  if (h < 24) return h + "h" + (rm ? " " + rm + "m" : "");
+  return Math.floor(h / 24) + "d " + (h % 24) + "h";
+}
+
+function fmtMem(mib) {
+  if (mib == null || !isFinite(Number(mib))) return "";
+  var n = Number(mib);
+  if (n >= 1024) return (n / 1024).toFixed(n % 1024 === 0 ? 0 : 1) + " GiB";
+  return n + " MiB";
+}
+
+function fmtEur(n) {
+  if (n == null || !isFinite(Number(n))) return "";
+  return "\u20ac" + Number(n).toFixed(2);
+}
+
+function fmtSize(box) {
+  var parts = [];
+  if (box.cpus != null) parts.push(box.cpus + " vCPU");
+  if (box.memoryMiB != null) parts.push(fmtMem(box.memoryMiB));
+  return parts.join(" / ");
+}
+
+// Usage windows are per box; index them by provider + box id so a row can
+// show its own active time and cost rather than only the fleet totals.
+function boxUsageIndex(usage) {
+  var idx = {};
+  for (var i = 0; i < usage.length; i++) {
+    var w = usage[i];
+    var key = (w.provider || "") + "\u0000" + (w.computer || w.id || "");
+    var entry = idx[key] || (idx[key] = { activeSec: 0, costEur: 0, costKnown: false });
+    entry.activeSec += Number(w.activeSec || 0);
+    if (w.costEur != null) {
+      entry.costEur += Number(w.costEur);
+      entry.costKnown = true;
+    }
+  }
+  return idx;
+}
+
+// A box that was placed by the auto provider's overflow carries the reason
+// on the spawning session's descriptor (sandboxProviderChoice), linked by
+// sandboxId. Prefer a reason carried by the box itself if a provider ever
+// supplies one.
+function overflowNote(box) {
+  if (box.overflowReason) return String(box.overflowReason);
+  var own = box.sandboxProviderChoice || box.choice;
+  var ownText = choiceNote(own, box.provider);
+  if (ownText) return ownText;
+  for (var i = 0; i < sessions.length; i++) {
+    var s = sessions[i];
+    if (s.sandboxId !== box.id) continue;
+    var text = choiceNote(s.sandboxProviderChoice, box.provider);
+    if (text) return text;
+  }
+  return "";
+}
+
+function choiceNote(choice, fallbackProvider) {
+  if (!choice) return "";
+  var moved = choice.from || (choice.provider && choice.requested && choice.provider !== choice.requested);
+  if (!moved) return "";
+  var text = choice.from ? choice.from + " \u2192 " + (choice.provider || fallbackProvider) : (choice.provider || "");
+  if (choice.reason) text += (text ? ": " : "") + choice.reason;
+  return text;
+}
+
+function renderSandboxes() {
+  var el = document.getElementById("sandboxes");
+  var totalsEl = document.getElementById("sandbox-totals");
+  var countEl = document.getElementById("sandbox-count");
+  if (!el || !totalsEl) return;
+  var data = sandboxes || { boxes: [], usage: [], totals: null, errors: [], notScanned: [] };
+  var boxes = Array.isArray(data.boxes) ? data.boxes : [];
+  var usage = Array.isArray(data.usage) ? data.usage : [];
+  var errors = Array.isArray(data.errors) ? data.errors : [];
+  var notScanned = Array.isArray(data.notScanned) ? data.notScanned : [];
+
+  var boxCounts = {};
+  for (var i = 0; i < boxes.length; i++) {
+    var p = boxes[i].provider || "unknown";
+    boxCounts[p] = (boxCounts[p] || 0) + 1;
+  }
+  countEl.textContent = boxes.length ? boxes.length + " boxes" : "";
+
+  // Per-provider usage aggregate.
+  var stats = {};
+  for (var u = 0; u < usage.length; u++) {
+    var w = usage[u];
+    var pp = w.provider || "unknown";
+    var st = stats[pp] || (stats[pp] = { activeSec: 0, vcpuSec: 0, gibSec: 0, costEur: 0, partial: false });
+    st.activeSec += Number(w.activeSec || 0);
+    st.vcpuSec += Number(w.vcpuSec || 0);
+    st.gibSec += Number(w.gibSec || 0);
+    if (w.costEur == null) st.partial = true;
+    else st.costEur += Number(w.costEur);
+  }
+
+  var totalsHtml = "";
+  var providerNames = ["computer", "e2b"];
+  for (var pi = 0; pi < providerNames.length; pi++) {
+    var prov = providerNames[pi];
+    var count = boxCounts[prov] || 0;
+    var provStats = stats[prov];
+    if (count === 0 && !provStats) continue;
+    var meta = provStats
+      ? "<span>" + escHtml(fmtDuration(provStats.activeSec)) + " active</span>"
+        + "<span>" + Math.round(provStats.vcpuSec / 3600) + " vCPU-h</span>"
+        + "<span>" + (provStats.gibSec / 3600).toFixed(1) + " GiB-h</span>"
+      : "<span>no usage ledger</span>";
+    if (prov === "e2b") meta += "<span>cost estimated</span>";
+    var cost = provStats ? (provStats.partial ? "\u2265" : "") + fmtEur(provStats.costEur) : "";
+    totalsHtml += '<div class="card"><div class="ct">' + escHtml(prov)
+      + ' <span class="badge b-idle">' + count + " box" + (count === 1 ? "" : "es") + "</span></div>"
+      + '<div class="meta">' + meta + "</div>"
+      + '<div class="nums"><div class="num"><b>' + escHtml(cost || "-") + "</b><span>cost EUR</span></div></div>"
+      + "</div>";
+  }
+  var totals = data.totals;
+  if (totals) {
+    totalsHtml += '<div class="card"><div class="ct">All providers</div>'
+      + '<div class="meta"><span>' + boxes.length + " boxes</span>"
+      + "<span>" + escHtml(fmtDuration(totals.activeSec)) + " active</span>"
+      + "<span>" + (Number(totals.gibSec || 0) / 3600).toFixed(1) + " GiB-h</span></div>"
+      + '<div class="nums"><div class="num"><b>' + escHtml((totals.costPartial ? "\u2265" : "") + fmtEur(totals.costEur))
+      + "</b><span>total EUR</span></div></div></div>";
+  }
+  totalsEl.innerHTML = totalsHtml;
+
+  var rows = [];
+  for (var r = 0; r < boxes.length; r++) {
+    if (sandboxProviderFilter && boxes[r].provider !== sandboxProviderFilter) continue;
+    rows.push(boxes[r]);
+  }
+  rows.sort(function (a, b) {
+    var pa = a.provider || "", pb = b.provider || "";
+    if (pa !== pb) return pa < pb ? -1 : 1;
+    return String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+  });
+
+  if (rows.length === 0) {
+    var note = "";
+    for (var ni = 0; ni < notScanned.length; ni++) {
+      note += (note ? " \u00b7 " : "") + notScanned[ni].provider + ": " + notScanned[ni].reason;
+    }
+    for (var ei = 0; ei < errors.length; ei++) {
+      note += (note ? " \u00b7 " : "") + errors[ei].provider + ": " + errors[ei].error;
+    }
+    el.innerHTML = '<div class="empty">No sandbox boxes'
+      + (sandboxProviderFilter ? " for " + escHtml(sandboxProviderFilter) : "") + ".</div>"
+      + (note ? '<div class="sbx-note">' + escHtml(note) + "</div>" : "");
+    return;
+  }
+
+  var costIdx = boxUsageIndex(usage);
+  var html = "<table><thead><tr><th>Provider</th><th>Box</th><th>Tenant / end user</th><th>State</th><th>Size</th><th>Host</th><th>Age</th><th>Active</th><th>Cost</th><th>Overflow</th></tr></thead><tbody>";
+  for (var k = 0; k < rows.length; k++) {
+    var box = rows[k];
+    var entry = costIdx[(box.provider || "") + "\u0000" + (box.id || "")];
+    var active = entry ? fmtDuration(entry.activeSec) : "";
+    var costCell = entry && entry.costKnown ? fmtEur(entry.costEur) : (box.costEur != null ? fmtEur(box.costEur) : "");
+    if (box.provider === "e2b") costCell = costCell ? costCell + " est." : "est.";
+    var tenant = [box.tenantId, box.endUser].filter(Boolean).join(" / ");
+    var stateCls = box.state === "running" ? "b-run" : "b-end";
+    var sessionTag = box.sessions != null
+      ? ' <span class="ws-tag">' + box.sessions + " session" + (box.sessions === 1 ? "" : "s") + "</span>"
+      : "";
+    html += "<tr>"
+      + "<td>" + escHtml(box.provider || "") + "</td>"
+      + '<td><span class="sid">' + escHtml(box.id || "") + "</span>" + sessionTag + "</td>"
+      + "<td>" + escHtml(tenant) + "</td>"
+      + "<td>" + (box.state ? '<span class="badge ' + stateCls + '">' + escHtml(box.state) + "</span>" : "") + "</td>"
+      + "<td>" + escHtml(fmtSize(box)) + "</td>"
+      + "<td>" + escHtml(box.host || box.egressIp || "") + "</td>"
+      + "<td>" + escHtml(box.createdAt ? fmtRelative(box.createdAt).replace(" ago", "") : "") + "</td>"
+      + "<td>" + escHtml(active) + "</td>"
+      + "<td>" + escHtml(costCell) + "</td>"
+      + "<td>" + escHtml(overflowNote(box)) + "</td>"
+      + "</tr>";
+  }
+  html += "</tbody></table>";
+  if (notScanned.length || errors.length) {
+    var foot = "";
+    for (var n2 = 0; n2 < notScanned.length; n2++) {
+      foot += (foot ? " \u00b7 " : "") + notScanned[n2].provider + " not scanned: " + notScanned[n2].reason;
+    }
+    for (var e2 = 0; e2 < errors.length; e2++) {
+      foot += (foot ? " \u00b7 " : "") + errors[e2].provider + ": " + errors[e2].error;
+    }
+    html += '<div class="sbx-note">' + escHtml(foot) + "</div>";
+  }
+  el.innerHTML = html;
+}
+
 function renderCrons() {
   var el = document.getElementById("crons");
   document.getElementById("cron-count").textContent = crons.length ? crons.length + " jobs" : "";
@@ -713,6 +954,10 @@ document.getElementById("refresh-btn").addEventListener("click", function () { l
 document.getElementById("ws-select").addEventListener("change", function (e) {
   wsFilter = e.target.value;
   renderSessions();
+});
+document.getElementById("sandbox-provider").addEventListener("change", function (e) {
+  sandboxProviderFilter = e.target.value;
+  renderSandboxes();
 });
 
 window.McpApp.connect()
