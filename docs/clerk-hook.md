@@ -159,7 +159,8 @@ Limits:
 - the debounce timer stays in memory: a restart drops a pending debounce
   exactly as before;
 - a pass interrupted by a crash is not replayed;
-- a failed dispatch is retried up to 3 times with backoff.
+- a dispatch that throws is retried with backoff, up to 3 attempts in total; a
+  command that exits non-zero ends the receipt `dead` without a retry.
 
 ## Implementation
 
