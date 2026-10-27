@@ -9701,13 +9701,13 @@ export function createSessionsRegistry(opts?: {
         }
         if (resolveAgentAdapter) {
           // The rescue owns the final notice, so it also owns the one close.
-          await performContextContinueFresh(rt, false)
+          await performContextContinueFresh(rt, { deferTranscriptClose: true })
           if (!isSessionAlive(rt)) {
             announceContextRescue(rt, "continued", pctBefore, pctAfter)
             return
           }
         }
-        await performContextHardStop(rt, pctAfter ?? pctBefore)
+        await performContextHardStop(rt, pctAfter ?? pctBefore, { deferTranscriptClose: true })
         announceContextRescue(rt, "hard-stopped", pctBefore, pctAfter)
       } finally {
         rt.contextRescue = undefined
@@ -9718,7 +9718,11 @@ export function createSessionsRegistry(opts?: {
     return rt.contextRescue
   }
 
-  async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
+  async function performContextHardStop(
+    rt: SessionRuntime,
+    pct: number,
+    opts?: { deferTranscriptClose?: boolean },
+  ): Promise<void> {
     // The stop itself is not optional (a prompt into a full window is
     // truncated or rejected), but the work done so far must survive it:
     // checkpoint first, while the transcript is still open. A failure here
@@ -9743,9 +9747,10 @@ export function createSessionsRegistry(opts?: {
     rt.desc.status = "killed"
     rt.desc.endedAt = new Date().toISOString()
     rt.desc.endedReason = "context-hard-stop"
-    // The transcript stays open for `announceContextRescue`'s final notice;
-    // that function closes it (once) for every terminal rescue outcome.
     void rt.agentSession?.close().catch(() => undefined)
+    // The rescue defers this close so its final notice lands on the same
+    // stream; `announceContextRescue` then closes it exactly once.
+    if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     tracedSessions.delete(rt.desc.id)
     schedulePersist()
     emitExited(rt)
@@ -9753,7 +9758,7 @@ export function createSessionsRegistry(opts?: {
 
   async function performContextContinueFresh(
     rt: SessionRuntime,
-    closeTranscript = true,
+    opts?: { deferTranscriptClose?: boolean },
   ): Promise<void> {
     if (!resolveAgentAdapter) {
       appendLine(
@@ -9764,8 +9769,8 @@ export function createSessionsRegistry(opts?: {
       await performContextHardStop(
         rt,
         computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100,
+        { deferTranscriptClose: opts?.deferTranscriptClose },
       )
-      if (closeTranscript) trackWrite(transcriptWriter.close(rt.desc.id))
       return
     }
     try {
@@ -9790,11 +9795,10 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       emitExited(rt)
       retireRow(rt, "continued", result.descriptor.id)
-      // The rescue path passes `false` and lets `announceContextRescue` write
-      // its notice before closing. The standalone callers (turn-boundary
-      // action, structured-question answer) have no rescue notice, so they
-      // close here.
-      if (closeTranscript) trackWrite(transcriptWriter.close(rt.desc.id))
+      // The rescue path defers and lets `announceContextRescue` write its
+      // notice before closing. The standalone callers (turn-boundary action,
+      // structured-question answer) have no rescue notice, so they close here.
+      if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     } catch (err) {
       appendLine(
         rt,

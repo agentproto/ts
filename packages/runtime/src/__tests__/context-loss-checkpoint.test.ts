@@ -33,7 +33,11 @@ import type { ContextCheckpoint } from "../context-checkpoint.js"
  *  terminal session must open exactly one, not one per write after its
  *  transcript was closed, and it must be finished when the session ends. */
 const openedStreams = vi.hoisted(() => ({
-  streams: [] as Array<{ path: string; finished: boolean }>,
+  streams: [] as Array<{
+    path: string
+    finished: boolean
+    stream?: { writableFinished: boolean }
+  }>,
 }))
 
 vi.mock("node:fs", async importOriginal => {
@@ -41,9 +45,13 @@ vi.mock("node:fs", async importOriginal => {
   return {
     ...actual,
     createWriteStream: (...args: Parameters<typeof actual.createWriteStream>) => {
-      const entry = { path: String(args[0]), finished: false }
+      const entry: (typeof openedStreams.streams)[number] = {
+        path: String(args[0]),
+        finished: false,
+      }
       openedStreams.streams.push(entry)
       const stream = actual.createWriteStream(...args)
+      entry.stream = stream
       stream.on("finish", () => {
         entry.finished = true
       })
@@ -437,7 +445,7 @@ describe("context-losing paths checkpoint first", () => {
       // still finish the transcript when it hard-stops for lack of a resolver.
       const streams = await closedStreamsFor(id)
       expect(streams.length).toBeGreaterThan(0)
-      expect(streams.every(entry => entry.finished)).toBe(true)
+      expect(streams.every(entry => entry.finished && entry.stream?.writableFinished === true)).toBe(true)
     })
 
     it("closes the transcript when a structured answer continues fresh", async () => {
@@ -456,7 +464,7 @@ describe("context-losing paths checkpoint first", () => {
 
       const streams = await closedStreamsFor(id)
       expect(streams.length).toBeGreaterThan(0)
-      expect(streams.every(entry => entry.finished)).toBe(true)
+      expect(streams.every(entry => entry.finished && entry.stream?.writableFinished === true)).toBe(true)
     })
   })
 })
