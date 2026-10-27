@@ -715,4 +715,81 @@ describe("agentproto sessions wait — idle short-circuit (exit 5)", () => {
     const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
     expect(calledUrl).toContain("/sessions/sess_1/wait")
   })
+
+  it("short-circuits to exit 5 for an exited terminal session with turnsCompleted 0", async () => {
+    httpGetJson.mockResolvedValueOnce({
+      id: "sess_term",
+      kind: "terminal",
+      status: "exited",
+      busy: false,
+      awaitingInput: false,
+      turnsCompleted: 0,
+    })
+
+    const code = await runSessions(["wait", "sess_term", "--until", "turn-end"])
+
+    expect(code).toBe(5)
+    expect(httpGetJson).toHaveBeenCalledTimes(1)
+    const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(calledUrl).not.toContain("/wait")
+    expect(calledUrl).toContain("/sessions/sess_term")
+  })
+
+  it("short-circuits to exit 5 for a non-turn-capable external session with turnsCompleted 0", async () => {
+    httpGetJson.mockResolvedValueOnce({
+      id: "sess_ext",
+      kind: "external",
+      status: "running",
+      busy: false,
+      awaitingInput: false,
+      turnsCompleted: 0,
+    })
+
+    const code = await runSessions(["wait", "sess_ext", "--until", "turn-end"])
+
+    expect(code).toBe(5)
+    expect(httpGetJson).toHaveBeenCalledTimes(1)
+    const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(calledUrl).not.toContain("/wait")
+  })
+
+  it("does not short-circuit a non-turn-capable session when --since is passed and it is not terminal", async () => {
+    httpGetJson
+      .mockResolvedValueOnce({
+        id: "sess_ext",
+        kind: "external",
+        status: "running",
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 0,
+      })
+      .mockResolvedValueOnce({ timedOut: true, nextCursor: 1 })
+      .mockResolvedValueOnce({ event: "turn-end", sessionId: "sess_ext", status: "running" })
+
+    const code = await runSessions(["wait", "sess_ext", "--until", "turn-end", "--since", "0"])
+
+    expect(code).toBe(0)
+    expect(httpGetJson).toHaveBeenCalledTimes(3)
+    const waitUrl = (httpGetJson.mock.calls[1] as [string])[0]
+    expect(waitUrl).toContain("/sessions/sess_ext/wait")
+    expect(waitUrl).toContain("since=0")
+  })
+
+  it("short-circuits a terminal/exited session even when --since is passed", async () => {
+    httpGetJson.mockResolvedValueOnce({
+      id: "sess_term",
+      kind: "terminal",
+      status: "exited",
+      busy: false,
+      awaitingInput: false,
+      turnsCompleted: 0,
+    })
+
+    const code = await runSessions(["wait", "sess_term", "--until", "turn-end", "--since", "0"])
+
+    expect(code).toBe(5)
+    expect(httpGetJson).toHaveBeenCalledTimes(1)
+    const calledUrl = (httpGetJson.mock.calls[0] as [string])[0]
+    expect(calledUrl).not.toContain("/wait")
+  })
 })

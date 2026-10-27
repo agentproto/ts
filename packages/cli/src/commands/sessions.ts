@@ -2985,28 +2985,32 @@ async function runWaitSession(opts: {
     // Nothing this wait could ever resolve on by blocking: no turn in
     // flight, not awaiting input (that would be a real match, not idleness —
     // left to the loop below), nothing queued to run next, not still
-    // spinning up, and at least one turn has ALREADY run to completion.
+    // spinning up.
     //
-    // The `turnsCompleted` gate is load-bearing for a prompted spawn: the
-    // spawn response can land, and this pre-flight read can see the session,
-    // before its opening turn has started (busy false, nothing queued,
-    // turnsCompleted 0). That snapshot is not "idle with nothing to wait
-    // for": the first turn is exactly what the caller is waiting on. A
-    // terminal session is still short-circuited regardless: no turn can
-    // start there.
+    // The `turnsCompleted` gate is load-bearing for a prompted spawn of a
+    // turn-capable session: the spawn response can land, and this pre-flight
+    // read can see the session, before its opening turn has started (busy
+    // false, nothing queued, turnsCompleted 0). That snapshot is not "idle
+    // with nothing to wait for": the first turn is exactly what the caller is
+    // waiting on. Only kinds that can actually run turns get that grace;
+    // terminal/external/command/browser sessions that will never emit a
+    // turn-end must keep the honest exit 5 short-circuit.
     const terminalStatus =
       desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    const kind = (desc as { kind?: string }).kind
+    const turnCapable = kind === undefined ? true : kind === "agent-cli"
     const idle =
       desc.busy !== true &&
       desc.awaitingInput !== true &&
       !desc.queuedPrompts &&
       desc.status !== "starting" &&
-      ((desc.turnsCompleted ?? 0) > 0 || terminalStatus)
+      (terminalStatus || (turnCapable && (desc.turnsCompleted ?? 0) > 0))
     // A caller-supplied cursor moves the "already finished?" decision to the
     // daemon (`monitorSessionWait`), which can distinguish a turn-end after
-    // that cursor from stale history. Do not override it with this
-    // cursor-less snapshot.
-    if (idle && since === undefined) {
+    // that cursor from stale history — but a terminal/exited session has
+    // no turn to replay for `--until turn-end`, so keep that short-circuit
+    // cursor-independent.
+    if (idle && (since === undefined || terminalStatus)) {
       return emitWaitIdle(json, {
         sessionId: desc.id,
         idOrName,
