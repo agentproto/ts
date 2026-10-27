@@ -36,8 +36,9 @@ import type {
   SandboxExecOpts,
   SandboxExecResult,
   SandboxProbeResult,
-  SandboxSpec,
   SandboxProvider,
+  SandboxProviderBox,
+  SandboxSpec,
   SandboxUsageWindow,
 } from "@agentproto/sandbox"
 import { resolveLifecyclePolicy, SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
@@ -825,6 +826,18 @@ function toSandboxBox(info: SandboxInfo): SandboxBox {
   }
 }
 
+/** Keep only the fields `SandboxProviderBox` declares, for the orphan gc's
+ *  thin view of the same `list()` mapping. */
+function toProviderBox(box: SandboxBox): SandboxProviderBox {
+  return {
+    id: box.id,
+    ...(box.state !== undefined ? { state: box.state } : {}),
+    ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
+    ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
+    ...(box.createdAt !== undefined ? { createdAt: box.createdAt } : {}),
+  }
+}
+
 /** One page-at-a-time read of `Sandbox.list()`, which by default includes
  *  both `running` and `paused` boxes. */
 async function listSandboxInfos(): Promise<SandboxInfo[]> {
@@ -986,6 +999,15 @@ export const e2bSandboxProvider: SandboxProvider = {
    */
   async list(): Promise<SandboxBox[]> {
     return (await listSandboxInfos()).map(toSandboxBox)
+  },
+
+  /**
+   * Thin `SandboxProviderBox` view of the same control-plane read `list()`
+   * performs, for the orphan-box gc. A paused box is included: e2b keeps it
+   * (and its RAM snapshot), so it is exactly what the gc must see.
+   */
+  async listBoxes(): Promise<SandboxProviderBox[]> {
+    return (await listSandboxInfos()).map(toSandboxBox).map(toProviderBox)
   },
 
   /**

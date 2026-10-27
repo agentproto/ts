@@ -97,6 +97,33 @@ describe("e2bSandboxProvider.list", () => {
 
     expect(boxes.map((box) => box.id)).toEqual(["sbx_a", "sbx_b", "sbx_c"])
   })
+
+  it("listBoxes exposes the same read in the thin orphan-gc shape", async () => {
+    sandboxListMock.mockReturnValue(
+      paginator([
+        [info({ sandboxId: "sbx_a", state: "running" })],
+        [info({ sandboxId: "sbx_b", state: "paused", cpuCount: 4, memoryMB: 2048 })],
+      ]),
+    )
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const boxes = await e2bSandboxProvider.listBoxes?.()
+
+    expect(boxes).toEqual([
+      {
+        id: "sbx_a",
+        state: "running",
+        memoryMiB: 1024,
+        createdAt: "2026-10-20T00:00:00.000Z",
+      },
+      {
+        id: "sbx_b",
+        state: "paused",
+        memoryMiB: 2048,
+        createdAt: "2026-10-20T00:00:00.000Z",
+      },
+    ])
+  })
 })
 
 describe("e2bSandboxProvider.usage", () => {
