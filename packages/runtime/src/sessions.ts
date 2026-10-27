@@ -10710,6 +10710,13 @@ export function createSessionsRegistry(opts?: {
               }
             : undefined
         )
+        // The prompt record is queued on the writer's in-memory stream, so a
+        // transcript read issued right after `sendPrompt` (the
+        // transcript-tools tests, and any caller that inspects the
+        // transcript at a turn boundary) can observe the file without the
+        // prompt. Track the flush through `pendingWrites` (see `trackWrite`)
+        // so `settlePendingWrites()` can gate those reads.
+        trackWrite(transcriptWriter.drain?.(rt.desc.id) ?? Promise.resolve())
         // Capture the caller's own ask (system preamble stripped, mirroring the
         // transcript writer) so the index sidecar carries it without a
         // transcript read on the write path.
