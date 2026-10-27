@@ -21,6 +21,7 @@
  * never a guess).
  */
 
+import { tmpdir } from "node:os"
 import { z } from "zod"
 import { execArgv } from "./exec.js"
 
@@ -87,7 +88,7 @@ export interface ForgeClient {
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
 export class UnreachableForgeClient implements ForgeClient {
-  constructor(private readonly reason: string) {}
+  constructor(readonly reason: string) {}
   async pullRequestsForBranch(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
@@ -103,6 +104,42 @@ export class UnreachableForgeClient implements ForgeClient {
   async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
+}
+
+/**
+ * Wrap `client` so the first `ForgeUnavailableError` it throws also calls
+ * `notify` once with a loud, human-readable line, then rethrows unchanged.
+ * Status code keeps degrading to `unknown(offline)` exactly as before; this
+ * only guarantees the operator is told why, instead of seeing a silently
+ * empty status. Legitimate empty answers never notify.
+ */
+export function withUnavailableNotice(client: ForgeClient, notify: (message: string) => void): ForgeClient {
+  let told = false
+  const guard = async <T>(call: () => Promise<T>): Promise<T> => {
+    try {
+      return await call()
+    } catch (err) {
+      if (err instanceof ForgeUnavailableError && !told) {
+        told = true
+        notify(`forge unavailable: ${err.message}; PR/merge status shown as unknown(offline)`)
+      }
+      throw err
+    }
+  }
+  const wrapped: ForgeClient = {
+    pullRequestsForBranch: (branch) => guard(() => client.pullRequestsForBranch(branch)),
+    pullRequestsForCommit: (sha) => guard(() => client.pullRequestsForCommit(sha)),
+    ensurePullHeadFetched: (n, oid) => guard(() => client.ensurePullHeadFetched(n, oid)),
+  }
+  if (client.listOpenPullRequests) {
+    const list = client.listOpenPullRequests.bind(client)
+    wrapped.listOpenPullRequests = () => guard(list)
+  }
+  if (client.listMergedPullRequests) {
+    const list = client.listMergedPullRequests.bind(client)
+    wrapped.listMergedPullRequests = () => guard(list)
+  }
+  return wrapped
 }
 
 // ── gh CLI implementation ───────────────────────────────────────────────
@@ -162,19 +199,40 @@ function isCommitNotFoundError(output: string): boolean {
   return /\(HTTP (404|422)\)/.test(output)
 }
 
-/** Runs `gh` in `repoRoot` so it auto-detects owner/repo from the `origin` remote there. */
+/**
+ * Runs `gh` against an explicit `owner/repo` slug resolved once from `origin`
+ * (never from `gh`'s own cwd-based host detection, which does not recognise an
+ * ssh-config alias host such as `github.com-work`). When origin is not a
+ * github.com remote the slug is unknown and `gh` falls back to its own
+ * detection in `repoRoot` (GitHub Enterprise and the like).
+ */
 export class GhCliForgeClient implements ForgeClient {
+  private slug: Promise<{ owner: string; repo: string } | null> | undefined
+
   constructor(private readonly repoRoot: string) {}
 
+  private resolveSlug(): Promise<{ owner: string; repo: string } | null> {
+    this.slug ??= readOriginSlug(this.repoRoot)
+    return this.slug
+  }
+
   private async runRaw(args: readonly string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const slug = await this.resolveSlug()
+    const full = slug ? this.qualify(args, slug) : args
     try {
-      return await execArgv("gh", args, this.repoRoot)
+      return await execArgv("gh", full, this.repoRoot, slug ? { env: { GH_HOST: "github.com" } } : {})
     } catch (err) {
       throw new ForgeUnavailableError(
-        `gh ${args.join(" ")} could not be run: ${err instanceof Error ? err.message : String(err)}`,
+        `gh ${full.join(" ")} could not be run: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       )
     }
+  }
+
+  private qualify(args: readonly string[], slug: { owner: string; repo: string }): readonly string[] {
+    const full = `${slug.owner}/${slug.repo}`
+    if (args[0] === "pr") return [...args, "-R", full]
+    return args.map((a) => a.replace("{owner}/{repo}", full))
   }
 
   private async run(args: readonly string[]): Promise<string> {
@@ -281,18 +339,30 @@ function normalizeRestPr(item: RestPullRequest): ForgePullRequestRef {
 }
 
 /**
- * Parse `owner/repo` out of a `git remote get-url origin` value (ssh or https
- * form). The ssh form also accepts the multi-account `~/.ssh/config` alias
- * convention, `git@github.com-<alias>:owner/repo` (a `Host github.com-work`
- * entry that picks a key but still points at github.com), which is what a
- * machine juggling two GitHub identities has as its origin.
+ * Parse `owner/repo` out of a `git remote get-url origin` value: scp form
+ * (`git@host:o/r`), `ssh://`, `git://` and `https://`, with or without a
+ * `.git` suffix, trailing slash, user info or port. `host` is `github.com` or
+ * the multi-account `~/.ssh/config` alias convention `github.com-<alias>`
+ * (a `Host github.com-work` entry that picks a key but still points at
+ * github.com), which is normalized to github.com by returning only the slug.
  */
 export function parseGithubOwnerRepo(remoteUrl: string): { owner: string; repo: string } | null {
-  const ssh = remoteUrl.match(/^git@github\.com(?:-[\w.-]+)?:([^/]+)\/(.+?)(\.git)?$/)
-  if (ssh?.[1] && ssh[2]) return { owner: ssh[1], repo: ssh[2] }
-  const https = remoteUrl.match(/^https:\/\/github\.com\/([^/]+)\/(.+?)(\.git)?\/?$/)
-  if (https?.[1] && https[2]) return { owner: https[1], repo: https[2] }
-  return null
+  const host = String.raw`github\.com(?:-[\w.-]+)?`
+  const path = String.raw`([^/:]+)\/([^/]+?)(?:\.git)?\/*$`
+  const url = remoteUrl.trim()
+  const scp = url.match(new RegExp(String.raw`^(?:[^@/\s]+@)?${host}:${path}`))
+  const proto = url.match(new RegExp(String.raw`^(?:ssh|git|https):\/\/(?:[^@/]+@)?${host}(?::\d+)?\/${path}`))
+  const m = scp ?? proto
+  return m?.[1] && m[2] ? { owner: m[1], repo: m[2] } : null
+}
+
+async function readOriginSlug(repoRoot: string): Promise<{ owner: string; repo: string } | null> {
+  try {
+    const remote = await execArgv("git", ["-C", repoRoot, "remote", "get-url", "origin"], repoRoot)
+    return remote.exitCode === 0 ? parseGithubOwnerRepo(remote.stdout) : null
+  } catch {
+    return null
+  }
 }
 
 export class RestForgeClient implements ForgeClient {
@@ -420,9 +490,11 @@ export class RestForgeClient implements ForgeClient {
  * exactly what `ForgeUnavailableError` and the memo/`unknown(offline)` fallback
  * already handle.
  */
-async function ghIsUsable(repoRoot: string): Promise<boolean> {
+async function ghIsUsable(): Promise<boolean> {
   try {
-    const res = await execArgv("gh", ["auth", "token"], repoRoot)
+    // Neutral cwd + explicit host: `gh` must not try to detect a host from the
+    // repo's origin, which is an unrecognised ssh alias for multi-account setups.
+    const res = await execArgv("gh", ["auth", "token", "--hostname", "github.com"], tmpdir())
     return res.exitCode === 0 && res.stdout.trim() !== ""
   } catch {
     return false
@@ -436,16 +508,18 @@ async function ghIsUsable(repoRoot: string): Promise<boolean> {
  * knows how to fall back from that (memo, else `unknown(offline)`).
  */
 export async function createForgeClient(repoRoot: string): Promise<ForgeClient> {
-  if (await ghIsUsable(repoRoot)) return new GhCliForgeClient(repoRoot)
+  if (await ghIsUsable()) return new GhCliForgeClient(repoRoot)
 
   const token = process.env.GITHUB_TOKEN
   if (token) {
-    const remote = await execArgv("git", ["-C", repoRoot, "remote", "get-url", "origin"], repoRoot)
-    const parsed = remote.exitCode === 0 ? parseGithubOwnerRepo(remote.stdout.trim()) : null
+    const parsed = await readOriginSlug(repoRoot)
     if (parsed) return new RestForgeClient(parsed.owner, parsed.repo, repoRoot, token)
+    return new UnreachableForgeClient(
+      "no usable forge client: `gh auth token --hostname github.com` printed no token and origin is not a github.com remote (GITHUB_TOKEN REST needs one)",
+    )
   }
 
   return new UnreachableForgeClient(
-    "no usable forge client: `gh` is not installed/authenticated and GITHUB_TOKEN is not set (or origin isn't a GitHub remote)",
+    "no usable forge client: `gh auth token --hostname github.com` printed no token (gh missing or not logged in to github.com) and GITHUB_TOKEN is not set",
   )
 }

@@ -160,6 +160,7 @@ export {
   UnreachableForgeClient,
   ForgeUnavailableError,
   parseGithubOwnerRepo,
+  withUnavailableNotice,
   type ForgeClient,
   type ForgePullRequestRef,
 } from "./forge.js"

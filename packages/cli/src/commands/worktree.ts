@@ -57,6 +57,7 @@ import {
   cleanupWorktreeTool,
   worktreeProvider,
   createForgeClient,
+  withUnavailableNotice,
   type ForgeClient,
   parseGithubOwnerRepo,
   FileVerdictMemoStore,
@@ -293,12 +294,19 @@ async function runLs(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** Forge client that prints one stderr warning if the forge turns out to be unreachable, so a degraded status is never silent. */
+async function createWarningForgeClient(repoRoot: string): Promise<ForgeClient> {
+  return withUnavailableNotice(await createForgeClient(repoRoot), (message) => {
+    process.stderr.write(`agentproto worktree: ${message}\n`)
+  })
+}
+
 // ── ls --status ──────────────────────────────────────────────────────
 
 /** `ls --status`: the full status engine (PLAN.md §1.3–§1.5) over every linked worktree of `repoRoot`. */
 async function runLsStatus(repoRoot: string, json: boolean): Promise<number> {
   const [forge, defaultBranch, live] = await Promise.all([
-    createForgeClient(repoRoot),
+    createWarningForgeClient(repoRoot),
     detectDefaultBranch(repoRoot),
     fetchLiveSessionCwds(),
   ])
@@ -1357,7 +1365,7 @@ async function runGc(args: readonly string[]): Promise<number> {
   }
 
   const [forge, defaultBranch, worktreesRoot, live] = await Promise.all([
-    createForgeClient(repoRoot),
+    createWarningForgeClient(repoRoot),
     detectDefaultBranch(repoRoot),
     resolveWorktreesRoot(undefined),
     fetchLiveSessionCwds(),
