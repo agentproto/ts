@@ -213,10 +213,27 @@ The `session.<field>` filter paths are the flat facts from `sessionFactsOf`:
 | `session.label` | the descriptor `label`, omitted when undefined |
 | `session.reactionDepth` | the descriptor `meta.reactionDepth` read as a number, omitted unless it is a decimal integer string |
 | `session.causedByEventId` | the descriptor `meta.causedByEventId`, omitted when undefined |
+| `session.agentId` | the descriptor `meta.agentId`, omitted unless it is a non-empty string |
 
 An undefined field is omitted, so a filter on it never matches. An agent arm
 treats unreadable session facts as "do not fire"; it also refuses a session whose
 `origin` starts with `reaction:`.
+
+### Agent `on` maps
+
+An AGENT.md `on` map is a second source of the same reaction bindings.
+`packages/runtime/src/action-hooks/agent-on-scanner.ts` rescans
+`<workspace>/.agents/<id>/AGENT.md` on every reconcile and resolves each entry
+to the id `<agent-id>/on/<canonical-event>/<index>` (the owner prefix is
+stripped from the manifest id). An entry applies only to sessions whose
+descriptor `meta.agentId` equals the declaring agent, so the same completion
+never fires another agent's `on` map. The wiring converts these bindings after
+the routine bindings and reports an invalid `on` map as a refusal under
+`<agent-id>/on`, alongside the existing per-binding refusals. To roll an entry
+back, remove it from the manifest (or remove the `AGENT.md`) and run
+`routine_reconcile`. A manifest that fails to load is logged and skipped, so its
+bindings go away on the next reconcile; the array form of an `on` value is such
+a failure today (see `docs/design/action-hooks-v1.md`).
 
 ### Registered actions
 
