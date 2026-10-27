@@ -19,6 +19,8 @@ import {
   resumeResponseSchema,
   sessionsResponseSchema,
   suspendResponseSchema,
+  usageResponseSchema,
+  type UsageWindow,
 } from "@agentproto/computer-api"
 
 /** Contract guard: the fake must emit controller-shaped bodies (the
@@ -42,6 +44,15 @@ export interface FakeControllerOptions {
   /** Fail GET /v1/computers (the list) with this status/body. */
   listStatus?: number
   listError?: string
+  /** Extra W0b fields merged into every `GET /v1/computers` entry. */
+  listExtra?: Record<string, unknown>
+  /** Fail GET /v1/usage with this status/body. */
+  usageStatus?: number
+  usageError?: string
+  /** Windows served by GET /v1/usage (already contract-shaped). */
+  usageWindows?: UsageWindow[]
+  /** `host.unallocatedEur` served by GET /v1/usage; defaults to null. */
+  usageUnallocatedEur?: number | null
   /** Fail every GET /v1/computers/:id with this status/body (capacity tests). */
   statusStatus?: number
   statusError?: string
@@ -95,6 +106,8 @@ export class FakeController {
   readonly suspended: string[] = []
   readonly resumed: string[] = []
   readonly removed: string[] = []
+  /** Query parameters of every GET /v1/usage call. */
+  readonly usageRequests: Array<{ from?: string; to?: string; endUser?: string }> = []
   /** Every DELETE, with the force flag the caller sent. */
   readonly deletes: Array<{ id: string; force: boolean }> = []
   /** Bodies of the attach/detach calls, for holder assertions. `holder` is
@@ -260,9 +273,42 @@ export class FakeController {
         name,
         state: this.states.get(name) ?? "unknown",
         sessions: this.sessions.get(name) ?? 0,
+        ...this.options.listExtra,
       }))
       const responseBody = { computers }
       assertContract(computerListResponseSchema, responseBody)
+      return reply(res, 200, responseBody)
+    }
+
+    if (url.pathname === "/v1/usage" && req.method === "GET") {
+      if (this.options.usageStatus) {
+        const body = { error: this.options.usageError ?? "failed" }
+        assertContract(errorResponseSchema, body)
+        return reply(res, this.options.usageStatus, body)
+      }
+      const from = url.searchParams.get("from") ?? undefined
+      const to = url.searchParams.get("to") ?? undefined
+      const endUser = url.searchParams.get("endUser") ?? undefined
+      this.usageRequests.push({ from, to, endUser })
+      const windows = (this.options.usageWindows ?? []).filter(
+        (window) => endUser === undefined || window.endUser === endUser,
+      )
+      const responseBody = {
+        from: from ?? "",
+        to: to ?? "",
+        windows,
+        totals: windows.reduce(
+          (acc, window) => ({
+            activeSec: acc.activeSec + window.activeSec,
+            vcpuSec: acc.vcpuSec + window.vcpuSec,
+            gibSec: acc.gibSec + window.gibSec,
+            costEur: acc.costEur + window.costEur,
+          }),
+          { activeSec: 0, vcpuSec: 0, gibSec: 0, costEur: 0 },
+        ),
+        host: { unallocatedEur: this.options.usageUnallocatedEur ?? null },
+      }
+      assertContract(usageResponseSchema, responseBody)
       return reply(res, 200, responseBody)
     }
 

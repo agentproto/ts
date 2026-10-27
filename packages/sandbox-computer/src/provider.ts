@@ -49,6 +49,8 @@ import type {
   SandboxSpec,
   SandboxProvider,
   SandboxProviderBox,
+  SandboxBox,
+  SandboxUsageWindow,
 } from "@agentproto/sandbox"
 import { SandboxBoxGoneError, SandboxBootCancelledError } from "@agentproto/sandbox"
 import {
@@ -59,7 +61,7 @@ import {
 } from "./client.js"
 import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js"
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
-import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
+import type { ComputerListEntry, ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 export const DEFAULT_PORT = 18790
@@ -826,28 +828,75 @@ export const computerSandboxProvider: SandboxProvider = {
   },
 
   /**
+   * Every computer the controller still holds (`GET /v1/computers`), as the
+   * richer inventory shape. Read-only: no box is touched, no session slot is
+   * taken. Fields the controller does not report stay absent.
+   */
+  async list(_opts?: { from?: string; to?: string }): Promise<SandboxBox[]> {
+    return listComputerBoxes()
+  },
+
+  /** Usage windows from the controller's ledger (`GET /v1/usage`) in the
+   *  requested window, optionally restricted to one end user. */
+  async usage(opts: { from: string; to: string; endUser?: string }): Promise<SandboxUsageWindow[]> {
+    const client = new ComputerControllerClient(fallbackClientConfig())
+    const body = await client.getUsage(opts)
+    return body.windows
+  },
+
+  /**
    * Every computer the controller still holds (`GET /v1/computers`) - the
-   * orphan-box gc's view of the provider's control plane. Read-only: no box
-   * is touched, no session slot is taken. The controller's session count is
-   * reported as the box's `sessions` (the stale attachments an orphan box
-   * keeps), and `memoryMiB`/`createdAt` when the controller reports them.
+   * orphan-box gc's view of the provider's control plane. Shares `list()`'s
+   * mapping and keeps only the fields `SandboxProviderBox` declares.
    */
   async listBoxes(): Promise<SandboxProviderBox[]> {
-    const fallbackConfig = () =>
-      resolveClientConfig(
-        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
-        readComputerConfig({ provider: "computer", config: {} }),
-      )
-    const client = new ComputerControllerClient(fallbackConfig())
-    const computers = await client.listComputers()
-    return computers.map(entry => ({
-      id: entry.name,
-      state: entry.state,
-      ...(entry.sessions !== undefined ? { sessions: countSessions(entry.sessions) } : {}),
-      ...(entry.memoryMiB !== undefined ? { memoryMiB: entry.memoryMiB } : {}),
-      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
-    }))
+    return (await listComputerBoxes()).map(toProviderBox)
   },
+}
+
+/** Client for the process-wide bookkeeping paths (`probe`, `remove`,
+ *  `list`, `listBoxes`), which have no per-agent spec: config from the
+ *  `COMPUTER_CONTROLLER_*` env vars, exactly like the registry fills them. */
+function fallbackClientConfig(): ComputerClientConfig {
+  return resolveClientConfig(
+    { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+    readComputerConfig({ provider: "computer", config: {} }),
+  )
+}
+
+async function listComputerBoxes(): Promise<SandboxBox[]> {
+  const client = new ComputerControllerClient(fallbackClientConfig())
+  return (await client.listComputers()).map(toSandboxBox)
+}
+
+/** Map one controller list entry onto the unified inventory shape, field by
+ *  field: an absent controller field stays absent (never invented). */
+function toSandboxBox(entry: ComputerListEntry): SandboxBox {
+  return {
+    id: entry.name,
+    provider: "computer",
+    ...(entry.state !== undefined ? { state: entry.state } : {}),
+    ...(entry.tenantId !== undefined ? { tenantId: entry.tenantId } : {}),
+    ...(entry.endUser !== undefined ? { endUser: entry.endUser } : {}),
+    ...(entry.hostId !== undefined ? { host: entry.hostId } : {}),
+    ...(entry.cpus !== undefined ? { cpus: entry.cpus } : {}),
+    ...(entry.memoryMiB !== undefined ? { memoryMiB: entry.memoryMiB } : {}),
+    ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    ...(entry.lastActivityAt !== undefined ? { lastActivityAt: entry.lastActivityAt } : {}),
+    ...(entry.egressIp !== undefined ? { egressIp: entry.egressIp === null ? null : entry.egressIp.publicIp } : {}),
+    ...(entry.sessions !== undefined ? { sessions: countSessions(entry.sessions) } : {}),
+  }
+}
+
+/** Project a rich inventory box back onto the gc's thin shape. */
+function toProviderBox(box: SandboxBox): SandboxProviderBox {
+  return {
+    id: box.id,
+    ...(box.state !== undefined ? { state: box.state } : {}),
+    ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
+    ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
+    ...(box.createdAt !== undefined ? { createdAt: box.createdAt } : {}),
+  }
 }
 
 /** The controller reports the session slots of a computer either as a count

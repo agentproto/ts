@@ -129,15 +129,34 @@ export type ComputerStatus = z.infer<typeof computerStatusSchema>
  * every other `/v1/computers/:id` route), its state, and the session slots
  * the controller counts for it. `sessions` is read TOLERANTLY - a controller
  * may report a count or a list of session holders, so both shapes parse.
+ *
+ * The W0b ownership/activity fields (`hostId`, `hostUrl`, `tenantId`,
+ * `endUser`, `state`, `lastActivityAt`, `cpus`) are all optional: a
+ * controller that predates W0b simply omits them, and a field that is
+ * absent stays absent downstream rather than being invented.
  */
 export const computerListEntrySchema = z.object({
   name: z.string(),
-  state: computerStateSchema,
+  state: computerStateSchema.optional(),
   sessions: z.union([z.number().int(), z.array(z.unknown())]).optional(),
   /** Memory the box holds, when the controller reports it. */
   memoryMiB: z.number().int().optional(),
   /** Creation timestamp (ISO-8601), when the controller reports it. */
   createdAt: z.string().optional(),
+  /** Virtual CPUs allocated to the box (W0b), when reported. */
+  cpus: z.number().int().optional(),
+  /** Host identifier owning the box (W0b), when reported. */
+  hostId: z.string().optional(),
+  /** Public URL clients use for the host (W0b), when reported. */
+  hostUrl: z.string().optional(),
+  /** Owning tenant (W0b), when reported. */
+  tenantId: z.string().optional(),
+  /** End user inside the tenant (W0b), when reported. */
+  endUser: z.string().optional(),
+  /** Last activity timestamp (W0b, ISO-8601), when reported. */
+  lastActivityAt: z.string().optional(),
+  /** Public egress address, when the controller reports it on the list. */
+  egressIp: egressIpSchema.nullable().optional(),
 }).passthrough()
 export type ComputerListEntry = z.infer<typeof computerListEntrySchema>
 
@@ -151,6 +170,53 @@ export const computerListResponseSchema = z.object({
   computers: z.array(computerListEntrySchema),
 }).passthrough()
 export type ComputerListResponse = z.infer<typeof computerListResponseSchema>
+
+// ── GET /v1/usage ─────────────────────────────────────────────────────
+
+/**
+ * One usage window, the exact W0 `UsageWindow` shape
+ * (`projects/computer/CONTRACT-SCALE.md`). Camel-case JSON, ISO-8601 UTC
+ * times, whole seconds, EUR. Optional fields stay absent when the ledger
+ * does not know them.
+ */
+export const usageWindowSchema = z.object({
+  computer: z.string(),
+  tenantId: z.string(),
+  endUser: z.string().optional(),
+  provider: z.enum(["computer", "e2b"]),
+  host: z.string().optional(),
+  from: z.string(),
+  to: z.string(),
+  activeSec: z.number(),
+  vcpuSec: z.number(),
+  gibSec: z.number(),
+  costEur: z.number(),
+  eventId: z.string().optional(),
+}).passthrough()
+export type UsageWindow = z.infer<typeof usageWindowSchema>
+
+/** Totals over the returned usage windows. */
+export const usageTotalsSchema = z.object({
+  activeSec: z.number(),
+  vcpuSec: z.number(),
+  gibSec: z.number(),
+  costEur: z.number(),
+}).passthrough()
+export type UsageTotals = z.infer<typeof usageTotalsSchema>
+
+/**
+ * Response of `GET /v1/usage?from=<iso>&to=<iso>[&endUser=..]`. `host` is
+ * the host-level view: `unallocatedEur` is admin-only and `null` for a
+ * tenant token.
+ */
+export const usageResponseSchema = z.object({
+  from: z.string(),
+  to: z.string(),
+  windows: z.array(usageWindowSchema),
+  totals: usageTotalsSchema,
+  host: z.object({ unallocatedEur: z.number().nullable() }).passthrough().optional(),
+}).passthrough()
+export type UsageResponse = z.infer<typeof usageResponseSchema>
 
 // ── POST /v1/computers/:id/exec ───────────────────────────────────────
 
