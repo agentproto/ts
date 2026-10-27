@@ -411,8 +411,9 @@ export interface SandboxUsageWindow {
   vcpuSec: number
   /** `activeSec * memoryMiB / 1024`. */
   gibSec: number
-  /** Cost for the window in EUR, from the provider's cost model. */
-  costEur: number
+  /** Cost for the window in EUR, from the provider's cost model; `null`
+   *  when the host has no price model, never `0`. */
+  costEur: number | null
   /** Opening ledger event id, when the provider exposes one (the fleet
    *  dedupes windows on it). */
   eventId?: string

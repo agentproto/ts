@@ -232,6 +232,39 @@ describe("computer sandbox: common list and usage surface", () => {
     expect(window && "eventId" in window).toBe(false)
   })
 
+  it("usage accepts null costs from a host without a price model", async () => {
+    const windows: UsageWindow[] = [
+      {
+        computer: "cmp-003",
+        tenantId: "tenant-a",
+        provider: "computer",
+        from: "2026-10-01T00:00:00.000Z",
+        to: "2026-10-01T01:00:00.000Z",
+        activeSec: 60,
+        vcpuSec: 120,
+        gibSec: 30,
+        costEur: null,
+      },
+    ]
+    await start({ usageWindows: windows, usageTotalsExtra: { snapshotBytes: 1234, storageEur: null } })
+
+    const usage = await computerSandboxProvider.usage?.({
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-10-02T00:00:00.000Z",
+    })
+
+    expect(usage).toEqual(windows)
+    expect(usage?.[0]?.costEur).toBeNull()
+
+    const body = await client().getUsage({
+      from: "2026-10-01T00:00:00.000Z",
+      to: "2026-10-02T00:00:00.000Z",
+    })
+    expect(body.totals.costEur).toBeNull()
+    expect(body.totals.snapshotBytes).toBe(1234)
+    expect(body.totals.storageEur).toBeNull()
+  })
+
   it("usage surfaces a controller failure as ComputerApiError", async () => {
     await start({ usageStatus: 500, usageError: "boom" })
 

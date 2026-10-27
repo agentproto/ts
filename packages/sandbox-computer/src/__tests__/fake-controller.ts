@@ -53,6 +53,8 @@ export interface FakeControllerOptions {
   usageWindows?: UsageWindow[]
   /** `host.unallocatedEur` served by GET /v1/usage; defaults to null. */
   usageUnallocatedEur?: number | null
+  /** Extra fields merged into `totals` on GET /v1/usage. */
+  usageTotalsExtra?: Record<string, unknown>
   /** Fail every GET /v1/computers/:id with this status/body (capacity tests). */
   statusStatus?: number
   statusError?: string
@@ -293,19 +295,23 @@ export class FakeController {
       const windows = (this.options.usageWindows ?? []).filter(
         (window) => endUser === undefined || window.endUser === endUser,
       )
+      const usageTotals = windows.reduce(
+        (acc, window) => ({
+          activeSec: acc.activeSec + window.activeSec,
+          vcpuSec: acc.vcpuSec + window.vcpuSec,
+          gibSec: acc.gibSec + window.gibSec,
+          costEur:
+            acc.costEur === null || window.costEur === null
+              ? null
+              : acc.costEur + window.costEur,
+        }),
+        { activeSec: 0, vcpuSec: 0, gibSec: 0, costEur: 0 as number | null },
+      )
       const responseBody = {
         from: from ?? "",
         to: to ?? "",
         windows,
-        totals: windows.reduce(
-          (acc, window) => ({
-            activeSec: acc.activeSec + window.activeSec,
-            vcpuSec: acc.vcpuSec + window.vcpuSec,
-            gibSec: acc.gibSec + window.gibSec,
-            costEur: acc.costEur + window.costEur,
-          }),
-          { activeSec: 0, vcpuSec: 0, gibSec: 0, costEur: 0 },
-        ),
+        totals: { ...usageTotals, ...this.options.usageTotalsExtra },
         host: { unallocatedEur: this.options.usageUnallocatedEur ?? null },
       }
       assertContract(usageResponseSchema, responseBody)

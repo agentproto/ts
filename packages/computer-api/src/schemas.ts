@@ -177,7 +177,8 @@ export type ComputerListResponse = z.infer<typeof computerListResponseSchema>
  * One usage window, the exact W0 `UsageWindow` shape
  * (`projects/computer/CONTRACT-SCALE.md`). Camel-case JSON, ISO-8601 UTC
  * times, whole seconds, EUR. Optional fields stay absent when the ledger
- * does not know them.
+ * does not know them. `costEur` is `null` when the host has no price model,
+ * never `0`.
  */
 export const usageWindowSchema = z.object({
   computer: z.string(),
@@ -190,17 +191,20 @@ export const usageWindowSchema = z.object({
   activeSec: z.number(),
   vcpuSec: z.number(),
   gibSec: z.number(),
-  costEur: z.number(),
+  costEur: z.number().nullable(),
   eventId: z.string().optional(),
 }).passthrough()
 export type UsageWindow = z.infer<typeof usageWindowSchema>
 
-/** Totals over the returned usage windows. */
+/** Totals over the returned usage windows. `costEur` and `storageEur` are
+ *  `null` when the host has no price model, never `0`. */
 export const usageTotalsSchema = z.object({
   activeSec: z.number(),
   vcpuSec: z.number(),
   gibSec: z.number(),
-  costEur: z.number(),
+  costEur: z.number().nullable(),
+  snapshotBytes: z.number().optional(),
+  storageEur: z.number().nullable().optional(),
 }).passthrough()
 export type UsageTotals = z.infer<typeof usageTotalsSchema>
 
