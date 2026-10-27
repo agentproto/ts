@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/run",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/run - the AIP-58 run substrate: the per-run workspace layout, the append-only event log, the on-disk run store, the file-backed step cache, and the pure run-record types.",
   "keywords": [
     "agentproto",

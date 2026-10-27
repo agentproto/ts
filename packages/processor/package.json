@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/processor",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "@agentproto/processor - AIP-51 vendor-neutral Processor/Redactor port + built-in redactors (none, deny-list, truncate, chain) and a catalog/resolver so any egress boundary can scrub outbound payloads before they leave the process.",
   "keywords": [
     "agentproto",

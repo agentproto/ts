@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/driver-agent-cli",
-  "version": "2.15.0",
+  "version": "2.16.0",
   "description": "DEPRECATED: renamed @agentproto/harness. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",

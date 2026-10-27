@@ -1,5 +1,84 @@
 # @agentproto/cli
 
+## 1.31.0
+
+### Minor Changes
+
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy`,
+  nested `config` and key-merged `options` on the user preset store; one pure
+  session-config resolver shared by the spawn path and exposed as
+  `agentproto preset resolve` / `user_preset_resolve`; preset model policies
+  compose with the request's so both apply.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy` and
+  an optional nested `config` on the user preset store; one pure session-config
+  resolver used by the spawn path and exposed as `agentproto preset resolve` /
+  `user_preset_resolve`; preset model policies compose with the request's.
+
+### Patch Changes
+
+- 0c114ae: Add the opt-in brain-ingest reaction on `agentproto:session-completed`, owned per workspace via `defaults.reactions.brainIngest.workspaces`, with boot reconciliation and a gateway handle method.
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- bcb6a8c: Keep sandbox gc off boxes a live successor or paused teardown holds
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [7a90c4b]
+- Updated dependencies [52f8616]
+- Updated dependencies [97a0074]
+- Updated dependencies [d3ce829]
+- Updated dependencies [61e6068]
+- Updated dependencies [a00f77d]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [a68476e]
+- Updated dependencies [89012c2]
+- Updated dependencies [8d53429]
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [76003b9]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f41d51c]
+- Updated dependencies [8d53429]
+- Updated dependencies [804db17]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [97a0074]
+- Updated dependencies [5ab8114]
+- Updated dependencies [d3ce829]
+- Updated dependencies [0865827]
+- Updated dependencies [61e6068]
+- Updated dependencies [89012c2]
+  - @agentproto/harness@2.16.0
+  - @agentproto/workspace@1.1.0
+  - @agentproto/inference-endpoint@0.12.0
+  - @agentproto/app@2.4.0
+  - @agentproto/apps@0.24.2
+  - @agentproto/app-client@0.4.4
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/sandbox-computer@0.5.0
+  - @agentproto/sandbox-e2b@0.10.0
+  - @agentproto/worktree@0.19.1
+  - @agentproto/adapter-browser@0.9.0
+  - @agentproto/sandbox-box@0.2.37
+  - @agentproto/sandbox-instabox@0.2.4
+  - @agentproto/acp@0.12.0
+  - @agentproto/auth@1.4.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/secrets@2.2.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/runtime-profile-standard@0.1.4
+  - create-agentproto-app@0.3.9
+  - @agentproto/pairing-host@0.2.11
+  - @agentproto/workflow-loader@0.2.10
+
 ## 1.30.0
 
 ### Minor Changes

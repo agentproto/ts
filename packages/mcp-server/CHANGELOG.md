@@ -1,5 +1,33 @@
 # @agentproto/mcp-server
 
+## 0.7.2
+
+### Patch Changes
+
+- 8d8c10c: Release and doc hygiene after the AIP-70 renames: fix remaining old package
+  names and dead paths, add the missing harness and doctype READMEs, document
+  the `inference-endpoint` command alongside its `llm-endpoint` alias, and
+  classify the AIP-70 rename shims as archived in STATUS.md.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [001368d]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [9ae92a7]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/agent@0.5.0
+  - @agentproto/doctype@0.2.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/extension@0.3.0
+  - @agentproto/routine@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/manifest@0.2.5
+
 ## 0.7.1
 
 ### Patch Changes

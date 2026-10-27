@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/mastra",
-  "version": "0.2.20",
+  "version": "0.3.0",
   "description": "DEPRECATED: renamed @agentproto/bridge. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",

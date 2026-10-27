@@ -1,5 +1,26 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.31
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- Updated dependencies [7a90c4b]
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [8d53429]
+- Updated dependencies [84ac51b]
+- Updated dependencies [8d53429]
+- Updated dependencies [d3ce829]
+  - @agentproto/harness@2.16.0
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/provider-presets@0.7.2
+
 ## 0.7.30
 
 ### Patch Changes

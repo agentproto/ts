@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/clerk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/clerk - the AIP-68 clerk pass: hook configuration, the turn-end subscriber that runs one debounced pass after a session goes idle, and the runner that launches the configured routine or command.",
   "keywords": [
     "agentproto",

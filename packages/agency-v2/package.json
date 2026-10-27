@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agency-v2",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "DEPRECATED: renamed @agentproto/agency. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",

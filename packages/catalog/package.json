@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/catalog",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "@agentproto/catalog: a multi-source, tier-aware catalog primitive that composes N CatalogSources (builtin / curated / marketplace / private / collection) into a single deduplicated fetch surface. One impl, every entity family (skills, operators, runtimes, integrations, ...).",
   "keywords": [
     "agentproto",

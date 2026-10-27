@@ -1,5 +1,12 @@
 # @agentproto/knowledge-cascade
 
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [8aa0aeb]
+  - @agentproto/corpus@0.9.0
+
 ## 0.2.7
 
 ### Patch Changes

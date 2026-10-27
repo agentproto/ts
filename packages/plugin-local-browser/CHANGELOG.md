@@ -1,5 +1,11 @@
 # @agentproto/plugin-local-browser
 
+## 0.3.7
+
+### Patch Changes
+
+- @agentproto/browser-profiles@0.2.5
+
 ## 0.3.6
 
 ### Patch Changes

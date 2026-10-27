@@ -1,5 +1,19 @@
 # @agentproto/sandbox-instabox
 
+## 0.2.4
+
+### Patch Changes
+
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- Updated dependencies [61e6068]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [804db17]
+- Updated dependencies [5ab8114]
+- Updated dependencies [61e6068]
+  - @agentproto/sandbox@0.14.0
+
 ## 0.2.3
 
 ### Patch Changes

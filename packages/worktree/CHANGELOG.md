@@ -1,5 +1,21 @@
 # @agentproto/worktree
 
+## 0.19.1
+
+### Patch Changes
+
+- e1fa90e: Attach stored verdicts to checkpoint refs in branch gc
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- e1fa90e: Attach stored review verdicts to sandbox checkpoint refs in branch gc and let `includeReviewed` reclaim an agreeing checkpoint through the line-coverage guard.
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/session-presets@0.7.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow-runtime@0.20.2
+
 ## 0.19.0
 
 ### Minor Changes

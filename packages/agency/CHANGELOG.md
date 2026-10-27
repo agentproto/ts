@@ -1,5 +1,23 @@
 # @agentproto/agency-v2
 
+## 0.2.0
+
+### Minor Changes
+
+- f19dd59: Rename `@agentproto/agency-v2` to its AIP-70 name `@agentproto/agency`. The old package name remains as a deprecated re-export shim, and `@agentproto/agency` now exports `defineAgency` alongside `defineAgencyV2`.
+- f19dd59: Rename `@agentproto/agency-v2` to its AIP-70 registry name `@agentproto/agency`, keeping `@agentproto/agency-v2` as a deprecated re-export shim. `@agentproto/agency` now exports `defineAgency` alongside `defineAgencyV2` with `SPEC_NAME = "agency/v2"`.
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+
 ## 0.1.5
 
 ### Patch Changes

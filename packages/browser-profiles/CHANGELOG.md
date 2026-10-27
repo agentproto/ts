@@ -1,5 +1,17 @@
 # @agentproto/browser-profiles
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+  - @agentproto/driver-browser@0.4.0
+  - @agentproto/tool@0.6.0
+
 ## 0.2.4
 
 ### Patch Changes

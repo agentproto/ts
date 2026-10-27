@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-opencode",
-  "version": "1.9.3",
-  "description": "@agentproto/adapter-opencode \u2014 AIP-45 AGENT-CLI adapter for sst/opencode. Spawns `opencode acp` (via npx -y opencode-ai) and drives OpenCode as an agentproto agent CLI over stdio JSON-RPC.",
+  "version": "1.9.4",
+  "description": "@agentproto/adapter-opencode — AIP-45 AGENT-CLI adapter for sst/opencode. Spawns `opencode acp` (via npx -y opencode-ai) and drives OpenCode as an agentproto agent CLI over stdio JSON-RPC.",
   "keywords": [
     "agentproto",
     "aip-45",
