@@ -113,11 +113,12 @@ on:
 
 Only `agentproto:session-completed` is a supported event today, and only
 actions registered in the daemon registry can be named; anything else is
-reported under `reactions.refused`. An `on` entry has no filter, cooldown or
-retry (use a routine). An edit takes effect on the next reconcile (boot,
-`routine_reconcile`, `POST /routine-defs/reconcile`), only the daemon
-workspace is scanned, and a failing target records a failed receipt without
-failing a turn.
+reported under `reactions.refused`. An `on` entry has no filter and no
+settings of its own (use a routine for a filter); like every reaction, a failing
+target is retried up to 3 attempts, and there is no cooldown on either surface.
+An edit takes effect on the next reconcile (boot, `routine_reconcile`,
+`POST /routine-defs/reconcile`), only the daemon workspace is scanned, and a
+failing target records a failed receipt without failing a turn.
 
 ## AIP-41 event routines are a second configuration surface, not a second system
 
