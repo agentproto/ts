@@ -1,5 +1,262 @@
 # @agentproto/runtime
 
+## 5.30.0
+
+### Minor Changes
+
+- aca2e3a: Make the AIP-42 `on` map of a workspace `AGENT.md` live: the daemon scans manifests on every routine reconcile and fires their `agentproto:session-completed` actions for that agent's sessions.
+- 0c114ae: Add the opt-in brain-ingest reaction on `agentproto:session-completed`, owned per workspace via `defaults.reactions.brainIngest.workspaces`, with boot reconciliation and a gateway handle method.
+- 56b7fd0: Add an opt-in durable reaction that dispatches the AIP-68 clerk pass, per workspace, while preserving the legacy dispatch as the default owner.
+- 86e541d: Resolve event routines and agent `on:` maps into one shape of event binding exposed by the routine registrar, adding `resolveRoutineEventBinding`, `resolveAgentOnBindings`, `matchEventFilter`, `EventBindingError`, and `eventBindings()` on the routine registrar.
+- 639d67f: Turn resolved event bindings into runnable reaction bindings with one typed action registry and the action, tool, workflow and agent target arms.
+- 2e3fa73: Reaction chains now carry their causation through every arm, so the depth cap bounds sessions started by tool and workflow reactions too.
+- dae78b8: Add the generic durable reaction runner over the reaction receipt store with single-flight execution, retries, recursion capping and boot reconciliation.
+- 9ae92a7: Wire AIP-41 event routines into the daemon through a hot-refreshed reaction runner binding set.
+- 5ce470d: Add a synchronous reaction runner health read model, one structured trace line per terminal transition and a read-only `GET /reactions` route.
+- ff060de: Add the durable reaction receipt store for action hooks with durable pending and running writes, a five-state lifecycle, redaction, retention and load validation.
+- fb5159a: Add the `session:archive` action so an event routine can archive the session of a completed event through the durable reaction runner.
+- bcb6a8c: Keep sandbox gc off boxes a live successor or paused teardown holds
+- a68476e: Discover Chrome browser UUID, fail loudly, add key/select/wait tools
+- 1d7b55a: Add auto sandbox provider with capacity overflow from computer to e2b
+- 8d53429: Add model lists with selectors, ordering and composition. A seeded `zero-cost` list (catalog price 0/0) replaces the free-model predicates, and the runtime enforces one generic `modelPolicy` (`allow`/`block` over list ids, set on `agent_start`) at spawn, `setModel`, restart and rotation instead of any free-versus-paid rule. Also, `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools.
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+- 76003b9: Declare native hook capabilities under `capabilities.hooks`, report them from harness capability discovery, and echo a session harness's declared hooks from `session_capabilities`.
+- 8c4169e: Make `allowPromptFrom` and `operatorLabel` survive restart/continue-fresh and the HTTP spawn path.
+
+  - New MCP tool `agent_set_operator_label`: lets the human operator stamp a
+    session's operator-assigned `operatorLabel` directly, without a fresh root
+    spawn.
+    Needed for a lineage that has lived by resume/continue-fresh since before
+    it ever got a label, so there was never a prior label for the existing
+    carry-forward logic to propagate.
+  - `session_restart` and `session_continue_fresh` now also carry forward
+    `allowPromptFrom` from the replaced session to its successor, the same way
+    they already carry forward `operatorLabel`. Previously a permanent agent's
+    drive grants (e.g. a `label:` grant) were silently dropped at the next
+    restart/continuation.
+  - `POST /sessions/agent` now applies `allowPromptFrom` post-spawn, the same
+    way the `agent_start` MCP tool handler already does. Previously the HTTP
+    spawn path (used by non-MCP callers such as Pygmalion's `EngineClient`)
+    silently accepted and dropped the field.
+  - New route `POST /sessions/:id/prompt-policy`, the HTTP twin of
+    `agent_set_prompt_policy`: (re-)grants `allowPromptFrom` on a session
+    that is ALREADY LIVE, for a non-MCP caller. The spawn-time field above
+    only reaches a fresh spawn, so a permanent `keepAlive` agent already
+    running before a grant was added would otherwise never pick it up until
+    it happens to restart.
+
+- 5a429e0: Corrective bump for PR #2177: beyond the reliability fixes already covered by
+  `.changeset/follow-sentinel-message-reliability.md` (bumped `patch`), this PR
+  adds new public exports from `@agentproto/runtime` — `PROTECTED_MESSAGE_KINDS`,
+  `isProtectedMessage`, `isNoiseMessage`, and `effectiveMessageUrgency` — via
+  `export * from "./session-message.js"` in `index.ts`, plus behavior changes
+  (blocker/question urgency upgrade, noise-first inbox eviction, the default
+  7-day `expiresAt` backstop on follows and session-target sentinels, and the new
+  `sweepWiringLifecycle` pass). Repo bump rules make added exports and behavior
+  changes a `minor`; combined with the committed patch changeset the release
+  resolves to `minor`.
+- 8c4169e: Carry `allowPromptFrom` forward across `session_restart` / `session_continue_fresh`, apply it on the HTTP `POST /sessions/agent` spawn path, and add the operator-only `agent_set_operator_label` MCP tool for stamping a session's `operatorLabel` without a fresh root spawn.
+- 8d53429: Add model lists with selectors, ordering and composition. The new `zero-cost` list (seed: catalog price 0/0) replaces every free-model predicate in the runtime, and `getEnrichment` now tags zero-priced LLMs `price:zero` on both the explicit and inferred paths. The runtime gains a `~/.agentproto/model-lists.json` store plus `model_list_save`, `model_list_list`, `model_list_delete` and `model_list_resolve` MCP tools. `@agentproto/model-intel` reuses an internal `isZeroPriced` helper for the same rule.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy`,
+  nested `config` and key-merged `options` on the user preset store; one pure
+  session-config resolver shared by the spawn path and exposed as
+  `agentproto preset resolve` / `user_preset_resolve`; preset model policies
+  compose with the request's so both apply.
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- ff060de: Add the durable AIP-71 reaction receipt store for action hooks. The new exports (`createReactionReceiptStore`, `buildReactionReceiptKey`, `ReceiptTransitionError`, `RECEIPT_REDACTION_REVISION`, and the receipt types/options) provide durable pending/running/terminal writes, a five-state lifecycle, redaction, retention, and load-time validation. Persistence is enabled by default when using the built-in receipt path.
+- dae78b8: Add the generic durable reaction runner over the reaction receipt store: single-flight execution, deterministic retry backoff, recursion capping, boot reconciliation and a retry/sweep tick. Exposes `createReactionRunner` and the `ReactionTarget`, `ReactionBinding`, `ReactionRunner` and related types.
+- d57dccf: Add `WorkflowRunner.dispose()`: a new exported method that clears the runner's trailing-flush and lease-heartbeat timers, unsubscribes its session-event-bus listeners, removes its process-exit drain, and awaits queued persistence so a test or shutdown path can tear down a persist directory without racing an in-flight write.
+
+  > Reviewer note: the PR's existing `.changeset/workflow-runner-dispose.md` marks this `patch`, but a new exported method on the public `WorkflowRunner` interface is a new feature. If this file lands alongside it, changesets selects the highest bump (minor). Adjust/supersede the existing changeset accordingly.
+
+- 9ae92a7: Wire AIP-41 `schedule.kind: "event"` routines into the daemon: `createReactionWiring`/`sessionFactsOf` turn resolved event bindings into reaction bindings, and `ReactionRunner.replaceBindings` hot-swaps the live binding set on every reconcile/boot. The agent-arm guard now fails closed when an event's session facts cannot be read.
+
+  Document how event routines are resolved in the routine README.
+
+- 02c8d08: Add in-place merging for queued session-follow digests: a busy follower now receives one persisted digest carrying all coalesced events (with a 50-entry cap) instead of a new digest per flush. This also exposes the digest/merge hook on the sessions registry.
+- 2e3fa73: Reaction chains now carry their causation through every arm: the runner derives each receipt's reaction depth and caused event id from the completing session's facts, enters an async reaction context around every target, and stamps sessions spawned inside it with origin and reaction meta. The depth cap therefore bounds sessions started by tool and workflow reactions too. This mirrors the existing `.changeset/action-hooks-reaction-causation.md` in the PR.
+- 5ce470d: Expose reaction runner health through a new `ReactionRunner.health()` read model and a read-only `GET /reactions` HTTP route, add a `ReactionWiring.current()` accessor, and emit one structured trace line per terminal reaction transition on a separate `trace` channel.
+- fb5159a: Add the `session:archive` action so an event routine can archive the session of a completed event through the durable reaction runner. The handler skips missing, already-archived, alive, pinned and keepAlive sessions with an `outcomeRef`, and surfaces an archive failure as a retryable reaction failure.
+- 3c0045a: Add a persisted, bounded `dedupeKey` to prompt admission (`enqueuePrompt` and the MCP `agent_prompt` tool) so a retried prompt is delivered at most once inside a 24 hour window, returning `delivery: "duplicate"` with no delivery or queue mutation.
+- aca2e3a: Make the AIP-42 `on` map of a workspace `AGENT.md` live: the daemon rescans `.agents/<id>/AGENT.md` on every routine reconcile, scopes each entry to sessions whose `meta.agentId` matches the declaring agent, and fires the named action for `agentproto:session-completed`.
+- 8955834: Add `sandbox_list` / `collectSandboxInventory` for a unified, per-provider sandbox inventory. `sandbox_gc` defaults to `computer` only, and reports an explicit `e2b` sweep as `notScanned` (the shared account writes no daemon marker, so its boxes cannot be attributed to this daemon).
+- 3c0045a: Add a persisted, bounded `dedupeKey` to prompt admission so a retried prompt is delivered at most once inside a 24 hour window. The exported `PromptDelivery` union gains `"duplicate"`; a consumer with an exhaustive switch must handle it.
+- 8955834: Add sandbox_list across every concrete provider; sandbox_gc now defaults to `computer` only (its controller scopes boxes to this daemon's tenant), and refuses an explicit e2b sweep because that shared account writes no daemon marker at boot
+- 2797c4a: Add per-call human approval for imported MCP tools. A `hold` rule in `.agentproto/hooks.json` matching an imported tool (for example `send_message` on agentpush) now parks the call as a real pending permission (`allow_once` / `reject_once`, fail-closed on timeout, session death and shutdown) before it reaches the upstream server; `deny` and `gate` rules are treated as the same human hold at this seam. New exports `ToolPermissionRequest` and `ToolPermissionOutcome`, new `SessionsRegistry.requestToolPermission`. An opt-in Telegram bridge (`approvals.permissionTelegramChatId` + `approvals.permissionTelegramUserIds`, plus `permissionTelegramAlias` and `permissionTelegramTools`) mirrors each pending permission on the configured tools to a chat with tap buttons and routes the tap back to the permission, through callback_query updates on a signed telegram inbound endpoint. With no hold rule and no bridge config, behaviour is unchanged.
+- 3d5d2eb: Add `turnRetry.fallback` overlays that move a failed session across models, auth profiles and harnesses after same-config retries are exhausted, recording each step and emitting a `session:fallback` event.
+- 02c8d08: Merge queued follow digests in place instead of stacking one per flush, retaining both batches across a daemon restart and capping merged events at 50.
+- d3d7119: Add AIP-46 session presets: `tags`, `extends`, `defaultFor`, `modelPolicy` and
+  an optional nested `config` on the user preset store; one pure session-config
+  resolver used by the spawn path and exposed as `agentproto preset resolve` /
+  `user_preset_resolve`; preset model policies compose with the request's.
+- d57dccf: Add `WorkflowRunner.dispose()` to stop trailing-flush and lease timers, unsubscribe bus listeners, and drain pending persistence writes.
+
+### Patch Changes
+
+- b60089c: Add the internal action-hooks contract types for the action envelope, admission decisions, hook owner, and occurrence keys.
+- 1b09503: Add the `agentproto:session-completed` host event with a pure derivation helper and an emitter wired into the runtime composition root.
+- a031ce9: Route the existing spawn dedupe and collision decisions through the pure spawn admission policy, with unchanged behaviour.
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- ecd171b: Autocompact now fires on sessions whose harness advertises its compact slash command (`/compact`, or `/compress` for hermes) in `available-commands`. It used to require a `compact` session mode, which no real ACP adapter advertises, so the absolute token threshold never compacted a claude-code session.
+- 5391176: Checkpoint snapshots no longer miss a same-size edit made in the same second.
+- 6366c83: Allow at most one continue-fresh per source session: a duplicate or concurrent call with the same options now returns the first call's checkpoint and successor instead of spawning a second one, while a later call with different options is refused with `already_continued` rather than silently returning the first successor.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and use it from the sentinel webhook outbox, with no behavior change.
+- 2aea136: Extract the AIP-66 managed cloud spawn surface into the new `@agentproto/cloud-agent` package. The vendor registry, pure spawn resolver and refusal shapes, `meta.cloud` identity helpers, relay session-meta side file and declared-remote spawn env now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- a54ae71: Extract the AIP-65 decision core into the new `@agentproto/decision` package. Policy parsing, bounded evidence collection, and the typed decision primitive now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 89e3acc: Extract the AIP-58 run substrate into the new `@agentproto/run` package. The per-run workspace, the append-only event log, the on-disk run store, the file-backed step cache, and the pure run-record types now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 07daf79: Extract the AIP-60 sentinel primitive into the new `@agentproto/sentinel` package. The sentinel store, runtime, providers, MCP tools and webhook outbox now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- bf31a70: Stop a late lease heartbeat from recreating a finished run's lease sidecar.
+- 15c186b: Persist a workflow run's terminal state before draining the app ledger, so `flush()` waits for the lease sidecar removal once the run is observed done or failed.
+- 5a429e0: Harden blocker delivery, inbox eviction, and follow/sentinel lifetimes.
+
+  - `blocker` and `question` messages are never downgraded to `fyi`: an
+    explicit `fyi` is applied as `next-turn`, so the recipient wakes (or the
+    message parks with the inbox's non-loss guarantee).
+  - A full inbox now evicts noise (`notice`/`fyi`) first and never drops an
+    un-consumed `blocker`/`question`. When every entry is protected, a new
+    noisy message is refused instead; a new protected message may exceed the
+    soft cap rather than lose a blocker.
+  - Follows and sentinels now carry an `expiresAt` (defaulted to 7 days,
+    matching the cron scheduler's owned-job backstop) and a periodic wiring
+    sweep removes expired records and those whose recipient is gone or retired
+    (relinking to a live successor when one exists). The sweep runs at boot and
+    every 60 seconds, cleaning up orphans left by an older daemon.
+
+- c9edab3: Fail open when follow triage throws, and add event timestamps, occurrence keys, task ids and a per-flush digest id to the follow triage ledger.
+- 1ac9090: Checkpoint sandbox work every 3 minutes by default instead of 10
+- 0f880f5: Stamp `operatorLabel` on operator spawns via `POST /sessions/agent`, matching `agent_start` so `label:` entries in `allowPromptFrom` apply.
+- e9256c2: Report installed apps whose dir is gone instead of a no-adapter error
+- 2391104: Keep box sessions alive across a dropped relay stream
+- 3e78d31: Extract the AIP-68 clerk pass into the new `@agentproto/clerk` package. The hook configuration, the turn-end subscriber and the pass runner now live there; `@agentproto/runtime` depends on the package and re-exports the same public names.
+- 449ab6f: Move the AIP-67 quota API to the new `@agentproto/quota` package. `@agentproto/model-intel` keeps `diffCatalog` and re-exports the quota API as deprecated aliases; `@agentproto/runtime` imports quota symbols from `@agentproto/quota`.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- c2a17e4: Quiesce active workflow runs (cancel, wait for lease release, flush persistence) before tmpdir teardown in the workflow-retry tests, deflaking teardown against late asynchronous writes.
+- 2391104: Keep box sessions alive across a dropped relay stream: re-open the structured `/events/stream` from the last consumed transcript seq with a bounded retry budget instead of declaring the box dead, reconstruct live tool-call phase state from flattened relay `[tool]` lines, and surface ring-buffer output on long-poll timeouts so long-running box builds don't trip the stall watchdog.
+- f370600: Extract the durable keyed-row file mechanics into a shared module and rewire the sentinel webhook outbox to use it, with no behavior change.
+- 0f880f5: Stamp `operatorLabel` on operator spawns made through `POST /sessions/agent`, matching the `agent_start` MCP tool so `label:` entries in `allowPromptFrom` apply to sessions that Pygmalion launches over HTTP.
+- c1a17d7: Correct the `ContextProfile` documentation to accurately describe the adapters' `lean` semantics and the built-in executor default, and drop a stale source line reference.
+- df98be7: Record follow-triage rule verdicts to the triage ledger for every session-follow event even when triage is disabled. Ledger lines now include `source: "follow"` and `applied: false` in that mode; digest text, urgency, and delivery are unchanged.
+- 9d4f337: Fix sentinel triage key timing: record the coalesce key only after a successful delivery so a failed send is retried without being classified as a repeat of itself, and guard the repeat window against backwards clock steps.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+- a031ce9: Route the existing spawn dedupe and worktree collision decisions through the pure spawn admission policy. Adds observer parity telemetry and parity tests; no public API change and no behaviour change.
+- 1b09503: Wire the `agentproto:session-completed` host event: a pure derivation helper for the terminal-transition occurrence (`exit:<endedAt>`), a bounded in-process emitter wired to `session:exited` and `policy:passed`, and the corresponding bus event type. The PR already ships `.changeset/action-hooks-session-completed.md` with the same package and bump; this file is redundant and CI may drop it. Once completions recorded after the exit event (steward close, `session_mark_completed`, operator "Mark as completed") are emitted too, revisit whether the new host-event contract warrants a `minor` bump.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- 3e78d31: Extract the AIP-68 clerk pass into the new `@agentproto/clerk` package: hook configuration (agent > workspace > daemon resolution), the debounced/single-flight turn-end subscriber, and the routine/command pass runner now live there. `@agentproto/runtime` depends on the package and re-exports the same public names, so its public API is unchanged.
+- 89e3acc: Extract the AIP-58 run substrate into the new `@agentproto/run` package: the per-run workspace layout, the append-only event log, the on-disk run store, the file-backed step cache, and the pure run-record types. `@agentproto/runtime` depends on the package and re-exports the same public names, so existing consumers keep working.
+- ecd171b: Autocompact now recognises the slash command a harness actually advertises in `available-commands` (`/compact`, or `/compress` on hermes) rather than requiring an unadvertised `compact` session mode, so sessions on real ACP adapters compact at the absolute token threshold again. This is already covered by `.changeset/autocompact-advertised-compact-command.md` on the branch; this entry mirrors the same patch bump for the workflow handoff.
+- 07daf79: Extract the AIP-60 sentinel primitive into the new `@agentproto/sentinel` package (store, runtime, providers, MCP tools, webhook outbox). `@agentproto/runtime` now depends on the package through a runtime-owned platform-port layer and re-exports the same public names, so its API is unchanged.
+- 2aea136: Extract the AIP-66 managed cloud spawn surface into the new `@agentproto/cloud-agent` package: the vendor registry, pure spawn resolver and refusal shapes, `meta.cloud` identity helpers, relay session-meta side file, `GIT_TOKEN_ENV`, and declared-remote spawn env (now taking the runtime's remote validators through a `CloudRemotePort`). `@agentproto/runtime` depends on the new package and keeps the same behavior at its spawn/restart call sites.
+- 7114c28: Record a host-side `silent` turn-end when an agent acks its wake as an explicit `inbox_ack({ noop: true })` no-op, and let session-follow skip or deliver it like an empty turn.
+- b626b79: Classify a Codex usage cap printed as assistant text as provider-limit, so a bare "Internal error" that follows the cap message is attributed to the provider quota rather than a generic turn failure.
+- dfb1aef: Rename `@agentproto/redaction` to the AIP-70 name `@agentproto/processor`, with a `@agentproto/redaction` shim that re-exports it unchanged.
+- d3ce829: Point the `go-free` and `free-sonnet` model-role presets at `opencode-go/beam-free`: upstream deprecated `opencode-go/longcat-2.5-preview-free`, so the catalog no longer carries it.
+- 0aa32f3: Surface the PR's head branch name (`headRefName`) in `review_pr`'s status
+  snapshot and in `local-gh` sentinel events, so a watching session can read
+  who opened a PR directly from the event's `data` instead of GitHub's
+  `author` field — which is always the same bot account for every PR we open,
+  and so cannot distinguish which agent/role opened it. The branch's own
+  prefix convention (`pm-brain/...`, `mainteneur/...`, `fix-pr-<n>-...`) does.
+- 68485ca: Keep sentinel triage from demoting a failing verdict on a head already seen as pending, use a fixed repeat window, and add the event timestamp and triage key to the observation ledger.
+- 9d4f337: Record what a triage stage would decide for sentinel deliveries. The new `sentinel-triage` module classifies each session delivery as `wake` or `fyi` using ordered rules (`terminal`, `coalesced-repeat` within 10 minutes, then `default`) and appends an observation-only JSONL line (`applied: false`) to `~/.agentproto/sentinel-triage.jsonl`. Delivery itself is unchanged.
+- 7114c28: Record a host-side `silent` turn-end when an agent acks its wake as an explicit `inbox_ack({ noop: true })` no-op, and let session-follow skip or deliver it like an empty turn.
+- b626b79: Classify a Codex usage cap printed as assistant text as provider-limit
+- 34216fc: Attribute task tools called on the root `/mcp` via `?callerSessionId=` to that session instead of the operator, and add `defaults.tasks.operatorDelegates` to keep the ledger's operator rights for explicitly listed sessions.
+- df98be7: Record follow triage decisions in the ledger while triage is off, without changing delivery.
+- Updated dependencies [ba7e5a1]
+- Updated dependencies [001368d]
+- Updated dependencies [7a90c4b]
+- Updated dependencies [6b78431]
+- Updated dependencies [52f8616]
+- Updated dependencies [97a0074]
+- Updated dependencies [d3ce829]
+- Updated dependencies [61e6068]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [2aea136]
+- Updated dependencies [a54ae71]
+- Updated dependencies [89e3acc]
+- Updated dependencies [07daf79]
+- Updated dependencies [a68476e]
+- Updated dependencies [9fbf379]
+- Updated dependencies [bee10e3]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [8d53429]
+- Updated dependencies [3e78d31]
+- Updated dependencies [84ac51b]
+- Updated dependencies [449ab6f]
+- Updated dependencies [d3dd524]
+- Updated dependencies [76003b9]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f41d51c]
+- Updated dependencies [8d53429]
+- Updated dependencies [bee10e3]
+- Updated dependencies [804db17]
+- Updated dependencies [97a0074]
+- Updated dependencies [5ab8114]
+- Updated dependencies [3e78d31]
+- Updated dependencies [89e3acc]
+- Updated dependencies [07daf79]
+- Updated dependencies [2aea136]
+- Updated dependencies [9ae92a7]
+- Updated dependencies [d3ce829]
+- Updated dependencies [0865827]
+- Updated dependencies [61e6068]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [dfb1aef]
+  - @agentproto/lifecycle@0.2.0
+  - @agentproto/agent@0.5.0
+  - @agentproto/harness@2.16.0
+  - @agentproto/governance@0.2.0
+  - @agentproto/governance-engine@0.2.0
+  - @agentproto/review@0.7.0
+  - @agentproto/inference-endpoint@0.12.0
+  - @agentproto/app@2.4.0
+  - @agentproto/apps@0.24.2
+  - @agentproto/app-client@0.4.4
+  - @agentproto/model-catalog@0.14.0
+  - @agentproto/sandbox@0.14.0
+  - @agentproto/provider-presets@0.7.2
+  - @agentproto/mcp-server@0.7.2
+  - @agentproto/driver-http@0.2.0
+  - @agentproto/driver-browser@0.4.0
+  - @agentproto/cloud-agent@0.2.0
+  - @agentproto/decision@0.2.0
+  - @agentproto/run@0.2.0
+  - @agentproto/sentinel@0.2.0
+  - @agentproto/adapter-browser@0.9.0
+  - @agentproto/model-intel@0.4.0
+  - @agentproto/clerk@0.2.0
+  - @agentproto/quota@0.1.0
+  - @agentproto/acp@0.12.0
+  - @agentproto/auth@1.4.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/routine@0.4.0
+  - @agentproto/secrets@2.2.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow@0.8.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/manifest@0.2.5
+  - @agentproto/processor@0.3.0
+  - @agentproto/workflow-runtime@0.20.2
+  - @agentproto/workspace-brain@0.5.5
+  - @agentproto/eval-reporters@0.2.29
+  - @agentproto/telemetry-langfuse@0.2.27
+  - @agentproto/providers-store@0.4.1
+  - @agentproto/pairing-host@0.2.11
+  - @agentproto/storage-github@0.2.2
+  - @agentproto/workflow-loader@0.2.10
+  - @agentproto/plugin-local-browser@0.3.7
+
 ## 5.29.0
 
 ### Minor Changes

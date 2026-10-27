@@ -1,5 +1,15 @@
 # @agentproto/eval-reporters
 
+## 0.2.29
+
+### Patch Changes
+
+- Updated dependencies [8aa0aeb]
+- Updated dependencies [76003b9]
+  - @agentproto/eval@0.4.0
+  - @agentproto/provider-kit@0.5.0
+  - @agentproto/telemetry-langfuse@0.2.27
+
 ## 0.2.28
 
 ### Patch Changes

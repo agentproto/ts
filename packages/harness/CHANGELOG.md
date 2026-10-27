@@ -1,5 +1,34 @@
 # @agentproto/harness
 
+## 2.16.0
+
+### Minor Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+
+### Patch Changes
+
+- 8d8c10c: Release and doc hygiene after the AIP-70 renames: fix remaining old package
+  names and dead paths, add the missing harness and doctype READMEs, document
+  the `inference-endpoint` command alongside its `llm-endpoint` alias, and
+  classify the AIP-70 rename shims as archived in STATUS.md.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/acp@0.12.0
+
 ## 2.15.0
 
 ### Minor Changes

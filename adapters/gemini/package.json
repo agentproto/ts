@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-gemini",
-  "version": "0.2.32",
-  "description": "@agentproto/adapter-gemini \u2014 AIP-45 AGENT-CLI adapter for Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Native billing-auth: \"use my existing Gemini login\".",
+  "version": "0.3.0",
+  "description": "@agentproto/adapter-gemini — AIP-45 AGENT-CLI adapter for Google's Gemini CLI in ACP mode (`gemini --experimental-acp`). Native billing-auth: \"use my existing Gemini login\".",
   "keywords": [
     "agentproto",
     "aip-45",

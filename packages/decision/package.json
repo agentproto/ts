@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/decision",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/decision - the AIP-65 DECISION.md core: policy parsing, bounded evidence collection, and the reusable typed decision primitive with its shared cache.",
   "keywords": [
     "agentproto",

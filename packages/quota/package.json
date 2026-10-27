@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/quota",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/quota - unified, provider-neutral quota status (AIP-67): a QuotaStatus shape with a mandatory basis, a never-throw QuotaReader contract, and a reader registry. Unknown is omitted, never fabricated.",
   "keywords": [
     "agentproto",

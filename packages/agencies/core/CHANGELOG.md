@@ -1,5 +1,19 @@
 # @agentproto/agencies
 
+## 0.2.0
+
+### Minor Changes
+
+- 16d10ed: Add an internal data-format id (`AGENCIES_FORMAT`, `AGENT_CLI_FORMAT`), so the packages no longer present their format ids as AIP registry spec names. The legacy `SPEC_NAME` export is retained for compatibility and is now deprecated; it remains a legitimate pending registry-name deviation until it is removed.
+
+### Patch Changes
+
+- Updated dependencies [6b78431]
+- Updated dependencies [9fbf379]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/governance@0.2.0
+
 ## 0.1.6
 
 ### Patch Changes

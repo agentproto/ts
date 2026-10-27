@@ -1,5 +1,37 @@
 # @agentproto/app-kit
 
+## 2.4.0
+
+### Minor Changes
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+### Patch Changes
+
+- f41d51c: Docs-only sync: the `@agentproto/app` README now documents the AIP-53 `services` production-hosting surface as deterministic managed child processes, including the structured `{ name, command, args?, cwd?, port? }` declaration, legacy `entry` compatibility, boot re-ensure via `daemon.resumeServicesOnBoot`, and manifest reconciliation on install/uninstall.
+- Updated dependencies [001368d]
+- Updated dependencies [52f8616]
+- Updated dependencies [97a0074]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [97a0074]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+  - @agentproto/agent@0.5.0
+  - @agentproto/workspace@1.1.0
+  - @agentproto/bridge@0.3.0
+  - @agentproto/driver-cli@0.3.0
+  - @agentproto/driver-http@0.2.0
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow@0.8.0
+  - @agentproto/workflow-loader@0.2.10
+
 ## 2.3.0
 
 ### Minor Changes

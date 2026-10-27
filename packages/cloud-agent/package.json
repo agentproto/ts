@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/cloud-agent",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/cloud-agent - the AIP-66 host-side managed cloud spawn surface: the vendor registry, pure spawn resolver and refusal shapes, meta.cloud identity helpers, the relay session-meta side file, and declared-remote spawn env.",
   "keywords": [
     "agentproto",

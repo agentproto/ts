@@ -1,5 +1,17 @@
 # @agentproto/catalog-sync
 
+## 0.8.11
+
+### Patch Changes
+
+- d3ce829: Sync generated catalog data from the pinned provider sources.
+- d3ce829: Sync generated catalog data from the pinned provider sources: refreshed catalog-sync snapshots/ledgers and regenerated model-catalog pricing, routing and context-window data, plus the dated CATALOG-CHANGELOG entry for 2026-10-26.
+- Updated dependencies [d3ce829]
+- Updated dependencies [8d53429]
+- Updated dependencies [8d53429]
+- Updated dependencies [d3ce829]
+  - @agentproto/model-catalog@0.14.0
+
 ## 0.8.10
 
 ### Patch Changes

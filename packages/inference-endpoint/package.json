@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/inference-endpoint",
-  "version": "0.11.15",
-  "description": "@agentproto/inference-endpoint \u2014 a multi-surface inference proxy gateway. Exposes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses API surfaces with transparent provider/model routing to Moonshot, OpenRouter, ZAI/Zhipu, Groq, xAI, and OpenAI. Handles Anthropic\u2194OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
+  "version": "0.12.0",
+  "description": "@agentproto/inference-endpoint — a multi-surface inference proxy gateway. Exposes Anthropic Messages, OpenAI Chat Completions, and OpenAI Responses API surfaces with transparent provider/model routing to Moonshot, OpenRouter, ZAI/Zhipu, Groq, xAI, and OpenAI. Handles Anthropic↔OpenAI schema translation, per-provider tool caps, orphaned-tool-call repair, and thinking-block stripping.",
   "keywords": [
     "agentproto",
     "inference",

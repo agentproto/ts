@@ -1,5 +1,24 @@
 # @agentproto/driver-cli
 
+## 0.3.0
+
+### Minor Changes
+
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export none.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export no `SPEC_NAME`/`SPEC_ID` constant (mirrors `.changeset/e33-spec-name-constants.md`).
+
+### Patch Changes
+
+- 8d8c10c: Release and doc hygiene after the AIP-70 renames: fix remaining old package
+  names and dead paths, add the missing harness and doctype READMEs, document
+  the `inference-endpoint` command alongside its `llm-endpoint` alias, and
+  classify the AIP-70 rename shims as archived in STATUS.md.
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+
 ## 0.2.5
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @agentproto/agencies-engine
 
+## 0.1.14
+
+### Patch Changes
+
+- Updated dependencies [16d10ed]
+- Updated dependencies [6b78431]
+- Updated dependencies [9fbf379]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/agencies@0.2.0
+  - @agentproto/governance@0.2.0
+  - @agentproto/governance-engine@0.2.0
+
 ## 0.1.13
 
 ### Patch Changes

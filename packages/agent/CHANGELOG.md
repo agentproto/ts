@@ -1,5 +1,26 @@
 # @agentproto/agent
 
+## 0.5.0
+
+### Minor Changes
+
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+
+### Patch Changes
+
+- 001368d: Fix loading an AGENT.md whose `on:` value is an array, the multi-action form AIP-42 documents. The generated schema typed an action ref as `z.any()`, so an array matched both branches of the `oneOf` and the load failed with "Should pass single schema. Passed 2". `on:` values are now validated as a string or object action ref, or an array of them, so a bare number is rejected where it used to load.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [5ab8114]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/manifest@0.2.5
+
 ## 0.4.1
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @agentproto/manifest
 
+## 0.2.5
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+
 ## 0.2.4
 
 ### Patch Changes

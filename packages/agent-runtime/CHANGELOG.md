@@ -1,5 +1,13 @@
 # @agentproto/agent-runtime
 
+## 0.2.0
+
+### Minor Changes
+
+- 52f8616: Accept the canonical AIP-70 document tags (for example `skill/v1` and `design/v1`) alongside their legacy aliases in every document parser. Writers keep emitting the legacy value until the next major.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export none.
+- c6e0daa: Export each package's AIP-70 registry spec id as `SPEC_NAME`, and make `check-names` flag registered packages that export no `SPEC_NAME`/`SPEC_ID` constant (mirrors `.changeset/e33-spec-name-constants.md`).
+
 ## 0.1.6
 
 ### Patch Changes

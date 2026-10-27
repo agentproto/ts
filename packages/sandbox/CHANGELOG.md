@@ -1,5 +1,35 @@
 # @agentproto/sandbox
 
+## 0.14.0
+
+### Minor Changes
+
+- 61e6068: Add common sandbox list and usage surface with W0b fields
+- 1d7b55a: Add auto sandbox provider with capacity overflow from computer to e2b
+- d3dd524: Align `SPEC_NAME` with the canonical AIP-70 names registry, add the `defineAuth` alias for `defineAuthProvider`, and point the runtime approval request at the accepted AIP-7.
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- 61e6068: Add the common sandbox list and usage surface. `@agentproto/sandbox` gains the `SandboxBox` and `SandboxUsageWindow` types plus optional `list()`/`usage()` methods on `SandboxProvider`; `@agentproto/computer-api` gains the `GET /v1/usage` schemas/types and additive W0b list fields; `@agentproto/sandbox-computer` implements `list()`/`usage()` and `ComputerControllerClient.getUsage()`, keeping absent controller fields absent.
+
+### Patch Changes
+
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package. Update dependency keys, import specifiers, tsup externals, and generated scaffolds; keep the shim and changelogs untouched.
+- 5ab8114: Switch the workspace dependents of the deprecated `@agentproto/define-doctype` shim to the canonical `@agentproto/doctype` package: dependency keys, import specifiers, tsup externals, the lockfile, and the generated AIP scaffold. The shim itself and per-package changelogs are retained unchanged.
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [84ac51b]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [e1fa90e]
+- Updated dependencies [f18edbc]
+- Updated dependencies [5ab8114]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [f18edbc]
+  - @agentproto/doctype@0.2.0
+  - @agentproto/worktree@0.19.1
+  - @agentproto/secrets@2.2.0
+  - @agentproto/workflow-runtime@0.20.2
+
 ## 0.13.0
 
 ### Minor Changes

@@ -1,5 +1,28 @@
 # @agentproto/sandbox-computer
 
+## 0.5.0
+
+### Minor Changes
+
+- 61e6068: Add common sandbox list and usage surface with W0b fields
+- 89012c2: Add typed capacity refusal codes and an isCapacityRefusal predicate
+- 804db17: Make computer sandbox boot visible, bounded, and honest about impossible capacity: register a `starting` session row before the box boots and adopt it once the driver session exists (with a new `sandbox` provisioning phase), give the whole provider boot one deadline that fails with a typed `sandbox_boot_timeout` naming the stuck phase, refuse requests above the tenant's total budget with `sandbox_capacity_exceeds_budget`, log one daemon line per boot phase through the new optional `SandboxBootOpts.log`, and abort a boot whose `starting` row is killed (provider create requests are aborted on a create-phase deadline, and a completed boot is torn down so a killed spawn can never resurrect). `sandbox-computer` also gains `ComputerControllerClient.getCapacity()`, the `bootDeadlineMs` config, and additive error fields (`budget`, `phase`, `timeoutMs`, `sandboxId`); its bump is `minor` because those exports are new.
+- 61e6068: Add the common sandbox list and usage surface. `@agentproto/sandbox` gains the `SandboxBox` and `SandboxUsageWindow` types plus optional `list()`/`usage()` methods on `SandboxProvider`; `@agentproto/computer-api` gains the `GET /v1/usage` schemas/types and additive W0b list fields; `@agentproto/sandbox-computer` implements `list()`/`usage()` and `ComputerControllerClient.getUsage()`, keeping absent controller fields absent.
+- 89012c2: Add typed capacity-refusal handling: new `sandbox_fleet_capacity`, `sandbox_tenant_running_cap`, `sandbox_end_user_cap`, and `sandbox_fleet_tenant_cap` error codes, an additive `cap` field on the error types, and an exported `isCapacityRefusal` predicate that classifies by controller body code rather than HTTP status.
+
+### Patch Changes
+
+- 84ac51b: Move the typed session presets from `@agentproto/harness` to `@agentproto/session-presets`. This is step 1 of 2 for AIP-45: the presets moved to `@agentproto/session-presets`, and the name `@agentproto/harness` now carries the AIP-45 runner (see the aip-45 changeset). `@agentproto/worktree` now imports the new package. The sandbox providers only update a doc comment that names the package, so they take a patch bump to satisfy the changeset coverage gate.
+- Updated dependencies [61e6068]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [804db17]
+- Updated dependencies [5ab8114]
+- Updated dependencies [61e6068]
+  - @agentproto/computer-api@0.4.0
+  - @agentproto/sandbox@0.14.0
+
 ## 0.4.0
 
 ### Minor Changes

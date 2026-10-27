@@ -1,5 +1,123 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.45
+
+### Patch Changes
+
+- 7a90c4b: AIP-45 step 2 of 2: the runner formerly published as `@agentproto/driver-agent-cli` now ships as `@agentproto/harness` (on npm since 2.15.0). It gains `defineHarness`, an alias of `defineAgentCli` registered as the AIP-70 `harness/v1` entry, and `SPEC_NAME` is `harness/v1`.
+
+  Users of the old session presets move to `@agentproto/session-presets`; users of `@agentproto/driver-agent-cli` move to `@agentproto/harness` (same API, `defineHarness` added). `@agentproto/driver-agent-cli` stays published as a deprecated shim that re-exports the harness package unchanged, so existing installs keep working.
+
+  The switched dependents only rename their dependency and import specifiers, hence the patch bumps.
+
+- 97a0074: Rename three packages to their AIP-70 names: `@agentproto/llm-endpoint` to `@agentproto/inference-endpoint` (AIP-61), `@agentproto/app-kit` to `@agentproto/app` (AIP-53) and `@agentproto/mastra` to `@agentproto/bridge` (AIP-52). The old names stay as deprecated re-export shims with the same exports, and every workspace dependency, import, test and doc points at the new names.
+- 97a0074: Complete the AIP-52/AIP-53/AIP-61 batch renames: add the canonical `@agentproto/bridge`, `@agentproto/app` and `@agentproto/inference-endpoint` packages (moved from `mastra`, `app-kit` and `llm-endpoint`), keep the old names as deprecated re-export shims, and repoint every workspace dependency, import, test and doc at the new names.
+
+  This complements the changeset already in the PR (`.changeset/aip70-p3-batch7b-renames.md`); the two are merged by changesets so each package is bumped at most once.
+
+- Updated dependencies [aca2e3a]
+- Updated dependencies [0c114ae]
+- Updated dependencies [56b7fd0]
+- Updated dependencies [b60089c]
+- Updated dependencies [86e541d]
+- Updated dependencies [639d67f]
+- Updated dependencies [2e3fa73]
+- Updated dependencies [dae78b8]
+- Updated dependencies [9ae92a7]
+- Updated dependencies [5ce470d]
+- Updated dependencies [ff060de]
+- Updated dependencies [fb5159a]
+- Updated dependencies [1b09503]
+- Updated dependencies [a031ce9]
+- Updated dependencies [001368d]
+- Updated dependencies [7a90c4b]
+- Updated dependencies [97a0074]
+- Updated dependencies [bcb6a8c]
+- Updated dependencies [ecd171b]
+- Updated dependencies [5391176]
+- Updated dependencies [6366c83]
+- Updated dependencies [f370600]
+- Updated dependencies [8d8c10c]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [2aea136]
+- Updated dependencies [a54ae71]
+- Updated dependencies [89e3acc]
+- Updated dependencies [07daf79]
+- Updated dependencies [bf31a70]
+- Updated dependencies [15c186b]
+- Updated dependencies [a68476e]
+- Updated dependencies [5a429e0]
+- Updated dependencies [c9edab3]
+- Updated dependencies [1ac9090]
+- Updated dependencies [0f880f5]
+- Updated dependencies [e9256c2]
+- Updated dependencies [2391104]
+- Updated dependencies [1d7b55a]
+- Updated dependencies [8d53429]
+- Updated dependencies [3e78d31]
+- Updated dependencies [84ac51b]
+- Updated dependencies [449ab6f]
+- Updated dependencies [d3dd524]
+- Updated dependencies [76003b9]
+- Updated dependencies [8c4169e]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5a429e0]
+- Updated dependencies [8c4169e]
+- Updated dependencies [8d53429]
+- Updated dependencies [c2a17e4]
+- Updated dependencies [3d5d2eb]
+- Updated dependencies [d3d7119]
+- Updated dependencies [804db17]
+- Updated dependencies [2391104]
+- Updated dependencies [f370600]
+- Updated dependencies [0f880f5]
+- Updated dependencies [c1a17d7]
+- Updated dependencies [df98be7]
+- Updated dependencies [9d4f337]
+- Updated dependencies [97a0074]
+- Updated dependencies [ff060de]
+- Updated dependencies [a031ce9]
+- Updated dependencies [1b09503]
+- Updated dependencies [dae78b8]
+- Updated dependencies [5ab8114]
+- Updated dependencies [3e78d31]
+- Updated dependencies [89e3acc]
+- Updated dependencies [ecd171b]
+- Updated dependencies [d57dccf]
+- Updated dependencies [07daf79]
+- Updated dependencies [2aea136]
+- Updated dependencies [9ae92a7]
+- Updated dependencies [02c8d08]
+- Updated dependencies [2e3fa73]
+- Updated dependencies [7114c28]
+- Updated dependencies [5ce470d]
+- Updated dependencies [fb5159a]
+- Updated dependencies [3c0045a]
+- Updated dependencies [aca2e3a]
+- Updated dependencies [c6e0daa]
+- Updated dependencies [8955834]
+- Updated dependencies [b626b79]
+- Updated dependencies [3c0045a]
+- Updated dependencies [dfb1aef]
+- Updated dependencies [d3ce829]
+- Updated dependencies [8955834]
+- Updated dependencies [2797c4a]
+- Updated dependencies [0aa32f3]
+- Updated dependencies [68485ca]
+- Updated dependencies [9d4f337]
+- Updated dependencies [3d5d2eb]
+- Updated dependencies [02c8d08]
+- Updated dependencies [d3d7119]
+- Updated dependencies [7114c28]
+- Updated dependencies [b626b79]
+- Updated dependencies [34216fc]
+- Updated dependencies [df98be7]
+- Updated dependencies [d57dccf]
+  - @agentproto/runtime@5.30.0
+  - @agentproto/agent@0.5.0
+  - @agentproto/harness@2.16.0
+  - @agentproto/bridge@0.3.0
+
 ## 0.7.44
 
 ### Patch Changes

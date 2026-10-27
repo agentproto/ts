@@ -1,5 +1,20 @@
 # @agentproto/eval
 
+## 0.4.0
+
+### Minor Changes
+
+- 8aa0aeb: Add an internal data-format id (`CATALOG_FORMAT`, `CORPUS_FORMAT`, `EVAL_FORMAT`), removing the packages' claims to be AIP registry specs. The legacy `SPEC_NAME` export is retained for compatibility and is now deprecated; it remains a legitimate pending registry-name deviation until it is removed.
+
+### Patch Changes
+
+- Updated dependencies [d3dd524]
+- Updated dependencies [5ab8114]
+- Updated dependencies [5ab8114]
+  - @agentproto/driver@0.4.0
+  - @agentproto/tool@0.6.0
+  - @agentproto/workflow-runtime@0.20.2
+
 ## 0.3.14
 
 ### Patch Changes

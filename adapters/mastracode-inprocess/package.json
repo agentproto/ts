@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-mastracode-inprocess",
-  "version": "0.5.3",
-  "description": "@agentproto/adapter-mastracode-inprocess \u2014 AIP-45 AGENT-CLI adapter for Mastra Code driven in-process via the `mastracode`/`mastracode/headless` SDK, instead of spawning a subprocess. Implements the `protocol: \"proprietary\"` arm contract directly.",
+  "version": "0.5.4",
+  "description": "@agentproto/adapter-mastracode-inprocess — AIP-45 AGENT-CLI adapter for Mastra Code driven in-process via the `mastracode`/`mastracode/headless` SDK, instead of spawning a subprocess. Implements the `protocol: \"proprietary\"` arm contract directly.",
   "keywords": [
     "agentproto",
     "aip-45",
