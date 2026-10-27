@@ -12,7 +12,7 @@
  * daemon-discovery + HTTP helper pattern as `agentproto tunnel`.
  */
 import { parseArgs } from "node:util"
-import type { SentinelView } from "@agentproto/runtime"
+import type { SentinelView } from "@agentproto/sentinel"
 import {
   discoverDaemon,
   printNoDaemonError,

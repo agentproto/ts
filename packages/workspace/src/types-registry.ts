@@ -57,9 +57,9 @@ export function parseTypesManifest(source: string): TypesManifestFrontmatter {
 // author doesn't have to spell out every zod default by hand.
 export function writeTypesManifest(def: TypesManifestFrontmatterInput, body = ""): string {
   const parsed = typesManifestSchema.parse(def)
-  // Writers keep emitting the legacy tag until the next major. Old readers
-  // in the field only know workspace-types/v1.
-  return matter.stringify(body, { ...parsed, schema: "workspace-types/v1" })
+  // Writers emit the canonical tag; readers still accept the legacy
+  // workspace-types/v1 alias in the schema enum above.
+  return matter.stringify(body, { ...parsed, schema: "workspace.types/v1" })
 }
 
 /** `type`'s resolved parent-chain floor, per the type's own `extends` chain. */

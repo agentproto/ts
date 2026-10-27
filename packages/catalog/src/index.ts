@@ -14,12 +14,6 @@
 export const CATALOG_FORMAT = "agentproto.catalog/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-/**
- * @deprecated Not an AIP spec name; use {@link CATALOG_FORMAT} instead.
- * Kept for backward compatibility.
- */
-export const SPEC_NAME = "agentcatalog/v1" as const
-
 export { createCatalog } from "./create-catalog.js"
 export { CollectionSource, type CollectionSourceOptions } from "./collection-source.js"
 export {

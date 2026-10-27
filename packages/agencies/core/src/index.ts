@@ -35,11 +35,5 @@
 export const AGENCIES_FORMAT = "agentagencies/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-/**
- * @deprecated Not an AIP spec name; use {@link AGENCIES_FORMAT} instead.
- * Kept for backward compatibility.
- */
-export const SPEC_NAME = "agentagencies/v1" as const
-
 export * from "./spec/doctypes/index.js"
 export * from "./spec/validators/index.js"

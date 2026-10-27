@@ -170,12 +170,11 @@ export interface PackLoader {
   load(ref: string): Promise<PackSource>
 }
 
-/** The legacy pack-digest recipe string writers still emit until the next
- *  major. Old readers in the field only know agentproto-pack-digest/v1.
- *  See
+/** Canonical pack-digest recipe string writers emit. Readers still accept
+ *  the pre-AIP-70 agentproto-pack-digest/v1 alias. See
  *  {@link computePackDigestSha256}'s doc comment for the exact byte
  *  layout. Travels as `PackDigest.alg`, inside the signed attestation. */
-export const PACK_DIGEST_ALG = "agentproto-pack-digest/v1" as const
+export const PACK_DIGEST_ALG = "review.pack-digest/v1" as const
 
 /**
  * The v1 pack-digest recipe: sha256 over a canonical text built from the

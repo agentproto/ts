@@ -44,7 +44,7 @@ export function parseExportManifest(source: string): ExportManifest {
 
 export function writeExportManifest(frontmatter: ExportManifestFrontmatterInput, body: string): string {
   const parsed = exportManifestSchema.parse(frontmatter)
-  // Writers keep emitting the legacy tag until the next major. Old readers
-  // in the field only know workspace-export/v1.
-  return matter.stringify(body, { ...parsed, schema: "workspace-export/v1" })
+  // Writers emit the canonical tag; readers still accept the legacy
+  // workspace-export/v1 alias in the schema enum above.
+  return matter.stringify(body, { ...parsed, schema: "workspace.export/v1" })
 }
