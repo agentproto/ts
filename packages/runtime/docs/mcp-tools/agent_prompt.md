@@ -49,8 +49,10 @@ A retry-safe key, 1 to 200 characters after trimming. Once a prompt carrying
 the key is accepted (dispatched, queued, or steered), a later call with the
 same key inside a 24 hour window is not delivered again: it answers
 `delivery: "duplicate"`, `pending: false`, and `duplicate: true`, plus the
-original `queueId` while that item still waits. A duplicate does not
-interrupt, resume, compact, or touch the inbox or queue.
+original `queueId` while that item still waits. A retry that arrives while the
+first call is still being admitted (for example while a dead session resumes)
+answers `duplicate` too. A duplicate does not interrupt, resume, compact, or
+touch the inbox or queue.
 
 The accepted-key window holds at most 128 keys and is persisted with the
 session, so the guarantee survives a daemon restart. Dropping a waiting item
