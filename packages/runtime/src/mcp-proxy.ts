@@ -101,7 +101,30 @@ export interface CallError {
 }
 export type ProxyCallOutcome = CallResult | CallError
 
+/** Who is making an imported-MCP call, when the entry point knows. */
+export interface ProxyCallContext {
+  callerSessionId?: string
+}
+
+/**
+ * Pre-dispatch hook consulted by every `callTool`. Returning `{allow:false}`
+ * short-circuits the call with `reason` as its error; the upstream is never
+ * contacted. Unset by default, so a bare registry dispatches exactly as before.
+ */
+export type ProxyCallGuard = (call: {
+  alias: string
+  toolName: string
+  args: unknown
+  context?: ProxyCallContext
+}) => Promise<{ allow: true } | { allow: false; reason: string }>
+
 export class McpProxyRegistry {
+  private callGuard: ProxyCallGuard | undefined
+
+  setCallGuard(guard: ProxyCallGuard | undefined): void {
+    this.callGuard = guard
+  }
+
   private clients = new Map<string, ProxyClient>()
   private lastMtimeMs = 0
   /** Sentinel so we know whether the file has *ever* been read.
@@ -276,8 +299,13 @@ export class McpProxyRegistry {
   async callTool(
     alias: string,
     toolName: string,
-    args: unknown
+    args: unknown,
+    context?: ProxyCallContext
   ): Promise<ProxyCallOutcome> {
+    if (this.callGuard) {
+      const verdict = await this.callGuard({ alias, toolName, args, ...(context ? { context } : {}) })
+      if (!verdict.allow) return { ok: false, error: verdict.reason }
+    }
     const handle = await this.connectIfNeeded(alias)
     if (!handle) return { ok: false, error: `unknown alias "${alias}"` }
     if (!handle.client) {

@@ -3825,10 +3825,12 @@ export function registerSessionTools(
           isError: true,
         }
       }
+      const caller = callerScope?.ownerSessionId ?? callerSessionId
       const out = await mcpProxy.callTool(
         input.alias,
         input.toolName,
-        input.args ?? {}
+        input.args ?? {},
+        caller ? { callerSessionId: caller } : undefined
       )
       if (!out.ok) {
         return {

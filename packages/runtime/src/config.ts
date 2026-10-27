@@ -478,6 +478,21 @@ export interface ApprovalsConfig {
    * callback has none). Default absent — `telegram` is OFF until set.
    */
   telegramBotSecret?: string
+  /**
+   * Telegram tap-to-approve for the pending-permissions inbox
+   * (`permission-telegram-bridge.ts`). The bridge starts only when BOTH
+   * `permissionTelegramChatId` and a non-empty `permissionTelegramUserIds`
+   * are set; default absent = no bridge, no behaviour change. Chat that gets
+   * the approval messages and the only chat taps are accepted from.
+   */
+  permissionTelegramChatId?: string
+  /** Telegram user ids allowed to tap Allow/Reject. */
+  permissionTelegramUserIds?: string[]
+  /** Bot credential alias (`telegram_bot_token_set`) and the signed telegram
+   *  inbound endpoint alias that receives the taps. Default `"default"`. */
+  permissionTelegramAlias?: string
+  /** Tool names mirrored to Telegram. Default `["send_message"]`. */
+  permissionTelegramTools?: string[]
 }
 
 /**

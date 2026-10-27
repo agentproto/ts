@@ -277,6 +277,10 @@ const approvalsConfigSchema: z.ZodType<ApprovalsConfig> = z
   .object({
     webOrigins: z.array(z.string()).optional(),
     telegramBotSecret: z.string().optional(),
+    permissionTelegramChatId: z.string().optional(),
+    permissionTelegramUserIds: z.array(z.string()).optional(),
+    permissionTelegramAlias: z.string().optional(),
+    permissionTelegramTools: z.array(z.string()).optional(),
   })
   .passthrough()
 
@@ -572,6 +576,45 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "daemon",
     label: "Approval telegram bot secret",
     help: "Shared bearer secret gating POST /approvals/:id/decision/telegram (telegram channel). A Telegram webhook callback has no browser Origin to check, so this secret IS the credential, held only by the trusted bot-bridge service. Unset (default) turns the channel off entirely.",
+  },
+  {
+    path: "approvals.permissionTelegramChatId",
+    schema: str,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram chat id",
+    help: "Telegram chat that receives a tap-to-approve message for each pending permission on a bridged tool (default send_message). The bridge starts only when this AND approvals.permissionTelegramUserIds are set. Unset (default) = no bridge.",
+  },
+  {
+    path: "approvals.permissionTelegramUserIds",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram user ids",
+    help: "Telegram user ids allowed to tap Allow/Reject on a permission message. Taps from anyone else, or from another chat, are refused. Empty (default) = no bridge.",
+    default: [],
+  },
+  {
+    path: "approvals.permissionTelegramAlias",
+    schema: str,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram bot alias",
+    help: "Bot credential alias used to send the approval messages, and the alias a signed telegram inbound endpoint must carry for its taps to reach the bridge.",
+    default: "default",
+  },
+  {
+    path: "approvals.permissionTelegramTools",
+    schema: strArray,
+    apply: "restart",
+    writable: false,
+    section: "daemon",
+    label: "Permission Telegram tools",
+    help: "Tool names whose pending permissions are mirrored to Telegram. Which calls are held at all is decided by .agentproto/hooks.json rules.",
+    default: ["send_message"],
   },
   {
     path: "daemon.strictOrigins",
