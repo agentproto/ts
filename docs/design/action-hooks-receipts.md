@@ -69,26 +69,26 @@ keeps the full `envelope` and the original `event` alongside the row.
 Rows are keyed in memory by a string built from sentinel and event:
 `packages/sentinel/src/sentinel-webhook-outbox.ts` `  const rowKey = (sentinelId: string, eventId: string): string => `${sentinelId}::${eventId}``.
 The persisted JSON is a map keyed by that same string, loaded at construction:
-`packages/sentinel/src/sentinel-webhook-outbox.ts` `    for (const [key, row] of rows.entries()) out[key] = row`.
+`packages/runtime/src/durable-row-file.ts` `    for (const [key, row] of rows.entries()) out[key] = row`.
 
 ### Storage format and location
 
 The default file is `~/.agentproto/sentinel-webhook-outbox.json`:
 `packages/sentinel/src/sentinel-webhook-outbox.ts` `  const filePath = opts.filePath ?? resolve(agentprotoHome(), "sentinel-webhook-outbox.json")`.
 The body is pretty-printed JSON with a trailing newline:
-`packages/sentinel/src/sentinel-webhook-outbox.ts` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
+`packages/runtime/src/durable-row-file.ts` `      const body = JSON.stringify(snapshot(), null, 2) + "\n"`.
 
 ### Atomicity and locking
 
 Writes use the shared durable file writer:
-`packages/sentinel/src/sentinel-webhook-outbox.ts` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
+`packages/runtime/src/durable-row-file.ts` `      await writeFileDurable(filePath, body, { commitIf: () => generation === syncGeneration })`.
 That helper is documented as tmp plus fsync plus rename plus parent directory
 fsync: `packages/runtime/src/durable-file.ts:2` ` * Crash-durable file writes: tmp file → fsync → rename → fsync of the parent`.
 It defaults to mode `0o600`:
 `packages/runtime/src/durable-file.ts:42` `  const mode = opts.mode ?? 0o600`.
 The outbox serializes all writes through one promise chain:
-`packages/sentinel/src/sentinel-webhook-outbox.ts` `  // All writes ride ONE serialized chain so a slow older snapshot can never`
-and `packages/sentinel/src/sentinel-webhook-outbox.ts` `  let writeTail: Promise<void> = Promise.resolve()`.
+`packages/sentinel/src/sentinel-webhook-outbox.ts` `  // All writes ride one serialized chain. Enqueue awaits its write (durable`
+and `packages/runtime/src/durable-row-file.ts` `  let writeTail: Promise<void> = Promise.resolve()`.
 Enqueue awaits its own write, so durability precedes the caller's ack:
 `packages/sentinel/src/sentinel-webhook-outbox.ts` `      enqueueDispatch()` is reached only after the awaited persist, and a failed
 persist rolls the row back and rejects, cited in the interface contract at
@@ -429,7 +429,7 @@ status vocabulary. It does not generalize `sentinel-webhook-outbox.ts`, and the
 webhook outbox does not become an adapter of the receipt store.
 
 The two stores share the durable-row mechanics, extracted from the outbox into
-one module (proposed `packages/runtime/src/durable-row-file.ts`, next to the
+one module (now `packages/runtime/src/durable-row-file.ts`, next to the
 existing `durable-file.ts`). The extraction is a behaviour-preserving refactor
 of the outbox: its public interface, row shape, file format and tests do not
 change, and its existing tests are the guard.
@@ -439,7 +439,7 @@ sentinels:
 
 - The load of a JSON map keyed by an opaque string, and the pretty-printed
   snapshot written through `writeFileDurable` (mode `0o600`, tmp plus fsync
-  plus rename), cited in section 1.
+  plus rename) in `packages/runtime/src/durable-row-file.ts`, cited in section 1.
 - The single serialized write chain and the generation guard that keeps a slow
   older snapshot from overwriting a newer one, cited in section 1.
 - The persist-before-ack rule for a new row, with the rollback of the
