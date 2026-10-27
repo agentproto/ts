@@ -226,12 +226,12 @@ test("documented rule order: archived override wins over adapters/** path", () =
 test("status table has exactly one row per package in STATUS.md", () => {
   const entries = computeStatus(REPO_ROOT);
   const md = readFileSync(STATUS_PATH, "utf8");
-  // Package-table rows: `name | `dir` | version | tier | reason |`
+  // Package-table rows: `name | `dir` | tier | reason |`
   // (names are usually @agentproto/… but four first-party packages are bare.)
-  const rowRe = /^([^\s|`]+) \| `([^`]+)` \| ([^\s|]+) \| ([^\s|]+) \| (.+) \|$/gm;
+  const rowRe = /^([^\s|`]+) \| `([^`]+)` \| ([^\s|]+) \| (.+) \|$/gm;
   const rows = [];
   for (const m of md.matchAll(rowRe)) {
-    rows.push({ name: m[1], dir: m[2], version: m[3], tier: m[4] });
+    rows.push({ name: m[1], dir: m[2], tier: m[3] });
   }
   assert.ok(rows.length > 0, "STATUS.md package table is empty/unparseable");
   assert.equal(
@@ -246,6 +246,32 @@ test("status table has exactly one row per package in STATUS.md", () => {
     assert.ok(row, `STATUS.md is missing a row for ${e.dir}`);
     assert.equal(row.name, e.name, `name mismatch for ${e.dir}`);
     assert.equal(row.tier, e.tier, `tier mismatch for ${e.dir}`);
+  }
+});
+
+test("bumping a package version leaves the generated STATUS.md unchanged", () => {
+  // Releases bump package.json versions without regenerating STATUS.md.
+  // If the table carried versions, every Version PR would leave main red.
+  const tmp = mkdtempSync(path.join(tmpdir(), "gen-status-version-bump-"));
+  try {
+    const pkgDir = path.join(tmp, "packages", "fake-pkg");
+    mkdirSync(pkgDir, { recursive: true });
+    const writePkg = (version) =>
+      writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "@agentproto/fake-pkg",
+          version,
+          dependencies: {},
+        }),
+      );
+    writePkg("1.0.0");
+    const before = generateStatusFile(computeStatus(tmp));
+    writePkg("2.0.0");
+    const after = generateStatusFile(computeStatus(tmp));
+    assert.equal(after, before);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 
@@ -268,7 +294,7 @@ test("adding a package changes STATUS.md by exactly one added table row", () => 
   const added = after.filter((line) => !before.includes(line));
   assert.deepStrictEqual(removed, []);
   assert.deepStrictEqual(added, [
-    "@agentproto/zz-fake | `packages/zz-fake` | 0.0.0 | core | product runtime package consumed by the runtime/cli |",
+    "@agentproto/zz-fake | `packages/zz-fake` | core | product runtime package consumed by the runtime/cli |",
   ]);
 });
 
