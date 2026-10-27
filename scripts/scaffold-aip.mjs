@@ -82,6 +82,11 @@ if (!args.aip || !args.slug || !args.doctype) {
 // packages when the JSON Schema or this generator's logic changes.
 const SCHEMA_ONLY = Boolean(args["schema-only"])
 const INLINE_REFS = Boolean(args["inline-refs"])
+// The non-recursive `$defs` of the draft being rendered (set once external
+// refs are inlined). `oneOfOverride` runs inside json-schema-to-zod, which
+// gives it no way back to the root, so the local `$ref`s of a `oneOf` branch
+// are resolved against this.
+let RESOLVABLE_DEFS = {}
 
 const AIP = Number(args.aip)
 const SLUG = args.slug
@@ -155,6 +160,7 @@ if (Array.isArray(schema.required)) {
 // files from `<RESOURCES_DIR>/aip-N/draft/`, attach to `$defs`, rewrite refs
 // to local `#/$defs/<key>` form. Idempotent across nested refs.
 inlineExternalRefs(schema, RESOURCES_DIR)
+RESOLVABLE_DEFS = acyclicDefs(schema.$defs ?? {})
 
 // json-schema-to-typescript derives the top-level type name from the
 // schema's `title`. Mutate a clone so the emitted interface is
@@ -791,10 +797,13 @@ function renderZod(schema) {
  * issue, so emit a plain zod union instead:
  *   - every branch is an object sharing a property whose `const` values are
  *     pairwise distinct  →  `z.discriminatedUnion`;
- *   - branch kinds (`const` → typeof, else `type`) are pairwise distinct
- *     →  `z.union`.
- * Anything else falls through to the library's default. Also restores
- * `propertyNames` on record schemas.
+ *   - branch kinds (see `branchKinds`) are pairwise distinct  →  `z.union`.
+ * Anything else falls through to the library's default. Local `$ref`
+ * branches are resolved against the root `$defs` first: the library renders
+ * a ref as `z.any()`, which accepts everything and so overlaps every other
+ * branch (an array under `oneOf: [{$ref: stringOrObject}, {type: array}]`
+ * then matched both and was rejected). Also restores `propertyNames` on
+ * record schemas.
  */
 function oneOfOverride(schema, refs) {
   // json-schema-to-zod drops `propertyNames`; a map whose keys are
@@ -812,9 +821,11 @@ function oneOfOverride(schema, refs) {
       (schema.description ? `.describe(${JSON.stringify(schema.description)})` : "")
     )
   }
-  const branches = schema.oneOf
-  if (!Array.isArray(branches) || branches.length < 2) return
-  if (!branches.every((b) => b && typeof b === "object")) return
+  if (!Array.isArray(schema.oneOf) || schema.oneOf.length < 2) return
+  if (!schema.oneOf.every((b) => b && typeof b === "object")) return
+  // Only a union that is actually emitted below sees the resolved branches;
+  // when we fall through, the library renders the untouched `schema`.
+  const branches = schema.oneOf.map((b) => inlineLocalRefs(b, RESOLVABLE_DEFS))
 
   const tail =
     (schema.description ? `.describe(${JSON.stringify(schema.description)})` : "") +
@@ -836,12 +847,54 @@ function oneOfOverride(schema, refs) {
     }
   }
 
-  const kinds = branches.map((b) =>
-    b.const !== undefined ? `const:${typeof b.const}` : typeof b.type === "string" ? b.type : undefined,
-  )
-  if (kinds.every((k) => k !== undefined) && new Set(kinds).size === kinds.length) {
-    return `z.union([${branches.map(render).join(", ")}])${tail}`
+  const kinds = branches.map(branchKinds)
+  if (kinds.every((k) => k !== undefined)) {
+    const all = kinds.flat()
+    if (new Set(all).size === all.length) {
+      return `z.union([${branches.map(render).join(", ")}])${tail}`
+    }
   }
+}
+
+/**
+ * `defs` without the definitions that can reach themselves through local
+ * `$ref`s (a workflow `step` holds `steps`). Resolving one of those inside
+ * `oneOfOverride` would expand it again at every level it is rendered, so
+ * a ref to one stays a `$ref` (rendered `z.any()`, as before).
+ */
+function acyclicDefs(defs) {
+  const direct = {}
+  const collect = (node, into) => {
+    if (Array.isArray(node)) return node.forEach((n) => collect(n, into))
+    if (!node || typeof node !== "object") return
+    const m = typeof node.$ref === "string" && node.$ref.match(/^#\/\$defs\/([^/]+)$/)
+    if (m) into.add(m[1])
+    for (const v of Object.values(node)) collect(v, into)
+  }
+  for (const [k, d] of Object.entries(defs)) collect(d, (direct[k] = new Set()))
+  const reaches = (from, target, seen = new Set()) => {
+    for (const n of direct[from] ?? []) {
+      if (n === target) return true
+      if (!seen.has(n) && (seen.add(n), reaches(n, target, seen))) return true
+    }
+    return false
+  }
+  return Object.fromEntries(Object.entries(defs).filter(([k]) => !reaches(k, k)))
+}
+
+/**
+ * The kinds a (ref-resolved) `oneOf` branch can match, or `undefined` when
+ * that cannot be told statically. A `const` branch is keyed
+ * `const:<typeof>`, any other typed branch by its `type`, and a branch that
+ * is itself a `oneOf`/`anyOf` matches the union of its branches' kinds.
+ */
+function branchKinds(b) {
+  if (b.const !== undefined) return [`const:${typeof b.const}`]
+  if (typeof b.type === "string") return [b.type]
+  const nested = b.oneOf ?? b.anyOf
+  if (!Array.isArray(nested) || nested.length === 0) return undefined
+  const kinds = nested.map((n) => (n && typeof n === "object" ? branchKinds(n) : undefined))
+  return kinds.every((k) => k !== undefined) ? kinds.flat() : undefined
 }
 
 /**

@@ -132,3 +132,109 @@ test("broken external ref fails closed (no warn-and-stub)", (t) => {
   assert.match(res.stderr, /aip-999|NOPE/)
   assert.ok(!res.stderr.includes("replacing with empty schema"), res.stderr)
 })
+
+// ── oneOf branches that are `$ref`s ──────────────────────────────────
+// json-schema-to-zod renders a `$ref` as `z.any()`. As a `oneOf` branch that
+// matches every value, so the library's "exactly one branch passes" check
+// counted an array twice and rejected it (AGENT.md `on:` arrays, AIP-42).
+// The scaffolder resolves the refs of a `oneOf` branch before it decides
+// whether the branches are disjoint.
+function writeDraft(tmp, name, schema) {
+  writeFileSync(
+    join(tmp, "specs", "resources", "aip-99", "draft", `${name}.schema.json`),
+    JSON.stringify({ type: "object", required: ["id"], ...schema }),
+  )
+}
+
+test("a oneOf of $ref and array-of-$ref renders a union over the resolved ref", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "HOOKS", {
+    properties: {
+      id: { type: "string" },
+      on: {
+        type: "object",
+        additionalProperties: {
+          oneOf: [
+            { $ref: "#/$defs/actionRef" },
+            { type: "array", items: { $ref: "#/$defs/actionRef" } },
+          ],
+        },
+      },
+    },
+    $defs: {
+      actionRef: {
+        oneOf: [
+          { type: "string", minLength: 1 },
+          { type: "object", properties: { action: { type: "string" } } },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "HOOKS"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /z\.union\(\[z\.union\(\[z\.string\(\)\.min\(1\), z\.object\(/, res.stdout)
+  assert.match(res.stdout, /z\.array\(z\.union\(\[z\.string\(\)\.min\(1\), z\.object\(/, res.stdout)
+})
+
+test("a oneOf of $ref objects sharing a const discriminator renders a discriminatedUnion", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CHECKS", {
+    properties: {
+      id: { type: "string" },
+      checks: {
+        type: "array",
+        items: { oneOf: [{ $ref: "#/$defs/cmd" }, { $ref: "#/$defs/agent" }] },
+      },
+    },
+    $defs: {
+      cmd: { type: "object", properties: { kind: { const: "command" }, run: { type: "string" } } },
+      agent: { type: "object", properties: { kind: { const: "agent" }, preset: { type: "string" } } },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CHECKS"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /z\.discriminatedUnion\("kind", \[z\.object\(/, res.stdout)
+})
+
+test("a oneOf whose $ref branches overlap keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "OVERLAP", {
+    properties: {
+      id: { type: "string" },
+      name: { oneOf: [{ $ref: "#/$defs/short" }, { $ref: "#/$defs/long" }] },
+    },
+    $defs: {
+      short: { type: "string", maxLength: 3 },
+      long: { type: "string", minLength: 3 },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "OVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+  assert.ok(!res.stdout.includes("z.union("), res.stdout)
+})
+
+test("a recursive $ref in a oneOf branch is left as z.any(), not expanded forever", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "TREE", {
+    properties: {
+      id: { type: "string" },
+      tree: {
+        oneOf: [
+          { type: "string" },
+          { type: "array", items: { $ref: "#/$defs/node" } },
+        ],
+      },
+    },
+    $defs: {
+      node: {
+        oneOf: [{ type: "string" }, { type: "array", items: { $ref: "#/$defs/node" } }],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "TREE"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes('"tree": z.union([z.string(), z.array(z.any())])'), res.stdout)
+})
