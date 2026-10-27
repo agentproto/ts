@@ -6174,7 +6174,8 @@ function spawnFailureStatus(code: string): number {
   if (
     code === "orchestrator_max_depth_exceeded" ||
     code === "orchestrator_child_quota_exceeded" ||
-    code === "role_spawn_denied"
+    code === "role_spawn_denied" ||
+    code === "already_continued"
   ) {
     return 409
   }
