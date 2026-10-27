@@ -522,9 +522,8 @@ async function resolveComposedFrom(att: Attestation, exportDir: string): Promise
  * changed since the range was reviewed).
  *
  * `alg` is checked BEFORE the digest itself: `resolved.packs[i].alg` is
- * always the digest recipe THIS build of `resolvePacks` knows (currently
- * the only one that exists, `PACK_DIGEST_ALG`) — so an attestation whose
- * `alg` differs was hashed under a recipe this verifier can't reproduce.
+ * always the digest recipe THIS build of `resolvePacks` knows (`PACK_DIGEST_ALG`) —
+ * so an attestation whose `alg` differs was hashed under a recipe this verifier can't reproduce.
  * That is a HARD failure, not a note: comparing hex digests computed under
  * two different, unstated recipes as if they were comparable is exactly
  * the "mis-verify" a versioned `alg` field exists to rule out — silently
@@ -548,7 +547,9 @@ async function verifyPackDigests(
         problems.push(`pack '${want.ref}' (id '${want.id}') is recorded on the attestation but this REVIEW.md's uses[] no longer declares it`)
         continue
       }
-      if (want.alg !== got.alg) {
+      const wantAlg = want.alg === "agentproto-pack-digest/v1" ? "review.pack-digest/v1" : want.alg
+      const gotAlg = got.alg === "agentproto-pack-digest/v1" ? "review.pack-digest/v1" : got.alg
+      if (wantAlg !== gotAlg) {
         problems.push(
           `pack '${want.ref}' was attested with digest algorithm ${want.alg ? `'${want.alg}'` : "(none recorded — a pre-v1 attestation)"}, but this checkout's resolver only knows ` +
             `'${got.alg}' — refusing to compare digests computed under different, unstated recipes`,

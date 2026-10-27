@@ -50,6 +50,8 @@ export {
   resolvePacks,
   computePackDigestSha256,
   PACK_DIGEST_ALG,
+  LEGACY_PACK_DIGEST_ALG,
+  normalizePackDigestAlg,
   PackManifestError,
   type PackManifest,
   type PackCheck,

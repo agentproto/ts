@@ -65,8 +65,6 @@ export interface PolicyDefinition {
  * with array/object fields shallow-frozen to lock the wire shape.
  */
 export interface PolicyHandle {
-  // definePolicy keeps emitting the pre-AIP-70 tag for now; it flips to
-  // SPEC_NAME at the next major (EMITTED_SPEC_NAME).
   readonly schema: typeof EMITTED_SPEC_NAME
   readonly doctype: "policy"
   readonly slug: string
@@ -119,8 +117,6 @@ export const definePolicy = createDoctype<PolicyDefinition, PolicyHandle>({
   },
   build(def) {
     return {
-      // Emit the legacy tag until the next major: verifiers in the field
-      // only know it (EMITTED_SPEC_NAME).
       schema: EMITTED_SPEC_NAME,
       doctype: "policy",
       slug: def.slug,

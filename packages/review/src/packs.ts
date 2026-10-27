@@ -176,6 +176,14 @@ export interface PackLoader {
  *  layout. Travels as `PackDigest.alg`, inside the signed attestation. */
 export const PACK_DIGEST_ALG = "review.pack-digest/v1" as const
 
+/** Legacy pack-digest recipe tag accepted on read paths (AIP-70). */
+export const LEGACY_PACK_DIGEST_ALG = "agentproto-pack-digest/v1" as const
+
+export function normalizePackDigestAlg(alg: string | undefined | null): string | undefined | null {
+  if (alg === LEGACY_PACK_DIGEST_ALG) return PACK_DIGEST_ALG
+  return alg
+}
+
 /**
  * The v1 pack-digest recipe: sha256 over a canonical text built from the
  * pack's own REVIEW.md source plus every rubric file its SELECTED checks
