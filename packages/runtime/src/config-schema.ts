@@ -181,6 +181,12 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
           })
           .passthrough()
           .optional(),
+        clerk: z
+          .object({
+            workspaces: z.array(z.string().min(1)).optional(),
+          })
+          .passthrough()
+          .optional(),
       })
       .passthrough()
       .optional(),
@@ -516,6 +522,9 @@ const peerGroupsSchema = z.array(z.array(z.string().min(1)))
 /** `defaults.reactions.brainIngest.workspaces` - workspace slugs whose
  *  completed sessions are ingested by the durable brain-ingest reaction. */
 const brainIngestWorkspacesSchema = z.array(z.string().min(1))
+/** `defaults.reactions.clerk.workspaces` - workspace slugs whose clerk passes
+ *  are dispatched by the durable reaction instead of the legacy dispatch. */
+const clerkReactionWorkspacesSchema = z.array(z.string().min(1))
 
 export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   // ── daemon ──
@@ -1332,6 +1341,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "defaults",
     label: "Brain-ingest reaction workspaces",
     help: "Workspace slugs whose completed sessions are ingested into the workspace brain by a durable reaction instead of the legacy exit subscriber. Empty (the default) = every workspace stays with the legacy subscriber. Takes effect on the next completion.",
+    default: [],
+  },
+  {
+    path: "defaults.reactions.clerk.workspaces",
+    schema: clerkReactionWorkspacesSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Clerk reaction workspaces",
+    help: "Workspace slugs whose clerk passes are dispatched through the durable reaction instead of the legacy dispatch. Empty (the default) = every workspace stays on the legacy dispatch. Takes effect on the next firing.",
     default: [],
   },
 

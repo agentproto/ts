@@ -112,15 +112,62 @@ Daemon level - `~/.agentproto/config.json`:
 { "daemon": { "clerk": { "enabled": true, "debounceMs": 600000 } } }
 ```
 
+## Durable dispatch (opt-in)
+
+By default the firing of a debounce timer calls the legacy pass runner
+directly. A workspace can hand its clerk passes to the durable reaction path
+instead by listing its slug in `defaults.reactions.clerk.workspaces`:
+
+```json
+{ "defaults": { "reactions": { "clerk": { "workspaces": ["my-workspace"] } } } }
+```
+
+What changes for a listed workspace:
+
+- each firing emits the host event `agentproto:clerk-due` and writes a
+  receipt under `~/.agentproto/reaction-receipts/<bucket>.json`;
+- the pass runs through the reaction runner, so a failed pass is retried up
+  to 3 times with backoff;
+- boot reconciliation marks a stale `pending` receipt `dead` with
+  `stale_trigger` (the session is gone) and does not replay a `running`
+  receipt because the pass target is not idempotent;
+- the binding appears in `GET /reactions` visibility like the other builtin
+  bindings.
+
+What does not change:
+
+- the controller stays the gate: its ignore rules, its per-session debounce
+  timer and its config resolution are untouched;
+- single-flight per session still holds, but for a listed workspace it is
+  enforced inside the pass target rather than by the controller (the
+  controller returns as soon as the event is emitted): a second concurrent
+  pass for the same session is recorded as done with the outcome
+  `skipped:single_flight` and runs nothing;
+- the firing that reaches the reaction is already debounced, and ownership is
+  read once for that firing, so a workspace never runs both paths for the
+  same firing.
+
+Rollback: remove the slug from `defaults.reactions.clerk.workspaces`. The key
+is hot, so the next firing uses the legacy dispatch again.
+
+Limits:
+
+- the debounce timer stays in memory: a restart drops a pending debounce
+  exactly as before;
+- a pass interrupted by a crash is not replayed;
+- a failed dispatch is retried up to 3 times with backoff.
+
 ## Implementation
 
-- `packages/runtime/src/clerk-turn-end.ts` - the controller (debounce,
+- `packages/clerk/src/clerk-turn-end.ts` - the controller (debounce,
   single-flight, fire-and-forget, the ignore rules).
-- `packages/runtime/src/clerk-hook-config.ts` - the three-level resolution,
+- `packages/clerk/src/clerk-hook-config.ts` - the three-level resolution,
   the per-field merge and the config shapes.
-- `packages/runtime/src/clerk-pass-runner.ts` - what a pass launches: an
+- `packages/clerk/src/clerk-pass-runner.ts` - what a pass launches: an
   AIP-41 routine (through the daemon's routine registrar) or a detached
   shell command.
+- `packages/runtime/src/action-hooks/clerk-reaction.ts` - the opt-in durable
+  reaction and the dispatch the controller calls.
 
 The daemon wires the controller at boot (`packages/runtime/src/index.ts`) and
 disposes it on shutdown, cancelling every pending debounce timer.
