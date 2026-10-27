@@ -1312,7 +1312,7 @@ export interface AgentCliClient {
 }
 
 /**
- * The runtime handle returned by `defineAgentCli` — call `.start()`
+ * The runtime handle returned by `defineHarness` — call `.start()`
  * to spawn the binary and obtain a {@link AgentCliRuntimeSession}.
  */
 export interface AgentCliRuntime {

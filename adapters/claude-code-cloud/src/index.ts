@@ -17,7 +17,7 @@
 import { fileURLToPath } from "node:url"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -46,7 +46,7 @@ export const CLOUD_REFUSED_SPAWN_FIELDS = [
   "inference",
 ] as const
 
-export const claudeCodeCloud: AgentCliHandle = defineAgentCli({
+export const claudeCodeCloud: AgentCliHandle = defineHarness({
   name: "claude-code-cloud",
   id: "claude-code-cloud",
   description:

@@ -66,7 +66,7 @@ vi.mock("@agentproto/acp/client", async importOriginal => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("@agentproto/harness")
+const { defineHarness, createAgentCliRuntime } = await import("@agentproto/harness")
 
 /** Mirrors `adapters/codex`'s definition: the parts the spawn path reads. */
 const codexDefinition = (): AgentCliDefinition => ({
@@ -108,7 +108,7 @@ function fixture() {
   const bus = createSessionEventBus()
   const spawned: Array<{ id?: string; adapterSlug?: string }> = []
   const descriptors = new Map<string, SessionDescriptor>()
-  const codexRuntime = createAgentCliRuntime(defineAgentCli(codexDefinition()))
+  const codexRuntime = createAgentCliRuntime(defineHarness(codexDefinition()))
   const claudeStart = vi.fn(async (_o: Record<string, unknown>) => ({
     sessionId: "claude_1",
     send: async function* () {},

@@ -49,7 +49,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import { applySessionSkills } from "../session-skills.js"
 import type { AgentCliDefinition, AgentCliSessionSkill } from "../types.js"
 
@@ -98,7 +98,7 @@ describe("session-skills delivery (define-agent-cli wiring)", () => {
     const skills: AgentCliSessionSkill[] = [{ alias: "ap-x", path: src }]
 
     const runtime = createAgentCliRuntime(
-      defineAgentCli(
+      defineHarness(
         opencodeLike({
           sessionSkills: { dir: "skills", env: { OPENCODE_CONFIG_DIR: "<abs dir>" } },
         }),
@@ -117,7 +117,7 @@ describe("session-skills delivery (define-agent-cli wiring)", () => {
     writeFileSync(join(configDir, "skills", "old", "SKILL.md"), "stale")
 
     const runtime = createAgentCliRuntime(
-      defineAgentCli(claudeLike({ sessionSkills: { dir: "skills" } })),
+      defineHarness(claudeLike({ sessionSkills: { dir: "skills" } })),
     )
     await runtime.start({
       cwd: "/scratch",
@@ -134,7 +134,7 @@ describe("session-skills delivery (define-agent-cli wiring)", () => {
   it("an adapter with no metadata.sessionSkills gets no delivery", async () => {
     const configDir = join(base, "sess_none")
     const src = makeSkill(base, "ap-z")
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike({})))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike({})))
     await runtime.start({ cwd: "/scratch", configDir, sessionSkills: [{ alias: "ap-z", path: src }] })
     expect(existsSync(join(configDir, "skills"))).toBe(false)
   })

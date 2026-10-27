@@ -22,7 +22,7 @@ import { join } from "node:path"
 import {
   CREDENTIAL_DATA_SUBDIR,
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -94,7 +94,7 @@ function buildOpencodeModelMenu(): Array<{ id: string; provider: string }> {
 /** Inline config the `lean` mode layers over the user's global opencode config. */
 export const LEAN_INLINE_CONFIG = { mcp: { agentproto: { enabled: false } } } as const
 
-export const opencode: AgentCliHandle = defineAgentCli({
+export const opencode: AgentCliHandle = defineHarness({
   name: "opencode",
   id: "opencode",
   description:

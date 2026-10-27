@@ -3,7 +3,7 @@
  *
  * Mirror of `@agentproto/skill/manifest` and `@agentproto/acp/manifest`:
  * the .md provides metadata; the TS runtime supplies any spec-specific
- * runtime bits. Both inputs end up in `defineAgentCli` so the cross-AIP
+ * runtime bits. Both inputs end up in `defineHarness` so the cross-AIP
  * invariants run uniformly.
  */
 
@@ -12,7 +12,7 @@ import {
   agentCliFrontmatterSchema,
   type AgentCliFrontmatter,
 } from "../schema.js"
-import { defineAgentCli } from "../define-agent-cli.js"
+import { defineHarness } from "../define-agent-cli.js"
 import type { AgentCliDefinition, AgentCliHandle } from "../types.js"
 
 export { agentCliFrontmatterSchema, type AgentCliFrontmatter }
@@ -41,5 +41,5 @@ export function parseAgentCliManifest(source: string): AgentCliManifest {
 export function agentCliFromManifest(
   manifest: AgentCliManifest,
 ): AgentCliHandle {
-  return defineAgentCli(manifest.frontmatter as unknown as AgentCliDefinition)
+  return defineHarness(manifest.frontmatter as unknown as AgentCliDefinition)
 }

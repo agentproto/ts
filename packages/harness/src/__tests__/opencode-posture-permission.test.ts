@@ -53,7 +53,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime, spawnEnforcedPostures } = await import(
+const { defineHarness, createAgentCliRuntime, spawnEnforcedPostures } = await import(
   "../define-agent-cli.js"
 )
 const { opencodePermissionForPosture, mergeOpencodePermission } = await import(
@@ -184,7 +184,7 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
   })
 
   it("bypass writes an allow-everything permission block", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", posture: "bypass" })
 
     expect(inlineConfig().permission).toEqual(opencodePermissionForPosture("bypass"))
@@ -192,7 +192,7 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
 
   it("layers over the lean context profile and the system-prompt instructions without clobbering either", async () => {
     const configDir = join(baseDir, "sess_1")
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({
       cwd: "/scratch",
       configDir,
@@ -210,13 +210,13 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
   })
 
   it("accept-edits writes edit:allow", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", posture: "accept-edits" })
     expect(inlineConfig().permission).toEqual({ edit: "allow" })
   })
 
   it("leaves the inline config untouched for no posture, default, and plan", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch" })
     await runtime.start({ cwd: "/scratch", posture: "default" })
     await runtime.start({ cwd: "/scratch", posture: "plan" })
@@ -225,7 +225,7 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
 
   it("does not apply to an adapter with another id, even with the same inline-config channel", async () => {
     const runtime = createAgentCliRuntime(
-      defineAgentCli({ ...opencodeLike(), id: "mastracode", name: "mastracode" }),
+      defineHarness({ ...opencodeLike(), id: "mastracode", name: "mastracode" }),
     )
     await runtime.start({ cwd: "/scratch", posture: "bypass" })
     expect(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT).toBeUndefined()
@@ -233,7 +233,7 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
 
   describe("claude-code regression: its posture path is unchanged", () => {
     it("bypass still lands as permissions.defaultMode in the isolated settings.json, with no opencode block", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(claudeCodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(claudeCodeLike()))
       await runtime.start({ cwd: "/scratch", posture: "bypass" })
 
       const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
@@ -245,7 +245,7 @@ describe("opencode spawn: posture → OPENCODE_CONFIG_CONTENT permission", () =>
     })
 
     it("read-only still maps to claude-code's plan mode", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(claudeCodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(claudeCodeLike()))
       await runtime.start({ cwd: "/scratch", posture: "read-only" })
 
       const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
@@ -269,11 +269,11 @@ describe("spawnEnforcedPostures (enforced-vs-advisory read surface)", () => {
 
   it("stamps the list on a started opencode session and omits it for an adapter with none", async () => {
     spawnCalls.length = 0
-    const oc = await createAgentCliRuntime(defineAgentCli(opencodeLike())).start({ cwd: "/scratch" })
+    const oc = await createAgentCliRuntime(defineHarness(opencodeLike())).start({ cwd: "/scratch" })
     expect(oc.spawnEnforcedPostures).toEqual(spawnEnforcedPostures({ id: "opencode" }))
 
     const other = await createAgentCliRuntime(
-      defineAgentCli({ ...opencodeLike(), id: "mastracode", name: "mastracode" }),
+      defineHarness({ ...opencodeLike(), id: "mastracode", name: "mastracode" }),
     ).start({ cwd: "/scratch" })
     expect(other.spawnEnforcedPostures).toBeUndefined()
   })

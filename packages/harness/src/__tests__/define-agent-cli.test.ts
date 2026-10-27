@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { defineAgentCli } from "../define-agent-cli.js"
+import { defineHarness } from "../define-agent-cli.js"
 import { parseAgentCliManifest } from "../manifest/index.js"
 import type { AgentCliAuthSubscription, AgentCliDefinition } from "../types.js"
 
@@ -30,46 +30,46 @@ const minimal = (overrides: Partial<AgentCliDefinition> = {}): AgentCliDefinitio
   ...overrides,
 })
 
-describe("defineAgentCli (AIP-45)", () => {
+describe("defineHarness (AIP-45)", () => {
   it("imports cleanly", () => {
-    expect(typeof defineAgentCli).toBe("function")
+    expect(typeof defineHarness).toBe("function")
   })
 
   describe("baseline frontmatter", () => {
     it("accepts a minimal acp-arm manifest", () => {
-      const handle = defineAgentCli(minimal())
+      const handle = defineHarness(minimal())
       expect(handle.protocol).toBe("acp")
       expect(handle.acp).toBe("./hermes-acp.ACP.md")
     })
 
     it("accepts an inline sandbox block", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({ sandbox: { provider: "local" } }),
       )
       expect(typeof handle.sandbox).toBe("object")
     })
 
     it("rejects non-kebab id", () => {
-      expect(() => defineAgentCli(minimal({ id: "Hermes_Agent" }))).toThrow(
+      expect(() => defineHarness(minimal({ id: "Hermes_Agent" }))).toThrow(
         /AIP-45/,
       )
     })
 
     it("rejects malformed semver in version", () => {
-      expect(() => defineAgentCli(minimal({ version: "v1" }))).toThrow(
+      expect(() => defineHarness(minimal({ version: "v1" }))).toThrow(
         /AIP-45/,
       )
     })
 
     it("rejects empty install array", () => {
-      expect(() => defineAgentCli(minimal({ install: [] }))).toThrow(
+      expect(() => defineHarness(minimal({ install: [] }))).toThrow(
         /AIP-45/,
       )
     })
 
     it("requires version_check.range", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             version_check: {
               cmd: "hermes --version",
@@ -85,13 +85,13 @@ describe("defineAgentCli (AIP-45)", () => {
   describe("protocol cross-field rules", () => {
     it("requires `acp` when protocol=acp", () => {
       expect(() =>
-        defineAgentCli(minimal({ protocol: "acp", acp: undefined })),
+        defineHarness(minimal({ protocol: "acp", acp: undefined })),
       ).toThrow(/`acp` ref is required when protocol=acp/)
     })
 
     it("requires `mcp` when protocol=mcp", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             protocol: "mcp",
             acp: undefined,
@@ -102,7 +102,7 @@ describe("defineAgentCli (AIP-45)", () => {
     })
 
     it("accepts protocol=mcp with mcp block", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({
           protocol: "mcp",
           acp: undefined,
@@ -115,14 +115,14 @@ describe("defineAgentCli (AIP-45)", () => {
 
     it("requires `adapter` when protocol=proprietary", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({ protocol: "proprietary", acp: undefined }),
         ),
       ).toThrow(/`adapter` package is required when protocol=proprietary/)
     })
 
     it("accepts protocol=proprietary with adapter", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({
           protocol: "proprietary",
           acp: undefined,
@@ -136,7 +136,7 @@ describe("defineAgentCli (AIP-45)", () => {
   describe("session resumable cross-field rule", () => {
     it("requires capabilities.resumable when session.mode=resumable", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             session: { mode: "resumable" },
             capabilities: { resumable: false },
@@ -146,7 +146,7 @@ describe("defineAgentCli (AIP-45)", () => {
     })
 
     it("accepts session.mode=resumable with capabilities.resumable=true", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({
           session: { mode: "resumable", idle_timeout_ms: 86_400_000 },
           capabilities: { resumable: true, streaming: true },
@@ -159,7 +159,7 @@ describe("defineAgentCli (AIP-45)", () => {
   describe("models.apply=\"arg\" cross-field rule", () => {
     it("requires models.bin_args_template when models.apply=\"arg\"", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             models: { default: "o3", apply: "arg" },
           }),
@@ -168,7 +168,7 @@ describe("defineAgentCli (AIP-45)", () => {
     })
 
     it("accepts models.apply=\"arg\" with bin_args_template", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({
           models: {
             default: "o3",
@@ -194,7 +194,7 @@ describe("defineAgentCli (AIP-45)", () => {
       minimal({ modes: modes as unknown as AgentCliDefinition["modes"] })
 
     it("accepts kind: \"context\"", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         withModes([{ id: "lean", kind: "context", env: { X: "1" } }]),
       )
       expect(handle.modes?.[0]?.kind).toBe("context")
@@ -202,18 +202,18 @@ describe("defineAgentCli (AIP-45)", () => {
 
     it("rejects a legacy kind: \"posture\" mode", () => {
       expect(() =>
-        defineAgentCli(withModes([{ id: "plan", kind: "posture" }])),
+        defineHarness(withModes([{ id: "plan", kind: "posture" }])),
       ).toThrow(/AIP-45/)
     })
 
     it("rejects a legacy kind: \"route\" mode", () => {
       expect(() =>
-        defineAgentCli(withModes([{ id: "moonshot", kind: "route" }])),
+        defineHarness(withModes([{ id: "moonshot", kind: "route" }])),
       ).toThrow(/AIP-45/)
     })
 
     it("still accepts a mode that omits kind (id-inferred by the daemon shim)", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({ modes: [{ id: "default", description: "Standard." }] }),
       )
       expect(handle.modes?.[0]?.kind).toBeUndefined()
@@ -260,22 +260,22 @@ body
 
   describe("routeSelection (AIP-45 launch-menu drill-down, WP1)", () => {
     it("defaults to undefined (back-compat: absent ⇒ free)", () => {
-      expect(defineAgentCli(minimal()).routeSelection).toBeUndefined()
+      expect(defineHarness(minimal()).routeSelection).toBeUndefined()
     })
 
     it("accepts \"free\"", () => {
-      expect(defineAgentCli(minimal({ routeSelection: "free" })).routeSelection).toBe("free")
+      expect(defineHarness(minimal({ routeSelection: "free" })).routeSelection).toBe("free")
     })
 
     it("accepts \"derived-from-model\"", () => {
       expect(
-        defineAgentCli(minimal({ routeSelection: "derived-from-model" })).routeSelection,
+        defineHarness(minimal({ routeSelection: "derived-from-model" })).routeSelection,
       ).toBe("derived-from-model")
     })
 
     it("rejects an unrecognized route-selection value", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({ routeSelection: "sometimes" } as unknown as Partial<AgentCliDefinition>),
         ),
       ).toThrow(/AIP-45/)
@@ -284,14 +284,14 @@ body
 
   describe("authSubscription — bearer vs external (file-based)", () => {
     it("accepts a bearer subscription (setEnv, no external)", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({ provider: "anthropic", authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
       )
       expect(singleSurface(handle.authSubscription)?.setEnv).toBe("CLAUDE_CODE_OAUTH_TOKEN")
     })
 
     it("accepts an external subscription (external:true, no setEnv, conflictEnv scrub)", () => {
-      const handle = defineAgentCli(
+      const handle = defineHarness(
         minimal({
           provider: "openai",
           authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
@@ -303,7 +303,7 @@ body
 
     it("rejects external:true WITH setEnv (an external subscription injects nothing)", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             provider: "openai",
             authSubscription: { external: true, setEnv: "OPENAI_API_KEY" },
@@ -314,7 +314,7 @@ body
 
     it("rejects a non-external authSubscription with NO setEnv (the bearer needs a var)", () => {
       expect(() =>
-        defineAgentCli(
+        defineHarness(
           minimal({
             provider: "anthropic",
             authSubscription: {} as unknown as { setEnv: string },

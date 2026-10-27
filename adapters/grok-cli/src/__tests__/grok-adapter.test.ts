@@ -5,7 +5,7 @@ import { grokCli, grokCliRuntime } from "../index.js"
  * @agentproto/adapter-grok-cli — manifest shape.
  *
  * Hermetic by construction: this adapter, like gemini/codex, ships no
- * spawn/parse code of its own — `defineAgentCli` only builds a static
+ * spawn/parse code of its own — `defineHarness` only builds a static
  * manifest object, so these tests assert on that object directly, with no
  * subprocess, no network, and no real `grok` binary required. The MECHANICAL
  * application of a file-based (external) subscription spec (scrub-only, no

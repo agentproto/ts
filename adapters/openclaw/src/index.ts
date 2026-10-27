@@ -24,12 +24,12 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
 
-export const openclaw: AgentCliHandle = defineAgentCli({
+export const openclaw: AgentCliHandle = defineHarness({
   name: "openclaw",
   id: "openclaw",
   description:

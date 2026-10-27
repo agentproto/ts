@@ -13,7 +13,7 @@
 import { fileURLToPath } from "node:url"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -24,7 +24,7 @@ import {
 // from node_modules) or a user runs the published bin.
 const cliEntry = fileURLToPath(new URL("./cli.mjs", import.meta.url))
 
-export const mastraAgent: AgentCliHandle = defineAgentCli({
+export const mastraAgent: AgentCliHandle = defineHarness({
   name: "mastra-agent",
   id: "mastra-agent",
   description:

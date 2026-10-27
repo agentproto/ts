@@ -1,7 +1,6 @@
 # `@agentproto/provider-kit` — Design
 
-> Formerly `@agentproto/adapter-kit`; renamed in #245. The `@agentproto/adapter-kit`
-> name lives on as a deprecated re-export shim. Concepts below are unchanged.
+> Formerly `@agentproto/adapter-kit`; renamed in #245. Concepts below are unchanged.
 
 **Status:** Shipped · `@agentproto/provider-kit` 0.2.0
 **Author:** Design task, 2026-06-22

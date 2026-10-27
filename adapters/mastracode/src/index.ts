@@ -16,7 +16,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -62,7 +62,7 @@ function buildMastracodeModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const mastracode: AgentCliHandle = defineAgentCli({
+export const mastracode: AgentCliHandle = defineHarness({
   name: "mastracode",
   id: "mastracode",
   description:

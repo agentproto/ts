@@ -42,7 +42,7 @@ const CONTINUATION_KEY_SCOPES = [
 // AIP-29 install methods, mirrored locally to avoid a runtime cross-package import.
 // Schema-level $ref to AIP-29 is preserved on the JSON Schema side
 // (resources/aip-45/draft/HARNESS.schema.json); this zod copy is the
-// TS-side mirror used by `defineAgentCli`. When AIP-29 grows new
+// TS-side mirror used by `defineHarness`. When AIP-29 grows new
 // install methods, both sides update together via scaffold-aip.
 
 const installMethodSchema = z.discriminatedUnion("method", [

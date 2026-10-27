@@ -28,7 +28,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -48,7 +48,7 @@ const GROK_TEXT_MODELS = [
   "grok-build-0.1",
 ] as const
 
-export const grokCli: AgentCliHandle = defineAgentCli({
+export const grokCli: AgentCliHandle = defineHarness({
   name: "grok-cli",
   id: "grok-cli",
   description:

@@ -49,7 +49,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 const { resolveSmallModelEnv } = await import("../small-model.js")
 import type { AgentCliDefinition, AgentCliSmallModel } from "../types.js"
 import { agentCliFrontmatterSchema } from "../schema.js"
@@ -220,13 +220,13 @@ describe("smallModel at spawn", () => {
   })
 
   it("pins small_model to the requested model in the child's inline config", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: base, config: { options: { model: FREE } } })
     expect(JSON.parse(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT!)).toEqual({ small_model: FREE })
   })
 
   it("layers it over the lean mode's inline config", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: base, contextProfile: "lean", config: { options: { model: FREE } } })
     expect(JSON.parse(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT!)).toEqual({
       mcp: { agentproto: { enabled: false } },
@@ -235,13 +235,13 @@ describe("smallModel at spawn", () => {
   })
 
   it("leaves the env alone when no model is requested", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: base })
     expect(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT).toBeUndefined()
   })
 
   it("a host-supplied inline small_model wins", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     const host = JSON.stringify({ small_model: "opencode/big-pickle" })
     await runtime.start({ cwd: base, env: { OPENCODE_CONFIG_CONTENT: host }, config: { options: { model: FREE } } })
     expect(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT).toBe(host)

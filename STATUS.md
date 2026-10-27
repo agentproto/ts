@@ -9,7 +9,7 @@ A snapshot of every pnpm workspace package (each `package.json` under the worksp
 1. Packages on the explicit dead-package override list in `scripts/gen-status.mjs` (verified zero-dependent in the workspace) → `archived`. The override wins over the `adapters/**` path rule.
 2. `adapters/**` (not on the override list) → `adapters`.
 3. The core runtime family — `runtime`, `cli`, `driver` (core), the `sandbox` family, `auth`, `model-catalog` and their runtime neighbours — → `core`.
-4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory `@agentproto/doctype` (plus the deprecated `@agentproto/define-doctype` shim), the generic doctype verbs `@agentproto/manifest` and build tooling `@agentproto/tooling` -> `spec-reference`.
+4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory `@agentproto/doctype`, the generic doctype verbs `@agentproto/manifest` and build tooling `@agentproto/tooling` -> `spec-reference`.
 5. Everything else → `core`.
 
 Each package appears exactly once; tiers are applied in the order above.
@@ -45,19 +45,10 @@ Package | Path | Tier | Reason (one line) |
 @agentproto/adapter-pi | `adapters/pi` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-ai-sdk | `adapters/ai-sdk` | archived | dead: zero workspace dependents (override list) |
 @agentproto/adapter-mastra | `adapters/mastra` | archived | dead: zero workspace dependents (override list) |
-@agentproto/adapter-kit | `packages/adapter-kit` | archived | dead: zero workspace dependents (override list) |
-@agentproto/agency-v2 | `packages/agency-v2` | archived | dead: zero workspace dependents (override list) |
-@agentproto/app-kit | `packages/app-kit` | archived | dead: zero workspace dependents (override list) |
 @agentproto/catalog | `packages/catalog` | archived | dead: zero workspace dependents (override list) |
-@agentproto/define-doctype | `packages/define-doctype` | archived | dead: zero workspace dependents (override list) |
-@agentproto/driver-agent-cli | `packages/driver/agent-cli` | archived | dead: zero workspace dependents (override list) |
 @agentproto/driver-sdk | `packages/driver/sdk` | archived | dead: zero workspace dependents (override list) |
 @agentproto/egress | `packages/egress` | archived | dead: zero workspace dependents (override list) |
 @agentproto/identity | `packages/identity` | archived | dead: zero workspace dependents (override list) |
-@agentproto/llm-endpoint | `packages/llm-endpoint` | archived | dead: zero workspace dependents (override list) |
-@agentproto/mastra | `packages/mastra` | archived | dead: zero workspace dependents (override list) |
-@agentproto/pair-client | `packages/pair-client` | archived | dead: zero workspace dependents (override list) |
-@agentproto/redaction | `packages/redaction` | archived | dead: zero workspace dependents (override list) |
 @agentproto/role-catalog | `packages/role-catalog` | archived | dead: zero workspace dependents (override list) |
 @agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | archived | dead: zero workspace dependents (override list) |
 @agentproto/a2a | `packages/a2a` | core | product runtime package consumed by the runtime/cli |

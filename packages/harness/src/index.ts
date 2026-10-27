@@ -1,11 +1,10 @@
 /**
- * @agentproto/harness: `defineHarness` / `defineAgentCli` implementation for
- * AIP-45 AGENT-CLI.md.
+ * @agentproto/harness: `defineHarness` implementation for AIP-45 AGENT-CLI.md.
  *
  * Spec: https://agentproto.sh/docs/aip-45
  *
  * Authoring paths:
- *   - TS:  `defineAgentCli({...})` → `AgentCliHandle`
+ *   - TS:  `defineHarness({...})` → `AgentCliHandle`
  *   - MD:  `parseAgentCliManifest(src) → agentCliFromManifest({...})` → `AgentCliHandle`
  *
  * Runtime: `createAgentCliRuntime(handle)` → spawn binary, dispatch
@@ -17,8 +16,6 @@
  * {@link AGENT_CLI_FORMAT}.
  */
 
-import { defineAgentCli } from "./define-agent-cli.js"
-
 /** Internal data-format id (not an AIP registry spec name); see AIP-70. */
 export const AGENT_CLI_FORMAT = "agentproto.agent-cli/v1" as const
 export const SPEC_VERSION = "0.1.0-alpha" as const
@@ -26,15 +23,8 @@ export const SPEC_VERSION = "0.1.0-alpha" as const
 /** AIP-70 registry spec id for this package (`harness/v1`, AIP-45). */
 export const SPEC_NAME = "harness/v1" as const
 
-/**
- * AIP-70 registry entry `harness/v1`: the AIP-45 harness definition
- * constructor. Alias of {@link defineAgentCli}, kept under the registry
- * name `defineHarness`.
- */
-export const defineHarness = defineAgentCli
-
 export {
-  defineAgentCli,
+  defineHarness,
   createAgentCliRuntime,
   // Same bin resolution the driver spawns with (`bin: "node"` → this
   // process's execPath, `npx`/`npm` → execPath sibling when present) —

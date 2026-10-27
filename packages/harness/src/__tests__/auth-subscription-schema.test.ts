@@ -4,12 +4,12 @@ import { describe, it, expect } from "vitest"
  * Schema coverage for `authSubscription`'s single-or-array shape (multi-
  * surface adapters, e.g. mastracode/opencode declaring an anthropic AND an
  * openai native OAuth login) — see `authSubscriptionSchema` in schema.ts.
- * `defineAgentCli` runs the SAME zod validation `agentCliFrontmatterSchema`
+ * `defineHarness` runs the SAME zod validation `agentCliFrontmatterSchema`
  * does (see `define-agent-cli.ts`'s `validate()`), so exercising it here
  * covers both paths without needing a full frontmatter fixture.
  */
 
-const { defineAgentCli } = await import("../define-agent-cli.js")
+const { defineHarness } = await import("../define-agent-cli.js")
 import type { AgentCliDefinition } from "../types.js"
 
 const base: Omit<AgentCliDefinition, "authSubscription"> = {
@@ -29,13 +29,13 @@ const base: Omit<AgentCliDefinition, "authSubscription"> = {
 describe("authSubscription — single-or-array validation", () => {
   it("accepts a single unscoped surface (claude-code shape)", () => {
     expect(() =>
-      defineAgentCli({ ...base, authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
+      defineHarness({ ...base, authSubscription: { setEnv: "CLAUDE_CODE_OAUTH_TOKEN" } }),
     ).not.toThrow()
   })
 
   it("accepts a single provider-scoped surface (pi shape)", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: { setEnv: "ANTHROPIC_OAUTH_TOKEN", provider: "anthropic" },
       }),
@@ -44,7 +44,7 @@ describe("authSubscription — single-or-array validation", () => {
 
   it("accepts an array of provider-scoped surfaces (mastracode/opencode shape)", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [
           { external: true, provider: "anthropic" },
@@ -56,7 +56,7 @@ describe("authSubscription — single-or-array validation", () => {
 
   it("rejects two array entries scoped to the same provider", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [
           { external: true, provider: "anthropic" },
@@ -68,7 +68,7 @@ describe("authSubscription — single-or-array validation", () => {
 
   it("rejects two unscoped array entries", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [{ setEnv: "GENERIC_A" }, { setEnv: "GENERIC_B" }],
       }),
@@ -76,12 +76,12 @@ describe("authSubscription — single-or-array validation", () => {
   })
 
   it("rejects an empty array", () => {
-    expect(() => defineAgentCli({ ...base, authSubscription: [] })).toThrow()
+    expect(() => defineHarness({ ...base, authSubscription: [] })).toThrow()
   })
 
   it("still rejects an external entry that also declares setEnv, inside an array", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [
           { external: true, provider: "anthropic" },
@@ -95,7 +95,7 @@ describe("authSubscription — single-or-array validation", () => {
 describe("authSubscription.boxLogin — box-login bridge declaration", () => {
   it("accepts a boxLogin on an external surface (codex shape)", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: {
           external: true,
@@ -110,7 +110,7 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("accepts an optional methodId / expiresPath / home-relative file override", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [
           { external: true, provider: "anthropic" },
@@ -132,7 +132,7 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("rejects boxLogin on a bearer (non-external) surface — only a file has something to bridge", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: {
           setEnv: "ANTHROPIC_OAUTH_TOKEN",
@@ -144,7 +144,7 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("rejects boxLogin on a non-external entry inside an array, too", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: [
           { external: true, provider: "anthropic" },
@@ -160,7 +160,7 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("rejects an empty keep-list — it would copy nothing the box could bill with", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: { external: true, boxLogin: { recipe: "codex", keep: [] } },
       }),
@@ -169,13 +169,13 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("rejects a boxLogin without a recipe or without keep", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: { external: true, boxLogin: { keep: ["tokens.access_token"] } as never },
       }),
     ).toThrow()
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: { external: true, boxLogin: { recipe: "codex", keep: undefined as never } },
       }),
@@ -184,7 +184,7 @@ describe("authSubscription.boxLogin — box-login bridge declaration", () => {
 
   it("rejects unknown boxLogin keys (strict schema — no smuggling a token through an extra field)", () => {
     expect(() =>
-      defineAgentCli({
+      defineHarness({
         ...base,
         authSubscription: {
           external: true,

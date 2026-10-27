@@ -24,14 +24,14 @@
 import { join } from "node:path"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
 import type { AuthStore, CapabilityStrategy, CredSource } from "@agentproto/provider-kit"
 import { geminiNativeHooks } from "./native-hooks.js"
 
-export const gemini: AgentCliHandle = defineAgentCli({
+export const gemini: AgentCliHandle = defineHarness({
   name: "gemini",
   id: "gemini",
   description:

@@ -75,7 +75,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import type { AgentCliDefinition } from "../types.js"
 
 const claudeCodeLike = (): AgentCliDefinition => ({
@@ -126,7 +126,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("writes a temp CLAUDE_CONFIG_DIR/settings.json and points the child env at it for mode:plan", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({ cwd: "/scratch", config: { mode: "plan" } })
 
@@ -147,7 +147,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("maps mode:bypass-permissions to the same settings.json vocabulary", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({ cwd: "/scratch", config: { mode: "bypass-permissions" } })
 
@@ -159,7 +159,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("applies decomposed posture and contextProfile independently", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({
       cwd: "/scratch",
@@ -176,7 +176,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("still isolates CLAUDE_CONFIG_DIR (no posture, no ambient mcpServers) when no mode is requested", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({ cwd: "/scratch" })
 
@@ -212,7 +212,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("still isolates CLAUDE_CONFIG_DIR when mode:default is requested explicitly", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({ cwd: "/scratch", config: { mode: "default" } })
 
@@ -240,7 +240,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
       // Deliberately nested + nonexistent: the daemon hands a path keyed by
       // a session id that has never spawned before.
       const configDir = join(baseDir, "adapter-config", "sess_abc123")
-      const handle = defineAgentCli(claudeCodeLike())
+      const handle = defineHarness(claudeCodeLike())
       const runtime = createAgentCliRuntime(handle)
       await runtime.start({ cwd: "/scratch", configDir, config: { mode: "plan" } })
 
@@ -256,7 +256,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
 
     it("on a REUSED dir: preserves the SDK's own .claude.json state, re-asserts mcpServers:{}, and never touches the conversation store", async () => {
       const configDir = join(baseDir, "sess_reuse")
-      const handle = defineAgentCli(claudeCodeLike())
+      const handle = defineHarness(claudeCodeLike())
       const runtime = createAgentCliRuntime(handle)
       // First spawn seeds the dir; then simulate what a live session leaves
       // behind: the SDK mutates .claude.json (project trust, onboarding) and
@@ -289,7 +289,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
       const configDir = join(baseDir, "sess_corrupt")
       mkdirSync(configDir, { recursive: true })
       writeFileSync(join(configDir, ".claude.json"), "{not json")
-      const handle = defineAgentCli(claudeCodeLike())
+      const handle = defineHarness(claudeCodeLike())
       const runtime = createAgentCliRuntime(handle)
       await runtime.start({ cwd: "/scratch", configDir })
 
@@ -300,7 +300,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
 
     it("ignores configDir for a non-claude-code adapter (no isolation there at all)", async () => {
       const configDir = join(baseDir, "sess_hermes")
-      const handle = defineAgentCli({ ...claudeCodeLike(), id: "hermes", name: "hermes" })
+      const handle = defineHarness({ ...claudeCodeLike(), id: "hermes", name: "hermes" })
       const runtime = createAgentCliRuntime(handle)
       await runtime.start({ cwd: "/scratch", configDir })
 
@@ -310,7 +310,7 @@ describe("claude-code CLAUDE_CONFIG_DIR isolation + permission-mode override", (
   })
 
   it("does not apply the override for a non-claude-code adapter, even with an identical bin_args_append shape", async () => {
-    const handle = defineAgentCli({
+    const handle = defineHarness({
       ...claudeCodeLike(),
       id: "hermes",
       name: "hermes",

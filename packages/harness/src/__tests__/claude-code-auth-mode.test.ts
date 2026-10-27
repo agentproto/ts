@@ -60,7 +60,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import { RuntimeConfigError } from "../manifest/compose.js"
 import type { AgentCliDefinition, ResolvedAuthSpec } from "../types.js"
 
@@ -192,7 +192,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("subscription: SETS CLAUDE_CODE_OAUTH_TOKEN and DELETES ANTHROPIC_API_KEY + ANTHROPIC_AUTH_TOKEN, even when stray creds are present in the parent env", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
     const prevToken = process.env.ANTHROPIC_AUTH_TOKEN
@@ -215,7 +215,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("subscription also deletes the cloud-provider toggles and ANTHROPIC_BASE_URL", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevBedrock = process.env.CLAUDE_CODE_USE_BEDROCK
     const prevBaseUrl = process.env.ANTHROPIC_BASE_URL
@@ -237,7 +237,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("api-key: SETS ANTHROPIC_API_KEY and DELETES ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_OAUTH_TOKEN", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevToken = process.env.ANTHROPIC_AUTH_TOKEN
     const prevOauth = process.env.CLAUDE_CODE_OAUTH_TOKEN
@@ -260,7 +260,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("fail-fast: an engaged subscription spec with no credential refuses the spawn — no fallback, no exec (claude-code unconfigured, enforce=always)", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     const prevKey = process.env.ANTHROPIC_API_KEY
     process.env.ANTHROPIC_API_KEY = "sk-ant-api03-ambient"
@@ -281,7 +281,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("fail-fast: an engaged api-key spec with no credential refuses the spawn and does not fall back to subscription", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await expect(
       runtime.start({ cwd: "/scratch", auth: apiKeySpec({}) }),
@@ -290,7 +290,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("fail-fast: neitherConfigured names BOTH auth paths + the config.json block, never claims subscription was chosen", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await expect(
       runtime.start({
@@ -304,7 +304,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("fail-fast: ignoredApiKeyInStore adds the 'already have a key' hint", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await expect(
       runtime.start({
@@ -316,7 +316,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("fail-fast: api-key mode with no credential (not neitherConfigured) keeps the mode-specific message + config.json block", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await expect(
       runtime.start({ cwd: "/scratch", auth: apiKeySpec({}) }),
@@ -324,7 +324,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("does not scrub ANTHROPIC_BASE_URL when a gateway mode explicitly sets it", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     await runtime.start({
       cwd: "/scratch",
@@ -337,7 +337,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("does not engage — and does not scrub — when no auth spec is passed (ambient preserved)", async () => {
-    const handle = defineAgentCli({
+    const handle = defineHarness({
       ...claudeCodeLike(),
       id: "hermes",
       name: "hermes",
@@ -358,7 +358,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("does not engage a when-configured spec that the operator did not configure (explicit=false) — ambient preserved", async () => {
-    const handle = defineAgentCli({
+    const handle = defineHarness({
       ...claudeCodeLike(),
       id: "codex",
       name: "codex",
@@ -390,7 +390,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("a base_url option with NO auth_token must not engage native Anthropic billing-auth — the gateway base_url survives, CLAUDE_CODE_OAUTH_TOKEN never leaks in", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     // No `auth_token` option, no ANTHROPIC_AUTH_TOKEN — only the base_url
     // option targets a foreign gateway. The resolved spec below is exactly
@@ -409,7 +409,7 @@ describe("claude-code auth — mechanical resolved-spec application", () => {
   })
 
   it("P0: a runtime-resolved gateway spec (baseUrl present) DOES engage — injects ANTHROPIC_AUTH_TOKEN alongside the routed base_url and scrubs the raw provider var", async () => {
-    const handle = defineAgentCli(claudeCodeLike())
+    const handle = defineHarness(claudeCodeLike())
     const runtime = createAgentCliRuntime(handle)
     // Ambient leftover the resolved spec must scrub — the daemon's own
     // OPENROUTER_API_KEY would otherwise be inherited by the child.

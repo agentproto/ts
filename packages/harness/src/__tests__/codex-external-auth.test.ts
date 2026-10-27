@@ -57,7 +57,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import type { AgentCliDefinition, ResolvedAuthSpec } from "../types.js"
 
 // The scrub the runtime resolver derives for a codex external subscription:
@@ -106,7 +106,7 @@ describe("codex external subscription — mechanical resolved-spec application",
   })
 
   it("engages: SCRUBS OPENAI_API_KEY + CODEX_API_KEY and SETS no credential env, even when both are present in the parent env", async () => {
-    const handle = defineAgentCli(codexLike())
+    const handle = defineHarness(codexLike())
     const runtime = createAgentCliRuntime(handle)
     const prevOpenai = process.env.OPENAI_API_KEY
     const prevCodex = process.env.CODEX_API_KEY
@@ -130,7 +130,7 @@ describe("codex external subscription — mechanical resolved-spec application",
   })
 
   it("does NOT fail-fast on the missing credential — an external subscription deliberately has none", async () => {
-    const handle = defineAgentCli(codexLike())
+    const handle = defineHarness(codexLike())
     const runtime = createAgentCliRuntime(handle)
     // No credential on the spec, yet the spawn proceeds (unlike a bearer
     // subscription, which would throw missing_auth_credential here).
@@ -141,7 +141,7 @@ describe("codex external subscription — mechanical resolved-spec application",
   })
 
   it("does not engage when-configured + not explicit ⇒ ambient preserved (codex uses its own auth.json)", async () => {
-    const handle = defineAgentCli(codexLike())
+    const handle = defineHarness(codexLike())
     const runtime = createAgentCliRuntime(handle)
     const prevOpenai = process.env.OPENAI_API_KEY
     process.env.OPENAI_API_KEY = "sk-openai-AMBIENT"

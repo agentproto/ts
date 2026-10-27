@@ -62,7 +62,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import type { AgentCliDefinition, AgentCliSmallModel } from "../types.js"
 
 const FREE = "opencode/step-5-preview-free"
@@ -154,7 +154,7 @@ describe("system-prompt channel at spawn", () => {
 
   describe("via acp-meta", () => {
     it("sends _meta.systemPrompt.append on newSession", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(acpLike({ via: "acp-meta" })))
+      const runtime = createAgentCliRuntime(defineHarness(acpLike({ via: "acp-meta" })))
       await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
       expect(acpCalls.newSession).toHaveLength(1)
       expect(acpCalls.newSession[0]!.meta).toEqual({ systemPrompt: { append: "AGENT.md text" } })
@@ -162,7 +162,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("sends the same _meta on loadSession (native resume re-reads it)", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(acpLike({ via: "acp-meta" })))
+      const runtime = createAgentCliRuntime(defineHarness(acpLike({ via: "acp-meta" })))
       await runtime.start({
         cwd: base,
         appendSystemPrompt: "AGENT.md text",
@@ -174,7 +174,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("sends no _meta at all without the text", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(acpLike({ via: "acp-meta" })))
+      const runtime = createAgentCliRuntime(defineHarness(acpLike({ via: "acp-meta" })))
       await runtime.start({ cwd: base })
       expect(acpCalls.newSession[0]!.meta).toBeUndefined()
     })
@@ -183,7 +183,7 @@ describe("system-prompt channel at spawn", () => {
   describe("via inline-config, shape file-list", () => {
     it("keeps the existing inline config keys and appends the prompt file path to `instructions`", async () => {
       const configDir = join(base, "session-config")
-      const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
       await runtime.start({
         cwd: base,
         configDir,
@@ -201,7 +201,7 @@ describe("system-prompt channel at spawn", () => {
 
     it("extends an instructions array the host already set", async () => {
       const configDir = join(base, "session-config")
-      const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
       await runtime.start({
         cwd: base,
         configDir,
@@ -213,7 +213,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("without a config dir, writes the file to a private temp dir (the text is never dropped)", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
       await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
       const inline = JSON.parse(spawnCalls[0]!.env.OPENCODE_CONFIG_CONTENT!) as { instructions: string[] }
       expect(inline.instructions).toHaveLength(1)
@@ -223,7 +223,7 @@ describe("system-prompt channel at spawn", () => {
 
   describe("via inline-config, shape text", () => {
     it("joins the text after an existing developer_instructions string, keeping every other key", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+      const runtime = createAgentCliRuntime(defineHarness(codexLike()))
       await runtime.start({
         cwd: base,
         appendSystemPrompt: "AGENT.md text",
@@ -242,7 +242,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("sets the key outright when the config carries none, and needs no config dir", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+      const runtime = createAgentCliRuntime(defineHarness(codexLike()))
       await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
       expect(JSON.parse(spawnCalls[0]!.env.CODEX_CONFIG!)).toEqual({
         developer_instructions: "AGENT.md text",
@@ -252,7 +252,7 @@ describe("system-prompt channel at spawn", () => {
     it("warns when the existing value is not a JSON object, leaving it untouched", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
       try {
-        const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+        const runtime = createAgentCliRuntime(defineHarness(codexLike()))
         await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text", env: { CODEX_CONFIG: "not json" } })
         expect(spawnCalls[0]!.env.CODEX_CONFIG).toBe("not json")
         expect(warn.mock.calls.map(c => String(c[0])).join("\n")).toMatch(/CODEX_CONFIG is not a JSON object.*not delivered/)
@@ -265,7 +265,7 @@ describe("system-prompt channel at spawn", () => {
   describe("via argv", () => {
     it("appends the flag + text to the child's spawn args", async () => {
       const runtime = createAgentCliRuntime(
-        defineAgentCli(acpLike({ via: "argv", flag: "--append-system-prompt" })),
+        defineHarness(acpLike({ via: "argv", flag: "--append-system-prompt" })),
       )
       await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
       expect(spawnCalls[0]!.args.slice(-2)).toEqual(["--append-system-prompt", "AGENT.md text"])
@@ -276,7 +276,7 @@ describe("system-prompt channel at spawn", () => {
 
     it("leaves the args untouched without the text", async () => {
       const runtime = createAgentCliRuntime(
-        defineAgentCli(acpLike({ via: "argv", flag: "--append-system-prompt" })),
+        defineHarness(acpLike({ via: "argv", flag: "--append-system-prompt" })),
       )
       await runtime.start({ cwd: base })
       expect(spawnCalls[0]!.args).not.toContain("--append-system-prompt")
@@ -297,7 +297,7 @@ describe("system-prompt channel at spawn", () => {
 
     it("writes the text to the session config dir and points the env var at the file's absolute path", async () => {
       const configDir = join(base, "session-config")
-      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      const runtime = createAgentCliRuntime(defineHarness(envFileLike()))
       await runtime.start({ cwd: base, configDir, appendSystemPrompt: "AGENT.md text" })
       const file = spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE!
       expect(file).toBe(join(configDir, "agentproto-system-prompt.md"))
@@ -305,7 +305,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("without a config dir, writes to a private temp dir that is removed on close", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      const runtime = createAgentCliRuntime(defineHarness(envFileLike()))
       const session = await runtime.start({ cwd: base, appendSystemPrompt: "AGENT.md text" })
       const file = spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE!
       expect(readFileSync(file, "utf8")).toBe("AGENT.md text")
@@ -315,7 +315,7 @@ describe("system-prompt channel at spawn", () => {
     })
 
     it("sets no env var without the text", async () => {
-      const runtime = createAgentCliRuntime(defineAgentCli(envFileLike()))
+      const runtime = createAgentCliRuntime(defineHarness(envFileLike()))
       await runtime.start({ cwd: base })
       expect(spawnCalls[0]!.env.AGENTPROTO_SYSTEM_PROMPT_FILE).toBeUndefined()
     })

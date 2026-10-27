@@ -110,8 +110,7 @@ only the ones whose mode is easy to misread.
 
 ## Authoring an adapter
 
-The `defineHarness` API lives in `@agentproto/harness` (`defineAgentCli` is the
-old alias). A minimal adapter looks like:
+The `defineHarness` API lives in `@agentproto/harness`. A minimal adapter looks like:
 
 ```ts
 import { defineHarness } from "@agentproto/harness"

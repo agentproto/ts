@@ -31,13 +31,13 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
 import { copilotCliNativeHooks } from "./native-hooks.js"
 
-export const copilotCli: AgentCliHandle = defineAgentCli({
+export const copilotCli: AgentCliHandle = defineHarness({
   name: "copilot-cli",
   id: "copilot-cli",
   description:

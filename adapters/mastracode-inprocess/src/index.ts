@@ -25,14 +25,14 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
 import { DEFAULT_ANTHROPIC_MODEL } from "@agentproto/model-catalog"
 import { deriveDeclaredCapabilities, type CapabilityStrategy } from "@agentproto/provider-kit"
 
-export const mastracodeInprocess: AgentCliHandle = defineAgentCli({
+export const mastracodeInprocess: AgentCliHandle = defineHarness({
   name: "Mastra Code (in-process)",
   id: "mastracode-inprocess",
   description:

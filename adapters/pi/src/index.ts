@@ -33,7 +33,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -98,7 +98,7 @@ function buildPiModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const pi: AgentCliHandle = defineAgentCli({
+export const pi: AgentCliHandle = defineHarness({
   name: "Pi",
   id: "pi",
   description:

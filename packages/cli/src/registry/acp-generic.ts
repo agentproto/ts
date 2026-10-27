@@ -21,7 +21,7 @@ import { promises as fs, constants as fsConstants } from "node:fs"
 import { homedir } from "node:os"
 import { delimiter, join } from "node:path"
 import {
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
 } from "@agentproto/harness"
 import {
@@ -53,7 +53,7 @@ export type AcpSpecSource = "acp-config" | "acp-catalog"
 
 /**
  * Mint a runnable `AgentCliHandle` from a plain spec by routing every
- * field through `defineAgentCli` with `protocol: "acp"`. The result is a
+ * field through `defineHarness` with `protocol: "acp"`. The result is a
  * fully-validated AIP-45 handle — schema-identical to a hand-authored
  * native ACP adapter, just without the npm package.
  *
@@ -71,7 +71,7 @@ export function acpHandleFromSpec(spec: AcpAgentSpec): AgentCliHandle {
     spec.description ??
     `Generic ACP agent '${spec.slug}' — spawns \`${[spec.bin, ...(spec.bin_args ?? [])].join(" ")}\` and drives it over the Agent Client Protocol.`
 
-  return defineAgentCli({
+  return defineHarness({
     name: spec.name ?? spec.slug,
     id: spec.slug,
     description,

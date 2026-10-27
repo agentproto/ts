@@ -18,8 +18,7 @@
  *   spec-reference - spec-only / doctype-only packages: reference
  *                    implementations of AIP file formats whose workspace
  *                    dependencies are limited to the doctype meta-factory
- *                    (@agentproto/doctype, with the deprecated
- *                    @agentproto/define-doctype shim counted too), generic
+ *                    (@agentproto/doctype), generic
  *                    doctype verbs (@agentproto/manifest) and build tooling
  *                    (@agentproto/tooling). This is computed as a transitive
  *                    closure, so doctype packages layered on top of other
@@ -49,7 +48,6 @@ const GLOBS = [
 // verified by scanning all workspace package.json dependency fields.
 const ARCHIVED = new Set([
   "@agentproto/driver-sdk", // packages/driver/sdk
-  "@agentproto/adapter-kit", // packages/adapter-kit
   "@agentproto/workflow-ai-sdk", // packages/workflow-ai-sdk
   "@agentproto/egress", // packages/egress
   "@agentproto/identity", // packages/identity
@@ -57,16 +55,6 @@ const ARCHIVED = new Set([
   "@agentproto/role-catalog", // packages/role-catalog
   "@agentproto/adapter-ai-sdk", // adapters/ai-sdk
   "@agentproto/adapter-mastra", // adapters/mastra
-  // AIP-70 rename shims: deprecated re-export packages with no workspace
-  // dependents, classified like adapter-kit.
-  "@agentproto/agency-v2", // packages/agency-v2
-  "@agentproto/app-kit", // packages/app-kit
-  "@agentproto/define-doctype", // packages/define-doctype
-  "@agentproto/driver-agent-cli", // packages/driver/agent-cli
-  "@agentproto/llm-endpoint", // packages/llm-endpoint
-  "@agentproto/mastra", // packages/mastra
-  "@agentproto/pair-client", // packages/pair-client
-  "@agentproto/redaction", // packages/redaction
 ]);
 
 // Core runtime family: named regardless of doctype-only dependency closure.
@@ -92,12 +80,8 @@ const CORE_NAMES = new Set([
 // spec-reference classification (they ship build macros, not runtime deps).
 const TOOLING_DEPS = new Set(["@agentproto/tooling"]);
 
-// Seed of the spec-reference closure: the AIP doctype meta-factory and its
-// deprecated shim name.
-const DOCTYPE_SEEDS = new Set([
-  "@agentproto/doctype",
-  "@agentproto/define-doctype",
-]);
+// Seed of the spec-reference closure: the AIP doctype meta-factory.
+const DOCTYPE_SEEDS = new Set(["@agentproto/doctype"]);
 
 function workspaceDirs(root = process.cwd()) {
   const dirs = [];
@@ -153,8 +137,7 @@ export function computeStatus(root = process.cwd()) {
 
   // Spec-reference closure: every package that is a doctype/AIP file-format
   // implementation qualifies if (a) it directly uses the doctype meta-factory
-  // (@agentproto/doctype, plus the deprecated @agentproto/define-doctype shim,
-  // and manifest/tooling/seed itself count too) and (b) each of its workspace
+  // (@agentproto/doctype, and manifest/tooling/seed itself count too) and (b) each of its workspace
   // dependencies, other than build tooling, is itself a spec-reference
   // package. Runtime packages depending on doctypes plus real services
   // (registry, relay, provider-kit, ...) fail (b).
@@ -242,7 +225,7 @@ A snapshot of every pnpm workspace package (each \`package.json\` under the work
 1. Packages on the explicit dead-package override list in \`scripts/gen-status.mjs\` (verified zero-dependent in the workspace) → \`archived\`. The override wins over the \`adapters/**\` path rule.
 2. \`adapters/**\` (not on the override list) → \`adapters\`.
 3. The core runtime family — \`runtime\`, \`cli\`, \`driver\` (core), the \`sandbox\` family, \`auth\`, \`model-catalog\` and their runtime neighbours — → \`core\`.
-4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory \`@agentproto/doctype\` (plus the deprecated \`@agentproto/define-doctype\` shim), the generic doctype verbs \`@agentproto/manifest\` and build tooling \`@agentproto/tooling\` -> \`spec-reference\`.
+4. Spec-only / doctype-only packages: reference implementations of AIP file formats whose workspace dependencies resolve (transitively) only to the doctype meta-factory \`@agentproto/doctype\`, the generic doctype verbs \`@agentproto/manifest\` and build tooling \`@agentproto/tooling\` -> \`spec-reference\`.
 5. Everything else → \`core\`.
 
 Each package appears exactly once; tiers are applied in the order above.

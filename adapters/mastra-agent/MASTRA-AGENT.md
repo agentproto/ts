@@ -2,7 +2,7 @@
 
 AIP-45 manifest companion for `@agentproto/adapter-mastra-agent` — the
 first-party agentproto agent. See `src/index.ts` for the authoritative
-`defineAgentCli` handle.
+`defineHarness` handle.
 
 Unlike the other adapters, this package does not wrap an external agent CLI:
 it **is** the agent. An AIP-42 `AGENT.md` is parsed (`@agentproto/agent`), built
