@@ -11,6 +11,8 @@ until the turn ends (`delivery: "queued-mid-turn"`; stale ones show as
 `pendingPrompts` in `session_list`/`session_recap`). `pending: false` =
 delivered, `true` = NOT yet; `deliverWithin` forces a stuck one through. An
 interrupted turn leaves the queue parked until the next natural turn-end.
+`dedupeKey` makes a retry safe: a second call with the same key inside the
+window answers `delivery: "duplicate"` and delivers nothing (see below).
 `interrupt: true` cancels the in-flight turn and redirects the SAME session onto
 this prompt, keeping its context (unlike `agent_kill`); the prompt opens with a
 one-line `[agentproto]` notice saying the cut was a delivery, not a stop. No-op
@@ -40,3 +42,20 @@ operator changed it) — so a mid-turn target queues by default; pass
 When the session is mid-turn, queue this prompt (FIFO) and dispatch it
 automatically once the current turn ends instead of rejecting. Default true.
 Explicit false restores the old reject-when-busy behavior.
+
+## dedupeKey
+
+A retry-safe key, 1 to 200 characters after trimming. Once a prompt carrying
+the key is accepted (dispatched, queued, or steered), a later call with the
+same key inside a 24 hour window is not delivered again: it answers
+`delivery: "duplicate"`, `pending: false`, and `duplicate: true`, plus the
+original `queueId` while that item still waits. A duplicate does not
+interrupt, resume, compact, or touch the inbox or queue.
+
+The accepted-key window holds at most 128 keys and is persisted with the
+session, so the guarantee survives a daemon restart. Dropping a waiting item
+with `session_queue_drop` (or `removeQueuedPrompt`) keeps its key: dropping is
+an explicit cancel, and a retry must not resurrect it. Residual: a daemon
+crash between accepting an idle session's key and its turn actually starting
+loses that prompt, the same as today without a key; a queued item is
+persisted with its key in one step, so it is not lost.

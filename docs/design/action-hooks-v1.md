@@ -25,7 +25,10 @@ be best-effort, which is wrong for both.
 
 The contract does not build one universal callback. It also does not add a
 second prompt queue. A reaction that needs a model turn must use the existing
-session and prompt path.
+session and prompt path. That path now carries a persisted `dedupeKey` on
+`enqueuePrompt` and `agent_prompt` so a replayed reaction is delivered at most
+once per key; the prompt admission barrier (`holdUntil` / `maxHoldMs`) is
+still pending.
 
 ## Frozen terms
 
