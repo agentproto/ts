@@ -190,7 +190,13 @@ import {
   type StopOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
-import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
+import {
+  DELIBERATE_END_REASONS,
+  isProviderLimitError,
+  providerLimitFromTurnText,
+  tagLimitErrorWithWallet,
+  type SessionEndReason,
+} from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
 import type { ModelPolicy } from "./model-policy.js"
@@ -10780,10 +10786,17 @@ export function createSessionsRegistry(opts?: {
         // A thrown provider/subscription usage-cap error (or one reported via
         // an `error` stream event just before the generator gave up) gets its
         // own reason instead of the bare "turn error" — see
-        // `isProviderLimitError`'s doc.
-        if (isProviderLimitError(message) || isProviderLimitError(rt.lastErrorMessage)) {
+        // `isProviderLimitError`'s doc. When the thrown error is an opaque
+        // generic one, the turn's assistant text may be the only place the cap
+        // was stated (see `providerLimitFromTurnText`).
+        const providerLimitMessage = isProviderLimitError(message)
+          ? message
+          : isProviderLimitError(rt.lastErrorMessage)
+            ? rt.lastErrorMessage
+            : providerLimitFromTurnText(message, rt.lastAssistantText)
+        if (providerLimitMessage) {
           rt.desc.endedReason = "provider-limit"
-          rt.desc.lastError = message
+          rt.desc.lastError = providerLimitMessage
         }
         recordExitUsageSnapshot(rt)
         schedulePersist()
@@ -10816,6 +10829,24 @@ export function createSessionsRegistry(opts?: {
       // "pending" in every UI consumer. Emit a synthetic `tool-result`
       // before the turn-end so transcript reducers can resolve the segment.
       settlePendingToolCalls()
+
+      // ── Provider cap printed as assistant text ────────────────────────
+      // Codex (codex-acp) reports the subscription cap as the final assistant
+      // message, then fails the turn with a bare "Internal error". A generic
+      // driver error names no cause, so the turn's own text is the only
+      // evidence — only then, and only the exact cap wording, classifies (see
+      // `providerLimitFromTurnText`). Replacing `turnErrorMessage` also lets
+      // the `session:turn-end` consumer (turn-retry) classify the failure.
+      const providerLimitFromText = providerLimitFromTurnText(turnErrorMessage, rt.lastAssistantText)
+      if (providerLimitFromText) {
+        turnErrorMessage = providerLimitFromText
+        if (rt.desc.endedReason !== "provider-limit") {
+          rt.desc.endedReason = "provider-limit"
+          rt.desc.lastError = providerLimitFromText
+          appendLine(rt, `[provider-limit] ${providerLimitFromText}`, "stderr")
+          void suggestHandoff(rt, "provider-limit", "turn")
+        }
+      }
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
@@ -10910,9 +10941,15 @@ export function createSessionsRegistry(opts?: {
             delete rt.desc.lastTurnErrorMessage
           }
           schedulePersist()
-        } else if (rt.desc.lastTurnErroredAt !== undefined) {
+        } else if (rt.desc.lastTurnErroredAt !== undefined || rt.desc.endedReason === "provider-limit") {
           delete rt.desc.lastTurnErroredAt
           delete rt.desc.lastTurnErrorMessage
+          // A cap stamped on a still-live row is spent once a turn succeeds
+          // again (the quota reset), so it must not outlive the failure.
+          if (rt.desc.endedReason === "provider-limit") {
+            delete rt.desc.endedReason
+            delete rt.desc.lastError
+          }
           schedulePersist()
         }
 

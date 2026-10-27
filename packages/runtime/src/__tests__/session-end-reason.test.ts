@@ -678,6 +678,62 @@ describe("provider-limit classification", () => {
     reg.shutdown()
   })
 
+  it("an opaque 'Internal error' after the assistant printed the usage cap is tagged provider-limit", async () => {
+    // Codex (codex-acp) reports a subscription cap as a final assistant
+    // message, then fails the turn with a bare "Internal error". The text is
+    // the only place the real cause exists.
+    const reg = createSessionsRegistry({ persist: false })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-codex-cap-as-text",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        yield {
+          kind: "text-delta",
+          text:
+            "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), " +
+            "visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 6:00 AM.\n",
+        }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "error" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    const after = reg.get(desc.id)
+    expect(after?.endedReason).toBe("provider-limit")
+    expect(after?.lastError).toContain("hit your usage limit")
+    reg.shutdown()
+  })
+
+  it("an opaque 'Internal error' after an unrelated mention of 'limit' is NOT tagged provider-limit", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-generic-error-limit-word",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        yield { kind: "text-delta", text: "I will check the rate limit config next.\n" }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "error" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.get(desc.id)?.endedReason).toBeUndefined()
+    reg.shutdown()
+  })
+
   it("an ordinary thrown error is NOT tagged provider-limit (regression guard)", async () => {
     const reg = createSessionsRegistry({ persist: false })
     const fakeAgent: AgentSessionLike = {
