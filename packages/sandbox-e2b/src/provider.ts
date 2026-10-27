@@ -28,14 +28,17 @@
  */
 
 import { CommandExitError, Sandbox, SandboxNotFoundError } from "e2b"
+import type { SandboxInfo } from "e2b"
 import type {
   BootedSandbox,
   SandboxBootOpts,
+  SandboxBox,
   SandboxExecOpts,
   SandboxExecResult,
   SandboxProbeResult,
   SandboxSpec,
   SandboxProvider,
+  SandboxUsageWindow,
 } from "@agentproto/sandbox"
 import { resolveLifecyclePolicy, SandboxBoxGoneError, scrubCommandFromMessage } from "@agentproto/sandbox"
 import {
@@ -732,6 +735,119 @@ function resolveOnTimeout(spec: SandboxSpec, config: E2bSandboxConfig): "pause" 
  *  bundle the delivery path will pull (50 MiB) over a slow link. */
 const READ_FILE_TIMEOUT_MS = 5 * 60_000
 
+/**
+ * EUR cost model for e2b boxes. The defaults are the W0 e2b numbers from
+ * `projects/computer/CONTRACT-SCALE.md:147-151`; every field can be
+ * overridden through the `AGENTPROTO_E2B_PRICING` env var (JSON with
+ * `usdPerVcpuHour`, `usdPerGibHour`, `eurPerUsd`).
+ *
+ * Cost is ESTIMATED: e2b reports the box's CPU/RAM and its started/expiry
+ * times, not its actual billed usage, so the window is derived from the
+ * allocated size over the active interval. An override that is absent,
+ * malformed or missing a field is UNKNOWN pricing, never a guess: the
+ * producer then reports `costEur: null` instead of `0`.
+ */
+export interface E2bPricing {
+  usdPerVcpuHour: number
+  usdPerGibHour: number
+  eurPerUsd: number
+}
+
+/** W0 e2b prices, `CONTRACT-SCALE.md:147-151`. */
+export const DEFAULT_E2B_PRICING: Readonly<E2bPricing> = {
+  usdPerVcpuHour: 0.0504,
+  usdPerGibHour: 0.0162,
+  eurPerUsd: 0.92,
+}
+
+/**
+ * Resolve the EUR e2b pricing table: the W0 defaults when
+ * `AGENTPROTO_E2B_PRICING` is unset, the parsed override when every field is
+ * a finite non-negative number, and `null` (unknown, so callers report
+ * `costEur: null`) when the override cannot be trusted.
+ */
+export function resolveE2bPricing(env: NodeJS.ProcessEnv = process.env): E2bPricing | null {
+  const raw = env.AGENTPROTO_E2B_PRICING
+  if (raw === undefined || raw.trim() === "") return { ...DEFAULT_E2B_PRICING }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== "object" || parsed === null) return null
+  const source = parsed as Record<string, unknown>
+  const field = (key: keyof E2bPricing): number | null => {
+    const value = source[key]
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null
+  }
+  const usdPerVcpuHour = field("usdPerVcpuHour")
+  const usdPerGibHour = field("usdPerGibHour")
+  const eurPerUsd = field("eurPerUsd")
+  if (usdPerVcpuHour === null || usdPerGibHour === null || eurPerUsd === null) return null
+  return { usdPerVcpuHour, usdPerGibHour, eurPerUsd }
+}
+
+/** Estimated cost of `vcpuSec`/`gibSec` at `pricing`, or `null` when unknown. */
+function e2bCostEur(
+  vcpuSec: number,
+  gibSec: number,
+  pricing: E2bPricing | null,
+): number | null {
+  if (pricing === null) return null
+  return (
+    (vcpuSec / 3600) * pricing.usdPerVcpuHour * pricing.eurPerUsd +
+    (gibSec / 3600) * pricing.usdPerGibHour * pricing.eurPerUsd
+  )
+}
+
+/** ISO-8601 for an SDK `Date`, or `undefined` when the SDK never set it. */
+function isoOrUndefined(value: Date | undefined): string | undefined {
+  return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : undefined
+}
+
+/**
+ * Map one e2b control-plane `SandboxInfo` onto the unified `SandboxBox`.
+ * A paused box is listed too: it still bills (it keeps its RAM snapshot) and
+ * is exactly what the orphan gc must see. Ownership is unknown: this
+ * provider writes no metadata at boot, so `tenantId`/`endUser` stay absent.
+ */
+function toSandboxBox(info: SandboxInfo): SandboxBox {
+  const createdAt = isoOrUndefined(info.startedAt)
+  return {
+    id: info.sandboxId,
+    provider: "e2b",
+    ...(info.state !== undefined ? { state: String(info.state) } : {}),
+    ...(Number.isFinite(info.cpuCount) ? { cpus: info.cpuCount } : {}),
+    ...(Number.isFinite(info.memoryMB) ? { memoryMiB: info.memoryMB } : {}),
+    ...(createdAt !== undefined ? { createdAt } : {}),
+  }
+}
+
+/** One page-at-a-time read of `Sandbox.list()`, which by default includes
+ *  both `running` and `paused` boxes. */
+async function listSandboxInfos(): Promise<SandboxInfo[]> {
+  const infos: SandboxInfo[] = []
+  const paginator = Sandbox.list({ apiKey: process.env.E2B_API_KEY })
+  while (paginator.hasNext) {
+    infos.push(...(await paginator.nextItems()))
+  }
+  return infos
+}
+
+/** Clamp `[startMs, endMs]` to `[fromMs, toMs]`, returning null when empty. */
+function clampInterval(
+  startMs: number | undefined,
+  endMs: number,
+  fromMs: number,
+  toMs: number,
+): { fromMs: number; toMs: number } | null {
+  if (startMs === undefined) return null
+  const start = Math.max(startMs, fromMs)
+  const end = Math.min(endMs, toMs)
+  return end > start ? { fromMs: start, toMs: end } : null
+}
+
 /** `e2bSandboxProvider.boot`/`.connect` — see module docs. */
 export const e2bSandboxProvider: SandboxProvider = {
   async boot(spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox> {
@@ -858,6 +974,65 @@ export const e2bSandboxProvider: SandboxProvider = {
       if (err instanceof SandboxNotFoundError) return
       throw err
     }
+  },
+
+  /**
+   * Every box the e2b account still holds, running AND paused (paused boxes
+   * keep billing for their memory snapshot). One `Sandbox.list()` read, all
+   * pages followed. The SDK is only touched when this method (or `usage`,
+   * which shares the read) is called.
+   */
+  async list(): Promise<SandboxBox[]> {
+    return (await listSandboxInfos()).map(toSandboxBox)
+  },
+
+  /**
+   * ESTIMATED usage windows derived from the same control-plane inventory:
+   * e2b exposes `startedAt`/`endAt`/`cpuCount`/`memoryMB`, not a billing
+   * ledger, so one window is produced per box over the active interval
+   * `[startedAt, min(endAt, now)]` clamped to `[from, to]`. A box with no
+   * overlap is omitted.
+   *
+   * `tenantId` is the literal `"unknown"`: this provider writes no ownership
+   * metadata at boot, and inventing a tenant would misattribute the cost.
+   * For the same reason an `endUser` filter matches nothing (e2b does not
+   * record an end user). Cost is estimated from the W0 table unless
+   * `AGENTPROTO_E2B_PRICING` overrides it; unknown pricing yields
+   * `costEur: null`, never `0`.
+   */
+  async usage(opts: { from: string; to: string; endUser?: string }): Promise<SandboxUsageWindow[]> {
+    if (opts.endUser !== undefined) return []
+    const fromMs = Date.parse(opts.from)
+    const toMs = Date.parse(opts.to)
+    if (!Number.isFinite(fromMs) || !Number.isFinite(toMs) || toMs <= fromMs) return []
+    const nowMs = Date.now()
+    const pricing = resolveE2bPricing()
+    const windows: SandboxUsageWindow[] = []
+    for (const info of await listSandboxInfos()) {
+      const startedMs = info.startedAt instanceof Date ? info.startedAt.getTime() : undefined
+      const expiryMs =
+        info.endAt instanceof Date ? info.endAt.getTime() : Number.POSITIVE_INFINITY
+      const interval = clampInterval(startedMs, Math.min(expiryMs, nowMs), fromMs, toMs)
+      if (interval === null) continue
+      const activeSec = Math.floor((interval.toMs - interval.fromMs) / 1000)
+      if (activeSec <= 0) continue
+      const cpus = Number.isFinite(info.cpuCount) ? info.cpuCount : 0
+      const memoryMiB = Number.isFinite(info.memoryMB) ? info.memoryMB : 0
+      const vcpuSec = Math.round(activeSec * cpus)
+      const gibSec = (activeSec * memoryMiB) / 1024
+      windows.push({
+        computer: info.sandboxId,
+        tenantId: "unknown",
+        provider: "e2b",
+        from: new Date(interval.fromMs).toISOString(),
+        to: new Date(interval.toMs).toISOString(),
+        activeSec,
+        vcpuSec,
+        gibSec,
+        costEur: e2bCostEur(vcpuSec, gibSec, pricing),
+      })
+    }
+    return windows
   },
 }
 
