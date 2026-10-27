@@ -53,6 +53,7 @@ function fakeE2bModule(): Record<string, unknown> {
         sandboxId: "sbx_fake",
         stop: async () => {},
       }),
+      usage: async () => [],
     },
   }
 }

@@ -11,8 +11,10 @@ export {
   DEFAULT_SIZE,
   DEFAULT_TEMPLATE,
   DEFAULT_E2B_PRICING,
+  DEFAULT_SANDBOX_TIMEOUT_MS,
   resolveE2bPricing,
   type E2bPricing,
   SIZES,
+  TEMPLATES,
   type WorkstationSize,
 } from "./provider.js"

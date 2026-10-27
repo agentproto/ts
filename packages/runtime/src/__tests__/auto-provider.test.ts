@@ -89,7 +89,11 @@ function fakeLegs(opts: {
     resolveProvider: async slug =>
       slug === "computer"
         ? handle("computer", { boot: computerBoot, connect: computerConnect })
-        : handle("e2b", { boot: e2bBoot, connect: e2bConnect }),
+        : handle("e2b", {
+            boot: e2bBoot,
+            connect: e2bConnect,
+            usage: async () => [],
+          }),
     ledger: () => opts.ledger ?? [],
   })
   return { computerBoot, computerConnect, e2bBoot, e2bConnect, auto }
@@ -216,7 +220,7 @@ describe("auto sandbox provider — boot", () => {
     expect(legs.e2bBoot).toHaveBeenCalledTimes(1)
   })
 
-  it("forwards the SAME broker-resolved env to the overflow leg", async () => {
+  it("forwards the allowlisted broker-resolved env to the overflow leg", async () => {
     const computerErr = new ComputerSandboxError("sandbox_capacity", "host capacity exhausted")
     const legs = fakeLegs({
       computer: async () => Promise.reject(computerErr),
@@ -224,7 +228,16 @@ describe("auto sandbox provider — boot", () => {
     })
     const env = { ANTHROPIC_API_KEY: "brokered-value" }
 
-    await legs.auto.provider.boot(spec({ overflow: { enabled: true } }), { env })
+    await legs.auto.provider.boot(
+      spec({
+        overflow: {
+          enabled: true,
+          allowSecrets: true,
+          secretAllowlist: ["ANTHROPIC_API_KEY"],
+        },
+      }),
+      { env },
+    )
 
     expect(legs.e2bBoot).toHaveBeenCalledTimes(1)
     expect(legs.e2bBoot.mock.calls[0]?.[1]).toMatchObject({ env })
@@ -356,6 +369,7 @@ describe("auto sandbox provider — descriptor and ledger", () => {
           stop: async () => {},
         }
       },
+      usage: async () => [],
     })
     const computer = handle("computer", {
       async boot() {
@@ -406,6 +420,7 @@ describe("auto sandbox provider — descriptor and ledger", () => {
           stop: async () => {},
         }
       },
+      usage: async () => [],
     })
     const computer = handle("computer", {
       async boot() {
