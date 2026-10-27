@@ -4,9 +4,9 @@
 agentproto worktree ls      [--repo <dir>] [--status] [--json]
 agentproto worktree new     <slug> [--repo <dir>] [--base <ref>] [--branch <name>]
                                    [--root <dir>] [--no-setup] [--json]
-agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch]
+agentproto worktree rm      <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--force]
                                    [--discard-untracked] [--discard-modified] [--json]
-agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--json]
+agentproto worktree archive <path> [--repo <dir>] [--base <ref>] [--keep-branch] [--force] [--json]
 agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
                                    [--include-detached] [--noise <path,...>]
                                    [--active-minutes <n>] [--json]
@@ -70,7 +70,8 @@ the flag matching the class of change present authorizes it.
 |------|---------|-------------|
 | `--repo <dir>` | *(from `<path>`)* | Repo that owns the worktree. |
 | `--base <ref>` | `origin/main` | Ref whose committed teardown hooks run. |
-| `--keep-branch` | `false` | Keep the branch; by default it's deleted too. |
+| `--keep-branch` | `false` | Always keep the branch. Without it the branch is deleted only when its tip is proven merged into base (the [`branch gc`](./branch.md) ladder); an unmerged branch is kept and the output says so. |
+| `--force` | `false` | Delete the branch even when it is not proven merged. |
 | `--discard-untracked` | `false` | Authorize discarding unignored untracked files. |
 | `--discard-modified` | `false` | Authorize discarding modified tracked files. |
 | `--json` | `false` | Emit `{"removed":path,"branch":str\|null}` as JSON. |
@@ -83,12 +84,20 @@ file, and a `MANIFEST.json`) **before** running the same removal as `rm` with
 both discard flags granted — so nothing still on disk is lost. If the salvage
 step fails, nothing is removed.
 
+The snapshot covers **uncommitted** state only. Committed work lives on the
+branch, which `archive` keeps unless its tip is proven merged into base (or
+`--force` is given). The decision, with its reason and the number of commits
+present on no remote, is printed and recorded in `MANIFEST.json` as
+`branchDecision` (written before the removal runs, so it is the intended
+outcome). A detached HEAD has no branch to keep; only its `tipSha` is recorded.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--repo <dir>` | *(from `<path>`)* | Repo that owns the worktree. |
 | `--base <ref>` | `origin/main` | Ref whose committed teardown hooks run. |
-| `--keep-branch` | `false` | Keep the branch. |
-| `--json` | `false` | Emit `{"archived":path,"branch":…,"salvageDir":path}` as JSON. |
+| `--keep-branch` | `false` | Always keep the branch (see above for the default). |
+| `--force` | `false` | Delete the branch even when it is not proven merged. |
+| `--json` | `false` | Emit `{"archived":path,"branch":…,"salvageDir":path,"branchDecision":…}` as JSON. |
 
 ### `gc`
 
@@ -106,7 +115,7 @@ nothing is touched without `--apply`.**
 | `--repo <dir>` | cwd | Repo to sweep. |
 | `--apply` | `false` | Execute the plan instead of printing it. |
 | `--salvage-dirty` | `false` | Also archive salvage-class worktrees. |
-| `--include-detached` | `false` | Also reclaim clean, idle detached worktrees. |
+| `--include-detached` | `false` | Accepted for compatibility; no longer widens anything. A clean, idle detached worktree is reclaimed by default, but only when its HEAD is proven in base (ancestor, squash, patch, or the head of a merged PR); otherwise it holds. |
 | `--noise <path,...>` | `.opencode/package-lock.json` | Worktree-relative paths whose dirt is known noise: a worktree dirty only on these counts as clean, and removal restores them before a plain non-force remove. `--noise ""` disables. |
 | `--active-minutes <n>` | `60` | Recent-activity window in minutes: a worktree whose own git index mtime is younger than this holds with reason `recent-activity` instead of reclaiming/salvaging. `0` disables the guard. |
 | `--json` | `false` | Emit the plan (or the outcomes, with `--apply`) as JSON. |

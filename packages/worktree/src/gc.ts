@@ -493,7 +493,7 @@ async function provenDetachedInBase(
     const tip = await classifyTipAgainstBase(repoRoot, baseRef, sha)
     if (tip.status === "merged" || tip.status === "squash-merged" || tip.status === "patch-merged") return tip.status
   } catch {
-    return null
+    // A git error proves nothing; the forge tier below may still prove it.
   }
   if (!forge) return null
   try {

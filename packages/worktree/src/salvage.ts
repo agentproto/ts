@@ -34,7 +34,7 @@ export interface SalvageManifest {
   /** Whether `changes.patch` has any content (tracked-file changes existed). */
   hasPatch: boolean
   provenance: ProvenanceInfo
-  /** What `archive` did with the branch (kept or deleted) and why. Absent for a detached HEAD or a gc salvage. */
+  /** What `archive` decided to do with the branch (kept or deleted) and why; written before the removal runs, so it is the intent. Absent for a detached HEAD or a gc salvage. */
   branchDecision?: BranchDeletionDecision
 }
 
