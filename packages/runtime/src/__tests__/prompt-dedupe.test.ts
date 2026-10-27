@@ -100,6 +100,22 @@ describe("enqueuePrompt dedupeKey", () => {
     registry.shutdown()
   })
 
+  it("idle: two concurrent calls with the same key deliver once and the second answers duplicate", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent, prompts } = countingAgent()
+    const desc = spawn(registry, agent)
+
+    const results = await Promise.all([
+      registry.enqueuePrompt(desc.id, "one", { dedupeKey: "race-key" }),
+      registry.enqueuePrompt(desc.id, "two", { dedupeKey: "race-key" }),
+    ])
+
+    expect(results.map(result => result.delivery).sort()).toEqual(["delivered", "duplicate"])
+    await vi.waitFor(() => expect(prompts.length).toBe(1))
+    expect(prompts.length).toBe(1)
+    registry.shutdown()
+  })
+
   it("busy: the same key twice leaves one queue item, exposes its key, and returns its queueId", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const { agent, release } = hangingAgent()

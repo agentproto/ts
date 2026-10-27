@@ -4664,6 +4664,7 @@ export interface SessionsRegistry {
        *  duplicate does not interrupt, resume, compact, trace, or touch the
        *  inbox or queue. Dropping a waiting item keeps its key. */
       dedupeKey?: string
+      /** Digest payload for a freshly queued item (follow digests). */
       digest?: QueuedDigest
       /** On replacement only: synchronously merge with the item actually
        *  still waiting under `coalesceKey`. Returned `message`/`envelope`
@@ -12847,7 +12848,7 @@ export function createSessionsRegistry(opts?: {
       }
       // A duplicate does NOTHING else: no interrupt, resume, compaction,
       // envelope trace, inbox write, queue change, or persist.
-      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+      const duplicateResult = (): EnqueuePromptResult => {
         const waiting = (rtPre.desc.promptQueue ?? []).find(p => p.dedupeKey === dedupeKey)
         return {
           queued: false,
@@ -12856,6 +12857,9 @@ export function createSessionsRegistry(opts?: {
           duplicate: true,
           ...(waiting ? { queueId: waiting.id } : {}),
         }
+      }
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
       }
       assertCompactionAllowed(rtPre, message, opts?.source, "enqueuePrompt")
       // `interrupt` only ever changes behavior on a mid-turn session —
@@ -13011,6 +13015,14 @@ export function createSessionsRegistry(opts?: {
         ...(opts?.source ? { source: opts.source } : {}),
         ...(opts?.forceResume ? { force: true } : {}),
       })
+      // The awaits above (resume attempt, reaped box move) leave a window in
+      // which a retry carrying the same key, sent while this call was still
+      // resuming, may already have been accepted. Check again in the same
+      // synchronous block as admission and the record below, so the retry
+      // answers duplicate instead of a mid-turn error.
+      if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
+        return duplicateResult()
+      }
       const rt = validateAgentTurn(id, "enqueuePrompt", { compaction: isCompactPrompt(message) })
       // Admission succeeded: record the key before any turn is launched, and
       // before the structured-answer branch.
