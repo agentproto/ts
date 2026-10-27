@@ -969,6 +969,14 @@ export function registerAgentTools(
         .enum(["auto", "steer", "interrupt"])
         .optional()
         .describe("Forcing mode; auto (default) = steer, else interrupt."),
+      dedupeKey: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          "Retry-safe key. A second call with the same key within 24 hours is not delivered again and answers delivery 'duplicate'."
+        ),
     },
     async input => {
       const sessionId = resolveSessionIdArg(input)
@@ -1016,6 +1024,7 @@ export function registerAgentTools(
                 deliverVia: input.deliverWithinVia ?? "auto",
               }
             : {}),
+          ...(input.dedupeKey !== undefined ? { dedupeKey: input.dedupeKey } : {}),
           ...(promptSource ? { source: `agent:${promptSource}` } : {}),
         })
         // Self-documenting loop: the prompt actually parked behind an
@@ -1024,11 +1033,13 @@ export function registerAgentTools(
         // moment it's missing, so it won't be delivered until the current
         // turn ends.
         const pending = result.pending ?? result.queued
+        const duplicate = result.duplicate === true
         // Session events: record WHO sent this prompt — the calling session
         // id, or the literal `"operator"` for a call with no caller session.
-        registry.noteSessionPrompt(sessionId, promptCallerLabel(caller), pending)
+        // A duplicate sent nothing, so it must not be noted as a prompt.
+        if (!duplicate) registry.noteSessionPrompt(sessionId, promptCallerLabel(caller), pending)
         const delivery = result.delivery ?? (result.queued ? "queued-mid-turn" : "delivered")
-        const hintQueued = pending && input.interrupt === undefined
+        const hintQueued = pending && input.interrupt === undefined && !duplicate
         return {
           content: [
             {
@@ -1045,6 +1056,7 @@ export function registerAgentTools(
                   sessionId,
                   queued: true,
                   ...(result.queueId ? { queueId: result.queueId } : {}),
+                  ...(duplicate ? { duplicate: true } : {}),
                   ...(hintQueued
                     ? {
                         hint:
