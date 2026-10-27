@@ -343,6 +343,18 @@ const CONTROLLER_ERROR_CODES: Record<string, ComputerSandboxErrorCode> = {
   "egress-slot-dedicated": "sandbox_egress_slot_dedicated",
   "egress-pool-unknown": "sandbox_egress_slot_unknown",
   "host-capacity": "sandbox_capacity",
+  "fleet-capacity": "sandbox_fleet_capacity",
+  "tenant-running-cap": "sandbox_tenant_running_cap",
+  "end-user-cap": "sandbox_end_user_cap",
+  "fleet-tenant-cap": "sandbox_fleet_tenant_cap",
+}
+
+/** Human wording for the capacity codes that have no per-resource detail. */
+const CAPACITY_REFUSAL_LABELS: Partial<Record<ComputerSandboxErrorCode, string>> = {
+  sandbox_fleet_capacity: "fleet capacity exhausted",
+  sandbox_tenant_running_cap: "tenant running-computer cap reached",
+  sandbox_end_user_cap: "end-user computer cap reached",
+  sandbox_fleet_tenant_cap: "fleet tenant computer cap reached",
 }
 
 /** Unit suffix for a resource's amounts, when the controller named one we
@@ -421,6 +433,28 @@ async function mapControllerError(err: unknown, client?: ComputerControllerClien
         resource: err.resource,
         requested: err.requested,
         available: err.available,
+        retryAfterMs: err.retryAfterMs,
+      },
+    )
+  }
+
+  const label = CAPACITY_REFUSAL_LABELS[code]
+  if (label !== undefined) {
+    const cap = err.cap !== undefined ? ` (cap ${err.cap})` : ""
+    const retry =
+      err.retryAfterMs !== undefined
+        ? `; retry after ${Math.ceil(err.retryAfterMs / 1000)}s`
+        : ""
+    return new ComputerSandboxError(
+      code,
+      `computer sandbox: ${label}${cap}${retry}`,
+      {
+        status: err.status,
+        resource: err.resource,
+        requested: err.requested,
+        available: err.available,
+        budget: err.budget,
+        cap: err.cap,
         retryAfterMs: err.retryAfterMs,
       },
     )
