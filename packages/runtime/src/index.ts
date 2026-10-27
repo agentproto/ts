@@ -261,6 +261,7 @@ import {
   createActionRegistry,
   createBrainIngestReaction,
   createClerkReaction,
+  createSessionArchiveAction,
   createReactionReceiptStore,
   createReactionWiring,
   reactionReceiptsPathForBucket,
@@ -3262,6 +3263,7 @@ export async function createGateway(
   builtinReactionBindings.push(clerkReaction.binding)
   reactionRunner.replaceBindings(builtinReactionBindings)
   actionRegistry.register(clerkReaction.handler)
+  actionRegistry.register(createSessionArchiveAction({ sessions }))
   const clerkTurnEnd = createClerkTurnEndController({
     registry: sessions,
     sessionEvents,

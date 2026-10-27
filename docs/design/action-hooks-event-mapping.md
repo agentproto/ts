@@ -218,6 +218,44 @@ An undefined field is omitted, so a filter on it never matches. An agent arm
 treats unreadable session facts as "do not fire"; it also refuses a session whose
 `origin` starts with `reaction:`.
 
+### Registered actions
+
+| Action | Behavior |
+| --- | --- |
+| `session:clerk-pass` | registered by the daemon, reachable only through the builtin clerk binding because user routines cannot subscribe to `agentproto:clerk-due` |
+| `session:archive` | archives the session of the event, skips with an `outcomeRef` when the session is missing, already archived, alive, pinned or keepAlive |
+
+An event routine archives a finished child session by naming the action:
+
+```yaml
+schema: routine/v1
+id: archive-finished-children
+description: Archive a child agent session once it has completed, so it leaves the default session list.
+schedule:
+  kind: event
+  on: agentproto:session-completed
+  filter:
+    session.isChild: true
+target:
+  action: session:archive
+```
+
+The handler reports one of `archived`, `skipped:session_missing`,
+`skipped:already_archived`, `skipped:alive`, `skipped:pinned` or
+`skipped:keep_alive` in the receipt `outcomeRef`; an `archiveSession` throw is
+retried by the runner.
+
+Rollback: set `enabled: false` on the routine and run `routine_reconcile`;
+already archived sessions stay archived and `session_unarchive` restores one.
+
+Limits: it archives as soon as the completion is established, with no delay or
+retention barrier; archiving hides the row from the default list and does not
+delete bytes, so on-disk retention is separate; a pinned or keepAlive session is
+never archived by it. A session that already has a successor (`continuedTo`) is
+archived too. Archiving a session that was closed with an outcome emits a
+retirement event with cause `archived` after the earlier `killed` one, as any
+archive of a closed session does.
+
 The `reconcile()` result and the `routine_reconcile` tool output carry
 `reactions.active` and `reactions.refused` (each refusal has `bindingId` and
 `error`). A refused binding is not live. Builtin bindings always win a duplicate
@@ -235,10 +273,10 @@ Known limits in this version: tool, workflow and agent arms get no event context
 only a registered action handler receives the occurrence; a session started
 by a detached process that does not inherit the async reaction context, for
 example a spawn done by a separate OS process, is not stamped; the daemon
-action registry contains only the builtin `session:clerk-pass` handler, so
-every other `action` arm is refused until a handler is registered; and an event
-arriving between runner start and the first reconcile only reaches builtin
-bindings.
+action registry contains the builtin `session:clerk-pass` and `session:archive`
+handlers, so every other `action` arm is refused until a handler is registered;
+and an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`. The
 binding disappears on the next refresh; its receipts are left untouched.
