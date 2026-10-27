@@ -40,9 +40,9 @@ import {
 import { loadConfig } from "@agentproto/runtime/config"
 import {
   exitOnStdinClose,
-  stampOrigin,
   watchParentExit,
 } from "./mcp-bridge.logic.js"
+import { forwardBridgeTool } from "./mcp-bridge-call.js"
 
 export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   const url = process.env.AGENTPROTO_MCP_URL ?? (await resolveDefaultUrl())
@@ -102,7 +102,7 @@ export async function runMcpBridge(_args: readonly string[]): Promise<number> {
   // host gets a source node in the tree (#575). Never overrides an explicit
   // origin; only session-creating tools (mcp-bridge.logic.ts).
   server.setRequestHandler(CallToolRequestSchema, (req) =>
-    client.callTool(stampOrigin(req.params, server.getClientVersion()?.name))
+    forwardBridgeTool(client, url, req.params, server.getClientVersion()?.name)
   )
 
   // Pass-through: resources (ui:// panels for MCP Apps hosts).

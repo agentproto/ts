@@ -4518,6 +4518,7 @@ export async function createGateway(
     registerSessionFollowTools(server, {
       store: sessionFollowStore,
       hasSession: id => sessions.get(id) !== undefined,
+      sessionKind: id => sessions.get(id)?.kind,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Sandbox adapter introspection/setup, riding on @agentproto/provider-kit
