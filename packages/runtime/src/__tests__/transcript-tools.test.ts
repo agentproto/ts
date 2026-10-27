@@ -87,6 +87,8 @@ describe("transcript_search / transcript_read", () => {
   it("finds a predecessor's transcript after a restart and dates the hits", async () => {
     const oldId = spawn()
     await reg.sendPrompt(oldId, "the mission is to ship the parser")
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
     const newId = spawn(oldId)
 
     const res = await call("transcript_search", { sessionId: newId, query: "parser" })
@@ -103,6 +105,8 @@ describe("transcript_search / transcript_read", () => {
   it("never returns a whole transcript, the excerpt is bounded", async () => {
     const oldId = spawn()
     await reg.sendPrompt(oldId, "x".repeat(5000) + " needle " + "y".repeat(5000))
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
     const newId = spawn(oldId)
 
     const res = await call("transcript_search", {
@@ -119,8 +123,12 @@ describe("transcript_search / transcript_read", () => {
   it("reads dated excerpts along the chain", async () => {
     const oldId = spawn()
     await reg.sendPrompt(oldId, "the mission is to ship the parser")
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
     const newId = spawn(oldId)
     await reg.sendPrompt(newId, "back at it")
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
 
     const res = await call("transcript_read", { sessionId: newId })
     const body = payload(res)
@@ -132,8 +140,12 @@ describe("transcript_search / transcript_read", () => {
   it("filters a read by query", async () => {
     const oldId = spawn()
     await reg.sendPrompt(oldId, "alpha")
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
     const newId = spawn(oldId)
     await reg.sendPrompt(newId, "beta")
+    // The transcript write this prompt queued must land before the read below.
+    await reg.settlePendingWrites()
 
     const res = await call("transcript_read", { sessionId: newId, query: "alpha" })
     const body = payload(res)
