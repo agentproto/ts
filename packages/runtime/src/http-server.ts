@@ -11671,6 +11671,10 @@ async function handleCron(
       json(400, { error: "missing_action" })
       return true
     }
+    if (b.notify !== undefined && b.notify !== "always" && b.notify !== "onFailure") {
+      json(400, { error: "invalid_body", message: 'notify must be "always" or "onFailure"' })
+      return true
+    }
     try {
       const job = await scheduler.create({
         label: typeof b.label === "string" ? b.label : undefined,
@@ -11678,6 +11682,9 @@ async function handleCron(
         timezone: typeof b.timezone === "string" ? b.timezone : undefined,
         recurring: typeof b.recurring === "boolean" ? b.recurring : true,
         action: action as import("./cron-scheduler.js").CronAction,
+        ...(b.notify !== undefined
+          ? { notify: b.notify as import("./cron-scheduler.js").CronNotify }
+          : {}),
       })
       json(201, job)
     } catch (err) {
@@ -11737,13 +11744,14 @@ async function handleCron(
       return true
     }
     const b = body as Record<string, unknown>
-    const allowed = new Set(["schedule", "label", "timezone", "recurring", "active", "action"])
+    const allowed = new Set(["schedule", "label", "timezone", "recurring", "active", "action", "notify"])
     if (Object.keys(b).some(key => !allowed.has(key)) ||
         (b.schedule !== undefined && (typeof b.schedule !== "string" || !b.schedule)) ||
         (b.label !== undefined && b.label !== null && typeof b.label !== "string") ||
         (b.timezone !== undefined && b.timezone !== null && typeof b.timezone !== "string") ||
         (b.recurring !== undefined && typeof b.recurring !== "boolean") ||
         (b.active !== undefined && typeof b.active !== "boolean") ||
+        (b.notify !== undefined && b.notify !== null && b.notify !== "always" && b.notify !== "onFailure") ||
         (b.action !== undefined && (!b.action || typeof b.action !== "object" || Array.isArray(b.action)))) {
       json(400, { error: "invalid_body" })
       return true

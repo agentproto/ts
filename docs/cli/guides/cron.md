@@ -43,6 +43,7 @@ The flags you will actually touch (verified against `cron add --help`):
 | `--command <cmd>` + `--args <arg>` | Run an allowlisted shell command (repeat `--args` for more). |
 | `--target-session <id>` + `--prompt <text>` | Re-prompt a session in place (id or `agent:<label>`); no new session is spawned. |
 | `--label <text>` | Human-readable name shown by `cron list`. |
+| `--notify <mode>` | How loudly a successful command run is heard: `always` (default) wakes followers, `onFailure` sends success to their inbox as `fyi`. |
 | `--once` | Fire a single time, then deactivate (the job stays listed, inactive). |
 | `--model <id>` / `--cwd <dir>` | Model override and working directory (agent kind). |
 | `--options-json <json\|@file>` | Extra `agent_start` spawn fields (agent kind only). |
@@ -54,8 +55,9 @@ The flags you will actually touch (verified against `cron add --help`):
 agentproto cron list
 ```
 
-Shows every job: label, schedule, recurring/one-shot, active/inactive, next
-run, last run, and last result. Add `--json` for the machine-readable form.
+Shows every job: label, schedule, recurring/one-shot, active/inactive, notify
+mode, next run, last run, and last result. Add `--json` for the machine-readable
+form.
 
 ## Step 3: Fire one now (optional)
 

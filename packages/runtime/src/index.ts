@@ -3697,6 +3697,15 @@ export async function createGateway(
       const cfg = await loadConfig().catch((): { follow?: { triage?: FollowTriageInput } } => ({}))
       return resolveFollowTriageConfig(defaultFollowTriageConfig(), cfg.follow?.triage)
     },
+    // A cron command job's successful exit is informational when the job
+    // declares `notify: "onFailure"`. Resolved at event time from the
+    // descriptor captured then, so a later delete or rename cannot flip it.
+    sourceUrgency: desc => {
+      if (desc.origin !== "cron" || desc.kind !== "command" || !desc.label) return undefined
+      const match = /^cron:(.+)$/.exec(desc.label)
+      if (!match) return undefined
+      return cronScheduler.get(match[1]!)?.notify === "onFailure" ? "fyi" : undefined
+    },
     triageFacts: {
       // "A cron run that finished OK already reported itself" — the cron
       // ledger is the only place that knows the run's real outcome.

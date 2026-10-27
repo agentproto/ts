@@ -1161,6 +1161,8 @@ export interface DigestEntry {
   empty?: boolean
   /** `turn-end`: the agent acked its wake as an explicit no-op. */
   silent?: boolean
+  /** `exited`: the source declared this success informational (fyi). */
+  fyi?: boolean
   reason?: string
   /** Already-resolved excerpt text for this event. */
   text?: string

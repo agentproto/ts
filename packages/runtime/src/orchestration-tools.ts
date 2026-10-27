@@ -2797,6 +2797,11 @@ export function registerOrchestrationTools(
           "under a new id; " +
           "'tool' calls a registered daemon MCP tool in-process (cron_* refused).",
         ),
+        notify: z.enum(["always", "onFailure"]).optional().describe(
+          "How loudly a successful `kind:\"command\"` run is heard by followers. " +
+            "`always` (default) wakes them; `onFailure` lands the success in the inbox as fyi and only " +
+            "a non-zero exit wakes them.",
+        ),
         maxConsecutiveFailures: z.number().int().min(1).optional().describe(
           "Health threshold: pause the job after this many consecutive non-productive runs. Default 2.",
         ),
@@ -2825,6 +2830,7 @@ export function registerOrchestrationTools(
             timezone: input.timezone,
             recurring: input.recurring ?? true,
             action: input.action,
+            ...(input.notify !== undefined ? { notify: input.notify } : {}),
             ...(input.maxConsecutiveFailures !== undefined
               ? { maxConsecutiveFailures: input.maxConsecutiveFailures }
               : {}),
@@ -2876,6 +2882,7 @@ export function registerOrchestrationTools(
       schedule: j.schedule,
       recurring: j.recurring,
       active: j.active,
+      notify: j.notify ?? "always",
       finished: j.finished ?? false,
       nextRunAt: j.nextRunAt,
       lastRunAt: j.lastRunAt,
@@ -2922,6 +2929,9 @@ export function registerOrchestrationTools(
         recurring: z.boolean().optional(),
         active: z.boolean().optional(),
         action: cronActionSchema.optional(),
+        notify: z.enum(["always", "onFailure"]).nullable().optional().describe(
+          "How loudly a successful command run is heard: `always`, `onFailure`, or `null` to clear it.",
+        ),
         maxConsecutiveFailures: z.number().int().min(1).optional().describe(
           "Health threshold: pause after this many consecutive non-productive runs. Default 2.",
         ),
