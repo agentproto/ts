@@ -731,8 +731,6 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
       mod = await importFresh(harnessPackageName)
       packageName = harnessPackageName
     } catch {
-      // Adapter- spelling is the fallback. A combined failure propagates the
-      // adapter-package error, for backwards compatibility.
       mod = await importFresh(adapterPackageName)
     }
   } catch (primaryErr) {

@@ -786,6 +786,12 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
 
       // The same slug cannot be listed twice when both prefixes exist on disk.
       expect(slugs.filter((slug) => slug === "dup")).toHaveLength(1)
+      // When both spellings exist, the canonical harness- package must be the
+      // one actually imported (mirroring discovery's harness-wins-within-tier
+      // precedence).
+      expect(adapters.find((a) => a.slug === "dup")?.packageName).toBe(
+        "@agentproto/harness-dup"
+      )
     } finally {
       restoreRoot()
       await fs.rm(root, { recursive: true, force: true })
