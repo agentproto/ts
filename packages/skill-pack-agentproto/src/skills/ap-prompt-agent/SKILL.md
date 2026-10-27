@@ -41,6 +41,25 @@ immediately instead of waiting for the queue:
 }
 ```
 
+## Retry-safe prompts (`dedupeKey`)
+
+An MCP call that times out may still have been delivered, so a blind retry can
+send the prompt twice. Pass `dedupeKey` (1 to 200 characters) and a second call
+with the same key inside 24 hours is **not delivered again**: it answers
+`delivery: "duplicate"`, `pending: false`, `duplicate: true` (and the original
+`queueId` while that item still waits).
+
+```json
+{
+  "tool": "agent_prompt",
+  "args": { "sessionId": "sess_5f9a3c38", "prompt": "Run the migration check.", "dedupeKey": "migration-check-2026-10-27" }
+}
+```
+
+The window holds the last 128 keys per session and survives a daemon restart.
+Dropping a queued item keeps its key, so a retry does not resurrect it. The key
+is available on `agent_prompt` only (not on the HTTP prompt route or the CLI).
+
 ## Prompt or message?
 
 `agent_prompt` DRIVES a session (it's a delegation action). To talk to a
