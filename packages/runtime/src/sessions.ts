@@ -9630,7 +9630,15 @@ export function createSessionsRegistry(opts?: {
           ? `[context] auto-compaction could not free the window (${pctBefore}%${after}); the session was continued fresh`
           : `[context-hard-stop] context at ${pctBefore}% and neither compaction nor a fresh continuation was possible; the session was ended`
     appendLine(rt, text, outcome === "hard-stopped" ? "stderr" : "stdout")
-    transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    // The rescue announces AFTER `performContextHardStop` (which used to close
+    // the transcript), so recording the notice there reopened a writer for a
+    // session that was already terminal. Write the notice first and let THIS
+    // be the one close for a dead session: one stream, no write to reopen.
+    try {
+      transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text })
+    } finally {
+      if (outcome !== "compacted") trackWrite(transcriptWriter.close(rt.desc.id))
+    }
     sessionEvents?.emit({
       type: "session:context-rescue",
       sessionId: rt.desc.id,
@@ -9692,13 +9700,14 @@ export function createSessionsRegistry(opts?: {
           return
         }
         if (resolveAgentAdapter) {
-          await performContextContinueFresh(rt)
+          // The rescue owns the final notice, so it also owns the one close.
+          await performContextContinueFresh(rt, { deferTranscriptClose: true })
           if (!isSessionAlive(rt)) {
             announceContextRescue(rt, "continued", pctBefore, pctAfter)
             return
           }
         }
-        await performContextHardStop(rt, pctAfter ?? pctBefore)
+        await performContextHardStop(rt, pctAfter ?? pctBefore, { deferTranscriptClose: true })
         announceContextRescue(rt, "hard-stopped", pctBefore, pctAfter)
       } finally {
         rt.contextRescue = undefined
@@ -9709,7 +9718,11 @@ export function createSessionsRegistry(opts?: {
     return rt.contextRescue
   }
 
-  async function performContextHardStop(rt: SessionRuntime, pct: number): Promise<void> {
+  async function performContextHardStop(
+    rt: SessionRuntime,
+    pct: number,
+    opts?: { deferTranscriptClose?: boolean },
+  ): Promise<void> {
     // The stop itself is not optional (a prompt into a full window is
     // truncated or rejected), but the work done so far must survive it:
     // checkpoint first, while the transcript is still open. A failure here
@@ -9735,13 +9748,18 @@ export function createSessionsRegistry(opts?: {
     rt.desc.endedAt = new Date().toISOString()
     rt.desc.endedReason = "context-hard-stop"
     void rt.agentSession?.close().catch(() => undefined)
-    void transcriptWriter.close(rt.desc.id)
+    // The rescue defers this close so its final notice lands on the same
+    // stream; `announceContextRescue` then closes it exactly once.
+    if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     tracedSessions.delete(rt.desc.id)
     schedulePersist()
     emitExited(rt)
   }
 
-  async function performContextContinueFresh(rt: SessionRuntime): Promise<void> {
+  async function performContextContinueFresh(
+    rt: SessionRuntime,
+    opts?: { deferTranscriptClose?: boolean },
+  ): Promise<void> {
     if (!resolveAgentAdapter) {
       appendLine(
         rt,
@@ -9751,6 +9769,7 @@ export function createSessionsRegistry(opts?: {
       await performContextHardStop(
         rt,
         computeContextPct(rt.desc.contextSize, rt.desc.contextUsed) ?? 100,
+        { deferTranscriptClose: opts?.deferTranscriptClose },
       )
       return
     }
@@ -9772,11 +9791,14 @@ export function createSessionsRegistry(opts?: {
       rt.desc.endedAt = new Date().toISOString()
       rt.desc.contextContinuityHardStopped = true
       void rt.agentSession?.close().catch(() => undefined)
-      void transcriptWriter.close(rt.desc.id)
       tracedSessions.delete(rt.desc.id)
       schedulePersist()
       emitExited(rt)
       retireRow(rt, "continued", result.descriptor.id)
+      // The rescue path defers and lets `announceContextRescue` write its
+      // notice before closing. The standalone callers (turn-boundary action,
+      // structured-question answer) have no rescue notice, so they close here.
+      if (!opts?.deferTranscriptClose) trackWrite(transcriptWriter.close(rt.desc.id))
     } catch (err) {
       appendLine(
         rt,

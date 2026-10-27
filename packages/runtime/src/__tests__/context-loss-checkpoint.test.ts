@@ -29,6 +29,37 @@ import { HANDOFF_PROMPT_OPENER } from "../handoff-markers.js"
 import { sessionTranscriptDir } from "../transcript-writer.js"
 import type { ContextCheckpoint } from "../context-checkpoint.js"
 
+/** Every transcript stream this file's registries open, in order. A
+ *  terminal session must open exactly one, not one per write after its
+ *  transcript was closed, and it must be finished when the session ends. */
+const openedStreams = vi.hoisted(() => ({
+  streams: [] as Array<{
+    path: string
+    finished: boolean
+    stream?: { writableFinished: boolean }
+  }>,
+}))
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>()
+  return {
+    ...actual,
+    createWriteStream: (...args: Parameters<typeof actual.createWriteStream>) => {
+      const entry: (typeof openedStreams.streams)[number] = {
+        path: String(args[0]),
+        finished: false,
+      }
+      openedStreams.streams.push(entry)
+      const stream = actual.createWriteStream(...args)
+      entry.stream = stream
+      stream.on("finish", () => {
+        entry.finished = true
+      })
+      return stream
+    },
+  }
+})
+
 const HANDOFF_REPLY = JSON.stringify({
   goal: "pick the storage engine",
   decisions: ["Use Postgres, not SQLite: we need concurrent writers"],
@@ -108,11 +139,16 @@ describe("context-losing paths checkpoint first", () => {
 
   beforeEach(() => {
     tmp = mkdtempSync(join(tmpdir(), "ctx-loss-"))
+    openedStreams.streams.length = 0
     reg = createSessionsRegistry({ persist: false, transcriptDir: tmp, contextRescueSettleMs: 100 })
   })
   afterEach(async () => {
+    // `shutdown()` is sync and starts the transcript closes without awaiting
+    // them. Drain those writes before removing the dir they land in, or the
+    // rm races a late flush and fails with ENOTEMPTY.
     reg.shutdown()
-    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+    await reg.settlePendingWrites()
+    rmSync(tmp, { recursive: true, force: true })
   })
 
   const dirOf = (id: string): string => sessionTranscriptDir(id, tmp)
@@ -375,9 +411,26 @@ describe("context-losing paths checkpoint first", () => {
 
       expect(outputOf(id).join("\n")).toMatch(/stopping WITHOUT a checkpoint/)
     })
+
+    it("writes its final notice to the one transcript stream, never reopening it", async () => {
+      const { id } = spawn(95, { mode: "manual" }, 95)
+      breakCheckpointDir(id)
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      await vi.waitFor(() =>
+        expect(outputOf(id).join("\n")).toMatch(/neither compaction nor a fresh continuation/),
+      )
+
+      const opened = openedStreams.streams.filter(entry => entry.path.includes(id))
+      expect(opened).toHaveLength(1)
+    })
   })
 
   describe("continue fresh", () => {
+    const closedStreamsFor = async (id: string) => {
+      await reg.settlePendingWrites()
+      return openedStreams.streams.filter(entry => entry.path.includes(id))
+    }
+
     it("degrades to a checkpointed hard stop when no adapter resolver is wired", async () => {
       // The relève proper (checkpoint, then spawn) is covered by
       // session-continue-fresh.test.ts.
@@ -387,6 +440,31 @@ describe("context-losing paths checkpoint first", () => {
       const files = readdirSync(checkpointDir(id))
       expect(files).toHaveLength(1)
       expect(readCheckpoint(id, files[0]!).recentDigest).toContain("decide which database")
+
+      // This is the standalone turn-boundary action, not the rescue: it must
+      // still finish the transcript when it hard-stops for lack of a resolver.
+      const streams = await closedStreamsFor(id)
+      expect(streams.length).toBeGreaterThan(0)
+      expect(streams.every(entry => entry.finished && entry.stream?.writableFinished === true)).toBe(true)
+    })
+
+    it("closes the transcript when a structured answer continues fresh", async () => {
+      const { id } = spawn(25, {
+        mode: "ask",
+        warnAtPct: 10,
+        compactAtPct: 15,
+        continueFreshAtPct: 20,
+        hardStopAtPct: 90,
+      })
+      await reg.sendPrompt(id, "Let's decide which database we use")
+      expect(reg.get(id)?.awaitingQuestion?.options).toContain("continue-fresh")
+
+      await reg.sendPrompt(id, "continue-fresh")
+      await vi.waitFor(() => expect(reg.get(id)?.status).toBe("killed"))
+
+      const streams = await closedStreamsFor(id)
+      expect(streams.length).toBeGreaterThan(0)
+      expect(streams.every(entry => entry.finished && entry.stream?.writableFinished === true)).toBe(true)
     })
   })
 })
