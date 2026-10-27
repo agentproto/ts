@@ -153,11 +153,11 @@ test('publishablePackageMap excludes private packages and finds real ones', () =
   assert.ok(names.every((n) => n.startsWith('@agentproto/')))
 })
 
-test('publishablePackageMap finds nested packages under a grouping dir (packages/driver/agent-cli)', () => {
+test('publishablePackageMap finds nested packages under a grouping dir (packages/driver/core)', () => {
   const map = publishablePackageMap()
-  assert.equal(map.get('packages/driver/agent-cli/'), '@agentproto/driver-agent-cli')
-  const touched = changedPublishablePackages(['packages/driver/agent-cli/src/index.ts'], map)
-  assert.deepEqual([...touched], ['@agentproto/driver-agent-cli'])
+  assert.equal(map.get('packages/driver/core/'), '@agentproto/driver')
+  const touched = changedPublishablePackages(['packages/driver/core/src/index.ts'], map)
+  assert.deepEqual([...touched], ['@agentproto/driver'])
 })
 
 /** Lay out a throwaway workspace: `{ "rel/dir": packageJsonObject }`. */

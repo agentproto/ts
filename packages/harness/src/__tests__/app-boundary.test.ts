@@ -56,7 +56,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 
 const claudeCodeLike = (): AgentCliDefinition => ({
   name: "claude-code",
@@ -103,7 +103,7 @@ describe("app boundary: claude-code isolated settings", () => {
   it("isolateHostContext excludes every ancestor's CLAUDE.md but not the cwd's own", async () => {
     const app = join(base, "monorepo", "apps", "yt")
     mkdirSync(app, { recursive: true })
-    const runtime = createAgentCliRuntime(defineAgentCli(claudeCodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(claudeCodeLike()))
     await runtime.start({ cwd: app, isolateHostContext: true })
 
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
@@ -117,7 +117,7 @@ describe("app boundary: claude-code isolated settings", () => {
   })
 
   it("does not write claudeMdExcludes unless isolation was requested", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(claudeCodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(claudeCodeLike()))
     await runtime.start({ cwd: base })
     const configDir = spawnCalls[0]!.env.CLAUDE_CONFIG_DIR!
     expect(JSON.parse(readFileSync(`${configDir}/settings.json`, "utf8"))).toEqual({
@@ -132,7 +132,7 @@ describe("app boundary: claude-code isolated settings", () => {
       const runWs = join(base, "runs", "r1")
       mkdirSync(app, { recursive: true })
       mkdirSync(runWs, { recursive: true })
-      const runtime = createAgentCliRuntime(defineAgentCli(claudeCodeLike()))
+      const runtime = createAgentCliRuntime(defineHarness(claudeCodeLike()))
       await runtime.start({
         cwd: app,
         fsZones: { readOnly: [], writable: [runWs] },

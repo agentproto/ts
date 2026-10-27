@@ -5,7 +5,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -73,7 +73,7 @@ const OPENCODE_ANTHROPIC_MODELS = [
   })),
 ]
 
-export const claudeCode: AgentCliHandle = defineAgentCli({
+export const claudeCode: AgentCliHandle = defineHarness({
   name: "claude-code",
   id: "claude-code",
   description:

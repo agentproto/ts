@@ -39,7 +39,7 @@ import type {
   StreamEvent,
 } from "./types.js"
 
-export const defineAgentCli = createDoctype<AgentCliDefinition, AgentCliHandle>(
+export const defineHarness = createDoctype<AgentCliDefinition, AgentCliHandle>(
   {
     aip: 45,
     name: "agent-cli",
@@ -1186,7 +1186,7 @@ async function buildProtocolArm(
       throw new Error("createAgentCliRuntime: mcp protocol arm not yet implemented")
     case "proprietary":
       if (!def.adapter) {
-        // defineAgentCli's validate() already enforces this for manifests
+        // defineHarness's validate() already enforces this for manifests
         // built through it — this guards a hand-built AgentCliHandle that
         // bypassed that check.
         throw new Error(

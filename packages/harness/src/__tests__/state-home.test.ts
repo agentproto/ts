@@ -59,7 +59,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 
 const codexLike = (): AgentCliDefinition => ({
   name: "codex",
@@ -107,7 +107,7 @@ describe("stateHome: isolated adapter home for confined spawns", () => {
     "points CODEX_HOME at the session config dir, links only auth.json, and grants exactly those paths",
     async () => {
       const configDir = join(base, "adapter-config", "sess_1")
-      const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+      const runtime = createAgentCliRuntime(defineHarness(codexLike()))
       await runtime.start({ cwd: app, configDir, fsZones: { readOnly: [], writable: [runWs] } })
 
       const call = spawnCalls[0]!
@@ -135,7 +135,7 @@ describe("stateHome: isolated adapter home for confined spawns", () => {
     const configDir = join(base, "adapter-config", "sess_2")
     mkdirSync(configDir, { recursive: true })
     writeFileSync(join(configDir, "auth.json"), '{"stale":true}')
-    const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+    const runtime = createAgentCliRuntime(defineHarness(codexLike()))
     await runtime.start({ cwd: app, configDir, fsZones: { readOnly: [], writable: [runWs] } })
     expect(lstatSync(join(configDir, "auth.json")).isSymbolicLink()).toBe(true)
   })
@@ -149,7 +149,7 @@ describe("stateHome: isolated adapter home for confined spawns", () => {
       symlinkSync(join(realHome, "config.toml"), join(configDir, "config.toml"))
       const def = codexLike()
       def.stateHome = { ...def.stateHome!, seed: { "config.toml": "project_root_markers = []\n" } }
-      const runtime = createAgentCliRuntime(defineAgentCli(def))
+      const runtime = createAgentCliRuntime(defineHarness(def))
       await runtime.start({ cwd: app, configDir, fsZones: { readOnly: [], writable: [runWs] } })
 
       const seeded = join(configDir, "config.toml")
@@ -160,7 +160,7 @@ describe("stateHome: isolated adapter home for confined spawns", () => {
   )
 
   it("leaves an unconfined spawn on the operator's own home", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(codexLike()))
+    const runtime = createAgentCliRuntime(defineHarness(codexLike()))
     await runtime.start({ cwd: app, configDir: join(base, "adapter-config", "sess_3") })
     const call = spawnCalls[0]!
     expect(call.bin).not.toBe("sandbox-exec")

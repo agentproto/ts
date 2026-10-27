@@ -46,7 +46,7 @@ vi.mock("@agentproto/acp/client", () => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("../define-agent-cli.js")
+const { defineHarness, createAgentCliRuntime } = await import("../define-agent-cli.js")
 import type { AgentCliDefinition, ResolvedAuthSpec } from "../types.js"
 import { agentCliFrontmatterSchema } from "../schema.js"
 
@@ -93,7 +93,7 @@ describe("credentialDataHome", () => {
 
   it("points the data home at <configDir>/auth-data when a credential is engaged", async () => {
     const configDir = join(base, "sess_1")
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", configDir, auth: apiKeySpec() })
     expect(spawnCalls[0]!.env.XDG_DATA_HOME).toBe(join(configDir, "auth-data"))
     expect(existsSync(join(configDir, "auth-data"))).toBe(true)
@@ -102,7 +102,7 @@ describe("credentialDataHome", () => {
 
   it("keeps the ambient data home when the spec opts out with isolateDataHome:false", async () => {
     const configDir = join(base, "sess_optout")
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", configDir, auth: apiKeySpec({ isolateDataHome: false }) })
     expect(spawnCalls[0]!.env.XDG_DATA_HOME).toBe("/operator/real/data")
     expect(existsSync(join(configDir, "auth-data"))).toBe(false)
@@ -110,7 +110,7 @@ describe("credentialDataHome", () => {
   })
 
   it("falls back to a throwaway dir when the host keys no configDir — never the operator's real data home", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", auth: apiKeySpec() })
     const dir = spawnCalls[0]!.env.XDG_DATA_HOME!
     expect(dir).not.toBe("/operator/real/data")
@@ -119,7 +119,7 @@ describe("credentialDataHome", () => {
   })
 
   it("applies the spec's extraEnv alongside the credential", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({
       cwd: "/scratch",
       configDir: join(base, "sess_2"),
@@ -131,7 +131,7 @@ describe("credentialDataHome", () => {
   })
 
   it("deep-merges the credential's inline config over a mode's own config under the same key; ambient env is never merged", async () => {
-    const withMode = defineAgentCli({
+    const withMode = defineHarness({
       ...opencodeLike(),
       modes: [
         {
@@ -159,7 +159,7 @@ describe("credentialDataHome", () => {
     spawnCalls.length = 0
     process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ ambient: true })
     try {
-      await createAgentCliRuntime(defineAgentCli(opencodeLike())).start({
+      await createAgentCliRuntime(defineHarness(opencodeLike())).start({
         cwd: "/scratch",
         configDir: join(base, "sess_5"),
         auth: apiKeySpec({ extraEnv: { OPENCODE_CONFIG_CONTENT: "{\"provider\":{}}" } }),
@@ -171,7 +171,7 @@ describe("credentialDataHome", () => {
   })
 
   it("leaves the data home alone when no credential is engaged (ambient)", async () => {
-    const runtime = createAgentCliRuntime(defineAgentCli(opencodeLike()))
+    const runtime = createAgentCliRuntime(defineHarness(opencodeLike()))
     await runtime.start({ cwd: "/scratch", configDir: join(base, "sess_3") })
     expect(spawnCalls[0]!.env.XDG_DATA_HOME).toBe("/operator/real/data")
   })

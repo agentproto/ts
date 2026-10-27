@@ -19,13 +19,13 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
 import { codexNativeHooks } from "./native-hooks.js"
 
-export const codex: AgentCliHandle = defineAgentCli({
+export const codex: AgentCliHandle = defineHarness({
   name: "codex",
   id: "codex",
   description:

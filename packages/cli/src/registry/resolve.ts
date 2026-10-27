@@ -17,7 +17,7 @@
  *
  * Step 1 covers 100% of v0 usage. The on-disk path (step 3) is only there
  * for users authoring their own adapters; we'll add it once
- * `defineAgentCli` supports MD-source authoring end to end.
+ * `defineHarness` supports MD-source authoring end to end.
  */
 
 import { promises as fs } from "node:fs"
@@ -224,7 +224,7 @@ function toModelDetails(allowed: unknown): AdapterModelInfo[] {
 }
 
 /** Read `models.apply` off a loosely-typed handle field, defaulted the
- *  same way `defineAgentCli`'s driver does when the manifest omits it —
+ *  same way `defineHarness`'s driver does when the manifest omits it —
  *  see `AdapterInfo.modelApply`'s doc for why this matters to a client. */
 function toModelApply(models: unknown): "config" | "command" | "arg" {
   const apply = (models as { apply?: unknown } | undefined)?.apply

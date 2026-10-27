@@ -26,7 +26,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -74,7 +74,7 @@ function buildJcodeModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const jcode: AgentCliHandle = defineAgentCli({
+export const jcode: AgentCliHandle = defineHarness({
   name: "jcode",
   id: "jcode",
   description:

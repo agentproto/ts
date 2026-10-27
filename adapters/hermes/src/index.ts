@@ -1,7 +1,7 @@
 /**
  * @agentproto/adapter-hermes — AIP-45 adapter for Nous Research's Hermes Agent.
  *
- * Re-exports a `defineAgentCli` instance plus the runtime factory so
+ * Re-exports a `defineHarness` instance plus the runtime factory so
  * a host can boot Hermes with one import:
  *
  *   import { hermes, hermesRuntime } from "@agentproto/adapter-hermes"
@@ -19,7 +19,7 @@
 import { join } from "node:path"
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -75,7 +75,7 @@ function buildHermesModelMenu(): Array<{ id: string; provider: string }> {
   })
 }
 
-export const hermes: AgentCliHandle = defineAgentCli({
+export const hermes: AgentCliHandle = defineHarness({
   name: "hermes",
   id: "hermes",
   description:

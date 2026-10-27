@@ -4,7 +4,7 @@
  * Mirror of `@agentproto/tool/manifest` and `@agentproto/driver/manifest`:
  * the .md provides metadata; the TS module supplies any spec-specific
  * runtime bits (schemas, execute bodies, …) that can't live in
- * frontmatter. Both inputs end up in `defineAgencyV2` so the cross-AIP
+ * frontmatter. Both inputs end up in `defineAgency` so the cross-AIP
  * invariants run uniformly.
  *
  *
@@ -16,7 +16,7 @@
 
 import matter from "gray-matter"
 import { agencyV2FrontmatterSchema, type AgencyV2Frontmatter } from "../schema.js"
-import { defineAgencyV2 } from "../define-agency-v2.js"
+import { defineAgency } from "../define-agency-v2.js"
 import type { AgencyV2Definition, AgencyV2Handle } from "../types.js"
 
 // Re-export so consumers can import the schema + inferred type either
@@ -49,5 +49,5 @@ export function agencyV2FromManifest(manifest: AgencyV2Manifest): AgencyV2Handle
   // AgencyV2Definition; the cast pins the typing once the manifest
   // schema and the TS interface diverge (e.g. handle has frozen fields
   // a literal config doesn't carry yet).
-  return defineAgencyV2(manifest.frontmatter as unknown as AgencyV2Definition)
+  return defineAgency(manifest.frontmatter as unknown as AgencyV2Definition)
 }

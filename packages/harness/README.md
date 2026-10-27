@@ -34,8 +34,4 @@ export const myHarness = defineHarness({
 })
 ```
 
-`defineAgentCli` is the old alias and still works. `SPEC_NAME` is
-`harness/v1`, the AIP-70 registry name for this package.
-
-`@agentproto/driver-agent-cli` is the deprecated old name; it remains a thin
-re-export shim for existing installs.
+`SPEC_NAME` is `harness/v1`, the AIP-70 registry name for this package.

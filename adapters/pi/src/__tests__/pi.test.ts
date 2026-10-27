@@ -15,7 +15,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
     expect(pi.protocol).toBe("proprietary")
     expect(pi.adapter).toBe("@agentproto/adapter-pi")
     expect(pi.bin).toBe("pi")
-    // No throw from defineAgentCli means the manifest is schema-valid.
+    // No throw from defineHarness means the manifest is schema-valid.
     expect(typeof pi.version).toBe("string")
   })
 

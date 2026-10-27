@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { defineAgentCli } from "../define-agent-cli.js"
+import { defineHarness } from "../define-agent-cli.js"
 import { agentCliFromManifest, parseAgentCliManifest } from "../manifest/index.js"
 import type {
   AgentCliDefinition,
@@ -67,7 +67,7 @@ Body.
 
 describe("capabilities.hooks (AIP-71)", () => {
   it("accepts one valid entry and keeps it on the handle", () => {
-    const handle = defineAgentCli(withHooks([validHook]))
+    const handle = defineHarness(withHooks([validHook]))
     expect(handle.capabilities?.hooks).toEqual([validHook])
   })
 
@@ -87,7 +87,7 @@ describe("capabilities.hooks (AIP-71)", () => {
 
   it("rejects an unknown key in an entry", () => {
     expect(() =>
-      defineAgentCli(
+      defineHarness(
         withHooks([
           { ...validHook, unexpected: true } as unknown as NativeHookCapability,
         ]),
@@ -97,13 +97,13 @@ describe("capabilities.hooks (AIP-71)", () => {
 
   it("rejects empty handlers", () => {
     expect(() =>
-      defineAgentCli(withHooks([{ ...validHook, handlers: [] }])),
+      defineHarness(withHooks([{ ...validHook, handlers: [] }])),
     ).toThrow(/handlers must not be empty/)
   })
 
   it("rejects a duplicate handler", () => {
     expect(() =>
-      defineAgentCli(
+      defineHarness(
         withHooks([{ ...validHook, handlers: ["command", "command"] }]),
       ),
     ).toThrow(/handlers must not contain duplicates/)
@@ -111,7 +111,7 @@ describe("capabilities.hooks (AIP-71)", () => {
 
   it("rejects lifecycle with can_block true", () => {
     expect(() =>
-      defineAgentCli(
+      defineHarness(
         withHooks([{ ...validHook, path: "lifecycle", can_block: true }]),
       ),
     ).toThrow(/can_block must be false when path is lifecycle/)
@@ -119,18 +119,18 @@ describe("capabilities.hooks (AIP-71)", () => {
 
   it("rejects a duplicate (event, native_event) pair", () => {
     expect(() =>
-      defineAgentCli(withHooks([validHook, { ...validHook }])),
+      defineHarness(withHooks([validHook, { ...validHook }])),
     ).toThrow(/hooks must not repeat the same \(event, native_event\) pair/)
   })
 
   it("rejects an empty event", () => {
     expect(() =>
-      defineAgentCli(withHooks([{ ...validHook, event: "" }])),
+      defineHarness(withHooks([{ ...validHook, event: "" }])),
     ).toThrow(/capabilities\.hooks\.0\.event/)
   })
 
   it("still parses a manifest without hooks", () => {
-    const handle = defineAgentCli(minimal({ capabilities: { streaming: true } }))
+    const handle = defineHarness(minimal({ capabilities: { streaming: true } }))
     expect(handle.capabilities).toEqual({ streaming: true })
     expect(handle.capabilities?.hooks).toBeUndefined()
   })

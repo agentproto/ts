@@ -46,7 +46,7 @@ tags: [pi, earendil, proprietary, rpc, agent-runtime, coding, mcp-bridge]
 `@agentproto/adapter-pi` drives **earendil-works/pi**
 (`@earendil-works/pi-coding-agent`) as a `protocol: "proprietary"` AGENT-CLI
 operator. The canonical, executable manifest lives in `src/index.ts`
-(`defineAgentCli({...})`); this file is the human-readable overview.
+(`defineHarness({...})`); this file is the human-readable overview.
 
 ## Why `protocol: "proprietary"`
 

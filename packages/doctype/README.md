@@ -37,6 +37,3 @@ export const defineWidget = createDoctype<WidgetDefinition, WidgetHandle>({
   },
 })
 ```
-
-`@agentproto/define-doctype` is the deprecated old name; it remains a thin
-re-export shim for existing installs.

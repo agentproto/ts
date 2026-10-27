@@ -3,7 +3,7 @@ import { agencyV2FrontmatterSchema } from "./schema.js"
 import type { AgencyV2Definition, AgencyV2Handle } from "./types.js"
 
 /**
- * AIP-21 reference implementation of `defineAgencyV2`.
+ * AIP-21 reference implementation of `defineAgency`.
  *
  * Built on `createDoctype` so the cross-AIP invariants (id pattern,
  * description length, top-level freeze, "defineAgencyV2 (AIP-21): …"
@@ -19,7 +19,7 @@ import type { AgencyV2Definition, AgencyV2Handle } from "./types.js"
  *   readIdentity: def.name
  *   readDescription: def.description.
  */
-export const defineAgencyV2 = createDoctype<AgencyV2Definition, AgencyV2Handle>({
+export const defineAgency = createDoctype<AgencyV2Definition, AgencyV2Handle>({
   aip: 21,
   name: "agency-v2",
   readIdentity: (def) => def.name,
@@ -54,6 +54,3 @@ export const defineAgencyV2 = createDoctype<AgencyV2Definition, AgencyV2Handle>(
     return { ...def } as AgencyV2Handle
   },
 })
-
-/** AIP-70 registry name for `defineAgencyV2`. */
-export const defineAgency = defineAgencyV2

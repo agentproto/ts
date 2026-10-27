@@ -37,7 +37,7 @@
 
 import {
   createAgentCliRuntime,
-  defineAgentCli,
+  defineHarness,
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
@@ -46,7 +46,7 @@ import {
   type CapabilityStrategy,
 } from "@agentproto/provider-kit"
 
-export const antigravity: AgentCliHandle = defineAgentCli({
+export const antigravity: AgentCliHandle = defineHarness({
   name: "antigravity",
   id: "antigravity",
   description:

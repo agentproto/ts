@@ -6,12 +6,12 @@
  * Spec: https://agentproto.sh/docs/aip-21
  *
  * Authoring paths:
- *   - TS:  `defineAgencyV2({...})` → `AgencyV2Handle`
+ *   - TS:  `defineAgency({...})` → `AgencyV2Handle`
  *   - MD:  `parseAgencyV2Manifest(src) → agencyV2FromManifest({...})` → `AgencyV2Handle`
  */
 
 export const SPEC_NAME = "agency/v2" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
-export { defineAgency, defineAgencyV2 } from "./define-agency-v2.js"
+export { defineAgency } from "./define-agency-v2.js"
 export type { AgencyV2Definition, AgencyV2Handle } from "./types.js"
