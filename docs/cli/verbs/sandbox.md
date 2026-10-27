@@ -4,7 +4,7 @@
 agentproto sandbox list   [--no-probe] [--reconcile] [--json]
 agentproto sandbox attach <provider> <sandboxId> [--config-json <json>] [--keep-alive] [--json]
 agentproto sandbox rm     <sandboxId|label|id-prefix> [--box] [--yes] [--json]
-  agentproto sandbox gc [--apply] [--pause] [--provider <slug>]... [--include-attached] [--json]
+agentproto sandbox gc     [--apply] [--pause] [--provider <slug>]... [--include-attached] [--json]
 agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
 agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
@@ -109,7 +109,7 @@ Reaps two kinds of orphan boxes:
    return to its box, so the box is wasted spend.
 2. **Provider-control-plane orphans** — running/paused boxes the provider
    still reports that no live ledger row accounts for, once they are older
-   than a grace window (2 h by default). The sweep enumerates each provider's
+   than a grace window (15 minutes by default). The sweep enumerates each provider's
    control plane (`listBoxes`) and deletes those boxes; a box still attached
    to a live session is left alone unless `--include-attached` opts it in.
    Each provider is scanned independently: one provider's failure is reported
@@ -118,9 +118,10 @@ Reaps two kinds of orphan boxes:
    reported **not scanned** — never as "no orphan found".
 
 Dry run by default; nothing is torn down until `--apply` is passed. The
-daemon also runs this same provider sweep periodically (1 h cadence;
-`AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides or disables it), so manual
-`gc` is the targeted, out-of-band tool.
+daemon runs a separate periodic sweep for **ledger** orphans (1 h cadence by default;
+`AGENTPROTO_SANDBOX_GC_INTERVAL_MS` overrides or disables it). The
+provider-control-plane sweep is invoked by the CLI (`sandbox gc`) and the
+`sandbox_gc` MCP tool, not by that daemon timer.
 
 Requires a running daemon to look up origin-session statuses and to resolve
 provider control planes.
@@ -129,7 +130,7 @@ provider control planes.
 |------|---------|-------------|
 | `--apply` | `false` | Actually tear down (or pause) the orphan boxes and stamp their ledger rows `stopped`. Without this, the command only prints the plan. |
 | `--pause` | `false` | With `--apply`: pause the boxes instead of killing them, keeping them reattachable via `sandbox attach`. Note: a paused e2b box still bills, so the default kill is usually preferable for orphans. |
-| `--provider <slug>` | all configured | Restrict the provider sweep to one provider (repeatable, e.g. `--provider computer --provider e2b`). Ledger orphans are unaffected. |
+| `--provider <slug>` | `computer` | Restrict the provider sweep to one provider (repeatable, e.g. `--provider computer --provider e2b`). Ledger orphans are unaffected. |
 | `--include-attached` | `false` | Also propose provider-side boxes the provider still counts a session on (attached). |
 | `--json` | `false` | Print the plan / outcomes as JSON instead of the human summary. |
 
