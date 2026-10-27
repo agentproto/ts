@@ -99,9 +99,25 @@ reaction is `delivery: "best-effort"` and `reconciliation: "none"`.
 Compatibility note: `AGENT.schema.json` constrains `on:` values to an
 actionRef or an array of actionRefs, but the generated zod schema currently
 collapses actionRef to `any`. Malformed values can therefore pass manifest
-parsing today. `parseAgentHookMap` is the stricter opt-in contract. No
-runtime path calls it in this PR, and existing AGENT.md loads behave exactly
-as before.
+parsing today. `parseAgentHookMap` is the stricter opt-in contract, and the daemon now runs
+it through `packages/runtime/src/action-hooks/agent-on-scanner.ts`. Every
+routine reconcile rescans `<workspace>/.agents/<id>/AGENT.md`, scopes each
+`on` entry to the sessions whose descriptor `meta.agentId` equals that agent
+id, and refreshes the reaction runner through the same wiring event routines
+use. Example:
+
+```yaml
+on:
+  agentproto:session-completed: session:archive
+```
+
+Only `agentproto:session-completed` is a supported event today, and only
+actions registered in the daemon registry can be named; anything else is
+reported under `reactions.refused`. An `on` entry has no filter, cooldown or
+retry (use a routine). An edit takes effect on the next reconcile (boot,
+`routine_reconcile`, `POST /routine-defs/reconcile`), only the daemon
+workspace is scanned, and a failing target records a failed receipt without
+failing a turn.
 
 ## AIP-41 event routines are a second configuration surface, not a second system
 
@@ -196,8 +212,8 @@ of scope for this contract.
 | --- | --- | --- |
 | `packages/lifecycle/src/index.ts` | AIP-37 event vocabulary, aliases, templated names | Source of portable event refs |
 | `packages/action/src/schema.ts` | AIP-39 `<target-kind>:<verb>` action ids | Source of action-ref shape |
-| `packages/agent/src/schema.ts` | AIP-42 `on:` map, values currently loose after zod generation | Agent-manifest config layer; opt-in strict parser in this PR |
-| `packages/agent/src/load-agent.ts` | Loads and validates AGENT.md | Unchanged; no dispatcher call added |
+| `packages/agent/src/schema.ts` | AIP-42 `on:` map, values currently loose after zod generation | Agent-manifest config layer; the runtime scanner runs the strict parser before any binding goes live |
+| `packages/agent/src/load-agent.ts` | Loads and validates AGENT.md | Unchanged; the runtime scanner calls `loadAgent` and reads `handle.on` |
 | `packages/routine/src/schema.ts` | AIP-41 schedule and target validation | Event-routine config layer |
 | `packages/runtime/src/routine-registrar.ts` | Registers cron jobs; event routines resolve to reaction bindings; `target.action` is skipped for a cron routine and refused for an event routine until a handler is registered | Event routines now fire through the reaction runner; event `action` arms are listed under `reactions.refused`. The daemon registry contains the builtin `session:clerk-pass` and `session:archive` handlers; every other action id is refused until registered. The runner exposes a health read model through `GET /reactions`. |
 | `packages/runtime/src/session-event-bus.ts` | In-memory `SessionEventType` pub/sub | Transport for lifecycle and reaction paths; not portable config names |
