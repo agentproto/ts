@@ -130,9 +130,8 @@ async function recordAuditEventLocked(
   if (input.idempotencyKey) metadata.idempotencyKey = input.idempotencyKey
 
   const rowWithoutChain: Record<string, unknown> = {
-    // Emit the pre-AIP-70 tag until the next major: the tag is part of
-    // the hashed bytes, so existing chains must keep verifying, and old
-    // verifiers in the field only know it (EMITTED_SPEC_NAME).
+    // The tag is part of the hashed bytes; verification always uses the tag
+    // stored in each row, so existing legacy-tagged chains keep verifying.
     schema: EMITTED_SPEC_NAME,
     doctype: "audit-event",
     actorKind: input.actorKind,
