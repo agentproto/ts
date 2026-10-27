@@ -403,6 +403,13 @@ describe("resolveAdapter — workspace-local resolution (fixture, deterministic)
         const fixture = adapters.find((a) => a.slug === "fixture-workspace-adapter")
         expect(fixture).toBeDefined()
         expect(fixture?.packageName).toBe("@agentproto/adapter-fixture-workspace-adapter")
+        // Nothing was loaded from npm for a workspace-local adapter, but the
+        // reported name must still be the npm-installable adapter- name,
+        // never a harness- one (no @agentproto/harness-* package exists on
+        // npm today, so reinstall hints pointing at one are dead ends).
+        expect(
+          (fixture?.packageName ?? "").startsWith("@agentproto/adapter-")
+        ).toBe(true)
 
         // Sanity: a normal npm-resolved adapter is still present in the same list.
         expect(adapters.find((a) => a.slug === "claude-code")).toBeDefined()

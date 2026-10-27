@@ -730,14 +730,10 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     try {
       mod = await importFresh(harnessPackageName)
       packageName = harnessPackageName
-    } catch (harnessErr) {
-      try {
-        mod = await importFresh(adapterPackageName)
-      } catch (adapterErr) {
-        // Prefer the adapter-package error message as the primary cause
-        // for backwards compatibility, but keep harnessErr available
-        throw adapterErr
-      }
+    } catch {
+      // Adapter- spelling is the fallback. A combined failure propagates the
+      // adapter-package error, for backwards compatibility.
+      mod = await importFresh(adapterPackageName)
     }
   } catch (primaryErr) {
     // npm/node_modules resolution missed — before the parent-package and
@@ -927,7 +923,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     description: typeof handle.description === "string" ? handle.description : "",
     protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
     streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
-    packageName: resolved.packageName ?? `@agentproto/harness-${slug}`,
+    packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
     commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
     models: modelDetails.map((m) => m.id),
     modes: toAdapterModes(resolved.handle.modes),
@@ -996,7 +992,7 @@ export async function listInstalledAdapters(opts?: {
         } else {
           console.warn(
             `[agentproto/cli] listInstalledAdapters: skipping adapter '${slug}' — the package is on disk but cannot be imported ` +
-              `(dist missing or malformed?): ${msg}. Fix: reinstall it (\`npm i -g @agentproto/harness-${slug}\` or \`@agentproto/adapter-${slug}\`) or reinstall the CLI.`
+              `(dist missing or malformed?): ${msg}. Fix: reinstall it (\`npm i -g @agentproto/adapter-${slug}\`) or reinstall the CLI.`
           )
         }
       }
@@ -1236,7 +1232,7 @@ async function discoverExtraHandles(
           wrapCliHandle(
             slug,
             resolved.handle,
-            resolved.packageName ?? `@agentproto/harness-${slug}`,
+            resolved.packageName ?? `@agentproto/adapter-${slug}`,
             resolved.stale
           )
         )
