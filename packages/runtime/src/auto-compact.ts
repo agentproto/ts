@@ -56,8 +56,10 @@
 
 /** Default absolute threshold: 150k tokens of context. */
 export const AUTO_COMPACT_DEFAULT_TOKENS = 150_000
-/** Hard ceiling for the threshold: a session never autocompacts above it. */
-export const AUTO_COMPACT_MAX_TOKENS = 200_000
+/** Hard ceiling for the threshold: a session never autocompacts above it.
+ *  Sized for a 1M-token window: stays below the default continue-fresh (75%)
+ *  and hard-stop (90%) bands. */
+export const AUTO_COMPACT_MAX_TOKENS = 600_000
 /** Floor for a non-zero threshold (below this the threshold is noise). */
 export const AUTO_COMPACT_MIN_TOKENS = 1_000
 

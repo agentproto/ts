@@ -43,10 +43,15 @@ describe("clampAutoCompactTokens", () => {
     expect(AUTO_COMPACT_DEFAULT_TOKENS).toBe(150_000)
   })
 
-  it("clamps a value above the maximum down to 200k", () => {
-    expect(clampAutoCompactTokens(500_000)).toBe(AUTO_COMPACT_MAX_TOKENS)
-    expect(AUTO_COMPACT_MAX_TOKENS).toBe(200_000)
-    expect(clampAutoCompactTokens(200_001)).toBe(200_000)
+  it("clamps a value above the maximum down to 600k", () => {
+    expect(clampAutoCompactTokens(700_000)).toBe(AUTO_COMPACT_MAX_TOKENS)
+    expect(AUTO_COMPACT_MAX_TOKENS).toBe(600_000)
+    expect(clampAutoCompactTokens(600_001)).toBe(600_000)
+  })
+
+  it("accepts a large-window threshold up to the maximum unchanged", () => {
+    expect(clampAutoCompactTokens(550_000)).toBe(550_000)
+    expect(clampAutoCompactTokens(600_000)).toBe(600_000)
   })
 
   it("clamps a value below the floor up to the floor", () => {

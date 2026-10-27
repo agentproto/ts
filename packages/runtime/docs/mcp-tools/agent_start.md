@@ -666,7 +666,7 @@ argument (claude-code), otherwise as a one-line note riding along with the
 next prompt the session receives (never a turn of its own). It is
 window-independent: the percent ladder never fires on a 1M-token window (558k
 of 1M is "55% full", the warn band), so a long session grew without ever
-compacting. Default 150000, clamped to 200000 max, `0` disables. The
+compacting. Default 150000, clamped to 600000 max, `0` disables. The
 continuity mode does not gate it (like the hard-stop floor, it is a safety
 guard, not a nudge).
 

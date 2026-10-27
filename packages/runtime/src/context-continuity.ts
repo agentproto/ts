@@ -75,7 +75,7 @@ export interface ContextContinuityPolicy
    * session can grow without ever compacting. An absolute count does not
    * care how big the window is.
    *
-   * Clamped into `[1000, 200000]`; `0` disables autocompact. Unset = the
+   * Clamped into `[1000, 600000]`; `0` disables autocompact. Unset = the
    * default (150k). */
   autoCompactAtTokens?: number
   /** Optional display label for UIs. */

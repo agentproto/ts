@@ -299,7 +299,7 @@ Usage:
                                --auto-compact-at-tokens <n> sets the ABSOLUTE
                                context threshold (tokens) at which an idle
                                session is compacted automatically (clamped
-                               to 200000 max, 0 disables).)
+                               to 600000 max, 0 disables).)
   agentproto sessions mirror <id-or-name> [--no-color]
                               (read-only tail of the session's output — never
                                takes stdin; Ctrl-C exits without touching the
