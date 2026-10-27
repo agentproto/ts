@@ -42,6 +42,7 @@ export {
   type SandboxExecResult,
   type SandboxProvider,
   type SandboxProbeResult,
+  type SandboxProviderChoice,
   type SandboxProviderBox,
   type SandboxBox,
   type SandboxUsageWindow,

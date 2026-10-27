@@ -258,6 +258,9 @@ export function makeSandboxResolver(
       const creds = await credsStore.read(slug)
       const handle = await resolveSandboxProvider(slug, {
         creds,
+        // A composite slug (`auto`) resolves its nested providers with THEIR
+        // own creds rows, not the composite's (which has none).
+        credsFor: nested => credsStore.read(nested),
         ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
       })
       if (!handle) throw new Error(`unknown sandbox adapter slug: ${slug}`)

@@ -264,6 +264,7 @@ import {
   SandboxHostBootFailedError,
   type SandboxAgentSessionHost,
   type SandboxLifecyclePolicy,
+  type SandboxProviderChoice,
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
@@ -4933,6 +4934,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxProviderChoice: SandboxProviderChoice | undefined
     let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPauseAfterIdleMs: number | undefined
@@ -5130,6 +5132,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxProviderChoice = booted.choice
       sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
       sandboxPauseAfterIdleMs = booted.pauseAfterIdleMs
@@ -5484,6 +5487,7 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxProviderChoice ? { sandboxProviderChoice } : {}),
       ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs } : {}),
@@ -5758,8 +5762,14 @@ export type SandboxBootResult =
        *  descriptor's own `cwd` so it reflects what the box actually got. */
       cwd: string
       /** Provider slug (e.g. `"e2b"`, `"local"`) — stamped onto the
-       *  descriptor's `sandboxProvider` by the caller. */
+       *  descriptor's `sandboxProvider` by the caller. For a composite
+       *  provider (`auto`) this is the provider that ACTUALLY produced the
+       *  box, never the requested composite slug. */
       provider: string
+      /** How a composite provider chose that backend — stamped onto the
+       *  descriptor's `sandboxProviderChoice`. Absent for a single-provider
+       *  boot. */
+      choice?: SandboxProviderChoice
       sandboxTeardown: SandboxLifecyclePolicy["teardown"]
       /** The spec's `lifecycle.pause_after_idle` window — stamped onto the
        *  descriptor's `sandboxPauseAfterIdleMs`. Absent when none declared. */
@@ -6550,6 +6560,12 @@ export async function bootSandboxAgentSession(opts: {
         }
   }
 
+  // A composite provider (`auto`) reports the backend that actually produced
+  // the box; a plain provider leaves it undefined and the requested slug IS
+  // the provider. Everything recorded from here on (ledger row, descriptor,
+  // command preview) uses the ACTUAL provider.
+  const actualProvider = host.provider ?? providerSlug
+
   // PLAN-D1 §1 — stamp the box into the sandbox ledger. "connected" for a
   // reuse (the box already existed), "booted" for a fresh boot. `expiresAt`
   // rides the one expiry the daemon actually knows at boot: the spec's
@@ -6557,7 +6573,7 @@ export async function bootSandboxAgentSession(opts: {
   // never throws.
   recordSandboxBoot({
     sandboxId: host.sandboxId,
-    provider: providerSlug,
+    provider: actualProvider,
     state: reuseSandboxId !== undefined ? "connected" : "booted",
     // AIP-36 shared-box refcount: the attaching session joins
     // `attachedSessions` in the same write (the boot stamp lands before the
@@ -6694,7 +6710,7 @@ export async function bootSandboxAgentSession(opts: {
   // One daemon-log line per boot phase, with the box id once known. The
   // provider logs create/running/daemon-healthy itself; the workspace and
   // agent phases live here.
-  console.warn(`[sandbox] boot: workspace ready (${providerSlug} ${host.sandboxId})`)
+  console.warn(`[sandbox] boot: workspace ready (${actualProvider} ${host.sandboxId})`)
 
   if (opts.boxCwdRequest !== undefined && handle.defaultCwd) {
     const landed = resolveBoxCwdRequest({
@@ -6842,7 +6858,7 @@ export async function bootSandboxAgentSession(opts: {
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
         : await host.start(startArgs)
     remoteSessionId = remoteDesc.id
-    console.warn(`[sandbox] boot: agent started (${providerSlug} ${host.sandboxId}, session ${remoteSessionId})`)
+    console.warn(`[sandbox] boot: agent started (${actualProvider} ${host.sandboxId}, session ${remoteSessionId})`)
     if (bootCancelled()) {
       if (remoteParent) revokeParentRelayGrant(remoteParent.token)
       return cancelBoot()
@@ -6981,7 +6997,7 @@ export async function bootSandboxAgentSession(opts: {
       ...(refreshBoxLogin ? { refreshLoginFile: refreshBoxLogin } : {}),
       ledger: {
         sandboxId: host.sandboxId,
-        provider: providerSlug,
+        provider: actualProvider,
         // AIP-36 shared-box refcount: `close()` detaches THIS session and
         // only kills the box when no other session is still attached.
         ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
@@ -7028,10 +7044,11 @@ export async function bootSandboxAgentSession(opts: {
       // a box whose `/health` this host can probe directly.
       ...(deviceTarget === undefined ? { watchdog: {} } : {}),
     }),
-    commandPreview: `sandbox:${providerSlug} → ${opts.adapter}`,
+    commandPreview: `sandbox:${actualProvider} → ${opts.adapter}`,
     sandboxId: host.sandboxId,
     cwd: resolvedCwd,
-    provider: providerSlug,
+    provider: actualProvider,
+    ...(host.choice ? { choice: host.choice } : {}),
     sandboxTeardown: lifecyclePolicy.teardown,
     ...(lifecyclePolicy.pauseAfterIdleMs !== undefined
       ? { pauseAfterIdleMs: lifecyclePolicy.pauseAfterIdleMs }

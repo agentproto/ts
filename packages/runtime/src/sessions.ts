@@ -58,6 +58,7 @@ import type {
 } from "./session-config.js"
 import type { CostBudget } from "@agentproto/auth"
 import type { HookCapabilityView } from "@agentproto/provider-kit"
+import type { SandboxProviderChoice } from "@agentproto/sandbox"
 import type { ResolvedSessionSkill } from "./skill-imports.js"
 import type { AdapterCapabilitiesLister, AgentAdapterResolver } from "./http-server.js"
 import type { QuotaReadableProfile, RemainingQuotaReader } from "./remaining-quota.js"
@@ -2926,6 +2927,14 @@ export interface SessionDescriptor {
    *  just THAT one exists — the VS Code panel's sandbox chip names it in its
    *  tooltip alongside `sandboxId`. */
   sandboxProvider?: string
+  /**
+   * How a composite sandbox provider (`auto`) chose the backend recorded in
+   * {@link sandboxProvider} — the requested slug, the actual provider, the
+   * provider it overflowed from (when any), and a short secret-free reason.
+   * Absent for a single-provider spawn, where the requested slug is already
+   * the actual provider.
+   */
+  sandboxProviderChoice?: SandboxProviderChoice
   /**
    * Non-secret sandbox spec config persisted for a later re-attach — the
    * effective boot config minus credentials, always carrying the stable
@@ -5930,6 +5939,9 @@ export interface SpawnAgentInput {
   /** Sandbox provider slug, when `remote` is true — see
    *  `SessionDescriptor.sandboxProvider`. */
   sandboxProvider?: string
+  /** Composite-provider choice, when `remote` is true — see
+   *  `SessionDescriptor.sandboxProviderChoice`. */
+  sandboxProviderChoice?: SandboxProviderChoice
   /** Non-secret sandbox config replayed on re-attach — see
    *  `SessionDescriptor.sandboxConfig`. */
   sandboxConfig?: Record<string, unknown>
@@ -11901,6 +11913,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
@@ -12140,6 +12153,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
         ...(input.sandboxPauseAfterIdleMs !== undefined
