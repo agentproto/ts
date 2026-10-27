@@ -196,7 +196,9 @@ function makeContext(): Context {
     runner,
     registrar,
     receiptBinding,
-    archiveRows: () => store.rows().filter(row => row.bindingId === receiptBinding).length,
+    // Settled receipts only: a pending or running row exists before the handler has run.
+    archiveRows: () =>
+      store.rows().filter(row => row.bindingId === receiptBinding && row.status === "done").length,
     spawn: agentId => {
       const desc = registry.spawnAgent({
         workspaceSlug: "default",
