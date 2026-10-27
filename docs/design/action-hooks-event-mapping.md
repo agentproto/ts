@@ -271,9 +271,9 @@ only a registered action handler receives the occurrence; a session started
 by a detached process that does not inherit the async reaction context, for
 example a spawn done by a separate OS process, is not stamped; the daemon
 action registry contains the builtin `session:clerk-pass` and `session:archive`
-handlers, so every other `action` arm is refused until a handler is registered; and an event
-arriving between runner start and the first reconcile only reaches builtin
-bindings.
+handlers, so every other `action` arm is refused until a handler is registered;
+and an event arriving between runner start and the first reconcile only reaches
+builtin bindings.
 
 Rollback: set `enabled: false` on the routine and run `routine_reconcile`. The
 binding disappears on the next refresh; its receipts are left untouched.
