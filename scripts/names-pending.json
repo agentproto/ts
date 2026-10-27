@@ -1,6 +1,5 @@
 {
   "pending": [
-    "ts:aip-46:package",
     "ts:package:@agentproto/agencies:unregistered",
     "ts:package:@agentproto/catalog:unregistered",
     "ts:package:@agentproto/corpus:unregistered",
