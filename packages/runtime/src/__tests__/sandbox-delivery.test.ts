@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawnSync } from "node:child_process"
@@ -19,6 +20,7 @@ import {
   DELIVERY_RECORD_FILE,
   buildBundleCommand,
   buildProbeCommand,
+  buildSnapshotCommand,
   buildCheckpointPushCommand,
   buildCheckpointDeleteCommand,
   buildPushCommand,
@@ -338,6 +340,48 @@ describe("uncommitted-work snapshot", () => {
     expect(buildCheckpointPushCommand(target)).toBe(
       "git -C '/home/user/agentproto' push --no-verify origin '+refs/agentproto/checkpoint:refs/heads/agentproto-checkpoint/wt/x'",
     )
+  })
+
+  it("keeps the index mtime on the throwaway copy so a racy same-size edit is not skipped", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sandbox-delivery-racy-"))
+    try {
+      const git = (...args: string[]): string => {
+        const r = spawnSync("git", args, { cwd: dir, encoding: "utf8" })
+        if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr}`)
+        return r.stdout
+      }
+      const run = (command: string): string => {
+        const r = spawnSync("bash", ["-c", command], { cwd: dir, encoding: "utf8" })
+        if (r.status !== 0) throw new Error(`bash: ${r.stderr}`)
+        return r.stdout
+      }
+      git("init", "-q", "-b", "wt/racy", ".")
+      git("config", "user.email", "a@b.c")
+      git("config", "user.name", "t")
+      // Ignore ctime so only the mtime and size decide whether an entry is
+      // stat-clean; the original index and the entry then share mtime T.
+      git("config", "core.trustctime", "false")
+
+      const file = join(dir, "a.txt")
+      const t = new Date("2020-01-01T00:00:00.000Z")
+      writeFileSync(file, "v1\n")
+      utimesSync(file, t, t)
+      git("add", "-A")
+      git("commit", "-qm", "init")
+      const baseSha = git("rev-parse", "HEAD").trim()
+      utimesSync(join(dir, ".git", "index"), t, t)
+
+      // Same size, same mtime: only a racy index makes git re-hash it.
+      writeFileSync(file, "v2\n")
+      utimesSync(file, t, t)
+
+      const probe = run(buildSnapshotCommand({ checkoutDir: dir, branch: "wt/racy", baseSha }))
+      const snap = /^snapshot=([0-9a-f]{40,64})$/m.exec(probe)?.[1]
+      expect(snap).toMatch(/^[0-9a-f]{40}$/)
+      expect(git("show", `${snap}:a.txt`)).toBe("v2\n")
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it("pushes uncommitted work even with no commits ahead, and stops reporting it as lost", async () => {
