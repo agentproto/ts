@@ -7,8 +7,9 @@
  * rather take a cloud box than fail the spawn can opt into a one-way overflow
  * to e2b. The overflow is deliberately narrow:
  *
- *   - OFF by default (`config.overflow.enabled`), until the caps in a later
- *     wave make it safe to spend money unattended.
+ *   - OFF by default (`config.overflow.enabled`): an operator opts into
+ *     spending money on e2b, and every call is bounded by the safety rails
+ *     below.
  *   - ONLY for a body-coded capacity refusal (`isCapacityRefusal`): never for
  *     auth/validation/conflict errors, a boot timeout, a permanent budget
  *     verdict, or a transport failure — a create that timed out may already
@@ -19,9 +20,16 @@
  *   - Never retries `computer` after an overflow attempt fails: the caller gets
  *     the e2b error with the original computer error attached.
  *
+ * Safety rails (all fail closed) sit between the capacity refusal and the
+ * e2b call: residency, daily box/EUR caps, an explicit secret allowlist, a
+ * template CLI-version parity check, and a `timeoutMs` ceiling priced from
+ * `maxEurPerBox`. A refusal is a typed `sandbox_overflow_refused` error that
+ * records the choice and keeps the computer error as its cause.
+ *
  * Secrets: the caller's `SandboxBootOpts.env` (already broker-resolved by
- * `@agentproto/sandbox`) is forwarded to whichever leg boots. This module
- * never reads `process.env` and never logs config values.
+ * `@agentproto/sandbox`) is forwarded to the computer leg unchanged; the e2b
+ * leg receives only names on an explicit allowlist. This module never reads a
+ * secret from `process.env` and never logs a secret name or value.
  */
 
 import type {
@@ -30,6 +38,7 @@ import type {
   SandboxProvider,
   SandboxProviderChoice,
   SandboxSpec,
+  SandboxUsageWindow,
 } from "@agentproto/sandbox"
 
 import type { SandboxLedgerEntry } from "../sandbox-ledger.js"
@@ -39,22 +48,63 @@ import type { SandboxProviderCapabilities, SandboxProviderHandle } from "./types
 /** Concrete backends this provider can compose. */
 export type AutoConcreteProvider = "computer" | "e2b"
 
-/** Per-leg config, read from `agent_start.sandbox.config`. Everything here
- *  except `overflow` (and the PR6 caps that do not exist yet) is optional. */
+/** Overflow safety rails. Every numeric cap is validated before the e2b
+ *  call: an absent field takes the documented default, a present but
+ *  malformed one refuses the overflow (never "unlimited"). */
+export interface AutoOverflowConfig {
+  enabled?: boolean
+  /** Boxes already started today (UTC) before refusing another. */
+  maxBoxesPerDay?: number
+  /** EUR already spent on e2b today (UTC) before refusing another. */
+  maxEurPerDay?: number
+  /** Per-box EUR budget, converted into an e2b `timeoutMs` ceiling. */
+  maxEurPerBox?: number
+  /** Master switch for forwarding any broker-resolved secret to e2b. */
+  allowSecrets?: boolean
+  /** The ONLY secret names the e2b leg may receive. Unknown names refuse. */
+  secretAllowlist?: readonly string[]
+}
+
+/** Per-leg config, read from `agent_start.sandbox.config`. */
 export interface AutoSandboxConfig {
   /** Extra `computer` config, merged over the leg's own config. */
   computer?: Record<string, unknown>
   /** Fleet connection, mapped onto the computer leg's controller config. */
   fleet?: { url?: string; token?: string; tenantId?: string }
   /** Extra `e2b` config (size/template/timeout). */
-  e2b?: { size?: string; template?: string; timeoutMs?: number }
-  /** `"eu-ovh"` pins the box to the self-hosted fleet (computer only). The
-   *  full residency policy (including the env default) lands in PR6. */
+  e2b?: { size?: string; template?: string; timeoutMs?: number; cliVersion?: string }
+  /** `"eu-ovh"` pins the box to the self-hosted fleet (computer only).
+   *  Defaults to `AGENTPROTO_TENANT_RESIDENCY`, then `"any"`. */
   residency?: "any" | "eu-ovh" | string
   /** Overflow is opt-in; absent/false means a capacity refusal is returned
-   *  unchanged. */
-  overflow?: { enabled?: boolean }
+   *  unchanged. Caps and the secret allowlist only apply when enabled. */
+  overflow?: AutoOverflowConfig
 }
+
+/** Thrown when an enabled overflow is refused by one of the safety rails
+ *  BEFORE the e2b call. `reason` is operator-facing but never contains a
+ *  secret name or value. */
+export class SandboxOverflowRefusedError extends Error {
+  readonly code = "sandbox_overflow_refused"
+  readonly reason: string
+  /** The attempted choice, with the refusal recorded as its reason. */
+  readonly choice?: SandboxProviderChoice
+
+  constructor(
+    reason: string,
+    info: { cause?: unknown; choice?: SandboxProviderChoice } = {},
+  ) {
+    super(`auto sandbox: overflow refused (${reason})`)
+    this.name = "SandboxOverflowRefusedError"
+    this.reason = reason
+    if (info.cause !== undefined) this.cause = info.cause
+    if (info.choice !== undefined) this.choice = info.choice
+  }
+}
+
+const DEFAULT_MAX_BOXES_PER_DAY = 10
+const DEFAULT_MAX_EUR_PER_DAY = 25
+const DEFAULT_MAX_EUR_PER_BOX = 2
 
 const AUTO_KEYS = new Set(["computer", "fleet", "e2b", "residency", "overflow"])
 
@@ -78,6 +128,8 @@ export interface AutoSandboxProviderDeps {
   ledger?: () => readonly SandboxLedgerEntry[]
   /** Clock, injectable for tests. */
   now?: () => Date
+  /** Environment, only for the residency default. Injectable for tests. */
+  env?: NodeJS.ProcessEnv
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -111,27 +163,51 @@ const computerConfig = (config: AutoSandboxConfig): Record<string, unknown> => {
   }
 }
 
-const e2bConfig = (config: AutoSandboxConfig): Record<string, unknown> => ({
+const e2bConfig = (
+  config: AutoSandboxConfig,
+  timeoutMs?: number,
+): Record<string, unknown> => ({
   ...baseConfig(isRecord(config) ? config : {}),
   ...(isRecord(config.e2b) ? config.e2b : {}),
+  ...(timeoutMs !== undefined ? { timeoutMs } : {}),
 })
 
-const specFor = (spec: SandboxSpec, slug: AutoConcreteProvider, config: AutoSandboxConfig): SandboxSpec => ({
+const specFor = (
+  spec: SandboxSpec,
+  slug: AutoConcreteProvider,
+  config: AutoSandboxConfig,
+  e2bTimeoutMs?: number,
+): SandboxSpec => ({
   ...spec,
   provider: slug,
-  config: slug === "computer" ? computerConfig(config) : e2bConfig(config),
+  config:
+    slug === "computer" ? computerConfig(config) : e2bConfig(config, e2bTimeoutMs),
 })
+
+/** Effective residency: explicit config wins, then the host policy env, then
+ *  `"any"`. An empty value is treated as unset. */
+const resolveResidency = (
+  config: AutoSandboxConfig,
+  env: NodeJS.ProcessEnv,
+): string => {
+  const configured =
+    config.residency ?? env.AGENTPROTO_TENANT_RESIDENCY ?? undefined
+  if (configured === undefined) return "any"
+  if (typeof configured !== "string") return "invalid"
+  return configured.trim() === "" ? "any" : configured
+}
 
 /** Why this spawn may ONLY run on the self-hosted computer, if it may. */
 const computerOnlyReason = (
   spec: SandboxSpec,
   config: AutoSandboxConfig,
+  residency: string,
 ): string | undefined => {
-  if (config.residency !== undefined && config.residency !== "any") {
+  if (residency !== "any") {
     // Fail safe: only the two understood values may overflow. Any other
     // residency (known to a later policy, or a typo) pins to computer rather
     // than silently placing the box in a region the caller did not ask for.
-    return config.residency === "eu-ovh" ? "residency eu-ovh" : "residency requires computer"
+    return residency === "eu-ovh" ? "residency eu-ovh" : "residency requires computer"
   }
   const egressIp = spec.network?.egressIp
   if (egressIp !== undefined && egressIp !== "shared") return "dedicated egressIp"
@@ -150,6 +226,249 @@ const capacityReason = (err: unknown): string => {
       ? (err as { code: string }).code
       : undefined
   return code ? `capacity refusal (${code})` : "capacity refusal"
+}
+
+/** `major.minor.patch[-prerelease]` of the first version-looking token, for
+ *  the template parity check. A partial pin yields null and never matches. */
+const semverCore = (text: string): string | null => {
+  const match = /(?:^|[^0-9.])(\d+\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(?![.\d])/.exec(text)
+  return match ? (match[1] as string) + (match[2] ?? "") : null
+}
+
+/** An absent cap takes the default; a present but malformed one returns null,
+ *  which the caller turns into a refusal (fail closed, never unlimited). */
+const readCap = (value: unknown, fallback: number): number | null => {
+  if (value === undefined) return fallback
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null
+}
+
+interface E2bPricingLike {
+  usdPerVcpuHour: number
+  usdPerGibHour: number
+  eurPerUsd: number
+}
+
+interface E2bSizeLike {
+  cpuCount: number
+  memoryMb: number
+  id: string | null
+  baked: { cli: string | null }
+}
+
+interface E2bTemplateLike {
+  id: string | null
+  baked: { cli: string | null }
+}
+
+interface E2bLimitsModule {
+  DEFAULT_SIZE: string
+  DEFAULT_TEMPLATE: string
+  DEFAULT_SANDBOX_TIMEOUT_MS: number
+  SIZES: Record<string, E2bSizeLike>
+  TEMPLATES: Record<string, E2bTemplateLike>
+  resolveE2bPricing: () => E2bPricingLike | null
+}
+
+/** Load the CONCRETE e2b package lazily: it is an optional dependency and the
+ *  registry imports this module eagerly. */
+const loadE2bLimits = async (): Promise<E2bLimitsModule> =>
+  (await import("@agentproto/sandbox-e2b")) as unknown as E2bLimitsModule
+
+/** The size preset the box will be created at, when it can be priced. */
+const resolveSize = (
+  config: AutoSandboxConfig,
+  limits: E2bLimitsModule,
+): E2bSizeLike | null => {
+  if (!limits.SIZES) return null
+  const explicitSize = config.e2b?.size
+  if (explicitSize !== undefined) return limits.SIZES[explicitSize] ?? null
+  if (config.e2b?.template === undefined) {
+    return limits.SIZES[limits.DEFAULT_SIZE] ?? null
+  }
+  const byId = Object.values(limits.SIZES).find(
+    entry => entry.id !== null && entry.id === config.e2b?.template,
+  )
+  return byId ?? null
+}
+
+/** Cap the e2b lifetime so the box cannot spend more than `maxEurPerBox`.
+ *  Pricing or size that cannot be resolved refuses the overflow. */
+const capTimeoutMs = async (
+  config: AutoSandboxConfig,
+  overflow: AutoOverflowConfig,
+): Promise<{ timeoutMs: number } | { reason: string }> => {
+  const capEur = readCap(overflow.maxEurPerBox, DEFAULT_MAX_EUR_PER_BOX)
+  if (capEur === null) return { reason: "maxEurPerBox is not a positive number" }
+
+  let limits: E2bLimitsModule
+  try {
+    limits = await loadE2bLimits()
+  } catch {
+    return { reason: "e2b pricing is unavailable" }
+  }
+  if (typeof limits.resolveE2bPricing !== "function" || !limits.SIZES) {
+    return { reason: "e2b pricing is unavailable" }
+  }
+  let pricing: E2bPricingLike | null
+  try {
+    pricing = limits.resolveE2bPricing()
+  } catch {
+    return { reason: "e2b pricing is unknown" }
+  }
+  if (pricing === null) return { reason: "e2b pricing is unknown" }
+  const size = resolveSize(config, limits)
+  if (size === null) return { reason: "e2b box size is unknown" }
+  if (
+    !Number.isFinite(size.cpuCount) ||
+    !Number.isFinite(size.memoryMb) ||
+    size.cpuCount < 0 ||
+    size.memoryMb < 0
+  ) {
+    return { reason: "e2b box size is unknown" }
+  }
+
+  const eurPerMs =
+    ((size.cpuCount * pricing.usdPerVcpuHour +
+      (size.memoryMb / 1024) * pricing.usdPerGibHour) *
+      pricing.eurPerUsd) /
+    3_600_000
+  if (!Number.isFinite(eurPerMs) || eurPerMs <= 0) {
+    return { reason: "e2b pricing is unknown" }
+  }
+  const maxMs = Math.floor(capEur / eurPerMs)
+  if (maxMs <= 0) return { reason: "maxEurPerBox is too small for this box size" }
+
+  const defaultTimeout =
+    typeof limits.DEFAULT_SANDBOX_TIMEOUT_MS === "number" &&
+    Number.isFinite(limits.DEFAULT_SANDBOX_TIMEOUT_MS) &&
+    limits.DEFAULT_SANDBOX_TIMEOUT_MS > 0
+      ? limits.DEFAULT_SANDBOX_TIMEOUT_MS
+      : 45 * 60_000
+  const requested =
+    typeof config.e2b?.timeoutMs === "number" &&
+    Number.isFinite(config.e2b.timeoutMs) &&
+    config.e2b.timeoutMs > 0
+      ? config.e2b.timeoutMs
+      : defaultTimeout
+  return { timeoutMs: Math.min(requested, maxMs) }
+}
+
+/** Compare the e2b template's recorded CLI bake with the CLI pin the caller
+ *  expects (the controller's `cliVersion`, else e2b's own). A template with no
+ *  recorded bake is unknown and refuses, never "assume it matches". */
+const templateParityIssue = async (
+  config: AutoSandboxConfig,
+): Promise<string | undefined> => {
+  const computerConfig = isRecord(config.computer) ? config.computer : {}
+  const e2bCliVersion =
+    typeof config.e2b?.cliVersion === "string" && config.e2b.cliVersion !== ""
+      ? config.e2b.cliVersion
+      : undefined
+  const controllerCliVersion =
+    typeof computerConfig.cliVersion === "string" && computerConfig.cliVersion !== ""
+      ? computerConfig.cliVersion
+      : undefined
+  const expected = e2bCliVersion ?? controllerCliVersion
+  if (expected === undefined) return undefined
+
+  let limits: E2bLimitsModule
+  try {
+    limits = await loadE2bLimits()
+  } catch {
+    return "e2b template metadata is unavailable"
+  }
+  if (!limits.TEMPLATES || !limits.SIZES) {
+    return "e2b template metadata is unavailable"
+  }
+  const templateId =
+    config.e2b?.template ??
+    resolveSize(config, limits)?.id ??
+    limits.DEFAULT_TEMPLATE
+  const entries: Array<E2bSizeLike | E2bTemplateLike> = [
+    ...Object.values(limits.TEMPLATES),
+    ...Object.values(limits.SIZES),
+  ]
+  const recorded = entries.find(entry => entry.id !== null && entry.id === templateId)?.baked
+    ?.cli
+  if (recorded === null || recorded === undefined) {
+    return "e2b template CLI version is unknown"
+  }
+  const want = semverCore(expected)
+  const have = semverCore(recorded)
+  if (want === null || have === null || want !== have) {
+    return "e2b template CLI version does not match the controller's"
+  }
+  return undefined
+}
+
+/** Gate the e2b leg's env on an explicit allowlist. Any secret that is not
+ *  allowed refuses the overflow rather than silently producing a box missing
+ *  the credentials it needs. */
+const selectOverflowSecrets = (
+  env: Record<string, string>,
+  overflow: AutoOverflowConfig,
+): { env: Record<string, string> } | { reason: string } => {
+  const keys = Object.keys(env)
+  if (overflow.allowSecrets !== true) {
+    return keys.length === 0 ? { env: {} } : { reason: "secrets are not allowed" }
+  }
+  const allowed = (Array.isArray(overflow.secretAllowlist) ? overflow.secretAllowlist : []).filter(
+    (name): name is string => typeof name === "string" && name.length > 0,
+  )
+  if (allowed.length === 0) {
+    return keys.length === 0 ? { env: {} } : { reason: "secret allowlist is missing" }
+  }
+  const allowedSet = new Set(allowed)
+  if (keys.some(name => !allowedSet.has(name))) {
+    return { reason: "a secret is not on the allowlist" }
+  }
+  if (allowed.some(name => !(name in env))) {
+    return { reason: "an allowlisted secret is missing" }
+  }
+  const selected: Record<string, string> = {}
+  for (const name of allowed) selected[name] = env[name] as string
+  return { env: selected }
+}
+
+/** Daily box-count and EUR caps, read from the e2b usage ledger. An absent or
+ *  failing usage source refuses the overflow. */
+const checkDailyCaps = async (
+  e2b: SandboxProviderHandle,
+  overflow: AutoOverflowConfig,
+  now: Date,
+): Promise<string | undefined> => {
+  const maxBoxes = readCap(overflow.maxBoxesPerDay, DEFAULT_MAX_BOXES_PER_DAY)
+  if (maxBoxes === null) return "maxBoxesPerDay is not a positive number"
+  const maxEur = readCap(overflow.maxEurPerDay, DEFAULT_MAX_EUR_PER_DAY)
+  if (maxEur === null) return "maxEurPerDay is not a positive number"
+
+  const usage = e2b.provider.usage
+  if (!usage) return "e2b cost source is unavailable"
+
+  const from = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString()
+  let windows: SandboxUsageWindow[]
+  try {
+    windows = await usage.call(e2b.provider, { from, to: now.toISOString() })
+  } catch {
+    return "e2b cost source is unavailable"
+  }
+
+  const boxes = new Set(windows.map(window => window.computer))
+  if (boxes.size >= maxBoxes) return "daily box cap reached"
+
+  let spent = 0
+  for (const window of windows) {
+    if (window.costEur === null || !Number.isFinite(window.costEur)) {
+      return "e2b cost is unknown"
+    }
+    spent += window.costEur
+  }
+  if (spent >= maxEur) return "daily EUR cap reached"
+  return undefined
 }
 
 /** Return the e2b failure, annotated with the computer failure that sent us
@@ -195,6 +514,7 @@ export function createAutoSandboxProviderHandle(
 ): SandboxProviderHandle {
   const ledger = deps.ledger ?? (() => readSandboxLedger())
   const now = deps.now ?? (() => new Date())
+  const env = deps.env ?? process.env
 
   const resolve = async (slug: AutoConcreteProvider): Promise<SandboxProviderHandle> => {
     const handle = await deps.resolveProvider(slug)
@@ -214,7 +534,7 @@ export function createAutoSandboxProviderHandle(
       const requested = "auto"
       const log = (line: string): void => opts.log?.(line)
 
-      const pinnedReason = computerOnlyReason(spec, config)
+      const pinnedReason = computerOnlyReason(spec, config, resolveResidency(config, env))
       if (pinnedReason) {
         try {
           const computer = await resolve("computer")
@@ -273,12 +593,41 @@ export function createAutoSandboxProviderHandle(
         throw computerErr
       }
 
+      const overflow = config.overflow ?? {}
+      const refuse = (why: string): never => {
+        const choice: SandboxProviderChoice = {
+          requested,
+          provider: "computer",
+          from: "computer",
+          reason: `overflow refused: ${why}`,
+          at,
+        }
+        log(choiceLine(choice))
+        throw new SandboxOverflowRefusedError(why, { cause: computerErr, choice })
+      }
+
+      const e2b = await resolve("e2b")
+
+      const dailyIssue = await checkDailyCaps(e2b, overflow, now())
+      if (dailyIssue !== undefined) return refuse(dailyIssue)
+
+      const secrets = selectOverflowSecrets(opts.env, overflow)
+      if ("reason" in secrets) return refuse(secrets.reason)
+
+      const parityIssue = await templateParityIssue(config)
+      if (parityIssue !== undefined) return refuse(parityIssue)
+
+      const timeout = await capTimeoutMs(config, overflow)
+      if ("reason" in timeout) return refuse(timeout.reason)
+
       const reason = capacityReason(computerErr)
       try {
-        const e2b = await resolve("e2b")
-        // The SAME broker-resolved env object the computer leg received —
-        // never process.env, never a re-derivation.
-        const booted = await e2b.provider.boot(specFor(spec, "e2b", config), opts)
+        // Only names on the explicit allowlist reach the e2b leg; the computer
+        // leg already received the full broker-resolved env.
+        const booted = await e2b.provider.boot(
+          specFor(spec, "e2b", config, timeout.timeoutMs),
+          { ...opts, env: secrets.env },
+        )
         const choice: SandboxProviderChoice = {
           requested,
           provider: "e2b",
