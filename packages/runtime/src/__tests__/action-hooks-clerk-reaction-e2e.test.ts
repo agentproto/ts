@@ -231,6 +231,46 @@ describe("clerk reaction end to end", () => {
     }
   })
 
+  it("command arm: a non-zero exit ends dead after one attempt and a zero exit ends done", async () => {
+    const failing = setup({
+      run: { command: "/usr/local/bin/steward" },
+      pass: async () => ({ code: 1 }),
+    })
+    try {
+      failing.bus.emit(turnEnd(failing.root.id))
+      failing.fire()
+      await waitFor(() => rowsOf(failing.store).some(row => row.status === "dead"))
+      const failedRows = rowsOf(failing.store)
+      expect(failedRows).toHaveLength(1)
+      expect(failedRows[0]).toMatchObject({
+        status: "dead",
+        attempt: 1,
+      })
+      expect(failedRows[0]?.lastError).toContain("command exited with code 1")
+      expect(failing.pass).toHaveBeenCalledTimes(1)
+    } finally {
+      failing.stop()
+    }
+
+    const passing = setup({
+      run: { command: "/usr/local/bin/steward" },
+      pass: async () => ({ code: 0 }),
+    })
+    try {
+      passing.bus.emit(turnEnd(passing.root.id))
+      passing.fire()
+      await waitFor(() => rowsOf(passing.store).some(row => row.status === "done"))
+      expect(rowsOf(passing.store)).toHaveLength(1)
+      expect(rowsOf(passing.store)[0]).toMatchObject({
+        status: "done",
+        outcomeRef: "command:steward",
+      })
+      expect(passing.pass).toHaveBeenCalledTimes(1)
+    } finally {
+      passing.stop()
+    }
+  })
+
   it("three turn-ends inside the debounce window lead to one pass and one receipt", async () => {
     const h = setup()
     try {

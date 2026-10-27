@@ -285,6 +285,85 @@ describe("createClerkReaction shared run", () => {
     })
   })
 
+  it("reports done for a command arm that resolves code 0", async () => {
+    const h = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => ({ code: 0 }),
+    })
+    expect(await h.reaction.binding.target.run(receipt())).toEqual({
+      ok: true,
+      outcomeRef: "command:steward",
+    })
+  })
+
+  it("fails without retry when a command arm resolves a non-zero code", async () => {
+    const h = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => ({ code: 2 }),
+    })
+    expect(await h.reaction.binding.target.run(receipt())).toEqual({
+      ok: false,
+      retryable: false,
+      error: "command exited with code 2",
+      outcomeRef: "command:steward",
+    })
+  })
+
+  it("fails without retry when a command arm resolves a null code", async () => {
+    const h = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => ({ code: null }),
+    })
+    expect(await h.reaction.binding.target.run(receipt())).toEqual({
+      ok: false,
+      retryable: false,
+      error: "command terminated by signal or timeout",
+      outcomeRef: "command:steward",
+    })
+  })
+
+  it("stays done for a command arm whose value has no code property", async () => {
+    const undefinedHarness = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => undefined,
+    })
+    expect(await undefinedHarness.reaction.binding.target.run(receipt())).toEqual({
+      ok: true,
+      outcomeRef: "command:steward",
+    })
+    const stringHarness = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => "done",
+    })
+    expect(await stringHarness.reaction.binding.target.run(receipt())).toEqual({
+      ok: true,
+      outcomeRef: "command:steward",
+    })
+  })
+
+  it("never reads a routine arm value as an exit code", async () => {
+    const h = harness({
+      config: clerkConfig({ run: { routine: "steward" } }),
+      runPass: async () => ({ code: 1 }),
+    })
+    expect(await h.reaction.binding.target.run(receipt())).toEqual({
+      ok: true,
+      outcomeRef: "routine:steward",
+    })
+  })
+
+  it("releases the single flight after a failing command exit", async () => {
+    const h = harness({
+      config: clerkConfig({ run: { command: "/usr/local/bin/steward" } }),
+      runPass: async () => ({ code: 1 }),
+    })
+    const first = await h.reaction.binding.target.run(receipt())
+    expect(first).toMatchObject({ ok: false, retryable: false })
+    const second = await h.reaction.binding.target.run(receipt())
+    expect(second).not.toEqual({ ok: true, outcomeRef: "skipped:single_flight" })
+    expect(h.runPass).toHaveBeenCalledTimes(2)
+  })
+
   it("handler.run and binding.target.run behave the same", async () => {
     const h = harness()
     const input = { ...receipt(), event: "agentproto:clerk-due", occurrenceId: "due:x", bindingId: CLERK_REACTION_BINDING_ID, reactionDepth: 0 }

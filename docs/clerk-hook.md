@@ -128,6 +128,7 @@ What changes for a listed workspace:
   receipt under `~/.agentproto/reaction-receipts/<bucket>.json`;
 - the pass runs through the reaction runner, so a failed pass is retried up
   to 3 times with backoff;
+- for a reaction-owned workspace, a `run.command` that exits with a non-zero code (or is killed by its timeout) ends the receipt `dead` with the exit code as its reason and is not retried; the legacy path still ignores the exit code.
 - boot reconciliation marks a stale `pending` receipt `dead` with
   `stale_trigger` (the session is gone) and does not replay a `running`
   receipt because the pass target is not idempotent;

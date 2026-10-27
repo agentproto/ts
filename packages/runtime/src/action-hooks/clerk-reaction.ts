@@ -116,7 +116,32 @@ export function createClerkReaction(opts: ClerkReactionOptions): ClerkReaction {
         : config.run.command
           ? `command:${basename(config.run.command)}`
           : "skipped:config"
-      await opts.runPass({ sessionId, session, config })
+      const result = await opts.runPass({ sessionId, session, config })
+      if (!config.run.routine && config.run.command) {
+        if (
+          result !== null &&
+          typeof result === "object" &&
+          Object.prototype.hasOwnProperty.call(result, "code")
+        ) {
+          const { code } = result as { code?: unknown }
+          if (code === null) {
+            return {
+              ok: false,
+              retryable: false,
+              error: "command terminated by signal or timeout",
+              outcomeRef,
+            }
+          }
+          if (typeof code === "number" && code !== 0) {
+            return {
+              ok: false,
+              retryable: false,
+              error: `command exited with code ${code}`,
+              outcomeRef,
+            }
+          }
+        }
+      }
       return { ok: true, outcomeRef }
     } finally {
       inFlight.delete(sessionId)
