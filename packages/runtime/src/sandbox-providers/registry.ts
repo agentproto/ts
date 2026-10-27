@@ -22,6 +22,7 @@ import {
   sharedProviderProbe,
   type ProviderProbe,
 } from "../provider-probes.js"
+import { createAutoSandboxProviderHandle, type AutoConcreteProvider } from "./auto.js"
 import { localSandboxProvider } from "./local.js"
 import type { SandboxProviderCapabilities, SandboxProviderHandle } from "./types.js"
 
@@ -34,6 +35,10 @@ export type SandboxProviderFactory = (
 ) => SandboxProviderHandle
 
 const LOCAL_SLUG = "local"
+
+/** Composite slug handled BEFORE the catalog: it composes the existing
+ *  `computer` and `e2b` handles rather than importing a package of its own. */
+export const AUTO_SANDBOX_SLUG = "auto"
 
 /** Capabilities every provider exposes today — identical across the built-in
  *  local passthrough and the third-party (e2b) wrapper until they diverge. */
@@ -382,6 +387,10 @@ export interface ResolveSandboxProviderOpts {
   importPackage?: (packageName: string) => Promise<Record<string, unknown>>
   /** Injectable for tests — defaults to the shared import-probe cache. */
   probe?: ProviderProbe
+  /** Resolve a nested provider's OWN stored creds. `auto` composes
+   *  `computer`/`e2b`, and each of those has its own creds row — without
+   *  this, `auto` could only ever see the daemon env. */
+  credsFor?: (slug: string) => Promise<SandboxCreds | null>
 }
 
 /**
@@ -394,6 +403,20 @@ export async function resolveSandboxProvider(
   slug: string,
   opts?: ResolveSandboxProviderOpts,
 ): Promise<SandboxProviderHandle | null> {
+  if (slug === AUTO_SANDBOX_SLUG) {
+    return createAutoSandboxProviderHandle({
+      resolveProvider: async (nested: AutoConcreteProvider) => {
+        const creds = opts?.credsFor ? await opts.credsFor(nested) : null
+        return resolveSandboxProvider(nested, {
+          creds,
+          ...(opts?.credsFor ? { credsFor: opts.credsFor } : {}),
+          ...(opts?.importPackage ? { importPackage: opts.importPackage } : {}),
+          ...(opts?.probe ? { probe: opts.probe } : {}),
+        })
+      },
+    })
+  }
+
   const builtin = BUILTIN_SANDBOX_PROVIDERS[slug]
   if (builtin) return builtin(opts?.creds ?? null)
 

@@ -33,12 +33,20 @@ export class SandboxHostBootFailedError extends Error {
    *  the cleanup itself is best-effort, so a failed cleanup still records
    *  the attempt. */
   readonly cleanedUp: "paused" | "stopped"
+  /** Concrete provider that owned the box, when the boot came through a
+   *  composite provider (`auto`). Absent for a single-provider boot, where
+   *  the caller's requested slug already IS the provider. */
+  readonly provider?: string
 
-  constructor(message: string, info: { sandboxId: string; cleanedUp: "paused" | "stopped" }) {
+  constructor(
+    message: string,
+    info: { sandboxId: string; cleanedUp: "paused" | "stopped"; provider?: string },
+  ) {
     super(message)
     this.name = "SandboxHostBootFailedError"
     this.sandboxId = info.sandboxId
     this.cleanedUp = info.cleanedUp
+    if (info.provider !== undefined) this.provider = info.provider
   }
 }
 
@@ -55,12 +63,39 @@ export class SandboxPortExposureUnsupportedError extends Error {
   }
 }
 
+/**
+ * How a composite provider (e.g. `auto`) chose the concrete backend for one
+ * boot. `requested` is the slug the caller asked for, `provider` the one that
+ * actually produced the box; `from` names the provider a fallback moved away
+ * from (when there was one), and `reason` is a short, secret-free explanation.
+ */
+export interface SandboxProviderChoice {
+  /** Slug the caller requested (e.g. `"auto"`). */
+  requested: string
+  /** Concrete provider that actually produced the box. */
+  provider: string
+  /** Provider a fallback moved away from, when the choice was not the first
+   *  candidate (e.g. `"computer"` on an overflow to e2b). */
+  from?: string
+  /** Short, secret-free explanation for the choice. */
+  reason?: string
+  /** ISO instant the choice was made. */
+  at: string
+}
+
 /** What a `SandboxProvider` hands back once the box is up and reachable. */
 export interface BootedSandbox {
   /** The booted agentproto daemon's MCP endpoint, reachable from this process. */
   mcpUrl: string
   /** Provider-assigned sandbox id, for logging / lookup. */
   sandboxId: string
+  /** Concrete provider that produced this box, for a composite provider
+   *  (`auto`). Absent for a single-provider boot, where the caller's own
+   *  requested slug already IS the provider. */
+  provider?: string
+  /** How a composite provider chose this backend. Absent for a
+   *  single-provider boot. */
+  choice?: SandboxProviderChoice
   /** The egress address the provider brokered for this box, when it supports
    *  selecting one (AIP-36 `network.egressIp` / provider config `egressIp`).
    *  `null` means the controller explicitly reports no dedicated address
@@ -273,6 +308,10 @@ export interface SandboxBootOpts {
 export class SandboxBootCancelledError extends Error {
   /** The provider box id, when it was known before the cancel was observed. */
   readonly sandboxId?: string
+  /** Concrete provider that was booting, when a composite provider (`auto`)
+   *  tagged the error — so the failed-boot ledger row names a resolvable
+   *  provider instead of the composite slug. */
+  provider?: string
 
   constructor(message = "sandbox boot cancelled", sandboxId?: string) {
     super(message)
@@ -532,6 +571,14 @@ export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
   /** Provider-assigned sandbox id (`BootedSandbox.sandboxId`) — surfaced so a
    *  caller can record it (there's no local PID for a sandboxed session). */
   sandboxId: string
+  /** Concrete provider that produced the box (`BootedSandbox.provider`) —
+   *  forwarded so a caller records the ACTUAL backend, not the requested
+   *  composite slug. Absent for a single-provider boot. */
+  provider?: BootedSandbox["provider"]
+  /** How a composite provider chose the backend (`BootedSandbox.choice`) —
+   *  forwarded for the descriptor + operator log. Absent for a
+   *  single-provider boot. */
+  choice?: BootedSandbox["choice"]
   /** Headers the box daemon's gated HTTP routes require — the same ones the
    *  MCP connection presents. Absent for an ungated daemon. */
   authHeaders?: Record<string, string>
@@ -639,13 +686,19 @@ export async function createSandboxAgentSessionHost(
     }
     throw new SandboxHostBootFailedError(
       err instanceof Error ? err.message : String(err),
-      { sandboxId: booted.sandboxId, cleanedUp },
+      {
+        sandboxId: booted.sandboxId,
+        cleanedUp,
+        ...(booted.provider !== undefined ? { provider: booted.provider } : {}),
+      },
     )
   }
   return {
     ...host,
     mcpUrl: booted.mcpUrl,
     sandboxId: booted.sandboxId,
+    ...(booted.provider !== undefined ? { provider: booted.provider } : {}),
+    ...(booted.choice !== undefined ? { choice: booted.choice } : {}),
     ...(headers ? { authHeaders: headers } : {}),
     ...(booted.ports ? { ports: booted.ports } : {}),
     ...(booted.egressIp !== undefined ? { egressIp: booted.egressIp } : {}),

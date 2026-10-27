@@ -196,6 +196,8 @@ export interface AgentStartCompactDescriptor {
   remote?: boolean
   sandboxId?: string
   sandboxProvider?: string
+  /** Requested vs actual backend and reason, for a composite provider. */
+  sandboxProviderChoice?: SessionDescriptor["sandboxProviderChoice"]
   hostSessionId?: string
   hostFingerprint?: string
   externalHost?: string
@@ -290,6 +292,7 @@ export const compactAgentStartDescriptor = (
   ...(desc.remote ? { remote: desc.remote } : {}),
   ...(desc.sandboxId ? { sandboxId: desc.sandboxId } : {}),
   ...(desc.sandboxProvider ? { sandboxProvider: desc.sandboxProvider } : {}),
+  ...(desc.sandboxProviderChoice ? { sandboxProviderChoice: desc.sandboxProviderChoice } : {}),
   ...(desc.hostSessionId ? { hostSessionId: desc.hostSessionId } : {}),
   ...(desc.hostFingerprint ? { hostFingerprint: desc.hostFingerprint } : {}),
   ...(desc.externalHost ? { externalHost: desc.externalHost } : {}),
