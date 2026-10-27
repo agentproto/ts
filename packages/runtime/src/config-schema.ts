@@ -223,6 +223,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     turnStallAfterMs: z.number().optional(),
     reviewSessionRetentionDays: z.number().optional(),
     sessionRetentionDays: z.number().optional(),
+    adapterCacheRetentionDays: z.number().optional(),
   })
   .passthrough()
 
@@ -778,6 +779,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Session retention (days)",
     help: "Delete ANY terminal session dir older than this (pinned/keepAlive/live never). Unset/0 ⇒ off (default).",
     default: 0,
+  },
+  {
+    path: "daemon.adapterCacheRetentionDays",
+    schema: num,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Adapter cache retention (days)",
+    help: "Delete the cache content (pnpm store, opencode snapshot/tool-output/log) of dead sessions' ~/.agentproto/adapter-config/<id> dirs after this many quiet days. Resume data is kept. 0/negative disables.",
+    default: 1,
   },
   {
     path: "sessions.eventsDir",

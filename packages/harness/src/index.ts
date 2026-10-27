@@ -106,6 +106,23 @@ export {
   defaultToolchainReadPaths,
 } from "./command-sandbox-wrap.js"
 export { CREDENTIAL_DATA_SUBDIR } from "./state-home.js"
+// Per-session config dir layout knowledge shared with session GC: the caches
+// linked back to the operator's location, and the manifest naming the paths
+// GC may delete once the session is dead.
+export {
+  SHARED_TOOL_CACHES,
+  sharedToolCachePaths,
+  linkSharedToolCaches,
+  type SharedToolCache,
+  type LinkSharedToolCachesResult,
+} from "./shared-tool-caches.js"
+export {
+  SESSION_CACHE_MANIFEST,
+  readSessionCacheManifest,
+  recordSessionCachePaths,
+  safeRelativeCachePath,
+  type SessionCacheManifest,
+} from "./session-cache-manifest.js"
 // Whole-tree teardown for a spawned adapter process — exported so hosts that
 // spawn a harness themselves (the CLI's ACP smoke probe) tear it down the
 // same way `createAgentCliRuntime` does, instead of SIGKILLing only the

@@ -10,7 +10,9 @@ import { createPrintSession } from "./protocol/print-arm.js"
 import { createProprietaryProtocolArm } from "./protocol/proprietary.js"
 import { composeSpawn, RuntimeConfigError } from "./manifest/compose.js"
 import { resolveConfinedReadPaths, willConfineAgentCliSpawn, wrapAgentCliSpawn } from "./command-sandbox-wrap.js"
-import { isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
+import { CREDENTIAL_DATA_SUBDIR, isolatedCredentialDataHome, prepareIsolatedStateHome } from "./state-home.js"
+import { linkSharedToolCaches, sharedToolCachePaths } from "./shared-tool-caches.js"
+import { recordSessionCachePaths } from "./session-cache-manifest.js"
 import { hostContextExcludes } from "./host-context.js"
 import { resolveSmallModelEnv } from "./small-model.js"
 import {
@@ -741,17 +743,39 @@ export function createAgentCliRuntime(
         ...resolveConfinedReadPaths(definition.confinedReadPaths, undefined, env),
         ...(opts?.additionalReadPaths ?? []),
       ]
-      if (
-        definition.stateHome &&
-        definition.protocol !== "proprietary" &&
-        (await willConfineAgentCliSpawn({ mode: opts?.commandSandbox, cwd, zones: opts?.fsZones }))
-      ) {
+      let confinedSpawn: boolean | undefined
+      const willConfine = async (): Promise<boolean> =>
+        (confinedSpawn ??=
+          definition.protocol !== "proprietary" &&
+          (await willConfineAgentCliSpawn({ mode: opts?.commandSandbox, cwd, zones: opts?.fsZones })))
+      if (definition.stateHome && (await willConfine())) {
         const isolated = prepareIsolatedStateHome(definition.stateHome, {
           ...(opts?.configDir ? { configDir: opts.configDir } : {}),
           env,
         })
         env[definition.stateHome.env] = isolated.dir
         extraWritePaths.push(...isolated.writePaths)
+      }
+      // The isolated credential data home is inherited by everything the
+      // agent runs, so a tool deriving its cache from it (pnpm's store) would
+      // build a fresh one per session. Link those caches back to the
+      // operator's location (unconfined spawns only, see
+      // `shared-tool-caches.ts`), and record every cache path of the dir so
+      // session GC can reclaim them once the session is dead.
+      if (credentialDataDir && definition.credentialDataHome) {
+        const dataEnv = definition.credentialDataHome.env
+        // `opts.env` may have re-pointed the var; then the dir is not in use.
+        if (env[dataEnv] === credentialDataDir && !(await willConfine())) {
+          linkSharedToolCaches({ dir: credentialDataDir, envVar: dataEnv, ambientEnv: process.env })
+        }
+        if (opts?.configDir) {
+          recordSessionCachePaths(
+            opts.configDir,
+            [...sharedToolCachePaths(dataEnv), ...(definition.credentialDataHome.disposable ?? [])].map(
+              p => `${CREDENTIAL_DATA_SUBDIR}/${p}`,
+            ),
+          )
+        }
       }
 
       // The print arm spawns a fresh subprocess per turn — no

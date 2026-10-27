@@ -100,6 +100,11 @@ import {
   type SessionRetentionResult,
 } from "./session-retention.js"
 import {
+  runAdapterCacheRetentionPass,
+  type AdapterCacheRetentionOptions,
+  type AdapterCacheRetentionResult,
+} from "./adapter-config-retention.js"
+import {
   addSessionArtifact as addSessionArtifactImpl,
   getSessionArtifact as getSessionArtifactImpl,
   listSessionArtifacts as listSessionArtifactsImpl,
@@ -908,8 +913,9 @@ export function mintSessionId(): string {
  * provider's conversation store). Sibling of the per-session transcript
  * dirs (`~/.agentproto/sessions/<id>/`) but under its own root so session
  * GC/archival never rips a live lineage's resume store out from under it.
- * Nothing cleans these up today — same accumulate-forever discipline as
- * `~/.agentproto/sessions/` itself.
+ * The dirs themselves are kept (they hold the resume store); the periodic
+ * adapter-cache sweep (`adapter-config-retention.ts`) deletes the cache
+ * content a dead lineage's dir lists in its session cache manifest.
  */
 export function adapterConfigDirFor(sessionId: string): string {
   return resolve(homedir(), ".agentproto", "adapter-config", sessionId)
@@ -5046,6 +5052,12 @@ export interface SessionsRegistry {
    *  configured `sessionRetention` defaults. Async + batched; never touches
    *  a live, pinned or keepAlive session or an ancestor of a live one. */
   pruneSessionDirs(opts?: SessionRetentionOptions): Promise<SessionRetentionResult>
+  /** Adapter-config cache sweep (`adapter-config-retention.ts`): delete the
+   *  cache content (session cache manifest paths: pnpm store, opencode
+   *  snapshot/tool-output/log) of dead lineages' `~/.agentproto/adapter-config/
+   *  <id>/` dirs, keeping what a resume needs. Unset `maxAgeDays` falls back
+   *  to the registry's `adapterCacheRetention` default (1 day). */
+  pruneAdapterConfigCaches(opts?: AdapterCacheRetentionOptions): Promise<AdapterCacheRetentionResult>
   /** Set or clear a session's user-facing name and/or its `slug`. This is
    *  the write-path behind `PATCH /sessions/:id` and the `session_rename` MCP
    *  verb; the registry honours a `slug` key on `patch`, and those two
@@ -6383,6 +6395,10 @@ export function createSessionsRegistry(opts?: {
    *  / `daemon.sessionRetentionDays`) — what `pruneSessionDirs` uses for an
    *  option its caller leaves unset. Omitted ⇒ review lanes 7 days, others off. */
   sessionRetention?: { reviewMaxAgeDays?: number | null; maxAgeDays?: number | null }
+  /** Adapter-config cache retention (`daemon.adapterCacheRetentionDays`):
+   *  default for `pruneAdapterConfigCaches`, plus the root it sweeps
+   *  (default `~/.agentproto/adapter-config`; tests pin a tmpdir). */
+  adapterCacheRetention?: { maxAgeDays?: number | null; baseDir?: string }
   /** Shared, opt-in Langfuse session observer. Built once in the bootstrap
    *  from eval-reporter creds. Events only reach it for sessions in the
    *  registry's traced-session set — see `langfuseTracingDefault`. */
@@ -14667,6 +14683,17 @@ export function createSessionsRegistry(opts?: {
         baseDir: transcriptBaseDir,
         registry,
         ...(reviewMaxAgeDays !== undefined ? { reviewMaxAgeDays } : {}),
+        ...(maxAgeDays !== undefined ? { maxAgeDays } : {}),
+        ...(pruneOpts?.dryRun ? { dryRun: true } : {}),
+        ...(pruneOpts?.onlyIds ? { onlyIds: pruneOpts.onlyIds } : {}),
+      })
+    },
+    pruneAdapterConfigCaches(pruneOpts) {
+      const defaults = opts?.adapterCacheRetention ?? {}
+      const maxAgeDays = pruneOpts?.maxAgeDays !== undefined ? pruneOpts.maxAgeDays : defaults.maxAgeDays
+      return runAdapterCacheRetentionPass({
+        registry,
+        ...(defaults.baseDir ? { baseDir: defaults.baseDir } : {}),
         ...(maxAgeDays !== undefined ? { maxAgeDays } : {}),
         ...(pruneOpts?.dryRun ? { dryRun: true } : {}),
         ...(pruneOpts?.onlyIds ? { onlyIds: pruneOpts.onlyIds } : {}),

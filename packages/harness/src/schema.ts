@@ -597,7 +597,12 @@ export const agentCliFrontmatterSchema = z
       share: z.array(z.string().regex(/^[^/]+$/)).optional(),
       seed: z.record(z.string().regex(/^[^/]+$/).refine(n => n !== "." && n !== "..", { message: "seed names a file of the home" }), z.string()).optional(),
     }).strict().optional(),
-    credentialDataHome: z.object({ env: z.string().regex(/^[A-Z][A-Z0-9_]*$/) }).strict().optional(),
+    credentialDataHome: z.object({
+      env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+      disposable: z.array(z.string().min(1).refine(p => !p.startsWith("/") && !p.split("/").includes(".."), {
+        message: "disposable paths are relative to the data home and stay inside it",
+      })).optional(),
+    }).strict().optional(),
     confinedReadPaths: z.array(z.string().min(1)).optional(),
     smallModel: z.object({
       env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),

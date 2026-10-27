@@ -6190,8 +6190,12 @@ export function registerSessionTools(
       "`reviewMaxAgeDays` (default: daemon.reviewSessionRetentionDays, 7), " +
       "every other session only when `maxAgeDays` (default: " +
       "daemon.sessionRetentionDays, off) is set. Never live, pinned, keepAlive, " +
-      "or an ancestor of a live session. Pair with `dryRun:true` to preview; " +
-      "returns counts + ids.",
+      "or an ancestor of a live session. `adapterCaches:true` instead reclaims " +
+      "the CACHE content of dead sessions' adapter-config dirs " +
+      "(~/.agentproto/adapter-config/<id>: pnpm store, opencode snapshot/" +
+      "tool-output/log) once the lineage is quiet for `maxAgeDays` (default: " +
+      "daemon.adapterCacheRetentionDays, 1); what a resume reads is kept. " +
+      "Pair with `dryRun:true` to preview; returns counts + ids.",
     {
       olderThanDays: z
         .number()
@@ -6214,9 +6218,18 @@ export function registerSessionTools(
           "Run the on-disk retention pass instead of archive/forget: DELETE " +
             "terminal session dirs past their age threshold. Irreversible."
         ),
+      adapterCaches: mcpBool
+        .optional()
+        .describe(
+          "Reclaim dead sessions' adapter-config cache content (pnpm store, " +
+            "opencode snapshot/tool-output/log) instead of archive/forget. " +
+            "Resume data is kept."
+        ),
       dryRun: mcpBool
         .optional()
-        .describe("With `retention:true`: report what would be deleted, delete nothing."),
+        .describe(
+          "With `retention:true` or `adapterCaches:true`: report what would be deleted, delete nothing."
+        ),
       reviewMaxAgeDays: z
         .number()
         .optional()
@@ -6230,13 +6243,23 @@ export function registerSessionTools(
         .optional()
         .describe(
           "With `retention:true`: age (days) after which ANY terminal session " +
-            "dir is deleted. Default: daemon.sessionRetentionDays (off). 0 disables."
+            "dir is deleted. Default: daemon.sessionRetentionDays (off). 0 disables. " +
+            "With `adapterCaches:true`: quiet days before a dead lineage's caches " +
+            "go. Default: daemon.adapterCacheRetentionDays (1)."
         ),
     },
     async input => {
       const onlyIds = callerScope
         ? collectSubtree(callerScope.ownerSessionId, registry.list({ includeArchived: true }))
         : undefined
+      if (input.adapterCaches) {
+        const res = await registry.pruneAdapterConfigCaches({
+          ...(input.dryRun ? { dryRun: true } : {}),
+          ...(input.maxAgeDays !== undefined ? { maxAgeDays: input.maxAgeDays } : {}),
+          ...(onlyIds ? { onlyIds } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(res) }] }
+      }
       if (input.retention) {
         const res = await registry.pruneSessionDirs({
           ...(input.dryRun ? { dryRun: true } : {}),

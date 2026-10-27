@@ -914,6 +914,14 @@ export {
   type SessionRetentionResult,
 } from "./session-retention.js"
 export {
+  DEFAULT_ADAPTER_CACHE_RETENTION_DAYS,
+  LEGACY_CACHE_PATHS,
+  runAdapterCacheRetentionPass,
+  type AdapterCacheRetentionOptions,
+  type AdapterCacheRetentionRegistry,
+  type AdapterCacheRetentionResult,
+} from "./adapter-config-retention.js"
+export {
   DEFAULT_SANDBOX_IDLE_REAP_AFTER_MS,
   runIdleReapPass,
   type IdleReapSummary,
@@ -2619,6 +2627,12 @@ export async function createGateway(
       ? { maxAgeDays: daemonConfig.daemon.sessionRetentionDays }
       : {}),
   }
+  // Adapter-config cache retention (adapter-config-retention.ts): a dead
+  // lineage's cache content goes after 1 quiet day unless configured.
+  const adapterCacheRetention =
+    typeof daemonConfig.daemon?.adapterCacheRetentionDays === "number"
+      ? { maxAgeDays: daemonConfig.daemon.adapterCacheRetentionDays }
+      : {}
   // "Box is gone" restart hook (restart-scheduler's `sandbox-gone` policy) —
   // the gateway-wired executor behind `registry.triggerSandboxGoneRestart`.
   // Moves a dead box session to a FRESH box via the SAME `restartAgentSession`
@@ -2701,6 +2715,7 @@ export async function createGateway(
     sessionEvents,
     persist,
     sessionRetention,
+    adapterCacheRetention,
     ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
       ? { externalSessionLivenessMs }
       : {}),
@@ -4912,7 +4927,8 @@ export async function createGateway(
     console.log(`[sandbox-gc] automatic dead-session box gc every ${sandboxGcIntervalMs}ms`)
   }
 
-  // On-disk session retention sweep (session-retention.ts). Deletes terminal
+  // On-disk session retention sweep (session-retention.ts), followed by the
+  // adapter-config cache sweep. Deletes terminal
   // session dirs past their age threshold — review lanes after 7 days by
   // default, regular sessions only when `daemon.sessionRetentionDays` is set.
   // First run 10 min after boot (never competing with boot work), then every
@@ -4951,6 +4967,22 @@ export async function createGateway(
         .catch(err => {
           console.warn(
             `[session-retention] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
+        // Same cadence: the cache content of dead lineages' adapter-config
+        // dirs (pnpm store, opencode snapshot/tool-output/log).
+        .then(() => sessions.pruneAdapterConfigCaches())
+        .then(res => {
+          if (res && (res.count > 0 || res.errors > 0)) {
+            console.log(
+              `[adapter-cache-retention] pruned ${res.paths} cache path(s) in ${res.count} ` +
+                `adapter-config dir(s) (scanned ${res.scanned}, errors ${res.errors})`,
+            )
+          }
+        })
+        .catch(err => {
+          console.warn(
+            `[adapter-cache-retention] sweep failed: ${err instanceof Error ? err.message : String(err)}`,
           )
         })
         .finally(() => {

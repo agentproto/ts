@@ -8646,9 +8646,11 @@ code { color: #9ad; }
   // Bulk garbage-collect terminal-status sessions — the HTTP twin of the
   // `session_gc` MCP verb, powering `agentproto sessions gc`. Body:
   // `{ olderThanDays?: number, forget?: boolean, retention?: boolean,
-  // dryRun?: boolean, reviewMaxAgeDays?: number, maxAgeDays?: number }`.
+  // dryRun?: boolean, reviewMaxAgeDays?: number, maxAgeDays?: number,
+  // adapterCaches?: boolean }`.
   // `retention:true` runs the on-disk retention pass (deletes old terminal
-  // session dirs — see session-retention.ts). Otherwise ARCHIVES by default
+  // session dirs, see session-retention.ts); `adapterCaches:true` reclaims
+  // dead lineages' adapter-config cache content (adapter-config-retention.ts). Otherwise ARCHIVES by default
   // (reversible — hidden from the default list, still readable + importable);
   // `forget:true` DROPS each descriptor to reclaim sessions.json space (the
   // native conversation on disk survives). The registry never touches a live
@@ -8695,6 +8697,16 @@ code { color: #9ad; }
       typeof b.olderThanDays === "number" && b.olderThanDays > 0 ? b.olderThanDays : undefined
     const forget = b.forget === true
     try {
+      if (b.adapterCaches === true) {
+        // Adapter-config cache sweep (adapter-config-retention.ts): deletes
+        // the cache content of dead lineages' config dirs. `dryRun` previews.
+        const res = await registry.pruneAdapterConfigCaches({
+          ...(b.dryRun === true ? { dryRun: true } : {}),
+          ...(typeof b.maxAgeDays === "number" ? { maxAgeDays: b.maxAgeDays } : {}),
+        })
+        json(200, res)
+        return true
+      }
       if (b.retention === true) {
         // On-disk retention pass (session-retention.ts): DELETES terminal
         // session dirs past their age threshold. `dryRun` previews.

@@ -201,6 +201,13 @@ export interface DaemonConfig {
    *  never deleted either way. Set via `agentproto config set
    *  daemon.sessionRetentionDays <days>`. */
   sessionRetentionDays?: number
+  /** Adapter-config cache retention, in days: once every session of a
+   *  lineage is terminal and quiet this long, the periodic sweep deletes the
+   *  cache paths of its `~/.agentproto/adapter-config/<id>/` dir (pnpm store,
+   *  opencode snapshot/tool-output/log), keeping what a resume reads.
+   *  Default 1; `0` / negative disables. Set via `agentproto config set
+   *  daemon.adapterCacheRetentionDays <days>`. */
+  adapterCacheRetentionDays?: number
 }
 
 export interface TitlerConfig {

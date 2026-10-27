@@ -229,6 +229,12 @@ Usage:
                                review lanes after daemon.reviewSessionRetentionDays
                                (7), others only if daemon.sessionRetentionDays
                                is set. --dry-run previews.)
+  agentproto sessions gc --adapter-caches [--dry-run] [--json]
+                              (DELETE the cache content of dead sessions'
+                               ~/.agentproto/adapter-config/<id> dirs: pnpm
+                               store, opencode snapshot/tool-output/log, after
+                               daemon.adapterCacheRetentionDays (1) quiet days.
+                               Resume data is kept. --dry-run previews.)
   agentproto sessions continue-interrupted [--send] [--id <id-or-name>]...
                               [--prompt <text>] [--json]
                               (list sessions the LAST daemon restart cut off
@@ -2054,6 +2060,7 @@ async function runGc(args: readonly string[]): Promise<number> {
       "older-than-days": { type: "string" },
       forget: { type: "boolean" },
       retention: { type: "boolean" },
+      "adapter-caches": { type: "boolean" },
       "dry-run": { type: "boolean" },
       json: { type: "boolean" },
     },
@@ -2090,6 +2097,38 @@ async function runGc(args: readonly string[]): Promise<number> {
   const body: Record<string, unknown> = {}
   if (olderThanDays !== undefined) body.olderThanDays = olderThanDays
   if (values.forget) body.forget = true
+
+  if (values["adapter-caches"]) {
+    // Adapter-config cache sweep: deletes the cache content of dead
+    // lineages' ~/.agentproto/adapter-config/<id> dirs, keeping resume data.
+    // Quiet-time threshold from daemon.adapterCacheRetentionDays (1).
+    try {
+      const result = await httpPostJson<{ count: number; paths: number; scanned: number; dryRun: boolean; errors: number }>(
+        `${endpoint.url}/sessions/gc`,
+        { adapterCaches: true, ...(values["dry-run"] ? { dryRun: true } : {}) },
+        endpoint.token,
+      )
+      if (values.json) {
+        process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+      } else {
+        process.stdout.write(
+          `agentproto sessions gc: ${result.dryRun ? "would prune" : "pruned"} ${result.paths} cache ` +
+            `path${result.paths === 1 ? "" : "s"} in ${result.count} adapter-config ` +
+            `dir${result.count === 1 ? "" : "s"} (scanned ${result.scanned}` +
+            `${result.errors > 0 ? `, ${result.errors} failed` : ""}).\n`,
+        )
+      }
+      return 0
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/HTTP 401/.test(msg)) {
+        process.stderr.write((await explain401(endpoint, "agentproto sessions gc")) + "\n")
+        return 1
+      }
+      process.stderr.write(`agentproto sessions gc: ${msg}\n`)
+      return 1
+    }
+  }
 
   if (values.retention) {
     // On-disk retention pass: deletes old terminal session dirs. Thresholds

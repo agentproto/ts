@@ -147,7 +147,16 @@ export const opencode: AgentCliHandle = defineHarness({
   // block over env keys and inline config — so an engaged profile would bill
   // the ACTIVE ORG, not its own credential. An engaged spawn therefore runs in
   // a login-less data dir (`<configDir>/auth-data`).
-  credentialDataHome: { env: "XDG_DATA_HOME" },
+  //
+  // `disposable`: what a dead session's data home may lose. `snapshot/` is
+  // opencode's shadow git of the worktree (undo/revert only, re-created on
+  // the next step; 63 GB over 641 dead sessions on one host, 2026-10-27),
+  // `tool-output/` the spilled full outputs of long tool results, `log/` its
+  // logs. `opencode.db` (the conversation a resume reloads) is never listed.
+  credentialDataHome: {
+    env: "XDG_DATA_HOME",
+    disposable: ["opencode/snapshot", "opencode/tool-output", "opencode/log"],
+  },
   // opencode keeps mutable runtime state (the lock/state store its MCP client
   // registers ACP-provided servers through, plus logs) in
   // `$XDG_STATE_HOME/opencode`. A confined spawn (workflow agent step under an
