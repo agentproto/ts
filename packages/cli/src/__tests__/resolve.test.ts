@@ -723,6 +723,10 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
     const scanOnlyNames = ["harness"]
     const importableNames = [
       "harness-foo",
+      // Both spellings for slug foo exist on disk: the canonical harness-
+      // spelling must be the one resolveAdapter() actually loads, mirroring
+      // discovery's first-party precedence.
+      "adapter-foo",
       "adapter-bar",
       "adapter-dup",
       "harness-dup",
@@ -763,8 +767,9 @@ describe("listInstalledAdapters — harness- prefix alias", () => {
       expect(slugs).not.toContain("harness")
 
       // The listed entry names the package that was actually imported: the
-      // harness- spelling for a harness-<slug>-only slug, the adapter-
-      // spelling for an adapter-<slug>-only one.
+      // canonical harness- spelling when it exists (resolving must not keep
+      // the adapter- spelling merely because it is an older name), the
+      // adapter- spelling when that is the only one on disk.
       expect(adapters.find((a) => a.slug === "foo")?.packageName).toBe(
         "@agentproto/harness-foo"
       )

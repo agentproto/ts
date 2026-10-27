@@ -720,24 +720,23 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   const harnessPackageName = `@agentproto/harness-${slug}`
   const camel = slugToCamel(slug)
   let mod: Record<string, unknown>
+  // The package name actually loaded (AIP-70 canonical `harness-` spelling
+  // first, pre-rename `adapter-` spelling as fallback), reported on the
+  // resolved entry and used as the specifier `withResolvedProprietaryAdapter`
+  // below re-resolves a proprietary handle's self-referencing `adapter`
+  // field against.
   let packageName = adapterPackageName
-  // Specifier re-importable a second time by `withResolvedProprietaryAdapter`
-  // below (it rewrites a `protocol: "proprietary"` handle's self-referencing
-  // `adapter` field) — the package name, same as the npm path always used.
-  const proprietaryRewriteSpecifier = adapterPackageName
-  let primaryErr: unknown
   try {
     try {
-      mod = await importFresh(adapterPackageName)
-    } catch (err) {
-      primaryErr = err
+      mod = await importFresh(harnessPackageName)
+      packageName = harnessPackageName
+    } catch (harnessErr) {
       try {
-        mod = await importFresh(harnessPackageName)
-        packageName = harnessPackageName
-      } catch (harnessErr) {
+        mod = await importFresh(adapterPackageName)
+      } catch (adapterErr) {
         // Prefer the adapter-package error message as the primary cause
         // for backwards compatibility, but keep harnessErr available
-        throw primaryErr
+        throw adapterErr
       }
     }
   } catch (primaryErr) {
@@ -887,7 +886,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   const capabilitiesStrategy = mod[`${camel}Capabilities`] as CapabilityStrategy | undefined
   const resolved: ResolvedAdapter = {
     slug,
-    handle: withResolvedProprietaryAdapter(candidate, proprietaryRewriteSpecifier),
+    handle: withResolvedProprietaryAdapter(candidate, packageName),
     source: "npm",
     packageName,
     ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
