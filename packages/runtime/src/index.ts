@@ -721,6 +721,7 @@ export {
   type SandboxExecResult,
 } from "./sandbox-exec.js"
 export {
+  DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
   DEFAULT_SANDBOX_PROVIDER_SLUGS,
   makeSandboxResolver,
   makeSandboxCredsStore,

@@ -102,6 +102,7 @@ import { liveSessionBoxIds, runSandboxOrphanGcPass } from "./sandbox-orphan-gc.j
 import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
 import { collectSandboxInventory } from "./sandbox-inventory.js"
 import {
+  DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
   DEFAULT_SANDBOX_PROVIDER_SLUGS,
   makeSandboxCredsStore,
   makeSandboxResolver,
@@ -5204,7 +5205,12 @@ export function registerSessionTools(
       "forced, because a stale provider-side session slot would otherwise " +
       "make the provider refuse the destroy. One provider failing (a " +
       "controller that is down) is reported as `providerErrors` and never " +
-      "stops the sweep of the others.",
+      "stops the sweep of the others. By default only `computer` is swept: " +
+      "its controller scopes boxes to this daemon's tenant. `e2b` is on a " +
+      "shared account and its provider writes no daemon marker at boot, so " +
+      "it is NEVER swept (even when named explicitly) and is reported in " +
+      "`notScanned`: every other daemon's, machine's or CI's box would " +
+      "otherwise look like an orphan here.",
     {
       apply: mcpBool
         .optional()
@@ -5219,8 +5225,10 @@ export function registerSessionTools(
         .array(z.string())
         .optional()
         .describe(
-          "Provider slugs to sweep. Defaults to every configured concrete " +
-            "provider that can enumerate its boxes (`auto` is never swept).",
+          "Provider slugs to sweep. Defaults to `computer` only (its " +
+            "controller scopes boxes to this daemon's tenant). `e2b` is " +
+            "refused with a `notScanned` reason because it writes no daemon " +
+            "marker and its account is shared.",
         ),
     },
     async input => {
@@ -5244,7 +5252,7 @@ export function registerSessionTools(
           providerSlugs:
             input.providers && input.providers.length > 0
               ? input.providers
-              : DEFAULT_SANDBOX_PROVIDER_SLUGS,
+              : DEFAULT_SANDBOX_GC_PROVIDER_SLUGS,
           registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
           includeAttached: input.includeAttached === true,

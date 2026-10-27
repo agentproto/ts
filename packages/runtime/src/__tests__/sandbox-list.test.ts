@@ -5,13 +5,17 @@
  * reported per provider and never hides another provider's rows, duplicate
  * boxes are merged on provider + id, and totals exclude unknown costs while
  * flagging the result as partial. The same default provider set feeds
- * `sandbox_gc`, so a bare gc sweeps every concrete provider, not only
- * `computer`.
+ * `sandbox_list` and `sandbox_gc` deliberately differ: listing every
+ * concrete provider is read-only and safe, but a bare gc sweeps ONLY
+ * `computer` because its controller scopes boxes to this daemon's tenant.
+ * `e2b` shares an account across daemons, machines, CI and tools and writes
+ * no daemon marker at boot, so naming it explicitly reports it as
+ * `notScanned` and deletes nothing.
  *
  * Fail on main: `sandbox_list` is unregistered; the inventory does not exist;
  * a two-provider fake returns only one provider's rows; a throwing provider
- * yields no `errors`; duplicate ids are not merged; `sandbox_gc` with no
- * `providers` sweeps only `computer`.
+ * yields no `errors`; duplicate ids are not merged; a bare `sandbox_gc`
+ * sweeps every provider; an explicit e2b sweep deletes shared boxes.
  */
 
 import { mkdtemp, rm } from "node:fs/promises"
@@ -153,6 +157,8 @@ describe("collectSandboxInventory", () => {
 
 let home = ""
 let gateway: { url: string; stop: () => Promise<void> } | undefined
+/** Every `remove()` the fake e2b provider received. */
+let e2bRemoved: string[] = []
 
 function fakeHandle(slug: string, provider: Record<string, unknown>): Record<string, unknown> {
   return {
@@ -217,6 +223,9 @@ beforeAll(async () => {
           ],
           list: async () => [{ id: "e2b-1", provider: "e2b", state: "paused" }],
           usage: async () => [usageWindow("e2b-1", null)],
+          remove: async (id: string) => {
+            e2bRemoved.push(id)
+          },
         })
       }
       return null
@@ -272,12 +281,26 @@ describe("sandbox_list MCP tool", () => {
 })
 
 describe("sandbox_gc default providers", () => {
-  it("sweeps every concrete fake provider when no providers are given", async () => {
+  it("sweeps only computer when no providers are given", async () => {
     const out = await callTool("sandbox_gc", {})
     const candidates = out.candidates as Array<{ provider: string; boxId: string }>
-    expect(candidates.map(c => `${c.provider}:${c.boxId}`)).toEqual([
-      "e2b:e2b-orphan",
-      "computer:cmp-orphan",
+    expect(candidates.map(c => `${c.provider}:${c.boxId}`)).toEqual(["computer:cmp-orphan"])
+  })
+
+  it("refuses an explicit e2b sweep: no daemon marker, notScanned, nothing deleted", async () => {
+    e2bRemoved = []
+    const out = await callTool("sandbox_gc", { providers: ["e2b"], apply: true })
+    expect(out.candidates).toEqual([])
+    expect(out.deleted).toEqual([])
+    expect(out.notScanned).toEqual([
+      {
+        provider: "e2b",
+        reason:
+          "the e2b provider writes no daemon marker at boot, so its boxes " +
+          "cannot be attributed to this daemon; its account is shared with other " +
+          "daemons, machines, CI and tools - refusing to sweep it",
+      },
     ])
+    expect(e2bRemoved).toEqual([])
   })
 })
