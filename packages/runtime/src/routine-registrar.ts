@@ -188,7 +188,10 @@ export function createRoutineRegistrar(opts: {
   /** Called last on every reconcile; its return value is attached as `reactions`. */
   onReconciled?: (
     result: ReconcileResult,
-  ) => { active: string[]; refused: Array<{ bindingId: string; error: string }> } | void
+  ) =>
+    | Promise<{ active: string[]; refused: Array<{ bindingId: string; error: string }> } | void>
+    | { active: string[]; refused: Array<{ bindingId: string; error: string }> }
+    | void
 }): RoutineRegistrar {
   const { workspace, cronScheduler, dispatchTool } = opts
   const routinesDir = join(workspace, ".routines")
@@ -333,7 +336,7 @@ export function createRoutineRegistrar(opts: {
       const result: ReconcileResult = { registered, skipped, removed, errors, eventBindings }
       if (opts.onReconciled) {
         try {
-          const reactions = opts.onReconciled(result)
+          const reactions = await opts.onReconciled(result)
           if (reactions !== undefined) result.reactions = reactions
         } catch (err) {
           console.warn(

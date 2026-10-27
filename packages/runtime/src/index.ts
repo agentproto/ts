@@ -3226,7 +3226,10 @@ export async function createGateway(
     workspace,
     cronScheduler,
     dispatchTool,
-    onReconciled: () => reactionWiring.refresh(),
+    onReconciled: async () => {
+      await agentOnScanner.rescan()
+      return reactionWiring.refresh()
+    },
   })
   routineRegistrarBox.registrar = routineRegistrar
 
