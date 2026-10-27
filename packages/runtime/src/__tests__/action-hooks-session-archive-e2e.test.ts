@@ -248,7 +248,7 @@ describe("session:archive event routine end to end", () => {
       )
       const row = store.rows().find(entry => entry.bindingId === `routine:${ROUTINE_ID}`)
       expect(row).toBeDefined()
-      const endedAt = ctx.registry.get(child.id)?.endedAt
+      const endedAt = ctx.registry.get(child.id)?.endedAt ?? "2026-01-01T00:00:00.000Z"
       ctx.bus.emit({
         type: "agentproto:session-completed",
         sessionId: child.id,
