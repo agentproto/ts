@@ -808,9 +808,10 @@ function isoOrUndefined(value: Date | undefined): string | undefined {
 
 /**
  * Map one e2b control-plane `SandboxInfo` onto the unified `SandboxBox`.
- * A paused box is listed too: it still bills (it keeps its RAM snapshot) and
- * is exactly what the orphan gc must see. Ownership is unknown: this
- * provider writes no metadata at boot, so `tenantId`/`endUser` stay absent.
+ * A paused box is listed too: the account still holds it (and its RAM
+ * snapshot), so it is exactly what the orphan gc must see, even though e2b
+ * does not bill paused time. Ownership is unknown: this provider writes no
+ * metadata at boot, so `tenantId`/`endUser` stay absent.
  */
 function toSandboxBox(info: SandboxInfo): SandboxBox {
   const createdAt = isoOrUndefined(info.startedAt)
@@ -977,10 +978,11 @@ export const e2bSandboxProvider: SandboxProvider = {
   },
 
   /**
-   * Every box the e2b account still holds, running AND paused (paused boxes
-   * keep billing for their memory snapshot). One `Sandbox.list()` read, all
-   * pages followed. The SDK is only touched when this method (or `usage`,
-   * which shares the read) is called.
+   * Every box the e2b account still holds, running AND paused (a paused box
+   * still exists and holds its RAM snapshot, so the orphan gc must see it;
+   * e2b does not bill paused time). One `Sandbox.list()` read, all pages
+   * followed. The SDK is only touched when this method (or `usage`, which
+   * shares the read) is called.
    */
   async list(): Promise<SandboxBox[]> {
     return (await listSandboxInfos()).map(toSandboxBox)
@@ -997,10 +999,10 @@ export const e2bSandboxProvider: SandboxProvider = {
    * lists boxes it still holds, so a killed box's past usage is gone. The
    * fleet ledger is the record.
    *
-   * A paused box is counted as active CPU and RAM through now, which
-   * OVERESTIMATES it: `SandboxInfo` carries `state: "paused"` but no pause
-   * timestamp (only `startedAt`/`endAt`), so the pause instant cannot be
-   * recovered from the control plane.
+   * Paused boxes are excluded: e2b stops billing the moment a box is paused,
+   * and `SandboxInfo` carries no pause timestamp (only `startedAt`/`endAt`)
+   * from which a billable interval could be derived. Listing them remains
+   * correct for inventory/gc, just not for cost.
    *
    * `tenantId` is the literal `"unknown"`: this provider writes no ownership
    * metadata at boot, and inventing a tenant would misattribute the cost.
@@ -1018,6 +1020,7 @@ export const e2bSandboxProvider: SandboxProvider = {
     const pricing = resolveE2bPricing()
     const windows: SandboxUsageWindow[] = []
     for (const info of await listSandboxInfos()) {
+      if (info.state === "paused") continue
       const startedMs = info.startedAt instanceof Date ? info.startedAt.getTime() : undefined
       const expiryMs =
         info.endAt instanceof Date ? info.endAt.getTime() : Number.POSITIVE_INFINITY
@@ -1025,9 +1028,11 @@ export const e2bSandboxProvider: SandboxProvider = {
       if (interval === null) continue
       const activeSec = Math.floor((interval.toMs - interval.fromMs) / 1000)
       if (activeSec <= 0) continue
-      const cpus = Number.isFinite(info.cpuCount) ? info.cpuCount : 0
-      const memoryMiB = Number.isFinite(info.memoryMB) ? info.memoryMB : 0
-      const vcpuSec = Math.round(activeSec * cpus)
+      const cpusKnown = Number.isFinite(info.cpuCount)
+      const memoryKnown = Number.isFinite(info.memoryMB)
+      const cpus = cpusKnown ? info.cpuCount : 0
+      const memoryMiB = memoryKnown ? info.memoryMB : 0
+      const vcpuSec = activeSec * cpus
       const gibSec = (activeSec * memoryMiB) / 1024
       windows.push({
         computer: info.sandboxId,
@@ -1038,7 +1043,9 @@ export const e2bSandboxProvider: SandboxProvider = {
         activeSec,
         vcpuSec,
         gibSec,
-        costEur: e2bCostEur(vcpuSec, gibSec, pricing),
+        // Unknown sizing means unknown cost: never fabricate a concrete (or
+        // zero) EUR figure from a missing CPU/RAM count.
+        costEur: cpusKnown && memoryKnown ? e2bCostEur(vcpuSec, gibSec, pricing) : null,
       })
     }
     return windows

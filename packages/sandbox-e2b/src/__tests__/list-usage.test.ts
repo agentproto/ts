@@ -52,7 +52,7 @@ describe("e2bSandboxProvider.list", () => {
     expect(sandboxListMock).not.toHaveBeenCalled()
   })
 
-  it("maps both pages and keeps paused boxes (they still bill)", async () => {
+  it("maps both pages and keeps paused boxes (for inventory/gc)", async () => {
     sandboxListMock.mockReturnValue(
       paginator([
         [info({ sandboxId: "sbx_a", state: "running" })],
@@ -160,7 +160,7 @@ describe("e2bSandboxProvider.usage", () => {
     expect(windows[0]?.activeSec).toBe(8 * 3600)
   })
 
-  it("counts a paused box through now, the documented overestimate", async () => {
+  it("omits paused boxes, since e2b does not bill paused time", async () => {
     sandboxListMock.mockReturnValue(
       paginator([
         [
@@ -170,19 +170,44 @@ describe("e2bSandboxProvider.usage", () => {
             startedAt: new Date("2026-10-20T00:00:00.000Z"),
             endAt: new Date("2026-11-27T00:00:00.000Z"),
           }),
+          info({ sandboxId: "sbx_running" }),
         ],
       ]),
     )
 
     const { e2bSandboxProvider } = await import("../provider.js")
-    const [window] = await e2bSandboxProvider.usage!({
+    const windows = await e2bSandboxProvider.usage!({
       from: "2026-10-20T00:00:00.000Z",
       to: "2026-10-27T00:00:00.000Z",
     })
 
-    expect(window?.computer).toBe("sbx_paused")
-    expect(window?.to).toBe("2026-10-27T00:00:00.000Z")
-    expect(window?.activeSec).toBe(7 * 24 * 3600)
+    expect(windows.map((window) => window.computer)).toEqual(["sbx_running"])
+  })
+
+  it("derives vcpuSec without rounding for fractional CPU allocations", async () => {
+    sandboxListMock.mockReturnValue(paginator([[info({ cpuCount: 1.5 })]]))
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const [window] = await e2bSandboxProvider.usage!({
+      from: "2026-10-20T00:00:00.000Z",
+      to: "2026-10-20T01:00:00.000Z",
+    })
+
+    expect(window?.vcpuSec).toBe(3600 * 1.5)
+  })
+
+  it("reports costEur null when CPU/RAM sizing is unknown", async () => {
+    sandboxListMock.mockReturnValue(
+      paginator([[info({ cpuCount: Number.NaN, memoryMB: Number.NaN })]]),
+    )
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const [window] = await e2bSandboxProvider.usage!({
+      from: "2026-10-20T00:00:00.000Z",
+      to: "2026-10-20T01:00:00.000Z",
+    })
+
+    expect(window?.costEur).toBeNull()
   })
 
   it("uses the AGENTPROTO_E2B_PRICING override for costEur", async () => {
