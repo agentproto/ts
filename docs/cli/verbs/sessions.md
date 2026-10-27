@@ -649,7 +649,7 @@ a PTY/command restart with overrides is rejected `400`.
 
 **Auto-compact threshold.** `--auto-compact-at-tokens <n>` sets the ABSOLUTE
 context threshold (tokens) at which an idle session is compacted automatically
-(clamped to 200000 max; `0` disables). Same semantic as
+(clamped to 600000 max; `0` disables). Same semantic as
 `contextContinuity.autoCompactAtTokens` in [`../reference/config-schema.md`](../reference/config-schema.md) / the
 `agent_start` spawn field, but stamped onto this session's config for the
 restart's lifetime.
