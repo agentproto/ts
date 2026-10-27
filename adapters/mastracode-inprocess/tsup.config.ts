@@ -10,6 +10,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["@agentproto/driver-agent-cli", "mastracode", "mastracode/headless"],
+  external: ["@agentproto/harness", "mastracode", "mastracode/headless"],
   noExternal: [],
 })

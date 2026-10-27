@@ -20,7 +20,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // Self-locating: the built handle spawns `node <this-pkg>/bin/…
 // claude-code-cloud-acp.mjs`. From dist/index.mjs the bin sits one level up,

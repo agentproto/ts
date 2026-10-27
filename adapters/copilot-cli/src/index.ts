@@ -34,7 +34,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { copilotCliNativeHooks } from "./native-hooks.js"
 
 export const copilotCli: AgentCliHandle = defineAgentCli({

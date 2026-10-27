@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest"
 import {
   LEGACY_GATEWAY_MODE_IDS,
   LEGACY_POSTURE_MODE_IDS,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import {
   composeMode,
   decomposeMode,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { agentCliFrontmatterSchema, composeSpawn } from "@agentproto/driver-agent-cli"
+import { agentCliFrontmatterSchema, composeSpawn } from "@agentproto/harness"
 import type { AgentprotoConfig } from "@agentproto/runtime/config"
 import {
   acpHandleFromSpec,

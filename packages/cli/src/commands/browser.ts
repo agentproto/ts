@@ -44,7 +44,7 @@ import {
 } from "./_daemon-helpers.js"
 import { browserAdapters, getBrowserAdapter } from "@agentproto/adapter-browser"
 import { runSteps, loadLedger } from "../lib/setup-prompts.js"
-import type { AgentCliSetupStep } from "@agentproto/driver-agent-cli"
+import type { AgentCliSetupStep } from "@agentproto/harness"
 
 const USAGE = `agentproto browser — manage browser service sessions
 

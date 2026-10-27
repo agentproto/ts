@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-pi",
   "version": "0.5.3",
-  "description": "@agentproto/adapter-pi — AIP-45 AGENT-CLI adapter for earendil-works/pi (@earendil-works/pi-coding-agent), driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`). Implements the `protocol: \"proprietary\"` arm contract. NOTE: pi has no MCP support.",
+  "description": "@agentproto/adapter-pi \u2014 AIP-45 AGENT-CLI adapter for earendil-works/pi (@earendil-works/pi-coding-agent), driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`). Implements the `protocol: \"proprietary\"` arm contract. NOTE: pi has no MCP support.",
   "keywords": [
     "agentproto",
     "aip-45",
@@ -58,9 +58,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.32.1"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

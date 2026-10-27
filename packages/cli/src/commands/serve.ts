@@ -133,7 +133,7 @@ import {
 } from "../util/auth-providers-store.js"
 import { registerCatalogOverlay } from "@agentproto/model-catalog/overlay"
 import { loadCachedCatalogVoices } from "../provider-catalog.js"
-import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/driver-agent-cli"
+import { agentCliSupportsHostContextIsolation, createAgentCliRuntime } from "@agentproto/harness"
 import { readHermesUsage } from "@agentproto/adapter-hermes"
 import { readOpenCodeUsage } from "@agentproto/adapter-opencode"
 import { registerBuiltinSubaccountProviders } from "../util/subaccount-providers.js"

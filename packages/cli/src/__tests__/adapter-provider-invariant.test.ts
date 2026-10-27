@@ -35,7 +35,7 @@ import { mastracodeInprocess } from "@agentproto/adapter-mastracode-inprocess"
 import { openclaw } from "@agentproto/adapter-openclaw"
 import { opencode } from "@agentproto/adapter-opencode"
 import { pi } from "@agentproto/adapter-pi"
-import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle } from "@agentproto/harness"
 
 const ADAPTERS: ReadonlyArray<readonly [string, AgentCliHandle]> = [
   ["claude-code", claudeCode],

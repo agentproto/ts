@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-jcode",
   "version": "0.4.3",
-  "description": "@agentproto/adapter-jcode — AIP-45 adapter for 1jehuang/jcode, a RAM-efficient Rust coding agent. Spawns `jcode run` in headless mode.",
+  "description": "@agentproto/adapter-jcode \u2014 AIP-45 adapter for 1jehuang/jcode, a RAM-efficient Rust coding agent. Spawns `jcode run` in headless mode.",
   "keywords": [
     "agentproto",
     "aip-45",
@@ -49,9 +49,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
-    "@agentproto/provider-kit": "workspace:*"
+    "@agentproto/provider-kit": "workspace:*",
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

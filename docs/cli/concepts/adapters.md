@@ -13,7 +13,7 @@ declare:
 - How to spawn the agent for a single turn or a long-lived session.
 
 The CLI loads adapters by name; the AgentProto runtime treats every
-adapter uniformly through `@agentproto/driver-agent-cli`.
+adapter uniformly through `@agentproto/harness`.
 
 ## Naming convention
 
@@ -110,11 +110,11 @@ only the ones whose mode is easy to misread.
 
 ## Authoring an adapter
 
-The `defineAgentCli` API lives in `@agentproto/driver-agent-cli`. A
+The `defineHarness` / `defineAgentCli` API lives in `@agentproto/harness`. A
 minimal adapter looks like:
 
 ```ts
-import { defineAgentCli } from "@agentproto/driver-agent-cli"
+import { defineAgentCli } from "@agentproto/harness"
 
 export const myAgent = defineAgentCli({
   id: "my-agent",

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { composeSpawn, resolveConfinedReadPaths, RuntimeConfigError } from "@agentproto/driver-agent-cli"
+import { composeSpawn, resolveConfinedReadPaths, RuntimeConfigError } from "@agentproto/harness"
 
 import { LEAN_INLINE_CONFIG, opencode, readOpenCodeUsage } from "./index.js"
 

@@ -30,7 +30,7 @@ import {
   type AgentCliHandle,
   type AgentCliMode,
   type AgentCliRouteSelection,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import {
   makeAdapterResolver,
   makeAdapterLister,

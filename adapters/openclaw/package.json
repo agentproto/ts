@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-openclaw",
   "version": "0.1.38",
-  "description": "@agentproto/adapter-openclaw — AIP-45 AGENT-CLI adapter for OpenClaw. Spawns `openclaw acp` and bridges OpenClaw's Gateway session over stdio JSON-RPC.",
+  "description": "@agentproto/adapter-openclaw \u2014 AIP-45 AGENT-CLI adapter for OpenClaw. Spawns `openclaw acp` and bridges OpenClaw's Gateway session over stdio JSON-RPC.",
   "keywords": [
     "agentproto",
     "aip-45",
@@ -48,7 +48,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*"
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

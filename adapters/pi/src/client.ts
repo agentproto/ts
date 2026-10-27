@@ -32,7 +32,7 @@ import type {
   AgentCliConnectOptions,
   AgentCliHandle,
   StreamEvent,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { resolveContextWindow } from "@agentproto/model-catalog/llm"
 import { enumerateMcpTools } from "./mcp-bridge/enumerate.js"
 import {

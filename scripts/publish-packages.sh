@@ -81,7 +81,8 @@ PACKAGES=(
   "@agentproto/auth|auth"
   "@agentproto/secrets|secrets"
 
-  # ── Layer 2: agent CLI driver + wallet ────────────────────────────────────
+  # ── Layer 2: AIP-45 harness + deprecated shim + wallet ───────────────────
+  "@agentproto/harness|harness"
   "@agentproto/driver-agent-cli|driver/agent-cli"
   "@agentproto/wallet|wallet"
 

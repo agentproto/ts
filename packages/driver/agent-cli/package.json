@@ -1,19 +1,13 @@
 {
   "name": "@agentproto/driver-agent-cli",
   "version": "2.15.0",
-  "description": "@agentproto/driver-agent-cli: multi-protocol runner that loads an AIP-45 AGENT-CLI.md manifest, spawns the binary, and dispatches turns through an ACP / MCP / proprietary arm. ACP arm delegates to @agentproto/acp; emits the canonical StreamEvent taxonomy regardless of underlying protocol.",
+  "description": "DEPRECATED: renamed @agentproto/harness. This package re-exports it unchanged.",
   "keywords": [
     "agentproto",
     "aip-45",
     "agent-cli",
-    "interactive",
-    "hermes",
-    "claude-code",
-    "opencode",
-    "goose",
-    "gemini-cli",
-    "acp",
-    "mcp"
+    "harness",
+    "deprecated"
   ],
   "homepage": "https://agentproto.sh/docs/aip-45",
   "repository": {
@@ -59,11 +53,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/acp": "workspace:*",
-    "@agentproto/command-sandbox": "workspace:*",
-    "@agentproto/doctype": "workspace:*",
-    "gray-matter": "^4.0.3",
-    "zod": "^4.6.7"
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

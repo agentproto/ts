@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { AgentCliHandle } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle } from "@agentproto/harness"
 
 import { EXIT_SETUP_NEEDS_TTY, runSetup } from "../commands/setup.js"
 

@@ -27,7 +27,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 export const openclaw: AgentCliHandle = defineAgentCli({
   name: "openclaw",

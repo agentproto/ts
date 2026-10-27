@@ -28,7 +28,7 @@ import {
   type AgentCliHandle,
   type AgentCliUpgrade,
   type AgentCliVersionCheck,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { compareVersions, freshnessVerdict } from "./freshness.js"
 import { acpSmokeProbe, type SmokeProbeResult } from "./harness-probe.js"
 import { listInstalledAdapters, resolveAdapter } from "./resolve.js"

@@ -36,7 +36,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
 
 /**

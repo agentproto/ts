@@ -1,25 +1,19 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const entry = {
+  index: "src/index.ts",
+  "manifest/index": "src/manifest/index.ts",
+}
+
 export default createTsupConfig({
   banner: `/**
- * @agentproto/driver-agent-cli v0.1.0-alpha
- * AIP-45 AGENT-CLI.md \`defineAgentCli\` implementation.
+ * @agentproto/driver-agent-cli v2.15.0 (deprecated shim)
+ * Re-exports @agentproto/harness unchanged.
  */`,
-  entry: {
-    index: "src/index.ts",
-    "manifest/index": "src/manifest/index.ts",
-  },
+  entry,
   format: ["esm"],
   splitting: true,
-  dts: true,
-  external: [
-    "zod",
-    "gray-matter",
-    "@agentproto/doctype",
-    "@agentproto/acp",
-    "node:child_process",
-    "node:stream/web",
-    "node:stream",
-  ],
+  dts: { entry },
+  external: ["@agentproto/harness", "@agentproto/harness/*"],
   noExternal: [],
 })

@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/runtime",
   "version": "5.29.0",
-  "description": "@agentproto/runtime — long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
+  "description": "@agentproto/runtime \u2014 long-running gateway that turns an agentproto workspace into a live runtime. Composes @agentproto/mcp-server (CRUD verbs) with HTTP transport, HEARTBEAT.md autonomy loop, and append-only conversation persistence. Drop a workspace dir, point your MCP client at it, and the agent ticks on its own.",
   "keywords": [
     "agentproto",
     "aip-46",
@@ -244,7 +244,6 @@
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/decision": "workspace:*",
     "@agentproto/driver": "workspace:*",
-    "@agentproto/driver-agent-cli": "workspace:*",
     "@agentproto/driver-browser": "workspace:*",
     "@agentproto/driver-http": "workspace:*",
     "@agentproto/eval-reporters": "workspace:*",
@@ -283,7 +282,8 @@
     "defuddle": "^0.19.5",
     "gray-matter": "^4.0.3",
     "ws": "^8.22.0",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "@agentproto/harness": "workspace:*"
   },
   "optionalDependencies": {
     "@agentproto/sandbox-e2b": "workspace:*",
