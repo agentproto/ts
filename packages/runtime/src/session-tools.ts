@@ -100,7 +100,12 @@ import { createCheckpointSources } from "./checkpoint-extract.js"
 import { readSandboxLedger } from "./sandbox-ledger.js"
 import { liveSessionBoxIds, runSandboxOrphanGcPass } from "./sandbox-orphan-gc.js"
 import type { SandboxGcProviderHandle } from "./sandbox-gc.js"
-import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
+import { collectSandboxInventory } from "./sandbox-inventory.js"
+import {
+  DEFAULT_SANDBOX_PROVIDER_SLUGS,
+  makeSandboxCredsStore,
+  makeSandboxResolver,
+} from "./sandbox-adapters.js"
 import type { TaskLedger } from "./task-ledger.js"
 import { continueInterruptedSessions } from "./continue-interrupted.js"
 import {
@@ -5136,6 +5141,53 @@ export function registerSessionTools(
   )
 
   server.tool(
+    "sandbox_list",
+    "List the boxes every concrete sandbox provider still holds, tagged " +
+      "with their provider and optionally joined with usage windows. " +
+      "Deduplicates on provider + id and merges duplicate rows. Each " +
+      "provider is read independently: one that is unavailable, cannot " +
+      "enumerate its boxes, or throws is reported in `notScanned`/`errors` " +
+      "and never fails the call or hides another provider's rows. `totals` " +
+      "sums active/vcpu/gib seconds and EUR cost; a window with no cost " +
+      "model is excluded and sets `totals.costPartial`. Defaults to every " +
+      "concrete provider (`auto` is never listed) and, with no `from`/`to`, " +
+      "to the last 24 hours of usage.",
+    {
+      providers: z
+        .array(z.string())
+        .optional()
+        .describe("Provider slugs to list. Defaults to every concrete provider."),
+      includeUsage: mcpBool
+        .optional()
+        .describe("Also read usage windows from each provider that has a usage ledger. Default false."),
+      from: z.string().optional().describe("Usage window start (ISO-8601). Defaults to 24h before `to`."),
+      to: z.string().optional().describe("Usage window end (ISO-8601). Defaults to now."),
+    },
+    async input => {
+      try {
+        const resolveProvider =
+          opts.resolveSandboxProvider ??
+          makeSandboxResolver(makeSandboxCredsStore())
+        const result = await collectSandboxInventory({
+          ...(input.providers && input.providers.length > 0 ? { providers: input.providers } : {}),
+          resolveProvider,
+          includeUsage: input.includeUsage === true,
+          ...(input.from !== undefined ? { from: input.from } : {}),
+          ...(input.to !== undefined ? { to: input.to } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [
+            { type: "text", text: `sandbox_list failed: ${err instanceof Error ? err.message : String(err)}` },
+          ],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
     "sandbox_gc",
     "Reap ORPHAN sandbox boxes: boxes a PROVIDER's control plane still " +
       "holds (and still charges RAM for) that the daemon's sandbox registry " +
@@ -5166,7 +5218,10 @@ export function registerSessionTools(
       providers: z
         .array(z.string())
         .optional()
-        .describe('Provider slugs to sweep. Default ["computer"].'),
+        .describe(
+          "Provider slugs to sweep. Defaults to every configured concrete " +
+            "provider that can enumerate its boxes (`auto` is never swept).",
+        ),
     },
     async input => {
       try {
@@ -5187,7 +5242,9 @@ export function registerSessionTools(
             return handle as unknown as SandboxGcProviderHandle
           },
           providerSlugs:
-            input.providers && input.providers.length > 0 ? input.providers : ["computer"],
+            input.providers && input.providers.length > 0
+              ? input.providers
+              : DEFAULT_SANDBOX_PROVIDER_SLUGS,
           registryBoxIds: new Set(readSandboxLedger().map(e => e.sandboxId)),
           liveBoxIds: liveSessionBoxIds(liveSessions),
           includeAttached: input.includeAttached === true,

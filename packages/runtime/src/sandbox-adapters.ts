@@ -134,6 +134,15 @@ export const SANDBOX_CATALOG: AdapterCatalog = [
   },
 ]
 
+/** Slugs of the concrete box-owning providers, in catalog order. `local` is a
+ *  same-filesystem passthrough with no control plane to enumerate, and `auto`
+ *  is a selector rather than an owner, so neither is ever swept or listed by
+ *  default. Placeholders still resolve to null and are reported as not
+ *  scanned by the caller. */
+export const DEFAULT_SANDBOX_PROVIDER_SLUGS: readonly string[] = SANDBOX_CATALOG.map(
+  entry => entry.slug,
+).filter(slug => slug !== "local" && slug !== "auto")
+
 /** Extract the safe descriptor from a resolved handle. No secrets. */
 export function toSandboxInfo(handle: SandboxProviderHandle): SandboxAdapterInfo {
   return { capabilities: handle.capabilities }
