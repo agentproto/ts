@@ -259,6 +259,7 @@ import { makeInstalledAppUiApps, createUiHtmlCache } from "./app-ui-apps.js"
 import { createSessionEventBus } from "./session-event-bus.js"
 import {
   createActionRegistry,
+  createAgentOnScanner,
   createBrainIngestReaction,
   createClerkReaction,
   createSessionArchiveAction,
@@ -3157,10 +3158,12 @@ export async function createGateway(
   // cycle without module-level state. Builtins stay live from runner creation,
   // so an event arriving before the first reconcile still reaches them.
   const routineRegistrarBox: { registrar?: ReturnType<typeof createRoutineRegistrar> } = {}
+  const agentOnScanner = createAgentOnScanner({ workspace })
   const reactionWiring = createReactionWiring({
     runner: reactionRunner,
     builtin: builtinReactionBindings,
     eventBindings: () => routineRegistrarBox.registrar?.eventBindings() ?? [],
+    agentBindings: () => agentOnScanner.current(),
     conversion: {
       registry: actionRegistry,
       dispatchTool,
