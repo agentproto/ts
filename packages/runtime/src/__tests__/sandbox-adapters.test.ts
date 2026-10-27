@@ -155,6 +155,45 @@ describe("resolveSandboxProvider", () => {
   it("returns null for an unknown slug", async () => {
     expect(await resolveSandboxProvider("does-not-exist")).toBeNull()
   })
+
+  it("resolves auto's nested providers with their OWN stored creds rows", async () => {
+    const credsStore = makeSandboxCredsStore(home)
+    await credsStore.write("computer", {
+      apiKey: "computer-token",
+      controllerUrl: "http://controller:7110",
+    })
+    await credsStore.write("e2b", E2B_CREDS)
+
+    const savedToken = process.env.COMPUTER_CONTROLLER_TOKEN
+    const savedKey = process.env.E2B_API_KEY
+    delete process.env.COMPUTER_CONTROLLER_TOKEN
+    delete process.env.E2B_API_KEY
+    try {
+      const capacity = Object.assign(new Error("host full"), { code: "host-capacity" })
+      const resolver = makeSandboxResolver(credsStore, {
+        importPackage: async packageName =>
+          packageName === "@agentproto/sandbox-computer"
+            ? { computerSandboxProvider: { boot: async () => Promise.reject(capacity) } }
+            : fakeE2bModule(),
+      })
+
+      const auto = await resolver("auto")
+      expect(auto?.slug).toBe("auto")
+      const result = await auto!.provider.boot(
+        { provider: "auto", config: { overflow: { enabled: true } } },
+        { env: {} },
+      )
+
+      expect(result.provider).toBe("e2b")
+      expect(process.env.COMPUTER_CONTROLLER_TOKEN).toBe("computer-token")
+      expect(process.env.E2B_API_KEY).toBe(E2B_CREDS.apiKey)
+    } finally {
+      if (savedToken === undefined) delete process.env.COMPUTER_CONTROLLER_TOKEN
+      else process.env.COMPUTER_CONTROLLER_TOKEN = savedToken
+      if (savedKey === undefined) delete process.env.E2B_API_KEY
+      else process.env.E2B_API_KEY = savedKey
+    }
+  })
 })
 
 // ── lister: status classification ───────────────────────────────────────

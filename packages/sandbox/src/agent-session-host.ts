@@ -33,12 +33,20 @@ export class SandboxHostBootFailedError extends Error {
    *  the cleanup itself is best-effort, so a failed cleanup still records
    *  the attempt. */
   readonly cleanedUp: "paused" | "stopped"
+  /** Concrete provider that owned the box, when the boot came through a
+   *  composite provider (`auto`). Absent for a single-provider boot, where
+   *  the caller's requested slug already IS the provider. */
+  readonly provider?: string
 
-  constructor(message: string, info: { sandboxId: string; cleanedUp: "paused" | "stopped" }) {
+  constructor(
+    message: string,
+    info: { sandboxId: string; cleanedUp: "paused" | "stopped"; provider?: string },
+  ) {
     super(message)
     this.name = "SandboxHostBootFailedError"
     this.sandboxId = info.sandboxId
     this.cleanedUp = info.cleanedUp
+    if (info.provider !== undefined) this.provider = info.provider
   }
 }
 
@@ -300,6 +308,10 @@ export interface SandboxBootOpts {
 export class SandboxBootCancelledError extends Error {
   /** The provider box id, when it was known before the cancel was observed. */
   readonly sandboxId?: string
+  /** Concrete provider that was booting, when a composite provider (`auto`)
+   *  tagged the error — so the failed-boot ledger row names a resolvable
+   *  provider instead of the composite slug. */
+  provider?: string
 
   constructor(message = "sandbox boot cancelled", sandboxId?: string) {
     super(message)
@@ -674,7 +686,11 @@ export async function createSandboxAgentSessionHost(
     }
     throw new SandboxHostBootFailedError(
       err instanceof Error ? err.message : String(err),
-      { sandboxId: booted.sandboxId, cleanedUp },
+      {
+        sandboxId: booted.sandboxId,
+        cleanedUp,
+        ...(booted.provider !== undefined ? { provider: booted.provider } : {}),
+      },
     )
   }
   return {

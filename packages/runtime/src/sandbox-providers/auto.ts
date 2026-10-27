@@ -31,7 +31,6 @@ import type {
   SandboxProviderChoice,
   SandboxSpec,
 } from "@agentproto/sandbox"
-import { isCapacityRefusal } from "@agentproto/sandbox-computer"
 
 import type { SandboxLedgerEntry } from "../sandbox-ledger.js"
 import { readSandboxLedger } from "../sandbox-ledger.js"
@@ -128,7 +127,12 @@ const computerOnlyReason = (
   spec: SandboxSpec,
   config: AutoSandboxConfig,
 ): string | undefined => {
-  if (config.residency === "eu-ovh") return "residency eu-ovh"
+  if (config.residency !== undefined && config.residency !== "any") {
+    // Fail safe: only the two understood values may overflow. Any other
+    // residency (known to a later policy, or a typo) pins to computer rather
+    // than silently placing the box in a region the caller did not ask for.
+    return config.residency === "eu-ovh" ? "residency eu-ovh" : "residency requires computer"
+  }
   const egressIp = spec.network?.egressIp
   if (egressIp !== undefined && egressIp !== "shared") return "dedicated egressIp"
   const computer = isRecord(config.computer) ? config.computer : {}
@@ -161,6 +165,21 @@ const withComputerError = (e2bErr: unknown, computerErr: unknown): unknown => {
     }
   }
   return e2bErr
+}
+
+/** Tag a failed boot/reconnect with the concrete leg that was running, so a
+ *  failed-boot ledger row names a provider `sandbox gc` can resolve instead of
+ *  the composite slug. */
+const withBootProvider = (err: unknown, provider: AutoConcreteProvider): unknown => {
+  if (typeof err === "object" && err !== null) {
+    const target = err as { provider?: unknown }
+    try {
+      if (target.provider === undefined) target.provider = provider
+    } catch {
+      // A frozen error still propagates unchanged.
+    }
+  }
+  return err
 }
 
 const choiceLine = (choice: SandboxProviderChoice): string =>
@@ -197,16 +216,20 @@ export function createAutoSandboxProviderHandle(
 
       const pinnedReason = computerOnlyReason(spec, config)
       if (pinnedReason) {
-        const computer = await resolve("computer")
-        const booted = await computer.provider.boot(specFor(spec, "computer", config), opts)
-        const choice: SandboxProviderChoice = {
-          requested,
-          provider: "computer",
-          reason: pinnedReason,
-          at,
+        try {
+          const computer = await resolve("computer")
+          const booted = await computer.provider.boot(specFor(spec, "computer", config), opts)
+          const choice: SandboxProviderChoice = {
+            requested,
+            provider: "computer",
+            reason: pinnedReason,
+            at,
+          }
+          log(choiceLine(choice))
+          return { ...booted, provider: "computer", choice }
+        } catch (err) {
+          throw withBootProvider(err, "computer")
         }
-        log(choiceLine(choice))
-        return { ...booted, provider: "computer", choice }
       }
 
       let computerErr: unknown
@@ -222,13 +245,31 @@ export function createAutoSandboxProviderHandle(
         log(choiceLine(choice))
         return { ...booted, provider: "computer", choice }
       } catch (err) {
-        computerErr = err
+        computerErr = withBootProvider(err, "computer")
       }
 
       // Overflow is opt-in, and ONLY a body-coded capacity refusal qualifies
       // (never a transport timeout, auth/validation error, boot timeout, or
       // permanent budget verdict).
-      if (config.overflow?.enabled !== true || !isCapacityRefusal(computerErr)) {
+      if (config.overflow?.enabled !== true) {
+        throw computerErr
+      }
+
+      // Import the classifier lazily: `@agentproto/sandbox-computer` is an
+      // OPTIONAL dependency, and this module is imported eagerly by the
+      // registry. A top-level import would make `@agentproto/runtime`
+      // unimportable when the package is absent and would pull its whole
+      // index into the core bundle. The computer leg could not have resolved
+      // without the package, so a classifier import failure simply means
+      // "not a capacity refusal".
+      let capacityRefusal = false
+      try {
+        const { isCapacityRefusal } = await import("@agentproto/sandbox-computer")
+        capacityRefusal = isCapacityRefusal(computerErr)
+      } catch {
+        capacityRefusal = false
+      }
+      if (!capacityRefusal) {
         throw computerErr
       }
 
@@ -248,7 +289,7 @@ export function createAutoSandboxProviderHandle(
         log(choiceLine(choice))
         return { ...booted, provider: "e2b", choice }
       } catch (e2bErr) {
-        throw withComputerError(e2bErr, computerErr)
+        throw withComputerError(withBootProvider(e2bErr, "e2b"), computerErr)
       }
     },
 
@@ -273,11 +314,16 @@ export function createAutoSandboxProviderHandle(
             "provider cannot reconnect.",
         )
       }
-      const booted = await handle.provider.connect(
-        sandboxId,
-        specFor(spec, slug, config),
-        opts,
-      )
+      let booted: BootedSandbox
+      try {
+        booted = await handle.provider.connect(
+          sandboxId,
+          specFor(spec, slug, config),
+          opts,
+        )
+      } catch (err) {
+        throw withBootProvider(err, slug)
+      }
       const choice: SandboxProviderChoice = {
         requested: "auto",
         provider: slug,
@@ -298,12 +344,16 @@ export function createAutoSandboxProviderHandle(
     description:
       "Boots on the self-hosted computer fleet, overflowing to e2b only for a " +
       "body-coded capacity refusal when explicitly enabled. Resumes always stay " +
-      "with the provider recorded in the sandbox ledger.",
+      "with the provider recorded in the sandbox ledger. Shared sessions and " +
+      "mounts are not advertised — pin the computer provider for either.",
     requiresSetup: false,
     capabilities: AUTO_CAPABILITIES,
     setupFields: [],
     async check(): Promise<boolean> {
-      return true
+      // `auto` always boots `computer` first, so it is only usable when that
+      // leg resolves; e2b is an optional overflow target.
+      const computer = await deps.resolveProvider("computer").catch(() => null)
+      return computer !== null
     },
   }
 }

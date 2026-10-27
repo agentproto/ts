@@ -15,6 +15,7 @@ import { join } from "node:path"
 import { createServer } from "node:net"
 import type { AddressInfo } from "node:net"
 import {
+  SandboxBootCancelledError,
   type BootedSandbox,
   type SandboxBootOpts,
   type SandboxProvider,
@@ -100,6 +101,15 @@ describe("auto sandbox provider — resolution", () => {
     expect(resolved).not.toBeNull()
     expect(resolved?.slug).toBe("auto")
   })
+
+  it("reports not-ready when the computer leg is not installed", async () => {
+    const auto = createAutoSandboxProviderHandle({
+      resolveProvider: async slug =>
+        slug === "computer" ? null : handle("e2b", { boot: async () => booted("sbx_e2b_1") }),
+    })
+
+    await expect(auto.check()).resolves.toBe(false)
+  })
 })
 
 describe("auto sandbox provider — boot", () => {
@@ -163,6 +173,29 @@ describe("auto sandbox provider — boot", () => {
     await expect(
       legs.auto.provider.boot(spec({ residency: "eu-ovh", overflow: { enabled: true } }), { env: {} }),
     ).rejects.toBe(err)
+
+    expect(legs.e2bBoot).not.toHaveBeenCalled()
+  })
+
+  it("fails safe: any other residency value pins to computer, never overflows", async () => {
+    const err = new ComputerSandboxError("sandbox_capacity", "host capacity exhausted")
+    const legs = fakeLegs({ computer: async () => Promise.reject(err) })
+
+    await expect(
+      legs.auto.provider.boot(spec({ residency: "us-east", overflow: { enabled: true } }), { env: {} }),
+    ).rejects.toBe(err)
+
+    expect(legs.e2bBoot).not.toHaveBeenCalled()
+  })
+
+  it("tags a cancelled computer boot with the concrete provider for the ledger", async () => {
+    const cancel = new SandboxBootCancelledError("cancelled", "sbx_cancelled")
+    const legs = fakeLegs({ computer: async () => Promise.reject(cancel) })
+
+    await expect(legs.auto.provider.boot(spec(), { env: {} })).rejects.toMatchObject({
+      sandboxId: "sbx_cancelled",
+      provider: "computer",
+    })
 
     expect(legs.e2bBoot).not.toHaveBeenCalled()
   })
@@ -360,5 +393,48 @@ describe("auto sandbox provider — descriptor and ledger", () => {
     const row = readSandboxLedger().find(entry => entry.sandboxId === "sbx_auto_e2b")
     expect(row?.provider).toBe("e2b")
     await rm(boxWorkspace, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 })
+  })
+
+  it("records the ACTUAL provider on a failed boot after the box was created", async () => {
+    const deadPort = await freePort()
+    const computerErr = new ComputerSandboxError("sandbox_capacity", "host capacity exhausted")
+    const e2b = handle("e2b", {
+      async boot() {
+        return {
+          mcpUrl: `http://127.0.0.1:${deadPort}/mcp`,
+          sandboxId: "sbx_auto_failed",
+          stop: async () => {},
+        }
+      },
+    })
+    const computer = handle("computer", {
+      async boot() {
+        throw computerErr
+      },
+    })
+    const auto = createAutoSandboxProviderHandle({
+      resolveProvider: async slug => (slug === "computer" ? computer : e2b),
+    })
+
+    const deps: SpawnAgentSessionDeps = {
+      registry,
+      resolveAgentAdapter: vi.fn(async () => null),
+      resolveSandboxProvider: vi.fn(async slug => (slug === "auto" ? auto : null)),
+      loadDefaultsConfig: async () => undefined,
+      loadRoleRegistry: async () => ({}),
+    }
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "fake-cli",
+      cwd: workspace,
+      sandbox: { provider: "auto", config: { overflow: { enabled: true } } },
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.code).toBe("sandbox_boot_failed")
+
+    const row = readSandboxLedger().find(entry => entry.sandboxId === "sbx_auto_failed")
+    expect(row?.provider).toBe("e2b")
   })
 })

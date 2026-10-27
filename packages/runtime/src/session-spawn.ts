@@ -6513,7 +6513,7 @@ export async function bootSandboxAgentSession(opts: {
       const keepForSurvivors = err.cleanedUp === "paused" && survivorsAfterFailedAttach > 0
       markFailedBootLedger({
         sandboxId: err.sandboxId,
-        provider: providerSlug,
+        provider: failedBootProvider(err, providerSlug),
         state: err.cleanedUp,
         keepAttachedSessions: keepForSurvivors,
         ...(opts.label ? { label: opts.label } : {}),
@@ -6527,7 +6527,7 @@ export async function bootSandboxAgentSession(opts: {
       if (typeof err.sandboxId === "string" && err.sandboxId !== "") {
         markFailedBootLedger({
           sandboxId: err.sandboxId,
-          provider: providerSlug,
+          provider: failedBootProvider(err, providerSlug),
           state: "stopped",
           ...(opts.label ? { label: opts.label } : {}),
           ...(boxCwd ? { cwd: boxCwd } : {}),
@@ -7167,6 +7167,19 @@ function sandboxSubaccountScope(
     ...(auth.extraEnv ? { extraEnv: auth.extraEnv } : {}),
     ...(auth.isolateDataHome === false ? { isolateDataHome: false } : {}),
   }
+}
+
+/**
+ * The concrete provider a failed boot's box lives on, when the provider tagged
+ * the error (a composite like `auto` does); otherwise the requested slug.
+ * Keeps failed-boot ledger rows resolvable by `sandbox gc`.
+ */
+function failedBootProvider(err: unknown, requested: string): string {
+  if (typeof err === "object" && err !== null) {
+    const provider = (err as { provider?: unknown }).provider
+    if (typeof provider === "string" && provider !== "") return provider
+  }
+  return requested
 }
 
 /**
