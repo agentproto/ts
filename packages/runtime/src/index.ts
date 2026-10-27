@@ -56,31 +56,6 @@ import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
 import { createDaemonEscalationHost } from "./decision-escalation.js"
 import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
-export {
-  DECISION_POLICY_SCHEMA_VERSION,
-  decisionPolicyHash,
-  hashStable,
-  parseDecisionPolicy,
-  stableStringify,
-  type DecisionPolicy,
-  type DecisionPolicyFrontmatter,
-  type DecisionPolicyParse,
-  type DecisionWhen,
-} from "@agentproto/decision"
-export {
-  buildEscalationPacket,
-  clearDecisionCache,
-  decide,
-  decisionCacheSize,
-  evaluateWhen,
-  projectTier1Evidence,
-  type ClassifierOutcome,
-  type DecideDeps,
-  type DecisionEscalationHistoryEntry,
-  type DecisionOutcome,
-  type DecisionSource,
-  type EscalationOutcome,
-} from "@agentproto/decision"
 export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,
@@ -284,7 +259,6 @@ import { createReviewLedger } from "./review-ledger.js"
 import { createDaemonReviewerHost } from "./review-reviewer-host.js"
 import { registerReviewTools, reviewLedgerView } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
-import { createFileStepCache } from "@agentproto/run"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
@@ -434,34 +408,6 @@ export type { OpenPrResolver } from "./pr-provenance-reconciler.js"
 export { openPrForSession } from "./pr-open.js"
 export type { OpenPrForSessionInput, OpenPrForSessionOutcome } from "./pr-open.js"
 export { createActivityProjector } from "./activities.js"
-// AIP-68 clerk hook - the turn-end subscriber + its configuration
-// resolution (three levels: agent > workspace > daemon default).
-export {
-  createClerkTurnEndController,
-  type ClerkTurnEndController,
-  type ClerkTurnEndControllerOptions,
-  type ClerkPassInput,
-  type ClerkSessionLike,
-} from "@agentproto/clerk"
-export { createClerkPassRunner, spawnClerkCommand } from "@agentproto/clerk"
-export {
-  CLERK_HOOK_DEFAULTS,
-  CLERK_HOOK_DEFAULT_DEBOUNCE_MS,
-  CLERK_HOOK_EVENTS,
-  clerkHookInputSchema,
-  clerkHooksInputSchema,
-  loadDaemonClerkHook,
-  loadWorkspaceClerkHook,
-  mergeClerkHookLevels,
-  parseAgentClerkHook,
-  parseClerkHookLevel,
-  resolveClerkHookConfig,
-  type ClerkHookConfig,
-  type ClerkHookEvent,
-  type ClerkHookRun,
-  type ClerkHookSource,
-  type ResolvedClerkHookConfig,
-} from "@agentproto/clerk"
 export type {
   ActivityProjector,
   ActivityProjectorRegistry,
@@ -496,7 +442,6 @@ export {
   type WorkspaceBrainSubscriber,
   type WorkspaceBrainSubscriberOptions,
 } from "./workspace-brain-subscriber.js"
-export type { BrainManager, BrainStats, IngestResult, IngestReport } from "@agentproto/workspace-brain"
 export {
   policyToActivities,
   turnToActivities,
@@ -1142,21 +1087,6 @@ export type { TunnelHealth, TunnelHealthState } from "./remote-providers/types.j
 export { TunnelStartAbortedError } from "./remote-providers/types.js"
 export { buildSessionLink } from "./tunnel-links.js"
 export type { AppTunnelResult } from "./app-tunnel-tools.js"
-export type { SentinelStatus } from "@agentproto/sentinel"
-export type {
-  SentinelSpec,
-  SentinelMatchClause,
-  SentinelUntil,
-  SentinelTarget,
-} from "@agentproto/sentinel"
-export type { SentinelView } from "@agentproto/sentinel"
-export type {
-  SentinelMalformedItem,
-  SentinelPollResult,
-} from "@agentproto/sentinel"
-export { SentinelBackingExpiredError } from "@agentproto/sentinel"
-export type { SentinelQuarantine, SentinelQuarantineRecord } from "@agentproto/sentinel"
-export type { CancelTombstone, CancelTombstoneStore } from "@agentproto/sentinel"
 // Session-follow (wake a session on other sessions' events).
 export {
   createSessionFollowStore,
@@ -1276,18 +1206,6 @@ export {
   type DeliveryOutcome,
   type McpEventEnvelope,
 } from "./webhook-egress/delivery.js"
-// Sentinel webhook fire path (W-B of .plans/sentinel-mcp-events): persisted
-// outbox rows, dispatch + ack-after-terminal, restart resume.
-export {
-  createSentinelWebhookOutbox,
-  toWebhookEnvelope,
-  webhookRequestId,
-  type SentinelWebhookOutbox,
-  type SentinelWebhookOutboxOptions,
-  type SentinelWebhookOutboxRow,
-  type SentinelWebhookOutboxStatus,
-  type PersistedOutboxRow,
-} from "@agentproto/sentinel"
 export type {
   LlmEndpointStatusReport,
   LlmEndpointDescriptor,
@@ -1440,7 +1358,6 @@ export {
   type LocatedConversationByPath,
   type ResolveNativeLinkInput,
 } from "./conversation-index.js"
-export { createFileStepCache } from "@agentproto/run"
 export {
   sweepStaleRuntimeMetas,
   unlinkRuntimeMeta,
@@ -5478,4 +5395,3 @@ async function runBoot(
 // parallel edit in that region.
 export { evaluateCostBudget } from "./cost-budget.js"
 export type { CostBudgetDecision } from "./cost-budget.js"
-export type { CostBudget, CostBudgetScope } from "@agentproto/auth"

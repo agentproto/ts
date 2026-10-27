@@ -471,8 +471,7 @@ validation. Declared-tool `tool_use` blocks pass through normally as OpenAI `too
 
 ## Running it
 
-The installed command is `inference-endpoint`; `llm-endpoint` remains as its
-old alias.
+The installed command is `inference-endpoint`.
 
 No bespoke start script — it's a normal workspace package, driven by `pnpm` scripts:
 

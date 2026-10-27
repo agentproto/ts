@@ -21,19 +21,6 @@ automated versioning and npm publishing.
    - **No pending changesets** (i.e. the "Version Packages" PR was just merged)
      → publishes every changed package to npm and creates GitHub releases.
 
-### Manual publish (emergency / first publish of a new package)
-
-```bash
-# Dry-run first
-scripts/publish-packages.sh --dry-run
-
-# Publish with NPM_TOKEN in env
-NPM_TOKEN=<token> scripts/publish-packages.sh
-
-# Or let it prompt for TOTP
-scripts/publish-packages.sh
-```
-
 ## Secrets required
 
 | Secret | Where | Notes |
@@ -70,7 +57,5 @@ During `0.x.y-alpha` pre-release, `minor` is appropriate for most new features.
 ## Adding a new package
 
 1. Create the package under `packages/<name>/` with standard `package.json` + `tsup.config.ts`.
-2. Add it to the PACKAGES list in `scripts/publish-packages.sh` at the right dependency layer.
-3. First publish is manual (`scripts/publish-packages.sh`) — changesets doesn't publish packages
-   that have never been on npm before.
-4. Subsequent releases are fully automated via the changeset flow above.
+2. Add a changeset for its first release. The automated changeset flow publishes it like any
+   other package.

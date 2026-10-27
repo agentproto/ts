@@ -10,7 +10,7 @@ describe("TYPES.md round-trip", () => {
         project: { parents: ["root"], default_wall: "isolated", requires_files: ["RAPPORT.md"] },
       },
     })
-    expect(md).toContain("schema: workspace-types/v1")
+    expect(md).toContain("schema: workspace.types/v1")
     const parsed = parseTypesManifest(md)
     expect(parsed.types.project?.requires_files).toEqual(["RAPPORT.md"])
     expect(parsed.types.root?.max_per_tree).toBe(1)
@@ -35,9 +35,9 @@ describe("TYPES.md round-trip", () => {
     expect(parseTypesManifest(md).schema).toBe("workspace-types/v1")
   })
 
-  it("keeps writing the legacy tag even when handed the canonical one", () => {
-    const md = writeTypesManifest({ schema: "workspace.types/v1", types: { root: { parents: [] } } })
-    expect(md).toContain("schema: workspace-types/v1")
+  it("writes the canonical tag even when handed the legacy one", () => {
+    const md = writeTypesManifest({ schema: "workspace-types/v1", types: { root: { parents: [] } } })
+    expect(md).toContain("schema: workspace.types/v1")
   })
 
   it("rejects an invalid type key", () => {

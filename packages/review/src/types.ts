@@ -241,7 +241,7 @@ export interface ReviewPrRef {
  */
 export interface Attestation {
   /** Format marker so a verifier can reject a document it doesn't speak. */
-  schema: typeof ATTESTATION_SCHEMA | "review.attestation/v1"
+  schema: typeof ATTESTATION_SCHEMA | "agentproto.review.attestation/v1"
   /** The run that produced this attestation. */
   runId: string
   /** The REVIEW.md `id`. */
@@ -272,6 +272,6 @@ export interface Attestation {
   createdAt: string
 }
 
-/** Writers keep emitting the legacy tag until the next major. Old readers in
- *  the field only know agentproto.review.attestation/v1. */
-export const ATTESTATION_SCHEMA = "agentproto.review.attestation/v1" as const
+/** Canonical AIP-70 schema tag writers emit. Readers still accept the
+ *  pre-AIP-70 agentproto.review.attestation/v1 alias. */
+export const ATTESTATION_SCHEMA = "review.attestation/v1" as const

@@ -58,14 +58,14 @@ export function parseLock(source: string): AgentprotoLock {
 
 export function writeLock(lock: AgentprotoLockInput): string {
   const parsed = agentprotoLockSchema.parse(lock)
-  // Writers keep emitting the legacy tags until the next major. Old readers
-  // in the field only know agentproto-lock/v1 and agentproto-pack-digest/v1.
+  // Writers emit the canonical tags; readers still accept the legacy
+  // agentproto-lock/v1 and agentproto-pack-digest/v1 aliases above.
   return stringify({
     ...parsed,
-    lockfile: "agentproto-lock/v1",
+    lockfile: "workspace.lock/v1",
     packs: parsed.packs.map((pack) => ({
       ...pack,
-      digest: pack.digest.replace(/^review\.pack-digest\/v1:/, "agentproto-pack-digest/v1:"),
+      digest: pack.digest.replace(/^agentproto-pack-digest\/v1:/, "review.pack-digest/v1:"),
     })),
   })
 }

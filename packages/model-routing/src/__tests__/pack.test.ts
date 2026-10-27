@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { definePack, defineRoutingPack, overlay } from "../pack.js"
+import { defineRoutingPack, overlay } from "../pack.js"
 
 describe("defineRoutingPack", () => {
   it("is total over its keyspace — every declared key has a Route or an explicit null", () => {
@@ -16,9 +16,6 @@ describe("defineRoutingPack", () => {
     expect(pack.routes.deepThink).toBeNull()
   })
 
-  it("definePack is a deprecated alias of defineRoutingPack", () => {
-    expect(definePack).toBe(defineRoutingPack)
-  })
 })
 
 describe("overlay", () => {

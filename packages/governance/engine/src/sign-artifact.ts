@@ -101,9 +101,6 @@ export async function signArtifact(
   // 3. Compose the signature object.
   const signedAt = input.signedAt ?? new Date().toISOString()
   const sigObj: Signature = {
-    // Emit the pre-AIP-70 tag until the next major: verifiers in the
-    // field only know it (EMITTED_SPEC_NAME). It flips to SPEC_NAME at
-    // the next major.
     schema: EMITTED_SPEC_NAME,
     doctype: "signature",
     signer: input.signer,
