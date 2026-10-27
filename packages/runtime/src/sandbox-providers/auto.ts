@@ -606,7 +606,12 @@ export function createAutoSandboxProviderHandle(
         throw new SandboxOverflowRefusedError(why, { cause: computerErr, choice })
       }
 
-      const e2b = await resolve("e2b")
+      let e2b: SandboxProviderHandle
+      try {
+        e2b = await resolve("e2b")
+      } catch (e2bErr) {
+        throw withComputerError(withBootProvider(e2bErr, "e2b"), computerErr)
+      }
 
       const dailyIssue = await checkDailyCaps(e2b, overflow, now())
       if (dailyIssue !== undefined) return refuse(dailyIssue)
@@ -663,12 +668,61 @@ export function createAutoSandboxProviderHandle(
             "provider cannot reconnect.",
         )
       }
+      const overflow = config.overflow ?? {}
+      let connectOpts = opts
+      let connectSpec = specFor(spec, slug, config)
+      if (slug === "e2b") {
+        if (config.overflow?.enabled === true) {
+          const secrets = selectOverflowSecrets(opts.env, overflow)
+          if ("reason" in secrets) {
+            throw new SandboxOverflowRefusedError(secrets.reason, {
+              choice: {
+                requested: "auto",
+                provider: "e2b",
+                from: "ledger",
+                reason: `overflow refused: ${secrets.reason}`,
+                at: now().toISOString(),
+              },
+            })
+          }
+          connectOpts = { ...opts, env: secrets.env }
+        } else if (overflow.allowSecrets !== true) {
+          connectOpts = { ...opts, env: {} }
+        } else {
+          const secrets = selectOverflowSecrets(opts.env, overflow)
+          if ("reason" in secrets) {
+            throw new SandboxOverflowRefusedError(secrets.reason, {
+              choice: {
+                requested: "auto",
+                provider: "e2b",
+                from: "ledger",
+                reason: `overflow refused: ${secrets.reason}`,
+                at: now().toISOString(),
+              },
+            })
+          }
+          connectOpts = { ...opts, env: secrets.env }
+        }
+        const timeout = await capTimeoutMs(config, overflow)
+        if ("reason" in timeout) {
+          throw new SandboxOverflowRefusedError(timeout.reason, {
+            choice: {
+              requested: "auto",
+              provider: "e2b",
+              from: "ledger",
+              reason: `overflow refused: ${timeout.reason}`,
+              at: now().toISOString(),
+            },
+          })
+        }
+        connectSpec = specFor(spec, slug, config, timeout.timeoutMs)
+      }
       let booted: BootedSandbox
       try {
         booted = await handle.provider.connect(
           sandboxId,
-          specFor(spec, slug, config),
-          opts,
+          connectSpec,
+          connectOpts,
         )
       } catch (err) {
         throw withBootProvider(err, slug)
