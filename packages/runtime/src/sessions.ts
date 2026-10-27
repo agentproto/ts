@@ -1243,7 +1243,7 @@ export interface EnqueuePromptResult {
   /** `delivered` — started as a turn (idle target, or an interrupt);
    *  `steered` — injected into the running turn; `queued-mid-turn` — parked
    *  until the current turn ends (or a steer / `deliverWithin` fires);
-   *  `duplicate` — a prompt with the same `dedupeKey` was already accepted
+   *  `duplicate`: a prompt with the same `dedupeKey` was already accepted
    *  inside the window; nothing was delivered or queued.
    *  `delivery` / `pending` are always set by the registry; optional here so
    *  structural stand-ins that only know `queued` still type-check. */
@@ -12845,7 +12845,7 @@ export function createSessionsRegistry(opts?: {
       if (dedupeKey !== undefined && (dedupeKey.length < 1 || dedupeKey.length > 200)) {
         throw new Error("enqueuePrompt: dedupeKey must be 1 to 200 characters")
       }
-      // A duplicate does NOTHING else — no interrupt, resume, compaction,
+      // A duplicate does NOTHING else: no interrupt, resume, compaction,
       // envelope trace, inbox write, queue change, or persist.
       if (dedupeKey !== undefined && findPromptDedupe(rtPre.desc.promptDedupe, dedupeKey, Date.now())) {
         const waiting = (rtPre.desc.promptQueue ?? []).find(p => p.dedupeKey === dedupeKey)
