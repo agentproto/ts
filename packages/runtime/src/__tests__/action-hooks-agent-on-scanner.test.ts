@@ -153,7 +153,27 @@ describe("createAgentOnScanner", () => {
     expect(scanner.current()).toEqual({ bindings: [], errors: [] })
   })
 
-  it("keeps the previous cache when every load fails unexpectedly", async () => {
+  it("keeps the previous cache and logs when the agents directory cannot be listed", async () => {
+    const ws = tmp("agent-on-scanner-")
+    writeAgent(ws, "archiver", "archiver", ARCHIVE_ON)
+    const log = vi.fn()
+    const scanner = createAgentOnScanner({ workspace: ws, log })
+    const first = await scanner.rescan()
+    expect(first.bindings).toHaveLength(1)
+
+    // `.agents` becomes a regular file: readdir fails with ENOTDIR, which is
+    // not the "no directory" case and must not wipe the live bindings.
+    rmSync(join(ws, ".agents"), { recursive: true, force: true })
+    writeFileSync(join(ws, ".agents"), "not a directory")
+    const second = await scanner.rescan()
+    expect(second.bindings.map(binding => binding.bindingId)).toEqual([
+      "archiver/on/agentproto:session-completed/0",
+    ])
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(String(log.mock.calls[0]?.[0])).toContain("rescan failed")
+  })
+
+  it("drops the bindings of every manifest when all of them now fail to load", async () => {
     const ws = tmp("agent-on-scanner-")
     writeAgent(ws, "archiver", "archiver", ARCHIVE_ON)
     let fail = false
@@ -162,13 +182,9 @@ describe("createAgentOnScanner", () => {
       return loadAgent(path, opts)
     }
     const scanner = createAgentOnScanner({ workspace: ws, loadAgent: loader, log: () => {} })
-    const first = await scanner.rescan()
-    expect(first.bindings).toHaveLength(1)
+    expect((await scanner.rescan()).bindings).toHaveLength(1)
 
     fail = true
-    const second = await scanner.rescan()
-    expect(second.bindings.map(binding => binding.bindingId)).toEqual([
-      "archiver/on/agentproto:session-completed/0",
-    ])
+    expect((await scanner.rescan()).bindings).toEqual([])
   })
 })

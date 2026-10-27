@@ -95,8 +95,6 @@ export function createAgentOnScanner(opts: {
         const bindings: ResolvedEventBinding[] = []
         const errors: AgentOnScanError[] = []
         const seen = new Set<string>()
-        let loaded = 0
-        let failed = 0
 
         for (const name of names) {
           const path = join(agentsDir, name, "AGENT.md")
@@ -104,7 +102,6 @@ export function createAgentOnScanner(opts: {
           try {
             handle = (await load(path, { workspace: opts.workspace })).handle
           } catch (err) {
-            failed++
             const message = messageOf(err)
             const key = `${path}\u0000${message}`
             if (!loggedLoadFailures.has(key)) {
@@ -113,7 +110,6 @@ export function createAgentOnScanner(opts: {
             }
             continue
           }
-          loaded++
 
           const agentId = stripOwner(handle.id)
           if (seen.has(agentId)) {
@@ -129,11 +125,6 @@ export function createAgentOnScanner(opts: {
           } catch (err) {
             errors.push({ agentId, error: messageOf(err) })
           }
-        }
-
-        if (loaded === 0 && failed > 0) {
-          log(`${LOG_PREFIX} every manifest failed to load, keeping the previous result`)
-          return copy(cached)
         }
 
         cached = { bindings, errors }
