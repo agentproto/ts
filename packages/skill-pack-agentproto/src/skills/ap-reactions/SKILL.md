@@ -16,7 +16,7 @@ description: Make the daemon react when a session completes, with restart-safe r
 1. An **event** happens. Today the only event a routine or an `on` map can use is `agentproto:session-completed`: a session is terminal AND its outcome says completed (declared, steward verdict, operator "mark as completed") or a completion policy passed. It fires once per terminal transition.
 2. A **binding** (an event routine, an `AGENT.md` `on` entry, or a builtin) matches it.
 3. The runner writes a **receipt** keyed `<session>/<event>/<occurrence>/<binding>` before it runs the target. The same completion delivered twice runs once.
-4. The **action** runs. A failure is retried up to 3 times. After a crash, a receipt left `running` is replayed at boot only if the action is idempotent; a non-idempotent one is logged as stuck and not replayed.
+4. The **action** runs. A failed attempt is retried, up to 3 attempts in total. After a crash, a receipt left `running` is replayed at boot only if the action is idempotent; a non-idempotent one is logged as stuck and not replayed.
 
 A session that a reaction starts is stamped with origin `reaction:<binding>` and a depth; the chain stops at depth 4 (receipt `dead`, reason `recursion_cap`).
 
@@ -27,7 +27,7 @@ Only actions registered in the daemon can be named. Anything else is refused and
 | Action | What it does |
 | ------ | ------------ |
 | `session:archive` | Archives the session of the event. Idempotent. Skips (receipt still `done`, with an `outcomeRef`) when the session is missing, already archived, alive, pinned or `keepAlive`: `skipped:session_missing`, `skipped:already_archived`, `skipped:alive`, `skipped:pinned`, `skipped:keep_alive`. A session with a successor is archived too. |
-| `session:clerk-pass` | Runs the AIP-68 clerk pass. Reachable only through the builtin clerk reaction (see below), not nameable from a routine. |
+| `session:clerk-pass` | Runs the AIP-68 clerk pass. It is registered for the builtin clerk reaction, which is its intended driver (see Recipe 3). A routine on `agentproto:session-completed` could name it, but that is not what it is for, and a routine cannot subscribe to the clerk's own event `agentproto:clerk-due`. The pass is not idempotent. |
 
 A routine can also use a `tool`, `workflow` or `agent` target, but those arms get **no event context**: they cannot know which session just completed. Use an action when the target depends on the session of the event.
 
@@ -73,7 +73,7 @@ on:
   agentproto:session-completed: session:archive
 ```
 
-It applies **only to the sessions started from that agent** (`meta.agentId` equals the manifest id). A value is a string, an object `{ action, inputs }`, or an array of those. Every reconcile rescans `<workspace>/.agents/*/AGENT.md`, so an edit takes effect on the next reconcile, not live. An `on` entry has no filter, cooldown or retry; use a routine for those. A manifest that fails to load is logged and skipped. An invalid `on` map is reported as a refusal named `<agent-id>/on`. Any other event name (`turn-end`, for example) is reported under `reactions.refused` as not supported. Only the daemon workspace is scanned.
+It applies **only to the sessions started from that agent** (`meta.agentId` equals the manifest id). A value is a string, an object `{ action, inputs }`, or an array of those. Every reconcile rescans `<workspace>/.agents/*/AGENT.md`, so an edit takes effect on the next reconcile, not live. An `on` entry has no filter and no settings of its own, so use a routine when you need a filter. Like every reaction, a failing `on` target is retried (up to 3 attempts). Neither surface has a cooldown. A manifest that fails to load is logged and skipped. An invalid `on` map is reported as a refusal named `<agent-id>/on`. Any other event name (`turn-end`, for example) is reported under `reactions.refused` as not supported. Only the daemon workspace is scanned.
 
 ## Recipe 3: move brain ingest or the clerk onto the durable path
 

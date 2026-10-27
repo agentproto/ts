@@ -238,7 +238,7 @@ bindings go away on the next reconcile.
 
 | Action | Behavior |
 | --- | --- |
-| `session:clerk-pass` | registered by the daemon, reachable only through the builtin clerk binding because user routines cannot subscribe to `agentproto:clerk-due` |
+| `session:clerk-pass` | registered by the daemon for the builtin clerk binding, which is its intended driver; user routines cannot subscribe to `agentproto:clerk-due`, though a routine on `agentproto:session-completed` could name the action (not what it is for) |
 | `session:archive` | archives the session of the event, skips with an `outcomeRef` when the session is missing, already archived, alive, pinned or keepAlive |
 
 An event routine archives a finished child session by naming the action:
