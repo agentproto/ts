@@ -78,12 +78,14 @@ export class ComputerApiError extends Error {
   readonly available: number | undefined
   /** The tenant's total budget for `resource`, when the controller sent it. */
   readonly budget: number | undefined
+  /** The configured limit for a count-cap refusal, when the controller sent it. */
+  readonly cap: number | undefined
 
   constructor(
     status: number,
     message: string,
     code?: string,
-    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number } = {},
+    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number; cap?: number } = {},
   ) {
     super(message)
     this.name = "ComputerApiError"
@@ -94,6 +96,7 @@ export class ComputerApiError extends Error {
     this.requested = details.requested
     this.available = details.available
     this.budget = details.budget
+    this.cap = details.cap
   }
 }
 
@@ -223,6 +226,7 @@ export class ComputerControllerClient {
           requested: numberField("requested"),
           available: numberField("available"),
           budget: numberField("budget") ?? numberField("total"),
+          cap: numberField("cap"),
         },
       )
     }
