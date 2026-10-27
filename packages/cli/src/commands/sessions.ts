@@ -235,7 +235,7 @@ Usage:
                                mid-turn; --send prompts each to continue —
                                without it, a dry run that sends nothing)
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
-                              [--timeout <duration>] [--json]
+                              [--since <seq>] [--timeout <duration>] [--json]
                               (duration: bare integer = ms, unchanged — or an
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
@@ -2801,6 +2801,13 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      Exit 5 tells the caller the truth instead: there's nothing to wait
  *      for.
  *
+ * `--since <seq>` passes an EventRing cursor to the daemon. A spawn-then-wait
+ * caller that has no cursor of its own can pass `--since 0` so a turn-end
+ * that fired between the spawn response and this process starting is replayed
+ * instead of being reported as idle. With a cursor present the daemon's own
+ * already-finished-turn check is authoritative, so the idle pre-flight is
+ * skipped.
+ *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
  * it now gets its own code (2) and a message pointing at `--timeout`.
@@ -2833,6 +2840,7 @@ async function runWait(args: readonly string[]): Promise<number> {
     options: {
       until: { type: "string" },
       policy: { type: "string" },
+      since: { type: "string" },
       timeout: { type: "string" },
       json: { type: "boolean" },
     },
@@ -2873,6 +2881,18 @@ async function runWait(args: readonly string[]): Promise<number> {
         `Expected one of: turn-end, awaiting-input, exited, any.\n`,
     )
     return 2
+  }
+
+  let since: number | undefined
+  if (values.since !== undefined) {
+    if (!/^\d+$/.test(values.since)) {
+      process.stderr.write(
+        `agentproto sessions wait: invalid --since "${values.since}". ` +
+          `Expected a non-negative event sequence number (e.g. --since 0).\n`,
+      )
+      return 2
+    }
+    since = Number.parseInt(values.since, 10)
   }
 
   const defaultTimeout = resolveWaitDefaultTimeout(rawUntil !== undefined)
@@ -2919,6 +2939,7 @@ async function runWait(args: readonly string[]): Promise<number> {
     untilEvent,
     totalTimeout,
     json: values.json === true,
+    ...(since !== undefined ? { since } : {}),
   })
 }
 
@@ -2933,8 +2954,9 @@ async function runWaitSession(opts: {
   untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
   totalTimeout: number
   json: boolean
+  since?: number
 }): Promise<number> {
-  const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+  const { endpoint, idOrName, untilEvent, totalTimeout, json, since } = opts
 
   // Pre-flight: read the session's current descriptor before blocking at
   // all. `monitorSessionWait`'s already-finished-turn check deliberately
@@ -2980,13 +3002,21 @@ async function runWaitSession(opts: {
       !desc.queuedPrompts &&
       desc.status !== "starting" &&
       ((desc.turnsCompleted ?? 0) > 0 || terminalStatus)
-    if (idle) {
+    // A caller-supplied cursor moves the "already finished?" decision to the
+    // daemon (`monitorSessionWait`), which can distinguish a turn-end after
+    // that cursor from stale history. Do not override it with this
+    // cursor-less snapshot.
+    if (idle && since === undefined) {
       return emitWaitIdle(json, {
         sessionId: desc.id,
         idOrName,
         status: desc.status,
         busy: desc.busy === true,
         awaitingInput: desc.awaitingInput === true,
+        turnsCompleted: desc.turnsCompleted,
+        lastTurnReason: desc.lastTurnReason,
+        lastTurnErrorMessage: desc.lastTurnErrorMessage,
+        lastTurnEmpty: desc.lastTurnEmpty === true,
       })
     }
   }
@@ -2994,7 +3024,7 @@ async function runWaitSession(opts: {
   const deadline = Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
-  let cursor: number | undefined = undefined
+  let cursor: number | undefined = since
 
   // Stated BEFORE blocking, not just on timeout: the incident this whole
   // module exists for was a wrong unit that looked exactly like a stuck
@@ -3134,6 +3164,10 @@ function emitWaitIdle(
     status: string
     busy: boolean
     awaitingInput: boolean
+    turnsCompleted?: number
+    lastTurnReason?: string
+    lastTurnErrorMessage?: string
+    lastTurnEmpty?: boolean
   },
 ): number {
   if (json) {
@@ -3145,6 +3179,10 @@ function emitWaitIdle(
           status: ctx.status,
           busy: ctx.busy,
           awaitingInput: ctx.awaitingInput,
+          ...(ctx.turnsCompleted !== undefined ? { turnsCompleted: ctx.turnsCompleted } : {}),
+          ...(ctx.lastTurnReason !== undefined ? { reason: ctx.lastTurnReason } : {}),
+          ...(ctx.lastTurnErrorMessage !== undefined ? { error: ctx.lastTurnErrorMessage } : {}),
+          ...(ctx.lastTurnEmpty === true ? { empty: true } : {}),
         },
         null,
         2,

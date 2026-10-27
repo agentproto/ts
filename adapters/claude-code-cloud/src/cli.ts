@@ -16,7 +16,9 @@
  */
 
 import { spawn } from "node:child_process"
-import { tmpdir } from "node:os"
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { dirname, resolve } from "node:path"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 import { toCliSessionId } from "./sessions-api.js"
 import { CLOUD_GIT_TOKEN_ENV } from "./repo-checkout.js"
@@ -55,6 +57,65 @@ export function cloudChildEnv(
     out[key] = value
   }
   return out
+}
+
+/**
+ * Pre-seed the folder-trust answer in the config the claude child will read.
+ *
+ * A clean runner, a fresh `CLAUDE_CONFIG_DIR`, and a cloud checkout
+ * materialized outside the workspace all start without `projects[cwd]`, so
+ * `claude --cloud` opens the first-run "Do you trust the files in this
+ * folder?" dialog. The PTY path can answer it, but the answer races the
+ * word-by-word render and a stalled dialog burns the whole start timeout.
+ * Writing the same flag the TUI writes on "Yes" removes that race for the
+ * exact cwd the child runs in. Honors `CLAUDE_CONFIG_DIR` so an isolated
+ * adapter config is updated rather than the operator's real `~/.claude.json`.
+ *
+ * Best effort: a read-only or unparseable config must never turn a spawn
+ * into a failure. The PTY answerer remains the fallback.
+ */
+export function trustClaudeFolder(cwd: string, env = process.env): void {
+  const configDir = env.CLAUDE_CONFIG_DIR
+  const configFile = configDir
+    ? resolve(configDir, ".claude.json")
+    : resolve(env.HOME ?? homedir(), ".claude.json")
+  let config: Record<string, unknown> = {}
+  try {
+    const parsed = JSON.parse(readFileSync(configFile, "utf8")) as unknown
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      config = parsed as Record<string, unknown>
+    }
+  } catch {
+    // Missing or malformed config: start from a minimal object.
+  }
+  const existing = config.projects
+  const projects =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {}
+  const dirs = new Set([cwd])
+  try {
+    dirs.add(realpathSync(cwd))
+  } catch {
+    // cwd need not exist yet in unit tests; trust the literal path.
+  }
+  for (const dir of dirs) {
+    const prior = projects[dir]
+    projects[dir] = {
+      ...(prior && typeof prior === "object" && !Array.isArray(prior)
+        ? (prior as Record<string, unknown>)
+        : {}),
+      hasTrustDialogAccepted: true,
+      hasCompletedProjectOnboarding: true,
+    }
+  }
+  config.projects = projects
+  try {
+    mkdirSync(dirname(configFile), { recursive: true })
+    writeFileSync(configFile, JSON.stringify(config, null, 2))
+  } catch {
+    // Best effort: fall back to the PTY trust-prompt answer.
+  }
 }
 
 // ── TUI output normalization ────────────────────────────────────────────────
@@ -510,6 +571,7 @@ export async function startCloudSession(
   const runner = opts.runner ?? defaultCloudCliRunner()
   const env = cloudChildEnv(opts.env ?? process.env)
   if (!opts.skipPreflight) await preflightAuth(runner, { cwd: opts.cwd, env })
+  trustClaudeFolder(opts.cwd, env)
 
   const pty = runner.runPty("claude", ["--cloud", prompt], {
     cwd: opts.cwd,
@@ -555,6 +617,7 @@ export async function sendPrompt(
   const runner = opts.runner ?? defaultCloudCliRunner()
   const env = cloudChildEnv(opts.env ?? process.env)
   if (!opts.skipPreflight) await preflightAuth(runner, { cwd: opts.cwd, env })
+  trustClaudeFolder(opts.cwd, env)
 
   const result = await runner.run(
     "claude",

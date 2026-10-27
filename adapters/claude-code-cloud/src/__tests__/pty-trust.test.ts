@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
   defaultCloudCliRunner,
@@ -112,6 +115,44 @@ describe("startCloudSession trust prompt", () => {
       url: "https://claude.ai/code/session_01XyzAbC",
       title: "fix the flaky test",
     })
+  })
+
+  it("pre-trusts the cwd so a PTY that would show the trust dialog can start", async () => {
+    const home = mkdtempSync(join(tmpdir(), "claude-cloud-trust-"))
+    const cwd = mkdtempSync(join(tmpdir(), "claude-cloud-cwd-"))
+    const configFile = join(home, ".claude.json")
+    try {
+      const { spawn } = fakePty({
+        onAttach: api => {
+          const config = JSON.parse(readFileSync(configFile, "utf8")) as {
+            projects?: Record<string, { hasTrustDialogAccepted?: boolean }>
+          }
+          if (!config.projects?.[cwd]?.hasTrustDialogAccepted) {
+            // What a live clean runner does: render the dialog and ignore
+            // input until the human answers. On main this stalls to timeout.
+            api.emit(TRUST_PROMPT)
+            return
+          }
+          api.emit(CREATED_ESCAPED)
+          api.emit("\n")
+          api.emit(RESUME_ESCAPED)
+          api.exit(0)
+        },
+      })
+      const runner = defaultCloudCliRunner({ spawnPty: spawn })
+      const started = await startCloudSession("fix the flaky test", {
+        runner,
+        cwd,
+        env: { HOME: home, PATH: process.env.PATH },
+        skipPreflight: true,
+        timeoutMs: 250,
+      })
+
+      expect(started.sessionId).toBe("session_01XyzAbC")
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(cwd, { recursive: true, force: true })
+    }
   })
 
   it("parses escaped Created cloud session / --teleport lines", () => {

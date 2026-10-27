@@ -512,6 +512,80 @@ describe("agentproto sessions wait — idle short-circuit (exit 5)", () => {
     expect(waitUrl).toContain("/sessions/sess_1/wait")
   })
 
+  it("replays a turn-end that fired before the wait started when --since 0 is passed", async () => {
+    httpGetJson
+      .mockResolvedValueOnce({
+        id: "sess_1",
+        status: "running",
+        busy: false,
+        awaitingInput: false,
+        turnsCompleted: 1,
+        lastTurnReason: "error",
+        lastTurnErrorMessage: "vendor refused the session",
+      })
+      .mockResolvedValueOnce({
+        event: "turn-end",
+        sessionId: "sess_1",
+        status: "running",
+        reason: "error",
+        error: "vendor refused the session",
+      })
+
+    const code = await runSessions([
+      "wait",
+      "sess_1",
+      "--until",
+      "turn-end",
+      "--since",
+      "0",
+      "--json",
+    ])
+
+    expect(code).toBe(4)
+    expect(httpGetJson).toHaveBeenCalledTimes(2)
+    const waitUrl = (httpGetJson.mock.calls[1] as [string])[0]
+    expect(waitUrl).toContain("/sessions/sess_1/wait")
+    expect(waitUrl).toContain("since=0")
+    const parsed = JSON.parse(stdoutChunks.join(""))
+    expect(parsed).toMatchObject({
+      event: "turn-end",
+      reason: "error",
+      error: "vendor refused the session",
+    })
+    expect(stderrChunks.join("")).toContain("ended its turn with reason 'error'")
+  })
+
+  it("idle JSON carries the last turn reason and error for diagnostics", async () => {
+    httpGetJson.mockResolvedValueOnce({
+      id: "sess_1",
+      status: "running",
+      busy: false,
+      awaitingInput: false,
+      turnsCompleted: 2,
+      lastTurnReason: "error",
+      lastTurnErrorMessage: "boom",
+    })
+
+    const code = await runSessions(["wait", "sess_1", "--until", "turn-end", "--json"])
+
+    expect(code).toBe(5)
+    const parsed = JSON.parse(stdoutChunks.join(""))
+    expect(parsed).toMatchObject({
+      idle: true,
+      turnsCompleted: 2,
+      reason: "error",
+      error: "boom",
+    })
+  })
+
+  it("rejects a non-numeric --since before touching the daemon", async () => {
+    const code = await runSessions(["wait", "sess_1", "--since", "latest"])
+
+    expect(code).toBe(2)
+    expect(discoverDaemon).not.toHaveBeenCalled()
+    expect(stderrChunks.join("")).toContain('invalid --since "latest"')
+  })
+
   it("does not print the up-front 'waiting up to' budget-echo line — nothing is being waited on", async () => {
     httpGetJson.mockResolvedValueOnce({
       id: "sess_1",
