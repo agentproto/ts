@@ -61,7 +61,7 @@ import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
 import type { ComputerStatus, PortPublish } from "@agentproto/computer-api"
 
-/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
+/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 export const DEFAULT_PORT = 18790
 const DEFAULT_WORKSPACE = "/home/user"
 /** Tenant every computer is created under when config doesn't name one. */

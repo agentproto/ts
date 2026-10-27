@@ -1,17 +1,19 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
+const entry = {
+  index: "src/index.ts",
+  types: "src/types.ts",
+}
+
 export default createTsupConfig({
   banner: `/**
- * @agentproto/harness v0.1.0-alpha
- * Typed one-call agent-session presets over the agentproto daemon.
+ * @agentproto/harness v0.6.0 (deprecated shim)
+ * Re-exports @agentproto/session-presets unchanged.
  */`,
-  entry: {
-    index: "src/index.ts",
-    types: "src/types.ts",
-  },
+  entry,
   format: ["esm"],
   splitting: true,
-  dts: true,
-  external: ["@modelcontextprotocol/sdk", "zod"],
+  dts: { entry },
+  external: ["@agentproto/session-presets", "@agentproto/session-presets/*"],
   noExternal: [],
 })

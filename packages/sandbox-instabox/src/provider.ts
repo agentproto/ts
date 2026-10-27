@@ -57,7 +57,7 @@ import {
   type InstaboxMachine,
 } from "./api.js"
 
-/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
+/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 const DEFAULT_PORT = 18790
 /** InstaBox's Debian 13 image boots with user home under /data (`HOME` is
  *  `/data/home`; `/data` itself is root-owned, so the daemon workspace is

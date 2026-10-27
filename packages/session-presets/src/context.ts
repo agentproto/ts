@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — coding context types + rendering.
+ * @agentproto/session-presets — coding context types + rendering.
  *
  * Extract of the coder preset's `CoderContext` shape and its prompt renderer,
  * so both the harness and the supervisor can reference them without a circular

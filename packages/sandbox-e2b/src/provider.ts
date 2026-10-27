@@ -50,7 +50,7 @@ import {
  *  `templates/workstation/versions.json` via scripts/sync-templates.mjs). */
 export { DEFAULT_SIZE, DEFAULT_TEMPLATE, SIZES, TEMPLATES, type WorkstationSize }
 
-/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/harness`). */
+/** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 const DEFAULT_PORT = 18790
 /**
  * Default sandbox LIFETIME. e2b's own default is 5 minutes (`SandboxOpts.

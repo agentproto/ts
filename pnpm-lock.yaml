@@ -2758,6 +2758,10 @@ importers:
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
   packages/harness:
+    dependencies:
+      '@agentproto/session-presets':
+        specifier: workspace:*
+        version: link:../session-presets
     devDependencies:
       '@agentproto/tooling':
         specifier: workspace:*
@@ -4444,6 +4448,30 @@ importers:
         specifier: '>=3.2.6 <4'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
 
+  packages/session-presets:
+    devDependencies:
+      '@agentproto/tooling':
+        specifier: workspace:*
+        version: link:../tooling
+      '@modelcontextprotocol/sdk':
+        specifier: '>=1.31.0 <2'
+        version: 1.32.1(zod@4.6.7)
+      '@types/node':
+        specifier: ^25.9.9
+        version: 25.9.9
+      tsup:
+        specifier: ^8.5.1
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: '>=3.2.6 <4'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@25.9.9)(happy-dom@21.0.4(bufferutil@4.1.0))(jiti@2.7.0)(jsdom@29.1.1)(tsx@4.23.15)(yaml@2.9.1)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
   packages/skill:
     dependencies:
       '@agentproto/doctype':
@@ -5026,9 +5054,9 @@ importers:
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
-      '@agentproto/harness':
+      '@agentproto/session-presets':
         specifier: workspace:*
-        version: link:../harness
+        version: link:../session-presets
       '@agentproto/tool':
         specifier: workspace:*
         version: link:../tool

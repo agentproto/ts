@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — coder preset (WP3, STUB).
+ * @agentproto/session-presets — coder preset (WP3, STUB).
  *
  * Spawns a coding agent: `claude-code` (default) or `hermes` routed to a coding
  * model via OpenRouter. Sets cwd to the workspace and injects a coding context

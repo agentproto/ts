@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — researcher preset (WP4).
+ * @agentproto/session-presets — researcher preset (WP4).
  *
  * Spawns a big-context research agent: `hermes` routed to GLM-5.2 via
  * OpenRouter. Mounts a web-search MCP server and injects a structured-output

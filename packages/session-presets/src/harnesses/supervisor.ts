@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — supervisor preset (WP5).
+ * @agentproto/session-presets — supervisor preset (WP5).
  *
  * Spawns a `claude-code` opus orchestrator with `orchestrator: true` so it can
  * spawn + supervise its OWN sub-agents via the daemon's scoped sub-gateway.

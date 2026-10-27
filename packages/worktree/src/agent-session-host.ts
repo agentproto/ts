@@ -7,7 +7,7 @@ import {
   type StartAgentArgs,
   type TurnEvent,
   type TurnResult,
-} from "@agentproto/harness"
+} from "@agentproto/session-presets"
 import type { AgentSessionHost } from "@agentproto/workflow-runtime"
 
 /** `session_monitor`'s max accepted long-poll window (`orchestration-tools.ts`). */

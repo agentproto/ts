@@ -1,5 +1,5 @@
 /**
- * @agentproto/harness — transport client (WP1).
+ * @agentproto/session-presets — transport client (WP1).
  *
  * The single place that touches the MCP SDK + JSON-payload parsing. Connects to
  * the daemon's `/mcp` endpoint over `StreamableHTTPClientTransport` and exposes

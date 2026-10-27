@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/harness",
   "version": "0.6.0",
-  "description": "@agentproto/harness — typed, one-call agent-session presets (coder, researcher, supervisor) over the agentproto daemon's start/prompt/output session tools. A client-side recipe layer; adds no new daemon surface.",
+  "description": "DEPRECATED: moved to @agentproto/session-presets. The name @agentproto/harness will be reused by the AIP-45 harness runner in its next major.",
   "keywords": [
     "agentproto",
     "harness",
@@ -57,6 +57,9 @@
   "peerDependencies": {
     "@modelcontextprotocol/sdk": ">=1.0.0",
     "zod": ">=3.0.0"
+  },
+  "dependencies": {
+    "@agentproto/session-presets": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

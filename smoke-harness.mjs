@@ -1,4 +1,4 @@
-import { connectHarness, createCoderHarness, createResearcherHarness } from './packages/harness/dist/index.mjs'
+import { connectHarness, createCoderHarness, createResearcherHarness } from './packages/session-presets/dist/index.mjs'
 
 async function main() {
   console.log('Connecting to daemon...')

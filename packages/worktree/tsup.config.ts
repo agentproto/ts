@@ -16,7 +16,7 @@ export default createTsupConfig({
   dts: { entry: { index: "src/index.ts", "tools/index": "src/tools/index.ts", "provider/index": "src/provider/index.ts" } },
   external: [
     "@agentproto/driver",
-    "@agentproto/harness",
+    "@agentproto/session-presets",
     "@agentproto/tool",
     "@agentproto/workflow-runtime",
     "@modelcontextprotocol/sdk",
