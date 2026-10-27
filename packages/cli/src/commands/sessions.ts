@@ -2999,17 +2999,26 @@ async function runWaitSession(opts: {
       desc.status === "exited" || desc.status === "killed" || desc.status === "error"
     const kind = (desc as { kind?: string }).kind
     const turnCapable = kind === undefined ? true : kind === "agent-cli"
+    const active =
+      desc.busy === true ||
+      desc.awaitingInput === true ||
+      Boolean(desc.queuedPrompts) ||
+      desc.status === "starting"
+    // For turn-capable sessions, a snapshot with turnsCompleted==0 and nothing
+    // in-flight may be waiting for the first turn (prompted spawn race). For
+    // non-turn-capable sessions (terminal/external/...), they never produce
+    // turn-end events, so if nothing is active they are idle for --until turn-end.
     const idle =
-      desc.busy !== true &&
-      desc.awaitingInput !== true &&
-      !desc.queuedPrompts &&
-      desc.status !== "starting" &&
-      (terminalStatus || (turnCapable && (desc.turnsCompleted ?? 0) > 0))
+      !active &&
+      (terminalStatus ||
+        (turnCapable && (desc.turnsCompleted ?? 0) > 0) ||
+        !turnCapable)
     // A caller-supplied cursor moves the "already finished?" decision to the
     // daemon (`monitorSessionWait`), which can distinguish a turn-end after
     // that cursor from stale history — but a terminal/exited session has
     // no turn to replay for `--until turn-end`, so keep that short-circuit
-    // cursor-independent.
+    // cursor-independent (and also avoid skipping terminal short-circuit when
+    // --since is passed).
     if (idle && (since === undefined || terminalStatus)) {
       return emitWaitIdle(json, {
         sessionId: desc.id,
