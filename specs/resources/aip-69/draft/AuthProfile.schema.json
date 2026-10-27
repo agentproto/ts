@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://agentproto.sh/schemas/aip-69/AuthProfile.schema.json",
-  "title": "AIP-69 AuthProfile, authprofile/v1",
+  "title": "AIP-69 AuthProfile, auth-profile/v1",
   "description": "A named reference to the credential a session bills or authenticates through. Never contains credential material. Host-specific keys MUST be prefixed x-.",
   "type": "object",
   "required": [
