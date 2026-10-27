@@ -351,6 +351,7 @@ describe("cron_list transformer migration", () => {
         "lastOk",
         "lastRunAt",
         "nextRunAt",
+        "notify",
         "recurring",
         "schedule",
       ])
