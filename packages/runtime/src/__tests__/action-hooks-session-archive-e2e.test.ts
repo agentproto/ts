@@ -25,6 +25,7 @@ import {
   sessionFactsOf,
   SESSION_ARCHIVE_ACTION_ID,
   wireSessionCompletion,
+  type ActionHandler,
   type ActionRegistry,
   type ReactionReceiptStore,
 } from "../action-hooks/index.js"
@@ -104,19 +105,27 @@ const ROUTINE_LINES = [
   "  action: session:archive",
 ]
 
-function writeRoutine(ws: string, lines: string[]): void {
-  const dir = join(ws, ".routines", ROUTINE_ID)
+function writeRoutine(ws: string, lines: string[], id: string = ROUTINE_ID): void {
+  const dir = join(ws, ".routines", id)
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, "ROUTINE.md"), `---\n${lines.join("\n")}\n---\n`)
 }
 
-function spawn(registry: SessionsRegistry, parentSessionId?: string) {
+/** Retirement events with cause `archived` for one session. A session closed with an outcome is retired first (cause `killed`), so only the archive-time event is counted. */
+function archivedRetirements(retired: { mock: { calls: unknown[][] } }, sessionId: string) {
+  return retired.mock.calls
+    .map(call => call[0] as { sessionId: string; cause: string })
+    .filter(event => event.sessionId === sessionId && event.cause === "archived")
+}
+
+function spawn(registry: SessionsRegistry, parentSessionId?: string, label?: string) {
   return registry.spawnAgent({
     workspaceSlug: "default",
     cwd: "/tmp",
     agentSession: liveAgentSession(`live-${Math.random()}`),
     adapterSlug: "claude-code",
     ...(parentSessionId ? { parentSessionId } : {}),
+    ...(label ? { label } : {}),
   })
 }
 
@@ -135,8 +144,18 @@ function makeContext() {
     sessionEvents: bus,
   })
   wireSessionCompletion({ bus, getSession: id => registry.get(id) })
+  const notes: string[] = []
+  const noteHandler: ActionHandler = {
+    actionId: "demo:note",
+    idempotent: true,
+    run: async input => {
+      notes.push(input.sessionId)
+      return { ok: true, outcomeRef: "noted" }
+    },
+  }
   const actionRegistry: ActionRegistry = createActionRegistry([
     createSessionArchiveAction({ sessions: registry, log: () => {} }),
+    noteHandler,
   ])
   const dispatchTool = async () => ({ content: [{ text: "ok" }] })
   let onReconciled: () => void = () => {}
@@ -168,7 +187,7 @@ function makeContext() {
     }
     return { runner, wiring }
   }
-  return { ws, bus, registry, actionRegistry, registrar, openRunner }
+  return { ws, bus, registry, actionRegistry, registrar, openRunner, notes }
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
@@ -206,10 +225,10 @@ describe("session:archive event routine end to end", () => {
     await ctx.registrar.reconcile()
     runner.start()
     try {
-      const { child } = spawnParentAndChild(ctx.registry)
-      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       const retired = vi.fn()
       ctx.registry.onSessionRetired(retired)
+      const { child } = spawnParentAndChild(ctx.registry)
+      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       await waitFor(() =>
         store.rows().some(row => row.bindingId === `routine:${ROUTINE_ID}` && row.status === "done"),
       )
@@ -218,8 +237,7 @@ describe("session:archive event routine end to end", () => {
       expect(rows[0]?.outcomeRef).toBe("archived")
       expect(ctx.registry.get(child.id)?.archived).toBe(true)
       expect(archiveSpy).toHaveBeenCalledTimes(1)
-      expect(retired).toHaveBeenCalledTimes(1)
-      expect(retired.mock.calls[0]?.[0]).toMatchObject({ sessionId: child.id, cause: "archived" })
+      expect(archivedRetirements(retired, child.id)).toHaveLength(1)
     } finally {
       runner.stop()
       ctx.registry.shutdown()
@@ -239,10 +257,10 @@ describe("session:archive event routine end to end", () => {
     await ctx.registrar.reconcile()
     runner.start()
     try {
-      const { child } = spawnParentAndChild(ctx.registry)
-      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       const retired = vi.fn()
       ctx.registry.onSessionRetired(retired)
+      const { child } = spawnParentAndChild(ctx.registry)
+      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       await waitFor(() =>
         store.rows().some(row => row.bindingId === `routine:${ROUTINE_ID}` && row.status === "done"),
       )
@@ -259,7 +277,7 @@ describe("session:archive event routine end to end", () => {
       })
       await new Promise(resolve => setTimeout(resolve, 50))
       expect(archiveSpy).toHaveBeenCalledTimes(1)
-      expect(retired).toHaveBeenCalledTimes(1)
+      expect(archivedRetirements(retired, child.id)).toHaveLength(1)
       expect(store.rows().filter(entry => entry.bindingId === `routine:${ROUTINE_ID}`)).toHaveLength(1)
     } finally {
       runner.stop()
@@ -282,10 +300,17 @@ describe("session:archive event routine end to end", () => {
     try {
       const root = spawn(ctx.registry)
       ctx.registry.closeWithOutcome(root.id, { verdict: "done", source: "declared" })
-      await new Promise(resolve => setTimeout(resolve, 50))
+      // Positive control instead of a sleep: a child completes after the root,
+      // so its settled receipt proves the root completion was already handled.
+      const { child } = spawnParentAndChild(ctx.registry)
+      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
+      await waitFor(() =>
+        store.rows().some(row => row.sessionId === child.id && row.status === "done"),
+      )
       expect(ctx.registry.get(root.id)?.archived).not.toBe(true)
-      expect(archiveSpy).not.toHaveBeenCalled()
-      expect(store.rows()).toHaveLength(0)
+      expect(archiveSpy).toHaveBeenCalledTimes(1)
+      expect(archiveSpy).toHaveBeenCalledWith(child.id)
+      expect(store.rows().some(row => row.sessionId === root.id)).toBe(false)
     } finally {
       runner.stop()
       ctx.registry.shutdown()
@@ -329,12 +354,12 @@ describe("session:archive event routine end to end", () => {
     ctx.openRunner(store1)
     await ctx.registrar.reconcile()
     try {
-      const { child } = spawnParentAndChild(ctx.registry)
-      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       const retired = vi.fn()
       ctx.registry.onSessionRetired(retired)
+      const { child } = spawnParentAndChild(ctx.registry)
+      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       ctx.registry.archiveSession(child.id)
-      expect(retired).toHaveBeenCalledTimes(1)
+      expect(archivedRetirements(retired, child.id)).toHaveLength(1)
 
       const pending = await store1.insertPending(
         receiptInput(child.id, `exit:${ctx.registry.get(child.id)?.endedAt}`),
@@ -350,7 +375,7 @@ describe("session:archive event routine end to end", () => {
       const row = store2.get(pending.receiptKey)
       expect(row?.status).toBe("done")
       expect(row?.outcomeRef).toBe("skipped:already_archived")
-      expect(retired).toHaveBeenCalledTimes(1)
+      expect(archivedRetirements(retired, child.id)).toHaveLength(1)
     } finally {
       ctx.registry.shutdown()
     }
@@ -364,10 +389,10 @@ describe("session:archive event routine end to end", () => {
     ctx.openRunner(store1)
     await ctx.registrar.reconcile()
     try {
-      const { child } = spawnParentAndChild(ctx.registry)
-      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
       const retired = vi.fn()
       ctx.registry.onSessionRetired(retired)
+      const { child } = spawnParentAndChild(ctx.registry)
+      ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
 
       const pending = await store1.insertPending(
         receiptInput(child.id, `exit:${ctx.registry.get(child.id)?.endedAt}`),
@@ -384,7 +409,7 @@ describe("session:archive event routine end to end", () => {
       expect(row?.status).toBe("done")
       expect(row?.outcomeRef).toBe("archived")
       expect(ctx.registry.get(child.id)?.archived).toBe(true)
-      expect(retired).toHaveBeenCalledTimes(1)
+      expect(archivedRetirements(retired, child.id)).toHaveLength(1)
     } finally {
       ctx.registry.shutdown()
     }
@@ -398,6 +423,24 @@ describe("session:archive event routine end to end", () => {
       log: () => {},
     })
     writeRoutine(ctx.ws, ROUTINE_LINES)
+    // A second routine stays enabled as a positive control: its settled
+    // receipt proves the earlier completion was already handled.
+    writeRoutine(
+      ctx.ws,
+      [
+        "schema: routine/v1",
+        "id: sentinel",
+        "description: Control routine that notes a labelled session.",
+        "schedule:",
+        "  kind: event",
+        "  on: agentproto:session-completed",
+        "  filter:",
+        "    session.label: sentinel-label",
+        "target:",
+        "  action: demo:note",
+      ],
+      "sentinel",
+    )
     const { runner, wiring } = ctx.openRunner(store)
     await ctx.registrar.reconcile()
     expect(wiring.current().active).toContain(`routine:${ROUTINE_ID}`)
@@ -406,11 +449,14 @@ describe("session:archive event routine end to end", () => {
       writeRoutine(ctx.ws, [...ROUTINE_LINES, "enabled: false"])
       await ctx.registrar.reconcile()
       expect(wiring.current().active).not.toContain(`routine:${ROUTINE_ID}`)
+      expect(wiring.current().active).toContain("routine:sentinel")
       const { child } = spawnParentAndChild(ctx.registry)
       ctx.registry.closeWithOutcome(child.id, { verdict: "done", source: "declared" })
-      await new Promise(resolve => setTimeout(resolve, 50))
+      const control = spawn(ctx.registry, undefined, "sentinel-label")
+      ctx.registry.closeWithOutcome(control.id, { verdict: "done", source: "declared" })
+      await waitFor(() => ctx.notes.includes(control.id))
       expect(ctx.registry.get(child.id)?.archived).not.toBe(true)
-      expect(store.rows()).toHaveLength(0)
+      expect(store.rows().some(row => row.bindingId === `routine:${ROUTINE_ID}`)).toBe(false)
     } finally {
       runner.stop()
       ctx.registry.shutdown()

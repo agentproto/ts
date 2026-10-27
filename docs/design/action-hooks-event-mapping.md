@@ -251,7 +251,10 @@ already archived sessions stay archived and `session_unarchive` restores one.
 Limits: it archives as soon as the completion is established, with no delay or
 retention barrier; archiving hides the row from the default list and does not
 delete bytes, so on-disk retention is separate; a pinned or keepAlive session is
-never archived by it.
+never archived by it. A session that already has a successor (`continuedTo`) is
+archived too. Archiving a session that was closed with an outcome emits a
+retirement event with cause `archived` after the earlier `killed` one, as any
+archive of a closed session does.
 
 The `reconcile()` result and the `routine_reconcile` tool output carry
 `reactions.active` and `reactions.refused` (each refusal has `bindingId` and

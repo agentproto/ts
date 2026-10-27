@@ -150,6 +150,39 @@ describe("session:archive action", () => {
     expect(log.mock.calls[0]?.[0]).toContain("s1")
   })
 
+  it("treats a revival between the check and the primitive as skipped:alive, not a retryable failure", async () => {
+    const fake = fakeSessions([descriptor("s1")])
+    fake.archiveSession.mockImplementation((id: string) => {
+      const row = fake.rows.get(id)
+      if (row) row.status = "running"
+      throw new Error(`archiveSession: session "${id}" is still running`)
+    })
+    const log = vi.fn()
+    const handler = createSessionArchiveAction({ sessions: fake.sessions, log })
+    await expect(handler.run(input("s1"))).resolves.toEqual({ ok: true, outcomeRef: "skipped:alive" })
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it("treats a concurrent archive between the check and the primitive as skipped:already_archived", async () => {
+    const fake = fakeSessions([descriptor("s1")])
+    fake.archiveSession.mockImplementation((id: string) => {
+      const row = fake.rows.get(id)
+      if (row) row.archived = true
+      throw new Error("archiveSession: lost a race")
+    })
+    const handler = createSessionArchiveAction({ sessions: fake.sessions, log: () => {} })
+    await expect(handler.run(input("s1"))).resolves.toEqual({
+      ok: true,
+      outcomeRef: "skipped:already_archived",
+    })
+  })
+
+  it("archives a session that has a successor, because hiding the predecessor is the intent", async () => {
+    const fake = fakeSessions([descriptor("s1", { continuedTo: "s2" })])
+    const handler = createSessionArchiveAction({ sessions: fake.sessions, log: () => {} })
+    await expect(handler.run(input("s1"))).resolves.toEqual({ ok: true, outcomeRef: "archived" })
+  })
+
   it("ignores authored inputs", async () => {
     const fake = fakeSessions([descriptor("s1")])
     const handler = createSessionArchiveAction({ sessions: fake.sessions, log: () => {} })

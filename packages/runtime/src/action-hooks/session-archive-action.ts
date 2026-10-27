@@ -7,10 +7,21 @@
  * occurrence, so it knows which session just completed. The action takes no
  * inputs: any `inputs` authored on the binding are ignored.
  *
- * The handler reads the durable `archived` flag first, so a replay after a
- * crash between the archive and the `done` receipt is a no-op and never
- * re-fires the retirement listeners. The archive primitive itself is
- * unchanged; this module is the receipt dedupe the design note asked for.
+ * The handler reads the persisted `archived` flag first, so a replay after a
+ * crash between the archive and the `done` receipt is normally a no-op and does
+ * not fire the retirement listeners a second time. The flag is persisted with
+ * the descriptor on a debounce (`PERSIST_DEBOUNCE_MS`, 1.5 seconds): a crash
+ * inside that window can lose the flag while the `running` receipt survives,
+ * and then the replay archives again and the listeners see one more `archived`
+ * retirement. Those listeners converge (they re-point or remove wiring), so the
+ * extra event is harmless.
+ *
+ * Two behaviors worth knowing. A session closed with an outcome is already
+ * retired (cause `killed`) when its completion fires, so archiving it emits a
+ * second retirement event, with cause `archived`; that is the same as any other
+ * archive of a closed session. And a completed session that has a successor
+ * (`continuedTo`) is archived too: hiding the predecessor is the intent. The
+ * archive primitive itself is unchanged.
  */
 
 import type { SessionsRegistry } from "../sessions.js"
@@ -67,6 +78,16 @@ export function createSessionArchiveAction(opts: SessionArchiveActionOptions): A
         opts.sessions.archiveSession(input.sessionId)
         return { ok: true, outcomeRef: "archived" }
       } catch (err) {
+        // The row may have been revived or archived by someone else between the
+        // checks above and the primitive. Those are settled states, not
+        // transient failures: do not burn the retry budget on them.
+        const after = opts.sessions.get(input.sessionId)
+        if (after?.archived === true) {
+          return { ok: true, outcomeRef: "skipped:already_archived" }
+        }
+        if (after !== undefined && (after.status === "running" || after.status === "starting")) {
+          return { ok: true, outcomeRef: "skipped:alive" }
+        }
         const message = messageOf(err)
         const clipped = message.length > ERROR_TEXT_MAX ? message.slice(0, ERROR_TEXT_MAX) : message
         log(`${LOG_PREFIX} ${input.sessionId}: ${clipped}`)
