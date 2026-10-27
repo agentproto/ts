@@ -349,12 +349,15 @@ export function defaultCloudCliRunner(
         }
         const answerTrustPrompt = () => {
           const screen = normalizePtyOutput(trustScreen)
-          const highlighted =
-            screen.split("\n").find(line => line.includes("❯")) ?? ""
+          // Real captures collapse both options onto one line, so only what
+          // follows the LAST highlight marker says which option is selected.
           // Down moves the DEFAULT "No, exit" highlight to "Yes"; when the
           // dialog re-renders with Yes already highlighted, Enter alone is
           // the answer (sending Down again would wrap back to No).
-          const yesSelected = TRUST_PROMPT_RE.test(highlighted)
+          const highlightAt = screen.lastIndexOf("❯")
+          const highlighted =
+            highlightAt === -1 ? "" : screen.slice(highlightAt)
+          const yesSelected = /❯\s*Yes,\s*I\s*trust/i.test(highlighted)
           trustScreen = ""
           trustAnswers += 1
           if (trustAnswers < TRUST_MAX_ANSWERS) {

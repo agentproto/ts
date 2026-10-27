@@ -35,6 +35,17 @@ const TRUST_PROMPT_YES =
   "\x1b[2GNo,\x1b[8Gexit\r\r\n" +
   "\x1b[2G\x1b[94m❯\x1b[4GYes,\x1b[9GI\x1b[11Gtrust\x1b[17Gthis\x1b[22Gfolder\x1b[39m"
 
+// Real captures collapse both options onto one normalized line:
+// `❯ No, exit Yes, I trust this folder` and
+// `No, exit ❯ Yes, I trust this folder`. The decision must follow the LAST
+// highlight marker, not any "Yes, I trust this folder" on the line.
+const TRUST_ONE_LINE_NO_SELECTED =
+  "\x1b[2G\x1b[94m❯\x1b[4GNo,\x1b[8Gexit\x1b[11GYes,\x1b[16GI\x1b[18Gtrust" +
+  "\x1b[23Gthis\x1b[28Gfolder\x1b[39m"
+const TRUST_ONE_LINE_YES_SELECTED =
+  "\x1b[2GNo,\x1b[8Gexit\x1b[11G\x1b[94m❯\x1b[4GYes,\x1b[9GI\x1b[11Gtrust" +
+  "\x1b[17Gthis\x1b[22Gfolder\x1b[39m"
+
 const DOWN_ENTER = "\x1b[B\r"
 
 const CREATED_ESCAPED =
@@ -181,6 +192,54 @@ describe("startCloudSession trust prompt", () => {
       cwd: "/repo",
       skipPreflight: true,
       timeoutMs: 5_000,
+    })
+
+    expect(writes).toEqual(["\r"])
+    expect(started.sessionId).toBe("session_01XyzAbC")
+  })
+
+  it("sends Down+Enter when No is highlighted on a real one-line capture", async () => {
+    const { spawn, writes } = fakePty({
+      onAttach: api => api.emit(TRUST_ONE_LINE_NO_SELECTED),
+      onWrite: (data, api) => {
+        if (data === DOWN_ENTER) {
+          api.emit(CREATED_ESCAPED)
+          api.emit("\n")
+          api.emit(RESUME_ESCAPED)
+          api.exit(0)
+        }
+      },
+    })
+    const runner = defaultCloudCliRunner({ spawnPty: spawn })
+    const started = await startCloudSession("fix the flaky test", {
+      runner,
+      cwd: "/repo",
+      skipPreflight: true,
+      timeoutMs: 2_000,
+    })
+
+    expect(writes).toEqual([DOWN_ENTER])
+    expect(started.sessionId).toBe("session_01XyzAbC")
+  })
+
+  it("sends Enter only when Yes is highlighted on a real one-line capture", async () => {
+    const { spawn, writes } = fakePty({
+      onAttach: api => api.emit(TRUST_ONE_LINE_YES_SELECTED),
+      onWrite: (data, api) => {
+        if (data === "\r") {
+          api.emit(CREATED_ESCAPED)
+          api.emit("\n")
+          api.emit(RESUME_ESCAPED)
+          api.exit(0)
+        }
+      },
+    })
+    const runner = defaultCloudCliRunner({ spawnPty: spawn })
+    const started = await startCloudSession("fix the flaky test", {
+      runner,
+      cwd: "/repo",
+      skipPreflight: true,
+      timeoutMs: 2_000,
     })
 
     expect(writes).toEqual(["\r"])
