@@ -83,7 +83,7 @@ describe("agent-on binding scope", () => {
     )
     expect(binding.ok).toBe(true)
     if (!binding.ok) return
-    await expect(binding.binding.shouldHandle(completed("s1"))).resolves.toBe(true)
+    await expect(binding.binding.shouldHandle?.(completed("s1"))).resolves.toBe(true)
   })
 
   it("does not handle another agent id, a missing agent id, or unreadable facts", async () => {
@@ -98,10 +98,10 @@ describe("agent-on binding scope", () => {
     )
     expect(binding.ok).toBe(true)
     if (!binding.ok) return
-    await expect(binding.binding.shouldHandle(completed("other"))).resolves.toBe(false)
-    await expect(binding.binding.shouldHandle(completed("none"))).resolves.toBe(false)
-    await expect(binding.binding.shouldHandle(completed("missing"))).resolves.toBe(false)
-    await expect(binding.binding.shouldHandle(completed("missing"))).resolves.toBe(false)
+    await expect(binding.binding.shouldHandle?.(completed("other"))).resolves.toBe(false)
+    await expect(binding.binding.shouldHandle?.(completed("none"))).resolves.toBe(false)
+    await expect(binding.binding.shouldHandle?.(completed("missing"))).resolves.toBe(false)
+    await expect(binding.binding.shouldHandle?.(completed("missing"))).resolves.toBe(false)
     expect(log).toHaveBeenCalledTimes(1)
     expect(log.mock.calls[0]?.[0]).toContain("cannot read the session facts, not firing")
   })
@@ -120,7 +120,7 @@ describe("agent-on binding scope", () => {
     )
     expect(binding.ok).toBe(true)
     if (!binding.ok) return
-    await expect(binding.binding.shouldHandle(completed("s1"))).resolves.toBe(true)
+    await expect(binding.binding.shouldHandle?.(completed("s1"))).resolves.toBe(true)
   })
 })
 
