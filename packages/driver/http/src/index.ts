@@ -16,6 +16,9 @@ import {
   type DriverHandle,
 } from "@agentproto/driver"
 
+/** AIP-70 registry spec id for this package (`http/v1`, AIP-31). */
+export const SPEC_NAME = "http/v1" as const
+
 export interface HttpDriverDefinition extends Omit<DriverDefinition, "kind" | "execute"> {
   kind?: "http"
   /** API base URL. All implements[].metadata.http.endpoint paths relative to this. */

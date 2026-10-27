@@ -15,6 +15,9 @@
  * Recommended scaffold for new AIPs (referenced from AIP-1).
  */
 
+/** AIP-70 registry spec id for this package (`doctype/v1`, AIP-56). */
+export const SPEC_NAME = "doctype/v1" as const
+
 /**
  * Default shape every AIP definition is assumed to satisfy when no
  * custom `readIdentity` / `readDescription` extractors are passed.

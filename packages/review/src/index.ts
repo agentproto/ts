@@ -15,6 +15,9 @@
  * and the ledger.
  */
 
+/** AIP-70 registry spec id for this package (`review/v1`, AIP-62). */
+export const SPEC_NAME = "review/v1" as const
+
 export {
   parseReviewManifest,
   resolveBinding,

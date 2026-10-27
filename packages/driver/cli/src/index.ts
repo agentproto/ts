@@ -25,6 +25,9 @@ import {
   type DriverHandle,
 } from "@agentproto/driver"
 
+/** AIP-70 registry spec id for this package (`cli/v1`, AIP-29). */
+export const SPEC_NAME = "cli/v1" as const
+
 export interface CliDriverDefinition
   extends Omit<DriverDefinition, "kind" | "execute"> {
   kind?: "cli"

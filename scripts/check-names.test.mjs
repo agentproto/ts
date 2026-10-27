@@ -78,6 +78,16 @@ test("a wrong SPEC_NAME fails with ts:aip-<n>:spec-name and a file:line", (t) =>
   assert.match(result.deviations.get("ts:aip-38:spec-name").where, /packages\/policy\/src\/index\.ts:1$/)
 })
 
+test("a registered package with no SPEC_NAME/SPEC_ID fails with ts:aip-<n>:spec-name-missing", (t) => {
+  const { root, namesPath } = makeFixture(t, {
+    aips: [{ ...POLICY_ENTRY, define: undefined }],
+    packages: { policy: { name: "@agentproto/policy", source: "export function definePolicy() {}\n" } },
+  })
+  const result = checkNames({ root, namesPath })
+  assert.deepEqual(result.fresh, ["ts:aip-38:spec-name-missing"])
+  assert.match(result.deviations.get("ts:aip-38:spec-name-missing").message, /@agentproto\/policy/)
+})
+
 test("a missing define export fails with ts:aip-<n>:define", (t) => {
   const { root, namesPath } = makeFixture(t, {
     aips: [POLICY_ENTRY],
