@@ -44,8 +44,10 @@ export type { SetupField, MakeListToolOpts, MakeSetupToolOpts } from "./mcp-tool
 
 // discovery (shared node_modules walker)
 export {
+  adapterSlugFromDirEntry,
   collectAgentprotoNamespaceRoots,
   discoverAdapterPackages,
+  isHarnessPackageName,
 } from "./discover.js"
 export type { DiscoveredAdapter } from "./discover.js"
 

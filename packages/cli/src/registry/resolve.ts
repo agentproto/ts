@@ -35,6 +35,7 @@ import {
   makeAdapterResolver,
   makeAdapterLister,
   makeSetupLedger,
+  adapterSlugFromDirEntry,
   collectAgentprotoNamespaceRoots,
   discoverCapabilities,
   type AdapterHandle,
@@ -715,16 +716,23 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
-  const packageName = `@agentproto/adapter-${slug}`
+  const adapterPackageName = `@agentproto/adapter-${slug}`
+  const harnessPackageName = `@agentproto/harness-${slug}`
   const camel = slugToCamel(slug)
   let mod: Record<string, unknown>
-  let resolvedPackageName = packageName
-  // Specifier re-importable a second time by `withResolvedProprietaryAdapter`
-  // below (it rewrites a `protocol: "proprietary"` handle's self-referencing
-  // `adapter` field) — the package name, same as the npm path always used.
-  const proprietaryRewriteSpecifier = packageName
+  // The package name actually loaded (AIP-70 canonical `harness-` spelling
+  // first, pre-rename `adapter-` spelling as fallback), reported on the
+  // resolved entry and used as the specifier `withResolvedProprietaryAdapter`
+  // below re-resolves a proprietary handle's self-referencing `adapter`
+  // field against.
+  let packageName = adapterPackageName
   try {
-    mod = await importFresh(packageName)
+    try {
+      mod = await importFresh(harnessPackageName)
+      packageName = harnessPackageName
+    } catch {
+      mod = await importFresh(adapterPackageName)
+    }
   } catch (primaryErr) {
     // npm/node_modules resolution missed — before the parent-package and
     // generic-ACP fallbacks below, check for a workspace-local build:
@@ -864,7 +872,7 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
 
   if (!candidate || typeof candidate !== "object" || !("name" in candidate)) {
     throw new Error(
-      `agentproto: adapter '${resolvedPackageName}' does not export an AgentCliHandle ` +
+      `agentproto: adapter '${packageName}' does not export an AgentCliHandle ` +
         `(looked for export '${camel}', 'default', or 'handle').`
     )
   }
@@ -872,9 +880,9 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
   const capabilitiesStrategy = mod[`${camel}Capabilities`] as CapabilityStrategy | undefined
   const resolved: ResolvedAdapter = {
     slug,
-    handle: withResolvedProprietaryAdapter(candidate, proprietaryRewriteSpecifier),
+    handle: withResolvedProprietaryAdapter(candidate, packageName),
     source: "npm",
-    packageName: resolvedPackageName,
+    packageName,
     ...(typeof capabilitiesStrategy === "function" ? { capabilitiesStrategy } : {}),
   }
   lastKnownGood.set(slug, { resolved, resolvedAt: Date.now() })
@@ -954,9 +962,12 @@ export async function listInstalledAdapters(opts?: {
     } catch {
       continue
     }
-    for (const entry of entries) {
-      if (!entry.startsWith("adapter-")) continue
-      const slug = entry.slice("adapter-".length)
+    // Canonical `harness-` spelling must win over `adapter-` for the same
+    // slug even when it sorts later, so scan harness- prefixed entries first.
+    const rank = (entry: string) => (entry.startsWith("harness-") ? 0 : 1)
+    for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
+      const slug = adapterSlugFromDirEntry(entry)
+      if (slug === null) continue
       if (seen.has(slug)) continue
       seen.add(slug)
       try {
@@ -972,7 +983,8 @@ export async function listInstalledAdapters(opts?: {
         // syntax error in dist, etc.) still warns individually.
         if (
           /Cannot find package|ERR_MODULE_NOT_FOUND/i.test(msg) &&
-          msg.includes(`@agentproto/adapter-${slug}`)
+          (msg.includes(`@agentproto/adapter-${slug}`) ||
+            msg.includes(`@agentproto/harness-${slug}`))
         ) {
           notImportable.push(slug)
         } else {
@@ -1204,9 +1216,12 @@ async function discoverExtraHandles(
   for (const root of roots) {
     let entries: string[] = []
     try { entries = await fs.readdir(root) } catch { continue }
-    for (const entry of entries) {
-      if (!entry.startsWith("adapter-")) continue
-      const slug = entry.slice("adapter-".length)
+    // Canonical `harness-` spelling must win over `adapter-` for the same
+    // slug even when it sorts later, so scan harness- prefixed entries first.
+    const rank = (entry: string) => (entry.startsWith("harness-") ? 0 : 1)
+    for (const entry of [...entries].sort((a, b) => rank(a) - rank(b))) {
+      const slug = adapterSlugFromDirEntry(entry)
+      if (slug === null) continue
       if (seen.has(slug)) continue
       seen.add(slug)
       try {

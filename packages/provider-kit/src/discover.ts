@@ -2,9 +2,21 @@
  * On-disk adapter discovery — the shared node_modules walker used by every
  * adapter family (agent-CLI, tunnel, …) so none of them reimplements it.
  *
- * Two naming conventions are supported so anyone can publish a provider:
- *   - first-party:  `@agentproto/adapter-<slug>`
- *   - third-party:  `@<scope>/agentproto-adapter-<slug>`
+ * Three naming conventions are supported so anyone can publish a provider
+ * (AIP-70 renamed "adapter" to "harness"; the driven binary is a harness, so
+ * under the `harness-` spelling both spellings are accepted additively until
+ * any package rename):
+ *   - first-party:  `@agentproto/adapter-<slug>` and `@agentproto/harness-<slug>`
+ *   - third-party:  `@<scope>/agentproto-adapter-<slug>` and
+ *                   `@<scope>/agentproto-harness-<slug>`
+ *
+ * Precedence on a slug collision:
+ *   1. first-party `@agentproto/...` beats any third-party scope (as before)
+ *   2. within the same tier, the canonical `harness-` spelling beats
+ *      `adapter-` — so `@agentproto/harness-dup` wins over
+ *      `@agentproto/adapter-dup`
+ * The bare `@agentproto/harness` package (no dash suffix) is NOT an adapter
+ * and is never matched.
  *
  * Discovery reads disk on every call and never throws on a bad/missing dir —
  * partial discovery beats failing a whole listing on one broken package.
@@ -17,10 +29,34 @@ import { dirname, resolve as resolvePath } from "node:path"
 
 /** An adapter package found on disk — not yet imported. */
 export interface DiscoveredAdapter {
-  /** lower-kebab slug (the part after `adapter-` / `agentproto-adapter-`). */
+  /**
+   * lower-kebab slug (the part after `adapter-` / `harness-` for first-party
+   * packages, after `agentproto-adapter-` / `agentproto-harness-` for
+   * third-party ones).
+   */
   readonly slug: string
   /** Full npm package name to `import()`. */
   readonly packageName: string
+}
+
+/**
+ * Direct-dir-entry match used by the `@agentproto` scope walkers (cli
+ * `listInstalledAdapters` + `discoverExtraHandles`): returns the slug for an
+ * `adapter-<slug>` or canonical `harness-<slug>` directory entry, null
+ * otherwise. The bare `harness` package (no dash suffix) is NOT a match.
+ */
+export function adapterSlugFromDirEntry(entry: string): string | null {
+  if (entry.startsWith("adapter-")) return entry.slice("adapter-".length)
+  if (entry.startsWith("harness-")) return entry.slice("harness-".length)
+  return null
+}
+
+/** Whether a package name uses the canonical AIP-70 `harness-` spelling. */
+export function isHarnessPackageName(packageName: string): boolean {
+  const leaf = packageName.slice(packageName.lastIndexOf("/") + 1)
+  return (
+    leaf.startsWith("harness-") || leaf.startsWith("agentproto-harness-")
+  )
 }
 
 /**
@@ -113,8 +149,10 @@ async function collectNodeModulesRoots(start?: string): Promise<string[]> {
 }
 
 /**
- * Discover adapter packages on disk across BOTH naming conventions. Deduped by
- * slug; on a collision the first-party `@agentproto/adapter-<slug>` wins.
+ * Discover adapter packages on disk across BOTH naming conventions (adapter-
+ * and harness-prefixed, first- and third-party). Deduped by slug; on a
+ * collision the canonical `harness-` spelling wins within a tier, and
+ * first-party `@agentproto` still beats third-party.
  */
 export async function discoverAdapterPackages(opts?: {
   start?: string
@@ -138,23 +176,46 @@ export async function discoverAdapterPackages(opts?: {
       } catch {
         continue
       }
-      for (const entry of entries) {
+      // Canonical harness- spelling must win over adapter- even when it
+      // lexicographically sorts later, so scan harness- first.
+      const ranked = [...entries].sort(
+        (a, b) => (a.startsWith("harness-") ? 0 : 1) - (b.startsWith("harness-") ? 0 : 1)
+      )
+      for (const entry of ranked) {
         let slug: string | null = null
         let packageName: string | null = null
-        if (scope === "@agentproto" && entry.startsWith("adapter-")) {
-          slug = entry.slice("adapter-".length)
+        if (scope === "@agentproto" && adapterSlugFromDirEntry(entry) !== null) {
+          slug = adapterSlugFromDirEntry(entry)
           packageName = `@agentproto/${entry}`
         } else if (entry.startsWith("agentproto-adapter-")) {
           slug = entry.slice("agentproto-adapter-".length)
           packageName = `${scope}/${entry}`
+        } else if (entry.startsWith("agentproto-harness-")) {
+          slug = entry.slice("agentproto-harness-".length)
+          packageName = `${scope}/${entry}`
         }
         if (!slug || !packageName) continue
         const existing = bySlug.get(slug)
-        // first-party @agentproto wins on conflict
+        // Precedence: canonical harness- beats adapter- within a tier;
+        // first-party @agentproto still wins over third-party.
+        if (!existing) {
+          bySlug.set(slug, { slug, packageName })
+          continue
+        }
+        const existingIsFirstParty =
+          existing.packageName.startsWith("@agentproto/")
+        const candidateIsFirstParty = packageName.startsWith("@agentproto/")
+        if (existingIsFirstParty && !candidateIsFirstParty) {
+          continue
+        }
+        if (!existingIsFirstParty && candidateIsFirstParty) {
+          bySlug.set(slug, { slug, packageName })
+          continue
+        }
+        // Same tier: canonical harness- wins over adapter-
         if (
-          !existing ||
-          (scope === "@agentproto" &&
-            !existing.packageName.startsWith("@agentproto/"))
+          isHarnessPackageName(packageName) &&
+          !isHarnessPackageName(existing.packageName)
         ) {
           bySlug.set(slug, { slug, packageName })
         }

@@ -70,7 +70,8 @@ Providers (built-in; legacy aliases quick/named accepted):
                    an overlap window.
   ngrok            Ngrok tunnel — configure its authtoken first via the
                    setup_tunnel_provider MCP tool.
-  Any installed third-party provider (@scope/agentproto-adapter-<slug>) also
+  Any installed third-party provider (@scope/agentproto-adapter-<slug> or
+  @scope/agentproto-harness-<slug>) also
   works; the daemon's list_tunnel_adapters tool lists the full set.
 
 One-time named-tunnel setup:
