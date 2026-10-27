@@ -1,6 +1,6 @@
 ---
 name: ap-reactions
-description: Make the daemon react when a session completes, with restart-safe receipts and no duplicates: event routines (schedule.kind event) and AGENT.md on maps that fire a registered action such as session:archive, the per-workspace opt-in brain-ingest and clerk reactions, and GET /reactions to read health. Trigger when asked to archive finished child sessions automatically, run something on session completion, check why a reaction did not fire, read reactions.refused, or move brain ingest or the clerk pass onto the durable path.
+description: Make the daemon react when a session completes, with restart-safe receipts and no duplicates, through event routines (schedule.kind event) and AGENT.md on maps that fire a registered action such as session:archive, the per-workspace opt-in brain-ingest and clerk reactions, and GET /reactions to read health. Trigger when asked to archive finished child sessions automatically, run something on session completion, check why a reaction did not fire, read reactions.refused, or move brain ingest or the clerk pass onto the durable path.
 ---
 
 # ap-reactions
