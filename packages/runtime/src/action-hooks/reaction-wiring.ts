@@ -12,6 +12,7 @@
 
 import type { SessionDescriptor } from "../sessions.js"
 import type { ResolvedEventBinding } from "./event-bindings.js"
+import type { AgentOnScanResult } from "./agent-on-scanner.js"
 import {
   toReactionBinding,
   type ReactionBindingDeps,
@@ -28,6 +29,8 @@ export interface ReactionWiringDeps {
   eventBindings: () => readonly ResolvedEventBinding[]
   /** Passed to `toReactionBinding` as is. */
   conversion: ReactionBindingDeps
+  /** The last agent `on` scan; when present, its bindings follow the routines. */
+  agentBindings?: () => AgentOnScanResult
   log?: (line: string) => void
 }
 
@@ -66,6 +69,9 @@ export function sessionFactsOf(desc: SessionDescriptor): Record<string, unknown>
     if (typeof meta.causedByEventId === "string") {
       facts.causedByEventId = meta.causedByEventId
     }
+    if (typeof meta.agentId === "string" && meta.agentId.length > 0) {
+      facts.agentId = meta.agentId
+    }
   }
   return facts
 }
@@ -102,21 +108,35 @@ export function createReactionWiring(deps: ReactionWiringDeps): ReactionWiring {
         const ids = new Set(list.map(binding => binding.bindingId))
         const refused: ReactionWiringResult["refused"] = []
 
-        for (const binding of resolved) {
-          const converted = toReactionBinding(binding, deps.conversion)
-          if (!converted.ok) {
-            refused.push({ bindingId: binding.bindingId, error: converted.error })
-            logRefusal(binding.bindingId, converted.error)
-            continue
+        const addBindings = (bindings: readonly ResolvedEventBinding[]): void => {
+          for (const binding of bindings) {
+            const converted = toReactionBinding(binding, deps.conversion)
+            if (!converted.ok) {
+              refused.push({ bindingId: binding.bindingId, error: converted.error })
+              logRefusal(binding.bindingId, converted.error)
+              continue
+            }
+            if (ids.has(converted.binding.bindingId)) {
+              const error = `duplicate binding id '${converted.binding.bindingId}'`
+              refused.push({ bindingId: converted.binding.bindingId, error })
+              logRefusal(converted.binding.bindingId, error)
+              continue
+            }
+            ids.add(converted.binding.bindingId)
+            list.push(converted.binding)
           }
-          if (ids.has(converted.binding.bindingId)) {
-            const error = `duplicate binding id '${converted.binding.bindingId}'`
-            refused.push({ bindingId: converted.binding.bindingId, error })
-            logRefusal(converted.binding.bindingId, error)
-            continue
+        }
+
+        addBindings(resolved)
+
+        if (deps.agentBindings) {
+          const scan = deps.agentBindings()
+          addBindings(scan.bindings)
+          for (const entry of scan.errors) {
+            const bindingId = `${entry.agentId}/on`
+            refused.push({ bindingId, error: entry.error })
+            logRefusal(bindingId, entry.error)
           }
-          ids.add(converted.binding.bindingId)
-          list.push(converted.binding)
         }
 
         deps.runner.replaceBindings(list)
