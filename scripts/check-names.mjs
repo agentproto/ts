@@ -10,6 +10,9 @@
  *   ts:aip-<n>:package      the entry's `package` does not exist
  *   ts:aip-<n>:spec-name    the package's `SPEC_NAME`/`SPEC_ID` constant
  *                           differs from the entry's `specId`
+ *   ts:aip-<n>:spec-name-missing
+ *                           the package exports no `SPEC_NAME`/`SPEC_ID`
+ *                           constant for the entry's `specId`
  *   ts:aip-<n>:define       the package has no `export` of the entry's
  *                           `define` function in its non-test `src` TypeScript
  *   ts:package:<name>:unregistered
@@ -171,13 +174,21 @@ export function checkNames({ root = ROOT, namesPath, writePending = false } = {}
       continue
     }
     if (entry.specId) {
-      const wrong = pkg.constants.find((c) => c.value !== entry.specId)
-      if (wrong) {
+      if (pkg.constants.length === 0) {
         deviate(
-          `ts:aip-${n}:spec-name`,
-          `${path.relative(root, wrong.file)}:${wrong.line}`,
-          `${wrong.kind} is "${wrong.value}", registry specId is "${entry.specId}" in ${entry.package}`,
+          `ts:aip-${n}:spec-name-missing`,
+          null,
+          `${entry.package} exports no SPEC_NAME/SPEC_ID, registry specId is "${entry.specId}"`,
         )
+      } else {
+        const wrong = pkg.constants.find((c) => c.value !== entry.specId)
+        if (wrong) {
+          deviate(
+            `ts:aip-${n}:spec-name`,
+            `${path.relative(root, wrong.file)}:${wrong.line}`,
+            `${wrong.kind} is "${wrong.value}", registry specId is "${entry.specId}" in ${entry.package}`,
+          )
+        }
       }
     }
     if (entry.define && !hasDefine(pkg, entry.define)) {

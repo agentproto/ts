@@ -13,6 +13,9 @@
  * host package; this adapter doesn't bundle it.
  */
 
+/** AIP-70 registry spec id for this package (`bridge/v1`, AIP-52). */
+export const SPEC_NAME = "bridge/v1" as const
+
 export { buildMastraAgent } from "./build-agent.js"
 export { composeInstructions } from "./instructions.js"
 export type {

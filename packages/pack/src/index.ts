@@ -15,6 +15,9 @@
  *   - MD:  `parsePackManifest(src) → packFromManifest({...})` → `PackHandle`
  */
 
+/** AIP-70 registry spec id for this package (`pack/v1`, AIP-64). */
+export const SPEC_NAME = "pack/v1" as const
+
 export { definePack } from "./define-pack.js"
 export type { PackDefinition, PackHandle, PackStatus } from "./types.js"
 export { packFrontmatterSchema, type PackFrontmatter } from "./schema.js"
