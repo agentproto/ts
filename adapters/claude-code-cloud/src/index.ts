@@ -198,6 +198,7 @@ export {
   ptyOutputTail,
   sendPrompt,
   startCloudSession,
+  trustClaudeFolder,
   CLAUDE_CODE_GATEWAY_ENV_UNSET,
   type AuthStatus,
   type CloudCliRunner,

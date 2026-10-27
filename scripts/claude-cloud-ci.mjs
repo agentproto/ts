@@ -85,6 +85,97 @@ function seedClaudeConfig() {
   writeFileSync(configFile, JSON.stringify(config, null, 2))
 }
 
+function parseJson(text) {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+/** Last host-recorded stderr error from the session transcript, if any. */
+function lastTranscriptStderr(sessionId) {
+  const transcriptFile = resolve(
+    process.env.RUNNER_TEMP || '/tmp',
+    `claude-cloud-failed-${sessionId}.json`,
+  )
+  try {
+    execFileSync(
+      process.execPath,
+      [cli, 'sessions', 'export', sessionId, '--source', 'daemon', '--json', '-o', transcriptFile],
+      { cwd: ROOT, env: process.env, stdio: 'ignore' },
+    )
+    const transcript = JSON.parse(readFileSync(transcriptFile, 'utf8'))
+    const messages = Array.isArray(transcript.messages) ? transcript.messages : []
+    const last = [...messages].reverse().find(
+      message =>
+        message?.role === 'system' &&
+        typeof message.text === 'string' &&
+        /stderr:|\[turn error\]|\[error\]/.test(message.text),
+    )
+    return last?.text?.trim().slice(-4_000)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Turn a wait failure into the detail the old script discarded: the matched
+ * turn-end reason/error (exit 4), or the last turn the descriptor recorded
+ * when the pre-flight saw an idle session (exit 5), plus the session's last
+ * recorded stderr. A bare execFileSync error only says "Command failed".
+ */
+async function describeWaitFailure(sessionId, runtime, error) {
+  const parts = []
+  const waitOutput = typeof error?.stdout === 'string' ? error.stdout : ''
+  const wait = parseJson(waitOutput)
+  if (wait && typeof wait === 'object') {
+    if (wait.idle === true) parts.push('session was idle when wait started')
+    if (typeof wait.reason === 'string') parts.push(`turn-end reason: ${wait.reason}`)
+    if (typeof wait.error === 'string' && wait.error.trim()) {
+      parts.push(`turn error: ${wait.error.trim()}`)
+    }
+    if (wait.empty === true) parts.push('turn was empty (no assistant text or tool call)')
+    if (typeof wait.turnsCompleted === 'number') {
+      parts.push(`turns completed: ${wait.turnsCompleted}`)
+    }
+  } else {
+    const stderr = typeof error?.stderr === 'string' ? error.stderr.trim() : ''
+    if (waitOutput.trim()) parts.push(`wait stdout: ${waitOutput.trim()}`)
+    if (stderr) parts.push(`wait stderr: ${stderr}`)
+  }
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${port}/sessions/${encodeURIComponent(sessionId)}`,
+      { headers: { authorization: `Bearer ${runtime.token}` } },
+    )
+    if (response.ok) {
+      const desc = await response.json()
+      if (typeof desc.lastTurnReason === 'string') {
+        parts.push(`last turn-end reason: ${desc.lastTurnReason}`)
+      }
+      if (typeof desc.lastTurnErrorMessage === 'string' && desc.lastTurnErrorMessage.trim()) {
+        parts.push(`last turn error: ${desc.lastTurnErrorMessage.trim()}`)
+      }
+      if (desc.lastTurnEmpty === true) parts.push('last turn was empty')
+      if (desc.endedReason && desc.endedReason !== desc.lastTurnReason) {
+        parts.push(`ended reason: ${desc.endedReason}`)
+      }
+      if (typeof desc.lastError === 'string' && desc.lastError.trim()) {
+        parts.push(`last error: ${desc.lastError.trim()}`)
+      }
+    }
+  } catch {}
+
+  const stderr = lastTranscriptStderr(sessionId)
+  if (stderr) parts.push(`last session stderr:\n${stderr}`)
+
+  return parts.length > 0
+    ? parts.join('\n')
+    : `no wait detail (${error instanceof Error ? error.message : String(error)})`
+}
+
 async function main() {
   seedClaudeConfig()
   const logFd = openSync(logFile, 'a')
@@ -117,11 +208,27 @@ async function main() {
       throw new Error(`expected claude-code-cloud, got ${descriptor.adapterSlug || '(missing)'}`)
     }
 
-    execFileSync(process.execPath, [cli, 'sessions', 'wait', descriptor.id, '--until', 'turn-end', '--timeout', '40m', '--json'], {
-      cwd: ROOT,
-      env: process.env,
-      stdio: ['ignore', 'inherit', 'inherit'],
-    })
+    // Replay from the event-ring origin. The spawn response can return, and a
+    // fast first turn can end, before this wait process reads the descriptor;
+    // without a cursor the CLI reports that session as idle (exit 5) and the
+    // turn-end (including a vendor error) is lost. `--since 0` lets the
+    // daemon's replay/state check return the turn-end that already fired.
+    try {
+      const waitOutput = execFileSync(
+        process.execPath,
+        [cli, 'sessions', 'wait', descriptor.id, '--until', 'turn-end', '--since', '0', '--timeout', '40m', '--json'],
+        {
+          cwd: ROOT,
+          env: process.env,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      )
+      console.log(waitOutput.trim())
+    } catch (error) {
+      const detail = await describeWaitFailure(descriptor.id, runtime, error)
+      throw new Error(`session wait failed for ${descriptor.id}:\n${detail}`)
+    }
     const transcriptFile = resolve(process.env.RUNNER_TEMP || '/tmp', `claude-cloud-${descriptor.id}.json`)
     execFileSync(process.execPath, [cli, 'sessions', 'export', descriptor.id, '--source', 'daemon', '--json', '-o', transcriptFile], {
       cwd: ROOT,

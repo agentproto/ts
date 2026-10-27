@@ -16,7 +16,17 @@
  */
 
 import { spawn } from "node:child_process"
-import { tmpdir } from "node:os"
+import {
+  chmodSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs"
+import { homedir, tmpdir } from "node:os"
+import { dirname, resolve } from "node:path"
 import { ANTHROPIC_CORE_SCRUB_ENV } from "@agentproto/provider-presets"
 import { toCliSessionId } from "./sessions-api.js"
 import { CLOUD_GIT_TOKEN_ENV } from "./repo-checkout.js"
@@ -57,6 +67,103 @@ export function cloudChildEnv(
   return out
 }
 
+/**
+ * Pre-seed the folder-trust answer in the config the claude child will read.
+ *
+ * A clean runner, a fresh `CLAUDE_CONFIG_DIR`, and a cloud checkout
+ * materialized outside the workspace all start without `projects[cwd]`, so
+ * `claude --cloud` opens the first-run "Do you trust the files in this
+ * folder?" dialog. The PTY path can answer it, but the answer races the
+ * word-by-word render and a stalled dialog burns the whole start timeout.
+ * Writing the same flag the TUI writes on "Yes" removes that race for the
+ * exact cwd the child runs in. Honors `CLAUDE_CONFIG_DIR` so an isolated
+ * adapter config is updated rather than the operator's real `~/.claude.json`.
+ *
+ * Best effort: a read-only or unparseable config must never turn a spawn
+ * into a failure. The PTY answerer remains the fallback.
+ *
+ * The config is Claude Code's own live file, so it is only rewritten when a
+ * directory actually needs trust, always atomically (temp file + rename next
+ * to it), and never when an existing file cannot be parsed: overwriting a
+ * large concurrent config from a failed parse would wipe the user's settings.
+ */
+export function trustClaudeFolder(cwd: string, env = process.env): void {
+  const configDir = env.CLAUDE_CONFIG_DIR
+  const configFile = configDir
+    ? resolve(configDir, ".claude.json")
+    : resolve(env.HOME ?? homedir(), ".claude.json")
+  let raw: string | undefined
+  try {
+    raw = readFileSync(configFile, "utf8")
+  } catch (err) {
+    // A missing config starts fresh; any other read error is best-effort.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return
+  }
+  let config: Record<string, unknown> = {}
+  if (raw !== undefined) {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return
+    config = parsed as Record<string, unknown>
+  }
+  const existing = config.projects
+  const projects =
+    existing && typeof existing === "object" && !Array.isArray(existing)
+      ? (existing as Record<string, unknown>)
+      : {}
+  const dirs = new Set([cwd])
+  try {
+    dirs.add(realpathSync(cwd))
+  } catch {
+    // cwd need not exist yet in unit tests; trust the literal path.
+  }
+  const isTrusted = (dir: string): boolean => {
+    const prior = projects[dir]
+    return (
+      !!prior &&
+      typeof prior === "object" &&
+      !Array.isArray(prior) &&
+      (prior as Record<string, unknown>).hasTrustDialogAccepted === true
+    )
+  }
+  if ([...dirs].every(isTrusted)) return
+  for (const dir of dirs) {
+    const prior = projects[dir]
+    projects[dir] = {
+      ...(prior && typeof prior === "object" && !Array.isArray(prior)
+        ? (prior as Record<string, unknown>)
+        : {}),
+      hasTrustDialogAccepted: true,
+      hasCompletedProjectOnboarding: true,
+    }
+  }
+  config.projects = projects
+  const tempFile =
+    `${configFile}.${process.pid}.${Date.now()}.` +
+    `${Math.random().toString(36).slice(2)}.tmp`
+  try {
+    mkdirSync(dirname(configFile), { recursive: true })
+    writeFileSync(tempFile, JSON.stringify(config, null, 2), { mode: 0o600 })
+    try {
+      chmodSync(tempFile, 0o600)
+    } catch {
+      // Best effort to enforce restrictive permissions.
+    }
+    renameSync(tempFile, configFile)
+  } catch {
+    // Best effort: fall back to the PTY trust-prompt answer.
+    try {
+      unlinkSync(tempFile)
+    } catch {
+      // Temp file was never created or is already gone.
+    }
+  }
+}
+
 // ── TUI output normalization ────────────────────────────────────────────────
 
 /** Matches every terminal escape sequence the claude TUI emits: an OSC
@@ -88,6 +195,12 @@ export function normalizePtyOutput(raw: string): string {
 
 /** The trust prompt only ever appears INTERLEAVED with cursor escapes. */
 const TRUST_PROMPT_RE = /Yes,\s*I\s*trust\s*this\s*folder/i
+
+/** How often to re-answer a trust dialog that is still on screen. */
+const TRUST_RETRY_MS = 1_500
+
+/** Cap on trust answers so a dialog that never accepts cannot spin forever. */
+const TRUST_MAX_ANSWERS = 5
 
 /** Cap on {@link ptyOutputTail}: enough to see the stalled screen, short
  *  enough that no incidental material can ride into a log. */
@@ -227,24 +340,54 @@ export function defaultCloudCliRunner(
         for (const data of pendingWrites) p.write(data)
         pendingWrites.length = 0
         let output = ""
-        let answeredTrustPrompt = false
+        // The latest screen since the last trust answer, not the whole
+        // transcript: a dialog that is re-rendered after a dropped keystroke
+        // must be recognized again, while a prompt that has scrolled away
+        // must not be answered from stale output.
+        let trustScreen = ""
+        let trustAnswers = 0
+        let trustTimer: ReturnType<typeof setTimeout> | null = null
+        const clearTrustTimer = () => {
+          if (trustTimer) {
+            clearTimeout(trustTimer)
+            trustTimer = null
+          }
+        }
+        const answerTrustPrompt = () => {
+          const screen = normalizePtyOutput(trustScreen)
+          // Real captures collapse both options onto one line, so only what
+          // follows the LAST highlight marker says which option is selected.
+          // Down moves the DEFAULT "No, exit" highlight to "Yes"; when the
+          // dialog re-renders with Yes already highlighted, Enter alone is
+          // the answer (sending Down again would wrap back to No).
+          const highlightAt = screen.lastIndexOf("❯")
+          const highlighted =
+            highlightAt === -1 ? "" : screen.slice(highlightAt)
+          const yesSelected = /❯\s*Yes,\s*I\s*trust/i.test(highlighted)
+          trustScreen = ""
+          trustAnswers += 1
+          if (trustAnswers < TRUST_MAX_ANSWERS) {
+            trustTimer = setTimeout(() => {
+              trustTimer = null
+              maybeAnswerTrustPrompt()
+            }, TRUST_RETRY_MS)
+            trustTimer.unref?.()
+          }
+          p.write(yesSelected ? "\r" : "\x1b[B\r")
+        }
+        const maybeAnswerTrustPrompt = () => {
+          if (trustTimer || trustAnswers >= TRUST_MAX_ANSWERS) return
+          if (!TRUST_PROMPT_RE.test(normalizePtyOutput(trustScreen))) return
+          answerTrustPrompt()
+        }
         p.onData((chunk: string) => {
           output += chunk
+          trustScreen += chunk
           opts.onData?.(chunk)
-          // First run in a folder shows a trust prompt whose DEFAULT
-          // highlighted option is "No, exit" — Down + Enter picks
-          // "Yes, I trust this folder". The TUI renders it through cursor
-          // escapes, so match on the normalized transcript. Answer at most
-          // once.
-          if (
-            !answeredTrustPrompt &&
-            TRUST_PROMPT_RE.test(normalizePtyOutput(output))
-          ) {
-            answeredTrustPrompt = true
-            p.write("\x1b[B\r")
-          }
+          maybeAnswerTrustPrompt()
         })
         const timer = setTimeout(() => {
+          clearTrustTimer()
           try {
             p.kill("SIGKILL")
           } catch {
@@ -261,6 +404,7 @@ export function defaultCloudCliRunner(
         timer.unref?.()
         p.onExit(({ exitCode }: { exitCode: number }) => {
           clearTimeout(timer)
+          clearTrustTimer()
           resolveResult({ code: exitCode, output })
         })
       }
@@ -510,6 +654,7 @@ export async function startCloudSession(
   const runner = opts.runner ?? defaultCloudCliRunner()
   const env = cloudChildEnv(opts.env ?? process.env)
   if (!opts.skipPreflight) await preflightAuth(runner, { cwd: opts.cwd, env })
+  trustClaudeFolder(opts.cwd, env)
 
   const pty = runner.runPty("claude", ["--cloud", prompt], {
     cwd: opts.cwd,
@@ -555,6 +700,7 @@ export async function sendPrompt(
   const runner = opts.runner ?? defaultCloudCliRunner()
   const env = cloudChildEnv(opts.env ?? process.env)
   if (!opts.skipPreflight) await preflightAuth(runner, { cwd: opts.cwd, env })
+  trustClaudeFolder(opts.cwd, env)
 
   const result = await runner.run(
     "claude",

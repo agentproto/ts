@@ -235,7 +235,7 @@ Usage:
                                mid-turn; --send prompts each to continue —
                                without it, a dry run that sends nothing)
   agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
-                              [--timeout <duration>] [--json]
+                              [--since <seq>] [--timeout <duration>] [--json]
                               (duration: bare integer = ms, unchanged — or an
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
@@ -2785,17 +2785,28 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
  *      precedent (sessions-registry-agent-host.ts) so a caller can't
  *      mistake a bare "turn-end: success" for one that actually did
  *      something.
- *   5  the session is IDLE right now — no turn in flight, not awaiting
- *      input, nothing queued to run — for an `--until turn-end` /
- *      `awaiting-input` / `any` wait. Distinct from a timeout: this is a
- *      pre-flight read of the session's current descriptor, decided BEFORE
- *      ever blocking, because the daemon's own already-finished-turn check
- *      (`monitorSessionWait`) requires a `since` cursor a fresh CLI process
- *      never has — without this short-circuit an idle session burns the
- *      whole `--timeout` budget waiting for a turn-end that will never come
- *      (nothing new is running) and then reports a lying "timed out...
- *      still running?" message. Exit 5 tells the caller the truth instead:
- *      there's nothing to wait for.
+ *   5  the session is IDLE right now: at least one turn has completed (or
+ *      the session is terminal), no turn is in flight, not awaiting input,
+ *      nothing queued to run, for an `--until turn-end` / `awaiting-input`
+ *      / `any` wait. A freshly spawned session with `turnsCompleted` still
+ *      0 is NOT idle here: its opening turn may start after this pre-flight
+ *      read, and that turn is exactly what the caller is waiting for.
+ *      Distinct from a timeout: this is a pre-flight read of the session's
+ *      current descriptor, decided BEFORE ever blocking, because the
+ *      daemon's own already-finished-turn check (`monitorSessionWait`)
+ *      requires a `since` cursor a fresh CLI process never has; without
+ *      this short-circuit an idle session burns the whole `--timeout` budget
+ *      waiting for a turn-end that will never come (nothing new is running)
+ *      and then reports a lying "timed out... still running?" message.
+ *      Exit 5 tells the caller the truth instead: there's nothing to wait
+ *      for.
+ *
+ * `--since <seq>` passes an EventRing cursor to the daemon. A spawn-then-wait
+ * caller that has no cursor of its own can pass `--since 0` so a turn-end
+ * that fired between the spawn response and this process starting is replayed
+ * instead of being reported as idle. With a cursor present the daemon's own
+ * already-finished-turn check is authoritative, so the idle pre-flight is
+ * skipped.
  *
  * Timeout used to share exit code 1 with hard CLI failures, so a caller
  * couldn't tell "just needs a bigger --timeout" from "something broke" —
@@ -2829,6 +2840,7 @@ async function runWait(args: readonly string[]): Promise<number> {
     options: {
       until: { type: "string" },
       policy: { type: "string" },
+      since: { type: "string" },
       timeout: { type: "string" },
       json: { type: "boolean" },
     },
@@ -2869,6 +2881,18 @@ async function runWait(args: readonly string[]): Promise<number> {
         `Expected one of: turn-end, awaiting-input, exited, any.\n`,
     )
     return 2
+  }
+
+  let since: number | undefined
+  if (values.since !== undefined) {
+    if (!/^\d+$/.test(values.since)) {
+      process.stderr.write(
+        `agentproto sessions wait: invalid --since "${values.since}". ` +
+          `Expected a non-negative event sequence number (e.g. --since 0).\n`,
+      )
+      return 2
+    }
+    since = Number.parseInt(values.since, 10)
   }
 
   const defaultTimeout = resolveWaitDefaultTimeout(rawUntil !== undefined)
@@ -2915,6 +2939,7 @@ async function runWait(args: readonly string[]): Promise<number> {
     untilEvent,
     totalTimeout,
     json: values.json === true,
+    ...(since !== undefined ? { since } : {}),
   })
 }
 
@@ -2929,8 +2954,9 @@ async function runWaitSession(opts: {
   untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
   totalTimeout: number
   json: boolean
+  since?: number
 }): Promise<number> {
-  const { endpoint, idOrName, untilEvent, totalTimeout, json } = opts
+  const { endpoint, idOrName, untilEvent, totalTimeout, json, since } = opts
 
   // Pre-flight: read the session's current descriptor before blocking at
   // all. `monitorSessionWait`'s already-finished-turn check deliberately
@@ -2958,20 +2984,52 @@ async function runWaitSession(opts: {
     }
     // Nothing this wait could ever resolve on by blocking: no turn in
     // flight, not awaiting input (that would be a real match, not idleness —
-    // left to the loop below), nothing queued to run next, and not still
+    // left to the loop below), nothing queued to run next, not still
     // spinning up.
+    //
+    // The `turnsCompleted` gate is load-bearing for a prompted spawn of a
+    // turn-capable session: the spawn response can land, and this pre-flight
+    // read can see the session, before its opening turn has started (busy
+    // false, nothing queued, turnsCompleted 0). That snapshot is not "idle
+    // with nothing to wait for": the first turn is exactly what the caller is
+    // waiting on. Only kinds that can actually run turns get that grace;
+    // terminal/external/command/browser sessions that will never emit a
+    // turn-end must keep the honest exit 5 short-circuit.
+    const terminalStatus =
+      desc.status === "exited" || desc.status === "killed" || desc.status === "error"
+    const kind = (desc as { kind?: string }).kind
+    const turnCapable = kind === undefined ? true : kind === "agent-cli"
+    const active =
+      desc.busy === true ||
+      desc.awaitingInput === true ||
+      Boolean(desc.queuedPrompts) ||
+      desc.status === "starting"
+    // For turn-capable sessions, a snapshot with turnsCompleted==0 and nothing
+    // in-flight may be waiting for the first turn (prompted spawn race). For
+    // non-turn-capable sessions (terminal/external/...), they never produce
+    // turn-end events, so if nothing is active they are idle for --until turn-end.
     const idle =
-      desc.busy !== true &&
-      desc.awaitingInput !== true &&
-      !desc.queuedPrompts &&
-      desc.status !== "starting"
-    if (idle) {
+      !active &&
+      (terminalStatus ||
+        (turnCapable && (desc.turnsCompleted ?? 0) > 0) ||
+        !turnCapable)
+    // A caller-supplied cursor moves the "already finished?" decision to the
+    // daemon (`monitorSessionWait`), which can distinguish a turn-end after
+    // that cursor from stale history — but a terminal/exited session has
+    // no turn to replay for `--until turn-end`, so keep that short-circuit
+    // cursor-independent (and also avoid skipping terminal short-circuit when
+    // --since is passed).
+    if (idle && (since === undefined || terminalStatus)) {
       return emitWaitIdle(json, {
         sessionId: desc.id,
         idOrName,
         status: desc.status,
         busy: desc.busy === true,
         awaitingInput: desc.awaitingInput === true,
+        turnsCompleted: desc.turnsCompleted,
+        lastTurnReason: desc.lastTurnReason,
+        lastTurnErrorMessage: desc.lastTurnErrorMessage,
+        lastTurnEmpty: desc.lastTurnEmpty === true,
       })
     }
   }
@@ -2979,7 +3037,7 @@ async function runWaitSession(opts: {
   const deadline = Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
-  let cursor: number | undefined = undefined
+  let cursor: number | undefined = since
 
   // Stated BEFORE blocking, not just on timeout: the incident this whole
   // module exists for was a wrong unit that looked exactly like a stuck
@@ -3119,6 +3177,10 @@ function emitWaitIdle(
     status: string
     busy: boolean
     awaitingInput: boolean
+    turnsCompleted?: number
+    lastTurnReason?: string
+    lastTurnErrorMessage?: string
+    lastTurnEmpty?: boolean
   },
 ): number {
   if (json) {
@@ -3130,6 +3192,10 @@ function emitWaitIdle(
           status: ctx.status,
           busy: ctx.busy,
           awaitingInput: ctx.awaitingInput,
+          ...(ctx.turnsCompleted !== undefined ? { turnsCompleted: ctx.turnsCompleted } : {}),
+          ...(ctx.lastTurnReason !== undefined ? { reason: ctx.lastTurnReason } : {}),
+          ...(ctx.lastTurnErrorMessage !== undefined ? { error: ctx.lastTurnErrorMessage } : {}),
+          ...(ctx.lastTurnEmpty === true ? { empty: true } : {}),
         },
         null,
         2,
