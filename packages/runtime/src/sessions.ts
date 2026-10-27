@@ -4662,7 +4662,8 @@ export interface SessionsRegistry {
        *  same key inside the 24 hour window returns `delivery: "duplicate"`
        *  and delivers nothing. Trimmed; must be 1 to 200 characters. A
        *  duplicate does not interrupt, resume, compact, trace, or touch the
-       *  inbox or queue. Dropping a waiting item keeps its key. */
+       *  inbox or queue. Dropping a waiting item keeps its key. Not
+       *  supported together with `envelope`. */
       dedupeKey?: string
       /** Digest payload for a freshly queued item (follow digests). */
       digest?: QueuedDigest
@@ -12845,6 +12846,12 @@ export function createSessionsRegistry(opts?: {
       const dedupeKey = opts?.dedupeKey?.trim()
       if (dedupeKey !== undefined && (dedupeKey.length < 1 || dedupeKey.length > 200)) {
         throw new Error("enqueuePrompt: dedupeKey must be 1 to 200 characters")
+      }
+      // A typed envelope message already has its own daemon-minted id, and it
+      // records a sender trace on acceptance that a duplicate answer could
+      // not take back. Refuse the combination instead of leaking the trace.
+      if (dedupeKey !== undefined && opts?.envelope) {
+        throw new Error("enqueuePrompt: dedupeKey is not supported with a typed envelope message")
       }
       // A duplicate does NOTHING else: no interrupt, resume, compaction,
       // envelope trace, inbox write, queue change, or persist.

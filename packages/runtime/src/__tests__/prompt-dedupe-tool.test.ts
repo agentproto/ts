@@ -137,6 +137,7 @@ describe("agent_prompt dedupeKey", () => {
       pending: false,
       delivery: "duplicate",
       duplicate: true,
+      queued: false,
       queueId: firstQueueId,
     })
     expect(body.hint).toBeUndefined()

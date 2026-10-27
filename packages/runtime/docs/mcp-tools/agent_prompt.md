@@ -49,10 +49,17 @@ A retry-safe key, 1 to 200 characters after trimming. Once a prompt carrying
 the key is accepted (dispatched, queued, or steered), a later call with the
 same key inside a 24 hour window is not delivered again: it answers
 `delivery: "duplicate"`, `pending: false`, and `duplicate: true`, plus the
-original `queueId` while that item still waits. A retry that arrives while the
-first call is still being admitted (for example while a dead session resumes)
-answers `duplicate` too. A duplicate does not interrupt, resume, compact, or
-touch the inbox or queue.
+original `queueId` while that item still waits (only when the key is the one the
+waiting item was queued under: a key that was merged into an item by
+`coalesceKey` answers `duplicate` without a `queueId`). `queued` is `false` for
+a duplicate. A retry that arrives while the first call is still being admitted
+(for example while a dead session resumes) answers `duplicate` too, but it may
+already have attempted the same resume. Any other duplicate does not interrupt,
+resume, compact, or touch the inbox or queue.
+
+The key is available on this tool and on the registry call `enqueuePrompt`. The
+HTTP prompt route and the CLI do not carry it yet, and it cannot be combined
+with a typed `envelope` message (those have their own message id).
 
 The accepted-key window holds at most 128 keys and is persisted with the
 session, so the guarantee survives a daemon restart. Dropping a waiting item

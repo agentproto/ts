@@ -1045,8 +1045,9 @@ export function registerAgentTools(
             {
               type: "text",
               // `pending` leads so a truncated read still shows it. `queued`
-              // is legacy ("accepted") and stays true for compatibility —
-              // `pending` / `delivery` are the unambiguous signals.
+              // is legacy ("accepted") and stays true for compatibility, except
+              // for a duplicate, which accepted nothing — `pending` /
+              // `delivery` are the unambiguous signals.
               text: JSON.stringify(
                 {
                   ok: true,
@@ -1054,7 +1055,7 @@ export function registerAgentTools(
                   delivery,
                   ...(result.deliveredAt ? { deliveredAt: result.deliveredAt } : {}),
                   sessionId,
-                  queued: true,
+                  queued: !duplicate,
                   ...(result.queueId ? { queueId: result.queueId } : {}),
                   ...(duplicate ? { duplicate: true } : {}),
                   ...(hintQueued

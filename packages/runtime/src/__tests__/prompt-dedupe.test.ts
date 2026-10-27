@@ -337,6 +337,31 @@ describe("enqueuePrompt dedupeKey", () => {
     registry.shutdown()
   })
 
+  it("refuses a dedupeKey together with a typed envelope, so no sender trace can leak", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const { agent, prompts } = countingAgent()
+    const desc = spawn(registry, agent)
+
+    await expect(
+      registry.enqueuePrompt(desc.id, "typed", {
+        dedupeKey: "env-key",
+        envelope: {
+          id: "msg_test0001",
+          ts: "2026-01-01T00:00:00.000Z",
+          to: desc.id,
+          from: { sessionId: "parent-session", relation: "parent" },
+          kind: "report",
+          urgency: "next-turn",
+          text: "typed",
+        },
+      }),
+    ).rejects.toThrow("enqueuePrompt: dedupeKey is not supported with a typed envelope message")
+
+    expect(registry.get(desc.id)?.promptDedupe).toBeUndefined()
+    expect(prompts.length).toBe(0)
+    registry.shutdown()
+  })
+
   it("removing a waiting keyed item does not free its key", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const { agent, release } = hangingAgent()
