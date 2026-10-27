@@ -3,7 +3,7 @@ import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 export default createTsupConfig({
   banner: `/**
  * @agentproto/harness v2.15.0
- * AIP-45 AGENT-CLI.md \`defineHarness\` / \`defineHarness\` implementation.
+ * AIP-45 AGENT-CLI.md \`defineHarness\` implementation.
  */`,
   entry: {
     index: "src/index.ts",
