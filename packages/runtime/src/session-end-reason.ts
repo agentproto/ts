@@ -92,6 +92,39 @@ export function isProviderLimitError(message: string | undefined): boolean {
   return message !== undefined && PROVIDER_LIMIT_ERROR_RE.test(message)
 }
 
+// Opaque driver failures that carry no cause of their own ("Internal error",
+// "RequestError: Internal error"). Deliberately narrow: a message with any
+// further detail (a status code, a provider cause) is NOT generic, and its
+// own words are the classification — only a bare wrapper is worth a second
+// look at the turn's assistant text.
+const GENERIC_TURN_ERROR_RE = /^\s*(?:[A-Za-z][\w.]*:\s*)?internal error\s*[.!]?\s*$/i
+
+/** True when `message` is an opaque generic turn error. See
+ *  {@link GENERIC_TURN_ERROR_RE}. */
+export function isGenericTurnError(message: string | undefined): boolean {
+  return message !== undefined && GENERIC_TURN_ERROR_RE.test(message)
+}
+
+/**
+ * Recover a provider-limit message from the turn's own assistant text.
+ *
+ * Some adapters (notably Codex via codex-acp) print the subscription cap as a
+ * final assistant message, then fail the turn with a bare "Internal error".
+ * The driver error says nothing, so the text is the only evidence. Only
+ * consulted when the error is {@link isGenericTurnError} — a specific error
+ * is never overridden by prose — and only the narrow
+ * {@link PROVIDER_LIMIT_ERROR_RE} wording matches, as a single line.
+ * Returns `undefined` when no such line exists.
+ */
+export function providerLimitFromTurnText(
+  errorMessage: string | undefined,
+  assistantText: string | undefined,
+): string | undefined {
+  if (!isGenericTurnError(errorMessage) || assistantText === undefined) return undefined
+  const line = assistantText.split(/\r?\n/).find(l => isProviderLimitError(l))
+  return line?.trim() || undefined
+}
+
 /**
  * Name the wallet a usage-cap error was billed to. The adapter only says
  * e.g. "usage limit exceeded"; with several profiles/sub-accounts the operator

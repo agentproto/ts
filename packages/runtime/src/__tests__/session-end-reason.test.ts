@@ -34,7 +34,12 @@ import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
-import { isProviderLimitError, isKnownSessionEndReason } from "../session-end-reason.js"
+import {
+  isProviderLimitError,
+  isKnownSessionEndReason,
+  isGenericTurnError,
+  providerLimitFromTurnText,
+} from "../session-end-reason.js"
 
 // ── isProviderLimitError / isKnownSessionEndReason (pure) ──────────────────
 
@@ -57,6 +62,55 @@ describe("isProviderLimitError", () => {
 
   it("is false for undefined", () => {
     expect(isProviderLimitError(undefined)).toBe(false)
+  })
+})
+
+describe("isGenericTurnError", () => {
+  it("matches a bare Internal error, with or without a wrapper prefix", () => {
+    expect(isGenericTurnError("Internal error")).toBe(true)
+    expect(isGenericTurnError("RequestError: Internal error")).toBe(true)
+    expect(isGenericTurnError("  internal error.  ")).toBe(true)
+  })
+
+  it("does not match an error carrying further detail", () => {
+    expect(isGenericTurnError("Internal error: upstream returned 500")).toBe(false)
+    expect(isGenericTurnError("RequestError: Internal error (retryable)")).toBe(false)
+    expect(isGenericTurnError("subprocess exited with ENOBUFS")).toBe(false)
+  })
+
+  it("is false for undefined", () => {
+    expect(isGenericTurnError(undefined)).toBe(false)
+  })
+})
+
+describe("providerLimitFromTurnText", () => {
+  const cap =
+    "You've hit your usage limit. Upgrade to Pro, visit the usage page to purchase more credits or try again at 6:00 AM."
+
+  it("returns the matching cap line from the turn's assistant text", () => {
+    expect(providerLimitFromTurnText("Internal error", `Working on it.\n${cap}\n`)).toBe(cap)
+  })
+
+  it("accepts the RequestError: Internal error prefix form", () => {
+    expect(providerLimitFromTurnText("RequestError: Internal error", cap)).toBe(cap)
+  })
+
+  it("picks the cap line out of multi-line text, trimmed", () => {
+    expect(providerLimitFromTurnText("Internal error", `intro\n  ${cap}  \noutro`)).toBe(cap)
+  })
+
+  it("does not override a specific (non-generic) error with cap text", () => {
+    expect(providerLimitFromTurnText("Internal error: upstream returned 500", cap)).toBeUndefined()
+  })
+
+  it("ignores unrelated text that merely mentions limit", () => {
+    expect(
+      providerLimitFromTurnText("Internal error", "I will check the rate limit config next."),
+    ).toBeUndefined()
+  })
+
+  it("is undefined without assistant text", () => {
+    expect(providerLimitFromTurnText("Internal error", undefined)).toBeUndefined()
   })
 })
 
@@ -675,6 +729,128 @@ describe("provider-limit classification", () => {
     expect(after?.status).toBe("error")
     expect(after?.endedReason).toBe("provider-limit")
     expect(after?.lastError).toContain("hit your session limit")
+    reg.shutdown()
+  })
+
+  it("an opaque 'Internal error' after the assistant printed the usage cap is tagged provider-limit", async () => {
+    // Codex (codex-acp) reports a subscription cap as a final assistant
+    // message, then fails the turn with a bare "Internal error". The text is
+    // the only place the real cause exists.
+    const reg = createSessionsRegistry({ persist: false })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-codex-cap-as-text",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        yield {
+          kind: "text-delta",
+          text:
+            "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), " +
+            "visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 6:00 AM.\n",
+        }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "error" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    const after = reg.get(desc.id)
+    expect(after?.endedReason).toBe("provider-limit")
+    expect(after?.lastError).toContain("hit your usage limit")
+    reg.shutdown()
+  })
+
+  it("an opaque 'Internal error' after an unrelated mention of 'limit' is NOT tagged provider-limit", async () => {
+    const reg = createSessionsRegistry({ persist: false })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-generic-error-limit-word",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        yield { kind: "text-delta", text: "I will check the rate limit config next.\n" }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "error" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.get(desc.id)?.endedReason).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("does not reclassify a later generic error from a previous turn's cap text", async () => {
+    // Regression guard for the turn-scoped buffer: `lastAssistantText` is
+    // cross-turn and survives a successful turn, so searching it would tag
+    // an unrelated later failure with the old cap.
+    const reg = createSessionsRegistry({ persist: false })
+    let turn = 0
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-codex-stale-cap-text",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        turn += 1
+        if (turn === 1) {
+          yield {
+            kind: "text-delta",
+            text: "You've hit your usage limit. Try again at 6:00 AM.\n",
+          }
+          yield { kind: "turn-end", reason: "completed" }
+          return
+        }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "error" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.get(desc.id)?.endedReason).toBeUndefined()
+    await reg.sendPrompt(desc.id, "again")
+    expect(reg.get(desc.id)?.endedReason).toBeUndefined()
+    expect(reg.get(desc.id)?.lastError).toBeUndefined()
+    reg.shutdown()
+  })
+
+  it("keeps a cap classified this turn when the adapter's turn-end reason is not 'error'", async () => {
+    // An adapter can report the cap in-band and then still end the turn as
+    // "completed". The recovery branch must not undo this turn's own
+    // classification.
+    const reg = createSessionsRegistry({ persist: false })
+    const fakeAgent: AgentSessionLike = {
+      sessionId: "acp-codex-cap-completed",
+      async *send(): AsyncIterable<AgentStreamEvent> {
+        yield { kind: "text-delta", text: "You've hit your usage limit. Try again at 6:00 AM.\n" }
+        yield { kind: "error", error: { message: "Internal error" } }
+        yield { kind: "turn-end", reason: "completed" }
+      },
+      async cancel() {},
+      async close() {},
+    }
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgent,
+      adapterSlug: "codex",
+    })
+    await reg.sendPrompt(desc.id, "go")
+    const after = reg.get(desc.id)
+    expect(after?.endedReason).toBe("provider-limit")
+    expect(after?.lastError).toContain("hit your usage limit")
     reg.shutdown()
   })
 

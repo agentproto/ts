@@ -191,7 +191,13 @@ import {
   type StopOutcome,
   type SessionOutcomeCompact,
 } from "./session-outcome.js"
-import { DELIBERATE_END_REASONS, isProviderLimitError, tagLimitErrorWithWallet, type SessionEndReason } from "./session-end-reason.js"
+import {
+  DELIBERATE_END_REASONS,
+  isProviderLimitError,
+  providerLimitFromTurnText,
+  tagLimitErrorWithWallet,
+  type SessionEndReason,
+} from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
 import type { ModelPolicy } from "./model-policy.js"
@@ -1603,6 +1609,11 @@ export interface SessionDescriptor {
    *     `"steward-abandoned"` (the session steward's `closeWithOutcome` —
    *     verdict `"done"` vs. `"abandoned"`; a `"blocked"`/`"needs-input"`
    *     verdict doesn't close at all, see `SessionDescriptor.wrapupFlag`).
+   *  `"provider-limit"` may also be stamped on a row that is still live
+   *  (`status: "running"`) when an in-band turn failure is explained only by
+   *  the turn's own assistant text (see `providerLimitFromTurnText`). It is
+   *  cleared once a later turn succeeds — the quota recovered — so until
+   *  then a plain kill of that row leaves the cap in place as the reason.
    *  Absent for every terminal path this file doesn't tag (a plain natural
    *  exit, an ordinary turn error) — the session's own fault, or at least
    *  not something worth a special label. A string outside this list is
@@ -3425,6 +3436,12 @@ interface SessionRuntime {
   lastAssistantText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
+  /** Assistant text accumulated during the CURRENT turn, tail-capped like
+   *  `lastAssistantText`. Unlike that field it is reset at every turn start
+   *  and never sealed by a tool call, so it never carries a previous turn's
+   *  text into this turn's classification (see
+   *  `providerLimitFromTurnText`). Not persisted. */
+  turnAssistantText?: string
   /** The most recent user prompt for this session (the caller's own ask, with
    *  any daemon-composed system preamble stripped), captured at turn start so
    *  the index sidecar can carry it without a transcript read on the write
@@ -8022,6 +8039,11 @@ export function createSessionsRegistry(opts?: {
           rt.lastAssistantText =
             text.length > LAST_ASSISTANT_TEXT_CAP ? text.slice(text.length - LAST_ASSISTANT_TEXT_CAP) : text
           rt.lastAssistantTextSealed = false
+          const turnText = (rt.turnAssistantText ?? "") + evt.text
+          rt.turnAssistantText =
+            turnText.length > LAST_ASSISTANT_TEXT_CAP
+              ? turnText.slice(turnText.length - LAST_ASSISTANT_TEXT_CAP)
+              : turnText
           // text-delta is a stream of chunks — split on newlines so
           // each line lands in the ring buffer separately. Coalesce
           // a trailing fragment via rt.textBuf.
@@ -10566,6 +10588,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
     rt.turnHadOutput = false
+    rt.turnAssistantText = undefined
     // Clear a stale parked-with-background-tasks flag from the prior turn —
     // the session was re-prompted, so it is by definition no longer parked:
     // this turn will see whatever its background tasks produced. Counter
@@ -10611,6 +10634,11 @@ export function createSessionsRegistry(opts?: {
     // `SessionDescriptor.lastTurnErroredAt`'s doc. Also rides along on
     // `lastTurnErrorMessage` and the `session:turn-end` bus event's `error`.
     let turnErrorMessage: string | undefined
+    // True once THIS turn was classified as a provider limit (whether from a
+    // specific driver error or the turn's own assistant text). The recovery
+    // branch below must not un-classify the same turn it just classified;
+    // only a cap carried over from an earlier turn is cleared by success.
+    let providerLimitThisTurn = false
     // Productivity signals for empty-turn detection: a turn that produces
     // ZERO assistant text AND zero tool calls is a silent no-op (a bad /
     // unrecognized model id, or a provider that returned an empty
@@ -10792,10 +10820,18 @@ export function createSessionsRegistry(opts?: {
         // A thrown provider/subscription usage-cap error (or one reported via
         // an `error` stream event just before the generator gave up) gets its
         // own reason instead of the bare "turn error" — see
-        // `isProviderLimitError`'s doc.
-        if (isProviderLimitError(message) || isProviderLimitError(rt.lastErrorMessage)) {
+        // `isProviderLimitError`'s doc. When the thrown error is an opaque
+        // generic one, the turn's assistant text may be the only place the cap
+        // was stated (see `providerLimitFromTurnText`).
+        const providerLimitMessage = isProviderLimitError(message)
+          ? message
+          : isProviderLimitError(rt.lastErrorMessage)
+            ? rt.lastErrorMessage
+            : providerLimitFromTurnText(message, rt.turnAssistantText)
+        if (providerLimitMessage) {
+          providerLimitThisTurn = true
           rt.desc.endedReason = "provider-limit"
-          rt.desc.lastError = message
+          rt.desc.lastError = providerLimitMessage
         }
         recordExitUsageSnapshot(rt)
         schedulePersist()
@@ -10828,6 +10864,25 @@ export function createSessionsRegistry(opts?: {
       // "pending" in every UI consumer. Emit a synthetic `tool-result`
       // before the turn-end so transcript reducers can resolve the segment.
       settlePendingToolCalls()
+
+      // ── Provider cap printed as assistant text ────────────────────────
+      // Codex (codex-acp) reports the subscription cap as the final assistant
+      // message, then fails the turn with a bare "Internal error". A generic
+      // driver error names no cause, so the turn's own text is the only
+      // evidence — only then, and only the exact cap wording, classifies (see
+      // `providerLimitFromTurnText`). Replacing `turnErrorMessage` also lets
+      // the `session:turn-end` consumer (turn-retry) classify the failure.
+      const providerLimitFromText = providerLimitFromTurnText(turnErrorMessage, rt.turnAssistantText)
+      if (providerLimitFromText) {
+        providerLimitThisTurn = true
+        turnErrorMessage = providerLimitFromText
+        if (rt.desc.endedReason !== "provider-limit") {
+          rt.desc.endedReason = "provider-limit"
+          rt.desc.lastError = providerLimitFromText
+          appendLine(rt, `[provider-limit] ${providerLimitFromText}`, "stderr")
+          void suggestHandoff(rt, "provider-limit", "turn")
+        }
+      }
 
       // ── P5: guarantee exactly one terminal turn-end per turn ──────────
       // If the adapter's event stream ended without a turn-end (generator
@@ -10922,9 +10977,18 @@ export function createSessionsRegistry(opts?: {
             delete rt.desc.lastTurnErrorMessage
           }
           schedulePersist()
-        } else if (rt.desc.lastTurnErroredAt !== undefined) {
+        } else if (rt.desc.lastTurnErroredAt !== undefined || rt.desc.endedReason === "provider-limit") {
           delete rt.desc.lastTurnErroredAt
           delete rt.desc.lastTurnErrorMessage
+          // A cap stamped on a still-live row is spent once a turn succeeds
+          // again (the quota reset), so it must not outlive the failure. But
+          // a cap classified for THIS turn stays even when the adapter's own
+          // turn-end reason is not "error" — otherwise the block above would
+          // undo its own classification in the same turn.
+          if (rt.desc.endedReason === "provider-limit" && !providerLimitThisTurn) {
+            delete rt.desc.endedReason
+            delete rt.desc.lastError
+          }
           schedulePersist()
         }
 
@@ -11369,6 +11433,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
     rt.turnHadOutput = false
+    rt.turnAssistantText = undefined
     // No longer parked — same as a prompted turn start.
     if (rt.desc.pendingBgTasks !== undefined) {
       delete rt.desc.pendingBgTasks
