@@ -85,7 +85,7 @@ Two builtin reactions are opt-in per workspace, hot, default off. A listed works
 ```
 
 - `defaults.reactions.brainIngest.workspaces`: completed sessions are ingested into the workspace brain by a reaction (idempotent, replayed after a crash).
-- `defaults.reactions.clerk.workspaces`: the clerk controller keeps its gate and its debounce (still in memory, so a restart drops a pending debounce), but the pass itself is dispatched as a receipt with up to 3 attempts. The pass is not idempotent: a pass interrupted by a crash is not replayed.
+- `defaults.reactions.clerk.workspaces`: the clerk controller keeps its gate and its debounce (still in memory, so a restart drops a pending debounce), but the pass itself is dispatched as a receipt with up to 3 attempts. The pass is not idempotent: a pass interrupted by a crash is not replayed. A `run.command` that exits with a non-zero code (or is killed by its timeout) ends the receipt `dead` with the exit code as its reason and is not retried, while the legacy path still ignores the exit code.
 
 Rollback: set the key back to `[]` (or `unset: true`). It takes effect on the next completion or firing.
 
