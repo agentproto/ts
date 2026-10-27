@@ -17,8 +17,20 @@ pnpm add @agentproto/harness
 import { defineHarness } from "@agentproto/harness"
 
 export const myHarness = defineHarness({
+  name: "my-agent",
   id: "my-agent",
   description: "A minimal AIP-45 harness.",
+  version: "1.0.0",
+  bin: "my-agent",
+  install: [{ method: "npm", package: "my-agent-cli", global: true }],
+  version_check: {
+    cmd: "my-agent --version",
+    parse: "(\\d+\\.\\d+\\.\\d+)",
+    range: ">=1.0.0",
+  },
+  sandbox: "workspace",
+  protocol: "acp",
+  acp: "./ACP.md",
 })
 ```
 

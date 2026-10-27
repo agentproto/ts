@@ -18,14 +18,22 @@ pnpm add @agentproto/doctype
 ```ts
 import { createDoctype } from "@agentproto/doctype"
 
+interface WidgetDefinition {
+  id: string
+  description: string
+  color: string
+}
+
+interface WidgetHandle extends Readonly<WidgetDefinition> {}
+
 export const defineWidget = createDoctype<WidgetDefinition, WidgetHandle>({
   aip: 56,
   name: "widget",
   validate(definition) {
-    // spec-specific checks
+    if (!definition.color) throw new Error("widget needs a color")
   },
   build(definition) {
-    return { definition }
+    return { ...definition }
   },
 })
 ```
