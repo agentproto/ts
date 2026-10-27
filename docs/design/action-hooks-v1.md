@@ -219,7 +219,7 @@ of scope for this contract.
 | `packages/runtime/src/session-event-bus.ts` | In-memory `SessionEventType` pub/sub | Transport for lifecycle and reaction paths; not portable config names |
 | `packages/runtime/src/hooks-config.ts` | Existing semantic ACP permission hook engine | Separate surface; not renamed or merged |
 | `packages/runtime/src/capabilities-inventory.ts` | Existing MCP/skill inventory | Future host-level hook capability advertisement would extend existing capabilities surfaces |
-| `packages/runtime/src/sentinel-webhook-outbox.ts` | Existing durable outbox precedent | Future reaction receipts must generalize or reuse this pattern, not introduce a parallel durability system |
+| `packages/sentinel/src/sentinel-webhook-outbox.ts` | Existing durable outbox precedent | Future reaction receipts must generalize or reuse this pattern, not introduce a parallel durability system |
 | `packages/runtime/src/session-capabilities.ts` | Frozen session capability response | Future optional additive hook block; unchanged in PR 1 |
 
 ## Out of scope for PR 1

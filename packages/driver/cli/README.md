@@ -35,7 +35,7 @@ usually means.
 
 **Relative paths in an app-bundled cli driver resolve against the app
 root**, not the daemon's own cwd. When this driver is loaded from an app
-bundle via `@agentproto/app-kit`'s `loadAppBundledTools`, `cwd` is set to the
+bundle via `@agentproto/app`'s `loadAppBundledTools`, `cwd` is set to the
 app root (the directory containing `.agentproto/`) automatically, unless the
 DRIVER.md's `metadata.cli.cwd` overrides it — itself resolved relative to the
 app root, and rejected at load time if it would resolve outside the app

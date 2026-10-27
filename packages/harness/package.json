@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/harness",
   "version": "2.15.0",
-  "description": "@agentproto/harness: multi-protocol runner that loads an AIP-45 AGENT-CLI.md manifest, spawns the binary, and dispatches turns through an ACP / MCP / proprietary arm. ACP arm delegates to @agentproto/acp; emits the canonical StreamEvent taxonomy regardless of underlying protocol.",
+  "description": "@agentproto/harness: implements the AIP-45 HARNESS. Multi-protocol runner that loads an AGENT-CLI.md manifest, spawns the binary, and dispatches turns through an ACP / MCP / proprietary arm. ACP arm delegates to @agentproto/acp; emits the canonical StreamEvent taxonomy regardless of underlying protocol.",
   "keywords": [
     "agentproto",
     "aip-45",

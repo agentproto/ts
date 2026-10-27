@@ -42,7 +42,7 @@ Because pi has no native ACP/MCP protocol surface, this is a
 `protocol: "proprietary"` manifest:
 `createAgentCliRuntime` skips the built-in ACP/print subprocess plumbing and
 instead dynamic-imports this package's `createAgentCliClient(definition)`
-factory (see `createProprietaryProtocolArm` in `@agentproto/driver-agent-cli`).
+factory (see `createProprietaryProtocolArm` in `@agentproto/harness`).
 Unlike `@agentproto/adapter-mastracode-inprocess` (the in-process proprietary
 arm), **this arm spawns a real child** (`pi --mode rpc`) and translates pi's
 RPC event stream into the canonical `StreamEvent` taxonomy.

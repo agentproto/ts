@@ -36,7 +36,7 @@ export interface CliDriverDefinition
    * Absolute working directory for the spawned subprocess. Unset means
    * "inherit the host process's cwd" — the historical (and, for a
    * standalone TS-authored driver, still correct) behaviour. App-bundled
-   * drivers loaded via `@agentproto/app-kit`'s `loadAppBundledTools` get
+   * drivers loaded via `@agentproto/app`'s `loadAppBundledTools` get
    * this set to the app root so argv/DRIVER.md-relative paths resolve
    * predictably instead of against whatever directory happens to be
    * running the host.

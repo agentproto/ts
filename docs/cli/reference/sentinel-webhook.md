@@ -16,7 +16,7 @@ show it with the secret redacted.
 
 Implementation: `packages/runtime/src/webhook-egress/` (signing, SSRF gate,
 challenge verification, bounded-retry delivery) and
-`packages/runtime/src/sentinel-webhook-outbox.ts` (persisted outbox).
+`packages/sentinel/src/sentinel-webhook-outbox.ts` (persisted outbox).
 
 ## Sentinel model
 

@@ -46,10 +46,18 @@ Package | Path | Version | Tier | Reason (one line) |
 @agentproto/adapter-ai-sdk | `adapters/ai-sdk` | 0.1.14 | archived | dead: zero workspace dependents (override list) |
 @agentproto/adapter-mastra | `adapters/mastra` | 0.1.16 | archived | dead: zero workspace dependents (override list) |
 @agentproto/adapter-kit | `packages/adapter-kit` | 0.3.10 | archived | dead: zero workspace dependents (override list) |
+@agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
+@agentproto/app-kit | `packages/app-kit` | 2.3.0 | archived | dead: zero workspace dependents (override list) |
 @agentproto/catalog | `packages/catalog` | 0.1.2 | archived | dead: zero workspace dependents (override list) |
+@agentproto/define-doctype | `packages/define-doctype` | 0.1.4 | archived | dead: zero workspace dependents (override list) |
+@agentproto/driver-agent-cli | `packages/driver/agent-cli` | 2.15.0 | archived | dead: zero workspace dependents (override list) |
 @agentproto/driver-sdk | `packages/driver/sdk` | 0.1.13 | archived | dead: zero workspace dependents (override list) |
 @agentproto/egress | `packages/egress` | 0.1.18 | archived | dead: zero workspace dependents (override list) |
 @agentproto/identity | `packages/identity` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
+@agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | archived | dead: zero workspace dependents (override list) |
+@agentproto/mastra | `packages/mastra` | 0.2.20 | archived | dead: zero workspace dependents (override list) |
+@agentproto/pair-client | `packages/pair-client` | 1.0.5 | archived | dead: zero workspace dependents (override list) |
+@agentproto/redaction | `packages/redaction` | 0.2.4 | archived | dead: zero workspace dependents (override list) |
 @agentproto/role-catalog | `packages/role-catalog` | 0.1.5 | archived | dead: zero workspace dependents (override list) |
 @agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | 0.1.22 | archived | dead: zero workspace dependents (override list) |
 @agentproto/a2a | `packages/a2a` | 0.2.2 | core | product runtime package consumed by the runtime/cli |
@@ -57,13 +65,11 @@ Package | Path | Version | Tier | Reason (one line) |
 @agentproto/agencies | `packages/agencies/core` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agencies-engine | `packages/agencies/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agencies-mastra | `packages/agencies/mastra` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
-@agentproto/agency-v2 | `packages/agency-v2` | 0.1.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/agent-runtime | `packages/agent-runtime` | 0.1.6 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app | `packages/app` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-client | `packages/app-client` | 0.4.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/app-config | `packages/app-config` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
-@agentproto/app-kit | `packages/app-kit` | 2.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/apps | `packages/apps` | 0.24.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/auth | `packages/auth` | 1.3.1 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/batch | `packages/batch` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
@@ -85,7 +91,6 @@ agentproto | `packages/agentproto-placeholder` | 0.0.1 | core | product runtime 
 create-agentproto-app | `packages/create-agentproto-app` | 0.3.8 | core | product runtime package consumed by the runtime/cli |
 @agentproto/decision | `packages/decision` | 0.1.0 | core | product runtime package consumed by the runtime/cli |
 agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package consumed by the runtime/cli |
-@agentproto/driver-agent-cli | `packages/driver/agent-cli` | 2.15.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-browser | `packages/driver/browser` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-cli | `packages/driver/cli` | 0.2.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver | `packages/driver/core` | 0.3.3 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
@@ -100,14 +105,11 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/lifecycle | `packages/lifecycle` | 0.1.2 | core | product runtime package consumed by the runtime/cli |
-@agentproto/llm-endpoint | `packages/llm-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
-@agentproto/mastra | `packages/mastra` | 0.2.20 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mcp-app-host | `packages/mcp-app-host` | 0.1.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/mcp-server | `packages/mcp-server` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/model-catalog | `packages/model-catalog` | 0.13.2 | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/model-intel | `packages/model-intel` | 0.3.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/model-routing | `packages/model-routing` | 0.3.1 | core | product runtime package consumed by the runtime/cli |
-@agentproto/pair-client | `packages/pair-client` | 1.0.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pair-page | `packages/pair-page` | 0.0.14 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pairing | `packages/pairing` | 1.0.5 | core | product runtime package consumed by the runtime/cli |
 @agentproto/pairing-host | `packages/pairing-host` | 0.2.10 | core | product runtime package consumed by the runtime/cli |
@@ -120,7 +122,6 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/provider-presets | `packages/provider-presets` | 0.7.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/providers-store | `packages/providers-store` | 0.4.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/quota | `packages/quota` | 0.0.0 | core | product runtime package consumed by the runtime/cli |
-@agentproto/redaction | `packages/redaction` | 0.2.4 | core | product runtime package consumed by the runtime/cli |
 @agentproto/ref | `packages/ref` | 0.2.3 | core | product runtime package consumed by the runtime/cli |
 @agentproto/registry | `packages/registry` | 0.1.2 | core | product runtime package consumed by the runtime/cli |
 @agentproto/relay | `packages/relay` | 0.1.6 | core | product runtime package consumed by the runtime/cli |
@@ -163,7 +164,6 @@ agentproto-vscode | `packages/vscode` | 0.25.0 | core | product runtime package 
 @agentproto/code | `packages/code` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/collection | `packages/collection` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/company | `packages/company` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/define-doctype | `packages/define-doctype` | 0.1.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/design | `packages/design` | 0.1.5 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/doctype | `packages/doctype` | 0.1.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/extension | `packages/extension` | 0.2.4 | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |

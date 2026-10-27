@@ -157,14 +157,44 @@ test("archived override packages remain zero-dependent", () => {
       "@agentproto/adapter-ai-sdk",
       "@agentproto/adapter-kit",
       "@agentproto/adapter-mastra",
+      "@agentproto/agency-v2",
+      "@agentproto/app-kit",
       "@agentproto/catalog",
+      "@agentproto/define-doctype",
+      "@agentproto/driver-agent-cli",
       "@agentproto/driver-sdk",
       "@agentproto/egress",
       "@agentproto/identity",
+      "@agentproto/llm-endpoint",
+      "@agentproto/mastra",
+      "@agentproto/pair-client",
+      "@agentproto/redaction",
       "@agentproto/role-catalog",
       "@agentproto/workflow-ai-sdk",
     ],
   );
+});
+
+test("AIP-70 rename shims are archived, like adapter-kit", () => {
+  const byName = new Map(
+    computeStatus(REPO_ROOT).map((e) => [e.name, e]),
+  );
+  for (const name of [
+    "@agentproto/agency-v2",
+    "@agentproto/app-kit",
+    "@agentproto/define-doctype",
+    "@agentproto/driver-agent-cli",
+    "@agentproto/llm-endpoint",
+    "@agentproto/mastra",
+    "@agentproto/pair-client",
+    "@agentproto/redaction",
+  ]) {
+    assert.equal(
+      byName.get(name).tier,
+      "archived",
+      `${name} is a deprecated re-export shim and must be archived`,
+    );
+  }
 });
 
 test("documented rule order: archived override wins over adapters/** path", () => {

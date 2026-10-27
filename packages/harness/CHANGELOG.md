@@ -1,4 +1,4 @@
-# @agentproto/driver-agent-cli
+# @agentproto/harness
 
 ## 2.15.0
 
