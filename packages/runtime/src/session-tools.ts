@@ -202,7 +202,7 @@ import {
   type WorktreeStatusLister,
   type WorktreeStatusView,
 } from "./worktree-status.js"
-import { livingSessionCwds, type WorktreeGcResult, type WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, parseExpectedPlan, type WorktreeGcResult, type WorktreeGcRunner } from "./worktree-gc.js"
 import {
   createBackgroundJobRegistry,
   timedOutWaiting,
@@ -4700,6 +4700,16 @@ export function registerSessionTools(
             "time and again immediately before apply touches anything). " +
             "Default 60. Pass 0 to disable the guard."
         ),
+      expectedPlan: z
+        .array(z.record(z.string(), z.unknown()))
+        .optional()
+        .describe(
+          "The `plan` array of an earlier dry run. With `apply: true`, THIS plan " +
+            "is applied instead of planning afresh, and every entry is " +
+            "re-checked (branch, HEAD, git index, live sessions) against it " +
+            "right before it is touched: an entry that changed since is " +
+            "skipped as `skipped-stale` with the reason. Omit to plan and apply in one call."
+        ),
       wait: mcpBool
         .optional()
         .describe(
@@ -4747,6 +4757,7 @@ export function registerSessionTools(
       }
 
       try {
+        const expectedPlan = parseExpectedPlan(input.expectedPlan)
         const { job, promise } = worktreeGcJobs.start(() =>
           runWorktreeGc({
             repoRoot: resolved.repoRoot,
@@ -4758,6 +4769,7 @@ export function registerSessionTools(
             protectedPaths: livingSessionCwds(registry),
             ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
             ...(typeof input.activeMinutes === "number" ? { activeMinutes: input.activeMinutes } : {}),
+            ...(expectedPlan ? { expectedPlan } : {}),
           })
         )
         if (input.wait === false) {

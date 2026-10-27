@@ -1418,12 +1418,14 @@ export interface WorktreeGcOutcomeView {
     | "skipped-dirty"
     | "aborted-reclassified"
     | "aborted-vanished"
+    | "skipped-stale"
     | "failed"
   reclaimReason?: WorktreeGcReclaimReason
   salvageDir?: string
   from?: WorktreeGcClass
   to?: WorktreeGcClass
   message?: string
+  reason?: string
 }
 
 export type WorktreeGcResult =

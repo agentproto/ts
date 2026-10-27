@@ -330,7 +330,7 @@ import {
   sessionWorktreeScope,
   type WorktreeStatusLister,
 } from "./worktree-status.js"
-import { livingSessionCwds, type WorktreeGcRunner } from "./worktree-gc.js"
+import { livingSessionCwds, parseExpectedPlan, type WorktreeGcRunner } from "./worktree-gc.js"
 import { withBranchGcApplySummary, type BranchGcKind, type BranchGcRunner, type BranchGcVerdictRecorder } from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
@@ -3565,6 +3565,19 @@ export async function startHttpServer(
                   Number.isFinite(Number(rawActiveMinutes))
                 ? Number(rawActiveMinutes)
                 : undefined
+          let expectedPlan: ReturnType<typeof parseExpectedPlan>
+          try {
+            expectedPlan = parseExpectedPlan("expectedPlan" in obj ? obj.expectedPlan : undefined)
+          } catch (err) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "invalid_expected_plan",
+                message: err instanceof Error ? err.message : String(err),
+              })
+            )
+            return
+          }
           const resolved = await resolveWorktreeQueryRoot({
             repoRoot,
             workspaceSlug,
@@ -3589,6 +3602,7 @@ export async function startHttpServer(
                 ? { noisePaths: obj.noisePaths.filter((p): p is string => typeof p === "string") }
                 : {}),
               ...(activeMinutes !== undefined ? { activeMinutes } : {}),
+              ...(expectedPlan ? { expectedPlan } : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))

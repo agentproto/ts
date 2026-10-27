@@ -374,6 +374,9 @@ describe("gc — plans-only worktrees (no commits of their own, dirt entirely un
     await addWorktree(repo, wtPath, ["-b", "wt/plans-only"], "main")
     await mkdir(join(wtPath, ".plans"), { recursive: true })
     await writeFile(join(wtPath, ".plans", "a.md"), "the plan\n")
+    // An idle worktree: its dirt is as old as its index (a just-written file is "someone is in here").
+    const aged = new Date(Date.now() - 61 * 60 * 1000)
+    await utimes(join(wtPath, ".plans", "a.md"), aged, aged)
 
     const forge = new UnreachableForgeClient("must not be called — ancestry alone classifies a fresh branch")
     const memo = new InMemoryVerdictMemoStore()
