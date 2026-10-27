@@ -17,6 +17,7 @@
 
 import { spawn } from "node:child_process"
 import {
+  chmodSync,
   mkdirSync,
   readFileSync,
   realpathSync,
@@ -146,7 +147,12 @@ export function trustClaudeFolder(cwd: string, env = process.env): void {
     `${Math.random().toString(36).slice(2)}.tmp`
   try {
     mkdirSync(dirname(configFile), { recursive: true })
-    writeFileSync(tempFile, JSON.stringify(config, null, 2))
+    writeFileSync(tempFile, JSON.stringify(config, null, 2), { mode: 0o600 })
+    try {
+      chmodSync(tempFile, 0o600)
+    } catch {
+      // Best effort to enforce restrictive permissions.
+    }
     renameSync(tempFile, configFile)
   } catch {
     // Best effort: fall back to the PTY trust-prompt answer.
