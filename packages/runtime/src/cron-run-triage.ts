@@ -3,7 +3,9 @@
  * Agent crons record their spawned session id on the run, so a direct
  * `sessionId` match is enough. Command crons do not: they record only the
  * job id, and the follow event carries `cron:<jobId>` as its label. Match
- * that label against the job's latest run that ended at or before the exit.
+ * that label against the job's run nearest the exit, within a bounded window:
+ * the exit event is emitted before the run record is finalized, so the run
+ * can end slightly AFTER the event.
  */
 
 export interface CronRunTriageRecord {
@@ -15,6 +17,7 @@ export interface CronRunTriageRecord {
 }
 
 const CRON_LABEL_PREFIX = "cron:"
+const RUN_WINDOW_MS = 60_000
 
 /** Parse the job id out of a `cron:<jobId>` follow label. */
 export function cronJobIdFromLabel(label: string | undefined): string | undefined {
@@ -41,18 +44,21 @@ export function resolveCronRunOk(input: {
   const exitMs = Date.parse(input.at)
   if (Number.isNaN(exitMs)) return undefined
 
-  let latest: CronRunTriageRecord | undefined
+  let nearest: CronRunTriageRecord | undefined
+  let nearestDistance = Number.POSITIVE_INFINITY
   for (const run of input.runs) {
     if (run.jobId !== jobId) continue
     const endedMs = Date.parse(run.endedAt)
-    if (Number.isNaN(endedMs) || endedMs > exitMs) continue
+    if (Number.isNaN(endedMs)) continue
+    const distance = Math.abs(endedMs - exitMs)
+    if (distance > RUN_WINDOW_MS) continue
     if (
-      !latest ||
-      endedMs > Date.parse(latest.endedAt) ||
-      (endedMs === Date.parse(latest.endedAt) && run.startedAt > latest.startedAt)
+      distance < nearestDistance ||
+      (distance === nearestDistance && nearest !== undefined && run.startedAt > nearest.startedAt)
     ) {
-      latest = run
+      nearest = run
+      nearestDistance = distance
     }
   }
-  return latest?.ok
+  return nearest?.ok
 }

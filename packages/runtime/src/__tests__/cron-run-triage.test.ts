@@ -11,13 +11,17 @@ import {
 const EXIT_AT = "2026-10-05T00:05:00.000Z"
 const JOB_ID = "cron_e89272da-fbd9-4c6d-9d6c-84825a829cfe"
 const LABEL = `cron:${JOB_ID}`
+const HOUR_MS = 60 * 60_000
+
+const at = (offsetMs: number): string =>
+  new Date(Date.parse(EXIT_AT) + offsetMs).toISOString()
 
 function run(overrides: Partial<CronRunTriageRecord> = {}): CronRunTriageRecord {
   return {
     jobId: JOB_ID,
     ok: true,
     startedAt: "2026-10-05T00:03:00.000Z",
-    endedAt: "2026-10-05T00:04:00.000Z",
+    endedAt: at(-1_000),
     ...overrides,
   }
 }
@@ -46,28 +50,37 @@ function classify(runs: readonly CronRunTriageRecord[], event: TriageEvent) {
 }
 
 describe("cron-ok triage for command crons", () => {
-  it("drops a command cron exit whose latest run at or before the exit was ok", () => {
-    const runs = [
-      run({ ok: false, endedAt: "2026-10-05T00:01:00.000Z" }),
-      run({ ok: true, endedAt: "2026-10-05T00:04:00.000Z" }),
-      run({ ok: false, endedAt: "2026-10-05T00:06:00.000Z" }),
-    ]
+  it("drops when the job's run ended 1s after the exit and was ok", () => {
+    const runs = [run({ ok: true, endedAt: at(1_000) })]
     expect(classify(runs, exited("sess_command", LABEL))).toEqual({
       decision: "drop",
       rule: "cron-ok",
     })
   })
 
-  it("wakes when the matching command cron run failed", () => {
-    expect(
-      classify([run({ ok: false })], exited("sess_command", LABEL)),
-    ).toEqual({ decision: "wake", rule: "default" })
+  it("wakes when the nearest run failed, even with a stale ok run", () => {
+    const runs = [
+      run({ ok: false, endedAt: at(1_000) }),
+      run({ ok: true, endedAt: at(-2 * HOUR_MS) }),
+    ]
+    expect(classify(runs, exited("sess_command", LABEL))).toEqual({
+      decision: "wake",
+      rule: "default",
+    })
   })
 
-  it("wakes when no run of that job ended at or before the exit", () => {
+  it("wakes when the only run is 2 hours old, outside the window", () => {
+    const runs = [run({ ok: true, endedAt: at(-2 * HOUR_MS) })]
+    expect(classify(runs, exited("sess_command", LABEL))).toEqual({
+      decision: "wake",
+      rule: "default",
+    })
+  })
+
+  it("picks the nearest run, not just any earlier run", () => {
     const runs = [
-      run({ jobId: "cron_other", ok: true }),
-      run({ ok: true, endedAt: "2026-10-05T00:06:00.000Z" }),
+      run({ ok: false, endedAt: at(1_000) }),
+      run({ ok: true, endedAt: at(-50_000) }),
     ]
     expect(classify(runs, exited("sess_command", LABEL))).toEqual({
       decision: "wake",
@@ -81,12 +94,18 @@ describe("cron-ok triage for command crons", () => {
         jobId: "cron_other",
         sessionId: "sess_agent",
         ok: true,
-        endedAt: "2026-10-05T00:06:00.000Z",
+        endedAt: at(1_000),
       }),
+      run({ ok: false, endedAt: at(1_000) }),
+      run({ ok: true, endedAt: at(-2 * HOUR_MS) }),
     ]
     expect(classify(runs, exited("sess_agent", LABEL))).toEqual({
       decision: "drop",
       rule: "cron-ok",
+    })
+    expect(classify(runs, exited("sess_command", LABEL))).toEqual({
+      decision: "wake",
+      rule: "default",
     })
   })
 })
