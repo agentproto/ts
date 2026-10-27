@@ -716,16 +716,30 @@ export async function resolveAdapter(slug: string): Promise<ResolvedAdapter> {
     )
   }
 
-  const packageName = `@agentproto/adapter-${slug}`
+  const adapterPackageName = `@agentproto/adapter-${slug}`
+  const harnessPackageName = `@agentproto/harness-${slug}`
   const camel = slugToCamel(slug)
   let mod: Record<string, unknown>
-  let resolvedPackageName = packageName
+  let packageName = adapterPackageName
   // Specifier re-importable a second time by `withResolvedProprietaryAdapter`
   // below (it rewrites a `protocol: "proprietary"` handle's self-referencing
   // `adapter` field) — the package name, same as the npm path always used.
-  const proprietaryRewriteSpecifier = packageName
+  const proprietaryRewriteSpecifier = adapterPackageName
+  let primaryErr: unknown
   try {
-    mod = await importFresh(packageName)
+    try {
+      mod = await importFresh(adapterPackageName)
+    } catch (err) {
+      primaryErr = err
+      try {
+        mod = await importFresh(harnessPackageName)
+        packageName = harnessPackageName
+      } catch (harnessErr) {
+        // Prefer the adapter-package error message as the primary cause
+        // for backwards compatibility, but keep harnessErr available
+        throw primaryErr
+      }
+    }
   } catch (primaryErr) {
     // npm/node_modules resolution missed — before the parent-package and
     // generic-ACP fallbacks below, check for a workspace-local build:
@@ -914,7 +928,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     description: typeof handle.description === "string" ? handle.description : "",
     protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
     streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
-    packageName: resolved.packageName ?? `@agentproto/adapter-${slug}`,
+    packageName: resolved.packageName ?? `@agentproto/harness-${slug}`,
     commands: Array.isArray(handle.commands) ? (handle.commands as AgentCliCommand[]) : [],
     models: modelDetails.map((m) => m.id),
     modes: toAdapterModes(resolved.handle.modes),
@@ -976,13 +990,14 @@ export async function listInstalledAdapters(opts?: {
         // syntax error in dist, etc.) still warns individually.
         if (
           /Cannot find package|ERR_MODULE_NOT_FOUND/i.test(msg) &&
-          msg.includes(`@agentproto/adapter-${slug}`)
+          (msg.includes(`@agentproto/adapter-${slug}`) ||
+            msg.includes(`@agentproto/harness-${slug}`))
         ) {
           notImportable.push(slug)
         } else {
           console.warn(
             `[agentproto/cli] listInstalledAdapters: skipping adapter '${slug}' — the package is on disk but cannot be imported ` +
-              `(dist missing or malformed?): ${msg}. Fix: reinstall it (\`npm i -g @agentproto/adapter-${slug}\`) or reinstall the CLI.`
+              `(dist missing or malformed?): ${msg}. Fix: reinstall it (\`npm i -g @agentproto/harness-${slug}\` or \`@agentproto/adapter-${slug}\`) or reinstall the CLI.`
           )
         }
       }
@@ -1222,7 +1237,7 @@ async function discoverExtraHandles(
           wrapCliHandle(
             slug,
             resolved.handle,
-            resolved.packageName ?? `@agentproto/adapter-${slug}`,
+            resolved.packageName ?? `@agentproto/harness-${slug}`,
             resolved.stale
           )
         )

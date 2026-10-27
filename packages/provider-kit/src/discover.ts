@@ -198,12 +198,24 @@ export async function discoverAdapterPackages(opts?: {
         const existing = bySlug.get(slug)
         // Precedence: canonical harness- beats adapter- within a tier;
         // first-party @agentproto still wins over third-party.
+        if (!existing) {
+          bySlug.set(slug, { slug, packageName })
+          continue
+        }
+        const existingIsFirstParty =
+          existing.packageName.startsWith("@agentproto/")
+        const candidateIsFirstParty = packageName.startsWith("@agentproto/")
+        if (existingIsFirstParty && !candidateIsFirstParty) {
+          continue
+        }
+        if (!existingIsFirstParty && candidateIsFirstParty) {
+          bySlug.set(slug, { slug, packageName })
+          continue
+        }
+        // Same tier: canonical harness- wins over adapter-
         if (
-          !existing ||
-          (isHarnessPackageName(packageName) &&
-            !isHarnessPackageName(existing.packageName)) ||
-          (scope === "@agentproto" &&
-            !existing.packageName.startsWith("@agentproto/"))
+          isHarnessPackageName(packageName) &&
+          !isHarnessPackageName(existing.packageName)
         ) {
           bySlug.set(slug, { slug, packageName })
         }

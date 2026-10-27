@@ -58,4 +58,28 @@ describe("discoverAdapterPackages — harness- prefix alias", () => {
       await fs.rm(root, { recursive: true, force: true })
     }
   })
+
+  it("first-party @agentproto wins over third-party even if third-party uses harness- and is seen later", { timeout: 15_000 }, async () => {
+    const root = await fs.mkdtemp(join(tmpdir(), "agentproto-discover-cross-"))
+    try {
+      const nm = join(root, "node_modules")
+      for (const name of [
+        "@agentproto/adapter-dup",
+        "@x/agentproto-harness-dup",
+      ]) {
+        await fs.mkdir(join(nm, name, "dist"), { recursive: true })
+        await fs.writeFile(
+          join(nm, name, "package.json"),
+          JSON.stringify({ name, version: "0.0.1", type: "module" })
+        )
+      }
+
+      const found = await discoverAdapterPackages({ start: root })
+      expect(found.find((a) => a.slug === "dup")?.packageName).toBe(
+        "@agentproto/adapter-dup"
+      )
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
 })
