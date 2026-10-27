@@ -290,8 +290,12 @@ export interface DeliveryProbe {
  * Probe the branch and snapshot uncommitted work in one round trip. The
  * snapshot goes through a COPY of the index (`GIT_INDEX_FILE`), so `git add
  * -A` stages nothing in the agent's own index; `.gitignore`d paths
- * (node_modules, dist) stay out. A failing snapshot never fails the probe:
- * commits can still be delivered without it.
+ * (node_modules, dist) stay out. The copy is made with `cp -p`: keeping the
+ * index mtime lets git's racy-entry protection work as it does on the real
+ * index. A plain `cp` stamps the copy with a fresh mtime, which makes an
+ * entry written in the same second look stat-clean, so a same-size edit
+ * would be skipped and the snapshot would carry the OLD content. A failing
+ * snapshot never fails the probe: commits can still be delivered without it.
  */
 export function buildProbeCommand(
   target: SandboxDeliveryTarget,
@@ -321,6 +325,36 @@ export function buildProbeCommand(
       `echo "head=$(git rev-parse HEAD)"`
     )
   }
+  const snapshot = buildSnapshotCommand(target, opts)
+  return (
+    `cd ${shellQuote(target.checkoutDir)} && ` +
+    `echo "ahead=$(git rev-list --count ${range})" && ` +
+    `n=$(git status --porcelain | wc -l | tr -d ' ') && echo "uncommitted=$n" && ` +
+    `echo "head=$(git rev-parse HEAD)" && ` +
+    `if [ "$n" -gt 0 ]; then { ${snapshot}; } || echo "snapshot=failed"; rm -f "$idx"; fi`
+  )
+}
+
+/**
+ * Snapshot uncommitted work as a commit object (parent: HEAD) parked at
+ * {@link SNAPSHOT_REF}, without touching the agent's own index, worktree or
+ * branch. `git add -A` runs against a COPY of the index (`GIT_INDEX_FILE`),
+ * so `.gitignore`d paths (node_modules, dist) stay out. The copy is made with
+ * `cp -p`: keeping the index mtime lets git's racy-entry protection work as
+ * it does on the real index. A plain `cp` stamps the copy with a fresh mtime,
+ * which makes an entry written in the same second look stat-clean, so a
+ * same-size edit would be skipped and the snapshot would carry the OLD
+ * content.
+ */
+export function buildSnapshotCommand(
+  target: SandboxDeliveryTarget,
+  opts?: {
+    /** Recorded in the snapshot commit message; a human-readable breadcrumb. */
+    turn?: number
+    /** Stamped as an `Agentproto-Session:` trailer on the snapshot commit. */
+    sessionId?: string
+  },
+): string {
   const turnSuffix = opts?.turn !== undefined ? ` turn ${opts.turn}` : ""
   const baseMessage = `agentproto checkpoint: uncommitted work on ${target.branch}${turnSuffix}`
   const message = shellQuote(
@@ -328,17 +362,11 @@ export function buildProbeCommand(
       ? commitMessageWithSessionTrailer(baseMessage, opts.sessionId)
       : baseMessage,
   )
-  const snapshot =
-    `idx=$(mktemp -u) && { cp "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true; } && ` +
+  return (
+    `idx=$(mktemp -u) && { cp -p "$(git rev-parse --git-path index)" "$idx" 2>/dev/null || true; } && ` +
     `GIT_INDEX_FILE="$idx" git add -A && tree=$(GIT_INDEX_FILE="$idx" git write-tree) && ` +
     `snap=$(git commit-tree "$tree" -p HEAD -m ${message}) && ` +
     `git update-ref ${SNAPSHOT_REF} "$snap" && echo "snapshot=$snap" && echo "tree=$tree"`
-  return (
-    `cd ${shellQuote(target.checkoutDir)} && ` +
-    `echo "ahead=$(git rev-list --count ${range})" && ` +
-    `n=$(git status --porcelain | wc -l | tr -d ' ') && echo "uncommitted=$n" && ` +
-    `echo "head=$(git rev-parse HEAD)" && ` +
-    `if [ "$n" -gt 0 ]; then { ${snapshot}; } || echo "snapshot=failed"; rm -f "$idx"; fi`
   )
 }
 
