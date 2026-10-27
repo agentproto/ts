@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-codex",
   "version": "2.0.31",
-  "description": "@agentproto/adapter-codex — AIP-45 AGENT-CLI adapter for OpenAI's Codex CLI via @agentclientprotocol/codex-acp. Spawns the ACP wrapper over stdio JSON-RPC.",
+  "description": "@agentproto/adapter-codex \u2014 AIP-45 AGENT-CLI adapter for OpenAI's Codex CLI via @agentclientprotocol/codex-acp. Spawns the ACP wrapper over stdio JSON-RPC.",
   "keywords": [
     "agentproto",
     "aip-45",
@@ -49,7 +49,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*"
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

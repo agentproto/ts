@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest"
 // "[unknown_option at config.options.model] Option 'model' is not declared
 // by manifest 'claude-code-cloud'. Known options: (none)" and EVERY cloud
 // spawn that named a model was refused before any vendor side effect.
-import { composeSpawn } from "@agentproto/driver-agent-cli"
+import { composeSpawn } from "@agentproto/harness"
 import { claudeCodeCloud } from "../index.js"
 
 describe("claude-code-cloud manifest: model option (AIP-66)", () => {

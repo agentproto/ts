@@ -21,7 +21,7 @@ import { PassThrough } from "node:stream"
 import type { ChildProcess } from "node:child_process"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { resolveCommandSandbox } from "@agentproto/command-sandbox"
-import type { AgentCliDefinition } from "@agentproto/driver-agent-cli"
+import type { AgentCliDefinition } from "@agentproto/harness"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createAppRegistry } from "../app-registry.js"
 import type { AgentAdapterResolver } from "../http-server.js"
@@ -66,7 +66,7 @@ vi.mock("@agentproto/acp/client", async importOriginal => ({
   })),
 }))
 
-const { defineAgentCli, createAgentCliRuntime } = await import("@agentproto/driver-agent-cli")
+const { defineAgentCli, createAgentCliRuntime } = await import("@agentproto/harness")
 
 /** Mirrors `adapters/codex`'s definition: the parts the spawn path reads. */
 const codexDefinition = (): AgentCliDefinition => ({

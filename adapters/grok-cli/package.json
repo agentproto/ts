@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-grok-cli",
   "version": "0.2.26",
-  "description": "@agentproto/adapter-grok-cli — AIP-45 AGENT-CLI adapter for xAI's Grok Build CLI in ACP mode (`grok agent stdio`). Native billing-auth: \"use my existing Grok login\".",
+  "description": "@agentproto/adapter-grok-cli \u2014 AIP-45 AGENT-CLI adapter for xAI's Grok Build CLI in ACP mode (`grok agent stdio`). Native billing-auth: \"use my existing Grok login\".",
   "keywords": [
     "agentproto",
     "aip-45",
@@ -49,7 +49,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentproto/driver-agent-cli": "workspace:*"
+    "@agentproto/harness": "workspace:*"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

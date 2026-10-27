@@ -1,9 +1,12 @@
 {
-  "extends": "@agentproto/tooling/typescript/node-library.json",
+  "extends": "@agentproto/tooling/typescript/bundler.json",
   "compilerOptions": {
+    "skipLibCheck": true,
     "declaration": false,
     "declarationMap": false,
-    "rootDir": "src"
+    "lib": [
+      "ES2022"
+    ]
   },
   "include": [
     "src/**/*"

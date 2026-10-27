@@ -41,7 +41,8 @@ export const WEIGHTS = {
   '@agentproto/workflow-mastra': 33,
   '@agentproto/storage-github': 26,
   '@agentproto/apps': 26,
-  '@agentproto/driver-agent-cli': 25,
+  '@agentproto/harness': 25,
+  '@agentproto/driver-agent-cli': 1,
   '@agentproto/corpus': 23,
   '@agentproto/workflow-runtime': 22,
 }

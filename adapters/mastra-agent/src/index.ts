@@ -16,7 +16,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // Self-locating: the built handle spawns `node <this-dist>/cli.mjs acp`.
 // import.meta.url resolves into dist/ at runtime, where cli.mjs sits next to

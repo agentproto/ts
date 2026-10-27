@@ -45,7 +45,7 @@ import {
   type AgentCliConnectOptions,
   type AgentCliHandle,
   type StreamEvent,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 /** Env var carrying a manifest `modes[].env` patch through to `send()` —
  *  there's no argv for a `proprietary` arm to append `bin_args_append`

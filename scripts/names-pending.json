@@ -1,11 +1,9 @@
 {
   "pending": [
-    "ts:aip-45:define",
     "ts:aip-46:package",
     "ts:package:@agentproto/agencies:unregistered",
     "ts:package:@agentproto/catalog:unregistered",
     "ts:package:@agentproto/corpus:unregistered",
-    "ts:package:@agentproto/driver-agent-cli:unregistered",
     "ts:package:@agentproto/eval:unregistered"
   ]
 }

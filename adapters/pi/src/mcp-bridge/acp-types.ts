@@ -7,6 +7,6 @@
  * no dependence on a symbol the built types don't surface.
  */
 
-import type { AgentCliConnectOptions } from "@agentproto/driver-agent-cli"
+import type { AgentCliConnectOptions } from "@agentproto/harness"
 
 export type AcpMcpServer = NonNullable<AgentCliConnectOptions["mcpServers"]>[number]

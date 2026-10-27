@@ -36,7 +36,7 @@ import { mkdir, mkdtemp, rm, writeFile, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
-import type { AgentCliHandle, AgentCliInstallMethod } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle, AgentCliInstallMethod } from "@agentproto/harness"
 import { resolveAdapter } from "../registry/resolve.js"
 import { CATALOG } from "../registry/catalog.js"
 import {

@@ -22,7 +22,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { codexNativeHooks } from "./native-hooks.js"
 
 export const codex: AgentCliHandle = defineAgentCli({

@@ -65,7 +65,7 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
   external: [
     "@agentproto/acp",
     "@agentproto/driver",
-    "@agentproto/driver-agent-cli",
+    "@agentproto/harness",
     // Independently-published workspace packages consumed both directly by the
     // pairing CLI (`pair`, `rendezvous`) and transitively by the bundled runtime
     // dist. Externalised (like @agentproto/acp) so the published cli installs

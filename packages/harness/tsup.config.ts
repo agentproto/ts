@@ -1,19 +1,25 @@
 import { createTsupConfig } from "@agentproto/tooling/tsup/base"
 
-const entry = {
-  index: "src/index.ts",
-  types: "src/types.ts",
-}
-
 export default createTsupConfig({
   banner: `/**
- * @agentproto/harness v0.6.0 (deprecated shim)
- * Re-exports @agentproto/session-presets unchanged.
+ * @agentproto/harness v2.15.0
+ * AIP-45 AGENT-CLI.md \`defineHarness\` / \`defineAgentCli\` implementation.
  */`,
-  entry,
+  entry: {
+    index: "src/index.ts",
+    "manifest/index": "src/manifest/index.ts",
+  },
   format: ["esm"],
   splitting: true,
-  dts: { entry },
-  external: ["@agentproto/session-presets", "@agentproto/session-presets/*"],
+  dts: true,
+  external: [
+    "zod",
+    "gray-matter",
+    "@agentproto/doctype",
+    "@agentproto/acp",
+    "node:child_process",
+    "node:stream/web",
+    "node:stream",
+  ],
   noExternal: [],
 })

@@ -22,7 +22,7 @@ import { platform } from "node:os"
 import { join } from "node:path"
 import { parseArgs } from "node:util"
 import { spawn } from "node:child_process"
-import type { AgentCliHandle, AgentCliSetupStep, AgentCliSetupSkipIf } from "@agentproto/driver-agent-cli"
+import type { AgentCliHandle, AgentCliSetupStep, AgentCliSetupSkipIf } from "@agentproto/harness"
 import {
   makeAdapterWizard,
   makeSetupLedger,

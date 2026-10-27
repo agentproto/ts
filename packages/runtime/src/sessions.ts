@@ -239,7 +239,7 @@ import { assertDecisionAllows, type Decision } from "./permissions.js"
 import {
   isModelSwitchAcknowledgement,
   parseModelSwitchCommand,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 /**
  * Minimal shape we need from a driver-agent-cli session — kept as a

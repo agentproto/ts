@@ -6,7 +6,7 @@ describe("agent-cli format identity", () => {
     expect(AGENT_CLI_FORMAT).toBe("agentproto.agent-cli/v1")
   })
 
-  it("keeps the legacy SPEC_NAME for compatibility", () => {
-    expect(SPEC_NAME).toBe("agentcli-interactive/v1")
+  it("exposes the AIP-70 registry spec id", () => {
+    expect(SPEC_NAME).toBe("harness/v1")
   })
 })

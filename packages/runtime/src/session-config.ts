@@ -32,7 +32,7 @@
  * posture VALUE mapping (`POSTURE_MODE_VALUES`) stays local.
  */
 
-import { inferLegacyModeKind } from "@agentproto/driver-agent-cli"
+import { inferLegacyModeKind } from "@agentproto/harness"
 // A `type`-only import (erased at compile — no runtime edge). `CostBudget` is a
 // pure record in `@agentproto/auth`, a package strictly BELOW runtime in the
 // layer stack (and already a workspace dependency, `package.json`), so naming

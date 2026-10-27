@@ -30,7 +30,7 @@ const require = __agp_createRequire(import.meta.url)`,
   format: ["esm"],
   splitting: false,
   dts: { entry: { index: "src/index.ts" } },
-  external: ["@agentproto/driver-agent-cli"],
+  external: ["@agentproto/harness"],
   // tsup externalizes `dependencies` by default. Force the MCP SDK to be
   // INLINED: the bridge extension runs inside pi's process, which cannot
   // resolve `@modelcontextprotocol/sdk` — it must be self-contained. (The

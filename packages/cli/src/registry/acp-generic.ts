@@ -23,7 +23,7 @@ import { delimiter, join } from "node:path"
 import {
   defineAgentCli,
   type AgentCliHandle,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import {
   loadConfig,
   type AcpAgentConfigEntry,

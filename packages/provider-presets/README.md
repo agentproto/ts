@@ -31,7 +31,7 @@ The registry is **data only**. It does not know about `claude-code` vs
 ```
 
 This keeps `@agentproto/provider-kit` (the catalog mechanics) and the generic
-`@agentproto/driver-agent-cli` both free of concrete provider URLs — data flows
+`@agentproto/harness` both free of concrete provider URLs — data flows
 down, projection stays in the consumer.
 
 ## Surface
@@ -73,7 +73,7 @@ their own preset with their real proxy URL.
 
 ```ts
 // In an adapter's AgentCliDefinition — a self-hosted LiteLLM preset
-import type { AgentCliDefinition } from "@agentproto/driver-agent-cli"
+import type { AgentCliDefinition } from "@agentproto/harness"
 
 export const definition: AgentCliDefinition = {
   // …adapter fields…

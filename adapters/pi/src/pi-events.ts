@@ -19,7 +19,7 @@
  * Wire profile documented in ../PI-RPC.md.
  */
 
-import type { StreamEvent } from "@agentproto/driver-agent-cli"
+import type { StreamEvent } from "@agentproto/harness"
 
 // ============================================================================
 // Pi wire types (the subset this adapter reads — mirrors pi source, no `any`)

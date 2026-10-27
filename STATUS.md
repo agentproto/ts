@@ -95,7 +95,7 @@ agentproto-desktop | `packages/desktop` | 0.3.5 | core | product runtime package
 @agentproto/eval-reporters | `packages/eval-reporters` | 0.2.28 | core | product runtime package consumed by the runtime/cli |
 @agentproto/events-channel | `packages/events-channel` | 0.1.1 | core | product runtime package consumed by the runtime/cli |
 @agentproto/governance-engine | `packages/governance/engine` | 0.1.13 | core | product runtime package consumed by the runtime/cli |
-@agentproto/harness | `packages/harness` | 0.6.0 | core | product runtime package consumed by the runtime/cli |
+@agentproto/harness | `packages/harness` | 2.15.0 | core | product runtime package consumed by the runtime/cli |
 @agentproto/inference-endpoint | `packages/inference-endpoint` | 0.11.15 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-cascade | `packages/knowledge-cascade` | 0.2.7 | core | product runtime package consumed by the runtime/cli |
 @agentproto/knowledge-engine | `packages/knowledge-engine` | 0.3.3 | core | product runtime package consumed by the runtime/cli |

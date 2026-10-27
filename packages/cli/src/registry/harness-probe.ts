@@ -23,7 +23,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { terminateChildTree } from "@agentproto/driver-agent-cli"
+import { terminateChildTree } from "@agentproto/harness"
 
 /** Protocol version the probe requests — the same one `@agentproto/acp`'s
  *  client sends (`PROTOCOL_VERSION_DEFAULT`). An agent answering anything

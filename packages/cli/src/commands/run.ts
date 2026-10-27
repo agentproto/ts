@@ -15,7 +15,7 @@ import {
   createAgentCliRuntime,
   type AgentCliRuntimeSession,
   type StreamEvent,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import { formatToolCall, formatToolResult } from "@agentproto/runtime"
 import { resolveAdapter } from "../registry/resolve.js"
 import { readStdinIfPiped } from "../util/stdin.js"

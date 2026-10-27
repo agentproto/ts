@@ -27,7 +27,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 import type { AuthStore, CapabilityStrategy, CredSource } from "@agentproto/provider-kit"
 import { geminiNativeHooks } from "./native-hooks.js"
 

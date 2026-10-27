@@ -31,7 +31,7 @@ import {
   defineAgentCli,
   type AgentCliHandle,
   type AgentCliRuntime,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // Verified live against grok 1.0.3 (`grok models`, and the ACP `initialize`
 // response's `modelState.availableModels`) — restricted to the text/coding

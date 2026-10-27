@@ -23,7 +23,7 @@ import type {
   AgentCliSetupStep,
   AgentCliSetupSkipIf,
   AgentCliSetupPersist,
-} from "@agentproto/driver-agent-cli"
+} from "@agentproto/harness"
 
 // ── Ledger ────────────────────────────────────────────────────────────────────
 
