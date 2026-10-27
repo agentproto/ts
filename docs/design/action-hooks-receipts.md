@@ -233,7 +233,10 @@ Durable fact: `archived` and `archivedAt` are descriptor fields, cited at
 `packages/runtime/src/sessions.ts:1938` `  archivedAt?: string`.
 Replay after a crash is state-safe but not event-safe: the flag converges, but
 each replay re-fires retirement listeners. A reaction targeting archive would
-need its own receipt dedupe, not the primitive.
+need its own receipt dedupe, not the primitive. The `session:archive` action
+provides that dedupe in the handler through the durable `archived` flag
+(`packages/runtime/src/action-hooks/session-archive-action.ts`), and the archive
+primitive itself is unchanged.
 
 ### Sandbox checkpoint
 
