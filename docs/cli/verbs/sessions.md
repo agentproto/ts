@@ -39,6 +39,8 @@ agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
+                                           [--prefer-native-terminal]
+                                           [--auto-compact-at-tokens <n>]
 agentproto sessions switch-profile --from <profileRef> --to <profileRef>
                                            [--dry-run] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
@@ -644,6 +646,13 @@ the PTY-native `claude --resume` branch, which can't re-resolve billing or apply
 an axis). This is the way to apply an axis that a [live switch](#config-axes-mcphttp)
 reported as `requires-restart`. Only agent-CLI sessions have axes to override —
 a PTY/command restart with overrides is rejected `400`.
+
+**Auto-compact threshold.** `--auto-compact-at-tokens <n>` sets the ABSOLUTE
+context threshold (tokens) at which an idle session is compacted automatically
+(clamped to 200000 max; `0` disables). Same semantic as
+`contextContinuity.autoCompactAtTokens` in [`config.md`](./config.md) / the
+`agent_start` spawn field, but stamped onto this session's config for the
+restart's lifetime.
 
 **Sandbox sessions whose box is gone.** Restarting a [sandbox](#sandbox)
 session whose box died boots a fresh box instead of failing. The clone source

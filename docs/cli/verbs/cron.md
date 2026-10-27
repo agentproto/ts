@@ -46,7 +46,7 @@ mutually exclusive, and passing none or more than one exits `2`.
 |------|------|--------------|
 | Command | `--command <cmd>` | Runs an allowlisted shell command. Must be listed in `<workspace>/.agentproto/allowed-commands.json`. |
 | Agent | `--adapter <slug>` | Spawns a **brand-new** agent session and prompts it. Requires `--prompt`. |
-| Prompt-session | `--target-session <id>` | Re-prompts an existing, already-running session **in place** — no new session is spawned. Requires `--prompt`. For a durable session a job checks in on periodically. |
+| Prompt-session | `--target-session <id>` | Re-prompts an existing session **in place** — no new session is spawned. Requires `--prompt`. Accepts a session id or the label-target spelling `agent:<label>`, which is resolved to a session at fire time: a live session with that label, else an ended (non-retired) one, revived in place.
 
 ## Subverbs
 
@@ -61,7 +61,7 @@ next run.
 | `--command <cmd>` | — | Allowlisted command to run. |
 | `--args <arg>` | — | Argument for `--command`; repeatable. |
 | `--adapter <slug>` | — | Adapter to spawn a fresh session from. |
-| `--target-session <id>` | — | Live session to re-prompt in place. |
+| `--target-session <id>` | — | Session to re-prompt in place — a session id, or `agent:<label>` resolved to a session at fire time. |
 | `--prompt <text>` | — | The turn to send. Required with `--adapter` or `--target-session`. |
 | `--cwd <dir>` | — | Working dir (command and agent kinds). |
 | `--model <id>` | — | Model override (agent kind). |
@@ -111,6 +111,10 @@ agentproto cron add --schedule "0 9 * * 1-5" \
 # Check in on a long-lived session every 15 minutes, in place
 agentproto cron add --schedule "*/15 * * * *" \
   --target-session sess_abc123 --prompt "status?"
+
+# Same, but target by label — resolved to a session at fire time
+agentproto cron add --schedule "*/15 * * * *" \
+  --target-session agent:pm --prompt "status?"
 
 # Spawn an agent with a custom MCP server every 2 hours
 agentproto cron add --schedule "0 */2 * * *" --adapter my-adapter \
