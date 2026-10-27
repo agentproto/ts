@@ -48,11 +48,6 @@ const resolved = resolve(pack, "fast", [env])
 // resolved.source tells you which layer won: "override" | "env" | "pack"
 ```
 
-> `definePack` / `Pack` (this package's original names, before they were
-> renamed to `defineRoutingPack` / `RoutingPack` to stop colliding with the
-> unrelated `definePack` in `@agentproto/pack`, AIP-52) still work as
-> deprecated aliases.
-
 ## Chains (sticky selection)
 
 ```ts

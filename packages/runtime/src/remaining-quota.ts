@@ -21,6 +21,7 @@
  *     body is wrapped so it can NEVER throw and NEVER block the rollup.
  */
 
+import { parseAnthropicUnifiedRateLimitHeaders } from "@agentproto/quota"
 import { resolveClaudeCodeOauthToken } from "./claude-code-oauth-source.js"
 import {
   readProfileQuota,
@@ -64,75 +65,11 @@ export interface RemainingQuotaReader {
 /** Both windows keyed by their label — the parse result and the stored shape. */
 type WindowQuotas = { "5h"?: RemainingQuota; "7d"?: RemainingQuota }
 
-/** Read a header case-insensitively from either a `Headers` or a plain record
- *  (adapters/tests hand us both). */
-function headerGet(
-  headers: Headers | Record<string, string | undefined>,
-  name: string,
-): string | undefined {
-  if (headers instanceof Headers) {
-    return headers.get(name) ?? undefined
-  }
-  const direct = headers[name]
-  if (direct !== undefined) return direct
-  const lower = name.toLowerCase()
-  for (const [key, value] of Object.entries(headers)) {
-    if (key.toLowerCase() === lower) return value
-  }
-  return undefined
-}
-
-/** Parse a remaining-count header. Integer count only; empty/garbage →
- *  undefined (that window is then omitted, never fabricated). */
-function parseRemaining(raw: string | undefined): number | undefined {
-  if (raw === undefined) return undefined
-  const trimmed = raw.trim()
-  if (!/^\d+$/.test(trimmed)) return undefined
-  const n = Number(trimmed)
-  return Number.isFinite(n) ? n : undefined
-}
-
-/** Normalize a reset header — unix-epoch SECONDS (possibly fractional) OR an
- *  ISO-8601 instant — to an ISO string. Unparseable → undefined. */
-function parseResetToIso(raw: string | undefined): string | undefined {
-  if (raw === undefined) return undefined
-  const trimmed = raw.trim()
-  if (!trimmed) return undefined
-  // Purely numeric ⇒ unix epoch seconds (Anthropic's documented form).
-  if (/^\d+(\.\d+)?$/.test(trimmed)) {
-    const secs = Number(trimmed)
-    if (!Number.isFinite(secs)) return undefined
-    const date = new Date(secs * 1000)
-    return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
-  }
-  // Otherwise try to parse it as an ISO instant.
-  const ms = Date.parse(trimmed)
-  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString()
-}
-
-/**
- * PURE: extract the unified 5h/7d remaining budgets from a response's
- * rate-limit headers. Reads `anthropic-ratelimit-unified-<w>-remaining` +
- * `-<w>-reset` for `<w> ∈ {5h, 7d}`. A window is emitted ONLY when both its
- * remaining and its reset parse — otherwise it's omitted (never fabricated).
- */
-export function parseAnthropicRateLimitHeaders(
-  headers: Headers | Record<string, string | undefined>,
-): WindowQuotas {
-  const result: WindowQuotas = {}
-  for (const label of ["5h", "7d"] as const) {
-    const remaining = parseRemaining(
-      headerGet(headers, `anthropic-ratelimit-unified-${label}-remaining`),
-    )
-    if (remaining === undefined) continue
-    const resetsAt = parseResetToIso(
-      headerGet(headers, `anthropic-ratelimit-unified-${label}-reset`),
-    )
-    if (resetsAt === undefined) continue
-    result[label] = { window: label, remaining, resetsAt, basis: "provider" }
-  }
-  return result
-}
+/** PURE: extract the unified 5h/7d remaining budgets from a response's
+ *  rate-limit headers. Delegates to `@agentproto/quota` so the provider-header
+ *  parser has one home. A window is emitted ONLY when both its remaining and
+ *  its reset parse; otherwise it's omitted (never fabricated). */
+export const parseAnthropicRateLimitHeaders = parseAnthropicUnifiedRateLimitHeaders
 
 /** Pick the requested window out of a `{ "5h"?, "7d"? }` map. */
 function pickWindow(windows: WindowQuotas, window: string): RemainingQuota | undefined {

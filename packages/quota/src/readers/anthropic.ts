@@ -86,3 +86,66 @@ export function quotaFromAnthropicHeaders(input: AnthropicHeadersInput): QuotaSt
     windows,
   })
 }
+
+/** One provider-reported remaining budget from the undocumented unified family. */
+export interface AnthropicUnifiedWindow {
+  window: "5h" | "7d"
+  remaining: number
+  resetsAt: string
+  basis: "provider"
+}
+
+/** Both unified windows keyed by their label. */
+export type AnthropicUnifiedWindows = {
+  "5h"?: AnthropicUnifiedWindow
+  "7d"?: AnthropicUnifiedWindow
+}
+
+/** Parse an integer remaining-count header; empty/garbage → undefined. */
+function parseRemainingCount(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!/^\d+$/.test(trimmed)) return undefined
+  const n = Number(trimmed)
+  return Number.isFinite(n) ? n : undefined
+}
+
+/** Normalize a unified reset header (unix-epoch seconds OR an ISO instant)
+ *  to an ISO string; unparseable → undefined. */
+function parseUnifiedReset(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) return undefined
+  if (/^\d+(\.\d+)?$/.test(trimmed)) {
+    const secs = Number(trimmed)
+    if (!Number.isFinite(secs)) return undefined
+    const date = new Date(secs * 1000)
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString()
+  }
+  const ms = Date.parse(trimmed)
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString()
+}
+
+/**
+ * PURE: extract the unified 5h/7d remaining budgets from Anthropic's
+ * `anthropic-ratelimit-unified-<w>-{remaining,reset}` headers. A window is
+ * emitted only when both its integer remaining and reset parse; otherwise it
+ * is omitted, never fabricated.
+ */
+export function parseAnthropicUnifiedRateLimitHeaders(
+  headers: Headers | Record<string, string | undefined>,
+): AnthropicUnifiedWindows {
+  const result: AnthropicUnifiedWindows = {}
+  for (const window of ["5h", "7d"] as const) {
+    const remaining = parseRemainingCount(
+      headerGet(headers, `anthropic-ratelimit-unified-${window}-remaining`),
+    )
+    if (remaining === undefined) continue
+    const resetsAt = parseUnifiedReset(
+      headerGet(headers, `anthropic-ratelimit-unified-${window}-reset`),
+    )
+    if (resetsAt === undefined) continue
+    result[window] = { window, remaining, resetsAt, basis: "provider" }
+  }
+  return result
+}

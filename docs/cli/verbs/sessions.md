@@ -56,8 +56,9 @@ agentproto sessions export   <id-or-name> [--json] [-o <file>]
 agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
-agentproto sessions wait     <id-or-name> [--until <event>] [--timeout <duration>]
-                                           [--policy <policyId>] [--json]
+agentproto sessions wait     <id-or-name> [--until <event>] [--since <seq>]
+                                           [--timeout <duration>] [--policy <policyId>]
+                                           [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions gc       --retention [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
@@ -649,7 +650,7 @@ a PTY/command restart with overrides is rejected `400`.
 
 **Auto-compact threshold.** `--auto-compact-at-tokens <n>` sets the ABSOLUTE
 context threshold (tokens) at which an idle session is compacted automatically
-(clamped to 200000 max; `0` disables). Same semantic as
+(clamped to 600000 max; `0` disables). Same semantic as
 `contextContinuity.autoCompactAtTokens` in [`../reference/config-schema.md`](../reference/config-schema.md) / the
 `agent_start` spawn field, but stamped onto this session's config for the
 restart's lifetime.
@@ -810,6 +811,7 @@ outcome instead of erroring.
 ```bash
 agentproto sessions wait ses_abc12
 agentproto sessions wait ses_abc12 --until turn-end --timeout 5m
+agentproto sessions wait ses_abc12 --until turn-end --since 0 --timeout 5m
 agentproto sessions wait --policy pol_abc12 --timeout 2m
 ```
 
@@ -823,6 +825,7 @@ without the 49s MCP constraint — prefer it when you have shell access.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--until <event>` | `any` | Which lifecycle event to wait on: `turn-end`, `awaiting-input`, `exited`, `any`. |
+| `--since <seq>` | none | Event-ring cursor. Replays matching events after `seq` before blocking. Use `--since 0` from a spawn-then-wait caller when the first turn may end before this process starts; without a cursor the daemon cannot distinguish that turn-end from stale history and the CLI's idle pre-flight exits 5. |
 | `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
 | `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
 | `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. |

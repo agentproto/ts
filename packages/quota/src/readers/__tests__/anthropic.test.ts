@@ -5,7 +5,11 @@
  * the nothing-usable → undefined path.
  */
 import { describe, expect, it } from "vitest"
-import { quotaFromAnthropicHeaders, quotaStatusSchema } from "../../index.js"
+import {
+  parseAnthropicUnifiedRateLimitHeaders,
+  quotaFromAnthropicHeaders,
+  quotaStatusSchema,
+} from "../../index.js"
 
 const FIXED = () => new Date("2026-10-19T00:00:00.000Z")
 
@@ -174,5 +178,55 @@ describe("quotaFromAnthropicHeaders", () => {
         headers: { "anthropic-ratelimit-requests-remaining": "40" },
       }),
     ).toBeUndefined()
+  })
+})
+
+describe("parseAnthropicUnifiedRateLimitHeaders", () => {
+  it("parses the 5h and 7d windows from unix-second resets", () => {
+    expect(
+      parseAnthropicUnifiedRateLimitHeaders({
+        "anthropic-ratelimit-unified-5h-remaining": "42",
+        "anthropic-ratelimit-unified-5h-reset": "1753336800",
+        "anthropic-ratelimit-unified-7d-remaining": "900",
+        "anthropic-ratelimit-unified-7d-reset": "1753336800",
+      }),
+    ).toEqual({
+      "5h": {
+        window: "5h",
+        remaining: 42,
+        resetsAt: "2025-07-24T06:00:00.000Z",
+        basis: "provider",
+      },
+      "7d": {
+        window: "7d",
+        remaining: 900,
+        resetsAt: "2025-07-24T06:00:00.000Z",
+        basis: "provider",
+      },
+    })
+  })
+
+  it("accepts ISO resets and Headers input case-insensitively", () => {
+    const headers = new Headers({
+      "Anthropic-RateLimit-Unified-5h-Remaining": "7",
+      "Anthropic-RateLimit-Unified-5h-Reset": "2026-07-24T05:00:00Z",
+    })
+    expect(parseAnthropicUnifiedRateLimitHeaders(headers)["5h"]).toEqual({
+      window: "5h",
+      remaining: 7,
+      resetsAt: "2026-07-24T05:00:00.000Z",
+      basis: "provider",
+    })
+  })
+
+  it("omits windows with a garbage remaining or unparseable reset", () => {
+    expect(
+      parseAnthropicUnifiedRateLimitHeaders({
+        "anthropic-ratelimit-unified-5h-remaining": "soon",
+        "anthropic-ratelimit-unified-5h-reset": "1753336800",
+        "anthropic-ratelimit-unified-7d-remaining": "10",
+        "anthropic-ratelimit-unified-7d-reset": "eventually",
+      }),
+    ).toEqual({})
   })
 })

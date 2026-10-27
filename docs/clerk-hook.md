@@ -126,8 +126,12 @@ What changes for a listed workspace:
 
 - each firing emits the host event `agentproto:clerk-due` and writes a
   receipt under `~/.agentproto/reaction-receipts/<bucket>.json`;
-- the pass runs through the reaction runner, so a failed pass is retried up
-  to 3 times with backoff;
+- the pass runs through the reaction runner, so a pass that throws (a refused
+  command, a failed spawn) is retried with backoff, up to 3 attempts in total;
+- a `run.command` that runs but exits with a non-zero code, or is killed by
+  its timeout, is not retried (the pass is not idempotent): the receipt ends
+  `dead` with the exit code as its reason. The legacy path still ignores the
+  exit code;
 - boot reconciliation marks a stale `pending` receipt `dead` with
   `stale_trigger` (the session is gone) and does not replay a `running`
   receipt because the pass target is not idempotent;

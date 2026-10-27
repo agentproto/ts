@@ -104,6 +104,10 @@ describe("parsePackManifest", () => {
 })
 
 describe("computePackDigestSha256 — the v1 digest recipe", () => {
+  it("writes the canonical review.pack-digest/v1 recipe tag", () => {
+    expect(PACK_DIGEST_ALG).toBe("review.pack-digest/v1")
+  })
+
   /** Reimplements the documented byte layout independently of the source
    *  under test — proves the DOCUMENTED recipe (not just internal
    *  self-consistency) reproduces the digest from raw files. */

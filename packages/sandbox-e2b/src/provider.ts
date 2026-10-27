@@ -74,7 +74,7 @@ const DEFAULT_PORT = 18790
  * is still reachable — see `BOX_ACTIVE_RENEW_INTERVAL_MS` /
  * `BOX_DEADLINE_GUARD_LEAD_MS` in `@agentproto/runtime`.
  */
-const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
+export const DEFAULT_SANDBOX_TIMEOUT_MS = 45 * 60_000
 /** Account-level ceiling: `sandbox.setTimeout` rejects anything above 1 hour
  *  ("Timeout cannot be greater than 1 hours").
  *

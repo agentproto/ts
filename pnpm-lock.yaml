@@ -1712,6 +1712,9 @@ importers:
       '@agentproto/secrets':
         specifier: workspace:*
         version: link:../secrets
+      '@agentproto/sentinel':
+        specifier: workspace:*
+        version: link:../sentinel
       '@agentproto/workflow-loader':
         specifier: workspace:*
         version: link:../workflow-loader

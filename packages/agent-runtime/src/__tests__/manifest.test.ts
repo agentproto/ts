@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { parseManifest } from "../manifest.js"
+import { MULTI_AGENT_RUNTIME_SCHEMA, parseManifest } from "../manifest.js"
 
 describe("parseManifest", () => {
+  it("writes the canonical runtime/v1 schema tag", () => {
+    expect(MULTI_AGENT_RUNTIME_SCHEMA).toBe("runtime/v1")
+  })
+
   it("accepts per-participant command/args/model config", () => {
     const manifest = parseManifest(`---
 schema: agentruntimes/v1

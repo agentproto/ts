@@ -77,13 +77,21 @@ export type GcClass = "reclaim" | "salvage" | "hold"
 
 export interface ClassifyForGcOptions {
   /**
-   * A clean, idle/daemon-unreachable DETACHED worktree moves from `hold` to
-   * `reclaim` (PLAN.md §5.1). This is the only reclassification power any
-   * flag has: every other hold reason — partial, open, unknown(offline),
-   * gone-unexplained, diverged — is untouched by any flag, ever. Default
-   * false.
+   * Kept so `--include-detached` keeps working. It no longer grants any
+   * reclaim power: a detached HEAD is an anonymous branch and is reclaimed
+   * only when `detachedInBase` proves its sha is contained in base, with or
+   * without this flag. Every other hold reason — partial, open,
+   * unknown(offline), gone-unexplained, diverged — is untouched by any flag.
    */
   includeDetached?: boolean
+  /**
+   * Proof, computed by `resolveGcClass` (`provenDetachedInBase`), that a
+   * detached HEAD's sha is contained in base (ancestor, squash, patch, or the
+   * head of a merged PR). Absent/false ⇒ a detached worktree is never
+   * `reclaim` and never `salvage`: its commits may be reachable from nowhere
+   * else.
+   */
+  detachedInBase?: boolean
   /** Threaded straight through to `classify`'s `RECENT_WRITE_HOLD_WINDOW_MS` guard. Defaults to `Date.now()`. */
   nowMs?: number
 }
@@ -95,11 +103,11 @@ export interface ClassifyForGcOptions {
  * invariant is load-bearing for `ls --status` and every other caller (see
  * its 2026-07-15 note) and stays untouched here. What `classify` cannot know
  * is gc-specific archival policy; two overrides live here instead:
- *   - `--include-detached`: a clean, idle DETACHED worktree moves `hold` →
- *     `reclaim`.
+ *   - a clean, idle DETACHED worktree whose sha is proven in base
+ *     (`detachedInBase`) moves `hold` → `reclaim`; unproven stays `hold`.
  *   - the "plans-only" rule below: a no-commit worktree (`fresh`, or
- *     `detached` when `includeDetached` is set — same gate, since a detached
- *     HEAD's commit safety is exactly as unproven either way) whose ONLY
+ *     `detached` with `detachedInBase` — same gate, since a detached HEAD
+ *     only has no commits of its own once it is proven in base) whose ONLY
  *     dirt is untracked files under `.plans/` moves `hold` → `salvage`, so
  *     `--salvage-dirty` archives the plan files (never discards them) instead
  *     of holding the worktree forever. Narrow on purpose: any OTHER dirt
@@ -113,11 +121,9 @@ export function classifyForGc(
   options: ClassifyForGcOptions = {},
 ): GcClass {
   const idleOrUnreachable = liveness.state === "idle" || liveness.state === "daemon-unreachable"
-  if (options.includeDetached && integration.state === "detached") {
-    if (tree.state === "clean" && idleOrUnreachable) return "reclaim"
-  }
-  const noCommitsOfItsOwn =
-    integration.state === "fresh" || (Boolean(options.includeDetached) && integration.state === "detached")
+  const detachedProven = integration.state === "detached" && options.detachedInBase === true
+  if (detachedProven && tree.state === "clean" && idleOrUnreachable) return "reclaim"
+  const noCommitsOfItsOwn = integration.state === "fresh" || detachedProven
   if (
     noCommitsOfItsOwn &&
     idleOrUnreachable &&
@@ -367,6 +373,8 @@ export interface ResolveGcClassOptions extends ClassifyForGcOptions {
   inBaseCheck?: boolean
   /** The tip commit of the worktree being classified — `worktree.head`. */
   tipSha: string
+  /** Forge handle for the merged-PR-head tier of the detached proof. Omitted ⇒ that tier is skipped (never read as "no merged PR"). */
+  forge?: ForgeClient
   /** Default `"origin/main"` — matches `reconcileIntegration`'s own default. */
   defaultBranchRef?: string
 }
@@ -391,11 +399,18 @@ export async function resolveGcClass(
   liveness: LivenessState,
   options: ResolveGcClassOptions,
 ): Promise<ResolvedGcClass> {
-  const baseClass = classifyForGc(tree, integration, liveness, options)
-  if (baseClass !== "hold") return { class: baseClass }
+  const baseRef = options.defaultBranchRef ?? "origin/main"
+  let detachedProof: DetachedProof | null = null
+  if (integration.state === "detached" && detachedProofApplies(tree, liveness)) {
+    detachedProof = await provenDetachedInBase(options.repoRoot, baseRef, options.tipSha, options.forge)
+  }
+  const baseClass = classifyForGc(tree, integration, liveness, { ...options, detachedInBase: detachedProof !== null })
+  if (baseClass !== "hold") {
+    const reason = detachedProof === "squash-merged" || detachedProof === "patch-merged" ? detachedProof : undefined
+    return reason ? { class: baseClass, reclaimReason: reason } : { class: baseClass }
+  }
   if (tree.state !== "clean") return { class: "hold" }
 
-  const baseRef = options.defaultBranchRef ?? "origin/main"
   if (integration.state === "unpushed" && (await isMechanicalDepBumpRange(options.repoRoot, baseRef, options.tipSha))) {
     return { class: "reclaim", reclaimReason: "dep-bump" }
   }
@@ -447,6 +462,47 @@ async function provenInBase(
     // An unresolvable base or a git error proves nothing — keep holding.
     return null
   }
+}
+
+// ── detached HEAD proof ─────────────────────────────────────────────────
+//
+// A detached HEAD is an anonymous branch: `git worktree remove` drops the
+// only local ref to its commits, so reclaiming one whose sha is not in base
+// can lose work (a worktree sitting on a remote branch's unmerged commits is
+// the observed case). Same ladder as a branch tip, minus the content-coverage
+// tier: ancestor, squash (`merge-tree --write-tree` == base tree), patch
+// (`git cherry` all `-`), then a merged PR whose head IS the sha when the
+// forge answers. Anything else, including a forge error, is "not proven".
+
+type DetachedProof = "merged" | "squash-merged" | "patch-merged" | "merged-pr-head"
+
+/** Cheap pre-gate so the ladder's git spawns are only paid for a detached worktree that could actually leave. */
+function detachedProofApplies(tree: TreeState, liveness: LivenessState): boolean {
+  if (liveness.state !== "idle" && liveness.state !== "daemon-unreachable") return false
+  if (tree.state === "clean") return true
+  return tree.state === "dirty" && tree.modified === 0 && tree.staged === 0 && tree.untracked > 0 && tree.onlyUnder === ".plans/"
+}
+
+async function provenDetachedInBase(
+  repoRoot: string,
+  baseRef: string,
+  sha: string,
+  forge: ForgeClient | undefined,
+): Promise<DetachedProof | null> {
+  try {
+    const tip = await classifyTipAgainstBase(repoRoot, baseRef, sha)
+    if (tip.status === "merged" || tip.status === "squash-merged" || tip.status === "patch-merged") return tip.status
+  } catch {
+    // A git error proves nothing; the forge tier below may still prove it.
+  }
+  if (!forge) return null
+  try {
+    const prs = await forge.pullRequestsForCommit(sha)
+    if (prs.some((pr) => pr.merged && pr.headRefOid === sha)) return "merged-pr-head"
+  } catch {
+    // Forge unreachable proves nothing — keep holding.
+  }
+  return null
 }
 
 // ── plan ─────────────────────────────────────────────────────────────
@@ -812,6 +868,7 @@ async function reclaimPrunable(entry: GcPlanEntry, options: ApplyGcOptions): Pro
 
 async function toPlanEntry(
   repoRoot: string,
+  forge: ForgeClient,
   defaultBranchRef: string | undefined,
   worktree: GitWorktreeRef,
   status: { tree: TreeState; integration: IntegrationState; liveness: LivenessState },
@@ -851,6 +908,7 @@ async function toPlanEntry(
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot,
     tipSha: worktree.head,
+    forge,
     defaultBranchRef,
     includeDetached,
     nowMs,
@@ -909,6 +967,7 @@ export async function planGc(input: PlanGcInput): Promise<GcPlanEntry[]> {
     entries.push(
       await toPlanEntry(
         input.repoRoot,
+        input.forge,
         input.defaultBranchRef,
         worktree,
         status,
@@ -1178,6 +1237,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot: options.repoRoot,
     tipSha: fresh.head,
+    forge: options.forge,
     defaultBranchRef: options.defaultBranchRef,
     includeDetached: Boolean(options.includeDetached),
     nowMs: options.nowMs,
@@ -1285,6 +1345,7 @@ export async function reclaimOneWorktree(
   })
   const entry = await toPlanEntry(
     options.repoRoot,
+    options.forge,
     options.defaultBranchRef,
     worktree,
     status,

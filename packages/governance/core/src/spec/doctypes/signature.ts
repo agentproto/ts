@@ -98,9 +98,7 @@ const signerIdSchema = z
 
 export const signatureSchema = z
   .object({
-    // Reads accept the AIP-70 name and the pre-AIP-70 legacy name; new
-    // signatures keep being written with the legacy tag for now (see
-    // EMITTED_SPEC_NAME in ../names.js).
+    // Reads accept the AIP-70 name and the pre-AIP-70 legacy name.
     schema: z.enum(ACCEPTED_SPEC_NAMES),
     doctype: z.literal("signature"),
 

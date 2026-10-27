@@ -220,13 +220,12 @@ function renderTable(entries) {
     [
       "Package",
       "Path",
-      "Version",
       "Tier",
       "Reason (one line)",
     ].join(" | ") + " |";
-  const sep = "|---|---|---|---|---|";
+  const sep = "|---|---|---|---|";
   const rows = entries.map(
-    (e) => `${e.name} | \`${e.dir}\` | ${e.version} | ${e.tier} | ${e.reason} |`,
+    (e) => `${e.name} | \`${e.dir}\` | ${e.tier} | ${e.reason} |`,
   );
   return [header, sep, ...rows].join("\n");
 }

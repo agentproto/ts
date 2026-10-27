@@ -84,6 +84,7 @@ describe("ops-panel UI panel", () => {
       "session_restart",
       "session_archive",
       "session_gc",
+      "sandbox_list",
       "cron_list",
       "cron_create",
       "cron_delete",
