@@ -289,6 +289,33 @@ describe("native compaction in the runtime", () => {
       expect(detectedLines(id)).toEqual([])
     })
 
+    it("an operator /compact whose compacted frame lands after the turn ended", async () => {
+      makeRegistry()
+      // No frame inside the /compact turn: the harness reports the window only later.
+      const h = harness({ turns: [[150_000]], size: 200_000, compactFrames: [] })
+      const id = spawn(h)
+      await reg.sendPrompt(id, "work")
+      await reg.sendPrompt(id, "/compact")
+      expect(reg.get(id)?.busy).toBe(false)
+      h.emitOutOfTurn({ kind: "usage_update", size: 200_000, used: 5_000 })
+      await vi.waitFor(() => expect(reg.get(id)?.contextUsed).toBe(5_000), { timeout: 5_000 })
+      expect(got).toEqual([])
+      expect(detectedLines(id)).toEqual([])
+    })
+
+    it("only the first sample after a /compact turn is exempt: a later drop is still reported", async () => {
+      makeRegistry()
+      const h = harness({ turns: [[150_000], [60_000, 120_000], [20_000]], size: 200_000, compactFrames: [5_000] })
+      const id = spawn(h)
+      await reg.sendPrompt(id, "work")
+      await reg.sendPrompt(id, "/compact")
+      await reg.sendPrompt(id, "more work")
+      expect(got).toEqual([])
+      await reg.sendPrompt(id, "and more")
+      expect(got).toHaveLength(1)
+      expect(got[0]).toMatchObject({ usedBefore: 120_000, usedAfter: 20_000 })
+    })
+
     it("the floor rescue, including a frame that lands after its /compact turn", async () => {
       makeRegistry({ contextRescueSettleMs: 3_000 })
       // No advertised /compact: the absolute auto-compact stays out, the floor acts.
