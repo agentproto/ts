@@ -94,4 +94,43 @@ describe("parseServiceList", () => {
     const { errors } = parseServiceList([], "frontmatter.services")
     expect(errors[0]).toContain("'frontmatter.services'")
   })
+
+  describe("cwd (AIP-53: relative to the app dir, no `..` segment)", () => {
+    const cwdErrors = (cwd: string) =>
+      parseServiceList([{ name: "web", command: "node", cwd }], "services").errors
+
+    it.each(["/etc", "/", "/abs/server"])("rejects the absolute cwd %j", cwd => {
+      const errors = cwdErrors(cwd)
+      expect(errors).toHaveLength(1)
+      expect(errors[0]).toContain("'services[0].cwd'")
+      expect(errors[0]).toContain("service 'web'")
+      expect(errors[0]).toContain("absolute")
+    })
+
+    it.each(["..", "../x", "a/..", "a/../b", "a/b/../../c", "./../x"])(
+      "rejects the cwd %j containing a `..` segment",
+      cwd => {
+        const errors = cwdErrors(cwd)
+        expect(errors).toHaveLength(1)
+        expect(errors[0]).toContain("'services[0].cwd'")
+        expect(errors[0]).toContain("service 'web'")
+        expect(errors[0]).toContain("..")
+      },
+    )
+
+    it.each([".", "./", "sub", "sub/dir", "./sub/dir", "a..b", "..a", "a/..b", "a/b..", "a/.../b"])(
+      "accepts the cwd %j",
+      cwd => {
+        const { services, errors } = parseServiceList([{ name: "web", command: "node", cwd }])
+        expect(errors).toEqual([])
+        expect(services).toEqual([{ name: "web", command: "node", cwd }])
+      },
+    )
+
+    it("applies the same rule to the legacy `entry` form", () => {
+      expect(parseServiceList([{ name: "web", entry: "x", cwd: "/abs" }]).errors).toHaveLength(1)
+      expect(parseServiceList([{ name: "web", entry: "x", cwd: "a/../b" }]).errors).toHaveLength(1)
+      expect(parseServiceList([{ name: "web", entry: "x", cwd: "sub/dir" }]).errors).toEqual([])
+    })
+  })
 })
