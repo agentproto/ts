@@ -5238,6 +5238,15 @@ export interface SessionsRegistry {
    *  re-parenting, e.g. `agent_start.succeeds` on a spawn whose predecessor
    *  had no live children). Throws when either id is unknown. */
   setLineageSuccessor(fromId: string, toId: string): SessionDescriptor
+  /** Restart support: bring back the orchestrator scopes `id` lost when it
+   *  died, before a revival starts an adapter on its mount (see
+   *  `SessionsRegistryOptions.orchestratorScopes`). Returns a rollback for
+   *  a revival that fails. No-op when the hooks are not wired. */
+  reinstateOrchestratorScopes(id: string): () => void
+  /** Restart support: hand `from`'s orchestrator scopes to its successor
+   *  `to`, so the scope keeps verifying, spawns through it are attributed
+   *  to `to`, and only `to`'s own exit revokes it. No-op when not wired. */
+  transferOrchestratorScopes(from: string, to: string): void
   /** Lineage handover - re-parent a session: `id`'s `parentSessionId`
    *  becomes `newParentId` (the child keeps its own id, transcript and
    *  state; only the lineage pointer moves). This is what makes the
@@ -6449,6 +6458,18 @@ export function createSessionsRegistry(opts?: {
    *  killed agent-cli sessions surface the legacy "not an agent
    *  session" error and the user must spawn fresh. */
   resumeAgent?: AgentSessionResumer
+  /** Orchestrator scope-token hooks for a revival, wired by the gateway
+   *  (index.ts, `createOrchestratorScopeHooks`) to the daemon's scope-token
+   *  registry. `reinstate(id)` brings back the scopes a row lost when it
+   *  died, BEFORE its adapter is started again on the same mount, and
+   *  returns a rollback for a revival that fails; `transfer(from, to)`
+   *  hands a restarted row's scopes to its successor. Omitted ⇒ both
+   *  `reinstateOrchestratorScopes` and `transferOrchestratorScopes` are
+   *  no-ops. */
+  orchestratorScopes?: {
+    reinstate(sessionId: string): () => void
+    transfer(from: string, to: string): void
+  }
   /** Hook the restart-scheduler's `"sandbox-gone"` policy drives: move a dead
    *  box session (its box is gone) to a FRESH box — the same
    *  `restartAgentSession` path `session_restart` takes. Wired by the gateway
@@ -6605,6 +6626,7 @@ export function createSessionsRegistry(opts?: {
   ])
   const ptyFactory = opts?.spawnPty
   const resumeAgent = opts?.resumeAgent
+  const orchestratorScopes = opts?.orchestratorScopes
   const restartSandboxGoneHook = opts?.restartSandboxGone
   const moveReapedBoxHook = opts?.moveReapedBox
   const boxRestartPolicyDefault = opts?.boxRestartPolicyDefault
@@ -9022,6 +9044,11 @@ export function createSessionsRegistry(opts?: {
         `── resuming ${adapterSlug} session ${adapterSessionId} ──`,
         "stdout"
       )
+      // A row that died for real had its orchestrator scope revoked; the
+      // adapter is about to dial the same mount again, so bring the scope
+      // back first (same token, same parameters). Revoked again below if
+      // the resume does not take.
+      const rollbackScopes = orchestratorScopes?.reinstate(rt.desc.id)
       try {
         const fresh = await resumeAgent({
           adapterSlug,
@@ -9059,6 +9086,7 @@ export function createSessionsRegistry(opts?: {
             "stderr"
           )
           recordFailedResume(rt)
+          rollbackScopes?.()
           return
         }
         bindAgentSession(rt, fresh)
@@ -9185,6 +9213,7 @@ export function createSessionsRegistry(opts?: {
         const msg = err instanceof Error ? err.message : String(err)
         appendLine(rt, `[error] resume failed: ${msg}`, "stderr")
         recordFailedResume(rt)
+        if (rt.desc.status !== "running") rollbackScopes?.()
       }
     })()
     try {
@@ -15270,6 +15299,12 @@ export function createSessionsRegistry(opts?: {
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc
+    },
+    reinstateOrchestratorScopes(id) {
+      return orchestratorScopes?.reinstate(id) ?? (() => {})
+    },
+    transferOrchestratorScopes(from, to) {
+      orchestratorScopes?.transfer(from, to)
     },
     setLineageSuccessor(fromId, toId) {
       const from = sessions.get(fromId)

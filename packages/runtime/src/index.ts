@@ -332,6 +332,7 @@ import {
   createScopeTokenRegistry,
   createOrchestratorMcpServerFactory,
   createOrchestratorInjector,
+  createOrchestratorScopeHooks,
   reapOrphanedDescendants,
   orchestratorScopesFile,
   adoptLegacyOrchestratorScopes,
@@ -2729,9 +2730,16 @@ export async function createGateway(
     return { ok: true, newSessionId: restarted.desc.id }
   }
 
+  // Filled once the scope-token registry exists (further down); a revival
+  // that runs before that (boot) finds no hooks and leaves scopes as loaded.
+  let orchestratorScopeHooks: ReturnType<typeof createOrchestratorScopeHooks> | undefined
   const sessions = createSessionsRegistry({
     sessionEvents,
     persist,
+    orchestratorScopes: {
+      reinstate: id => orchestratorScopeHooks?.reinstate(id) ?? (() => {}),
+      transfer: (from, to) => orchestratorScopeHooks?.transfer(from, to),
+    },
     sessionRetention,
     adapterCacheRetention,
     ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
@@ -3809,6 +3817,9 @@ export async function createGateway(
   // resumable session descriptors' mcpServers — adopt them so those
   // already-persisted URLs keep authorizing without a session restart.
   adoptLegacyOrchestratorScopes(scopeTokens, sessions.list())
+  // Restart support: a revived row gets its revoked scope back, a restarted
+  // row hands its scope to the successor (session-restart-core.ts).
+  orchestratorScopeHooks = createOrchestratorScopeHooks(scopeTokens)
 
   // Orchestrator auto-injection (WP3). Closed over the scope-token
   // registry + the session-event bus + the HTTP port: when

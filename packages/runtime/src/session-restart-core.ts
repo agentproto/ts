@@ -184,6 +184,8 @@ import {
 } from "./sandbox-app-serve.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
+import { handoverLineage } from "./lineage-handover.js"
+import { redactOrchestratorScopeRef } from "./orchestrator-scope-ref.js"
 
 /**
  * Axis overrides a restart-with-override applies (SPEC §4.3, build step 6).
@@ -1023,12 +1025,58 @@ export async function restartPreferInPlace(
  * back to a fresh spawn (no continuity) if the adapter rejects the
  * resume id with a "not found" error — same behaviour `session_restart`
  * has always had for a prior session that died before its first turn.
+ *
+ * Orchestrator scope: the fresh row carries `prev`'s mounts, including an
+ * `/mcp/orchestrator?scope=<token>` entry. When `prev` died for real its
+ * scope was revoked, so it is reinstated here BEFORE the adapter dials the
+ * mount, and revoked again if the restart fails. A successful restart then
+ * hands the scope and `prev`'s live children to the fresh row before `prev`
+ * is closed (see `handOverToRestartedRow`).
  */
 export async function restartAgentSession(
   registry: SessionsRegistry,
   resolveAgentAdapter: AgentAdapterResolver,
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
+): Promise<RestartAgentSessionResult> {
+  const rollbackScopes = registry.reinstateOrchestratorScopes?.(prev.id)
+  try {
+    return await restartAgentSessionOnce(registry, resolveAgentAdapter, prev, opts)
+  } catch (err) {
+    rollbackScopes?.()
+    throw err
+  }
+}
+
+/**
+ * The restart is a hand-over, not an exit: the fresh row takes `prev`'s
+ * orchestrator scope (same token, same role/depth/tools/limits, owner moved
+ * to the fresh id) and `prev`'s live children (re-parented through the same
+ * `handoverLineage` path `agent_start.succeeds` and continue-fresh use, so
+ * drive rights, `message_parent`, `session_tree` and subtree kills all
+ * follow the one `parentSessionId` pointer). Runs BEFORE `prev` is closed:
+ * its `restarted` exit then owns no scope, so nothing is revoked and no
+ * child is reaped. Children an earlier real exit already reaped stay dead.
+ * Best-effort: a registry without the lineage surface keeps today's shape.
+ */
+function handOverToRestartedRow(registry: SessionsRegistry, prevId: string, nextId: string): void {
+  if (prevId === nextId) return
+  try {
+    registry.transferOrchestratorScopes?.(prevId, nextId)
+    handoverLineage({ registry, from: prevId, to: nextId, reason: "restart", actor: "daemon" })
+  } catch (err) {
+    console.warn(
+      `restartAgentSession: hand-over from ${prevId} to ${nextId} failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+}
+
+async function restartAgentSessionOnce(
+  registry: SessionsRegistry,
+  resolveAgentAdapter: AgentAdapterResolver,
+  prev: SessionDescriptor,
+  opts: RestartAgentSessionOptions,
 ): Promise<RestartAgentSessionResult> {
   // Sandbox gate — BEFORE any local strategy decision: a sandbox descriptor's
   // `cwd` is a path INSIDE the box (`/home/user`, …), so the local branches
@@ -2544,6 +2592,7 @@ export async function restartAgentSession(
   // timers.
   // Same once `spawnInSandbox` released prev's proxy: its `close()` is a
   // no-op from then on, so the row closes without the box going with it.
+  handOverToRestartedRow(registry, prev.id, desc.id)
   if (sandboxId === undefined || movedToFreshBox || priorProxyReleased) {
     registry.kill(prev.id, "SIGTERM", "restarted")
   }
@@ -2587,7 +2636,12 @@ export async function restartAgentSession(
       // Redacted — see the comment above. Only the never-secret facets.
       overrides.mcpServers.map(s => {
         const { name, transport, ref } = s
-        return { name, transport, ...(ref !== undefined ? { ref } : {}) } as AcpMcpServer
+        // An `/mcp/orchestrator` ref carries the scope-token itself.
+        return {
+          name,
+          transport,
+          ...(ref !== undefined ? { ref: redactOrchestratorScopeRef(ref) } : {}),
+        } as AcpMcpServer
       }),
     )
   }

@@ -53,6 +53,7 @@ import type {
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import { SUPERVISOR_ROLE } from "./role.js"
+import { extractOrchestratorScopeToken } from "./orchestrator-scope-ref.js"
 
 /**
  * The curated set of tools a scoped child orchestrator may call.
@@ -216,8 +217,21 @@ export interface ScopeTokenRegistry {
    *  token is minted before the child exists). No-op when the token is
    *  unknown. Mutates the live scope object so `verify` reflects it. */
   bindOwner(token: string, sessionId: string): void
-  /** Drop a token (e.g. when the child session ends). */
+  /** Drop a token (e.g. when the child session ends). The dropped scope
+   *  stops verifying at once; its parameters are kept in memory (never on
+   *  disk) so `reinstate` can bring it back if the same lineage is
+   *  revived. */
   revoke(token: string): void
+  /** Every LIVE scope whose owner is `sessionId`. */
+  ownedBy(sessionId: string): OrchestratorScope[]
+  /** Move every live scope owned by `from` to `to` (a restart handing the
+   *  scope to its successor row). Returns how many moved. */
+  transferOwner(from: string, to: string): number
+  /** Bring back every revoked scope last owned by `sessionId`, same token
+   *  and same parameters (role, depth, tools, limits), still owned by
+   *  `sessionId`. Returns the reinstated scopes; empty when there is
+   *  nothing to bring back. */
+  reinstate(sessionId: string): OrchestratorScope[]
   /** Register a PRE-EXISTING token (legacy migration — see
    *  `adoptLegacyOrchestratorScopes`). No-op when the token is already
    *  known, so a live registry entry always wins over an adopted one. */
@@ -288,8 +302,15 @@ const DEFAULT_TOOL_SET: ReadonlySet<string> = new Set(DEFAULT_ORCHESTRATOR_TOOLS
  * default). Tokens are never logged. Single-user-host trust assumption
  * mirrors the loopback auth bypass on `/mcp`.
  */
+/** Cap on remembered revoked scopes (see `ScopeTokenRegistry.revoke`). The
+ *  oldest is forgotten first; a forgotten scope just cannot be reinstated. */
+const MAX_REVOKED_SCOPES = 1024
+
 export function createScopeTokenRegistry(opts?: ScopeTokenRegistryOptions): ScopeTokenRegistry {
   const scopes = new Map<string, OrchestratorScope>()
+  // Revoked OWNED scopes, kept in memory only (a daemon restart forgets
+  // them) so a revival of the same session can get its exact scope back.
+  const revoked = new Map<string, OrchestratorScope>()
   const persistPath = opts?.persistPath
   const debounceMs = opts?.debounceMs ?? 250
   let persistTimer: ReturnType<typeof setTimeout> | null = null
@@ -444,7 +465,42 @@ export function createScopeTokenRegistry(opts?: ScopeTokenRegistryOptions): Scop
       schedulePersist()
     },
     revoke(token) {
-      if (scopes.delete(token)) schedulePersist()
+      const scope = scopes.get(token)
+      if (!scope) return
+      scopes.delete(token)
+      if (scope.ownerSessionId !== undefined) {
+        revoked.set(token, scope)
+        if (revoked.size > MAX_REVOKED_SCOPES) {
+          const oldest = revoked.keys().next().value
+          if (oldest !== undefined) revoked.delete(oldest)
+        }
+      }
+      schedulePersist()
+    },
+    ownedBy(sessionId) {
+      return [...scopes.values()].filter(s => s.ownerSessionId === sessionId)
+    },
+    transferOwner(from, to) {
+      let moved = 0
+      for (const scope of scopes.values()) {
+        if (scope.ownerSessionId !== from) continue
+        scope.ownerSessionId = to
+        moved++
+      }
+      if (moved > 0) schedulePersist()
+      return moved
+    },
+    reinstate(sessionId) {
+      const back: OrchestratorScope[] = []
+      for (const [token, scope] of [...revoked]) {
+        if (scope.ownerSessionId !== sessionId) continue
+        revoked.delete(token)
+        if (scopes.has(token)) continue
+        scopes.set(token, scope)
+        back.push(scope)
+      }
+      if (back.length > 0) schedulePersist()
+      return back
     },
     adopt(token, scope) {
       if (scopes.has(token)) return
@@ -464,20 +520,6 @@ export function createScopeTokenRegistry(opts?: ScopeTokenRegistryOptions): Scop
     },
     flushSync,
   }
-}
-
-/** Pull the `scope` query param out of an `/mcp/orchestrator` ref URL.
- *  Returns null for any other URL shape. Never logs the token. */
-function extractOrchestratorScopeToken(ref: string): string | null {
-  let url: URL
-  try {
-    url = new URL(ref)
-  } catch {
-    return null
-  }
-  if (!url.pathname.endsWith("/mcp/orchestrator")) return null
-  const token = url.searchParams.get("scope")
-  return token && token.length > 0 ? token : null
 }
 
 /** Number of ancestors via `parentSessionId` — a root session (no parent)
@@ -806,10 +848,11 @@ export interface OrchestratorInjection {
    *  effective (narrowed) allowlist. */
   scope: OrchestratorScope
   /**
-   * Revoke the scope-token once `sessionId` exits. Subscribes to the
-   * session-event bus for that one session's `session:exited` and
-   * self-unsubscribes on fire. Returns an unsubscribe in case the
-   * caller wants to drop the binding early (rarely needed).
+   * Make `sessionId` the scope's owner, so the scope-token is revoked (and
+   * the owner's live children reaped) once the owner exits. The exit is
+   * matched on the scope's CURRENT owner, so a restart that hands the
+   * scope to its successor row (`ScopeTokenRegistry.transferOwner`) moves
+   * the binding with it. Returns a no-op, kept for the call sites' type.
    */
   bindLifecycle(sessionId: string): () => void
 }
@@ -940,6 +983,25 @@ export function createOrchestratorInjector(
 ): OrchestratorInjector {
   const host = deps.host ?? "127.0.0.1"
   const name = deps.entryName ?? "agentproto"
+  // One exit handler for every scope this registry holds, keyed on the
+  // scope's CURRENT owner rather than on the id it was first bound to: a
+  // restart moves ownership to the successor row before it closes the old
+  // one (`transferOwner`), so the old row's `restarted` exit finds nothing
+  // to revoke and no children to reap, and the successor's own exit later
+  // revokes and reaps exactly as before. Owner-keyed also covers a scope
+  // reinstated for a revived row and one loaded from disk after a daemon
+  // restart, neither of which had a per-scope handler.
+  deps.sessionEvents.on("session:exited", ev => {
+    const owned = deps.scopeTokens.ownedBy(ev.sessionId)
+    if (owned.length === 0) return
+    for (const scope of owned) deps.scopeTokens.revoke(scope.token)
+    // WP-B (orphan reaping): revoking the token stops this parent's
+    // children from minting NEW scopes, but does nothing to the children
+    // ALREADY running; they'd be left as orphaned zombies (holding a shared
+    // checkout, no parent watching). Reap them here. Reaping a child that
+    // is itself an orchestrator cascades through this same handler.
+    deps.reapChildren?.(ev.sessionId)
+  })
   return (opts) => {
     const caller = opts?.caller
     // A recursive child lands one level below its caller; a root spawn
@@ -973,21 +1035,37 @@ export function createOrchestratorInjector(
       // it so its own spawns inherit `parentSessionId = sessionId` and
       // its subtree filters resolve.
       deps.scopeTokens.bindOwner(scope.token, sessionId)
-      const off = deps.sessionEvents.on("session:exited", ev => {
-        if (ev.sessionId !== sessionId) return
-        deps.scopeTokens.revoke(scope.token)
-        // WP-B (orphan reaping): revoking the token stops this parent's
-        // children from minting NEW scopes, but does nothing to the
-        // children ALREADY running — they'd be left as orphaned zombies
-        // (holding a shared checkout, no parent watching). Reap them here,
-        // riding the same "this parent is going away" enumeration the
-        // revoke already anchors. Reaping a child that is itself an
-        // orchestrator cascades through its own bound handler.
-        deps.reapChildren?.(sessionId)
-        off()
-      })
-      return off
+      return () => {}
     }
     return { entry, scope, bindLifecycle }
+  }
+}
+
+/**
+ * The scope-token side of a session revival, handed to the sessions
+ * registry (`SessionsRegistryOptions.orchestratorScopes`) so every restart
+ * path reaches it through the registry it already holds.
+ */
+export function createOrchestratorScopeHooks(scopeTokens: ScopeTokenRegistry): {
+  reinstate(sessionId: string): () => void
+  transfer(from: string, to: string): void
+} {
+  return {
+    // A row that died for real had its scopes revoked; reviving it (in
+    // place, or under a new id that carries the same mount) brings them
+    // back with the same token and parameters. The returned rollback
+    // revokes them again when the revival fails, unless a successful
+    // restart already moved them to a successor.
+    reinstate(sessionId) {
+      const back = scopeTokens.reinstate(sessionId)
+      return () => {
+        for (const scope of back) {
+          if (scope.ownerSessionId === sessionId) scopeTokens.revoke(scope.token)
+        }
+      }
+    },
+    transfer(from, to) {
+      scopeTokens.transferOwner(from, to)
+    },
   }
 }
