@@ -206,6 +206,8 @@ export interface TipClassification {
   residualFileCount?: number
   /** Set for `unmerged`: see {@link BranchLineCoverage}. */
   lineCoverage?: BranchLineCoverage
+  /** Set for `unmerged`: `git cherry` against the compare base — commits with no patch-equivalent there. */
+  cherry?: { total: number; unmatched: number }
 }
 
 export interface BranchRef {
@@ -719,6 +721,9 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
     return { status: "content-merged", history, ahead, behind, conflicts, coverage: summary }
   }
   const residualFiles = [...cov.uniqueFiles, ...cov.evolvedFiles, ...cov.deletedFiles]
+  const cherryRun = await git(repoRoot, ["cherry", cmp, tip])
+  const cherryLines =
+    cherryRun.exitCode === 0 ? cherryRun.stdout.split("\n").filter((l) => l.startsWith("+") || l.startsWith("-")) : null
   return {
     status: "unmerged",
     history,
@@ -732,6 +737,7 @@ export async function classifyTip(ctx: LadderContext, tip: string): Promise<TipC
     residualFiles: residualFiles.slice(0, 200),
     residualFileCount: residualFiles.length,
     lineCoverage: await lineCoverage(ctx, tip, mergeBase, [...cov.uniqueFiles, ...cov.evolvedFiles]),
+    ...(cherryLines ? { cherry: { total: cherryLines.length, unmatched: cherryLines.filter((l) => l.startsWith("+")).length } } : {}),
   }
 }
 
@@ -1535,6 +1541,7 @@ export interface BranchReviewCandidate {
   residualFiles?: string[]
   residualFileCount?: number
   lineCoverage?: BranchLineCoverage
+  cherry?: { total: number; unmatched: number }
   /** Every ref sharing this tip (a local branch and its remote twin share one review). */
   refs: string[]
   verdict?: BranchVerdictSummary
@@ -1562,6 +1569,7 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
       seen.refs.push(e.ref)
       // Refs sharing a tip: keep the line coverage from whichever carries it.
       if (!seen.lineCoverage && e.lineCoverage) seen.lineCoverage = e.lineCoverage
+      if (!seen.cherry && e.cherry) seen.cherry = e.cherry
       continue
     }
     bySha.set(e.sha, {
@@ -1584,6 +1592,7 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
       ...(e.residualFiles ? { residualFiles: e.residualFiles } : {}),
       ...(e.residualFileCount !== undefined ? { residualFileCount: e.residualFileCount } : {}),
       ...(e.lineCoverage ? { lineCoverage: e.lineCoverage } : {}),
+      ...(e.cherry ? { cherry: e.cherry } : {}),
       refs: [e.ref],
       ...(e.verdict ? { verdict: e.verdict } : {}),
     })

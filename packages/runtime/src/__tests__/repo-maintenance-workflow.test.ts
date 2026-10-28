@@ -477,6 +477,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(branchGcCalls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: false })
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
+    // The apply runs the SAME plan the review saw, so worktree_gc can skip whatever changed since.
+    expect(worktreeGcCalls[1]!.inputs.expectedPlan).toEqual(worktreeGcPlanFixture().plan)
 
     const notifyCall = calls.find(c => c.name === "transmit_message")
     expect(notifyCall).toBeDefined()

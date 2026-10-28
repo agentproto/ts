@@ -55,6 +55,8 @@ export interface BranchGcPlanEntryView {
   residualFiles?: string[]
   residualFileCount?: number
   lineCoverage?: BranchGcLineCoverageView
+  /** `git cherry` summary of an unmerged tip: commits with no patch-equivalent on the compare base. */
+  cherry?: { total: number; unmatched: number }
   ageDays: number
   class: BranchGcClass
   reclaimReason?: BranchGcReclaimReason

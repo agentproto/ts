@@ -1027,6 +1027,10 @@ export default {
         workspaceSlug: "$input.workspaceSlug",
         apply: "$input.applyMerged",
         salvageDirty: false,
+        // Apply the plan the review ran against, not a fresh one: worktree_gc
+        // re-checks each entry (branch, HEAD, git index, live sessions) and
+        // skips with a reason whatever changed while the reviewers worked.
+        expectedPlan: "$steps.worktreeGcPlan.plan",
         // Same as worktreeGcPlan: block for the real outcomes, or an apply
         // would run unreported in the background after the workflow ends.
         wait: true,
