@@ -617,7 +617,12 @@ export async function runSessions(args: readonly string[]): Promise<number> {
 
   // One-shot
   const page = await fetchSessionsPage(endpoint.url, listQuery)
-  printTable(page.sessions, await resolveAttentionDelaySec())
+  const projected = parseFieldList(values.fields)
+  if (projected.length > 0) {
+    printProjectedTable(page.sessions as unknown as Record<string, unknown>[], projected)
+  } else {
+    printTable(page.sessions, await resolveAttentionDelaySec())
+  }
   if (listQuery && page.total !== undefined) {
     process.stdout.write(`\x1b[2m${page.sessions.length} of ${page.total} matching sessions\x1b[0m\n`)
   }
@@ -3795,6 +3800,40 @@ export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDesc
       const bo = b.pinnedOrder ?? Number.POSITIVE_INFINITY
       return ao - bo
     })
+}
+
+/** `--fields a,b,c` → ["a","b","c"]; blanks dropped, repeats collapsed. */
+function parseFieldList(raw: string | undefined): string[] {
+  const names = (raw ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return [...new Set(names)]
+}
+
+function projectedCell(value: unknown): string {
+  if (value === undefined || value === null) return "-"
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+/** Plain table for rows the daemon projected with `?fields=`: exactly the
+ *  requested columns in the requested order. Projected rows are not full
+ *  `SessionDescriptor`s, so `printTable` can't render them. */
+function printProjectedTable(rows: readonly Record<string, unknown>[], fields: readonly string[]): void {
+  if (rows.length === 0) {
+    process.stdout.write("No sessions.\n")
+    return
+  }
+  const cells = rows.map(r => fields.map(f => projectedCell(r[f])))
+  const widths = fields.map((f, i) => Math.max(f.length, ...cells.map(c => c[i]!.length)))
+  const line = (parts: readonly string[]): string =>
+    parts
+      .map((p, i) => pad(p, widths[i]!))
+      .join("  ")
+      .trimEnd()
+  process.stdout.write(`\x1b[2m${line(fields.map(f => f.toUpperCase()))}\x1b[0m\n`)
+  for (const c of cells) process.stdout.write(line(c) + "\n")
 }
 
 function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {
