@@ -1383,6 +1383,8 @@ export function registerAgentTools(
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
+    workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 

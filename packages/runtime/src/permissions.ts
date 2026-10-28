@@ -298,7 +298,7 @@ function slugLinks(
  * links them too, "unverified" when only the recorded slugs do, "none" when
  * the slug rule does not link them.
  */
-export function peerBindingStatus(
+function peerBindingStatus(
   sender: MessageTreeNode,
   recipient: MessageTreeNode,
   ctx: PermissionContext = {},

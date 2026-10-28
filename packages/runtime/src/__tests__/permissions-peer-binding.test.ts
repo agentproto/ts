@@ -77,4 +77,5 @@ describe("peer binding", () => {
     expect(up.allow).toBe(true)
     expect(up.relation).toBe("child")
   })
+
 })
