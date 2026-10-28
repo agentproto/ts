@@ -616,8 +616,22 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   // One-shot
-  const page = await fetchSessionsPage(endpoint.url, listQuery)
-  printTable(page.sessions, await resolveAttentionDelaySec())
+  const projected = parseFieldList(values.fields)
+  const page =
+    projected.length > 0
+      ? {
+          projected: true as const,
+          ...(await fetchSessionsPage<Record<string, unknown>>(endpoint.url, listQuery)),
+        }
+      : {
+          projected: false as const,
+          ...(await fetchSessionsPage(endpoint.url, listQuery)),
+        }
+  if (page.projected) {
+    printProjectedTable(page.sessions, projected)
+  } else {
+    printTable(page.sessions, await resolveAttentionDelaySec())
+  }
   if (listQuery && page.total !== undefined) {
     process.stdout.write(`\x1b[2m${page.sessions.length} of ${page.total} matching sessions\x1b[0m\n`)
   }
@@ -665,7 +679,7 @@ function buildSessionListQuery(v: SessionListFlags): string | undefined {
   put("status", v.status)
   if (v.alive) qs.set("onlyAlive", "true")
   put("limit", v.limit)
-  put("fields", v.fields)
+  put("fields", parseFieldList(v.fields).join(","))
   const text = qs.toString()
   return text === "" ? undefined : text
 }
@@ -3742,15 +3756,15 @@ async function readRuntimeJson(workspacePath: string): Promise<DaemonEndpoint | 
   return out.endpoint
 }
 
-async function fetchSessionsPage(
+async function fetchSessionsPage<T = SessionDescriptor>(
   baseUrl: string,
   query?: string,
-): Promise<{ sessions: SessionDescriptor[]; total?: number }> {
+): Promise<{ sessions: T[]; total?: number }> {
   const body = await httpGetJson(`${baseUrl}/sessions${query ? `?${query}` : ""}`)
   if (!body || !Array.isArray((body as { sessions?: unknown }).sessions)) {
     return { sessions: [] }
   }
-  const { sessions, total } = body as { sessions: SessionDescriptor[]; total?: unknown }
+  const { sessions, total } = body as { sessions: T[]; total?: unknown }
   return typeof total === "number" ? { sessions, total } : { sessions }
 }
 
@@ -3795,6 +3809,40 @@ export function sortPinnedFirst(rows: readonly SessionDescriptor[]): SessionDesc
       const bo = b.pinnedOrder ?? Number.POSITIVE_INFINITY
       return ao - bo
     })
+}
+
+/** `--fields a,b,c` → ["a","b","c"]; blanks dropped, repeats collapsed. */
+function parseFieldList(raw: string | undefined): string[] {
+  const names = (raw ?? "")
+    .split(",")
+    .map(s => s.trim())
+    .filter(s => s.length > 0)
+  return [...new Set(names)]
+}
+
+function projectedCell(value: unknown): string {
+  if (value === undefined || value === null) return "-"
+  if (typeof value === "object") return JSON.stringify(value)
+  return String(value)
+}
+
+/** Plain table for rows the daemon projected with `?fields=`: exactly the
+ *  requested columns in the requested order. Projected rows are not full
+ *  `SessionDescriptor`s, so `printTable` can't render them. */
+function printProjectedTable(rows: readonly Record<string, unknown>[], fields: readonly string[]): void {
+  if (rows.length === 0) {
+    process.stdout.write("No sessions.\n")
+    return
+  }
+  const cells = rows.map(r => fields.map(f => projectedCell(r[f])))
+  const widths = fields.map((f, i) => Math.max(f.length, ...cells.map(c => c[i]!.length)))
+  const line = (parts: readonly string[]): string =>
+    parts
+      .map((p, i) => pad(p, widths[i]!))
+      .join("  ")
+      .trimEnd()
+  process.stdout.write(`\x1b[2m${line(fields.map(f => f.toUpperCase()))}\x1b[0m\n`)
+  for (const c of cells) process.stdout.write(line(c) + "\n")
 }
 
 function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void {
