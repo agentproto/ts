@@ -34,6 +34,7 @@ import {
 } from "./session-spawn.js"
 import { CALLER_SESSION_ID_HEADER, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
+import { SESSION_TOKEN_HEADER } from "./session-credentials.js"
 
 export interface ContinueAgentSessionFreshResult {
   ok: true
@@ -128,11 +129,17 @@ export function stripOwnCallerStamp(
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
     // The identity header travels with the query (see
     // `CALLER_SESSION_ID_HEADER`): strip OURS too, or the fresh session
-    // would keep speaking to the daemon under the dead session's id.
+    // would keep speaking to the daemon under the dead session's id. A
+    // session token (`SESSION_TOKEN_HEADER`) is never carried forward
+    // either: it names exactly one session, and the fresh session gets its
+    // own at spawn. (Descriptors carry none; this guards a legacy or
+    // hand-built list.)
     const original = entry.headers
     const kept = original
       ? Object.entries(original).filter(
-          ([k, v]) => !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId),
+          ([k, v]) =>
+            !(k.toLowerCase() === CALLER_SESSION_ID_HEADER && v === prevId) &&
+            k.toLowerCase() !== SESSION_TOKEN_HEADER,
         )
       : []
     const strippedHeader = original !== undefined && kept.length !== Object.keys(original).length

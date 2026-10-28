@@ -174,6 +174,12 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    identity: z
+      .object({
+        sessionTokens: z.enum(["off", "shadow"]).optional(),
+      })
+      .passthrough()
+      .optional(),
     reactions: z
       .object({
         brainIngest: z
@@ -1352,6 +1358,18 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Pending prompt staleness (minutes)",
     help: "How long a prompt may sit queued behind a running turn before its sender is notified it is stuck and it is flagged stale in session_list/session_recap pendingPrompts. Takes effect on the next sweep.",
     default: 5,
+  },
+
+  // ── defaults: identity ──
+  {
+    path: "defaults.identity.sessionTokens",
+    schema: z.enum(["off", "shadow"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Per-session identity tokens",
+    help: "\"shadow\" (default): each spawned session gets a daemon-minted token on its daemon self-mount, and the daemon counts verified, claim-only, mismatching and anonymous callers (GET /identity) without refusing anything. \"off\": no token, no observation. Applies to sessions spawned after the change.",
+    default: "shadow",
   },
 
   // ── defaults: reactions ──

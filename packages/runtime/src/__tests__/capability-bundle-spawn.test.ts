@@ -503,7 +503,8 @@ describe("spawnAgentSession — native default mounts (P2)", () => {
         name: "agentproto",
         transport: "http",
         ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}`,
-        headers: { "x-agentproto-caller-session-id": ownId },
+        // Shadow-mode session token (the default), adapter copy only.
+        headers: { "x-agentproto-caller-session-id": ownId, "x-agentproto-session-token": expect.stringMatching(/^apst_/) },
       },
       { name: "chrome-devtools", transport: "http", ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}` },
     ])

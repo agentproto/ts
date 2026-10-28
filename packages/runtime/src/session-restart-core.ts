@@ -96,7 +96,14 @@ import {
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
 import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
-import { bootSandboxAgentSession, stampDaemonCallerSessionId, uploadBoxLoginCopy } from "./session-spawn.js"
+import {
+  bootSandboxAgentSession,
+  stampDaemonCallerSessionId,
+  stripSessionTokenHeaders,
+  uploadBoxLoginCopy,
+  withSessionToken,
+} from "./session-spawn.js"
+import { sessionTokenModeOf } from "./identity-defaults.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { recordSandboxBoot, recordSessionDetach } from "./sandbox-ledger.js"
@@ -1327,7 +1334,10 @@ export async function restartAgentSession(
       }
       return baseMcpServers
     }
-    const stripped = stripOwnCallerStamp(baseMcpServers, prev.id)
+    // A session token is never carried forward (nor accepted from an
+    // override): the descriptor copy stays token-free, and the adapter copy
+    // gets a FRESH token below (`withSessionToken`).
+    const stripped = stripSessionTokenHeaders(stripOwnCallerStamp(baseMcpServers, prev.id))
     return stampDaemonCallerSessionId(stripped, {
       daemonMcpUrl: opts.daemonMcpUrl,
       callerSessionId: newSessionId,
@@ -1421,6 +1431,18 @@ export async function restartAgentSession(
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
     }
+    // SESSION IDENTITY TOKEN (shadow): a fresh token for the restarted id,
+    // on the adapter's copy only; `restartMcpServers` (the descriptor copy)
+    // stays token-free. Mode read now: it applies to sessions spawned after
+    // a config change, restarts included.
+    const adapterMcpServers = withSessionToken(restartMcpServers, {
+      mode: sessionTokenModeOf(
+        opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults,
+      ),
+      adapter: adapterSlug,
+      daemonMcpUrl: opts.daemonMcpUrl,
+      sessionId: restartedSessionId,
+    })
     const agentSession = await resolved.startSession({
       cwd,
       ...boundaryStart,
@@ -1433,7 +1455,7 @@ export async function restartAgentSession(
       // Legacy AIP-45 mode: prefer an explicit override; otherwise carry the
       // prior descriptor's mode forward so a plain restart preserves it.
       ...(effMode ? { mode: effMode } : {}),
-      ...(restartMcpServers ? { mcpServers: restartMcpServers } : {}),
+      ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
       // Re-apply the AGENT.md system-prompt text on the SAME declared channel
       // (the original spawn already warned + prefixed when the adapter had
