@@ -1750,6 +1750,9 @@ importers:
       '@agentproto/adapter-mastra-agent':
         specifier: workspace:*
         version: link:../../adapters/mastra-agent
+      '@agentproto/adapter-mastra-controller':
+        specifier: workspace:*
+        version: link:../../adapters/mastra-controller
       '@agentproto/adapter-mastracode':
         specifier: workspace:*
         version: link:../../adapters/mastracode

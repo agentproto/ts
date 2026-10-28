@@ -22,7 +22,7 @@ protocol: proprietary
 adapter: "@agentproto/adapter-mastra-controller"
 capabilities:
   streaming: true
-  tool_calls: false
+  tool_calls: true
   sub_agents: false
   file_io: false
   multimodal: false
@@ -74,13 +74,51 @@ E48 PR 2 (this release): a live session with modes.
   `thought` notice (`[mastra-controller] mode switched by the controller:
   plan -> execute`) and moves `currentModeId`.
 
-Capabilities claim `streaming` only. Every tool call goes through the
-controller's approval gate, which parks the run until E48 PR 3 wires
-approvals, so `tool_calls` stays `false`.
+- Requests. Controller suspensions become `agent-prompt` events, answered
+  with `respondPermission(requestId, resolution)` (`requestId` is the
+  prompt's `toolCallId`). The prompt's `_meta["mastra-controller/request"]`
+  says which kind it is:
+  - `tool-approval` (`tool_approval_required`): options `approve`
+    (allow_once), `always_allow` (allow_always) and `decline`
+    (reject_once). `always_allow` grants that tool for the rest of the
+    session and approves; the controller's own `always_allow_category`
+    needs a `toolCategoryResolver` a manifest cannot declare, so it is not
+    offered. A resolution's `feedback` on `decline` becomes the decline
+    reason.
+  - `question` (`ask_user` suspended): the prompt's `text` is the question,
+    with one `answer:<i>` option per choice (the answer is that choice's
+    label), or a single `answer` option whose free text is the resolution's
+    `feedback`, plus `decline`.
+  - `plan-approval` (`submit_plan` suspended): `approve` / `reject`. The
+    prompt carries the plan path in `rawInput`, the plan file's text under
+    `_meta["mastra-controller/plan"]` and the target mode under
+    `_meta["mastra-controller/transitionsTo"]`. On approve the controller
+    switches to the mode's `transitionsTo` (the `thought` notice above) and
+    the run continues there; on reject it stays in the current mode and the
+    model receives the resolution's `feedback` as its revision note.
+  - `suspension` (any other tool's `suspend()`): `approve` / `decline`,
+    resumed with `{ approved, feedback? }`.
 
-Next, PR 3: suspensions and approvals (`ask_user`, tool approvals,
-`submit_plan` surfacing as an agent prompt; approval switches to the mode's
-`transitionsTo`), and CLI registration.
+  A run parked on a suspension keeps its turn open until the answer
+  resumes it; `cancel()` on a parked turn drops the suspension and ends the
+  turn `cancelled`.
+- The manifest's `permissions` rules are set on the session at connect, so
+  the controller allows or denies a matching tool by itself, without a
+  prompt. `ask_user` and `submit_plan` default to `allow` there (their
+  suspension is the prompt) unless the manifest names them.
+- Prompts are raised only when the host connects with `permissionHold`
+  (the daemon's permission inbox). Without it nothing would answer, so the
+  client answers in place, like the ACP arm's auto-allow default: tools are
+  approved, other suspensions continue, a question gets a "no user is
+  attached" answer and a plan is rejected (an unattended session never
+  leaves its mode), each answer noted as a `thought`.
+
+Capabilities claim `streaming` and `tool_calls`.
+
+AIP-45 has no plan-approval contract: a plan approval rides on the generic
+`agent-prompt` / `respondPermission` pair, told apart only by `_meta`, and a
+controller-driven mode switch has no stream event of its own. Both are
+candidates for a later AIP-45 note (E48 PR 5).
 
 ## Host resolution and defaults
 

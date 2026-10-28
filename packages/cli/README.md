@@ -448,7 +448,7 @@ The terminal tools let one agent **orchestrate** other sessions: an agent in a s
 - `@agentproto/adapter-openclaw` — OpenClaw
 - `@agentproto/adapter-antigravity` — Google Antigravity (`agy`, print/headless, multi-model)
 - `@agentproto/adapter-jcode` — jcode (Rust coding agent, print/headless, multi-provider)
-- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
+- `@agentproto/adapter-mastra` / `adapter-mastra-agent` / `adapter-mastra-controller` / `adapter-mastracode` / `adapter-mastracode-inprocess` — Mastra-based agents
 - `@agentproto/adapter-browser` — browser / CDP session adapter
 - `@agentproto/adapter-pi` — pi
 

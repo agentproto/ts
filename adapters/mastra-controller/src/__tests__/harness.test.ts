@@ -8,13 +8,13 @@ describe("mastraController (defineHarness)", () => {
     expect(mastraController.adapter).toBe("@agentproto/adapter-mastra-controller")
   })
 
-  it("declares no static modes and claims streaming only", () => {
+  it("declares no static modes and claims streaming and tool calls only", () => {
     // Controller modes come from the manifest at session time (availableModes).
     expect(mastraController.modes ?? []).toEqual([])
     const claimed = Object.entries(mastraController.capabilities ?? {})
       .filter(([, value]) => value === true)
       .map(([key]) => key)
-    expect(claimed).toEqual(["streaming"])
+    expect(claimed).toEqual(["streaming", "tool_calls"])
   })
 
   it("declares the manifest and controller_mode options as env patches", () => {

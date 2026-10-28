@@ -194,7 +194,7 @@ describe("mastra-controller session (research-assistant fixture, stub model)", (
     const notices: StreamEvent[] = []
     client.onOutOfTurnEvent!(e => notices.push(e))
 
-    // What plan approval does in PR 3: the session flips to `transitionsTo`.
+    // What an approved plan does: the session flips to `transitionsTo`.
     const resourceId = client.sessionId!.slice(0, client.sessionId!.lastIndexOf(":"))
     const session = await controller!.getSessionByResource(resourceId)
     await session!.mode.switch({ modeId: "execute" })
