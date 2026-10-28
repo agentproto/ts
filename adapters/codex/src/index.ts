@@ -226,6 +226,9 @@ export const codex: AgentCliHandle = defineHarness({
     resumable: true,
     bidirectional: true,
     hooks: codexNativeHooks,
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   // No manifest `modes[]`: codex's operation profiles (default / read-only /
   // full-access) are POSTURE, which no longer lives in the manifest (SPEC

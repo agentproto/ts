@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { DEFAULT_PACKAGES, DEFAULTS, checkSpecDrift, schemaCode } from "./check-spec-drift.mjs"
+import { DEFAULT_PACKAGES, DEFAULTS, checkSpecDrift, cliTargets, schemaCode } from "./check-spec-drift.mjs"
 
 test("checkSpecDrift passes on the in-sync vendored JSON draft", async () => {
   const result = await checkSpecDrift()
@@ -41,4 +41,35 @@ test("schemaCode still exposes a drift in the code below the header", () => {
 test("schemaCode compares a file with no header as-is", () => {
   const src = 'import { z } from "zod"\n'
   assert.equal(schemaCode(src), src)
+})
+
+test("a manual --aip run passes the same flags as the scripted run for a guarded package", () => {
+  // AIP-72 is generated with --inline-refs; a manual check of it must regen
+  // the same way, or it reports the $refs as drift.
+  assert.deepEqual(cliTargets(["--aip", "72", "--slug", "memory", "--doctype", "memory"]), [
+    { aip: 72, slug: "memory", doctype: "MEMORY", inlineRefs: true },
+  ])
+  assert.deepEqual(cliTargets(["--aip", "72", "--slug", "memory", "--doctype", "MEMORY"]), [
+    DEFAULT_PACKAGES.find(p => p.slug === "memory"),
+  ])
+})
+
+test("a manual run of an unguarded package takes --inline-refs as a flag", () => {
+  assert.deepEqual(cliTargets(["--aip", "99", "--slug", "x", "--doctype", "X"]), [
+    { aip: 99, slug: "x", doctype: "X" },
+  ])
+  assert.deepEqual(cliTargets(["--aip", "99", "--inline-refs", "--slug", "x", "--doctype", "X"]), [
+    { aip: 99, slug: "x", doctype: "X", inlineRefs: true },
+  ])
+})
+
+test("the no-arg run checks every guarded package", () => {
+  assert.deepEqual(cliTargets([]), DEFAULT_PACKAGES)
+})
+
+test("a manual check of AIP-72 is in sync", async () => {
+  for (const t of cliTargets(["--aip", "72", "--slug", "memory", "--doctype", "MEMORY"])) {
+    const result = await checkSpecDrift(t)
+    assert.equal(result.ok, true, result.message)
+  }
 })

@@ -687,8 +687,9 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
   /** Manifest-declared AIP-72 `capabilities.memory.inject` (AIP-45). Read
    *  by the spawn digest (`memory-digest.ts`): `native-dir` gets the native
    *  projection (`startSession({ memoryProjection })`, the driver falls back
-   *  to the system prompt); absent, `none` and `system-prompt` get the
-   *  digest through the system-prompt channel when there is one. */
+   *  to the system prompt); `system-prompt` gets the digest through the
+   *  system-prompt channel when there is one; absent and `none` get no
+   *  digest (AIP-72 section 9, step 3). */
   memoryInject?: "native-dir" | "system-prompt" | "none"
   /** Manifest-declared AIP-72 `capabilities.memory.capture`. `native-dir-diff`
    *  makes the daemon diff the session's projected native memory dir at

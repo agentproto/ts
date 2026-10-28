@@ -210,9 +210,11 @@ export type MemoryInjectDecision =
  * The inject path for one session. A `native-dir` adapter gets the native
  * projection (the driver owns the last word: it falls back to the
  * system-prompt digest when the session cannot read its native dir). The
- * digest rides the system prompt when the adapter declares
- * `capabilities.memory.inject` as `system-prompt`, `none` or nothing, and
- * the host can actually append to that session's system prompt. One
+ * digest rides the system prompt only when the adapter declares
+ * `capabilities.memory.inject: "system-prompt"` and the host can actually
+ * append to that session's system prompt. `none`, and an absent
+ * declaration (which reads as `none`), get no digest at all, whatever
+ * channel the adapter has (AIP-72 section 9, resolution step 3). One
  * session never gets the items through two paths (rule 25).
  */
 export function decideMemoryInject(input: {
@@ -224,6 +226,12 @@ export function decideMemoryInject(input: {
     return { path: "none", reason: "a sandbox spawn starts the adapter on the box, which owns its own configuration" }
   }
   if (input.inject === "native-dir") return { path: "native-dir" }
+  if (input.inject !== "system-prompt") {
+    return {
+      path: "none",
+      reason: `the adapter declares capabilities.memory.inject ${input.inject === undefined ? "nothing (read as none)" : `"${input.inject}"`}`,
+    }
+  }
   if (input.supportsSystemPrompt !== true) {
     return { path: "none", reason: "the adapter has no usable system-prompt channel" }
   }
@@ -268,8 +276,18 @@ export async function buildNativeMemoryProjection(
 }
 
 /** Descriptor `meta` keys of the AIP-72 binding, carried to a restarted
- *  descriptor so its memory tools, projection and capture keep working. */
-export const MEMORY_META_KEYS = ["memoryStoreRoot", "memory", "memoryInject", "memoryAnchors", "memoryCapture"] as const
+ *  descriptor so its memory tools, projection and capture keep working.
+ *  `role` is the spawn role the commit gate reads (`memory-tools.ts`):
+ *  carried as spawned, so a restarted supervisor still commits and a
+ *  restarted executor still only proposes. */
+export const MEMORY_META_KEYS = [
+  "role",
+  "memoryStoreRoot",
+  "memory",
+  "memoryInject",
+  "memoryAnchors",
+  "memoryCapture",
+] as const
 
 export function carryMemoryMeta(meta: Readonly<Record<string, string>> | undefined): Record<string, string> {
   const out: Record<string, string> = {}

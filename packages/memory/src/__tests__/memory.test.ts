@@ -83,6 +83,13 @@ describe("validateMemory: valid items", () => {
     expect(result.ok).toBe(true)
   })
 
+  it("does not fill the schema's tags default: absent stays absent, an explicit [] validates", () => {
+    const doc = { ...USER }
+    expect(validateMemory(doc).ok).toBe(true)
+    expect(doc).not.toHaveProperty("tags")
+    expect(validateMemory({ ...USER, tags: [] }).ok).toBe(true)
+  })
+
   it("accepts any body (rule 12)", () => {
     expect(validateMemory({ ...USER, body: "---\nnot: frontmatter\n---\n" }).ok).toBe(true)
   })
@@ -238,6 +245,14 @@ describe("parseMemory / renderMemory", () => {
     const after = renderMemory({ ...FEEDBACK, status: "superseded" }).split("\n")
     const changed = before.filter((line, i) => line !== after[i])
     expect(changed).toEqual(['status: "active"'])
+  })
+
+  it("a status change re-rendered over a hand-written file rewrites more than the status line", () => {
+    // Why the store rewrites status in place (`setStatusLine`) instead.
+    const hand = "---\nid: mem_x\nname: x\ntype: user\nstatus: active\n---\n\nBody.\n"
+    const before = hand.split("\n")
+    const after = renderMemory({ ...parseMemory(hand), status: "archived" }).split("\n")
+    expect(before.filter((line, i) => line !== after[i]).length).toBeGreaterThan(1)
   })
 
   it("parses a hand-written file and keeps unquoted date-times as strings", () => {

@@ -173,9 +173,16 @@ describe("buildMemoryDigest bound", () => {
 })
 
 describe("decideMemoryInject", () => {
-  it("uses the system prompt when the adapter declares system-prompt, none, or nothing", () => {
-    for (const inject of [undefined, "none", "system-prompt"] as const) {
-      expect(decideMemoryInject({ inject, supportsSystemPrompt: true })).toEqual({ path: "system-prompt" })
+  it("uses the system prompt when the adapter declares system-prompt and has a channel", () => {
+    expect(decideMemoryInject({ inject: "system-prompt", supportsSystemPrompt: true })).toEqual({ path: "system-prompt" })
+  })
+
+  it("gives no digest to an adapter that declares inject none, or no memory capability (AIP-72 section 9 step 3)", () => {
+    // An absent declaration reads as `{ inject: "none" }`; `none` is no
+    // digest, whatever channel the adapter has.
+    for (const inject of [undefined, "none"] as const) {
+      expect(decideMemoryInject({ inject, supportsSystemPrompt: true }).path).toBe("none")
+      expect(decideMemoryInject({ inject }).path).toBe("none")
     }
   })
 
@@ -186,8 +193,8 @@ describe("decideMemoryInject", () => {
   })
 
   it("skips an adapter with no usable system-prompt channel, and a sandbox spawn", () => {
-    expect(decideMemoryInject({ supportsSystemPrompt: false }).path).toBe("none")
-    expect(decideMemoryInject({ supportsSystemPrompt: true, sandbox: true }).path).toBe("none")
+    expect(decideMemoryInject({ inject: "system-prompt", supportsSystemPrompt: false }).path).toBe("none")
+    expect(decideMemoryInject({ inject: "system-prompt", supportsSystemPrompt: true, sandbox: true }).path).toBe("none")
   })
 })
 
@@ -252,7 +259,7 @@ describe("spawnAgentSession memory digest", () => {
 
   it("appends the digest to the system prompt when the agent enables memory", async () => {
     const agentPath = await writeAgent(["memory:", "  enabled: true"])
-    const { startSession, deps } = setup({ supportsSystemPrompt: true })
+    const { startSession, deps } = setup({ supportsSystemPrompt: true, memoryInject: "system-prompt" })
     const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
     expect(result.ok).toBe(true)
     const appended = startSession.mock.calls[0]![0].appendSystemPrompt ?? ""
@@ -263,7 +270,7 @@ describe("spawnAgentSession memory digest", () => {
 
   it("resolves a workspace-relative memory.store against the session's workspace", async () => {
     const agentPath = await writeAgent(["memory:", "  store: ./team-memory"])
-    const { roots, deps } = setup({ supportsSystemPrompt: true })
+    const { roots, deps } = setup({ supportsSystemPrompt: true, memoryInject: "system-prompt" })
     const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
     expect(result.ok).toBe(true)
     expect(roots).toEqual([join(root, "ws", "team-memory")])
@@ -278,6 +285,25 @@ describe("spawnAgentSession memory digest", () => {
     expect(roots).toEqual([])
     // The memory tools refuse this session's writes (AIP-42).
     expect(result.ok && result.descriptor.meta?.memory).toBe("disabled")
+  })
+
+  it("injects no digest for an adapter that declares inject none, or no memory capability", async () => {
+    const agentPath = await writeAgent(["memory:", "  enabled: true"])
+    for (const memoryInject of [undefined, "none"] as const) {
+      const { startSession, deps } = setup({
+        supportsSystemPrompt: true,
+        ...(memoryInject !== undefined ? { memoryInject } : {}),
+      })
+      const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
+      expect(result.ok).toBe(true)
+      const opts = startSession.mock.calls[0]![0]
+      expect(opts.appendSystemPrompt ?? "").toContain("You are scout.")
+      expect(opts.appendSystemPrompt ?? "").not.toContain("<agentproto-memory")
+      expect(opts.memoryProjection).toBeUndefined()
+      // The store stays reachable through the memory_* tools.
+      if (result.ok) expect(result.descriptor.meta?.memoryStoreRoot).toBeDefined()
+      expect(result.ok && result.warnings?.some(w => w.includes("memory digest not injected"))).toBe(true)
+    }
   })
 
   it("injects nothing when the manifest has no AIP-72 memory binding", async () => {
