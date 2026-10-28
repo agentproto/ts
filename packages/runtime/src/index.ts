@@ -289,6 +289,7 @@ import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
 import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createClerkTurnEndController } from "@agentproto/clerk"
+import { createNativeMemoryCapture } from "./memory-capture.js"
 import { createClerkPassRunner } from "@agentproto/clerk"
 import type { ClerkSessionLike } from "@agentproto/clerk"
 import {
@@ -1065,6 +1066,7 @@ import { registerCatalogDiffTool } from "./catalog-diff-tool.js"
 import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
 import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
+import { respawnMemoryProjection } from "./memory-digest.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -2815,6 +2817,25 @@ export async function createGateway(
                   : {}
               // App boundary survives a lazy resume (fs zones + host-context isolation).
               const resumeBoundary = boundaryFromMeta(descriptor.meta)
+              // AIP-72 native-dir inject, recomputed for a lineage whose spawn
+              // projected (`meta.memoryInject`); never fails the resume.
+              const resumeMemoryProjection = await respawnMemoryProjection(descriptor.meta, {
+                sessionId: descriptor.id,
+                memoryStoreAt,
+                ...(adapter.supportsSystemPrompt !== undefined
+                  ? { supportsSystemPrompt: adapter.supportsSystemPrompt }
+                  : {}),
+                ...(adapter.systemPromptMaxChars !== undefined
+                  ? { systemPromptMaxChars: adapter.systemPromptMaxChars }
+                  : {}),
+              }).catch(err => {
+                console.warn(
+                  `[resume] native memory not projected for ${descriptor.id}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                )
+                return undefined
+              })
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
@@ -2854,6 +2875,7 @@ export async function createGateway(
                 // (skill imports) — the same set the original spawn delivered,
                 // so a revived session keeps its skills.
                 ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
+                ...(resumeMemoryProjection ? { memoryProjection: resumeMemoryProjection } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
                   ? { options: { base_url: resolvedBaseUrl } }
@@ -3262,6 +3284,14 @@ export async function createGateway(
     sessionEvents,
     resolveConfig: resolveClerkConfig,
     runPass: clerkReaction.dispatch,
+  })
+  // AIP-72 native-dir-diff capture: at each turn end and at exit, a
+  // session whose spawn projected its native memory dir gets that dir
+  // diffed and the changes written to its store as proposals.
+  const nativeMemoryCapture = createNativeMemoryCapture({
+    registry: sessions,
+    sessionEvents,
+    memoryStoreAt,
   })
 
   // Installed-app registry — singleton per daemon, shared between
@@ -5386,6 +5416,7 @@ export async function createGateway(
       // Detach the clerk turn-end subscriber + cancel its pending debounce
       // timers (a pending pass must not fire into a shutting-down daemon).
       clerkTurnEnd.dispose()
+      nativeMemoryCapture.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       permissionTelegram?.stop()

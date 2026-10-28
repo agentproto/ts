@@ -23,6 +23,7 @@ import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
  *  `"unsupported"` (the agent can't / refused to steer). */
 export type SteerOutcome = "steered" | "promptRequired" | "unsupported"
 import type { SandboxMode } from "@agentproto/command-sandbox"
+import type { MemoryDocument } from "@agentproto/memory"
 
 export type {
   AcpMcpServer,
@@ -403,6 +404,13 @@ export interface NativeHookCapability {
   handlers: readonly NativeHookHandler[]
   async?: boolean
   context?: NativeHookContext
+}
+
+/** {@link AgentCliStartOptions.memoryProjection}. */
+export interface AgentCliMemoryProjection {
+  items: readonly MemoryDocument[]
+  /** The system-prompt digest of the same items, the fallback channel. */
+  digest?: string
 }
 
 /** AIP-72 section 9 `capabilities.memory` declaration. */
@@ -1545,6 +1553,17 @@ export interface AgentCliStartOptions {
    * first-prompt prefix + harness warning in that case (never-silent).
    */
   appendSystemPrompt?: string
+  /**
+   * AIP-72 section 9 inject for an adapter declaring
+   * `capabilities.memory.inject: "native-dir"`: the in-force items scoped
+   * to this session, in digest order, and the same digest rendered for the
+   * system prompt. The driver projects `items` into the harness's native
+   * memory dir (claude-code: `<configDir>/memory`, see `native-memory.ts`)
+   * when the session can read it; otherwise (auto memory off, a repo that
+   * pins its own `autoMemoryDirectory`, a driver without the projection)
+   * `digest` is appended to the system-prompt text instead. Never both.
+   */
+  memoryProjection?: AgentCliMemoryProjection
   /**
    * Skill folders to deliver into this session's isolated config dir before
    * the child starts. Each `path` folder is copied to

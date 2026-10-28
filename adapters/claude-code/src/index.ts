@@ -283,6 +283,11 @@ export const claudeCode: AgentCliHandle = defineHarness({
     // The daemon therefore mounts itself eager here — see
     // `resolveSpawnDeferredTools` (packages/runtime/src/deferred-tools.ts).
     nativeToolSearch: true,
+    // AIP-72 section 9: the driver projects in-force memory into the
+    // session's auto-memory dir (`<configDir>/memory`, pinned through
+    // `autoMemoryDirectory`) and the daemon diffs it back as proposals.
+    // Falls back to the system-prompt digest when auto memory is off.
+    memory: { inject: "native-dir", capture: "native-dir-diff" },
   },
   // Only the `lean` context mode remains a manifest `modes[]` entry (SPEC
   // §3.4a). Posture (plan / accept-edits / bypass-permissions) and the gateway

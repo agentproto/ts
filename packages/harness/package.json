@@ -63,6 +63,7 @@
     "@agentproto/acp": "workspace:*",
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/doctype": "workspace:*",
+    "@agentproto/memory": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },

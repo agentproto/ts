@@ -359,7 +359,14 @@ import {
   resolveMemoryStoreRoot,
   type AgentMemoryBinding,
 } from "./memory-stores.js"
-import { DEFAULT_MEMORY_DIGEST_MAX_CHARS, buildMemoryDigest, decideMemoryInject } from "./memory-digest.js"
+import {
+  DEFAULT_MEMORY_DIGEST_MAX_CHARS,
+  buildMemoryDigest,
+  buildNativeMemoryProjection,
+  decideMemoryInject,
+  sessionAnchorTags,
+  type NativeMemoryProjection,
+} from "./memory-digest.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -3910,14 +3917,16 @@ export async function spawnAgentSession(
         " for a sandbox spawn.",
     }
   }
-  // ── AIP-72 memory digest (section 9 inject, system-prompt path) ────────
+  // ── AIP-72 memory digest (section 9 inject) ─────────────────────────────
   // An agent that binds memory (`memory.enabled`/`store`/`anchors`, unless
   // `enabled: false`) gets the in-force items scoped to this session
   // appended to its system prompt, through the same channel the AGENT.md
   // body takes below. Only when the adapter's `capabilities.memory.inject`
   // is absent, `none` or `system-prompt` and it has a usable channel: a
-  // `native-dir` adapter is left to its native projection, so no session
-  // ever gets the items through two paths. Never fails the spawn: a store
+  // `native-dir` adapter gets the items as `memoryProjection` instead (the
+  // driver writes them into its native dir, or appends the digest when the
+  // session cannot read that dir), so no session ever gets the items
+  // through two paths. Never fails the spawn: a store
   // that cannot be read is a warning, and the memory_* tools remain.
   // The store root is resolved for any binding, `enabled: false` included,
   // so the session's memory tools read the agent's own store.
@@ -3932,7 +3941,18 @@ export async function spawnAgentSession(
     memoryStoreRoot = storeRoot.root
     if (storeRoot.warning) spawnWarnings.push(`agent_start: ${storeRoot.warning}`)
   }
+  // The native-dir half (rule 25: one path per session): the same selection
+  // goes to the driver as `memoryProjection`, with the rendered digest as its
+  // fallback for a session that cannot read its native dir.
+  let memoryProjection: NativeMemoryProjection | undefined
+  let memoryAnchorTags: string[] | undefined
   if (storeRoot !== undefined && memoryProjectionEnabled(callerAgentMemory)) {
+    const anchors = {
+      session: mintedSessionId,
+      ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+      ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+      ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+    }
     const decision = decideMemoryInject({
       ...(resolved?.memoryInject !== undefined ? { inject: resolved.memoryInject } : {}),
       ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
@@ -3949,12 +3969,7 @@ export async function spawnAgentSession(
         const digest =
           maxChars > 0
             ? await buildMemoryDigest((deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root), {
-                anchors: {
-                  session: mintedSessionId,
-                  ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
-                  ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
-                  ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
-                },
+                anchors,
                 maxChars,
               })
             : null
@@ -3971,10 +3986,43 @@ export async function spawnAgentSession(
           }`,
         )
       }
+    } else if (decision.path === "native-dir") {
+      try {
+        memoryProjection = await buildNativeMemoryProjection(
+          (deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root),
+          {
+            anchors,
+            ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+            ...(resolved?.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
+            ...(input.appendSystemPrompt !== undefined ? { existingSystemPromptChars: input.appendSystemPrompt.length } : {}),
+          },
+        )
+        // Recorded so a respawn (restart, lazy resume) recomputes the same
+        // projection and the capture tags what it proposes with them.
+        memoryAnchorTags = sessionAnchorTags({
+          ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+          ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+          ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+        }).filter(tag => tag !== "global")
+      } catch (err) {
+        spawnWarnings.push(
+          `agent_start: native memory not projected, the store at ${storeRoot.root} could not be read: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
     } else {
       spawnWarnings.push(
         `agent_start: memory digest not injected: ${decision.reason}. The memory_* tools still reach the store.`,
       )
+      // TODO(sandbox capture): a sandbox box owns its own adapter config
+      // dir (tarred back by `sandbox-adapter-store.ts`); capture there needs
+      // the unpacked dir or an in-box diff, neither done here.
+      if (input.sandbox !== undefined && resolved?.memoryCapture === "native-dir-diff") {
+        spawnWarnings.push(
+          "agent_start: native memory capture skipped for a sandbox session: its config dir lives in the box.",
+        )
+      }
     }
   }
   // Descriptor `meta` the memory tools read, stamped by BOTH the sync spawn
@@ -3985,6 +4033,17 @@ export async function spawnAgentSession(
     role: role.name,
     ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
     ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
+    // AIP-72 native-dir path: the inject path and anchors a respawn
+    // recomputes the projection from, and the capture flag the
+    // turn-end/exit diff (`memory-capture.ts`) runs on, only for a session
+    // whose native dir this spawn projected.
+    ...(memoryAnchorTags !== undefined
+      ? {
+          memoryInject: "native-dir",
+          memoryAnchors: memoryAnchorTags.join(","),
+          ...(resolved?.memoryCapture === "native-dir-diff" ? { memoryCapture: "native-dir-diff" } : {}),
+        }
+      : {}),
   }
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
   // An adapter that declared a manifest `systemPrompt` channel takes the
@@ -5015,6 +5074,7 @@ export async function spawnAgentSession(
             ...(appendSystemPromptChannel !== undefined
               ? { appendSystemPrompt: appendSystemPromptChannel }
               : {}),
+            ...(memoryProjection ? { memoryProjection } : {}),
             onActivity: () => registry.pulseActivity(pendingDesc.id),
           })
           let asyncPrompt = effectivePrompt
@@ -5481,6 +5541,8 @@ export async function spawnAgentSession(
         ...(appendSystemPromptChannel !== undefined
           ? { appendSystemPrompt: appendSystemPromptChannel }
           : {}),
+        // AIP-72 native-dir inject (decision above), the driver's channel.
+        ...(memoryProjection ? { memoryProjection } : {}),
         onActivity: () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
         },

@@ -21,6 +21,13 @@ import {
   opencodePermissionForPosture,
 } from "./opencode-permission.js"
 import { applySessionSkills, readSessionSkillsMetadata } from "./session-skills.js"
+import {
+  NATIVE_MEMORY_DIR,
+  nativeMemoryUnavailable,
+  projectNativeMemory,
+  readNativeMemorySnapshot,
+  writeNativeMemorySnapshot,
+} from "./native-memory.js"
 import { terminateChildTree } from "./process-tree.js"
 import { resolveNpxFastPath } from "./npx-fast-path.js"
 import { resolveWindowsBatchSpawn, windowsBatchShellOption } from "./win32-spawn.js"
@@ -441,7 +448,38 @@ export function createAgentCliRuntime(
       // A private temp dir holding the file-list text when the host gave no
       // config dir — removed with the session (see `close()` below).
       let systemPromptTmpDir: string | undefined
-      const systemPromptText = opts?.appendSystemPrompt
+      // ── AIP-72 native memory (section 9 inject, native-dir path) ──────
+      // Decided here, before the system-prompt channel, because the fallback
+      // rides that channel: a claude-code session whose auto memory is
+      // readable gets the items projected into `<configDir>/memory` (below,
+      // with the isolated settings.json); otherwise the digest joins the
+      // system-prompt text. One channel per session, never both (rule 25).
+      const memoryProjection = opts?.memoryProjection
+      let projectNativeMemoryItems = false
+      let memoryDigestFallback: string | undefined
+      if (memoryProjection) {
+        const unavailable =
+          definition.id !== "claude-code" || definition.capabilities?.memory?.inject !== "native-dir"
+            ? "this driver projects native memory for claude-code only"
+            : nativeMemoryUnavailable({ cwd, env, ...(opts?.configDir ? { configDir: opts.configDir } : {}) })
+        if (unavailable === undefined) {
+          projectNativeMemoryItems = true
+        } else {
+          memoryDigestFallback = memoryProjection.digest
+          console.warn(
+            `[agent-cli] native memory not projected: ${unavailable}; ` +
+              (memoryDigestFallback !== undefined && definition.systemPrompt
+                ? "the digest rides the system prompt instead."
+                : "no system-prompt digest either."),
+          )
+        }
+      }
+      const systemPromptText =
+        memoryDigestFallback !== undefined && definition.systemPrompt
+          ? opts?.appendSystemPrompt !== undefined
+            ? `${opts.appendSystemPrompt}\n\n${memoryDigestFallback}`
+            : memoryDigestFallback
+          : opts?.appendSystemPrompt
       // Write the system-prompt text to `<config dir>/agentproto-system-prompt.md`
       // — or a private temp dir when the host gave no config dir (tracked in
       // `systemPromptTmpDir` for removal in `close()`) — and return the file's
@@ -621,6 +659,9 @@ export function createAgentCliRuntime(
       // `os.tmpdir()` BEFORE the confined spawn — it must ride along as an
       // extraWritePaths entry, not rely on the workspace bind.
       let claudeConfigDir: string | undefined
+      // The projected native memory dir, a confined-spawn write path like
+      // the session skills dir.
+      let nativeMemoryWritePath: string | undefined
       if (isolateClaudeCodeConfig) {
         // `opts.configDir` (AgentCliStartOptions.configDir) makes the
         // isolated dir PERSISTENT instead of throwaway: the caller picks a
@@ -697,10 +738,38 @@ export function createAgentCliRuntime(
         if (opts?.isolateHostContext) {
           isolatedSettings.claudeMdExcludes = hostContextExcludes(cwd)
         }
+        // Pin the auto-memory dir inside the config dir (E62 run 8: the
+        // setting replaces the git-root slug dir from any cwd), so the
+        // projection never has to re-derive the CLI's path rule.
+        // Only a spawn that carries a projection pins the dir: the runtime
+        // recomputes it on every respawn of a memory-enabled lineage
+        // (restart and lazy resume included), so a spawn without one has
+        // memory off and must not read the stale projected items.
+        const nativeMemoryDir = projectNativeMemoryItems ? join(claudeConfigDir, NATIVE_MEMORY_DIR) : undefined
+        if (nativeMemoryDir) {
+          isolatedSettings.autoMemoryDirectory = nativeMemoryDir
+          nativeMemoryWritePath = nativeMemoryDir
+        }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),
           JSON.stringify(isolatedSettings),
         )
+        if (nativeMemoryDir && memoryProjection) {
+          // Project, then persist the snapshot beside the session cache
+          // manifest; the daemon diffs against it at turn end and exit.
+          // Additive like skills: a failed write warns, never sinks the spawn.
+          try {
+            const prior = readNativeMemorySnapshot(claudeConfigDir)
+            const snapshot = projectNativeMemory(nativeMemoryDir, memoryProjection.items, prior ? { prior } : {})
+            writeNativeMemorySnapshot(claudeConfigDir, snapshot)
+          } catch (err) {
+            console.warn(
+              `[agent-cli] native memory: projection into ${nativeMemoryDir} failed: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            )
+          }
+        }
         env.CLAUDE_CONFIG_DIR = claudeConfigDir
       }
 
@@ -735,6 +804,7 @@ export function createAgentCliRuntime(
       const extraWritePaths = claudeConfigDir ? [claudeConfigDir] : []
       if (credentialDataDir) extraWritePaths.push(credentialDataDir)
       if (sessionSkillsTargetDir) extraWritePaths.push(sessionSkillsTargetDir)
+      if (nativeMemoryWritePath) extraWritePaths.push(nativeMemoryWritePath)
       // A confined spawn denies `$HOME`, but some CLIs still READ their own
       // global config at startup (opencode: ~/.config/opencode, even with
       // OPENCODE_CONFIG_CONTENT set). Those are adapter-declared, READ-only
