@@ -622,7 +622,7 @@ describe("spawnAgentSession", () => {
     })
   })
 
-  it("stamps `boardId` onto the spawned descriptor's meta — and omits meta without it", async () => {
+  it("stamps `boardId` onto the spawned descriptor's meta, and only the role without it", async () => {
     const { deps } = baseDeps()
     const pinned = await spawnAgentSession(deps, {
       adapter: "mock",
@@ -631,12 +631,13 @@ describe("spawnAgentSession", () => {
     })
     expect(pinned.ok).toBe(true)
     if (!pinned.ok) throw new Error("expected spawn")
-    expect(pinned.descriptor.meta).toEqual({ boardId: "cowork:main" })
+    expect(pinned.descriptor.meta).toEqual({ boardId: "cowork:main", role: "executor" })
 
     const plain = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
     expect(plain.ok).toBe(true)
     if (!plain.ok) throw new Error("expected spawn")
-    expect(plain.descriptor.meta).toBeUndefined()
+    // Every spawn records its resolved role (the memory commit gate reads it).
+    expect(plain.descriptor.meta).toEqual({ role: "executor" })
   })
 
   it("(a) rejects a spawn that would exceed the caller scope's maxDepth", async () => {

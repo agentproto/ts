@@ -24,6 +24,7 @@ import { stripOwner } from "@agentproto/app"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
+import { parseAgentMemoryBinding, type AgentMemoryBinding } from "./memory-stores.js"
 
 export interface AgentManifestRef {
   /** Logical agent id, resolved under `<root>/.agents/<id>/AGENT.md`. */
@@ -97,6 +98,10 @@ export interface AgentManifestSpawnDefaults {
    *  manifest's `metadata.hooks.clerk`. Undefined when the manifest states
    *  none - the less specific levels (workspace, daemon) then apply. */
   readonly hooks?: { clerk?: Partial<ClerkHookConfig> }
+  /** The manifest's AIP-72 binding (`memory.enabled` / `store` / `anchors`),
+   *  read by the spawn digest (`memory-digest.ts`). Undefined when the
+   *  `memory` block states none of them. */
+  readonly memory?: AgentMemoryBinding
   readonly warnings: string[]
 }
 
@@ -131,6 +136,7 @@ export async function loadAgentManifestDefaults(
   // The AGENT level of the clerk hook, when the manifest carries one
   // (`metadata.hooks.clerk`).
   const manifestHooks = manifestClerkHook(loaded.handle.metadata)
+  const memory = parseAgentMemoryBinding(loaded.handle.memory)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
   const projected = projectAgentToSpawn(
     { path, handle: loaded.handle, body: loaded.body, ...(model !== undefined ? { model } : {}) },
@@ -149,6 +155,7 @@ export async function loadAgentManifestDefaults(
       ...(projected.skills !== undefined ? { skills: projected.skills } : {}),
       ...(projected.tools !== undefined ? { tools: projected.tools } : {}),
       ...(manifestHooks !== undefined ? { hooks: manifestHooks } : {}),
+      ...(memory !== undefined ? { memory } : {}),
       warnings: projected.warnings,
     },
   }

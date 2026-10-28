@@ -593,6 +593,20 @@ export interface SessionsConfig {
 }
 
 /**
+ * Where the daemon's AIP-72 memory store lives (`memory-stores.ts`). The
+ * `memory_*` MCP tools and the spawn digest read the store at this root
+ * unless an agent's AIP-42 `memory.store` names its own files root.
+ */
+export interface MemoryStoreConfig {
+  /**
+   * Root of the default reference-layout store (`items/<type>/<id>.md`,
+   * `proposals/<id>.md`). Absolute, `~/`, or relative to the home
+   * directory. Read at boot; unset means `~/.agentproto/memory`.
+   */
+  root?: string
+}
+
+/**
  * Policy for the daemon's own AGENTS.md resolution + injection (WP-R2) —
  * how a spawned session's initial prompt carries the repo's `AGENTS.md`
  * (see `agents-md.ts`). The daemon resolves the nearest `AGENTS.md` walking
@@ -754,6 +768,8 @@ export interface AgentprotoConfig {
   review?: ReviewConfig
   /** Daemon-side AGENTS.md resolution/injection policy. See {@link AgentsMdConfig}. */
   agentsMd?: AgentsMdConfig
+  /** The default AIP-72 memory store. See {@link MemoryStoreConfig}. */
+  memory?: MemoryStoreConfig
   /** Model roles: ROLE → model id (or `{ model, route?, profile? }`), the
    *  one place reviewer/judge models are configured. Layer 3 of the
    *  precedence documented in `model-roles.ts` (input > workspace

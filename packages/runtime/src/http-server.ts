@@ -673,6 +673,12 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  ordinary spawn fields instead (`agent-projection.ts`). An option merely
    *  NAMED `agent` (antigravity's `agy` agent name) is not this. */
   agentManifestOption?: string
+  /** Manifest-declared AIP-72 `capabilities.memory.inject` (AIP-45). Read
+   *  by the spawn digest (`memory-digest.ts`): `native-dir` gets no
+   *  system-prompt digest (its native projection is a separate path);
+   *  absent, `none` and `system-prompt` get it through the system-prompt
+   *  channel when there is one. */
+  memoryInject?: "native-dir" | "system-prompt" | "none"
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes

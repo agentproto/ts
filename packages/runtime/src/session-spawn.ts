@@ -350,6 +350,14 @@ import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
+import type { MemoryStore } from "@agentproto/memory"
+import {
+  memoryProjectionEnabled,
+  memoryStoreAt as defaultMemoryStoreAt,
+  resolveMemoryStoreRoot,
+  type AgentMemoryBinding,
+} from "./memory-stores.js"
+import { DEFAULT_MEMORY_DIGEST_MAX_CHARS, buildMemoryDigest, decideMemoryInject } from "./memory-digest.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -1331,6 +1339,10 @@ export interface SpawnAgentSessionDeps {
    *  tests inject a stub registry to avoid touching the real
    *  filesystem. */
   loadRoleRegistry?: () => Promise<Record<string, RoleProfile>>
+  /** The AIP-72 store at a resolved root, read by the spawn digest.
+   *  Defaults to the daemon's shared per-root stores (`memory-stores.ts`);
+   *  tests inject a temp-dir store. */
+  memoryStoreAt?: (root: string) => MemoryStore
   /** Resolves an `agent_start.sandbox` slug (or an inline spec's own
    *  `.provider`) to a concrete sandbox provider handle. Required for
    *  `input.sandbox` — omitted ⇒ `sandbox_provider_not_found`. */
@@ -2818,6 +2830,12 @@ export async function spawnAgentSession(
   // spawn that didn't go through the agentId/agentPath branch.
   let callerAgentRoleHash: string | undefined
   let callerAgentToolsHash: string | undefined
+  // The manifest's AIP-72 binding (`memory.enabled`/`store`/`anchors`), read
+  // by the spawn digest below once the adapter is resolved.
+  let callerAgentMemory: AgentMemoryBinding | undefined
+  // The store root the session's memory tools and digest use, recorded on
+  // the descriptor `meta` (`memoryStoreRoot`) when the agent binds memory.
+  let memoryStoreRoot: string | undefined
   // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
   // its model/instructions/skills/tools into the spawn, WITHOUT overriding
   // anything the caller pinned. Resolved here — after `cwd` is final (agentId
@@ -2849,6 +2867,7 @@ export async function spawnAgentSession(
     const roleFingerprint = fingerprintAgentRole(d)
     callerAgentRoleHash = roleFingerprint.roleHash
     callerAgentToolsHash = roleFingerprint.toolsHash
+    callerAgentMemory = d.memory
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
       d.instructions !== undefined ? prefixPrompt(d.instructions, callerPrompt) : callerPrompt
@@ -3792,6 +3811,66 @@ export async function spawnAgentSession(
             ? `access profiles [${input.access!.profileRefs!.join(", ")}]`
           : "the configured default wallet") +
         " for a sandbox spawn.",
+    }
+  }
+  // ── AIP-72 memory digest (section 9 inject, system-prompt path) ────────
+  // An agent that binds memory (`memory.enabled`/`store`/`anchors`, unless
+  // `enabled: false`) gets the in-force items scoped to this session
+  // appended to its system prompt, through the same channel the AGENT.md
+  // body takes below. Only when the adapter's `capabilities.memory.inject`
+  // is absent, `none` or `system-prompt` and it has a usable channel: a
+  // `native-dir` adapter is left to its native projection, so no session
+  // ever gets the items through two paths. Never fails the spawn: a store
+  // that cannot be read is a warning, and the memory_* tools remain.
+  if (memoryProjectionEnabled(callerAgentMemory)) {
+    const storeRoot = resolveMemoryStoreRoot({
+      ...(callerAgentMemory?.store !== undefined ? { store: callerAgentMemory.store } : {}),
+      ...(cwd !== undefined ? { workspaceRoot: cwd } : {}),
+    })
+    memoryStoreRoot = storeRoot.root
+    if (storeRoot.warning) spawnWarnings.push(`agent_start: ${storeRoot.warning}`)
+    const decision = decideMemoryInject({
+      ...(resolved?.memoryInject !== undefined ? { inject: resolved.memoryInject } : {}),
+      ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+      sandbox: input.sandbox !== undefined,
+    })
+    if (decision.path === "system-prompt") {
+      const existing = input.appendSystemPrompt
+      const channelRoom =
+        resolved?.systemPromptMaxChars !== undefined
+          ? resolved.systemPromptMaxChars - (existing !== undefined ? existing.length + 2 : 0)
+          : DEFAULT_MEMORY_DIGEST_MAX_CHARS
+      const maxChars = Math.min(DEFAULT_MEMORY_DIGEST_MAX_CHARS, channelRoom)
+      try {
+        const digest =
+          maxChars > 0
+            ? await buildMemoryDigest((deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root), {
+                anchors: {
+                  session: mintedSessionId,
+                  ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+                  ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+                  ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+                },
+                maxChars,
+              })
+            : null
+        if (digest) {
+          input = {
+            ...input,
+            appendSystemPrompt: existing !== undefined ? `${existing}\n\n${digest.text}` : digest.text,
+          }
+        }
+      } catch (err) {
+        spawnWarnings.push(
+          `agent_start: memory digest not injected, the store at ${storeRoot.root} could not be read: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    } else {
+      spawnWarnings.push(
+        `agent_start: memory digest not injected: ${decision.reason}. The memory_* tools still reach the store.`,
+      )
     }
   }
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
@@ -5419,35 +5498,36 @@ export async function spawnAgentSession(
       // descriptor — the task ledger's board resolution reads it BEFORE the
       // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
       // generic `meta` hint map so future spawn-time hints need no new field.
-      ...(input.boardId ||
-      appBoundary ||
-      input.workflowOwner ||
-      cloudMeta ||
-      callerAgentId ||
-      callerAgentManifestPath ||
-      reactionStamp
-        ? {
-            meta: {
-              ...(input.boardId ? { boardId: input.boardId } : {}),
-              ...workflowOwnerMeta(input.workflowOwner),
-              ...(appBoundary ? boundaryMeta(appBoundary) : {}),
-              ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
-              // The caller's OWN AIP-42 manifest identity (see the capture
-              // above). Trusted because the daemon resolved it at spawn; the
-              // gateway reads it to bind the `create_tool`/`delete_tool` grant
-              // to the caller session, never a caller-supplied payload field.
-              ...(callerAgentId ? { agentId: callerAgentId } : {}),
-              ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
-              // The fingerprint THIS spawn rendered — `session_role_refresh`'s
-              // baseline (agent-role-refresh.ts). Only present alongside
-              // `agentManifestPath`, which is what makes a session eligible
-              // for a hot role refresh at all.
-              ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
-              ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
-              ...(reactionStamp ? reactionStamp.meta : {}),
-            },
-          }
-        : {}),
+      // Always present: every spawn records at least its resolved `role`.
+      meta: {
+        ...(input.boardId ? { boardId: input.boardId } : {}),
+        ...workflowOwnerMeta(input.workflowOwner),
+        ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+        ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
+        // The caller's OWN AIP-42 manifest identity (see the capture
+        // above). Trusted because the daemon resolved it at spawn; the
+        // gateway reads it to bind the `create_tool`/`delete_tool` grant
+        // to the caller session, never a caller-supplied payload field.
+        ...(callerAgentId ? { agentId: callerAgentId } : {}),
+        ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
+        // The fingerprint THIS spawn rendered: `session_role_refresh`'s
+        // baseline (agent-role-refresh.ts). Only present alongside
+        // `agentManifestPath`, which is what makes a session eligible
+        // for a hot role refresh at all.
+        ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
+        ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
+        // The resolved spawn role: the memory tools' commit gate reads
+        // it (`memory-tools.ts`), since a session's MCP calls carry only
+        // its id.
+        role: role.name,
+        // The AIP-72 store root this session's agent binds (see the
+        // memory digest above); the memory tools use it for this caller.
+        ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
+        // AIP-42 `memory.enabled: false`: the memory tools refuse this
+        // session's writes.
+        ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
+        ...(reactionStamp ? reactionStamp.meta : {}),
+      },
       ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),

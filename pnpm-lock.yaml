@@ -3948,6 +3948,9 @@ importers:
       '@agentproto/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server
+      '@agentproto/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@agentproto/model-catalog':
         specifier: workspace:*
         version: link:../model-catalog
