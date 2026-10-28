@@ -158,11 +158,15 @@ import type {
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   buildAutoCompactCompactInstructions,
+  buildAutoCompactResumePrompt,
   buildAutoCompactTranscriptNote,
   compactCommandTakesInstructions,
   createAutoCompactController,
   deriveLastTurnOutcome,
+  hasWorkInProgress,
+  readFiniteTokens,
   type AutoCompactController,
+  type AutoCompactDecision,
   type AutoCompactOutcome,
   type WorkInProgressSnapshot,
 } from "./auto-compact.js"
@@ -175,6 +179,7 @@ import {
   isContextContinuityHardStopped,
   type ContextContinuityPolicy,
   type ResolvedContextContinuityPolicy,
+  withContextPolicy,
 } from "./context-continuity.js"
 import {
   buildContextCheckpoint,
@@ -8512,7 +8517,8 @@ export function createSessionsRegistry(opts?: {
     // Context floor: never admit a prompt into a window the policy calls
     // full — and never leave the session stuck behind it either: start the
     // rescue (auto-compact) and tell the caller to retry. A compaction prompt
-    // is the way out, so it is always admitted.
+    // is the way out, so it is always admitted. A session with no policy
+    // still has the default floor.
     if (!admit?.compaction) {
       if (rt.contextRescue) {
         throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE}`)
@@ -8521,8 +8527,7 @@ export function createSessionsRegistry(opts?: {
       if (
         pct !== null &&
         !rt.contextUsedInconsistent &&
-        rt.desc.contextContinuity &&
-        isContextContinuityHardStopped(pct, rt.desc.contextContinuity)
+        isContextContinuityHardStopped(pct, rt.desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS)
       ) {
         void performContextRescue(rt, pct)
         throw new Error(`${caller}: session "${id}" ${CONTEXT_RESCUE_BUSY_MESSAGE} (context at ${pct}%)`)
@@ -9610,10 +9615,14 @@ export function createSessionsRegistry(opts?: {
       return
     }
     try {
-      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
-        harness,
-        baseDir: transcriptBaseDir,
-      })
+      const result = await continueAgentSessionFresh(
+        { registry, resolveAgentAdapter },
+        withContextPolicy(rt.desc).source,
+        {
+          harness,
+          baseDir: transcriptBaseDir,
+        },
+      )
       appendLine(
         rt,
         `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
@@ -9693,8 +9702,8 @@ export function createSessionsRegistry(opts?: {
         while (rt.busy && isSessionAlive(rt)) await sleepMs(250)
         if (!isSessionAlive(rt)) return
         const pctBefore = contextPctNow(rt) ?? pct
-        const policy = rt.desc.contextContinuity
-        if (policy && pctBefore < policy.hardStopAtPct) return
+        const floor = rt.desc.contextContinuity?.hardStopAtPct ?? CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct
+        if (pctBefore < floor) return
         appendLine(
           rt,
           `[context] context at ${pctBefore}% — compacting automatically (checkpoint first, queued prompts wait)`,
@@ -9711,7 +9720,6 @@ export function createSessionsRegistry(opts?: {
           )
         }
         if (!isSessionAlive(rt)) return
-        const floor = policy?.hardStopAtPct ?? CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct
         const deadline = Date.now() + (opts?.contextRescueSettleMs ?? 30_000)
         let pctAfter = contextPctNow(rt)
         while ((pctAfter === null || pctAfter >= floor) && Date.now() < deadline && isSessionAlive(rt)) {
@@ -9803,7 +9811,8 @@ export function createSessionsRegistry(opts?: {
     try {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
-        rt.desc,
+        // A session with no policy is continued under the defaults, like its checkpoint.
+        withContextPolicy(rt.desc).source,
         // The session is at its context limit: don't spend another turn on
         // a handoff question, extract from the transcript instead.
         { askSource: false, baseDir: transcriptBaseDir },
@@ -9872,10 +9881,33 @@ export function createSessionsRegistry(opts?: {
     // meanwhile is queued or answered "retry" instead of starting a turn the
     // `/compact` would then collide with.
     const run = async (): Promise<AutoCompactOutcome> => {
+      let compacted = false
+      let outcome: AutoCompactOutcome | undefined
       try {
-        return await sendAutoCompactPrompt(rt, snapshot)
+        outcome = await sendAutoCompactPrompt(rt, snapshot)
+        compacted = true
+        return outcome
       } finally {
         rt.contextRescue = undefined
+        // The compaction turn's own boundary check ran under the lock and
+        // skipped continue-fresh and the floor: evaluate once more now, so a
+        // compaction that did not free enough is acted on without waiting for
+        // the next prompt. Only after a compaction that ran (a refused one
+        // changed nothing), and without re-scheduling auto-compact, so this
+        // cannot loop. Before the queue drain: an action that takes the lock
+        // holds the queue until it is done.
+        // Do not re-evaluate while a resume turn will be injected for work in
+        // progress: that resume would race the re-evaluation and can be dropped
+        // or leave a stale question.
+        if (
+          compacted &&
+          isSessionAlive(rt) &&
+          !rt.busy &&
+          outcome &&
+          !hasWorkInProgress(outcome.snapshot)
+        ) {
+          void evaluateContextContinuity(rt, { skipAutoCompact: true }).catch(() => undefined)
+        }
         if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
       }
     }
@@ -10030,15 +10062,23 @@ export function createSessionsRegistry(opts?: {
     }, 0)
   }
 
-  async function evaluateContextContinuity(rt: SessionRuntime): Promise<void> {
+  async function evaluateContextContinuity(
+    rt: SessionRuntime,
+    evalOpts?: { skipAutoCompact?: boolean },
+  ): Promise<void> {
     if (rt.desc.kind !== "agent-cli") return
     // Autocompact is ABSOLUTE and window-independent: it must be evaluated
     // even when the window size is unknown (the percent ladder cannot act
     // without one, and that is exactly the 1M-context case).
-    scheduleAutoCompact(rt)
+    if (!evalOpts?.skipAutoCompact) scheduleAutoCompact(rt)
     const policy = rt.desc.contextContinuity
-    if (!policy) return
     const pct = computeContextPct(rt.desc.contextSize, rt.desc.contextUsed)
+    if (!policy) {
+      // No policy, no percent ladder (no warning, no question, no
+      // continue-fresh below the floor), but the default floor still holds.
+      if (pct !== null && pct >= CONTEXT_CONTINUITY_DEFAULTS.hardStopAtPct) rescueAtFloor(rt, pct)
+      return
+    }
     if (pct === null) return
 
     const nextAction = contextContinuityNextAction(
@@ -10118,21 +10158,26 @@ export function createSessionsRegistry(opts?: {
         return
       }
       case "hard-stop":
-        // The latest frame's `used` contradicted the window (see
-        // `contextUsedInconsistent`), so `pct` is a stale reading — ending a
-        // session on it is irreversible, a warning is not.
-        if (rt.contextUsedInconsistent) {
-          appendLine(
-            rt,
-            `[context] hard-stop skipped at ${pct}% — the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
-            "stderr",
-          )
-          return
-        }
-        // Not awaited: the rescue waits for this very turn to settle.
-        void performContextRescue(rt, pct)
+        rescueAtFloor(rt, pct)
         return
     }
+  }
+
+  /** The turn-boundary floor, with or without a policy. */
+  function rescueAtFloor(rt: SessionRuntime, pct: number): void {
+    // The latest frame's `used` contradicted the window (see
+    // `contextUsedInconsistent`), so `pct` is a stale reading: ending a
+    // session on it is irreversible, a warning is not.
+    if (rt.contextUsedInconsistent) {
+      appendLine(
+        rt,
+        `[context] hard-stop skipped at ${pct}%: the adapter's last usage frame reported more tokens than the window holds, so the reading is unreliable`,
+        "stderr",
+      )
+      return
+    }
+    // Not awaited: the rescue waits for this very turn to settle.
+    void performContextRescue(rt, pct)
   }
 
   // ── Inbox + waiters (AIP-46 §Session messages) ────────────────────────
@@ -10566,7 +10611,10 @@ export function createSessionsRegistry(opts?: {
         compactHandoffTurn && turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE
       try {
         // The rescue runs at the window's edge: no handoff turn into it.
-        rt.lastCompactionCheckpoint = await checkpointBeforeContextLoss(rt, "compaction", askSource)
+        const checkpoint = await checkpointBeforeContextLoss(rt, "compaction", askSource)
+        // Only the runtime auto-compaction reads it back: an operator
+        // `/compact` does not pin a checkpoint for the rest of the session.
+        if (isRuntimeAutoCompactSource(turnOpts?.promptSource)) rt.lastCompactionCheckpoint = checkpoint
       } catch (err) {
         throw new Error(
           `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,

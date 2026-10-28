@@ -85,7 +85,7 @@ export function clampAutoCompactTokens(value: number | undefined | null): number
  */
 const AUTO_COMPACT_REARM_GROWTH_FRACTION = 0.25
 
-function readFiniteTokens(value: number | undefined): number | undefined {
+export function readFiniteTokens(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) ? value : undefined
 }
 

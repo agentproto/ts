@@ -56,6 +56,7 @@ import { resolveModelRole as resolveModelRoleEntry } from "./model-roles.js"
 import { registerDecisionTools } from "./decision-tools.js"
 import { createDaemonEscalationHost } from "./decision-escalation.js"
 import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
+import { withContextPolicy } from "./context-continuity.js"
 export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,
@@ -2985,7 +2986,7 @@ export async function createGateway(
             ...(opts.listCatalogModels ? { listCatalogModels: opts.listCatalogModels } : {}),
             ...(orchestratorInjector ? { buildOrchestratorMcp: orchestratorInjector } : {}),
           },
-          prev,
+          withContextPolicy(prev).source,
           {
             adapter: target.harness,
             harness: target.harness,
