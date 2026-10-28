@@ -38,7 +38,7 @@ export const mastraController: AgentCliHandle = defineHarness({
     cmd: "npm view @mastra/core version",
     parse: "(\\d+\\.\\d+\\.\\d+)",
     // Matches this package's `@mastra/core` peerDependency range.
-    range: ">=1.59.0 <2",
+    range: ">=1.60.0 <2",
     timeout_ms: 15_000,
   },
   sandbox: {
@@ -93,9 +93,12 @@ export {
   type MastraControllerSessionState,
 } from "./client.js"
 export {
+  assertMastraCoreVersion,
   createAgentControllerHost,
+  MIN_MASTRA_CORE_VERSION,
   ResolvedValueError,
   UnresolvedReferenceError,
+  UnsupportedMastraCoreError,
   type AgentControllerHost,
   type AgentControllerHostDefaults,
   type AgentControllerHostOptions,
