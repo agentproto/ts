@@ -11,6 +11,9 @@
  *   - TS:  `defineMemory({...})` -> frozen `MemoryHandle` (writer, canonical)
  *   - MD:  `parseMemory(src)` -> `MemoryDocument`, then `validateMemory(doc)`
  *   - out: `renderMemory(doc)` -> MEMORY.md text
+ *
+ * Store (section 8): the `MemoryStore` port and `FilesMemoryStore`, the
+ * reference layout (`items/<type>/<id>.md`, `proposals/<id>.md`).
  */
 
 export const SPEC_NAME = "memory/v1" as const
@@ -22,6 +25,27 @@ export { parseMemory, renderMemory } from "./markdown.js"
 export { isAllowedStatusTransition, isInForce, memoryStatus } from "./lifecycle.js"
 export { MemoryParseError, MemoryValidationError } from "./errors.js"
 export { memoryFrontmatterSchema } from "./schema.js"
+export {
+  MemoryConflictError,
+  MemoryNotFoundError,
+  MemorySlugTakenError,
+  MemoryStoreError,
+  MemoryTransitionError,
+  type IMemoryStore,
+  type MemoryFilter,
+  type MemoryRecord,
+  type MemorySearchHit,
+  type MemorySearchOptions,
+  type MemoryStore,
+  type MemoryStoreErrorCode,
+  type MemoryWriteOptions,
+} from "./store.js"
+export {
+  FilesMemoryStore,
+  type FilesMemoryStoreOptions,
+  type MemoryKnowledgeHit,
+  type MemoryKnowledgeProvider,
+} from "./files-store.js"
 export {
   MEMORY_STATUSES,
   MEMORY_TYPES,
