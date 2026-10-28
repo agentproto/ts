@@ -129,6 +129,7 @@
     "@agentproto/adapter-grok-cli": "workspace:*",
     "@agentproto/adapter-hermes": "workspace:*",
     "@agentproto/adapter-mastra-agent": "workspace:*",
+    "@agentproto/adapter-mastra-controller": "workspace:*",
     "@agentproto/adapter-mastracode": "workspace:*",
     "@agentproto/adapter-mastracode-inprocess": "workspace:*",
     "@agentproto/adapter-openclaw": "workspace:*",

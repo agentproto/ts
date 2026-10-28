@@ -6,11 +6,11 @@ plan to execute transitions, per-mode instructions and tool allowlists,
 subagents, Observational Memory defaults, permissions. Implements the
 `protocol: "proprietary"` arm contract (no subprocess).
 
-> **Status: E48 PR 2.** Runs a live controller session with its modes
-> (stream mapping, spawn-time mode selection, `setSessionMode`, cancel).
-> Tool approvals, `ask_user` and `submit_plan` suspensions land in E48 PR 3,
-> so a tool call still parks on the controller's approval gate. See
-> MASTRA-CONTROLLER.md.
+> **Status: E48 PR 3.** Runs a live controller session with its modes
+> (stream mapping, spawn-time mode selection, `setSessionMode`, cancel) and
+> answers its requests: tool approvals, `ask_user` questions and
+> `submit_plan` plan approvals surface as `agent-prompt` events answered
+> with `respondPermission`. See MASTRA-CONTROLLER.md.
 
 ## Running a session
 

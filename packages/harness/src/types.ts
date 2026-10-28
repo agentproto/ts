@@ -1238,7 +1238,9 @@ export interface AgentCliClient {
    * Resolve a permission request parked by permission-hold mode — `requestId`
    * is the `toolCallId` carried on the `agent-prompt` StreamEvent that
    * surfaced it. Returns true when a matching parked request was found and
-   * resolved. Only the ACP arm implements this; other arms omit it.
+   * resolved. Implemented by the ACP arm and by proprietary arms that
+   * raise `agent-prompt` themselves (e.g. `mastra-controller`); arms that
+   * never park a request omit it.
    */
   respondPermission?(
     requestId: string,

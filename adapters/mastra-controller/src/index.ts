@@ -13,10 +13,11 @@
  * and maps its events to AIP-45 stream events. The controller's modes are
  * not static AIP-45 `modes` (those are context modes composed at spawn):
  * they come from the manifest at session time, as the client's
- * `availableModes`, switched with `setSessionMode`. `capabilities` claims
- * only what this release does: streaming. Tool calls park on the
- * controller's approval gate until E48 PR 3 wires approvals, so
- * `tool_calls` stays false. See MASTRA-CONTROLLER.md.
+ * `availableModes`, switched with `setSessionMode`. Tool approvals,
+ * `ask_user` questions and `submit_plan` plan approvals surface as
+ * `agent-prompt` events answered with `respondPermission`. `capabilities`
+ * claims only what this release does: streaming and tool calls. See
+ * MASTRA-CONTROLLER.md.
  */
 
 import { defineHarness, type AgentCliHandle } from "@agentproto/harness"
@@ -27,7 +28,7 @@ export const mastraController: AgentCliHandle = defineHarness({
   description:
     "A Mastra AgentController (@mastra/core/agent-controller) built in-process from a " +
     "mastra.agent-controller/v1 manifest: modes with plan to execute transitions, " +
-    "subagents, permissions. Approvals and plan suspensions land in E48 PR 3.",
+    "subagents, permissions, tool approvals, questions and plan approvals.",
   version: "0.0.0",
   // No binary is ever spawned for a proprietary arm. `bin` is required by
   // the AIP-45 schema regardless, so this is a documented placeholder.
@@ -51,7 +52,7 @@ export const mastraController: AgentCliHandle = defineHarness({
   adapter: "@agentproto/adapter-mastra-controller",
   capabilities: {
     streaming: true,
-    tool_calls: false,
+    tool_calls: true,
     sub_agents: false,
     file_io: false,
     multimodal: false,
@@ -84,6 +85,10 @@ export {
   createAgentCliClient,
   MANIFEST_ENV_KEY,
   MODE_ENV_KEY,
+  META_PLAN,
+  META_REQUEST,
+  META_SUSPEND_PAYLOAD,
+  META_TRANSITIONS_TO,
   type MastraControllerClientOptions,
   type MastraControllerSessionState,
 } from "./client.js"

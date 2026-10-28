@@ -30,6 +30,7 @@ import { codex } from "@agentproto/adapter-codex"
 import { gemini } from "@agentproto/adapter-gemini"
 import { hermes } from "@agentproto/adapter-hermes"
 import { mastraAgent } from "@agentproto/adapter-mastra-agent"
+import { mastraController } from "@agentproto/adapter-mastra-controller"
 import { mastracode } from "@agentproto/adapter-mastracode"
 import { mastracodeInprocess } from "@agentproto/adapter-mastracode-inprocess"
 import { openclaw } from "@agentproto/adapter-openclaw"
@@ -44,6 +45,7 @@ const ADAPTERS: ReadonlyArray<readonly [string, AgentCliHandle]> = [
   ["gemini", gemini],
   ["hermes", hermes],
   ["mastra-agent", mastraAgent],
+  ["mastra-controller", mastraController],
   ["mastracode", mastracode],
   ["mastracode-inprocess", mastracodeInprocess],
   ["openclaw", openclaw],
