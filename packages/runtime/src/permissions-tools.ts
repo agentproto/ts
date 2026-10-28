@@ -19,7 +19,6 @@ import {
   type PermissionResource,
   type Principal,
 } from "./permissions.js"
-import { createWorkspaceOfCwd } from "./workspace-binding.js"
 
 export interface RegisterPermissionsToolsOptions {
   registry: SessionsRegistry
@@ -35,7 +34,7 @@ export interface RegisterPermissionsToolsOptions {
   allowInterrupt?: boolean
   /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
   peerBinding?: "slug" | "verified"
-  /** Workspace resolver for verified peer binding; defaults to the registry's lookup. */
+  /** cwd to registered-workspace resolver for verified peer binding. Omitted: no cwd resolves, so "verified" links no peers. */
   workspaceOfCwd?: (cwd: string) => string | undefined
 }
 

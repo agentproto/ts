@@ -16,6 +16,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { decide, type PermissionContext } from "./permissions.js"
+import { warnPeerUnverified } from "./workspace-binding.js"
 import {
   createSessionMessage,
   messageFrom,
@@ -173,9 +174,12 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
     if (decision.allow && decision.relation === "peer" && decision.peerVerified === false) {
-      console.warn(
-        `[permissions] peer-unverified sender=${self.id} recipient=${recipient.id} slug=${self.workspaceSlug} rule=${decision.rule}`,
-      )
+      warnPeerUnverified({
+        senderId: self.id,
+        recipientId: recipient.id,
+        slug: self.workspaceSlug,
+        rule: decision.rule,
+      })
     }
     if (!decision.allow || !relation) {
       return fail(
