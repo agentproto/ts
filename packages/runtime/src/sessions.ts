@@ -76,7 +76,15 @@ import type {
   SessionConfigChangedEvent,
   ContextRescueOutcome,
 } from "./session-event-bus.js"
-import { postureEnforcement, resolvePosture, type PostureEnforcement } from "./canonical-posture.js"
+import {
+  exceedsPostureCeiling,
+  postureEnforcement,
+  postureForModeId,
+  resolvePosture,
+  restartPosture,
+  samePosture,
+  type PostureEnforcement,
+} from "./canonical-posture.js"
 import { isSandboxBoxExpiredError } from "./sandbox-agent-session-proxy.js"
 import {
   buildBackgroundTaskWakePrompt,
@@ -2406,8 +2414,20 @@ export interface SessionDescriptor {
   effort?: EffortLevel
   /** What the agent may DO (SPEC §3.1 axis 5) — an agentproto-canonical
    *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
-   *  registry (SPEC §3.4a). */
+   *  registry (SPEC §3.4a). Follows an agent-caused AIP-45 `mode-changed`
+   *  too, so it is the mode the harness is in now (see `postureSource`). */
   posture?: Posture
+  /** `"agent"` once the agent itself has moved `posture` (an AIP-45
+   *  `mode-changed` with `cause: "agent"`), absent until then (spawn,
+   *  `agent_set_posture`). A restart carries it forward while the caller's
+   *  pick still owns the ceiling, so the ceiling survives the restart. */
+  postureSource?: "agent"
+  /** The caller's last posture, snapshotted when the agent first moves the
+   *  posture (absent: the caller never set one). The agent may move below it
+   *  freely; past it, the daemon warns and a restart clamps back to it
+   *  (`restartPosture`, canonical-posture.ts). Carried across restarts with
+   *  `postureSource`. */
+  postureCeiling?: Posture
   /**
    * Read-surface echo of the live harness's advertised ACP session modes
    * (`SessionModeState.availableModes`, #482) — stamped at READ TIME from the
@@ -5971,6 +5991,14 @@ export interface SpawnAgentInput {
    *  on it. See each descriptor field's doc for the axis contract. */
   effort?: EffortLevel
   posture?: Posture
+  /** Agent-owned posture bookkeeping carried across a restart — see
+   *  {@link SessionDescriptor.postureSource}. Absent for a caller-set posture
+   *  (a fresh spawn or a restart override). */
+  postureSource?: "agent"
+  /** The caller's ceiling carried across a restart — see
+   *  {@link SessionDescriptor.postureCeiling}. Only meaningful with
+   *  `postureSource: "agent"`. */
+  postureCeiling?: Posture
   route?: RouteSpec
   contextProfile?: ContextProfile
   /** Named auth-profile echo for the `access` axis (SPEC §3.6). Non-secret —
@@ -6318,6 +6346,11 @@ export type AgentSessionResumer = (input: {
    *  same host-chosen toolset it had on the initial spawn (orchestrator
    *  WP1). Omitted for legacy rows spawned before this was persisted. */
   mcpServers?: AcpMcpServer[]
+  /** The posture to start the revived adapter in: the descriptor's current
+   *  posture clamped to the caller's ceiling (`restartPosture`). The hook
+   *  forwards it to `startSession({ posture })`; absent means the adapter
+   *  default. */
+  posture?: Posture
   /** Forwarded to the re-spawned adapter's `startSession({ onActivity })`
    *  so the resumed session keeps pulsing `lastActivityAt` the same way
    *  the original spawn did. */
@@ -8104,6 +8137,54 @@ export function createSessionsRegistry(opts?: {
     return { ...evt, size, reportedSize: evt.size }
   }
 
+  /**
+   * Fold an agent-caused AIP-45 mode switch onto the descriptor's `posture`
+   * (the canonical posture when the mode id maps to one, else the raw id). A
+   * caller-caused switch is not applied here: every caller path (spawn,
+   * `setPosture`, restart) already wrote the descriptor, and its stream echo
+   * must not apply it twice. The caller's last posture is kept as
+   * `postureCeiling`; moving past it is recorded (the harness IS in that
+   * mode) but announced as a warning, and a restart clamps back to it.
+   */
+  const followAgentMode = (rt: SessionRuntime, modeId: string): void => {
+    const posture = postureForModeId(modeId)
+    if (samePosture(rt.desc.posture, posture)) return
+    if (rt.desc.postureSource !== "agent") {
+      if (rt.desc.posture !== undefined) rt.desc.postureCeiling = rt.desc.posture
+      else delete rt.desc.postureCeiling
+      rt.desc.postureSource = "agent"
+    }
+    rt.desc.posture = posture
+    schedulePersist()
+    if (!sessionEvents) return
+    const ts = new Date().toISOString()
+    sessionEvents.emit({
+      type: "session:config-changed",
+      sessionId: rt.desc.id,
+      axis: "posture",
+      value: posture,
+      label: rt.desc.label,
+      ts,
+    })
+    if (exceedsPostureCeiling(posture, rt.desc.postureCeiling)) {
+      const ceiling = rt.desc.postureCeiling
+      const describe = (p: Posture | undefined) =>
+        p === undefined ? "the adapter default" : typeof p === "object" ? p.harnessModeId : p
+      const widerThan =
+        ceiling === undefined ? "the adapter default" : `the caller's ${describe(ceiling)}`
+      sessionEvents.emit({
+        type: "session:harness-warning",
+        sessionId: rt.desc.id,
+        warnings: [
+          `the agent switched to "${modeId}" (posture ${describe(posture)}), wider than ` +
+            `${widerThan}; a restart starts at ${describe(ceiling)}`,
+        ],
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    }
+  }
+
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
@@ -8494,6 +8575,7 @@ export function createSessionsRegistry(opts?: {
             `\x1b[2m[mode] ${evt.previousModeId ?? "?"} -> ${evt.modeId} (${why})\x1b[0m`,
             "stdout",
           )
+          if (evt.cause === "agent") followAgentMode(rt, evt.modeId)
         }
         break
       case "background-task":
@@ -8928,6 +9010,12 @@ export function createSessionsRegistry(opts?: {
       await rt.resumePromise
       return
     }
+    // A restart/recovery clamps the descriptor's posture to the caller's
+    // ceiling before the adapter starts, and reconciles the descriptor to the
+    // mode actually handed to `startSession` (passed to the resume hook as
+    // `posture`). Source/ceiling stay in place so a non-clamping revival does not
+    // re-baseline the caller's last pick.
+    const revivalPosture = restartPosture(rt.desc)
     rt.resumePromise = (async () => {
       appendLine(
         rt,
@@ -8954,6 +9042,7 @@ export function createSessionsRegistry(opts?: {
           // The prior descriptor — the hook re-resolves billing-auth off its
           // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
           descriptor: rt.desc,
+          ...(revivalPosture !== undefined ? { posture: revivalPosture } : {}),
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
           // Keep pulsing lastActivityAt across a resume the same way the
@@ -8975,6 +9064,20 @@ export function createSessionsRegistry(opts?: {
         bindAgentSession(rt, fresh)
         bindOutOfTurnEvents(rt)
         stampCapabilities(rt)
+        if (!samePosture(rt.desc.posture, revivalPosture)) {
+          if (revivalPosture !== undefined) rt.desc.posture = revivalPosture
+          else delete rt.desc.posture
+          if (revivalPosture !== undefined) {
+            sessionEvents?.emit({
+              type: "session:config-changed",
+              sessionId: rt.desc.id,
+              axis: "posture",
+              value: revivalPosture,
+              label: rt.desc.label,
+              ts: new Date().toISOString(),
+            })
+          }
+        }
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so
@@ -12201,6 +12304,8 @@ export function createSessionsRegistry(opts?: {
         // shape as `model`/`mode`/`auth` above.
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.postureSource === "agent" ? { postureSource: "agent" as const } : {}),
+        ...(input.postureCeiling !== undefined ? { postureCeiling: input.postureCeiling } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
@@ -12441,6 +12546,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.auth ? { auth: input.auth } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.postureSource === "agent" ? { postureSource: "agent" as const } : {}),
+        ...(input.postureCeiling !== undefined ? { postureCeiling: input.postureCeiling } : {}),
         ...(input.route ? { route: input.route } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(input.accessProfile ? { accessProfile: input.accessProfile } : {}),
@@ -13921,6 +14028,9 @@ export function createSessionsRegistry(opts?: {
         }
       }
       rt.desc.posture = posture
+      // The caller's pick is the new ceiling.
+      delete rt.desc.postureSource
+      delete rt.desc.postureCeiling
       schedulePersist()
       if (sessionEvents) {
         sessionEvents.emit({

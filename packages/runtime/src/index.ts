@@ -2779,6 +2779,7 @@ export async function createGateway(
             resumeSessionId,
             descriptor,
             mcpServers,
+            posture,
             onActivity,
           }) => {
             const adapter = await opts.resolveAgentAdapter!(adapterSlug)
@@ -2844,6 +2845,8 @@ export async function createGateway(
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                // Clamped to the caller's ceiling by the registry.
+                ...(posture !== undefined ? { posture } : {}),
                 ...(resumeBoundary
                   ? boundaryRestartOptions(resumeBoundary, {
                       supportsFsZones: adapter.supportsFsZones === true,
