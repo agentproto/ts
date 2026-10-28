@@ -67,7 +67,10 @@ const claudeCodeLike = (id = "claude-code"): AgentCliDefinition => ({
   sandbox: "./SANDBOX.md",
   protocol: "acp",
   acp: "./claude-code-acp.ACP.md",
-  modes: [{ id: "default", description: "Standard interactive mode." }],
+  modes: [
+    { id: "default", description: "Standard interactive mode." },
+    { id: "plan", description: "Plan-only.", bin_args_append: ["--permission-mode", "plan"] },
+  ],
 })
 
 const COMMAND = "/opt/agentproto/bin/agentproto hook pre-compact"
