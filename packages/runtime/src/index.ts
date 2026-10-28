@@ -74,6 +74,7 @@ export {
   type ModelRolesConfig,
   type ResolvedModelRole,
 } from "./model-roles.js"
+export { createWorkspaceOfCwd } from "./workspace-binding.js"
 export { loadWorkspaceModelRoles, type ModelRolesInput, type ModelRolesOutput } from "./model-roles-tools.js"
 import { registerHarnessPresetTools } from "./harness-preset-tools.js"
 import { registerUserPresetTools } from "./user-preset-tools.js"
@@ -4081,6 +4082,7 @@ export async function createGateway(
       defaultAgentPromptInterrupt: messagingDefaults.agentPromptInterrupt,
       messagingAllowSiblings: messagingDefaults.allowSiblings,
       messagingAllowSameWorkspace: messagingDefaults.allowSameWorkspace,
+      messagingPeerBinding: messagingDefaults.peerBinding,
       messagingPeerGroups: messagingDefaults.peerGroups,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),

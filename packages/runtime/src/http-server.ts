@@ -75,6 +75,7 @@ import {
 } from "./session-message.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
 import { setupTunnelProvider, tunnelLogin, tunnelLoginState } from "./tunnel-adapters.js"
@@ -7829,8 +7830,10 @@ code { color: #9ad; }
         allowSiblings: messaging.allowSiblings,
         allowSameWorkspace: messaging.allowSameWorkspace,
         peerGroups: messaging.peerGroups,
+        peerBinding: messaging.peerBinding,
         agentInterrupt: messaging.agentInterrupt,
       },
+      workspaceOfCwd: createWorkspaceOfCwd(),
     }
     const principal: Principal = sender
       ? { kind: "session", session: sender }
@@ -7838,6 +7841,11 @@ code { color: #9ad; }
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
+    if (decision.allow && decision.relation === "peer" && decision.peerVerified === false) {
+      console.warn(
+        `[permissions] peer-unverified sender=${sender?.id} recipient=${recipient.id} slug=${sender?.workspaceSlug} rule=${decision.rule}`,
+      )
+    }
     if (!decision.allow || !relation) {
       json(403, { error: "forbidden_recipient", id, callerSessionId: callerId, rule: decision.rule, reason: decision.reason })
       return true

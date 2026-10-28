@@ -95,6 +95,9 @@ export interface MessageTreeNode {
    *  workspace may message each other even without a tree edge - see
    *  {@link sameWorkspace} and `defaults.messaging.allowSameWorkspace`. */
   workspaceSlug?: string
+  /** The session's working directory. Used by the verified peer binding
+   *  (`defaults.messaging.peerBinding: "verified"`). */
+  cwd?: string
 }
 
 /**

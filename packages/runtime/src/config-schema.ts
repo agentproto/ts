@@ -168,6 +168,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
         allowSiblings: z.boolean().optional(),
         allowSameWorkspace: z.boolean().optional(),
         peerGroups: z.array(z.array(z.string().min(1))).optional(),
+        peerBinding: z.enum(["slug", "verified"]).optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
       })
@@ -1321,6 +1322,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Messaging peer groups",
     help: "Groups of workspace slugs: two sessions may message each other without a tree edge when both slugs sit in the same group (e.g. [[\"agentik-studio\",\"app-agentik-pygmalion\"]]). Empty (the default) = no cross-workspace link. Independent of allowSameWorkspace. Takes effect on the next call.",
     default: [],
+  },
+  {
+    path: "defaults.messaging.peerBinding",
+    schema: z.enum(["slug", "verified"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Peer workspace binding",
+    help: "\"slug\" (default): peers by recorded workspace slug; \"verified\": both cwds must resolve to the same registered workspace. Takes effect on the next call.",
+    default: "slug",
   },
   {
     path: "defaults.messaging.agentInterrupt",

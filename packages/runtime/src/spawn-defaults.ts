@@ -192,6 +192,7 @@ export interface SpawnDefaultsConfig {
     /** Whether a SESSION sender may use urgency `interrupt` (cancel the
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */
+    peerBinding?: "slug" | "verified"
     agentInterrupt?: "allow" | "deny"
     /** Minutes a prompt may sit queued behind a running turn before the
      *  sender is told it is stuck (typed notice) and it is flagged `stale`

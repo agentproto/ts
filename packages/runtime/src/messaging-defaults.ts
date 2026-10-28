@@ -41,6 +41,10 @@ export interface ResolvedMessagingDefaults {
    *  workspace slugs sit in the SAME group. Default [] (no
    *  cross-workspace link). Independent of `allowSameWorkspace`. */
   peerGroups: string[][]
+  /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
+   *  workspace slug; "verified": both cwds must resolve to the same
+   *  registered workspace. */
+  peerBinding: "slug" | "verified"
   /** `defaults.messaging.agentInterrupt` — whether a SESSION sender's
    *  `interrupt` may cancel the recipient's turn. Default "deny". */
   agentInterrupt: "allow" | "deny"
@@ -57,6 +61,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   allowSiblings: false,
   allowSameWorkspace: true,
   peerGroups: [],
+  peerBinding: "slug",
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
 }
@@ -72,6 +77,7 @@ export async function resolveMessagingDefaults(
       allowSameWorkspace:
         d?.messaging?.allowSameWorkspace ?? DEFAULT_MESSAGING_DEFAULTS.allowSameWorkspace,
       peerGroups: d?.messaging?.peerGroups ?? DEFAULT_MESSAGING_DEFAULTS.peerGroups,
+      peerBinding: d?.messaging?.peerBinding ?? DEFAULT_MESSAGING_DEFAULTS.peerBinding,
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
       pendingPromptStaleMinutes:
         d?.messaging?.pendingPromptStaleMinutes ?? DEFAULT_MESSAGING_DEFAULTS.pendingPromptStaleMinutes,
