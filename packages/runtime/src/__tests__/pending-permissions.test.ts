@@ -53,6 +53,7 @@ function holdSession(
   rawInput?: unknown,
   toolName = "Write",
   meta?: unknown,
+  extra: Record<string, unknown> = {},
 ): {
   session: AgentSessionLike
   responded: Array<{ requestId: string; resolution: unknown }>
@@ -71,6 +72,7 @@ function holdSession(
         options: OPTIONS,
         ...(rawInput !== undefined ? { rawInput } : {}),
         ...(meta !== undefined ? { _meta: meta } : {}),
+        ...extra,
       }
       await new Promise<void>(r => {
         release = r
@@ -195,6 +197,30 @@ describe("pending-permissions inbox — registry", () => {
     const pending = registry.listPendingPermissions()
     expect(pending).toHaveLength(1)
     expect(pending[0]).toMatchObject({ id: "perm-meta", sessionId: id, _meta: meta })
+
+    registry.shutdown()
+  })
+
+  it("carries an AIP-45 typed request (request + planApproval) through to the pending permission and the transcript", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const typed = {
+      request: "plan-approval",
+      planApproval: {
+        plan: "# Plan",
+        planRef: "plan.md",
+        targetModeId: "execute",
+        approveOptionId: "opt-once",
+        rejectOptionId: "opt-reject",
+      },
+    }
+    const fake = holdSession("acp-typed", "perm-typed", undefined, "submit_plan", undefined, typed)
+    const id = await spawnAndPark(registry, fake)
+
+    expect(registry.listPendingPermissions()[0]).toMatchObject({ id: "perm-typed", ...typed })
+    await registry.respondPermission("perm-typed", { decision: "approve" })
+    await new Promise(r => setTimeout(r, 20))
+    const prompt = readTranscript(transcriptDir, id).find(r => r.kind === "agent-prompt")
+    expect(prompt).toMatchObject({ toolCallId: "perm-typed", ...typed })
 
     registry.shutdown()
   })
@@ -529,6 +555,33 @@ describe("pending-permissions inbox — MCP tools", () => {
     registry.shutdown()
   })
 
+  it("permissions_list carries the AIP-45 request kind", async () => {
+    const bus = createSessionEventBus()
+    const eventRing = createEventRing()
+    const registry = createSessionsRegistry({ persist: false, transcriptDir, sessionEvents: bus })
+    const question = { prompt: "Which?", choices: [], allowFreeText: true, freeTextOptionId: "opt-once" }
+    const fake = holdSession("acp-mcp-q", "perm-mcp-q", undefined, "ask_user", undefined, {
+      request: "question",
+      question,
+    })
+    await spawnAndPark(registry, fake)
+
+    const server = new McpServer({ name: "perms-mcp", version: "0.0.0" })
+    registerOrchestrationTools(server, { registry, sessionEvents: bus, eventRing })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    const client = new Client({ name: "perms-mcp-client", version: "0.0.0" })
+    await client.connect(ct)
+
+    const listed = parse(await client.callTool({ name: "permissions_list", arguments: {} }))
+    expect(listed.permissions[0]).toMatchObject({ id: "perm-mcp-q", request: "question" })
+    const full = parse(await client.callTool({ name: "permissions_list", arguments: { full: true } }))
+    const rows = (full.permissions ?? full.items) as Array<Record<string, unknown>>
+    expect(rows[0]).toMatchObject({ id: "perm-mcp-q", request: "question", question })
+
+    registry.shutdown()
+  })
+
   it("permissions_list: page-walk with limit=2 covers exactly the unpaginated scoped list", async () => {
     const bus = createSessionEventBus()
     const eventRing = createEventRing()
@@ -720,6 +773,24 @@ describe("pending-permissions inbox — REST routes", () => {
       expect(fake.responded).toEqual([
         { requestId: "perm-http-meta", resolution: { optionId: "opt-reject", feedback: "do X instead" } },
       ])
+    })
+    registry.shutdown()
+  })
+
+  it("GET /permissions carries an AIP-45 typed question unchanged", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const typed = {
+      request: "question",
+      question: { prompt: "Which?", choices: [{ optionId: "opt-once", label: "This" }], allowFreeText: false },
+    }
+    const fake = holdSession("acp-http-q", "perm-http-q", undefined, "ask_user", undefined, typed)
+    await spawnAndPark(registry, fake)
+
+    await withServer(registry, async base => {
+      const list = (await (await fetch(`${base}/permissions`)).json()) as {
+        permissions: Array<Record<string, unknown>>
+      }
+      expect(list.permissions[0]).toMatchObject({ id: "perm-http-q", ...typed })
     })
     registry.shutdown()
   })

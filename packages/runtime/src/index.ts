@@ -1062,6 +1062,8 @@ import { syncDeviceMirror } from "./device-mirror.js"
 import { registerDaemonHealthTools } from "./daemon-health-tools.js"
 import { registerCatalogDiffTool } from "./catalog-diff-tool.js"
 import { registerQuotaStatusTool } from "./quota-status-tool.js"
+import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
+import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -2547,6 +2549,10 @@ export async function createGateway(
   if (daemonConfig.sessions?.eventsDir) {
     setDefaultSessionsBaseDir(daemonConfig.sessions.eventsDir)
   }
+  // Default AIP-72 memory store root from config (`memory.root`), read by
+  // the memory_* tools and the spawn digest. Unset leaves
+  // `~/.agentproto/memory`.
+  setDefaultMemoryRoot(daemonConfig.memory?.root)
   const lfCreds = await makeEvalReporterCredsStore().read("langfuse").catch(() => null)
   const langfuseTracer = lfCreds
     ? langfuseSessionTracer({
@@ -3996,6 +4002,20 @@ export async function createGateway(
     // diffs the LLM pricing catalog against the last call's stored baseline
     // and re-records "now" as the new baseline.
     registerCatalogDiffTool(server, {})
+    // AIP-72 memory store tools (memory_search/list/read/write/supersede/
+    // archive/dismiss). The caller is the trusted `callerSessionId` (none =
+    // the operator bearer); a commit needs the operator or a supervisor-role
+    // session, everyone else proposes (memory-tools.ts). The store is the
+    // one the caller's agent binds (`meta.memoryStoreRoot`, set at spawn),
+    // else the daemon default.
+    registerMemoryTools(server, {
+      caller: resolveMemoryCaller(callerSessionId, id => sessions.get(id)?.meta),
+      store: () =>
+        memoryStoreAt(
+          (callerSessionId ? sessions.get(callerSessionId)?.meta?.memoryStoreRoot : undefined) ??
+            defaultMemoryRoot(),
+        ),
+    })
     // Subprocess execution — the runtime's superpower for cloud
     // agents. Any allowlisted CLI on the user's machine (claude, gh,
     // pnpm, …) is reachable via `command_execute`. Allowlist lives at

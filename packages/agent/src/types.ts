@@ -208,6 +208,22 @@ export interface AgentDefinition {
  * Memory configuration.
  */
 export interface MemoryConfig {
+  /**
+   * AIP-72 memory items for this agent. When false, the agent MUST NOT write
+   * any memory item, and the host projects none into its sessions.
+   */
+  enabled?: boolean
+  /**
+   * The AIP-72 memory store the agent's items are read from and proposed
+   * to: a workspace-relative path to a reference-layout directory, or a
+   * host-resolved store id. Host default when omitted.
+   */
+  store?: string
+  /**
+   * Scope anchors in formatted form (`global`, `project:<slug>`,
+   * `agent:<slug>`...) added to the ones the host resolves for a session.
+   */
+  anchors?: string[]
   scope?: "per-conversation" | "per-thread" | "per-workspace" | "none"
   retention_turns?: number
   semantic?: {

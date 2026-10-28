@@ -163,7 +163,7 @@ describe("mastra-controller session (research-assistant fixture, stub model)", (
     ).rejects.toThrow(/mode 'review' is not declared.*Known modes: plan, execute/)
   })
 
-  it("setSessionMode switches the controller mode without a notice; unknown ids are refused", async () => {
+  it("setSessionMode switches the controller mode and reports mode-changed cause caller; unknown ids are refused", async () => {
     const client = newClient(fixtureResolvers(textModel("ok")))
     await client.connect({
       cwd: __dirname,
@@ -175,11 +175,22 @@ describe("mastra-controller session (research-assistant fixture, stub model)", (
 
     await expect(client.setSessionMode!("execute")).resolves.toEqual({ applied: true })
     expect(client.currentModeId).toBe("execute")
-    expect(notices).toEqual([])
+    expect(notices).toEqual([
+      {
+        kind: "mode-changed",
+        sessionId: client.sessionId,
+        modeId: "execute",
+        previousModeId: "plan",
+        cause: "caller",
+      },
+    ])
+    // Already in that mode: a no-op, nothing reported.
+    await expect(client.setSessionMode!("execute")).resolves.toEqual({ applied: true })
+    expect(notices).toHaveLength(1)
     await expect(client.setSessionMode!("review")).resolves.toMatchObject({ applied: false })
   })
 
-  it("a mode switch the controller makes by itself surfaces as a thought notice", async () => {
+  it("a mode switch the controller makes by itself surfaces as mode-changed cause agent", async () => {
     const host = createAgentControllerHost({ resolvers: fixtureResolvers(textModel("ok")) })
     let controller: AgentController | undefined
     const createController = host.createController.bind(host)
@@ -202,9 +213,11 @@ describe("mastra-controller session (research-assistant fixture, stub model)", (
     expect(client.currentModeId).toBe("execute")
     expect(notices).toEqual([
       {
-        kind: "thought",
+        kind: "mode-changed",
         sessionId: client.sessionId,
-        text: "[mastra-controller] mode switched by the controller: plan -> execute",
+        modeId: "execute",
+        previousModeId: "plan",
+        cause: "agent",
       },
     ])
   })

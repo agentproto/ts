@@ -491,8 +491,16 @@ interface SessionState {
   configOptions: SessionConfigOption[]
   /** Snapshot of `AcpClientSession.availableModes` — see there. */
   modes: SessionMode[]
-  /** Snapshot of `AcpClientSession.currentModeId` — see there. */
+  /** Starts as the `AcpClientSession.currentModeId` snapshot, then tracks
+   *  every applied mode change, so a `current_mode_update` can report the
+   *  mode it replaced (`mode-changed`'s `previousModeId`). */
   currentModeId: string | undefined
+  /** Mode of the caller's own `setSessionMode` while it is in flight, so its
+   *  `current_mode_update` echo is reported `cause: "caller"`. */
+  pendingCallerModeId?: string
+  /** Count of `current_mode_update`s applied, so `setSessionMode` can tell
+   *  whether the agent reported a mode while its RPC was in flight. */
+  modeUpdates?: number
   /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
   outOfTurnListeners: Set<(event: StreamEvent) => void>
   /** See `AcpClientOptions.orphanedPromptTimeoutMs`. */
@@ -1091,11 +1099,25 @@ function buildSession(
       }
     },
     async setSessionMode(modeId) {
+      state.pendingCallerModeId = modeId
+      const updatesBefore = state.modeUpdates ?? 0
       try {
         await connection.setSessionMode({ sessionId, modeId })
         onActivity?.()
+        if (state.pendingCallerModeId === modeId) state.pendingCallerModeId = undefined
+        // The agent reported a mode while the RPC was in flight: that report
+        // (echo or not) is the current mode, already delivered.
+        if ((state.modeUpdates ?? 0) !== updatesBefore) return { applied: true }
+        // No report before the response: report the caller's switch here
+        // (AIP-45 SHOULD). A later echo then finds the mode current, a no-op.
+        const previousModeId = state.currentModeId
+        state.currentModeId = modeId
+        if (previousModeId !== undefined && previousModeId !== modeId) {
+          deliver(state, { kind: "mode-changed", sessionId, modeId, previousModeId, cause: "caller" })
+        }
         return { applied: true }
       } catch (err) {
+        if (state.pendingCallerModeId === modeId) state.pendingCallerModeId = undefined
         // Non-fatal by design — same reasoning as `setConfigOption` above:
         // a mode id the wrapper doesn't (or no longer) recognize must never
         // propagate as a thrown error. The caller decides what to do with
@@ -1353,7 +1375,10 @@ function buildClientHandlers(
 
     const update = (params as { update?: Record<string, unknown> }).update
     if (!update) return
-    const event = translateSessionUpdate(sid, update)
+    const event =
+      update.sessionUpdate === "current_mode_update"
+        ? translateModeUpdate(sid, state, update)
+        : translateSessionUpdate(sid, update)
     state.observeTurnUpdate?.(event)
     if (event) deliver(state, event)
   }
@@ -1473,6 +1498,35 @@ function toolCallEnrichment(
     toolName: title ?? "",
     arguments: args,
     isUpdate: true,
+  }
+}
+
+/**
+ * ACP `current_mode_update` → AIP-45 `mode-changed`, `previousModeId` from
+ * the tracked mode. `cause` is `"caller"` when the update echoes the
+ * caller's in-flight `setSessionMode`, else `"agent"`. Null for a no-op, or
+ * when no previous mode is known (the wrapper reported no mode state).
+ */
+function translateModeUpdate(
+  sessionId: string,
+  state: SessionState,
+  update: Record<string, unknown>,
+): StreamEvent | null {
+  const modeId = update.currentModeId
+  if (typeof modeId !== "string" || modeId === "") return null
+  const previousModeId = state.currentModeId
+  state.currentModeId = modeId
+  state.modeUpdates = (state.modeUpdates ?? 0) + 1
+  const byCaller = state.pendingCallerModeId === modeId
+  if (byCaller) state.pendingCallerModeId = undefined
+  if (previousModeId === undefined || previousModeId === modeId) return null
+  return {
+    kind: "mode-changed",
+    sessionId,
+    modeId,
+    previousModeId,
+    cause: byCaller ? "caller" : "agent",
+    ...(update._meta !== undefined ? { _meta: update._meta } : {}),
   }
 }
 

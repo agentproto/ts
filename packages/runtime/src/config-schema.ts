@@ -21,6 +21,7 @@ import type {
   AgentprotoConfig,
   AcpAgentConfigEntry,
   AgentsMdConfig,
+  MemoryStoreConfig,
   CatalogConfig,
   DaemonConfig,
   FeaturesConfig,
@@ -309,6 +310,10 @@ const agentsMdConfigSchema: z.ZodType<AgentsMdConfig> = z
   .object({ inlineMaxKb: z.number().optional() })
   .passthrough()
 
+const memoryConfigSchema: z.ZodType<MemoryStoreConfig> = z
+  .object({ root: z.string().optional() })
+  .passthrough()
+
 /** `pairing.pairPage`: a plain http(s) URL, or a template with `{fp}` in the
  *  hostname — the exact check `pair offer --qr` applies (`resolvePairPageUrl`),
  *  run against a sample fingerprint so a bad template is refused at write
@@ -400,6 +405,7 @@ export const agentprotoConfigSchema = z
     provenance: provenanceConfigSchema.optional(),
     approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
+    memory: memoryConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
     modelRolePreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
     titler: titlerConfigSchema.optional(),
@@ -458,6 +464,7 @@ type ConfigTopLevelKey =
   | "provenance"
   | "approvals"
   | "agentsMd"
+  | "memory"
   | "models"
   | "modelRolePreset"
   | "titler"
@@ -806,6 +813,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Sessions events dir",
     help: "Root directory for per-session transcripts. Lockout: existing transcripts do not move when this changes, and a bad path can break every session reader.",
     default: "~/.agentproto/sessions",
+  },
+  {
+    path: "memory.root",
+    schema: str,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Memory store root",
+    help: "Root directory of the default AIP-72 memory store (items/<type>/<id>.md, proposals/<id>.md), read by the memory_* tools and the spawn digest. An agent's AIP-42 memory.store wins when it names a files root.",
+    default: "~/.agentproto/memory",
   },
   {
     path: "follow.triage.enabled",

@@ -10,6 +10,9 @@
 import type {
   AcpMcpServer,
   AcpPermissionResolution,
+  AgentPromptPlanApproval,
+  AgentPromptQuestion,
+  AgentPromptRequestKind,
   StreamEvent,
 } from "@agentproto/acp"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
@@ -24,6 +27,9 @@ import type { SandboxMode } from "@agentproto/command-sandbox"
 export type {
   AcpMcpServer,
   AcpPermissionResolution,
+  AgentPromptPlanApproval,
+  AgentPromptQuestion,
+  AgentPromptRequestKind,
   StreamEvent,
   SessionConfigOption,
   SessionMode,
@@ -463,6 +469,19 @@ export interface AgentCliCapabilities {
    * enables nothing. Absent reads as `{ inject: "none", capture: "none" }`.
    */
   memory?: MemoryProjectionCapability
+  /**
+   * AIP-45: the harness exposes session modes and emits the `mode-changed`
+   * stream event for every change of the current mode the caller did not
+   * make itself (and, SHOULD, for the caller's own `setSessionMode`).
+   * Absent reads as false.
+   */
+  mode_events?: boolean
+  /**
+   * AIP-45: the harness sets `request` on `agent-prompt` events and carries
+   * the `question` or `planApproval` payload for those kinds. Absent reads
+   * as false: every `agent-prompt` is a tool permission.
+   */
+  typed_prompts?: boolean
   /**
    * Native hook callbacks this harness exposes (AIP-71). Metadata
    * only: declaring an entry never installs a handler. Define-agent-cli and

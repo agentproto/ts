@@ -211,7 +211,11 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
       toolName: "echo",
       rawInput: { text: "hi" },
       text: 'Allow "echo"?',
+      request: "tool-permission",
+      _meta: { "mastra-controller/request": "tool-approval" },
     })
+    expect(prompt).not.toHaveProperty("question")
+    expect(prompt).not.toHaveProperty("planApproval")
     expect(echoRuns).toEqual([{ text: "hi" }])
     expect(textOf(events)).toBe("done")
     expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
@@ -291,6 +295,17 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
         { optionId: "answer:1", name: "Song", kind: "allow_once" },
         { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
       ])
+      expect(p.request).toBe("question")
+      expect(p.question).toEqual({
+        prompt: "Which era?",
+        choices: [
+          { optionId: "answer:0", label: "Tang" },
+          { optionId: "answer:1", label: "Song" },
+        ],
+        allowFreeText: false,
+      })
+      expect(p).not.toHaveProperty("planApproval")
+      expect(p._meta).toMatchObject({ "mastra-controller/request": "question" })
       return { optionId: "answer:1" }
     })
 
@@ -310,6 +325,13 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
         { optionId: "answer", name: "Answer", kind: "allow_once" },
         { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
       ])
+      expect(p.request).toBe("question")
+      expect(p.question).toEqual({
+        prompt: "Which tea?",
+        choices: [],
+        allowFreeText: true,
+        freeTextOptionId: "answer",
+      })
       return { optionId: "answer", feedback: "Oolong" }
     })
 
@@ -317,7 +339,7 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
     expect(JSON.stringify(prompts.at(-1))).toContain("User answered: Oolong")
   })
 
-  it("submit_plan approved: the controller switches to transitionsTo with the notice", async () => {
+  it("submit_plan approved: a typed plan-approval prompt, then mode-changed cause agent", async () => {
     writeFileSync(join(cwd, "plan.md"), "# Plan\n\n1. Read sources.\n")
     const { client } = await connected([
       { toolCall: { name: "submit_plan", input: { path: "plan.md" } } },
@@ -336,15 +358,30 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
         "mastra-controller/transitionsTo": "execute",
         "mastra-controller/plan": "# Plan\n\n1. Read sources.\n",
       })
+      expect(p.request).toBe("plan-approval")
+      expect(p.planApproval).toEqual({
+        plan: "# Plan\n\n1. Read sources.\n",
+        planRef: "plan.md",
+        targetModeId: "execute",
+        approveOptionId: "approve",
+        rejectOptionId: "reject",
+      })
+      expect(p).not.toHaveProperty("question")
       return { optionId: "approve" }
     })
 
     expect(client.currentModeId).toBe("execute")
-    expect(events).toContainEqual({
-      kind: "thought",
-      sessionId: client.sessionId,
-      text: "[mastra-controller] mode switched by the controller: plan -> execute",
-    })
+    expect(events.filter(e => e.kind === "mode-changed")).toEqual([
+      {
+        kind: "mode-changed",
+        sessionId: client.sessionId,
+        modeId: "execute",
+        previousModeId: "plan",
+        cause: "agent",
+        reason: "plan approved",
+      },
+    ])
+    expect(events.some(e => e.kind === "thought")).toBe(false)
     expect(textOf(events)).toBe("Executing.")
     expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
   })
@@ -360,7 +397,7 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
     }))
 
     expect(client.currentModeId).toBe("plan")
-    expect(events.some(e => e.kind === "thought")).toBe(false)
+    expect(events.some(e => e.kind === "thought" || e.kind === "mode-changed")).toBe(false)
     expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
     expect(JSON.stringify(prompts.at(-1))).toContain("User feedback: Add a step on sources.")
   })
@@ -443,6 +480,7 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
         "mastra-controller/request": "suspension",
         "mastra-controller/suspendPayload": { reason: "confirm the deploy" },
       })
+      expect(p.request).toBe("tool-permission")
       return { optionId: "approve" }
     })
 

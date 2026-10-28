@@ -253,6 +253,7 @@
     "@agentproto/lifecycle": "workspace:*",
     "@agentproto/manifest": "workspace:*",
     "@agentproto/mcp-server": "workspace:*",
+    "@agentproto/memory": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/model-intel": "workspace:*",
     "@agentproto/pairing-host": "workspace:*",

@@ -879,6 +879,10 @@ interface TranscriptRecord {
     from?: { sessionId?: string; label?: string; relation?: string }
   }
   cost?: { amount: number; currency: string }
+  /** `mode-changed` records (AIP-45). */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   // Kind-less CommandLogEntry fields (written by recordCommand — the line
   // has NO `kind` of its own). All optional so every other record shape
   // keeps parsing cleanly; unknown fields are ignored, never throw.
@@ -1132,6 +1136,16 @@ export async function exportDaemonEventsSession(
         flushAssistant()
         messages.push({ role: "system", text: "[awaiting input] agent requested a decision", ...seqStamp })
         break
+      case "mode-changed": {
+        flushAssistant()
+        const why = rec.reason ? `${rec.cause ?? "agent"}: ${rec.reason}` : (rec.cause ?? "agent")
+        messages.push({
+          role: "system",
+          text: `[mode] ${rec.previousModeId ?? "?"} -> ${rec.modeId ?? "?"} (${why})`,
+          ...seqStamp,
+        })
+        break
+      }
       case "plan": {
         flushAssistant()
         const entries = rec.entries ?? []
