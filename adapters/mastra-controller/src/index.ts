@@ -15,8 +15,9 @@
  * they come from the manifest at session time, as the client's
  * `availableModes`, switched with `setSessionMode`. Tool approvals,
  * `ask_user` questions and `submit_plan` plan approvals surface as
- * `agent-prompt` events answered with `respondPermission`. `capabilities`
- * claims only what this release does: streaming and tool calls. See
+ * typed `agent-prompt` events answered with `respondPermission`, and mode
+ * changes as `mode-changed` events. `capabilities` claims only what this
+ * release does: streaming, tool calls, mode events and typed prompts. See
  * MASTRA-CONTROLLER.md.
  */
 
@@ -58,6 +59,8 @@ export const mastraController: AgentCliHandle = defineHarness({
     multimodal: false,
     resumable: false,
     bidirectional: false,
+    mode_events: true,
+    typed_prompts: true,
   },
   modes: [],
   options: [

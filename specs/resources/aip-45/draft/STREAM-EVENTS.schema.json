@@ -1,0 +1,151 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-45/STREAM-EVENTS.schema.json",
+  "title": "AIP-45 stream events: agent-prompt and mode-changed",
+  "description": "JSON Schema for the AIP-45 stream events whose fields are specified: agent-prompt (with its optional typed request kinds) and mode-changed. The event name is carried in `kind`. The other events of the taxonomy (text-delta, tool-call, tool-result, thought, turn-end, error) are not covered here yet.",
+  "oneOf": [
+    { "$ref": "#/$defs/agentPrompt" },
+    { "$ref": "#/$defs/modeChanged" }
+  ],
+  "$defs": {
+    "meta": {
+      "type": "object",
+      "description": "Vendor extras. Consumers MUST NOT rely on keys they do not know."
+    },
+    "modeChanged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "modeId", "previousModeId", "cause"],
+      "description": "The session's current mode changed. Mirrors ACP current_mode_update (currentModeId) and adds previousModeId and cause.",
+      "properties": {
+        "kind": { "const": "mode-changed" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "modeId": { "type": "string", "minLength": 1, "description": "The current mode after the change. One of the session's available modes." },
+        "previousModeId": { "type": "string", "minLength": 1, "description": "The mode before the change. MUST differ from modeId (not expressible in JSON Schema; checked by consumers)." },
+        "cause": {
+          "enum": ["caller", "agent"],
+          "description": "caller = the caller's own setSessionMode was applied; agent = any other reason, including a switch after an approved plan."
+        },
+        "reason": { "type": "string", "description": "Human-readable reason, e.g. \"plan approved\"." },
+        "_meta": { "$ref": "#/$defs/meta" }
+      }
+    },
+    "permissionOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["optionId", "name", "kind"],
+      "description": "One answer the caller can pick. Same shape as ACP PermissionOption.",
+      "properties": {
+        "optionId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["allow_once", "allow_always", "reject_once", "reject_always"] },
+        "_meta": { "$ref": "#/$defs/meta" }
+      }
+    },
+    "questionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prompt", "choices", "allowFreeText"],
+      "properties": {
+        "prompt": { "type": "string", "minLength": 1, "description": "The question text." },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["optionId", "label"],
+            "properties": {
+              "optionId": { "type": "string", "minLength": 1, "description": "MUST appear in the event's options." },
+              "label": { "type": "string", "minLength": 1 },
+              "description": { "type": "string" }
+            }
+          }
+        },
+        "allowFreeText": { "type": "boolean", "description": "A typed answer is accepted: the caller selects freeTextOptionId and puts the text in the resolution's feedback." },
+        "freeTextOptionId": { "type": "string", "minLength": 1, "description": "REQUIRED when allowFreeText is true. MUST appear in the event's options." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "allowFreeText": { "const": true } }, "required": ["allowFreeText"] },
+          "then": { "required": ["freeTextOptionId"] }
+        },
+        {
+          "if": { "properties": { "allowFreeText": { "const": false } }, "required": ["allowFreeText"] },
+          "then": { "properties": { "choices": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "planApprovalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approveOptionId", "rejectOptionId"],
+      "anyOf": [{ "required": ["plan"] }, { "required": ["planRef"] }],
+      "properties": {
+        "plan": { "type": "string", "description": "The plan text." },
+        "planRef": { "type": "string", "minLength": 1, "description": "A reference to the plan (a path inside the session's sandbox, or a URI)." },
+        "targetModeId": { "type": "string", "minLength": 1, "description": "The session mode the harness enters if the plan is approved." },
+        "approveOptionId": { "type": "string", "minLength": 1, "description": "MUST appear in the event's options with kind allow_once." },
+        "rejectOptionId": { "type": "string", "minLength": 1, "description": "MUST appear in the event's options with kind reject_once. The resolution's feedback, when present, is the rejection reason handed to the agent." }
+      }
+    },
+    "agentPrompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "sessionId", "toolCallId", "options"],
+      "description": "The agent asks the caller to choose among options. Answered with respondPermission(toolCallId, { optionId, feedback? } | { cancelled: true }).",
+      "properties": {
+        "kind": { "const": "agent-prompt" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "toolCallId": { "type": "string", "minLength": 1, "description": "Request id the caller passes back to respondPermission." },
+        "options": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/permissionOption" } },
+        "text": { "type": "string", "description": "Human-readable question line." },
+        "toolName": { "type": "string" },
+        "rawInput": { "description": "The tool call's raw input, unmodified." },
+        "request": {
+          "enum": ["tool-permission", "question", "plan-approval"],
+          "default": "tool-permission",
+          "description": "What the agent asks for. Absent reads as tool-permission."
+        },
+        "question": { "$ref": "#/$defs/questionRequest" },
+        "planApproval": { "$ref": "#/$defs/planApprovalRequest" },
+        "_meta": { "$ref": "#/$defs/meta" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "request": { "const": "question" } }, "required": ["request"] },
+          "then": { "required": ["question"], "not": { "required": ["planApproval"] } }
+        },
+        {
+          "if": { "properties": { "request": { "const": "plan-approval" } }, "required": ["request"] },
+          "then": { "required": ["planApproval"], "not": { "required": ["question"] } }
+        },
+        {
+          "if": {
+            "anyOf": [
+              { "not": { "required": ["request"] } },
+              { "properties": { "request": { "const": "tool-permission" } }, "required": ["request"] }
+            ]
+          },
+          "then": { "not": { "anyOf": [{ "required": ["question"] }, { "required": ["planApproval"] }] } }
+        },
+        {
+          "if": {
+            "properties": { "request": { "enum": ["question", "plan-approval"] } },
+            "required": ["request"]
+          },
+          "then": {
+            "properties": {
+              "options": {
+                "contains": {
+                  "type": "object",
+                  "properties": { "kind": { "enum": ["reject_once", "reject_always"] } },
+                  "required": ["kind"]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

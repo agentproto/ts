@@ -13,13 +13,17 @@
  * controller.
  *
  * Modes: the manifest's modes are this session's `availableModes`;
- * `setSessionMode()` calls `session.mode.switch`. AIP-45 has no mode-change
- * stream event, so a switch the controller makes by itself (a mode's
- * `transitionsTo` after an approved plan) surfaces as a `thought` notice
- * and moves `currentModeId`.
+ * `setSessionMode()` calls `session.mode.switch`. Every change of the
+ * current mode is reported as an AIP-45 `mode-changed` event: `cause:
+ * "agent"` for a switch the controller makes by itself (a mode's
+ * `transitionsTo` after an approved plan, `reason: "plan approved"`), and
+ * `cause: "caller"` once the host's own `setSessionMode` is applied (the
+ * spec's SHOULD). A no-op switch reports nothing.
  *
  * Requests: controller suspensions become AIP-45 `agent-prompt` events,
- * answered through `respondPermission(requestId, resolution)`:
+ * typed with `request` (`tool-permission`, `question` with its `question`
+ * payload, `plan-approval` with its `planApproval` payload), answered
+ * through `respondPermission(requestId, resolution)`:
  *
  *   - `tool_approval_required`: options `approve` (allow_once),
  *     `always_allow` (allow_always: a session grant for that tool, then
@@ -41,7 +45,7 @@
  * The resolution's `feedback` is the free-text answer of an open question,
  * the reason of a denied tool, and the revision note of a rejected plan.
  * An approved plan lets the controller switch to the mode's `transitionsTo`
- * (the notice above); a rejected one stays in the current mode. A run
+ * (the `mode-changed` above); a rejected one stays in the current mode. A run
  * parked on a suspension keeps its turn open until the answer resumes it.
  * The manifest's `permissions` rules are set on the session at connect, so
  * the controller itself allows or denies a matching tool without asking.
@@ -98,9 +102,12 @@ type ControllerEvent = { type: string } & Record<string, unknown>
 type PermissionResolution = Parameters<NonNullable<AgentCliClient["respondPermission"]>>[1]
 
 /** `_meta` keys carried on the `agent-prompt` events this client raises. */
+/** @deprecated Read the event's `request` (AIP-45). Kept for one release. */
 export const META_REQUEST = "mastra-controller/request"
 export const META_SUSPEND_PAYLOAD = "mastra-controller/suspendPayload"
+/** @deprecated Read `planApproval.targetModeId` (AIP-45). Kept for one release. */
 export const META_TRANSITIONS_TO = "mastra-controller/transitionsTo"
+/** @deprecated Read `planApproval.plan` (AIP-45). Kept for one release. */
 export const META_PLAN = "mastra-controller/plan"
 
 /** Builtins whose suspension is the question itself, allowed past the approval gate by default. */
@@ -117,7 +124,12 @@ const NO_APPROVER_FEEDBACK =
 /** A controller request surfaced as `agent-prompt`, awaiting `respondPermission`. */
 type PendingRequest =
   | { kind: "tool-approval"; toolCallId: string; toolName: string }
-  | { kind: "question"; toolCallId: string; choices: string[]; multi: boolean }
+  | {
+      kind: "question"
+      toolCallId: string
+      choices: Array<{ label: string; description?: string }>
+      multi: boolean
+    }
   | { kind: "plan-approval"; toolCallId: string }
   | { kind: "suspension"; toolCallId: string }
 
@@ -166,8 +178,10 @@ export function createAgentCliClient(
   let onActivity: (() => void) | undefined
   let current: { turnId: string; queue: TurnQueue } | undefined
   let mapperState = createMastraMapperState()
-  /** Mode the host asked for, so its own `mode_changed` is not reported as a notice. */
+  /** Mode the host asked for, so its own `mode_changed` is reported `cause: "caller"`. */
   let hostSwitchTo: string | undefined
+  /** An approved plan's target mode, so the switch it brings carries its reason. */
+  let approvedPlanTarget: string | undefined
   const outOfTurnListeners = new Set<(event: StreamEvent) => void>()
   /** Surface requests as `agent-prompt` (true) or answer them in place (false). */
   let permissionHold = false
@@ -196,15 +210,21 @@ export function createAgentCliClient(
     const sid = sessionIdOf(state.session)
     if (evt.type === "mode_changed") {
       const modeId = String(evt.modeId)
+      const previousModeId =
+        typeof evt.previousModeId === "string" ? evt.previousModeId : state.modeId
       state.modeId = modeId
-      if (hostSwitchTo === modeId) {
-        hostSwitchTo = undefined
-        return
-      }
+      const byCaller = hostSwitchTo === modeId
+      if (byCaller) hostSwitchTo = undefined
+      const planApproved = !byCaller && approvedPlanTarget === modeId
+      if (planApproved) approvedPlanTarget = undefined
+      if (previousModeId === modeId) return
       emit({
-        kind: "thought",
+        kind: "mode-changed",
         sessionId: sid,
-        text: `[mastra-controller] mode switched by the controller: ${String(evt.previousModeId)} -> ${modeId}`,
+        modeId,
+        previousModeId,
+        cause: byCaller ? "caller" : "agent",
+        ...(planApproved ? { reason: "plan approved" } : {}),
       })
       return
     }
@@ -257,6 +277,7 @@ export function createAgentCliClient(
     pending.clear()
     parked = false
     suspendedInRun = false
+    approvedPlanTarget = undefined
     runSettled.resolve()
   }
 
@@ -265,12 +286,19 @@ export function createAgentCliClient(
     const toolName = String(evt.toolName)
     if (toolName === "ask_user") {
       const payload = (evt.suspendPayload ?? evt.args ?? {}) as {
-        options?: Array<{ label?: unknown }>
+        options?: Array<{ label?: unknown; description?: unknown }>
         selectionMode?: unknown
       }
-      const choices = (payload.options ?? [])
-        .map(o => o?.label)
-        .filter((l): l is string => typeof l === "string")
+      const choices = (payload.options ?? []).flatMap(o =>
+        typeof o?.label === "string"
+          ? [
+              {
+                label: o.label,
+                ...(typeof o.description === "string" ? { description: o.description } : {}),
+              },
+            ]
+          : [],
+      )
       onRequest(
         sid,
         { kind: "question", toolCallId, choices, multi: payload.selectionMode === "multi_select" },
@@ -335,19 +363,32 @@ export function createAgentCliClient(
             { optionId: "always_allow", name: "Always allow in this session", kind: "allow_always" },
             { optionId: "decline", name: "Deny", kind: "reject_once" },
           ],
+          request: "tool-permission",
           _meta: { [META_REQUEST]: "tool-approval" },
         }
       case "question": {
         const p = (evt.suspendPayload ?? {}) as { question?: unknown }
+        const text = typeof p.question === "string" ? p.question : "The agent asks a question."
+        const choices = req.choices.map((c, i) => ({ optionId: `answer:${i}`, ...c }))
         return {
           ...base,
-          text: typeof p.question === "string" ? p.question : "The agent asks a question.",
+          text,
           options: [
-            ...(req.choices.length
-              ? req.choices.map((label, i) => ({ optionId: `answer:${i}`, name: label, kind: "allow_once" }))
+            ...(choices.length
+              ? choices.map(c => ({ optionId: c.optionId, name: c.label, kind: "allow_once" }))
               : [{ optionId: "answer", name: "Answer", kind: "allow_once" }]),
             { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
           ],
+          request: "question",
+          // With choices the answer is one of them; without, a free-text
+          // `answer` whose text is the resolution's `feedback`.
+          question: {
+            prompt: text,
+            choices,
+            ...(choices.length
+              ? { allowFreeText: false }
+              : { allowFreeText: true, freeTextOptionId: "answer" }),
+          },
           _meta: { [META_REQUEST]: "question", ...payload },
         }
       }
@@ -365,6 +406,15 @@ export function createAgentCliClient(
             { optionId: "approve", name: "Approve plan", kind: "allow_once" },
             { optionId: "reject", name: "Reject plan", kind: "reject_once" },
           ],
+          request: "plan-approval",
+          planApproval: {
+            // The spec needs `plan` or `planRef`: with no path, say so in `plan`.
+            plan: plan ?? "plan not readable: no plan path given",
+            ...(typeof path === "string" && path !== "" ? { planRef: path } : {}),
+            ...(target ? { targetModeId: target } : {}),
+            approveOptionId: "approve",
+            rejectOptionId: "reject",
+          },
           _meta: {
             [META_REQUEST]: "plan-approval",
             ...payload,
@@ -381,6 +431,7 @@ export function createAgentCliClient(
             { optionId: "approve", name: "Continue", kind: "allow_once" },
             { optionId: "decline", name: "Cancel", kind: "reject_once" },
           ],
+          request: "tool-permission",
           _meta: { [META_REQUEST]: "suspension", ...payload },
         }
     }
@@ -426,10 +477,11 @@ export function createAgentCliClient(
     if (req.kind === "question") {
       const i = optionId?.startsWith("answer:") ? Number(optionId.slice("answer:".length)) : NaN
       const answer =
-        req.choices[i] ??
+        req.choices[i]?.label ??
         (optionId === "answer" ? (feedback ?? "") : "The user declined to answer.")
       resumeData = req.multi && req.choices[i] !== undefined ? [answer] : answer
     } else if (req.kind === "plan-approval") {
+      if (optionId === "approve") approvedPlanTarget = transitionTarget()
       resumeData =
         optionId === "approve"
           ? { action: "approved" }

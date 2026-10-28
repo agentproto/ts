@@ -579,6 +579,17 @@ export interface AgentStreamEvent {
    *  submit_plan's plan text there) — see @agentproto/acp's `StreamEvent`'s
    *  `agent-prompt` kind. Harness-shaped and untyped. */
   _meta?: unknown
+  /** "agent-prompt" AIP-45 request kind (absent reads as "tool-permission")
+   *  and its typed payload, see @agentproto/acp's `StreamEvent`. Carried
+   *  through to the pending-permission inbox unchanged; `unknown` payloads
+   *  for the same reason as `options`. */
+  request?: string
+  question?: unknown
+  planApproval?: unknown
+  /** "mode-changed" fields (AIP-45), see @agentproto/acp's `StreamEvent`. */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   /** "plan" event title — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
   title?: string
   /** "plan" event entries — see @agentproto/acp's `StreamEvent`'s `plan` kind. */
@@ -4376,6 +4387,13 @@ export interface PendingPermission {
    * Harness-shaped and untyped — don't assume a stable schema across adapters.
    */
   _meta?: unknown
+  /** AIP-45 request kind from the `agent-prompt` event (absent reads as
+   *  "tool-permission"), carried through unchanged. */
+  request?: string
+  /** AIP-45 `question` payload from the `agent-prompt` event, unchanged. */
+  question?: unknown
+  /** AIP-45 `planApproval` payload from the `agent-prompt` event, unchanged. */
+  planApproval?: unknown
   /** Set on a permission the DAEMON raised itself (`requestToolPermission`,
    *  e.g. the per-call gate on an imported MCP tool) rather than one an agent
    *  driver parked. It has no driver RPC behind it: resolving it resumes the
@@ -7103,6 +7121,9 @@ export function createSessionsRegistry(opts?: {
       requestedAt: new Date().toISOString(),
       ...(evt.rawInput !== undefined ? { rawInput: evt.rawInput } : {}),
       ...(evt._meta !== undefined ? { _meta: evt._meta } : {}),
+      ...(evt.request !== undefined ? { request: evt.request } : {}),
+      ...(evt.question !== undefined ? { question: evt.question } : {}),
+      ...(evt.planApproval !== undefined ? { planApproval: evt.planApproval } : {}),
     }
     pendingPermissions.set(id, pending)
     rt.desc.awaitingPermission = true
@@ -8407,6 +8428,18 @@ export function createSessionsRegistry(opts?: {
       // metadata that changes rarely and isn't part of the conversation).
       case "available-commands":
         rt.desc.availableCommands = evt.commands ?? []
+        break
+      // AIP-45 mode change: one dim line, so the output shows when and why
+      // the session left its mode (e.g. an approved plan).
+      case "mode-changed":
+        if (evt.modeId) {
+          const why = evt.reason ? `${evt.cause ?? "agent"}: ${evt.reason}` : (evt.cause ?? "agent")
+          appendLine(
+            rt,
+            `\x1b[2m[mode] ${evt.previousModeId ?? "?"} -> ${evt.modeId} (${why})\x1b[0m`,
+            "stdout",
+          )
+        }
         break
       case "background-task":
         noteBackgroundTask(rt, evt)

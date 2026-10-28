@@ -115,6 +115,8 @@ const compactPermissionItem = (p: Record<string, unknown>) => ({
   ...(p.sessionTitle !== undefined ? { sessionTitle: p.sessionTitle } : {}),
   ...(p.toolName !== undefined ? { toolName: p.toolName } : {}),
   ...(p.rawInput !== undefined ? { rawInput: p.rawInput } : {}),
+  // AIP-45 request kind (absent = tool-permission); its payload stays behind `full: true`.
+  ...(p.request !== undefined ? { request: p.request } : {}),
   options: p.options,
   ageMs: p.ageMs,
 })
