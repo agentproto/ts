@@ -549,6 +549,33 @@ The remaining unknowns are listed under NOT VERIFIED.
 - Per declared native hook event: `can_block: true` gives `permission-gate`, otherwise `observe`; the strongest entry wins; an undeclared event is `unavailable`.
 - A `can_block: true` plus `async: true` entry reports `permission-gate` as a declared capability: it blocks only when projected in the synchronous form (see the matrix notes above). The field never says that something is installed.
 
+## Projected PreCompact hook
+
+`defaults.nativeHooks.preCompactCheckpoint: "on"` (off by default) makes the
+claude-code driver write, into the isolated `<CLAUDE_CONFIG_DIR>/settings.json`
+it rewrites at every spawn, one synchronous `PreCompact` entry with matcher
+`auto` and timeout 30 running `<defaults.nativeHooks.command> hook pre-compact`
+(`packages/harness/src/define-agent-cli.ts`). The command posts a
+`native-pre-compact` checkpoint for `$AGENTPROTO_SESSION_ID` (never with a
+handoff turn, deduped per `occurrenceId`), always exits 0 and is bounded to
+20 s. Local claude-code spawns, restarts and lazy resumes only; sandbox
+sessions and other adapters get nothing. Codex is not covered.
+
+Verified live on 2026-10-28 with a PROJECT-level hook on daemon-spawned
+claude-code sessions: the hook fires for `manual` and `auto`; the payload is
+`{session_id (Claude's own id), transcript_path, cwd, prompt_id,
+hook_event_name: "PreCompact", trigger, custom_instructions}`; the environment
+carries `AGENTPROTO_SESSION_ID` (the daemon session id),
+`AGENTPROTO_WORKSPACE_SLUG` and `CLAUDE_CONFIG_DIR`; the hook is awaited (the
+compaction applies after it exits); exit 2 blocks a manual compaction. The
+environment also carries a harness-internal messaging token, so the hook
+never logs its environment.
+
+Not verified: the USER-level variant this projection writes (the isolated
+`CLAUDE_CONFIG_DIR/settings.json`), `auto` with exit 2, the
+`allowManagedHooksOnly` / `disableAllHooks` policies, how long the checkpoint
+takes on a large transcript against the 20 s budget, and Codex.
+
 ## NOT VERIFIED
 
 - AIP-71's final field optionality and any validator behaviour beyond the

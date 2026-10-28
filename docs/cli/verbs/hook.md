@@ -4,9 +4,10 @@ Status: Experimental
 
 ```text
 agentproto hook inbox [--session <id>] [--event <name>] [--max <n>]
+agentproto hook pre-compact
 ```
 
-Claude Code hook commands. Today there is one: `inbox`.
+Claude Code hook commands: `inbox` and `pre-compact`.
 
 ## `hook inbox`
 
@@ -47,3 +48,32 @@ Example `settings.json` entry:
 The session must already be registered with the daemon: an MCP connection to
 `/mcp?callerSessionId=<id>&host=claude-desktop` registers it on its first
 authenticated request.
+
+## `hook pre-compact`
+
+The Claude Code `PreCompact` hook the daemon projects into a claude-code
+session's isolated `settings.json` when
+`defaults.nativeHooks.preCompactCheckpoint` is `"on"` (see
+[config schema](../reference/config-schema.md)). It is synchronous and
+matches `auto` only: Claude Code waits for it before compacting its own
+context, and a `/compact` the daemon sends already checkpoints first.
+
+It reads the hook payload on stdin and posts
+`{ reason: "native-pre-compact", occurrenceId, trigger }` to
+`POST /sessions/:id/checkpoint` with the daemon token. The session is
+`$AGENTPROTO_SESSION_ID` (the daemon session id), never the payload's
+`session_id`, which is Claude's own id. `occurrenceId` is
+`pc-<transcript size in bytes>` (or `pc-t<unix seconds>` when the transcript
+cannot be read), so a repeated hook for the same compaction is answered with
+the first checkpoint (`deduped: true`).
+
+It prints nothing on stdout, gives up after 20 s and always exits `0`: a
+missed checkpoint never blocks the compaction (the
+`agentproto:context-compacted` event then reports `guarded: false`). A failed
+request writes one line on stderr,
+`agentproto hook pre-compact: checkpoint skipped (<reason>)`, never the
+token, the environment or the payload.
+
+The command is `<defaults.nativeHooks.command> hook pre-compact`, with
+`agentproto` by default; set an absolute path there when the daemon's PATH
+has no `agentproto`.
