@@ -126,6 +126,8 @@ function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRe
 }
 
 const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
+// Verbatim `services[].cwd` pattern from AIP-53 APP.schema.json: relative, no `..` segment.
+const SERVICE_CWD_RE = /^(?!\/)(?!(?:.*\/)?\.\.(?:\/|$)).*\S/
 
 /**
  * Parse + validate the AIP-53 `services` array (production hosting surface).
@@ -201,6 +203,13 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
     const cwd = entry.cwd
     if (cwd !== undefined && (typeof cwd !== "string" || cwd.trim() === "")) {
       throw new Error(`'${path}.cwd' must be a non-empty directory path string.`)
+    }
+    if (typeof cwd === "string" && !SERVICE_CWD_RE.test(cwd)) {
+      throw new Error(
+        cwd.startsWith("/")
+          ? `'${path}.cwd' (service '${name}') must be relative to the app directory, got the absolute path ${JSON.stringify(cwd)}.`
+          : `'${path}.cwd' (service '${name}') must not contain a '..' segment, got ${JSON.stringify(cwd)}.`,
+      )
     }
     const port = entry.port
     if (port !== undefined) {

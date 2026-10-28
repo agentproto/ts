@@ -343,52 +343,21 @@
           "name"
         ],
         "additionalProperties": false,
-        "oneOf": [
-          {
-            "required": [
-              "entry"
-            ],
-            "not": {
-              "anyOf": [
-                {
-                  "required": [
-                    "command"
-                  ]
-                },
-                {
-                  "required": [
-                    "args"
-                  ]
-                }
-              ]
-            }
-          },
-          {
-            "required": [
-              "command"
-            ],
-            "not": {
-              "required": [
-                "entry"
-              ]
-            }
-          }
-        ],
         "properties": {
           "name": {
             "type": "string",
             "pattern": "^[a-z][a-z0-9-]*$",
-            "description": "Service identifier — kebab-case slug, unique across the array."
+            "description": "Service identifier: kebab-case slug, unique across the array (JSON Schema cannot express per-key uniqueness; `uniqueItems` only guards exact duplicates, a loader MUST also reject two entries that share a `name`)."
           },
           "entry": {
             "type": "string",
-            "minLength": 1,
-            "description": "Legacy shell command line that starts the service (e.g. `pnpm --filter x start`, `node dist/server.js`). Carried verbatim; the loader/`defineApp` never executes it. Exactly one of entry/command."
+            "pattern": "\\S",
+            "description": "Legacy form: a shell command line that starts the service (e.g. `pnpm --filter x start`, `node dist/server.js`), run by the host under `sh -c`. Exactly one of `entry` / `command` is required. Carried verbatim; the loader and `defineApp` never execute it."
           },
           "command": {
             "type": "string",
-            "minLength": 1,
-            "description": "Structured (preferred) command form: the binary/script to run, never shell-interpreted — the runner passes it as argv[0]. Exactly one of entry/command."
+            "pattern": "\\S",
+            "description": "Structured form (preferred): the binary or script to run, passed as `argv[0]` with no shell interpretation. Exactly one of `entry` / `command` is required."
           },
           "args": {
             "type": "array",
@@ -396,22 +365,41 @@
             "items": {
               "type": "string"
             },
-            "description": "Structured command form: argv after `command`, passed verbatim. Requires `command`."
+            "description": "Structured form only: the argv after `command`, passed verbatim. Not valid alongside `entry`."
           },
           "cwd": {
             "type": "string",
-            "minLength": 1,
-            "description": "Working directory the runner starts the service in; relative paths resolve against the app's installed dir."
+            "pattern": "^(?!/)(?!(?:.*/)?\\.\\.(?:/|$)).*\\S",
+            "description": "Working directory, relative to the installed app directory (default: the app directory itself). Stricter than the reference implementation, which also resolves absolute paths and `..` segments: this schema forbids both so a service cannot start outside its app."
           },
           "port": {
             "type": "integer",
             "minimum": 1,
             "maximum": 65535,
-            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. One process per entry, one port."
+            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. Bookkeeping only: the host records it and does not inject it into the service's environment."
           }
-        }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "entry"
+            ],
+            "properties": {
+              "command": false,
+              "args": false
+            }
+          },
+          {
+            "required": [
+              "command"
+            ],
+            "properties": {
+              "entry": false
+            }
+          }
+        ]
       },
-      "description": "Production hosting surface: one supervised service process per entry — NO dependency graph, NO scaling, NO scheduler. The host (NOT app-kit) spawns exactly one keep-alive service-owner session per entry at install time (later work item) that runs `entry`; `dev.launch` is NOT executed by the loader and is not this surface. Names MUST be unique. See the pending SERVICES schema draft (pending upstream spec PR)."
+      "description": "Production hosting surface: long-running processes the host starts with the app, one process per entry. No dependency graph, no scaling, no scheduler. Not `dev.launch`, which stays dev-only and is never executed. See AIP-53 § Services."
     },
     "setup": {
       "type": "array",
