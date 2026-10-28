@@ -133,6 +133,14 @@ const require = __agentprotoCreateRequire(import.meta.url);`,
     // whichever one happens to be installed locally. Externalise it like
     // node-pty so it resolves from node_modules at runtime instead.
     "@ast-grep/napi",
+    // canvas is an optional peer of linkedom (bundled via runtime -> defuddle),
+    // which loads it as `try { require("canvas") } catch { shim }`. It is not a
+    // dependency of this package, so it must never be bundled: in a pnpm
+    // workspace where another package installs it with its build script
+    // disabled (the agentik-studio monorepo), esbuild would follow the require
+    // into canvas/lib/bindings.js and fail on the missing canvas.node. Left
+    // external, the guarded require runs at load time and falls back to the shim.
+    "canvas",
   ],
   // Workspace @agentproto/* packages NOT yet on npm — bundle them
   // into cli.mjs. Once each lands on npm independently, move it to
