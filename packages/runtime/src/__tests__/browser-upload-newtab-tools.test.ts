@@ -28,7 +28,7 @@ const allowDir: { current: string } = { current: "" }
 beforeEach(() => {
   // realpath-resolved: on macOS `tmpdir()` sits under the `/var` symlink to
   // `/private/var`, but `checkUploadPaths` realpaths every candidate before
-  // comparing it to the allowlist (collapsing symlinks is the whole point —
+  // comparing it to the allowlist (collapsing symlinks is the whole point;
   // the check is on the REAL target). Resolving once here keeps every path
   // built from `tmp` in this file matching what the tool actually returns.
   tmp = realpathSync(mkdtempSync(join(tmpdir(), "browser-upload-newtab-test-")))

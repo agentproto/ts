@@ -207,7 +207,7 @@ export interface AppServiceProcess {
   readonly sessionId: string
   /** Process-group leader pid of the current attempt, when known. */
   readonly pid: number | undefined
-  /** The process' start ticks at spawn time (see `readProcessStartTicks`) —
+  /** The process' start ticks at spawn time (see `readProcessStartTicks`):
    *  the UNFORGEABLE identity token persisted with the owner record so a
    *  later boot reconcile signals the recorded pid ONLY if it still names
    *  the same live process (a recycled pid has different start ticks; see
@@ -541,14 +541,14 @@ function defaultSchedule(fn: () => void, delayMs: number): () => void {
 // ── process identity (survives pid recycling) ───────────────────────────────
 
 /**
- * The process' start ticks — stable for the lifetime of the machine's pid
+ * The process' start ticks, stable for the lifetime of the machine's pid
  * space, so a recycled pid never shares it with its previous owner.
  * `undefined` on a dead pid or a platform where identity cannot be read at
- * all — callers treat undefined as "identity unverifiable".
+ * all; callers treat undefined as "identity unverifiable".
  *
  * Linux reads `/proc/<pid>/stat` field 22 directly (process-start jiffies).
  * Darwin has no `/proc`; `ps -o lstart=` reports the process' start time at
- * one-second resolution, which is parsed to epoch seconds — coarser than
+ * one-second resolution, which is parsed to epoch seconds, coarser than
  * jiffies but still unforgeable across a pid recycle (a new process gets a
  * new wall-clock start second almost always, and the mismatch path treats
  * ties as agreeing, never as compromising safety).
