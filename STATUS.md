@@ -38,6 +38,7 @@ Package | Path | Tier | Reason (one line) |
 @agentproto/adapter-knowledge-gbrain-doc | `adapters/knowledge-gbrain-doc` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-knowledge-qdrant | `adapters/knowledge-qdrant` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-mastra-agent | `adapters/mastra-agent` | adapters | under adapters/** — AIP-45 adapter or tool projection |
+@agentproto/adapter-mastra-controller | `adapters/mastra-controller` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-mastracode | `adapters/mastracode` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-mastracode-inprocess | `adapters/mastracode-inprocess` | adapters | under adapters/** — AIP-45 adapter or tool projection |
 @agentproto/adapter-openclaw | `adapters/openclaw` | adapters | under adapters/** — AIP-45 adapter or tool projection |
