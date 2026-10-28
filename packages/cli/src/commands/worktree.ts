@@ -43,6 +43,7 @@ import { randomUUID } from "node:crypto"
 import { resolve, dirname, basename, join } from "node:path"
 import { existsSync, readdirSync } from "node:fs"
 import { homedir } from "node:os"
+import { discoverDaemon, httpGetJson } from "./_daemon-helpers.js"
 import { execFile, spawnSync } from "node:child_process"
 import { runTool } from "@agentproto/driver"
 import { loadConfig } from "@agentproto/runtime/config"
@@ -56,6 +57,7 @@ import {
   cleanupWorktreeTool,
   worktreeProvider,
   createForgeClient,
+  withUnavailableNotice,
   type ForgeClient,
   parseGithubOwnerRepo,
   FileVerdictMemoStore,
@@ -68,6 +70,8 @@ import {
   WorktreeNotRemovableError,
   planGc,
   applyGc,
+  resolveGcNoise,
+  livenessSessionCount,
   parseProvisionLimits,
   provisionScheduler,
   runWithProvisionContext,
@@ -109,7 +113,7 @@ Usage:
                                      [--keep-branch] [--force] [--json]
   agentproto worktree gc      [--repo <dir>] [--apply] [--salvage-dirty]
                                      [--include-detached] [--noise <path,...>]
-                                     [--active-minutes <n>] [--json]
+                                     [--active-minutes <n>] [--concurrency <n>] [--json]
   agentproto worktree --help
 
   ls        List the repo's git worktrees (path, branch, HEAD).
@@ -163,8 +167,19 @@ Usage:
             reclaimed when its content is provably in base (squash-, patch- or
             content-merged, the \`branch gc\` ladder). --noise lists worktree-
             relative paths whose dirt is known noise (default
-            .opencode/package-lock.json; pass --noise "" to disable): a worktree
-            dirty only on those counts as clean.
+            .opencode/package-lock.json, plus pnpm-lock.yaml while no package.json
+            changed; pass --noise "" to disable, or --noise pnpm-lock.yaml to
+            treat it as noise unconditionally): a worktree dirty only on those
+            counts as clean.
+            A worktree with a live session (the daemon's session registry: any
+            alive session whose cwd is the worktree or under it) is never
+            reclaimed, and neither is one with a file written within
+            --active-minutes. With no daemon reachable the check falls back to
+            the on-disk sessions snapshot and file mtimes, and says so.
+            Long runs print progress on stderr; --concurrency <n> bounds the
+            per-worktree git/forge work (default 6).
+            --apply re-checks every planned worktree (branch, HEAD, git index)
+            right before touching it and skips it ("stale") if it changed.
 `
 
 const candidates = [worktreeProvider]
@@ -279,17 +294,32 @@ async function runLs(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** Forge client that prints one stderr warning if the forge turns out to be unreachable, so a degraded status is never silent. */
+async function createWarningForgeClient(repoRoot: string): Promise<ForgeClient> {
+  return withUnavailableNotice(await createForgeClient(repoRoot), (message) => {
+    process.stderr.write(`agentproto worktree: ${message}\n`)
+  })
+}
+
 // ── ls --status ──────────────────────────────────────────────────────
 
 /** `ls --status`: the full status engine (PLAN.md §1.3–§1.5) over every linked worktree of `repoRoot`. */
 async function runLsStatus(repoRoot: string, json: boolean): Promise<number> {
-  const [forge, defaultBranch] = await Promise.all([createForgeClient(repoRoot), detectDefaultBranch(repoRoot)])
+  const [forge, defaultBranch, live] = await Promise.all([
+    createWarningForgeClient(repoRoot),
+    detectDefaultBranch(repoRoot),
+    fetchLiveSessionCwds(),
+  ])
+  if (live.note) process.stderr.write(`agentproto worktree ls: ${live.note}\n`)
   const entries = await listWorktreeStatuses({
     repoRoot,
     repoName: repoLabel(repoRoot),
     forge,
     memo: new FileVerdictMemoStore(),
     defaultBranchRef: `origin/${defaultBranch}`,
+    ...resolveGcNoise(undefined),
+    ...(live.cwds ? { liveSessionCwds: live.cwds } : {}),
+    onProgress: makeProgressReporter("worktree ls"),
   })
 
   if (json) {
@@ -309,6 +339,53 @@ async function runLsStatus(repoRoot: string, json: boolean): Promise<number> {
   return 0
 }
 
+/**
+ * cwds of every alive session the daemon knows about (`GET /sessions?onlyAlive`),
+ * the authoritative liveness source for gc/status. `cwds` is `null` and `note`
+ * says so when no daemon answers: the engine then falls back to the on-disk
+ * sessions snapshot plus file mtimes, and the caller prints the note.
+ */
+export async function fetchLiveSessionCwds(
+  deps: {
+    discover?: typeof discoverDaemon
+    getJson?: <T>(url: string) => Promise<T>
+  } = {},
+): Promise<{ cwds: string[] | null; note?: string }> {
+  try {
+    const report = await (deps.discover ?? discoverDaemon)()
+    if (!report.found) {
+      return {
+        cwds: null,
+        note: "no live daemon found; session liveness falls back to the on-disk sessions snapshot and file mtimes.",
+      }
+    }
+    const getJson = deps.getJson ?? httpGetJson
+    const body = await getJson<{ sessions?: Array<{ cwd?: unknown }> }>(
+      `${report.found.url}/sessions?onlyAlive=true&includeCommands=true&fields=cwd`,
+    )
+    const cwds = (body.sessions ?? [])
+      .map((s) => s.cwd)
+      .filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0)
+    return { cwds }
+  } catch (err) {
+    return {
+      cwds: null,
+      note: `daemon session registry unreadable (${err instanceof Error ? err.message : String(err)}); session liveness falls back to the on-disk sessions snapshot and file mtimes.`,
+    }
+  }
+}
+
+/** stderr progress for long sweeps: silent below ~3 s, then a line per completed worktree. */
+function makeProgressReporter(label: string): (done: number, total: number, path: string) => void {
+  const startedAt = Date.now()
+  let announced = false
+  return (done, total, path) => {
+    if (!announced && Date.now() - startedAt < 3000 && done < total) return
+    announced = true
+    process.stderr.write(`agentproto ${label}: ${done}/${total} ${basename(path)}\n`)
+  }
+}
+
 function formatTree(tree: WorktreeStatusEntry["tree"]): string {
   if (tree.state === "clean") return "clean"
   return `dirty(${tree.modified}m/${tree.staged}s/${tree.untracked}u)`
@@ -323,6 +400,8 @@ function formatIntegration(integration: WorktreeStatusEntry["integration"]): str
       return `partial(#${integration.pr},+${integration.aheadBy}${offlineSuffix})`
     case "open":
       return `open(#${integration.pr}${offlineSuffix})`
+    case "closed-unmerged":
+      return `closed-unmerged(#${integration.pr}${offlineSuffix})`
     case "unpushed":
       return `unpushed(+${integration.aheadBy})`
     case "unknown":
@@ -333,7 +412,7 @@ function formatIntegration(integration: WorktreeStatusEntry["integration"]): str
 }
 
 function formatLiveness(liveness: WorktreeStatusEntry["liveness"]): string {
-  if (liveness.state === "sessions") return `sessions(${liveness.sessions.length})`
+  if (liveness.state === "sessions") return `sessions(${livenessSessionCount(liveness)})`
   return liveness.state
 }
 
@@ -476,6 +555,7 @@ export function makeWorktreeStatusLister(): WorktreeStatusLister {
       forge,
       memo: new FileVerdictMemoStore(),
       defaultBranchRef: `origin/${defaultBranch}`,
+      ...resolveGcNoise(undefined),
       ...(options.paths ? { paths: options.paths } : {}),
     })
     const prUrl = githubPrUrlBuilder(repoRoot)
@@ -548,11 +628,12 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
     class: entry.class,
     ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
     ...(entry.holdReason ? { holdReason: entry.holdReason } : {}),
+    ...(entry.indexMtimeMs !== undefined ? { indexMtimeMs: entry.indexMtimeMs } : {}),
     tree: tree.state,
     integration,
     liveness: {
       state: liveness.state,
-      sessionCount: liveness.sessions.length,
+      sessionCount: livenessSessionCount(liveness),
     },
   }
 }
@@ -578,8 +659,25 @@ function toGcOutcomeView(outcome: GcApplyOutcome): WorktreeGcOutcomeView {
       }
     case "failed":
       return { ...base, result: outcome.result, message: outcome.message }
+    case "skipped-stale":
+      return { ...base, result: outcome.result, reason: outcome.reason }
     default:
       return { ...base, result: outcome.result }
+  }
+}
+
+/** Inverse of {@link toGcPlanEntryView} for the fields `applyGc` reads (path, branch, head, class, reasons, index mtime). */
+function fromGcPlanEntryView(view: WorktreeGcPlanEntryView): GcPlanEntry {
+  return {
+    path: view.path,
+    branch: view.branch,
+    head: view.head,
+    class: view.class,
+    ...(view.reclaimReason ? { reclaimReason: view.reclaimReason } : {}),
+    ...(view.holdReason ? { holdReason: view.holdReason as NonNullable<GcPlanEntry["holdReason"]> } : {}),
+    ...(view.indexMtimeMs !== undefined ? { indexMtimeMs: view.indexMtimeMs } : {}),
+    ...(view.orphan ? { orphan: true } : {}),
+    ...(view.prunable ? { prunable: true } : {}),
   }
 }
 
@@ -602,6 +700,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     protectedPaths,
     noisePaths,
     activeMinutes,
+    expectedPlan,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -618,18 +717,24 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     const memo = new FileVerdictMemoStore()
     const defaultBranchRef = `origin/${defaultBranch}`
 
-    const plan = await planGc({
-      repoRoot,
-      repoName,
-      forge,
-      memo,
-      defaultBranchRef,
-      includeDetached,
-      worktreesRoot: join(worktreesRoot, repoName),
-      protectedPaths,
-      ...(noisePaths ? { noisePaths } : {}),
-      ...(activeMinutes !== undefined ? { activeMinutes } : {}),
-    })
+    // Applying a plan an earlier dry run produced: no re-plan, `applyGc` re-checks every
+    // entry against it and skips whatever changed since (`skipped-stale`).
+    const plan =
+      apply && expectedPlan
+        ? expectedPlan.map(fromGcPlanEntryView)
+        : await planGc({
+            repoRoot,
+            repoName,
+            forge,
+            memo,
+            defaultBranchRef,
+            includeDetached,
+            worktreesRoot: join(worktreesRoot, repoName),
+            protectedPaths,
+            liveSessionCwds: protectedPaths,
+            ...(noisePaths ? { noisePaths } : {}),
+            ...(activeMinutes !== undefined ? { activeMinutes } : {}),
+          })
 
     if (!apply) {
       return { mode: "plan", plan: plan.map(toGcPlanEntryView) }
@@ -644,6 +749,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       includeDetached,
       salvageDirty,
       protectedPaths,
+      liveSessionCwds: protectedPaths,
       ...(noisePaths ? { noisePaths } : {}),
       ...(activeMinutes !== undefined ? { activeMinutes } : {}),
     })
@@ -1225,9 +1331,19 @@ async function runGc(args: readonly string[]): Promise<number> {
       "include-detached": { type: "boolean" },
       noise: { type: "string" },
       "active-minutes": { type: "string" },
+      concurrency: { type: "string" },
       json: { type: "boolean" },
     },
   })
+  let concurrency: number | undefined
+  if (values.concurrency !== undefined) {
+    const parsed = Number(values.concurrency)
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      process.stderr.write("agentproto worktree gc: --concurrency must be a positive integer.\n")
+      return 2
+    }
+    concurrency = parsed
+  }
   const noisePaths =
     values.noise === undefined ? undefined : values.noise.split(",").map((p) => p.trim()).filter(Boolean)
   let activeMinutes: number | undefined
@@ -1248,11 +1364,14 @@ async function runGc(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  const [forge, defaultBranch, worktreesRoot] = await Promise.all([
-    createForgeClient(repoRoot),
+  const [forge, defaultBranch, worktreesRoot, live] = await Promise.all([
+    createWarningForgeClient(repoRoot),
     detectDefaultBranch(repoRoot),
     resolveWorktreesRoot(undefined),
+    fetchLiveSessionCwds(),
   ])
+  if (live.note) process.stderr.write(`agentproto worktree gc: ${live.note}\n`)
+  const liveSessionCwds = live.cwds ?? undefined
   const repoName = repoLabel(repoRoot)
   const memo = new FileVerdictMemoStore()
   const includeDetached = Boolean(values["include-detached"])
@@ -1267,6 +1386,9 @@ async function runGc(args: readonly string[]): Promise<number> {
     defaultBranchRef,
     includeDetached,
     worktreesRoot: join(worktreesRoot, repoName),
+    onProgress: makeProgressReporter("worktree gc"),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(liveSessionCwds ? { liveSessionCwds, protectedPaths: liveSessionCwds } : {}),
     ...(noisePaths ? { noisePaths } : {}),
     ...(activeMinutes !== undefined ? { activeMinutes } : {}),
   })
@@ -1284,6 +1406,7 @@ async function runGc(args: readonly string[]): Promise<number> {
     defaultBranchRef,
     includeDetached,
     salvageDirty,
+    ...(liveSessionCwds ? { liveSessionCwds, protectedPaths: liveSessionCwds } : {}),
     ...(noisePaths ? { noisePaths } : {}),
     ...(activeMinutes !== undefined ? { activeMinutes } : {}),
   })
@@ -1373,6 +1496,9 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
     case "aborted-vanished":
       detail = "aborted: worktree no longer exists"
       break
+    case "skipped-stale":
+      detail = `skipped: stale plan (${outcome.reason})`
+      break
     case "failed":
       detail = `failed: ${outcome.message}`
       break
@@ -1393,5 +1519,8 @@ function printGcOutcomes(outcomes: readonly GcApplyOutcome[], json: boolean): vo
   const reclaimed = outcomes.filter((o) => o.result === "reclaimed").length
   const salvaged = outcomes.filter((o) => o.result === "salvaged").length
   const failed = outcomes.filter((o) => o.result === "failed").length
-  process.stdout.write(`\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed.\n`)
+  const stale = outcomes.filter((o) => o.result === "skipped-stale").length
+  process.stdout.write(
+    `\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed` + (stale > 0 ? `, ${stale} skipped (stale plan)` : "") + ".\n",
+  )
 }

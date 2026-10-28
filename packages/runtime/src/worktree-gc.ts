@@ -84,6 +84,12 @@ export interface WorktreeGcPlanEntryView {
    */
   holdReason?: string
   /**
+   * mtime (epoch ms) of the worktree's git index when the plan read it. Echoed
+   * back as part of `WorktreeGcRunInput.expectedPlan` so apply can tell the
+   * worktree changed since the plan. Absent for orphan/prunable entries.
+   */
+  indexMtimeMs?: number
+  /**
    * `true` only for an orphan-scan entry: a directory physically present
    * under the repo's worktree pool with no `git worktree list` entry at all
    * (even after a prune). `tree`/`integration`/`liveness` carry no real axis
@@ -121,6 +127,7 @@ export interface WorktreeGcOutcomeView {
     | "skipped-dirty"
     | "aborted-reclassified"
     | "aborted-vanished"
+    | "skipped-stale"
     | "failed"
   /** Set only for a `reclaimed` outcome via the dep-bump exemption. */
   reclaimReason?: WorktreeGcReclaimReason
@@ -138,6 +145,8 @@ export interface WorktreeGcOutcomeView {
   holdReason?: string
   /** Set only for `failed`. */
   message?: string
+  /** Set only for `skipped-stale`: what changed between the plan and the apply (branch, HEAD, or git index). */
+  reason?: string
 }
 
 /**
@@ -182,6 +191,14 @@ export interface WorktreeGcRunInput {
    * the guard.
    */
   activeMinutes?: number
+  /**
+   * A plan an earlier call produced (`mode: "plan"`). With `apply`, the runner
+   * applies THIS plan instead of planning afresh, and `applyGc` re-checks each
+   * entry (branch, HEAD, git index mtime, live sessions) against it, skipping
+   * any that changed (`skipped-stale`). Without it, `apply` plans and applies
+   * in one call.
+   */
+  expectedPlan?: WorktreeGcPlanEntryView[]
 }
 
 /**
@@ -191,3 +208,25 @@ export interface WorktreeGcRunInput {
  * lister.
  */
 export type WorktreeGcRunner = (input: WorktreeGcRunInput) => Promise<WorktreeGcResult>
+
+/**
+ * Validate an `expectedPlan` arriving over a transport (MCP tool / HTTP body)
+ * into plan views. Throws on a malformed entry rather than guessing: applying
+ * a half-understood plan is exactly what the stale-plan re-check exists to avoid.
+ */
+export function parseExpectedPlan(raw: unknown): WorktreeGcPlanEntryView[] | undefined {
+  if (raw === undefined || raw === null) return undefined
+  if (!Array.isArray(raw)) throw new Error("expectedPlan must be an array of plan entries (the `plan` of a dry run).")
+  return raw.map((entry, i) => {
+    const e = entry as Record<string, unknown> | null
+    const ok =
+      e !== null &&
+      typeof e === "object" &&
+      typeof e["path"] === "string" &&
+      typeof e["head"] === "string" &&
+      (e["class"] === "reclaim" || e["class"] === "salvage" || e["class"] === "hold") &&
+      (e["branch"] === null || typeof e["branch"] === "string")
+    if (!ok) throw new Error(`expectedPlan[${i}] is not a plan entry (needs path, branch, head, class).`)
+    return e as unknown as WorktreeGcPlanEntryView
+  })
+}

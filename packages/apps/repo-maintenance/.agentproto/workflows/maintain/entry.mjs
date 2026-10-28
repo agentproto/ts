@@ -120,6 +120,15 @@ const REVIEW_PROMPT =
   "(the tree base would have if this branch merged cleanly, or null when the merge conflicts): " +
   "{{#item.mergedTree}}{{item.mergedTree}}{{/item.mergedTree}}{{^item.mergedTree}}null{{/item.mergedTree}}. Ahead {{item.ahead}}, behind {{item.behind}}. Push state: {{item.pushed}}. " +
   "Refs of this branch (across its tips): {{item.refs}}." +
+  "\n\nForge and patch evidence (the PR is read from the plan, never guessed). PR state: {{item.prSummary}}. " +
+  "git cherry: {{item.cherrySummary}}. How to weigh it: a closed-unmerged PR is a strong signal the work " +
+  "was abandoned or superseded, but not proof - still account for the residual files and cite what you " +
+  "checked. An open PR is live work: never agree to delete it (record triage in-progress or unclear, no " +
+  "gate.agree). A merged PR marked partial landed, but the branch carries commits made after it: judge " +
+  "those extra commits. PR state none or unknown means no PR was found or the forge was not consulted - " +
+  "do not infer one. git cherry counts commits with no patch-equivalent on base (a `+` line of `git cherry " +
+  "<base> <tip>`); when it says unavailable, run that read-only command yourself. " +
+  "Keep triage.reason (and gate.reason) to ONE line: the maintain report prints it verbatim next to the PR state." +
   "{{#item.worktree}}\n\nThis branch is checked out in the linked worktree {{item.worktree}} — " +
   "idle (no live session), clean tree, no open PR — which is the only reason branch gc held it. " +
   "Your verdict decides whether that worktree (and the branch) can be removed: agree only when " +
@@ -216,6 +225,74 @@ function treeState(tree) {
   return typeof tree === "string" ? tree : tree?.state
 }
 
+/** A worktree_gc plan entry's `integration` as the reviewer's PR state:
+ *  `{ state: open | merged | closed-unmerged | none, number }`. `partial` is a
+ *  merged PR plus commits made after it, so it is `merged` flagged `partial`
+ *  (with `aheadBy`). No PR number means no PR: `none`, whatever the state. */
+export function normalizePrState(integration) {
+  const number = typeof integration?.pr === "number" ? integration.pr : null
+  if (number === null) return { state: "none", number: null }
+  switch (integration.state) {
+    case "open":
+    case "merged":
+    case "closed-unmerged":
+      return { state: integration.state, number }
+    case "partial":
+      return {
+        state: "merged",
+        number,
+        partial: true,
+        ...(typeof integration.aheadBy === "number" ? { aheadBy: integration.aheadBy } : {}),
+      }
+    default:
+      return { state: "none", number: null }
+  }
+}
+
+/** `closed-unmerged PR #9`, `merged PR #6 (partial: +2 commit(s) made after it)`,
+ *  `none`, or `unknown` (+ ` (PR #n)` when only a number is known). */
+export function formatPrState(pr) {
+  const state = pr?.state ?? "unknown"
+  if (state === "none" || (state === "unknown" && pr?.number == null)) return state
+  if (state === "unknown") return `unknown (PR #${pr.number})`
+  const partial = pr.partial ? ` (partial: ${typeof pr.aheadBy === "number" ? `+${pr.aheadBy} ` : ""}commit(s) made after it)` : ""
+  return `${state} PR #${pr.number}${partial}`
+}
+
+/** `git cherry <base> <tip>` summary - `{ total, unmatched }` where `unmatched`
+ *  counts the `+` lines (commits with no patch-equivalent on base). branch_gc
+ *  computes it internally but does not (yet) put it on the plan entry; absent
+ *  stays `unavailable`, never zero. */
+export function formatCherry(cherry) {
+  if (typeof cherry?.total !== "number" || typeof cherry?.unmatched !== "number") return "unavailable"
+  return `${cherry.unmatched} of ${cherry.total} commit(s) have no patch-equivalent on base`
+}
+
+/** Report-line form of {@link formatCherry}: `2/5 not patch-equivalent on base`. */
+function cherryShort(cherry) {
+  if (typeof cherry?.total !== "number" || typeof cherry?.unmatched !== "number") return "unavailable"
+  return `${cherry.unmatched}/${cherry.total} not patch-equivalent on base`
+}
+
+/** `worktree_gc` plan entry for a worktree path, or undefined. */
+function worktreeEntryOf(worktreeGcPlanResult, path) {
+  const entries = Array.isArray(worktreeGcPlanResult?.plan) ? worktreeGcPlanResult.plan : []
+  return entries.find(w => w?.path === path)
+}
+
+/** The PR evidence for a branch_gc entry: from the matching worktree_gc entry
+ *  when the branch is worktree-held (`heldPath`), else only what the branch_gc
+ *  entry itself exposes (`mergedPr`, `forgePr` carry a number but not a PR
+ *  state). Anything else is `unknown` - never invented. */
+function prEvidenceOf(e, heldPath, worktreeGcPlanResult) {
+  if (heldPath) {
+    const w = worktreeEntryOf(worktreeGcPlanResult, heldPath)
+    if (w?.integration) return normalizePrState(w.integration)
+  }
+  const number = typeof e?.mergedPr === "number" ? e.mergedPr : typeof e?.forgePr === "number" ? e.forgePr : null
+  return { state: e?.mergedPr != null ? "merged" : "unknown", number }
+}
+
 /** The worktree path a branch_gc entry is held by, when that hold is the only
  *  thing between it and `review`: held for `worktree`, unmerged, old enough,
  *  and the worktree is one {@link reviewableWorktrees} kept. Else null. */
@@ -225,18 +302,76 @@ function heldWorktreeOf(e, heldWorktrees) {
   return heldWorktrees.get(e.holdDetail) === e.name ? e.holdDetail : null
 }
 
-/** One line per reviewed held worktree (from the verify plan's stored
- *  verdicts): what the reviewer said, and — when it agreed nothing of value
- *  is lost — the command that removes it. Removal stays a human step. */
+/** One entry per reviewed held worktree (from the verify plan's stored
+ *  verdicts): the verdict, the PR state (worktree_gc's integration) and the
+ *  cherry summary (when branch_gc exposes it). {@link verdictLine} turns it
+ *  into the report line - with the command that removes the worktree when
+ *  the reviewer agreed nothing of value is lost. Removal stays a human step. */
 export function heldWorktreeVerdicts(branchGcVerifyResult, worktreeGcPlanResult) {
   const held = reviewableWorktrees(worktreeGcPlanResult)
   const byPath = new Map()
   for (const e of branchGcVerifyResult?.plan?.entries ?? []) {
     const path = heldWorktreeOf(e, held)
     if (!path || !e.verdict || byPath.has(path)) continue
-    byPath.set(path, { name: e.name, path, sha: e.sha, triage: e.verdict.triage, agree: e.verdict.agree ?? null })
+    byPath.set(path, {
+      name: e.name,
+      path,
+      sha: e.sha,
+      triage: e.verdict.triage,
+      agree: e.verdict.agree ?? null,
+      pr: prEvidenceOf(e, path, worktreeGcPlanResult),
+      cherry: typeof e.cherry?.total === "number" && typeof e.cherry?.unmatched === "number" ? e.cherry : null,
+    })
   }
   return [...byPath.values()]
+}
+
+/** `branch_gc_verdict_get` answers by tip sha, from the `verdictRecords` step
+ *  (a tolerant map: `{ results: [{ status, value }] }`, or a bare array). */
+export function verdictRecordsBySha(verdictRecordsStep) {
+  const items = Array.isArray(verdictRecordsStep)
+    ? verdictRecordsStep
+    : Array.isArray(verdictRecordsStep?.results)
+      ? verdictRecordsStep.results.filter(r => r?.status === "fulfilled").map(r => r.value)
+      : []
+  const out = new Map()
+  for (const a of items) if (a?.record && typeof a.sha === "string") out.set(a.sha, a.record)
+  return out
+}
+
+/** The reviewer's one-line reason from a stored verdict record
+ *  (`branchVerdictSchema`): the second opinion `gate.reason` when there is
+ *  one, else `triage.reason`. First line only, cut to 200 chars. */
+export function verdictReason(record) {
+  const raw = record?.gate?.reason ?? record?.triage?.reason
+  const line = String(raw ?? "").split("\n").map(l => l.trim()).find(l => l.length > 0)
+  if (!line) return "(none recorded)"
+  return line.length > 200 ? `${line.slice(0, 199)}…` : line
+}
+
+/** The ONE report line for a verdict `v` (`{ name, triage, pr, cherry, path?, agree }`):
+ *  branch, PR state, cherry summary, the reviewer's reason, then the action. */
+export function verdictLine(v, record) {
+  const head =
+    `- \`${v.name}\` - ${v.triage} - PR: ${formatPrState(v.pr).replace(/ PR #(\d+)/, " #$1")}` +
+    ` - cherry: ${cherryShort(v.cherry)} - reason: ${verdictReason(record)}`
+  if (!v.path) return head
+  // An open PR is live work: never offer its worktree for removal.
+  if (v.pr?.state === "open") return `${head} - keep (open PR, ${v.path})`
+  return v.agree === true ? `${head} - nothing of value lost: \`agentproto worktree rm ${v.path}\`` : `${head} - keep (${v.path})`
+}
+
+/** Tips whose stored verdict the report needs the record of (for the reason):
+ *  every review candidate's tips plus the held-worktree verdicts shown. */
+export function verdictLookupTips(b) {
+  const shas = new Set()
+  for (const c of b.steps?.reviewCandidates ?? []) {
+    for (const t of c.allTips ?? [{ sha: c.sha }]) shas.add(t.sha)
+  }
+  if (b.input?.reviewHeldWorktrees !== false) {
+    for (const v of heldWorktreeVerdicts(b.steps?.branchGcVerify, b.steps?.worktreeGcPlan).slice(0, REPORT_LIST_CAP)) shas.add(v.sha)
+  }
+  return [...shas].map(sha => ({ sha }))
 }
 
 /** One `review`-class branch_gc plan entry per BRANCH NAME — a local branch
@@ -277,6 +412,9 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       if (!seen.lineCoverage && e.lineCoverage) seen.lineCoverage = e.lineCoverage
       continue
     }
+    const heldPath = heldWorktreeOf(e, heldWorktrees)
+    const pr = prEvidenceOf(e, heldPath, worktreeGcPlanResult)
+    const cherry = typeof e.cherry?.total === "number" && typeof e.cherry?.unmatched === "number" ? e.cherry : null
     bySha.set(e.sha, {
       name: e.name,
       kind: e.kind,
@@ -285,6 +423,12 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       author: e.author,
       subject: e.subject,
       history: e.history,
+      pr,
+      prState: pr.state,
+      prNumber: pr.number,
+      prSummary: formatPrState(pr),
+      cherry,
+      cherrySummary: formatCherry(cherry),
       base: plan?.baseSha ?? null,
       // branch_gc sets `compareBase` on EVERY unmerged entry (base itself for
       // a current-history tip, the anchor for a pre-rewrite one) — only the
@@ -302,7 +446,7 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       residualFileCount: e.residualFileCount ?? 0,
       lineCoverage: e.lineCoverage ?? null,
       refs: [e.ref],
-      ...(heldWorktreeOf(e, heldWorktrees) ? { worktree: heldWorktreeOf(e, heldWorktrees) } : {}),
+      ...(heldPath ? { worktree: heldPath } : {}),
     })
   }
   // Merge candidates whose refs share one branch NAME: `foo` and `origin/foo`
@@ -469,7 +613,7 @@ export function collectCandidateVerdicts(reviewCandidates, branchGcVerifyResult)
   const out = []
   for (const c of reviewCandidates ?? []) {
     const v = bySha.get(c.sha)
-    if (v) out.push({ name: c.name, sha: c.sha, triage: v.triage, agree: v.agree ?? null })
+    if (v) out.push({ name: c.name, sha: c.sha, triage: v.triage, agree: v.agree ?? null, pr: c.pr, cherry: c.cherry ?? null })
   }
   return out
 }
@@ -486,6 +630,7 @@ export function buildReport(b) {
     ? { succeeded: review.length, failed: 0, skipped: 0 }
     : { succeeded: 0, failed: 0, skipped: 0, ...(review ?? {}) }
   const reviewErrors = tallyReviewErrors(review, reviewCandidates)
+  const records = verdictRecordsBySha(b.steps.verdictRecords)
   const gaps = b.steps.gaps ?? []
   const verdicts = collectCandidateVerdicts(reviewCandidates, b.steps.branchGcVerify)
   const applyMerged = b.input?.applyMerged === true
@@ -555,22 +700,25 @@ export function buildReport(b) {
   if (salvage.length > 0) {
     lines.push(`- **salvage — needs a human**: ${formatNameList(salvage.map(v => v.name))}`)
   }
+  const heldVerdicts = b.input?.reviewHeldWorktrees === false ? [] : heldWorktreeVerdicts(b.steps.branchGcVerify, wtPlan)
+  // Held worktrees get their line in their own section below.
+  const heldNames = new Set(heldVerdicts.map(v => v.name))
+  const branchVerdicts = verdicts.filter(v => !heldNames.has(v.name))
+  if (branchVerdicts.length > 0) {
+    lines.push("- verdict reasons (one line per verdict: branch, PR state, git cherry, reviewer's reason):")
+    for (const v of branchVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(`  ${verdictLine(v, records.get(v.sha))}`)
+    if (branchVerdicts.length > REPORT_LIST_CAP) lines.push(`  - … and ${branchVerdicts.length - REPORT_LIST_CAP} more`)
+  }
   if (gaps.length > 0) {
     lines.push(`- **${gaps.length} branch(es) with no recorded verdict** (after a same-session re-prompt and a large-model retry; full list in the run output's \`gaps\`): ${formatNameList(gaps.map(g => g.name))}`)
   } else if (reviewCandidates.length > 0 && reviewOutcome.skipped === 0) {
     lines.push("- every review candidate has a recorded verdict")
   }
-  const heldVerdicts = b.input?.reviewHeldWorktrees === false ? [] : heldWorktreeVerdicts(b.steps.branchGcVerify, wtPlan)
   if (heldVerdicts.length > 0) {
     lines.push("")
     lines.push(`## Held worktrees reviewed (${heldVerdicts.length})`)
     lines.push("Idle, clean worktrees whose branch isn't provably merged — gc holds them; the reviewer's verdict says whether they can go. Removal is manual.")
-    for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) {
-      lines.push(
-        `- \`${v.name}\` — ${v.triage}` +
-          (v.agree === true ? ` — nothing of value lost: \`agentproto worktree rm ${v.path}\`` : ` — keep (${v.path})`),
-      )
-    }
+    for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(verdictLine(v, records.get(v.sha)))
     if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(`- … and ${heldVerdicts.length - REPORT_LIST_CAP} more`)
   }
   lines.push("")
@@ -848,6 +996,29 @@ export default {
       compute: b => computeReviewGaps(b.steps.reviewCandidates, b.steps.branchGcVerify, b.steps.review),
     },
     {
+      // Stored verdict records for the report's one-line reasons: the plan
+      // entry's verdict summary carries the triage verdict but not its reason.
+      id: "verdictLookupTips",
+      kind: "transform",
+      compute: b => verdictLookupTips(b),
+    },
+    {
+      // Cosmetic, so tolerant: a failed lookup prints "(none recorded)".
+      id: "verdictRecords",
+      kind: "map",
+      over: "$steps.verdictLookupTips",
+      parallelism: 4,
+      onError: "collect",
+      steps: [
+        {
+          id: "verdictRecordGet",
+          kind: "tool",
+          tool: "branch_gc_verdict_get",
+          inputs: { repoRoot: "$steps.branchGcPlan.plan.repoRoot", sha: "$item.sha" },
+        },
+      ],
+    },
+    {
       id: "worktreeGcApply",
       kind: "tool",
       tool: "worktree_gc",
@@ -856,6 +1027,10 @@ export default {
         workspaceSlug: "$input.workspaceSlug",
         apply: "$input.applyMerged",
         salvageDirty: false,
+        // Apply the plan the review ran against, not a fresh one: worktree_gc
+        // re-checks each entry (branch, HEAD, git index, live sessions) and
+        // skips with a reason whatever changed while the reviewers worked.
+        expectedPlan: "$steps.worktreeGcPlan.plan",
         // Same as worktreeGcPlan: block for the real outcomes, or an apply
         // would run unreported in the background after the workflow ends.
         wait: true,

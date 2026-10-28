@@ -217,6 +217,28 @@ steps:
     name: Review candidates with no recorded verdict
     description: Entry-based — see entry.mjs's computeReviewGaps.
 
+  - id: verdictLookupTips
+    kind: transform
+    name: Tips whose stored verdict the report needs the reason of
+    description: Entry-based - see entry.mjs's verdictLookupTips.
+
+  - id: verdictRecords
+    kind: map
+    name: Read the stored verdict record of each tip (for the report's reasons)
+    description: >-
+      Tolerant (`onError: collect`) `branch_gc_verdict_get` per tip: the plan
+      entry's verdict summary has the triage verdict but not its reason.
+    over: $steps.verdictLookupTips
+    parallelism: 4
+    onError: collect
+    steps:
+      - id: verdictRecordGet
+        kind: tool
+        tool: branch_gc_verdict_get
+        inputs:
+          repoRoot: $steps.branchGcPlan.plan.repoRoot
+          sha: $item.sha
+
   - id: worktreeGcApply
     kind: tool
     name: Apply worktree gc
@@ -360,6 +382,18 @@ gets two extra READ-ONLY zones for its own session: the worktree and the
 repo's git dir (`git log/show/diff` read the object store). Both are checked
 against git's own worktree back-pointer first, and both are read-only, so a
 reviewer still cannot stash, checkout or commit in the shared repo.
+
+## Reviewer evidence
+
+Each candidate carries the PR state (`open`, `merged`, `closed-unmerged`,
+`none`, or `unknown` for a plain branch the plans say nothing about) with its
+PR number, and the `git cherry` summary (commits with no patch-equivalent on
+base). For a worktree-held branch the PR state comes from the matching
+`worktree_gc` entry (`partial` is read as merged with extra commits); the
+cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
+and is `unavailable` when branch_gc does not expose it. The report prints one
+line per verdict: branch, PR state, cherry summary and the reviewer's one-line
+reason (stored `gate.reason`, else `triage.reason`).
 
 ## Applying agreed verdicts
 

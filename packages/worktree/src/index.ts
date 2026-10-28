@@ -130,6 +130,8 @@ export {
   computeWorktreeStatus,
   computeBaseDivergence,
   listWorktreeStatuses,
+  DEFAULT_STATUS_CONCURRENCY,
+  livenessSessionCount,
   listGitWorktrees,
   VERDICT_MEMO_PATH,
   FileVerdictMemoStore,
@@ -148,6 +150,7 @@ export {
   type ReconcileIntegrationInput,
   type ComputeWorktreeStatusInput,
   type ComputeTreeStateOptions,
+  type ComputeLivenessOptions,
   type ListWorktreeStatusesInput,
 } from "./status.js"
 export {
@@ -157,6 +160,7 @@ export {
   UnreachableForgeClient,
   ForgeUnavailableError,
   parseGithubOwnerRepo,
+  withUnavailableNotice,
   type ForgeClient,
   type ForgePullRequestRef,
 } from "./forge.js"
@@ -197,6 +201,8 @@ export {
   type GcReclaimReason,
   type InBaseReclaimReason,
   DEFAULT_GC_NOISE_PATHS,
+  DEFAULT_GC_CONDITIONAL_NOISE_PATHS,
+  resolveGcNoise,
   DEFAULT_GC_ACTIVE_MINUTES,
   type GcHoldReason,
   type ClassifyForGcOptions,

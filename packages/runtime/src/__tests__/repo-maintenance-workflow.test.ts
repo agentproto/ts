@@ -262,6 +262,8 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "reviewCleanup:tool",
       "branchGcVerify:tool",
       "gaps:transform",
+      "verdictLookupTips:transform",
+      "verdictRecords:map",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
@@ -385,8 +387,10 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(retries[0]!.model).toBe("claude-opus-5-5")
     expect(sends.find(s => s.sessionId === retries[0]!.id)!.prompt).toContain(`(tip ${SHA_B})`)
     const checkedShas = calls.filter(c => c.name === "branch_gc_verdict_get").map(c => c.inputs.sha)
-    expect(checkedShas.filter(sha => sha === SHA_A)).toHaveLength(1)
-    expect(checkedShas.filter(sha => sha === SHA_B)).toHaveLength(2)
+    // Per-tip checks inside the review map, plus one record read per tip
+    // afterwards for the report's one-line reasons (verdictRecords).
+    expect(checkedShas.filter(sha => sha === SHA_A)).toHaveLength(2)
+    expect(checkedShas.filter(sha => sha === SHA_B)).toHaveLength(3)
 
     // branch_gc plan called once up front, once again to verify verdicts,
     // once more as the (dry-run, since applyMerged is false) apply step.
@@ -473,6 +477,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(branchGcCalls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: false })
     const worktreeGcCalls = calls.filter(c => c.name === "worktree_gc")
     expect(worktreeGcCalls[1]!.inputs).toMatchObject({ apply: true, salvageDirty: false, wait: true })
+    // The apply runs the SAME plan the review saw, so worktree_gc can skip whatever changed since.
+    expect(worktreeGcCalls[1]!.inputs.expectedPlan).toEqual(worktreeGcPlanFixture().plan)
 
     const notifyCall = calls.find(c => c.name === "transmit_message")
     expect(notifyCall).toBeDefined()
@@ -1369,7 +1375,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     }
   }
 
-  function branchPlan(withVerdict: boolean) {
+  function branchPlan(withVerdict: boolean, idleExtra: Record<string, unknown> = {}) {
     const verdict = withVerdict ? { verdict: { triage: "obsolete", agree: true, reviewer: "r" } } : {}
     return {
       mode: "plan",
@@ -1380,7 +1386,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
         baseSha: BASE_SHA,
         scopes: ["local"],
         entries: [
-          heldEntry("idle", SHA_IDLE, verdict),
+          heldEntry("idle", SHA_IDLE, { ...verdict, ...idleExtra }),
           heldEntry("live", SHA_LIVE),
           heldEntry("dirty", SHA_DIRTY),
           heldEntry("young", SHA_YOUNG, { ageDays: 1 }),
@@ -1394,7 +1400,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     }
   }
 
-  function worktreePlan() {
+  function worktreePlan(idleIntegration?: Record<string, unknown>) {
     const wt = (name: string, over: Record<string, unknown> = {}) => ({
       path: `/wt/${name}`,
       branch: name,
@@ -1410,7 +1416,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     return {
       mode: "plan",
       plan: [
-        wt("idle"),
+        wt("idle", idleIntegration ? { integration: idleIntegration } : {}),
         wt("live", { liveness: { state: "sessions", sessionCount: 1 } }),
         wt("dirty", { tree: "dirty" }),
         wt("young"),
@@ -1419,15 +1425,20 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     }
   }
 
-  async function run(input: Record<string, unknown>) {
+  async function run(
+    input: Record<string, unknown>,
+    opts: { integration?: Record<string, unknown>; idleExtra?: Record<string, unknown>; record?: Record<string, unknown> } = {},
+  ) {
     let branchGcCalls = 0
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       if (name === "worktree_gc") {
         if (inputs.wait !== true) return mcpResult({ jobId: "wgc_test", status: "running" })
-        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreePlan())
+        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreePlan(opts.integration))
       }
-      if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2))
-      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2, opts.idleExtra))
+      if (name === "branch_gc_verdict_get") {
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha, ...opts.record } })
+      }
       if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
       if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
       if (name === "model_roles") return modelRolesResult(inputs)
@@ -1457,13 +1468,168 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
   it("reports the verdict with the removal command when the reviewer agreed — and removes nothing itself", async () => {
     const { report } = await run({})
     expect(report).toContain("## Held worktrees reviewed (1)")
-    expect(report).toContain("- `idle` — obsolete — nothing of value lost: `agentproto worktree rm /wt/idle`")
+    expect(report).toContain("- `idle` - obsolete - PR: none")
+    expect(report).toContain("nothing of value lost: `agentproto worktree rm /wt/idle`")
     expect(report).toContain("dry run only, nothing was deleted")
+  })
+
+  describe("reviewer evidence: PR state + git cherry", () => {
+    const CLOSED = { state: "closed-unmerged", pr: 9 }
+    const CHERRY = { total: 5, unmatched: 2 }
+    const RECORD = {
+      triage: { verdict: "obsolete", confidence: 0.9, reason: "superseded by #12\nsecond line is dropped" },
+      gate: { agree: true, verdict: "obsolete", reason: "all hunks re-landed in #12", evidence: ["git cherry shows -"] },
+    }
+
+    it("hands the reviewer the PR state + number and the cherry summary of a held worktree", async () => {
+      const { sends } = await run({}, { integration: CLOSED, idleExtra: { cherry: CHERRY } })
+      const prompt = sends[0]!.prompt
+      expect(prompt).toContain("PR state: closed-unmerged PR #9")
+      expect(prompt).toContain("git cherry: 2 of 5 commit(s) have no patch-equivalent on base")
+    })
+
+    it("tells the reviewer how to weigh the evidence: closed-unmerged is a strong signal not proof, an open PR is never safe to delete", async () => {
+      const { sends } = await run({}, { integration: CLOSED })
+      const prompt = sends[0]!.prompt
+      expect(prompt).toMatch(/closed-unmerged PR is a strong signal[^.]*abandon[^.]*supersed[^.]*not proof/i)
+      expect(prompt).toMatch(/open PR is live work[^.]*never[^.]*gate\.agree/i)
+      expect(prompt).toContain("git cherry: unavailable")
+    })
+
+    it("prints exactly ONE line per verdict: branch, PR state, cherry summary and the reviewer's one-line reason", async () => {
+      const { report } = await run({}, { integration: CLOSED, idleExtra: { cherry: CHERRY }, record: RECORD })
+      const lines = report.split("\n").filter(l => l.includes("`idle`") && l.includes("reason:"))
+      expect(lines).toEqual([
+        "- `idle` - obsolete - PR: closed-unmerged #9 - cherry: 2/5 not patch-equivalent on base - " +
+          "reason: all hunks re-landed in #12 - nothing of value lost: `agentproto worktree rm /wt/idle`",
+      ])
+      expect(report).not.toContain("second line is dropped")
+    })
+
+    it("falls back to the triage reason when the reviewer recorded no gate, and says so when no reason was stored", async () => {
+      const triageOnly = await run({}, { integration: CLOSED, record: { triage: RECORD.triage } })
+      expect(triageOnly.report).toContain("reason: superseded by #12 -")
+      expect(triageOnly.report).not.toContain("second line is dropped")
+      const none = await run({}, { integration: CLOSED })
+      expect(none.report).toContain("reason: (none recorded)")
+    })
+
+    it("renders unavailable cherry data as such, never as zero", async () => {
+      const { report } = await run({}, { integration: CLOSED, record: RECORD })
+      expect(report).toContain("cherry: unavailable")
+    })
   })
 
   it("reviewHeldWorktrees:false leaves held worktrees alone", async () => {
     const { spawns, report } = await run({ reviewHeldWorktrees: false })
     expect(spawns).toHaveLength(0)
     expect(report).not.toContain("## Held worktrees reviewed")
+  })
+})
+
+describe("repo-maintenance maintain workflow - reviewer evidence (pure functions)", () => {
+  const sha = (c: string) => c.repeat(40)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  type Fn = (...a: any[]) => any
+  const load = async () =>
+    (await import(join(dirname(WORKFLOW_PATH), "entry.mjs"))) as {
+      normalizePrState: Fn
+      formatPrState: Fn
+      formatCherry: Fn
+      buildReviewQueue: Fn
+    }
+
+  it("normalizePrState maps worktree_gc integration onto {open, merged, closed-unmerged, none} and carries the PR number", async () => {
+    const { normalizePrState } = await load()
+    expect(normalizePrState({ state: "open", pr: 3 })).toEqual({ state: "open", number: 3 })
+    expect(normalizePrState({ state: "merged", pr: 4 })).toEqual({ state: "merged", number: 4 })
+    expect(normalizePrState({ state: "closed-unmerged", pr: 5 })).toEqual({ state: "closed-unmerged", number: 5 })
+    // partial = merged PR plus commits made after it: still merged, but flagged.
+    expect(normalizePrState({ state: "partial", pr: 6, aheadBy: 2 })).toEqual({ state: "merged", number: 6, partial: true, aheadBy: 2 })
+    for (const state of ["pushed-no-pr", "unpushed", "local-only", "diverged"]) {
+      expect(normalizePrState({ state })).toEqual({ state: "none", number: null })
+    }
+    // No PR number means no PR, whatever the state says.
+    expect(normalizePrState({ state: "closed-unmerged" })).toEqual({ state: "none", number: null })
+    expect(normalizePrState(undefined)).toEqual({ state: "none", number: null })
+  })
+
+  it("formatPrState / formatCherry render the evidence strings, cherry unavailable stays unavailable", async () => {
+    const { formatPrState, formatCherry } = await load()
+    expect(formatPrState({ state: "closed-unmerged", number: 9 })).toBe("closed-unmerged PR #9")
+    expect(formatPrState({ state: "merged", number: 6, partial: true, aheadBy: 2 })).toBe("merged PR #6 (partial: +2 commit(s) made after it)")
+    expect(formatPrState({ state: "none", number: null })).toBe("none")
+    expect(formatPrState({ state: "unknown", number: null })).toBe("unknown")
+    expect(formatCherry({ total: 5, unmatched: 2 })).toBe("2 of 5 commit(s) have no patch-equivalent on base")
+    expect(formatCherry(null)).toBe("unavailable")
+    expect(formatCherry(undefined)).toBe("unavailable")
+  })
+
+  function branchPlan(entries: Array<Record<string, unknown>>) {
+    return { mode: "plan", plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: sha("c"), entries } }
+  }
+  const base = {
+    kind: "local",
+    date: "2026-01-01T00:00:00Z",
+    author: "a",
+    subject: "s",
+    ageDays: 10,
+    status: "unmerged",
+    history: "current",
+    ahead: 2,
+    behind: 0,
+    residualFiles: ["x.ts"],
+    residualFileCount: 1,
+  }
+
+  it("buildReviewQueue takes a worktree-held candidate's PR state from the matching worktree_gc entry (path + branch) and passes the cherry summary through", async () => {
+    const { buildReviewQueue } = await load()
+    const wtPlan = {
+      mode: "plan",
+      plan: [
+        {
+          path: "/wt/held",
+          branch: "held",
+          class: "hold",
+          tree: "clean",
+          integration: { state: "closed-unmerged", pr: 9 },
+          liveness: { state: "idle", sessionCount: 0 },
+        },
+      ],
+    }
+    const { queue } = buildReviewQueue(
+      branchPlan([
+        { ...base, name: "held", ref: "refs/heads/held", sha: sha("1"), class: "hold", holdReason: "worktree", holdDetail: "/wt/held", cherry: { total: 2, unmatched: 2 } },
+      ]),
+      wtPlan,
+    ) as { queue: Array<Record<string, unknown>> }
+    expect(queue).toHaveLength(1)
+    expect(queue[0]).toMatchObject({
+      worktree: "/wt/held",
+      pr: { state: "closed-unmerged", number: 9 },
+      prState: "closed-unmerged",
+      prNumber: 9,
+      prSummary: "closed-unmerged PR #9",
+      cherry: { total: 2, unmatched: 2 },
+      cherrySummary: "2 of 2 commit(s) have no patch-equivalent on base",
+    })
+  })
+
+  it("buildReviewQueue never invents a PR state or a cherry result for a plain branch candidate", async () => {
+    const { buildReviewQueue } = await load()
+    const { queue } = buildReviewQueue(
+      branchPlan([{ ...base, name: "plain", ref: "refs/heads/plain", sha: sha("2"), class: "review" }]),
+      { mode: "plan", plan: [] },
+    ) as { queue: Array<Record<string, unknown>> }
+    expect(queue[0]).toMatchObject({ prState: "unknown", prNumber: null, prSummary: "unknown", cherry: null, cherrySummary: "unavailable" })
+  })
+
+  it("buildReviewQueue uses the PR number a branch_gc entry does expose (forgePr / mergedPr) without claiming a state", async () => {
+    const { buildReviewQueue } = await load()
+    const { queue } = buildReviewQueue(
+      branchPlan([{ ...base, name: "mirror", ref: "refs/heads/mirror", sha: sha("3"), class: "review", forgePr: 77 }]),
+      { mode: "plan", plan: [] },
+    ) as { queue: Array<Record<string, unknown>> }
+    expect(queue[0]).toMatchObject({ prState: "unknown", prNumber: 77, prSummary: "unknown (PR #77)" })
   })
 })

@@ -255,6 +255,13 @@ export async function writeWorktreeMarker(
 
 export interface ComputeProvenanceOptions {
   sessionsPath?: string
+  /**
+   * A registry the caller already read (`readSessionsRegistry`), `null` for
+   * "read and unreadable". When present it is used as-is instead of re-reading
+   * the sessions files: a sweep over N worktrees would otherwise parse every
+   * per-workspace `sessions.json` (tens of MB on a busy machine) 2N times.
+   */
+  sessionsRegistry?: SessionRef[] | null
 }
 
 /**
@@ -273,7 +280,9 @@ export async function computeProvenance(
     // No `sessionsPath` ⇒ the bucket ∪ legacy union, NOT the legacy file
     // alone — pinning it here would hide every partitioned session from
     // the GC join. See this file's header.
-    readSessionsRegistry(options.sessionsPath),
+    options.sessionsRegistry !== undefined
+      ? Promise.resolve(options.sessionsRegistry)
+      : readSessionsRegistry(options.sessionsPath),
     readWorktreeMarker(repoRoot, worktreePath),
   ])
   const sessions = registry ?? []
