@@ -7,7 +7,16 @@
  * then acks exactly the items it injected. Any failure (no daemon, unknown
  * session, bad input) is silent and exits 0 — a hook must never block the
  * user's prompt.
+ *
+ * `agentproto hook pre-compact`
+ *
+ * The synchronous Claude Code PreCompact hook the daemon projects when
+ * `defaults.nativeHooks.preCompactCheckpoint` is on: asks the daemon for a
+ * checkpoint of the session it runs in before the harness compacts. Always
+ * exits 0 with nothing on stdout, bounded to 20 s: a missed checkpoint must
+ * never break the compaction.
  */
+import { statSync } from "node:fs"
 import { parseArgs } from "node:util"
 import {
   discoverDaemon,
@@ -19,6 +28,7 @@ const USAGE = `agentproto hook — Claude Code hook commands
 
 Usage:
   agentproto hook inbox [--session <id>] [--event <name>] [--max <n>]
+  agentproto hook pre-compact
 
 \`inbox\` is meant to run as a Claude Code UserPromptSubmit / PostToolUse hook.
 It lists the session's unread daemon inbox items (oldest first, at most
@@ -32,6 +42,14 @@ Session id: --session, else $CLAUDE_CODE_SESSION_ID, else the hook payload's
 
 Example settings.json entry:
   { "hooks": { "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "agentproto hook inbox" } ] } ] } }
+
+\`pre-compact\` is the Claude Code PreCompact hook the daemon projects into a
+claude-code session's isolated settings when
+\`defaults.nativeHooks.preCompactCheckpoint\` is "on" (auto compactions only).
+It asks the daemon to checkpoint the session named by $AGENTPROTO_SESSION_ID
+(never the payload's \`session_id\`, which is Claude's own id) before the
+harness compacts. It prints nothing on stdout, gives up after 20 s and always
+exits 0, so a missed checkpoint never blocks the compaction.
 `
 
 const DEFAULT_MAX = 20
@@ -79,6 +97,111 @@ export function buildInboxHookOutput(
   }
 }
 
+/** Overridable for tests: the stdin reader and the overall time budget of
+ *  `pre-compact`. */
+export interface HookDeps {
+  readStdin?: () => Promise<string>
+  timeoutMs?: number
+}
+
+const PRE_COMPACT_TIMEOUT_MS = 20_000
+const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
+
+export interface PreCompactRequest {
+  sessionId: string
+  body: { reason: "native-pre-compact"; occurrenceId: string; trigger?: "auto" | "manual" }
+}
+
+/**
+ * The checkpoint request for a PreCompact payload, or `undefined` when the
+ * hook does not run inside a daemon session. The daemon session id comes
+ * from `AGENTPROTO_SESSION_ID` only: the payload's `session_id` is Claude's
+ * own id. `occurrenceId` keys the compaction on the transcript size, so a
+ * repeated hook for the same compaction is deduped by the daemon; without a
+ * readable transcript it falls back to the current second. Pure.
+ */
+export function buildPreCompactRequest(
+  env: Record<string, string | undefined>,
+  payload: Record<string, unknown>,
+  statSize: (path: string) => number | undefined,
+  nowMs: number = Date.now(),
+): PreCompactRequest | undefined {
+  const sessionId = env.AGENTPROTO_SESSION_ID
+  if (!sessionId || !SESSION_ID_RE.test(sessionId)) return undefined
+  const size = typeof payload.transcript_path === "string" ? statSize(payload.transcript_path) : undefined
+  const occurrenceId =
+    typeof size === "number" && Number.isFinite(size) ? `pc-${size}` : `pc-t${Math.floor(nowMs / 1000)}`
+  const trigger = payload.trigger === "auto" || payload.trigger === "manual" ? payload.trigger : undefined
+  return {
+    sessionId,
+    body: { reason: "native-pre-compact", occurrenceId, ...(trigger ? { trigger } : {}) },
+  }
+}
+
+function statSizeOf(path: string): number | undefined {
+  try {
+    return statSync(path).size
+  } catch {
+    return undefined
+  }
+}
+
+/** A short, secret-free reason for a failed POST: never the response body. */
+function skipReason(err: unknown, timedOut: boolean): string {
+  if (timedOut) return "timeout"
+  const message = err instanceof Error ? err.message : ""
+  const http = /^HTTP (\d{3})/.exec(message)
+  if (http) return `HTTP ${http[1]}`
+  const code = (err as { code?: unknown } | undefined)?.code
+  if (typeof code === "string" && /^[A-Z_]{1,32}$/.test(code)) return code
+  return "request failed"
+}
+
+async function runPreCompact(deps: HookDeps): Promise<number> {
+  const controller = new AbortController()
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, deps.timeoutMs ?? PRE_COMPACT_TIMEOUT_MS)
+  timer.unref?.()
+  const expired = new Promise<undefined>(resolve =>
+    controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }),
+  )
+  try {
+    let payload: Record<string, unknown> = {}
+    try {
+      const raw = await Promise.race([(deps.readStdin ?? readStdin)(), expired])
+      if (raw?.trim()) {
+        const parsed: unknown = JSON.parse(raw)
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) payload = parsed as Record<string, unknown>
+      }
+    } catch {
+      /* no / malformed payload: the env still names the session */
+    }
+    const request = buildPreCompactRequest(process.env, payload, statSizeOf)
+    if (!request || timedOut) return 0
+    const report = await Promise.race([discoverDaemon().catch(() => undefined), expired])
+    const endpoint = report?.found
+    if (!endpoint || timedOut) return 0
+    try {
+      await httpPostJson(
+        `${endpoint.url}/sessions/${encodeURIComponent(request.sessionId)}/checkpoint`,
+        request.body,
+        endpoint.token,
+        { signal: controller.signal },
+      )
+    } catch (err) {
+      process.stderr.write(`agentproto hook pre-compact: checkpoint skipped (${skipReason(err, timedOut)})\n`)
+    }
+    return 0
+  } catch {
+    return 0
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return ""
   return await new Promise<string>(resolve => {
@@ -97,13 +220,20 @@ async function readStdin(): Promise<string> {
   })
 }
 
-export async function runHook(args: readonly string[]): Promise<number> {
+export async function runHook(args: readonly string[], deps: HookDeps = {}): Promise<number> {
   if (args.includes("--help") || args.includes("-h") || args.length === 0) {
     process.stdout.write(USAGE)
     return 0
   }
+  if (args[0] === "pre-compact") {
+    try {
+      return await runPreCompact(deps)
+    } catch {
+      return 0
+    }
+  }
   if (args[0] !== "inbox") {
-    process.stderr.write(`agentproto hook: unknown subcommand "${args[0]}"\n  Known: inbox\n`)
+    process.stderr.write(`agentproto hook: unknown subcommand "${args[0]}"\n  Known: inbox, pre-compact\n`)
     return 2
   }
   try {

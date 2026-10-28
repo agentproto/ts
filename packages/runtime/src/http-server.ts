@@ -272,6 +272,7 @@ import {
   persistCheckpoint,
   renderCheckpointPrompt,
 } from "./context-checkpoint.js"
+import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
 import { computeContextPct, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
@@ -613,6 +614,10 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  (claude-code: `claudeMdExcludes`). Only passed to adapters whose
      *  resolver entry sets `supportsHostContextIsolation`. */
     isolateHostContext?: boolean
+    /** Command line of the projected Claude Code PreCompact hook
+     *  (`defaults.nativeHooks`), forwarded to the driver's
+     *  `start({ preCompactCommand })`. Set only for local claude-code spawns. */
+    preCompactCommand?: string
     /** Resolved imported skills to deliver into this session's isolated
      *  config dir — forwarded verbatim to the driver's
      *  `start({ sessionSkills })` (see `AgentCliStartOptions.sessionSkills`).
@@ -6330,6 +6335,30 @@ function spawnFailureStatus(code: string): number {
   return 500
 }
 
+/** `reason` of the projected PreCompact hook's checkpoint request. */
+const NATIVE_PRE_COMPACT_REASON = "native-pre-compact"
+const CHECKPOINT_REASON_MAX = 64
+/** `reason` lands in a transcript notice line: words, digits and ". _ : -"
+ *  only, no control character, no newline, no escape, never empty. */
+const CHECKPOINT_REASON_RE = /^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,63}$/
+const CHECKPOINT_OCCURRENCE_RE = /^[^\s/\u0000-\u001f\u007f-\u009f]{1,128}$/
+/** First response per occurrence key, in this process. Bounded: the oldest
+ *  entry goes first. */
+const CHECKPOINT_OCCURRENCES_MAX = 500
+const checkpointOccurrences = new Map<string, Record<string, unknown>>()
+/** Builds in flight, so a concurrent request with the same key waits for the
+ *  first one instead of building a second checkpoint. */
+const checkpointInflight = new Map<string, Promise<Record<string, unknown>>>()
+
+function rememberCheckpointOccurrence(key: string, response: Record<string, unknown>): void {
+  checkpointOccurrences.set(key, response)
+  while (checkpointOccurrences.size > CHECKPOINT_OCCURRENCES_MAX) {
+    const oldest = checkpointOccurrences.keys().next().value
+    if (oldest === undefined) break
+    checkpointOccurrences.delete(oldest)
+  }
+}
+
 /** Preconditions shared by `POST /sessions/:id/checkpoint` and `.../handoff`. */
 function checkpointableSession(
   desc: SessionDescriptor,
@@ -8050,7 +8079,13 @@ code { color: #9ad; }
   }
 
   // POST /sessions/:id/checkpoint — build + persist a context-continuity
-  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes? }`.
+  // checkpoint (the REST twin of `session_checkpoint`). Body `{ notes?,
+  // reason?, occurrenceId?, trigger? }`. `reason` names what the checkpoint
+  // precedes in its notice line; `reason: "native-pre-compact"` (the
+  // projected PreCompact hook, `agentproto hook pre-compact`) never asks the
+  // source session for a handoff turn: it is busy inside its own compaction.
+  // A repeated `occurrenceId` for the same session answers the first
+  // checkpoint (`deduped: true`) without building another.
   const checkpointMatch = path.match(/^\/sessions\/([^/]+)\/checkpoint$/)
   if (checkpointMatch && req.method === "POST") {
     const id = checkpointMatch[1]
@@ -8065,28 +8100,97 @@ code { color: #9ad; }
       json(400, { error: "invalid_notes", message: "notes must be a string" })
       return true
     }
+    if (b.reason !== undefined && (typeof b.reason !== "string" || !CHECKPOINT_REASON_RE.test(b.reason))) {
+      json(400, {
+        error: "invalid_reason",
+        message: `reason must be 1 to ${CHECKPOINT_REASON_MAX} chars: letters, digits, spaces and . _ : - (starting with a letter or digit)`,
+      })
+      return true
+    }
+    if (b.occurrenceId !== undefined && (typeof b.occurrenceId !== "string" || !CHECKPOINT_OCCURRENCE_RE.test(b.occurrenceId))) {
+      json(400, {
+        error: "invalid_occurrence_id",
+        message: "occurrenceId must be 1 to 128 chars with no whitespace, control character or \"/\"",
+      })
+      return true
+    }
+    if (b.trigger !== undefined && b.trigger !== "auto" && b.trigger !== "manual") {
+      json(400, { error: "invalid_trigger", message: 'trigger must be "auto" or "manual"' })
+      return true
+    }
     const gate = checkpointableSession(desc)
     if (gate) {
       json(gate.status, { error: gate.error, message: gate.message, id: desc.id })
       return true
     }
-    try {
+    const reason = b.reason as string | undefined
+    const occurrenceKey =
+      typeof b.occurrenceId === "string"
+        ? buildOccurrenceKey({
+            sessionId: desc.id,
+            event: "compact-start",
+            occurrenceId: b.occurrenceId,
+            bindingId: "builtin:pre-compact-checkpoint",
+          })
+        : undefined
+    const prior = occurrenceKey ? checkpointOccurrences.get(occurrenceKey) : undefined
+    if (prior) {
+      json(200, { ...prior, deduped: true })
+      return true
+    }
+    // A request for the same occurrence that is already building: wait for it
+    // and answer its checkpoint instead of building a second one.
+    const pending = occurrenceKey ? checkpointInflight.get(occurrenceKey) : undefined
+    if (pending) {
+      try {
+        json(200, { ...(await pending), deduped: true })
+      } catch (err) {
+        json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+      return true
+    }
+    const buildResponse = async (): Promise<Record<string, unknown>> => {
       const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
       const checkpoint = await buildContextCheckpoint(source, {
         contextPct: pct,
         ...(b.notes ? { notes: b.notes as string } : {}),
+        ...(reason === NATIVE_PRE_COMPACT_REASON ? { askSource: false } : {}),
       })
       await persistCheckpoint(checkpoint)
-      registry.noteCheckpointWritten(desc.id)
-      json(200, {
+      registry.noteCheckpointWritten(
+        desc.id,
+        reason
+          ? {
+              checkpointId: checkpoint.checkpointId,
+              checkpointPath: checkpoint.checkpointPath,
+              // The trigger ("auto" | "manual") rides in the notice line so
+              // the transcript says which kind of compaction it preceded.
+              before: typeof b.trigger === "string" ? `${reason} (${b.trigger})` : reason,
+            }
+          : undefined,
+      )
+      return {
         ok: true,
         checkpointId: checkpoint.checkpointId,
         path: checkpoint.checkpointPath,
         checkpoint,
-      })
-    } catch (err) {
-      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    try {
+      const run = buildResponse()
+      if (occurrenceKey) checkpointInflight.set(occurrenceKey, run)
+      let response: Record<string, unknown>
+      try {
+        response = await run
+      } finally {
+        if (occurrenceKey) checkpointInflight.delete(occurrenceKey)
+      }
+      // Nothing awaits between the delete above and this store, so a request
+      // arriving now finds one of the two maps populated.
+      if (occurrenceKey) rememberCheckpointOccurrence(occurrenceKey, response)
+      json(200, response)
+    } catch (err) {      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }
