@@ -135,3 +135,59 @@ describe("capabilities.hooks (AIP-71)", () => {
     expect(handle.capabilities?.hooks).toBeUndefined()
   })
 })
+
+describe("capabilities.memory (AIP-72 section 9)", () => {
+  const memoryManifest = `---
+name: hermes
+id: hermes
+description: Nous Research Hermes Agent.
+version: 0.1.0
+bin: hermes
+bin_args: [acp]
+install:
+  - method: brew
+    package: hermes
+version_check:
+  cmd: hermes --version
+  parse: "(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)"
+  range: ">=0.13.0"
+  timeout_ms: 5000
+sandbox: ./SANDBOX.md
+protocol: acp
+acp: ./hermes-acp.ACP.md
+capabilities:
+  memory:
+    inject: native-dir
+    capture: native-dir-diff
+---
+
+Body.
+`
+
+  it("accepts a declaration and keeps it on the handle", () => {
+    const memory = { inject: "system-prompt", capture: "none" } as const
+    const handle = defineHarness(minimal({ capabilities: { memory } }))
+    expect(handle.capabilities?.memory).toEqual(memory)
+  })
+
+  it("parses a declaration from a markdown manifest", () => {
+    const handle = agentCliFromManifest(parseAgentCliManifest(memoryManifest))
+    expect(handle.capabilities?.memory).toEqual({
+      inject: "native-dir",
+      capture: "native-dir-diff",
+    })
+  })
+
+  it("rejects an unknown inject value and an unknown key", () => {
+    expect(() =>
+      defineHarness(
+        minimal({ capabilities: { memory: { inject: "env" } as never } }),
+      ),
+    ).toThrow(/capabilities\.memory\.inject/)
+    expect(() =>
+      defineHarness(
+        minimal({ capabilities: { memory: { digest: true } as never } }),
+      ),
+    ).toThrow(/Unrecognized key/)
+  })
+})

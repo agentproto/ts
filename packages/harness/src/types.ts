@@ -399,6 +399,12 @@ export interface NativeHookCapability {
   context?: NativeHookContext
 }
 
+/** AIP-72 section 9 `capabilities.memory` declaration. */
+export interface MemoryProjectionCapability {
+  inject?: "native-dir" | "system-prompt" | "none"
+  capture?: "native-dir-diff" | "none"
+}
+
 export interface AgentCliCapabilities {
   streaming?: boolean
   tool_calls?: boolean
@@ -450,6 +456,13 @@ export interface AgentCliCapabilities {
    * `tools/list` (opencode does, rejecting the request client-side) cannot.
    */
   deferredToolDiscovery?: boolean
+  /**
+   * AIP-72 memory projection (section 9): how a digest of in-force memory
+   * items reaches a session, and whether native-memory changes can be
+   * captured back as proposals. Metadata only, like `hooks`: declaring it
+   * enables nothing. Absent reads as `{ inject: "none", capture: "none" }`.
+   */
+  memory?: MemoryProjectionCapability
   /**
    * Native hook callbacks this harness exposes (AIP-71). Metadata
    * only: declaring an entry never installs a handler. Define-agent-cli and
