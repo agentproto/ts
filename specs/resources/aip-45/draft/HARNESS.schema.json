@@ -344,6 +344,11 @@
         "multimodal":    { "type": "boolean" },
         "resumable":     { "type": "boolean" },
         "bidirectional": { "type": "boolean" },
+        "hooks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/nativeHookCapability" },
+          "description": "AIP-71 native hook declaration (section 3): an open list of the native hook seams this harness can project. Metadata only: it does not enable a hook, install user code, or grant a permission. A harness-extension capability, excluded from the ACP subset check."
+        },
         "mode_events": {
           "type": "boolean",
           "description": "The harness exposes session modes and emits the mode-changed stream event for every change of the current mode the caller did not make itself (SHOULD for the caller's own setSessionMode too). Absent reads as false. A harness-extension capability, excluded from the ACP subset check."
@@ -366,6 +371,46 @@
               "description": "Whether the native memory location can be diffed after the session so its changes become memory store proposals."
             }
           }
+        }
+      }
+    },
+    "nativeHookCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["event", "native_event", "path", "can_block", "handlers"],
+      "description": "One native hook seam (AIP-71 NativeHookCapability).",
+      "properties": {
+        "event": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The portable AIP-37 semantic event (e.g. tool-call). A namespaced <host>:<event> name is non-portable and MUST be registered by that host."
+        },
+        "native_event": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The harness callback identifier (e.g. PreToolUse). Descriptive and harness-owned; portable configuration MUST NOT reference it."
+        },
+        "path": {
+          "enum": ["admission", "lifecycle"],
+          "description": "admission = the native seam runs before an operation; lifecycle = it observes a lifecycle transition."
+        },
+        "can_block": {
+          "type": "boolean",
+          "description": "True only when a successful native callback can prevent the corresponding operation. A timeout or malformed callback response MUST NOT be advertised as a successful denial."
+        },
+        "handlers": {
+          "type": "array",
+          "items": { "enum": ["command", "mcp", "http", "prompt", "agent"] },
+          "uniqueItems": true,
+          "description": "Mechanisms the harness can execute at that seam."
+        },
+        "async": {
+          "type": "boolean",
+          "description": "The harness can run the handler in the background."
+        },
+        "context": {
+          "enum": ["none", "append"],
+          "description": "append = a successful handler may add bounded context to the next model turn. It does not permit replacing the user's prompt."
         }
       }
     },
