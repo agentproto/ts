@@ -58,7 +58,7 @@
     "zod": "^4.6.7"
   },
   "peerDependencies": {
-    "@mastra/core": ">=1.59.0 <2"
+    "@mastra/core": ">=1.60.0 <2"
   },
   "devDependencies": {
     "@agentproto/tooling": "workspace:*",

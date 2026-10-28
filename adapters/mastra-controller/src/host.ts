@@ -41,6 +41,7 @@
  *   - memory: none.
  */
 
+import { createRequire } from "node:module"
 import { Agent } from "@mastra/core/agent"
 import {
   AgentController,
@@ -127,9 +128,59 @@ function describe(value: unknown): string {
   return typeof value
 }
 
+/** Lowest `@mastra/core` whose approval gate does not re-run on a tool resuming from its own `suspend()`. */
+export const MIN_MASTRA_CORE_VERSION = "1.60.0"
+
+export class UnsupportedMastraCoreError extends Error {
+  readonly installed: string
+  readonly minimum: string
+
+  constructor(installed: string, minimum: string) {
+    super(
+      `mastra-controller: @mastra/core ${installed} is installed but ${minimum} or newer is ` +
+        "required: older versions re-run the approval gate on a tool resuming from its own " +
+        "suspend(), so rejected plans lose their feedback and approved self-suspended tools " +
+        "never resume. Upgrade @mastra/core.",
+    )
+    this.name = "UnsupportedMastraCoreError"
+    this.installed = installed
+    this.minimum = minimum
+  }
+}
+
+function parseVersion(version: string): [number, number, number] | undefined {
+  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version)
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined
+}
+
+/** Throws when `installed` is older than `minimum`; an unparseable version is let through. */
+export function assertMastraCoreVersion(
+  installed: string,
+  minimum: string = MIN_MASTRA_CORE_VERSION,
+): void {
+  const have = parseVersion(installed)
+  const need = parseVersion(minimum)
+  if (!have || !need) return
+  for (let i = 0; i < 3; i++) {
+    if (have[i]! > need[i]!) return
+    if (have[i]! < need[i]!) throw new UnsupportedMastraCoreError(installed, minimum)
+  }
+}
+
+function installedMastraCoreVersion(): string | undefined {
+  try {
+    const pkg = createRequire(import.meta.url)("@mastra/core/package.json") as { version?: unknown }
+    return typeof pkg.version === "string" ? pkg.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export function createAgentControllerHost(
   options: AgentControllerHostOptions = {},
 ): AgentControllerHost {
+  const installed = installedMastraCoreVersion()
+  if (installed !== undefined) assertMastraCoreVersion(installed)
   const resolvers = options.resolvers ?? {}
   const defaults = options.defaults ?? {}
 

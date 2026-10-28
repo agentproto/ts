@@ -10,7 +10,7 @@ install:
 version_check:
   cmd: npm view @mastra/core version
   parse: '(\d+\.\d+\.\d+)'
-  range: ">=1.59.0 <2"
+  range: ">=1.60.0 <2"
   timeout_ms: 15000
 sandbox:
   model: in-process
@@ -153,8 +153,12 @@ yet.
 - Not `@agentproto/adapter-mastracode-inprocess`: that drives Mastra Code, a
   fixed preset of one controller. This adapter builds whatever controller a
   manifest declares.
-- `@mastra/core` is a `peerDependency` (`>=1.59.0 <2`) so the host and this
-  adapter share one `AgentController` class identity.
+- `@mastra/core` is a `peerDependency` (`>=1.60.0 <2`) so the host and this
+  adapter share one `AgentController` class identity. The floor is 1.60.0:
+  on 1.59.0 a tool resuming from its own `suspend()` goes back through the
+  approval gate, so a rejected plan loses its feedback and a self-suspended
+  tool that is approved never resumes. `createAgentControllerHost()` throws
+  on an older install.
 
 ## Why `mastra.agent-controller/v1` and not `harness/v1`
 

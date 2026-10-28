@@ -12,6 +12,10 @@ subagents, Observational Memory defaults, permissions. Implements the
 > `submit_plan` plan approvals surface as `agent-prompt` events answered
 > with `respondPermission`. See MASTRA-CONTROLLER.md.
 
+Requires `@mastra/core` `>=1.60.0 <2`. Before 1.60.0 the approval gate
+re-runs on a tool resuming from its own `suspend()`, which breaks plan
+rejection feedback and approved self-suspended tools.
+
 ## Running a session
 
 ```ts
