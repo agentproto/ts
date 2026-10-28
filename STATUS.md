@@ -165,6 +165,7 @@ agentproto-vscode | `packages/vscode` | core | product runtime package consumed 
 @agentproto/knowledge | `packages/knowledge` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/lesson | `packages/lesson` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/manifest | `packages/manifest` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/memory | `packages/memory` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/office | `packages/office` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/operator | `packages/operator` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/pack | `packages/pack` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
