@@ -180,17 +180,16 @@ describe("context behaviour pinned before the rework (Pygmalion profile)", () =>
     expect(resolvedB.hardStopAtPct).toBe(95)
   })
 
-  it("T5: without a policy the floor does not act and the session keeps taking prompts", async () => {
-    // A3 inverts this: the floor must hold without a policy.
-    const h = harness(95, 100)
+  it("T5: without a policy the floor still compacts and the session keeps running", async () => {
+    // A3: inverted, the floor holds without a policy.
+    const h = harness(95, 100, 10)
     const id = spawn(h)
     await reg.sendPrompt(id, "work")
-    await new Promise(r => setTimeout(r, 300))
-    expect(h.prompts.some(isCompact)).toBe(false)
+    await vi.waitFor(() => expect(h.prompts.some(isCompact)).toBe(true), { timeout: 4_000 })
+    await vi.waitFor(() => expect(outputOf(id).join("\n")).toMatch(/auto-compacted at the hard-stop floor/), { timeout: 4_000 })
     expect(reg.get(id)?.status).toBe("running")
-    const before = h.prompts.length
     await reg.sendPrompt(id, "more")
-    expect(h.prompts.length).toBe(before + 1)
+    expect(h.prompts.at(-1)).toBe("more")
   })
 
   it("T5b: without a policy auto-compact still fires from the default token threshold", async () => {

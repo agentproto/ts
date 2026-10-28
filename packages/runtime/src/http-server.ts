@@ -272,7 +272,7 @@ import {
   persistCheckpoint,
   renderCheckpointPrompt,
 } from "./context-checkpoint.js"
-import { computeContextPct } from "./context-continuity.js"
+import { CONTEXT_CONTINUITY_DEFAULTS, computeContextPct } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
@@ -6235,14 +6235,18 @@ function checkpointableSession(
   if (desc.kind !== "agent-cli") {
     return { status: 400, error: "not_agent_session", message: `session "${desc.id}" is not an agent-cli session` }
   }
-  if (!desc.contextContinuity) {
-    return {
-      status: 409,
-      error: "no_context_continuity_policy",
-      message: `session "${desc.id}" has no resolved context continuity policy`,
-    }
-  }
   return undefined
+}
+
+/** The descriptor a checkpoint is built from, and its policy: a session with
+ *  no policy is checkpointed under the defaults, the same way the runtime's
+ *  own pre-compaction checkpoint does. */
+function withContextPolicy(desc: SessionDescriptor): {
+  source: SessionDescriptor
+  policy: NonNullable<SessionDescriptor["contextContinuity"]>
+} {
+  const policy = desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
+  return { source: desc.contextContinuity ? desc : { ...desc, contextContinuity: policy }, policy }
 }
 
 /** Parse the `orchestrator` body field on `POST /sessions/agent` — the
@@ -7976,9 +7980,9 @@ code { color: #9ad; }
       return true
     }
     try {
-      const policy = desc.contextContinuity!
+      const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, {
+      const checkpoint = await buildContextCheckpoint(source, {
         contextPct: pct,
         ...(b.notes ? { notes: b.notes as string } : {}),
       })
@@ -8042,10 +8046,10 @@ code { color: #9ad; }
     const notes = b.notes as string | undefined
     if (b.dryRun === true) {
       try {
-        const policy = prev.contextContinuity!
+        const { source, policy } = withContextPolicy(prev)
         const pct = computeContextPct(prev.contextSize, prev.contextUsed) ?? policy.continueFreshAtPct
         // Read-only: never prompt the source session from a dry run.
-        const checkpoint = await buildContextCheckpoint(prev, {
+        const checkpoint = await buildContextCheckpoint(source, {
           contextPct: pct,
           askSource: false,
           ...(notes ? { notes } : {}),
@@ -8087,7 +8091,7 @@ code { color: #9ad; }
           ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
           ...(listAgentAdapters ? { listAgentAdapters } : {}),
         },
-        prev,
+        withContextPolicy(prev).source,
         {
           harness: to,
           ...(typeof b.model === "string" ? { model: b.model } : {}),

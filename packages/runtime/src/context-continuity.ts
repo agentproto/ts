@@ -375,7 +375,7 @@ function stateSummary(pct: number | null, state: ContextContinuityState, policy:
     case "ok":
       return `Context at ${pct}% — below warn threshold (${policy.warnAtPct}%).`
     case "warn":
-      return `Context at ${pct}% — consider compacting soon (${policy.compactAtPct}% auto).`
+      return `Context at ${pct}%: compaction is automatic at the token threshold.`
     case "compact":
       return `Context at ${pct}% — compact recommended (${policy.continueFreshAtPct}% continues fresh).`
     case "continue-fresh":
