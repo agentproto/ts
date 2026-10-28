@@ -16,6 +16,10 @@
  * AIP-42 `memory.enabled: false` (`meta.memory: "disabled"`) writes
  * nothing, not even a proposal; it can still read.
  *
+ * This is a write policy, not an authentication boundary: the caller id is
+ * the same loopback identity claim every gateway tool trusts, so a local
+ * process that omits `?callerSessionId=` is the operator.
+ *
  * The store's typed failures come back as structured tool errors
  * (`{ error, message, ... }`), never a bare message.
  */

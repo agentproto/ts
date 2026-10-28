@@ -3822,13 +3822,20 @@ export async function spawnAgentSession(
   // `native-dir` adapter is left to its native projection, so no session
   // ever gets the items through two paths. Never fails the spawn: a store
   // that cannot be read is a warning, and the memory_* tools remain.
-  if (memoryProjectionEnabled(callerAgentMemory)) {
-    const storeRoot = resolveMemoryStoreRoot({
-      ...(callerAgentMemory?.store !== undefined ? { store: callerAgentMemory.store } : {}),
-      ...(cwd !== undefined ? { workspaceRoot: cwd } : {}),
-    })
+  // The store root is resolved for any binding, `enabled: false` included,
+  // so the session's memory tools read the agent's own store.
+  const storeRoot =
+    callerAgentMemory !== undefined
+      ? resolveMemoryStoreRoot({
+          ...(callerAgentMemory.store !== undefined ? { store: callerAgentMemory.store } : {}),
+          ...(cwd !== undefined ? { workspaceRoot: cwd } : {}),
+        })
+      : undefined
+  if (storeRoot !== undefined) {
     memoryStoreRoot = storeRoot.root
     if (storeRoot.warning) spawnWarnings.push(`agent_start: ${storeRoot.warning}`)
+  }
+  if (storeRoot !== undefined && memoryProjectionEnabled(callerAgentMemory)) {
     const decision = decideMemoryInject({
       ...(resolved?.memoryInject !== undefined ? { inject: resolved.memoryInject } : {}),
       ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
@@ -3872,6 +3879,15 @@ export async function spawnAgentSession(
         `agent_start: memory digest not injected: ${decision.reason}. The memory_* tools still reach the store.`,
       )
     }
+  }
+  // Descriptor `meta` the memory tools read, stamped by BOTH the sync spawn
+  // and the async-worktree pending descriptor: the resolved spawn role (the
+  // commit gate, `memory-tools.ts`), the agent's store root, and AIP-42
+  // `memory.enabled: false` (the tools then refuse this session's writes).
+  const memoryMeta: Record<string, string> = {
+    role: role.name,
+    ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
+    ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
   }
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────
   // An adapter that declared a manifest `systemPrompt` channel takes the
@@ -4721,9 +4737,12 @@ export async function spawnAgentSession(
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        ...(input.boardId || input.workflowOwner || reactionStamp
-          ? { meta: { ...(input.boardId ? { boardId: input.boardId } : {}), ...workflowOwnerMeta(input.workflowOwner), ...(reactionStamp ? reactionStamp.meta : {}) } }
-          : {}),
+        meta: {
+          ...(input.boardId ? { boardId: input.boardId } : {}),
+          ...workflowOwnerMeta(input.workflowOwner),
+          ...memoryMeta,
+          ...(reactionStamp ? reactionStamp.meta : {}),
+        },
         ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -5516,16 +5535,8 @@ export async function spawnAgentSession(
         // for a hot role refresh at all.
         ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
         ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
-        // The resolved spawn role: the memory tools' commit gate reads
-        // it (`memory-tools.ts`), since a session's MCP calls carry only
-        // its id.
-        role: role.name,
-        // The AIP-72 store root this session's agent binds (see the
-        // memory digest above); the memory tools use it for this caller.
-        ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
-        // AIP-42 `memory.enabled: false`: the memory tools refuse this
-        // session's writes.
-        ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
+        // Role, store root, memory disabled (see `memoryMeta` above).
+        ...memoryMeta,
         ...(reactionStamp ? reactionStamp.meta : {}),
       },
       ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),

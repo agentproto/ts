@@ -165,6 +165,13 @@ describe("buildMemoryDigest", () => {
   })
 })
 
+describe("buildMemoryDigest bound", () => {
+  it("returns null rather than a block over the bound when not even the frame fits", async () => {
+    await seed([item({ id: "f1", polarity: "do" })])
+    expect(await buildMemoryDigest(store, { anchors: ANCHORS, maxChars: 100 })).toBeNull()
+  })
+})
+
 describe("decideMemoryInject", () => {
   it("uses the system prompt when the adapter declares system-prompt, none, or nothing", () => {
     for (const inject of [undefined, "none", "system-prompt"] as const) {
@@ -281,6 +288,37 @@ describe("spawnAgentSession memory digest", () => {
     const appended = startSession.mock.calls[0]![0].appendSystemPrompt ?? ""
     expect(appended).toContain("You are scout.")
     expect(appended).not.toContain("<agentproto-memory")
+  })
+
+  it("an agent with memory.enabled: false and a store records both, so its tools read that store and refuse writes", async () => {
+    const agentPath = await writeAgent(["memory:", "  enabled: false", "  store: ./team-memory"])
+    const { deps } = setup({ supportsSystemPrompt: true })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.meta).toMatchObject({
+      memory: "disabled",
+      memoryStoreRoot: join(root, "ws", "team-memory"),
+    })
+  })
+
+  it("the async worktree path records the same role and memory meta as the sync path", async () => {
+    const agentPath = await writeAgent(["memory:", "  enabled: false", "  store: ./team-memory"])
+    const { deps } = setup({ supportsSystemPrompt: true })
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        provisionWorktree: async () => ({ isolated: true, cwd: join(root, "ws"), branch: "wt/scout" }),
+        resolveWorktreeIsolation: async () => "on-request" as const,
+      },
+      { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath, role: "supervisor", worktree: { async: true } },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    const expected = { role: "supervisor", memory: "disabled", memoryStoreRoot: join(root, "ws", "team-memory") }
+    expect(deps.registry.get(result.descriptor.id)?.meta).toMatchObject(expected)
+    await vi.waitFor(() => expect(deps.registry.get(result.descriptor.id)?.status).toBe("running"))
+    expect(deps.registry.get(result.descriptor.id)?.meta).toMatchObject(expected)
   })
 
   it("records the resolved role on the descriptor for the commit gate", async () => {

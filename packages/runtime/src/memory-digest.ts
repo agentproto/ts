@@ -169,7 +169,11 @@ export async function buildMemoryDigest(
   }
   const omitted = entries.length - kept.length
   const lines = [head, ...kept, ...(omitted > 0 ? [leftOutLine(omitted)] : []), CLOSE]
-  return { text: lines.join("\n"), included: kept.length, omitted }
+  const text = lines.join("\n")
+  // A bound too small for even the frame and the left-out line: no digest,
+  // never a block over the bound.
+  if (text.length > maxChars) return null
+  return { text, included: kept.length, omitted }
 }
 
 export type MemoryInjectDecision =

@@ -12,6 +12,7 @@
 
 import { homedir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
+import type { MemoryConfig } from "@agentproto/agent"
 import { FilesMemoryStore, type MemoryStore } from "@agentproto/memory"
 
 /**
@@ -19,13 +20,7 @@ import { FilesMemoryStore, type MemoryStore } from "@agentproto/memory"
  * `retention_turns` and `semantic` configure conversation history and are
  * not read here.
  */
-export interface AgentMemoryBinding {
-  enabled?: boolean
-  /** A workspace-relative path to a reference-layout directory, or a store id. */
-  store?: string
-  /** Scope anchors in formatted form, added to the ones the host resolves. */
-  anchors?: string[]
-}
+export type AgentMemoryBinding = Pick<MemoryConfig, "enabled" | "store" | "anchors">
 
 let configuredRoot: string | undefined
 
