@@ -76,7 +76,14 @@ import type {
   SessionConfigChangedEvent,
   ContextRescueOutcome,
 } from "./session-event-bus.js"
-import { postureEnforcement, resolvePosture, type PostureEnforcement } from "./canonical-posture.js"
+import {
+  exceedsPostureCeiling,
+  postureEnforcement,
+  postureForModeId,
+  resolvePosture,
+  samePosture,
+  type PostureEnforcement,
+} from "./canonical-posture.js"
 import { isSandboxBoxExpiredError } from "./sandbox-agent-session-proxy.js"
 import {
   buildBackgroundTaskWakePrompt,
@@ -2406,8 +2413,18 @@ export interface SessionDescriptor {
   effort?: EffortLevel
   /** What the agent may DO (SPEC §3.1 axis 5) — an agentproto-canonical
    *  posture or a raw `{ harnessModeId }` sourced from the harness's ACP mode
-   *  registry (SPEC §3.4a). */
+   *  registry (SPEC §3.4a). Follows an agent-caused AIP-45 `mode-changed`
+   *  too, so it is the mode the harness is in now (see `postureSource`). */
   posture?: Posture
+  /** `"agent"` when `posture` was last moved by the agent itself (an AIP-45
+   *  `mode-changed` with `cause: "agent"`), absent when a caller set it
+   *  (spawn, `agent_set_posture`, restart). */
+  postureSource?: "agent"
+  /** The caller's last posture, kept while `postureSource` is `"agent"`
+   *  (absent: the caller never set one). The agent may move below it freely;
+   *  past it, the daemon warns and a restart clamps back to it
+   *  (`restartPosture`, canonical-posture.ts). */
+  postureCeiling?: Posture
   /**
    * Read-surface echo of the live harness's advertised ACP session modes
    * (`SessionModeState.availableModes`, #482) — stamped at READ TIME from the
@@ -8099,6 +8116,52 @@ export function createSessionsRegistry(opts?: {
     return { ...evt, size, reportedSize: evt.size }
   }
 
+  /**
+   * Fold an agent-caused AIP-45 mode switch onto the descriptor's `posture`
+   * (the canonical posture when the mode id maps to one, else the raw id). A
+   * caller-caused switch is not applied here: every caller path (spawn,
+   * `setPosture`, restart) already wrote the descriptor, and its stream echo
+   * must not apply it twice. The caller's last posture is kept as
+   * `postureCeiling`; moving past it is recorded (the harness IS in that
+   * mode) but announced as a warning, and a restart clamps back to it.
+   */
+  const followAgentMode = (rt: SessionRuntime, modeId: string): void => {
+    const posture = postureForModeId(modeId)
+    if (samePosture(rt.desc.posture, posture)) return
+    if (rt.desc.postureSource !== "agent") {
+      if (rt.desc.posture !== undefined) rt.desc.postureCeiling = rt.desc.posture
+      else delete rt.desc.postureCeiling
+      rt.desc.postureSource = "agent"
+    }
+    rt.desc.posture = posture
+    schedulePersist()
+    if (!sessionEvents) return
+    const ts = new Date().toISOString()
+    sessionEvents.emit({
+      type: "session:config-changed",
+      sessionId: rt.desc.id,
+      axis: "posture",
+      value: posture,
+      label: rt.desc.label,
+      ts,
+    })
+    if (exceedsPostureCeiling(posture, rt.desc.postureCeiling)) {
+      const ceiling = rt.desc.postureCeiling
+      const name = (p: Posture | undefined) =>
+        p === undefined ? "the adapter default" : typeof p === "object" ? p.harnessModeId : p
+      sessionEvents.emit({
+        type: "session:harness-warning",
+        sessionId: rt.desc.id,
+        warnings: [
+          `the agent switched to "${modeId}" (posture ${name(posture)}), wider than the caller's ` +
+            `${name(ceiling)}; a restart starts at ${name(ceiling)}`,
+        ],
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    }
+  }
+
   const projectEvent = (rt: SessionRuntime, evt: AgentStreamEvent): void => {
     switch (evt.kind) {
       case "text-delta":
@@ -8489,6 +8552,7 @@ export function createSessionsRegistry(opts?: {
             `\x1b[2m[mode] ${evt.previousModeId ?? "?"} -> ${evt.modeId} (${why})\x1b[0m`,
             "stdout",
           )
+          if (evt.cause === "agent") followAgentMode(rt, evt.modeId)
         }
         break
       case "background-task":
@@ -13916,6 +13980,9 @@ export function createSessionsRegistry(opts?: {
         }
       }
       rt.desc.posture = posture
+      // The caller's pick is the new ceiling.
+      delete rt.desc.postureSource
+      delete rt.desc.postureCeiling
       schedulePersist()
       if (sessionEvents) {
         sessionEvents.emit({

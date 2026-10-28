@@ -158,6 +158,7 @@ import {
   type SandboxSpec,
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
+import { restartPosture } from "./canonical-posture.js"
 import {
   formatDeliveryNotice,
   trackedSandboxDeliveryOpts,
@@ -1140,7 +1141,7 @@ export async function restartAgentSession(
   }
   const effEffort = overrides.effort ?? prev.effort
   const effRoute = reconciled.route ?? prev.route
-  const effPosture = overrides.posture ?? prev.posture
+  const effPosture = overrides.posture ?? restartPosture(prev)
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
   // AIP-66 cloud: a cloud session's recorded harness is the VENDOR's harness
   // (`claude-code`), never the local relay adapter slug (`claude-code-cloud`)
