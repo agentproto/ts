@@ -1,14 +1,23 @@
 /**
- * AIP-72 MEMORY.md frontmatter zod schema.
+ * AIP-72 memory/v1 frontmatter zod schema.
  *
- * Generated from `resources/aip-72/draft/MEMORY.schema.json` via
- * json-schema-to-zod. Imported by both `define-memory.ts` (TS path
- * validation) and `manifest/index.ts` (.md path validation) so every
- * field-level constraint runs in both authoring paths from a single
- * source of truth — re-run scaffold-aip to refresh after spec changes.
+ * Codegen output of `scripts/scaffold-aip.mjs --aip 72 --slug memory
+ * --doctype MEMORY --schema-only --inline-refs` over
+ * `specs/resources/aip-72/draft/MEMORY.schema.json`. Do not edit the code
+ * below by hand: change the JSON draft, then regenerate.
+ * `scripts/check-spec-drift.mjs` fails CI when the code drifts from the
+ * draft (it does not compare this comment).
  *
- * Cross-field rules (if/then/allOf in JSON Schema) don't translate
- * cleanly and live in `define-memory.ts`'s `validate(def)` instead.
+ * Only `validate.ts` imports this schema. `validateMemory` runs it, and
+ * `defineMemory` (`define-memory.ts`) and `renderMemory` (`markdown.ts`)
+ * validate through `validateMemory`. `index.ts` re-exports it.
+ *
+ * What the codegen cannot express also lives in `validate.ts`: the
+ * root `anyOf` (canonical fields or the legacy id/name/type trio), the
+ * `$defs.lifetime` if/then rules (`until` needs `at`, `while` needs
+ * `anchor`), the unknown-key check on the root and `lifetime` objects
+ * (zod 4 drops it inside the `.and(...)` intersections below), and the
+ * AIP-72 conformance rules that apply to a single document.
  */
 
 import { z } from "zod"

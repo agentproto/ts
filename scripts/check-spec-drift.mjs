@@ -15,6 +15,10 @@
  * emitted schema.ts against the checked-in
  * `packages/<slug>/src/schema.ts`. Exit 1 on any divergence.
  *
+ * The leading doc comment of schema.ts is NOT compared (`schemaCode`): the
+ * scaffolder emits a template header, and a package may rewrite it to
+ * describe its own files. Only the code below it is load-bearing.
+ *
  * `types.ts` is NOT diffed: its own header says the handle/runtime types
  * are hand-tuned on top of the generated base, so a mechanical diff is
  * meaningless there. `schema.ts` is the single validation source of truth
@@ -62,6 +66,12 @@ function parseArgs(argv) {
   return args
 }
 
+/** schema.ts without its leading `/** ... *\/` doc comment (and the blank
+ *  lines after it), so a package-specific header is not reported as drift. */
+export function schemaCode(src) {
+  return src.replace(/^\/\*\*[\s\S]*?\*\/\n*/, "")
+}
+
 export async function checkSpecDrift(opts = {}) {
   const { aip, slug, doctype, inlineRefs } = { ...DEFAULTS, ...opts }
   const specJsonPath = resolve(ROOT, "specs", "resources", `aip-${aip}`, "draft", `${doctype}.schema.json`)
@@ -85,12 +95,15 @@ export async function checkSpecDrift(opts = {}) {
     return { ok: false, message: `scaffold-aip --schema-only failed:\n${res.stderr || res.stdout}` }
   }
 
-  const checkedIn = readFileSync(resolve(ROOT, "packages", slug, "src", "schema.ts"), "utf8")
-  if (res.stdout === checkedIn) {
+  const checkedIn = schemaCode(
+    readFileSync(resolve(ROOT, "packages", slug, "src", "schema.ts"), "utf8"),
+  )
+  const regen = schemaCode(res.stdout)
+  if (regen === checkedIn) {
     return { ok: true, message: `spec↔codegen in sync for @agentproto/${slug}` }
   }
   const lines = []
-  const e = res.stdout.split("\n")
+  const e = regen.split("\n")
   const a = checkedIn.split("\n")
   for (let i = 0; i < Math.max(e.length, a.length); i++) {
     if (e[i] !== a[i]) {
