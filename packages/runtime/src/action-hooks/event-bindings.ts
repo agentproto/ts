@@ -15,6 +15,12 @@ export const HOST_EVENT_REGISTRATIONS: readonly HostEventRegistration[] = Object
     portability: "nonportable",
     description: "A session reached a terminal completed outcome, once per terminal transition.",
   }),
+  Object.freeze<HostEventRegistration>({
+    event: "agentproto:context-compacted",
+    host: "agentproto",
+    portability: "nonportable",
+    description: "A session's harness compacted its context on its own, observed from a usage drop, once per drop.",
+  }),
 ])
 
 /** Dotted payload path to a primitive. Semantics: every entry must match, exact equality, AND of all entries. */

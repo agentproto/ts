@@ -8064,6 +8064,7 @@ code { color: #9ad; }
         ...(b.notes ? { notes: b.notes as string } : {}),
       })
       await persistCheckpoint(checkpoint)
+      registry.noteCheckpointWritten(desc.id)
       json(200, {
         ok: true,
         checkpointId: checkpoint.checkpointId,

@@ -141,6 +141,11 @@ import {
   type UsageReadResult,
 } from "./usage.js"
 import { foldUsageFrameWindow, resetContextWindowForModel, type ContextSizeSource } from "./context-window.js"
+import {
+  detectNativeCompaction,
+  NATIVE_COMPACTION_GUARD_WINDOW_MS,
+  type UsageSample,
+} from "./native-compaction.js"
 import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import {
   attachParentRelayStore,
@@ -3336,6 +3341,21 @@ interface SessionRuntime {
    *  auto-compaction reads its goal without writing a second one. In memory
    *  only: never persisted, never on the descriptor. */
   lastCompactionCheckpoint?: ContextCheckpoint
+  /** The last `usage_update` reading accepted as tokens-in-context (not
+   *  dropped by `plausibleContextUsed`): the native-compaction detector
+   *  compares the next one against it. In memory only, on purpose: the
+   *  persisted `desc.contextUsed` survives a daemon restart and would make
+   *  the first frame after a resume look like a drop. */
+  lastUsageSample?: UsageSample
+  /** `Date.now()` when a checkpoint was last written for this session (the
+   *  compaction gate, a hard stop, the checkpoint route or tool). A native
+   *  compaction within `NATIVE_COMPACTION_GUARD_WINDOW_MS` of it is guarded.
+   *  In memory only. */
+  lastCheckpointAtMs?: number
+  /** True while the current turn is a compaction prompt (`/compact`,
+   *  `/compress`): its usage drop is the compaction the turn asked for, not
+   *  a native one. Set with `turnStartedAtMs`, cleared when the turn ends. */
+  compactionTurn?: boolean
   /** The autocompact controller for this session (absolute token
    *  threshold). Created lazily on the first turn boundary that reaches it. */
   autoCompact?: AutoCompactController
@@ -5711,6 +5731,11 @@ export interface SessionsRegistry {
   noteSandboxReattachUnserved(count: number): void
   /** Live + restart bookkeeping for `/health` and `daemon_health`. */
   sandboxSessionStats(): SandboxSessionStats
+  /** Record that a checkpoint was just written for a live session (the
+   *  checkpoint route, the `session_checkpoint` tool), so a native
+   *  compaction right after it is reported as guarded. No-op for an
+   *  unknown id. */
+  noteCheckpointWritten(sessionId: string): void
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
@@ -8369,7 +8394,15 @@ export function createSessionsRegistry(opts?: {
         // than let a fabricated-looking >100% occupancy figure through.
         if (typeof evt.used === "number" && evt.used > 0) {
           const used = plausibleContextUsed(rt.desc.contextSize, evt.used)
-          if (used !== undefined) rt.desc.contextUsed = used
+          if (used !== undefined) {
+            const sample: UsageSample = {
+              used,
+              ...(rt.desc.contextSize !== undefined ? { size: rt.desc.contextSize } : {}),
+            }
+            noteNativeCompaction(rt, rt.lastUsageSample, sample)
+            rt.lastUsageSample = sample
+            rt.desc.contextUsed = used
+          }
           rt.contextUsedInconsistent = used === undefined
         }
         if (evt.cost) {
@@ -9240,6 +9273,41 @@ export function createSessionsRegistry(opts?: {
     })
 
   /**
+   * Report a native compaction: the harness compacted its context on its own
+   * (Claude Code, Codex), which no `/compact` gate saw. Passive: one bus
+   * event and one transcript line per drop, nothing else changes. A drop the
+   * daemon or the operator caused is not one: a compaction turn, or any
+   * frame while the context rescue lock is held.
+   */
+  function noteNativeCompaction(rt: SessionRuntime, prev: UsageSample | undefined, next: UsageSample): void {
+    if (rt.contextRescue || rt.compactionTurn) return
+    const verdict = detectNativeCompaction(prev, next)
+    if (!verdict) return
+    const now = Date.now()
+    const sinceCheckpointMs = rt.lastCheckpointAtMs === undefined ? undefined : now - rt.lastCheckpointAtMs
+    const guarded =
+      sinceCheckpointMs !== undefined && sinceCheckpointMs >= 0 && sinceCheckpointMs <= NATIVE_COMPACTION_GUARD_WINDOW_MS
+    const checkpointNote = guarded ? `written ${Math.round(sinceCheckpointMs / 1000)}s earlier` : "none"
+    appendLine(
+      rt,
+      `[context] native compaction detected: ${verdict.usedBefore} -> ${verdict.usedAfter} tokens (checkpoint: ${checkpointNote})`,
+      "stderr",
+    )
+    const ts = new Date(now).toISOString()
+    sessionEvents?.emit({
+      type: "agentproto:context-compacted",
+      sessionId: rt.desc.id,
+      occurrenceId: `compact:${ts}`,
+      usedBefore: verdict.usedBefore,
+      usedAfter: verdict.usedAfter,
+      ...(next.size !== undefined ? { contextSize: next.size } : {}),
+      guarded,
+      ...(rt.desc.label ? { label: rt.desc.label } : {}),
+      ts,
+    })
+  }
+
+  /**
    * Fold the turn in progress into the cumulative `durationMs` / `toolCalls`
    * descriptor fields. Idempotent per turn (keyed on `turnStartedAtMs`), so
    * the exit recap and the turn's own `finally` can both call it.
@@ -9250,6 +9318,7 @@ export function createSessionsRegistry(opts?: {
       (rt.desc.durationMs ?? 0) + Math.max(0, Date.now() - rt.turnStartedAtMs)
     rt.desc.toolCalls = (rt.desc.toolCalls ?? 0) + (rt.toolCallsThisTurn ?? 0)
     rt.turnStartedAtMs = undefined
+    rt.compactionTurn = undefined
   }
 
   /**
@@ -9499,6 +9568,7 @@ export function createSessionsRegistry(opts?: {
       { contextPct: pct, baseDir: transcriptBaseDir, registry, askSource },
     )
     await persistCheckpoint(checkpoint)
+    rt.lastCheckpointAtMs = Date.now()
     const line = `[context] checkpoint ${checkpoint.checkpointId} written to ${checkpoint.checkpointPath} before ${reason}`
     appendLine(rt, line, "stdout")
     transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
@@ -10595,13 +10665,14 @@ export function createSessionsRegistry(opts?: {
       throw new Error("runAgentTurn: session has no agentSession")
     }
     const reattachTurn = turnOpts?.reattach === true
+    const compactionTurn = isCompactPrompt(message)
     // A compaction prompt discards context: refuse it where the policy
     // reserves compaction to the operator, and otherwise checkpoint BEFORE
     // it reaches the harness. This is the single choke point every prompt
     // path funnels through (sendPrompt, enqueuePrompt, the queue drain), and
     // it must run before `busy` is taken — a throw inside the turn would mark
     // the session errored. No checkpoint, no compaction.
-    if (isCompactPrompt(message)) {
+    if (compactionTurn) {
       assertCompactionAllowed(rt, message, turnOpts?.promptSource, "runAgentTurn")
       // A handoff turn is opt-in (`compactHandoffTurn`), and the rescue never
       // asks: default `/compact` writes the checkpoint from the transcript
@@ -10727,6 +10798,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.compactionTurn = compactionTurn
     rt.turnHadOutput = false
     rt.turnAssistantText = undefined
     // Clear a stale parked-with-background-tasks flag from the prior turn —
@@ -11579,6 +11651,7 @@ export function createSessionsRegistry(opts?: {
     rt.toolCallIdsThisTurn = new Set()
     rt.toolCallsThisTurn = 0
     rt.turnStartedAtMs = Date.now()
+    rt.compactionTurn = false
     rt.turnHadOutput = false
     rt.turnAssistantText = undefined
     // No longer parked — same as a prompted turn start.
@@ -15472,6 +15545,10 @@ export function createSessionsRegistry(opts?: {
           pending: Math.max(0, reattachBoot.detachedAtBoot - resolved - reattachBoot.unserved),
         },
       }
+    },
+    noteCheckpointWritten(sessionId) {
+      const rt = sessions.get(sessionId)
+      if (rt) rt.lastCheckpointAtMs = Date.now()
     },
     shutdown() {
       cancelDaemonGatePermissions("shutdown")

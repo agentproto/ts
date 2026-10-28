@@ -253,6 +253,7 @@ describe("HOST_EVENT_REGISTRATIONS", () => {
     expect(registration).toBeDefined()
     expect(registration!.event).toBe(completed.type)
     expect(HOST_EVENT_REGISTRATIONS.map(entry => entry.event)).toContain("agentproto:session-completed")
+    expect(HOST_EVENT_REGISTRATIONS.map(entry => entry.event)).toContain("agentproto:context-compacted")
   })
 
   it("cannot be mutated at runtime", () => {

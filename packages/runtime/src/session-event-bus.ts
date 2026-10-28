@@ -46,6 +46,7 @@ export type SessionEventType =
   | "session:message"
   | "session:prompt"
   | "agentproto:session-completed"
+  | "agentproto:context-compacted"
   | "agentproto:clerk-due"
   | "policy:passed"
   | "policy:failed"
@@ -349,6 +350,28 @@ export interface SessionCompletedEvent {
   /** What established the terminal outcome. */
   basis: "outcome" | "policy"
   endedAt: string
+  label?: string
+  ts: string
+}
+
+/**
+ * Emitted when a session's usage frames show its harness compacted the
+ * context on its own (Claude Code, Codex), a drop the daemon did not cause:
+ * not a `/compact` turn, not the floor rescue. A passive observation from
+ * the usage-drop detector (`native-compaction.ts`): no harness event exists
+ * for it, and nothing acts on it. One drop, one event: the next frames
+ * compare against the new, lower reading.
+ */
+export interface SessionContextCompactedEvent {
+  type: "agentproto:context-compacted"
+  sessionId: string
+  /** `compact:<ISO ts of the detection>`: one drop, one occurrence (AIP-71). */
+  occurrenceId: string
+  usedBefore: number
+  usedAfter: number
+  contextSize?: number
+  /** A checkpoint was written for the session within `NATIVE_COMPACTION_GUARD_WINDOW_MS` (120000) before the drop. */
+  guarded: boolean
   label?: string
   ts: string
 }
@@ -1302,6 +1325,7 @@ export type SessionEvent =
   | SessionExitedEvent
   | SessionOutcomeRecordedEvent
   | SessionCompletedEvent
+  | SessionContextCompactedEvent
   | SessionClerkDueEvent
   | SessionReapedEvent
   | SessionStalledEvent
