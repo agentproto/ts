@@ -130,7 +130,7 @@ import {
   revokeSessionTokens,
   sessionCredentialsFile,
 } from "./session-credentials.js"
-import { resolveIdentityDefaults } from "./identity-defaults.js"
+import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
 import { withSessionToken } from "./session-spawn.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import {
@@ -4899,10 +4899,12 @@ export async function createGateway(
       health: () => reactionRunner.health(),
       wiring: () => reactionWiring.current(),
     },
-    // Caller identity observation + `GET /identity` (ts#2165 step 5). Read per
-    // request so a `config_set` of `defaults.identity.sessionTokens` is hot.
+    // Caller identity observation + `GET /identity` (ts#2165 step 5). The
+    // mode is re-read from config at most every few seconds (the observer
+    // runs on every /mcp call), so a `config_set` of
+    // `defaults.identity.sessionTokens` is hot within that window.
     identity: {
-      mode: async () => (await resolveIdentityDefaults()).sessionTokens,
+      mode: createIdentityModeReader(),
     },
   })
 

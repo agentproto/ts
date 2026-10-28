@@ -32,6 +32,7 @@ import { continueAgentSessionFresh } from "../session-continue-fresh.js"
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import { cdContractLine } from "../agents-md.js"
+import { createIdentityModeReader } from "../identity-defaults.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
@@ -462,9 +463,24 @@ describe("C5 observation of caller identity claims", () => {
         })
         responses.push({ status: res.status, body: await res.text() })
       }
-      const idRes = await fetch(`http://127.0.0.1:${port}/identity`)
-      const json = idRes.status === 200 ? await idRes.json() : undefined
-      return { responses, identity: { status: idRes.status, json } }
+      const readIdentity = async (): Promise<{ status: number; json: any }> => {
+        const idRes = await fetch(`http://127.0.0.1:${port}/identity`)
+        return { status: idRes.status, json: idRes.status === 200 ? await idRes.json() : undefined }
+      }
+      let identity = await readIdentity()
+      if (mode === "shadow") {
+        // The observation is fire-and-forget on the request path: wait until
+        // all five requests are counted instead of assuming they already are.
+        await vi.waitFor(
+          async () => {
+            identity = await readIdentity()
+            const counted = Object.values((identity.json?.counters ?? {}) as Record<string, number>)
+            expect(counted.reduce((a, n) => a + n, 0)).toBe(5)
+          },
+          { timeout: 3_000 },
+        )
+      }
+      return { responses, identity }
     } finally {
       await http.stop()
     }
@@ -494,5 +510,186 @@ describe("C5 observation of caller identity claims", () => {
     expect(off.identity.json.mode).toBe("off")
     expect(off.responses).toEqual(shadow.responses)
     for (const r of shadow.responses) expect(r.status).toBe(200)
+  })
+})
+
+/** The credentials the store persisted (hashes only). */
+function storedCredentials(path: string): Array<{ sessionId: string }> {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { credentials?: Array<{ sessionId: string }> }
+    return parsed.credentials ?? []
+  } catch {
+    return []
+  }
+}
+
+describe("C6 a spawn that fails leaves no credential behind", () => {
+  const refusingResolver = (): AgentAdapterResolver => async () => ({
+    async startSession() {
+      throw new Error("adapter refused to start")
+    },
+    commandPreview: "mock-adapter",
+  })
+
+  it("synchronous spawn: startSession throws", async () => {
+    const creds = await credentials()
+    const path = join(tmp, "creds.json")
+    creds.attachSessionCredentialStore({ path })
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const res = await spawnAgentSession(
+        spawnDeps({ registry, resolveAgentAdapter: refusingResolver(), mode: "shadow" }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      expect(res.ok).toBe(false)
+      expect(storedCredentials(path)).toEqual([])
+    } finally {
+      registry.shutdown()
+    }
+  })
+
+  it("async worktree: the provisioning fails before the adapter starts", async () => {
+    const creds = await credentials()
+    const path = join(tmp, "creds.json")
+    creds.attachSessionCredentialStore({ path })
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const { resolver, calls } = recordingResolver()
+      const res = await spawnAgentSession(
+        spawnDeps({
+          registry,
+          resolveAgentAdapter: resolver,
+          mode: "shadow",
+          provisionWorktree: async () => {
+            throw new Error("git worktree add failed")
+          },
+          resolveWorktreeIsolation: async () => "always",
+        }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      if (!res.ok) throw new Error(`spawn failed: ${res.message}`)
+      await vi.waitFor(() => expect(registry.get(res.descriptor.id)?.status).toBe("error"), { timeout: 5_000 })
+      expect(calls).toHaveLength(0)
+      expect(storedCredentials(path)).toEqual([])
+    } finally {
+      registry.shutdown()
+    }
+  })
+
+  it("async worktree: startSession throws after the worktree was provisioned", async () => {
+    const creds = await credentials()
+    const path = join(tmp, "creds.json")
+    creds.attachSessionCredentialStore({ path })
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const res = await spawnAgentSession(
+        spawnDeps({
+          registry,
+          resolveAgentAdapter: refusingResolver(),
+          mode: "shadow",
+          provisionWorktree: async () => ({ isolated: true, cwd: tmp, branch: "wt/refused" }),
+          resolveWorktreeIsolation: async () => "always",
+        }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      if (!res.ok) throw new Error(`spawn failed: ${res.message}`)
+      await vi.waitFor(() => expect(registry.get(res.descriptor.id)?.status).toBe("error"), { timeout: 5_000 })
+      expect(storedCredentials(path)).toEqual([])
+    } finally {
+      registry.shutdown()
+    }
+  })
+
+  it("restart: a startSession that throws drops the credential minted for that attempt", async () => {
+    const creds = await credentials()
+    const path = join(tmp, "creds.json")
+    creds.attachSessionCredentialStore({ path })
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const first = recordingResolver()
+      const spawned = await spawnAgentSession(
+        spawnDeps({ registry, resolveAgentAdapter: first.resolver, mode: "shadow" }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      if (!spawned.ok) throw new Error(`spawn failed: ${spawned.message}`)
+      expect(storedCredentials(path).map(c => c.sessionId)).toEqual([spawned.descriptor.id])
+
+      await expect(
+        restartAgentSession(registry, refusingResolver(), registry.get(spawned.descriptor.id)!, {
+          forceAgentResume: true,
+          daemonMcpUrl: DAEMON_MCP_URL,
+          loadDefaultsConfig: async () => ({ identity: { sessionTokens: "shadow" } }) as never,
+        }),
+      ).rejects.toThrow(/refused to start/)
+      // Only the live session's own credential is left.
+      expect(storedCredentials(path).map(c => c.sessionId)).toEqual([spawned.descriptor.id])
+    } finally {
+      registry.shutdown()
+    }
+  })
+})
+
+describe("C7 a restart without a daemon URL still keeps a token header off the descriptor", () => {
+  it("drops a token header carried by an mcpServers override", async () => {
+    const creds = await credentials()
+    creds.attachSessionCredentialStore({ path: join(tmp, "creds.json") })
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const first = recordingResolver()
+      const spawned = await spawnAgentSession(
+        spawnDeps({ registry, resolveAgentAdapter: first.resolver, mode: "shadow" }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      if (!spawned.ok) throw new Error(`spawn failed: ${spawned.message}`)
+      const carried = `apst_${"x".repeat(43)}`
+      const second = recordingResolver()
+      const restarted = await restartAgentSession(registry, second.resolver, registry.get(spawned.descriptor.id)!, {
+        forceAgentResume: true,
+        loadDefaultsConfig: async () => ({ identity: { sessionTokens: "shadow" } }) as never,
+        overrides: {
+          mcpServers: [
+            {
+              name: "other",
+              transport: "http",
+              ref: "http://127.0.0.1:9/mcp",
+              headers: { [TOKEN_HEADER]: carried, "x-keep": "1" },
+            },
+          ],
+        },
+      })
+      const row = registry.get(restarted.desc.id)
+      expect(row?.mcpServers?.[0]?.headers?.["x-keep"]).toBe("1")
+      expect(JSON.stringify(row)).not.toContain(carried)
+      expect(JSON.stringify(second.calls[0]?.mcpServers)).not.toContain(carried)
+    } finally {
+      registry.shutdown()
+    }
+  })
+})
+
+describe("C8 the identity mode reader loads config at most once per window", () => {
+  it("reuses the mode inside the window, reloads after it, shares one in-flight load", async () => {
+    let now = 0
+    let loads = 0
+    let mode: "off" | "shadow" = "shadow"
+    const read = createIdentityModeReader(
+      async () => {
+        loads++
+        return { sessionTokens: mode }
+      },
+      1_000,
+      () => now,
+    )
+    const [a, b] = await Promise.all([read(), read()])
+    expect({ a, b, loads }).toEqual({ a: "shadow", b: "shadow", loads: 1 })
+
+    mode = "off"
+    now = 999
+    expect(await read()).toBe("shadow")
+    expect(loads).toBe(1)
+
+    now = 1_000
+    expect(await read()).toBe("off")
+    expect(loads).toBe(2)
   })
 })

@@ -104,6 +104,7 @@ import {
   withSessionToken,
 } from "./session-spawn.js"
 import { sessionTokenModeOf } from "./identity-defaults.js"
+import { revokeSessionTokens } from "./session-credentials.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
 import { recordSandboxBoot, recordSessionDetach } from "./sandbox-ledger.js"
@@ -1332,7 +1333,9 @@ export async function restartAgentSession(
             `the OLD session's identity).`,
         )
       }
-      return baseMcpServers
+      // Still token-free: an override can carry a token header, and the
+      // descriptor copy never holds one (the adapter copy gets its own below).
+      return stripSessionTokenHeaders(baseMcpServers)
     }
     // A session token is never carried forward (nor accepted from an
     // override): the descriptor copy stays token-free, and the adapter copy
@@ -1487,6 +1490,11 @@ export async function restartAgentSession(
       onActivity: () => {
         if (liveSessionId) registry.pulseActivity(liveSessionId)
       },
+    }).catch((err: unknown) => {
+      // The adapter never started (a rejected resume id is retried with a
+      // NEW id): drop the credential minted for this attempt's id.
+      revokeSessionTokens(restartedSessionId)
+      throw err
     })
     // Same "which path was used" logic the RESULT computes below (see the
     // `resumeVia` comment near the return statement) — computed here, per

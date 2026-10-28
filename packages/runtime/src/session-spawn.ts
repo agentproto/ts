@@ -350,7 +350,7 @@ import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
-import { mintSessionToken, SESSION_TOKEN_HEADER } from "./session-credentials.js"
+import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
 import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
 import type { MemoryStore } from "@agentproto/memory"
 import {
@@ -4777,15 +4777,19 @@ export async function spawnAgentSession(
     // read surfaces (`session_list full`, `GET /sessions/...`,
     // `session_capabilities`), so it never carries a session token, not even
     // one a caller supplied. The ADAPTER copy gets a freshly minted token on
-    // the daemon self-mount and goes only to `startSession`.
+    // the daemon self-mount and goes only to `startSession`. The mint is
+    // lazy: it runs right before `startSession`, so a spawn that is refused
+    // or fails while the worktree is provisioned never leaves a credential
+    // behind (one that fails AT `startSession` is revoked by the catches).
     const descriptorMcpServers = stripSessionTokenHeaders(resolvedMcpServers)
-    const adapterMcpServers = withSessionToken(resolvedMcpServers, {
-      mode: sessionTokenModeOf(configDefaults),
-      adapter: input.adapter,
-      sandbox: input.sandbox,
-      daemonMcpUrl,
-      sessionId: mintedSessionId,
-    })
+    const adapterMcpServersForStart = (): AcpMcpServer[] | undefined =>
+      withSessionToken(resolvedMcpServers, {
+        mode: sessionTokenModeOf(configDefaults),
+        adapter: input.adapter,
+        sandbox: input.sandbox,
+        daemonMcpUrl,
+        sessionId: mintedSessionId,
+      })
     // ── Async worktree provisioning ──────────────────────────────────
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
@@ -4984,6 +4988,7 @@ export async function spawnAgentSession(
             finalCwd,
           )
           if (effectiveCommandSandbox) pendingDesc.commandSandbox = effectiveCommandSandbox
+          const adapterMcpServers = adapterMcpServersForStart()
           const agentSession = await resolved!.startSession({
             cwd: finalCwd,
             ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -5053,6 +5058,8 @@ export async function spawnAgentSession(
             ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
           })
         } catch (err) {
+          // The row never went live: drop the credential minted for it.
+          revokeSessionTokens(mintedSessionId)
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
             message: `agent_start: spawn failed — ${
@@ -5404,6 +5411,7 @@ export async function spawnAgentSession(
         input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
         cwd,
       )
+      const adapterMcpServers = adapterMcpServersForStart()
       const localStartArgs = {
         cwd,
         ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
@@ -5858,6 +5866,9 @@ export async function spawnAgentSession(
       registry.forget(sandboxPendingId)
       sandboxPendingId = undefined
     }
+    // A spawn that failed before its row went live must not leave the
+    // credential minted for it (a live row keeps its own).
+    if (!registry.get(mintedSessionId)) revokeSessionTokens(mintedSessionId)
     return finish({
       ok: false,
       code: "agent_spawn_failed",

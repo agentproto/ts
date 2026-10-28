@@ -26,8 +26,7 @@ export interface ResolvedIdentityDefaults {
 /** `defaults.identity.sessionTokens` out of an already-loaded `defaults`
  *  block; anything but `"off"` / `"shadow"` falls back to the default. */
 export function sessionTokenModeOf(defaults: SpawnDefaultsConfig | undefined): SessionTokenMode {
-  const identity = (defaults as { identity?: { sessionTokens?: unknown } } | undefined)?.identity
-  const mode = identity?.sessionTokens
+  const mode = defaults?.identity?.sessionTokens
   return mode === "off" || mode === "shadow" ? mode : DEFAULT_SESSION_TOKEN_MODE
 }
 
@@ -38,6 +37,38 @@ export async function resolveIdentityDefaults(
     return { sessionTokens: sessionTokenModeOf((await loadCfg()).defaults) }
   } catch {
     return { sessionTokens: DEFAULT_SESSION_TOKEN_MODE }
+  }
+}
+
+/** How long the per-request observer reuses a resolved mode. */
+export const IDENTITY_MODE_CACHE_MS = 5_000
+
+/**
+ * The mode reader for the per-request observer. `observeCallerIdentity`
+ * runs on every `/mcp` call, and `resolveIdentityDefaults` loads and
+ * validates `config.json` each time, so the answer is reused for
+ * {@link IDENTITY_MODE_CACHE_MS}: a `config_set` of the knob applies within
+ * that window instead of on the very next call. Concurrent callers share one
+ * in-flight load.
+ */
+export function createIdentityModeReader(
+  load: () => Promise<ResolvedIdentityDefaults> = resolveIdentityDefaults,
+  ttlMs: number = IDENTITY_MODE_CACHE_MS,
+  now: () => number = Date.now,
+): () => Promise<SessionTokenMode> {
+  let cached: { mode: SessionTokenMode; at: number } | undefined
+  let inflight: Promise<SessionTokenMode> | undefined
+  return () => {
+    if (cached && now() - cached.at < ttlMs) return Promise.resolve(cached.mode)
+    inflight ??= load()
+      .then(r => {
+        cached = { mode: r.sessionTokens, at: now() }
+        return r.sessionTokens
+      })
+      .finally(() => {
+        inflight = undefined
+      })
+    return inflight
   }
 }
 

@@ -4913,6 +4913,9 @@ export async function startHttpServer(
         }
 
         // GET /identity - caller identity observation counters (shadow mode).
+        // Read-only and open like `/reactions` and `/routines` above: it
+        // serves counts and a start time, never a token, a hash or a session
+        // id. Mutating routes keep their own gate.
         if (opts.identity && path === "/identity" && req.method === "GET") {
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
