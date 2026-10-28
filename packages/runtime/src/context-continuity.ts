@@ -147,6 +147,15 @@ export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
   label: "ask",
 }
 
+/** A session with no resolved policy is checkpointed, and continued fresh,
+ *  under the defaults (the same way its pre-compaction checkpoint is). */
+export function withContextPolicy<D extends { contextContinuity?: ResolvedContextContinuityPolicy }>(
+  desc: D,
+): { source: D; policy: ResolvedContextContinuityPolicy } {
+  const policy = desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
+  return { source: desc.contextContinuity ? desc : { ...desc, contextContinuity: policy }, policy }
+}
+
 export interface ContextContinuityStatus {
   sessionId: string
   contextSize?: number

@@ -175,6 +175,7 @@ import {
   isContextContinuityHardStopped,
   type ContextContinuityPolicy,
   type ResolvedContextContinuityPolicy,
+  withContextPolicy,
 } from "./context-continuity.js"
 import {
   buildContextCheckpoint,
@@ -9803,7 +9804,7 @@ export function createSessionsRegistry(opts?: {
       const result = await continueAgentSessionFresh(
         { registry, resolveAgentAdapter },
         // A session with no policy is continued under the defaults, like its checkpoint.
-        rt.desc.contextContinuity ? rt.desc : { ...rt.desc, contextContinuity: CONTEXT_CONTINUITY_DEFAULTS },
+        withContextPolicy(rt.desc).source,
         // The session is at its context limit: don't spend another turn on
         // a handoff question, extract from the transcript instead.
         { askSource: false, baseDir: transcriptBaseDir },

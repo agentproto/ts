@@ -19,6 +19,9 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createMcpServer } from "@agentproto/mcp-server"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import {
   CONTEXT_CONTINUITY_DEFAULTS,
@@ -34,6 +37,7 @@ import {
   type AgentStreamEvent,
   type SessionsRegistry,
 } from "../sessions.js"
+import { registerSessionTools } from "../session-tools.js"
 import { sessionTranscriptDir, setDefaultSessionsBaseDir } from "../transcript-writer.js"
 
 interface Harness extends AgentSessionLike {
@@ -354,5 +358,54 @@ describe("checkpoint routes without a policy", () => {
     } finally {
       await h.stop()
     }
+  })
+})
+
+describe("F5: the MCP twins of the checkpoint routes work without a policy", () => {
+  let tmp: string
+  let reg: SessionsRegistry
+  let client: Client
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), "ctx-floor-mcp-"))
+    const fresh: Harness[] = []
+    reg = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const server = new McpServer({ name: "t", version: "0" })
+    registerSessionTools(server, { registry: reg, workspace: tmp, resolveAgentAdapter: freshAdapter(fresh) })
+    const [c, s] = InMemoryTransport.createLinkedPair()
+    await server.connect(s)
+    client = new Client({ name: "t-client", version: "0" })
+    await client.connect(c)
+  })
+  afterEach(async () => {
+    await client.close()
+    reg.shutdown()
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+  })
+
+  const textOf = (r: unknown): string =>
+    ((r as { content?: Array<{ text?: string }> }).content ?? []).map(c => c.text ?? "").join("")
+
+  const spawnBare = (): string =>
+    reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: tmp,
+      agentSession: harness({ frames: [50], size: 100 }),
+      adapterSlug: "fake",
+    }).id
+
+  it("session_checkpoint writes a checkpoint for a session with no policy", async () => {
+    const id = spawnBare()
+    expect(reg.get(id)?.contextContinuity).toBeUndefined()
+    const result = await client.callTool({ name: "session_checkpoint", arguments: { sessionId: id, askSource: false } })
+    expect((result as { isError?: boolean }).isError).toBeFalsy()
+    expect(JSON.parse(textOf(result)).checkpointId).toMatch(/^ckpt_/)
+  })
+
+  it("session_continue_fresh continues a session with no policy", async () => {
+    const id = spawnBare()
+    const result = await client.callTool({ name: "session_continue_fresh", arguments: { sessionId: id, askSource: false } })
+    expect((result as { isError?: boolean }).isError, textOf(result)).toBeFalsy()
+    expect(reg.get(id)?.continuedTo).toBeDefined()
   })
 })

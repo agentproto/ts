@@ -272,7 +272,7 @@ import {
   persistCheckpoint,
   renderCheckpointPrompt,
 } from "./context-checkpoint.js"
-import { CONTEXT_CONTINUITY_DEFAULTS, computeContextPct } from "./context-continuity.js"
+import { computeContextPct, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
@@ -6236,17 +6236,6 @@ function checkpointableSession(
     return { status: 400, error: "not_agent_session", message: `session "${desc.id}" is not an agent-cli session` }
   }
   return undefined
-}
-
-/** The descriptor a checkpoint is built from, and its policy: a session with
- *  no policy is checkpointed under the defaults, the same way the runtime's
- *  own pre-compaction checkpoint does. */
-function withContextPolicy(desc: SessionDescriptor): {
-  source: SessionDescriptor
-  policy: NonNullable<SessionDescriptor["contextContinuity"]>
-} {
-  const policy = desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS
-  return { source: desc.contextContinuity ? desc : { ...desc, contextContinuity: policy }, policy }
 }
 
 /** Parse the `orchestrator` body field on `POST /sessions/agent` — the

@@ -90,6 +90,7 @@ import { buildSessionReportFromRegistry } from "./session-report-service.js"
 import {
   computeContextContinuityStatus,
   computeContextPct,
+  withContextPolicy,
 } from "./context-continuity.js"
 import { buildSessionCapabilities } from "./session-capabilities.js"
 import type { McpObservationStore } from "./mcp-session-observer.js"
@@ -2707,22 +2708,10 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      const policy = desc.contextContinuity
-      if (!policy) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                error: `session "${desc.id}" has no resolved context continuity policy`,
-              }),
-            },
-          ],
-          isError: true,
-        }
-      }
+      // No resolved policy: checkpointed under the defaults, as the HTTP route does.
+      const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
-      const checkpoint = await buildContextCheckpoint(desc, {
+      const checkpoint = await buildContextCheckpoint(source, {
         contextPct: pct,
         registry,
         sources: checkpointSources,
@@ -2901,7 +2890,7 @@ export function registerSessionTools(
           : {}),
       }
       try {
-        const result = await continueAgentSessionFresh(spawnDeps, desc, {
+        const result = await continueAgentSessionFresh(spawnDeps, withContextPolicy(desc).source, {
           ...(input.harness !== undefined ? { harness: input.harness } : {}),
           ...(input.adapter !== undefined ? { adapter: input.adapter } : {}),
           ...(input.model !== undefined ? { model: input.model } : {}),
