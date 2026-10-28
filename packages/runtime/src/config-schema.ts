@@ -1330,7 +1330,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Peer workspace binding",
-    help: "\"slug\" (default): peers by recorded workspace slug; \"verified\": both cwds must resolve to the same registered workspace. Takes effect on the next call.",
+    help: "\"slug\" (default): peers by recorded workspace slug; \"verified\": both cwds must resolve to the same registered workspace, whatever slug each session recorded (so it can also link pairs the slug rule does not). Takes effect on the next call.",
     default: "slug",
   },
   {
