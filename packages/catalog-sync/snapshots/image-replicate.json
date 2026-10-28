@@ -432,7 +432,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2194932,
+      "run_count": 2194971,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2a",
       "visibility": "public",
       "weights_url": null
@@ -865,7 +865,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 392650,
+      "run_count": 392675,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2a-turbo",
       "visibility": "public",
       "weights_url": null
@@ -1182,7 +1182,7 @@
       "owner": "minimax",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3270076,
+      "run_count": 3270711,
       "url": "https://replicate.com/minimax/image-01",
       "visibility": "public",
       "weights_url": null
@@ -1526,7 +1526,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": "https://arxiv.org/pdf/2504.11346",
-      "run_count": 3411749,
+      "run_count": 3411759,
       "url": "https://replicate.com/bytedance/seedream-3",
       "visibility": "public",
       "weights_url": null
@@ -1836,7 +1836,7 @@
       "owner": "luma",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3330360,
+      "run_count": 3330851,
       "url": "https://replicate.com/luma/photon",
       "visibility": "public",
       "weights_url": null
@@ -2184,7 +2184,7 @@
       "owner": "luma",
       "is_official": true,
       "paper_url": null,
-      "run_count": 2189318,
+      "run_count": 2238117,
       "url": "https://replicate.com/luma/photon-flash",
       "visibility": "public",
       "weights_url": null
@@ -2796,7 +2796,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 6021191,
+      "run_count": 6024808,
       "url": "https://replicate.com/google/imagen-4-fast",
       "visibility": "public",
       "weights_url": null
@@ -3081,7 +3081,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 1833519,
+      "run_count": 1835098,
       "url": "https://replicate.com/google/imagen-4-ultra",
       "visibility": "public",
       "weights_url": null
@@ -3408,7 +3408,7 @@
       "owner": "nvidia",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2503.09641",
-      "run_count": 1133531,
+      "run_count": 1133554,
       "url": "https://replicate.com/nvidia/sana-sprint-1.6b",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers"
@@ -4063,7 +4063,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 8542753,
+      "run_count": 8544338,
       "url": "https://replicate.com/prunaai/hidream-l1-fast",
       "visibility": "public",
       "weights_url": "https://huggingface.co/HiDream-ai/HiDream-I1-Fast"
@@ -4378,7 +4378,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": "https://bfl.ai/announcements/24-08-01-bfl",
-      "run_count": 45507722,
+      "run_count": 45538157,
       "url": "https://replicate.com/prunaai/flux-fast",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -4698,7 +4698,7 @@
       "owner": "prunaai",
       "is_official": false,
       "paper_url": null,
-      "run_count": 7378,
+      "run_count": 7380,
       "url": "https://replicate.com/prunaai/sdxl-lightning",
       "visibility": "public",
       "weights_url": null
@@ -5244,7 +5244,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 2383600,
+      "run_count": 2383897,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-quality",
       "visibility": "public",
       "weights_url": null
@@ -5790,7 +5790,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 502700,
+      "run_count": 502932,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-balanced",
       "visibility": "public",
       "weights_url": null
@@ -6258,7 +6258,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 6259826,
+      "run_count": 6268020,
       "url": "https://replicate.com/black-forest-labs/flux-dev-lora",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -6597,7 +6597,7 @@
       "owner": "bria",
       "is_official": true,
       "paper_url": "https://f4e04.share-eu1.hsforms.com/2nS45z_zIQu-3YKtbRbrKPQ?utm_campaign=125033698-3.2%20T2I%20Release&utm_medium=email&_hsmi=112237510&utm_content=112237510&utm_source=hs_automation",
-      "run_count": 173071,
+      "run_count": 173118,
       "url": "https://replicate.com/bria/image-3.2",
       "visibility": "public",
       "weights_url": "https://huggingface.co/briaai/BRIA-3.2"
@@ -6881,7 +6881,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 8237632,
+      "run_count": 8240239,
       "url": "https://replicate.com/google/imagen-4",
       "visibility": "public",
       "weights_url": null
@@ -7226,7 +7226,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 54322549,
+      "run_count": 54347316,
       "url": "https://replicate.com/black-forest-labs/flux-kontext-pro",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs"
@@ -7571,7 +7571,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 12662333,
+      "run_count": 12666409,
       "url": "https://replicate.com/black-forest-labs/flux-kontext-max",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs"
@@ -7902,7 +7902,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 1281449,
+      "run_count": 1281692,
       "url": "https://replicate.com/prunaai/wan-2.2-image",
       "visibility": "public",
       "weights_url": null
@@ -8229,7 +8229,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 122435221,
+      "run_count": 122658780,
       "url": "https://replicate.com/google/nano-banana",
       "visibility": "public",
       "weights_url": null
@@ -8507,7 +8507,7 @@
       "owner": "wan-video",
       "is_official": true,
       "paper_url": null,
-      "run_count": 252392,
+      "run_count": 254306,
       "url": "https://replicate.com/wan-video/wan-2.7-image",
       "visibility": "public",
       "weights_url": null
@@ -8772,7 +8772,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": "https://deepmind.google/technologies/imagen-3/",
-      "run_count": 2174330,
+      "run_count": 2174457,
       "url": "https://replicate.com/google/imagen-3",
       "visibility": "public",
       "weights_url": null
@@ -9037,7 +9037,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": "https://deepmind.google/technologies/imagen-3/",
-      "run_count": 639342,
+      "run_count": 639596,
       "url": "https://replicate.com/google/imagen-3-fast",
       "visibility": "public",
       "weights_url": null
@@ -9424,7 +9424,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 35746266,
+      "run_count": 35922990,
       "url": "https://replicate.com/black-forest-labs/flux-2-klein-4b",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B"
@@ -9756,7 +9756,7 @@
       "owner": "bria",
       "is_official": true,
       "paper_url": null,
-      "run_count": 15812,
+      "run_count": 15820,
       "url": "https://replicate.com/bria/fibo",
       "visibility": "public",
       "weights_url": "https://huggingface.co/briaai/FIBO"
@@ -10107,7 +10107,7 @@
       "owner": "tencent",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2509.23951",
-      "run_count": 101434,
+      "run_count": 101519,
       "url": "https://replicate.com/tencent/hunyuan-image-3",
       "visibility": "public",
       "weights_url": "https://huggingface.co/tencent/HunyuanImage-3.0"
@@ -10416,7 +10416,7 @@
       "owner": "krea",
       "is_official": true,
       "paper_url": null,
-      "run_count": 9704,
+      "run_count": 11572,
       "url": "https://replicate.com/krea/krea-3",
       "visibility": "public",
       "weights_url": null
@@ -10803,7 +10803,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 40024791,
+      "run_count": 40044034,
       "url": "https://replicate.com/bytedance/seedream-4",
       "visibility": "public",
       "weights_url": null
@@ -11156,7 +11156,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 58652153,
+      "run_count": 58777373,
       "url": "https://replicate.com/prunaai/z-image-turbo",
       "visibility": "public",
       "weights_url": null
@@ -11491,7 +11491,7 @@
       "owner": "leonardoai",
       "is_official": true,
       "paper_url": "https://leonardo.ai/news/lucid-origin-ai-image-model/",
-      "run_count": 299873,
+      "run_count": 300018,
       "url": "https://replicate.com/leonardoai/lucid-origin",
       "visibility": "public",
       "weights_url": null
@@ -11776,7 +11776,7 @@
       "owner": "wan-video",
       "is_official": true,
       "paper_url": null,
-      "run_count": 498477,
+      "run_count": 504773,
       "url": "https://replicate.com/wan-video/wan-2.7-image-pro",
       "visibility": "public",
       "weights_url": null
@@ -12104,7 +12104,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 24671,
+      "run_count": 24743,
       "url": "https://replicate.com/recraft-ai/recraft-v4-pro",
       "visibility": "public",
       "weights_url": null
@@ -12409,7 +12409,7 @@
       "owner": "xai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 6546925,
+      "run_count": 6599612,
       "url": "https://replicate.com/xai/grok-imagine-image",
       "visibility": "public",
       "weights_url": null
@@ -12783,7 +12783,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 3585957,
+      "run_count": 3590778,
       "url": "https://replicate.com/bytedance/seedream-5-lite",
       "visibility": "public",
       "weights_url": null
@@ -13166,7 +13166,7 @@
       "owner": "openai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 33091001,
+      "run_count": 33327253,
       "url": "https://replicate.com/openai/gpt-image-2",
       "visibility": "public",
       "weights_url": null
@@ -13494,7 +13494,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 61241,
+      "run_count": 61691,
       "url": "https://replicate.com/recraft-ai/recraft-v4-svg",
       "visibility": "public",
       "weights_url": null
@@ -13914,7 +13914,7 @@
       "owner": "sourceful",
       "is_official": true,
       "paper_url": null,
-      "run_count": 26390,
+      "run_count": 26406,
       "url": "https://replicate.com/sourceful/riverflow-2.0-pro",
       "visibility": "public",
       "weights_url": null
@@ -14241,7 +14241,7 @@
       "owner": "bytedance",
       "is_official": true,
       "paper_url": null,
-      "run_count": 37336783,
+      "run_count": 37363727,
       "url": "https://replicate.com/bytedance/seedream-4.5",
       "visibility": "public",
       "weights_url": null
@@ -14565,8 +14565,304 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 441,
+      "run_count": 485,
       "url": "https://replicate.com/recraft-ai/recraft-v4-styles-pro-svg",
+      "visibility": "public",
+      "weights_url": null
+    },
+    {
+      "cover_image_url": "https://replicate.delivery/xezq/JdKEoNB9btp1AZbUurtT8XbenPfH2MS6hFFT3eUTbVJffIW6C/tmph0nppko8.png",
+      "created_at": "2026-09-30T17:42:39.558010Z",
+      "default_example": {
+        "completed_at": "2026-09-30T19:16:15.791422Z",
+        "created_at": "2026-09-30T19:16:01.004000Z",
+        "data_removed": false,
+        "error": null,
+        "id": "ns98f5e5dhrmr0d0yeza3rmj5g",
+        "input": {
+          "size": "source",
+          "prompt": "an elephant swimming",
+          "quality": "medium",
+          "num_images": 1
+        },
+        "is_free_trial_prediction": false,
+        "logs": "Using seed: 1212653424\nGenerating...\nGeneration took 13.75 seconds\nDownloading 6012436 bytes\nDownloaded 5.73MB in 0.40sec",
+        "metrics": {
+          "model_variant": "medium",
+          "image_output_count": 1,
+          "predict_time": 14.752008591,
+          "total_time": 14.78742291
+        },
+        "model": "ideogram-ai/ideogram-4-5",
+        "output": [
+          "https://replicate.delivery/xezq/JdKEoNB9btp1AZbUurtT8XbenPfH2MS6hFFT3eUTbVJffIW6C/tmph0nppko8.png"
+        ],
+        "source": "web",
+        "started_at": "2026-09-30T19:16:01.039414Z",
+        "status": "succeeded",
+        "urls": {
+          "stream": "https://stream.replicate.com/v1/files/jbxs-rena34vdmvlkwqqazbdtbtm3wrn7hcqbpxinnnu2pirvxvem7exa",
+          "get": "https://api.replicate.com/v1/predictions/ns98f5e5dhrmr0d0yeza3rmj5g",
+          "cancel": "https://api.replicate.com/v1/predictions/ns98f5e5dhrmr0d0yeza3rmj5g/cancel"
+        },
+        "version": "hidden"
+      },
+      "description": "Generate and edit images with Ideogram 4.5, the latest for precise image generation.",
+      "github_url": null,
+      "latest_version": {
+        "id": "55db50149a984b49171ea031aa5c7b34b3ece5fb35a20e017856347edc321bf1",
+        "created_at": "2026-09-30T19:12:47.717275Z",
+        "cog_version": "0.23.0",
+        "openapi_schema": {
+          "info": {
+            "title": "Cog",
+            "version": "0.23.0"
+          },
+          "paths": {},
+          "openapi": "3.0.2",
+          "components": {
+            "schemas": {
+              "size": {
+                "enum": [
+                  "source",
+                  "1024x1024",
+                  "1280x896",
+                  "896x1280",
+                  "1344x768",
+                  "768x1344",
+                  "1536x640",
+                  "640x1536"
+                ],
+                "type": "string",
+                "title": "size",
+                "description": "An enumeration."
+              },
+              "Input": {
+                "type": "object",
+                "title": "Input",
+                "required": [
+                  "prompt"
+                ],
+                "properties": {
+                  "mask": {
+                    "type": "string",
+                    "title": "Mask",
+                    "format": "uri",
+                    "default": null,
+                    "x-order": 2,
+                    "nullable": true,
+                    "description": "Optional black and white mask for editing. Black pixels are edited, white pixels are preserved. Only used when at least one source image is provided. When a mask is used, the output matches the source size and the size input is ignored."
+                  },
+                  "seed": {
+                    "type": "integer",
+                    "title": "Seed",
+                    "default": null,
+                    "maximum": 2147483647,
+                    "x-order": 6,
+                    "nullable": true,
+                    "description": "Random seed. Set for reproducible generation."
+                  },
+                  "size": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/size"
+                      }
+                    ],
+                    "default": "source",
+                    "x-order": 3,
+                    "description": "Output size. 'source' preserves the source image proportions. Ignored when a mask is provided."
+                  },
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": "Images",
+                    "default": null,
+                    "x-order": 1,
+                    "nullable": true,
+                    "description": "Up to 5 source images to edit. Omit for text-to-image generation. When a mask is provided, the first image is edited and the rest are used as references."
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "title": "Prompt",
+                    "x-order": 0,
+                    "description": "Text prompt. Describe the image to generate, or the edit to apply to the source images."
+                  },
+                  "quality": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/quality"
+                      }
+                    ],
+                    "default": "medium",
+                    "x-order": 4,
+                    "description": "Edit quality. Higher quality is slower and more expensive."
+                  },
+                  "num_images": {
+                    "type": "integer",
+                    "title": "Num Images",
+                    "default": 1,
+                    "maximum": 8,
+                    "minimum": 1,
+                    "x-order": 5,
+                    "description": "Number of images to generate."
+                  }
+                }
+              },
+              "Output": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "title": "Output"
+              },
+              "Status": {
+                "enum": [
+                  "starting",
+                  "processing",
+                  "succeeded",
+                  "canceled",
+                  "failed"
+                ],
+                "type": "string",
+                "title": "Status",
+                "description": "An enumeration."
+              },
+              "quality": {
+                "enum": [
+                  "very_low",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string",
+                "title": "quality",
+                "description": "An enumeration."
+              },
+              "ValidationError": {
+                "type": "object",
+                "title": "ValidationError",
+                "required": [
+                  "loc",
+                  "msg",
+                  "type"
+                ],
+                "properties": {
+                  "loc": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
+                    "title": "Location"
+                  },
+                  "msg": {
+                    "type": "string",
+                    "title": "Message"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Error Type"
+                  }
+                }
+              },
+              "PredictionRequest": {
+                "type": "object",
+                "title": "PredictionRequest",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  }
+                }
+              },
+              "PredictionResponse": {
+                "type": "object",
+                "title": "PredictionResponse",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "logs": {
+                    "type": "string",
+                    "title": "Logs"
+                  },
+                  "error": {
+                    "type": "string",
+                    "title": "Error"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  },
+                  "output": {
+                    "$ref": "#/components/schemas/Output"
+                  },
+                  "status": {
+                    "type": "string",
+                    "title": "Status"
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "title": "Metrics"
+                  },
+                  "version": {
+                    "type": "string",
+                    "title": "Version"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "title": "Created At",
+                    "format": "date-time"
+                  },
+                  "started_at": {
+                    "type": "string",
+                    "title": "Started At",
+                    "format": "date-time"
+                  },
+                  "completed_at": {
+                    "type": "string",
+                    "title": "Completed At",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "HTTPValidationError": {
+                "type": "object",
+                "title": "HTTPValidationError",
+                "properties": {
+                  "detail": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ValidationError"
+                    },
+                    "title": "Detail"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "license_url": null,
+      "name": "ideogram-4-5",
+      "owner": "ideogram-ai",
+      "is_official": true,
+      "paper_url": null,
+      "run_count": 4080,
+      "url": "https://replicate.com/ideogram-ai/ideogram-4-5",
       "visibility": "public",
       "weights_url": null
     },
@@ -14893,7 +15189,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://www.recraft.ai/blog/introducing-recraft-v4-design-taste-meets-image-generation",
-      "run_count": 11622,
+      "run_count": 11661,
       "url": "https://replicate.com/recraft-ai/recraft-v4-pro-svg",
       "visibility": "public",
       "weights_url": null
@@ -15204,7 +15500,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 36925578,
+      "run_count": 37001488,
       "url": "https://replicate.com/google/nano-banana-pro",
       "visibility": "public",
       "weights_url": null
@@ -15504,7 +15800,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 334391,
+      "run_count": 335489,
       "url": "https://replicate.com/prunaai/p-image-lora",
       "visibility": "public",
       "weights_url": null
@@ -15751,7 +16047,7 @@
       "owner": "quiverai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 267,
+      "run_count": 276,
       "url": "https://replicate.com/quiverai/arrow-1.1-max",
       "visibility": "public",
       "weights_url": null
@@ -15998,8 +16294,634 @@
       "owner": "quiverai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 230,
+      "run_count": 241,
       "url": "https://replicate.com/quiverai/arrow-1.1",
+      "visibility": "public",
+      "weights_url": null
+    },
+    {
+      "cover_image_url": "https://tjzk.replicate.delivery/models_models_featured_image/77e221e4-ddf5-4228-9ce1-d56283159590/tmpe7q51sey.webp",
+      "created_at": "2026-10-01T14:59:45.060994Z",
+      "default_example": {
+        "completed_at": "2026-10-01T17:46:55.065456Z",
+        "created_at": "2026-10-01T17:46:18.053000Z",
+        "data_removed": false,
+        "error": null,
+        "id": "xksk0xqy8nrmr0d0z29aqr5p7c",
+        "input": {
+          "images": [],
+          "prompt": "Extreme macro wildlife photograph of an unidentified marine creature, filling the frame with its pale ivory, finely textured skin and vivid red-orange mantle. One enormous golden-amber eye dominates the composition, featuring a razor-thin horizontal black pupil, intricate radial striations, glossy reflections, and visible moisture along the cornea. Capture at an intimate eye-level angle with a true macro lens, extremely shallow depth of field, tack-sharp focus on the eye and surrounding skin, and a gradual falloff into soft blur across the creature’s body. Use diffused natural underwater light with subtle specular highlights, rich micro-contrast, realistic organic texture, and deep cinematic shadows. High-end analog wildlife photography aesthetic, shot on 120 medium-format film, fine but visible film grain, gentle halation around highlights, natural color rendition, soft tonal rolloff, restrained saturation, detailed shadow retention, slight lens character, and museum-quality darkroom print finish. No text, no illustration, no CGI, no artificial sharpening.",
+          "grounding": true,
+          "resolution": "1k",
+          "aspect_ratio": "4:3",
+          "output_format": "webp",
+          "output_quality": 80,
+          "safety_tolerance": 2
+        },
+        "is_free_trial_prediction": false,
+        "logs": "Running prediction...\nGenerating image...\nCurrent status: {'id': '3b3972f8-6866-4a28-830a-8e5c0857cd4f', 'status': 'Reasoning', 'result': None, 'progress': None, 'details': None, 'preview': None}\nCurrent status: {'id': '3b3972f8-6866-4a28-830a-8e5c0857cd4f', 'status': 'Reasoning', 'result': None, 'progress': None, 'details': None, 'preview': None}\nCurrent status: {'id': '3b3972f8-6866-4a28-830a-8e5c0857cd4f', 'status': 'Generating', 'result': None, 'progress': None, 'details': None, 'preview': None}\nGenerated image in 36.2sec\nDownloaded and converted image in 0.67sec",
+        "metrics": {
+          "resolution_target": "1k",
+          "image_output_count": 1,
+          "predict_time": 36.986166919,
+          "total_time": 37.012456559
+        },
+        "model": "black-forest-labs/flux-3-image",
+        "output": "https://replicate.delivery/xezq/hgvfreHpsfSFfS9ExWE4feaMKjPRZ5WR6wlsi3f3Tb0LHdipLA/tmpu7xuzcqy.webp",
+        "source": "web",
+        "started_at": "2026-10-01T17:46:18.079289Z",
+        "status": "succeeded",
+        "urls": {
+          "stream": "https://stream.replicate.com/v1/files/jbxs-aighyoiu2avsnbc5byzk6v6ex4idqfs63ht4waokmyhezp4es7lq",
+          "get": "https://api.replicate.com/v1/predictions/xksk0xqy8nrmr0d0z29aqr5p7c",
+          "cancel": "https://api.replicate.com/v1/predictions/xksk0xqy8nrmr0d0z29aqr5p7c/cancel"
+        },
+        "version": "hidden"
+      },
+      "description": "FLUX 3 is Black Forest Labs' text-to-image and image-editing model. Generate images from a prompt, or edit with up to 10 reference images.",
+      "github_url": null,
+      "latest_version": {
+        "id": "ec84b8fbf178998c3d5a2c3a32b4fdd850caac711a5145a1ede36e307ade7ca9",
+        "created_at": "2026-10-01T15:46:16.868681Z",
+        "cog_version": "0.23.0",
+        "openapi_schema": {
+          "info": {
+            "title": "Cog",
+            "version": "0.23.0"
+          },
+          "paths": {},
+          "openapi": "3.0.2",
+          "components": {
+            "schemas": {
+              "Input": {
+                "type": "object",
+                "title": "Input",
+                "required": [
+                  "prompt"
+                ],
+                "properties": {
+                  "images": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": "Images",
+                    "default": [],
+                    "x-order": 1,
+                    "description": "Up to 10 reference images the prompt edits or draws from. When present, the request runs as an edit and the first image drives 'auto' aspect ratio. Each image must be at least 256x256 px and at most 16 MP. Must be jpeg, png, gif, or webp."
+                  },
+                  "prompt": {
+                    "type": "string",
+                    "title": "Prompt",
+                    "x-order": 0,
+                    "description": "Text description of the image to generate, or of the edit to apply to the reference images."
+                  },
+                  "grounding": {
+                    "type": "boolean",
+                    "title": "Grounding",
+                    "default": true,
+                    "x-order": 4,
+                    "description": "Let the model research the prompt with web search and image search before generating."
+                  },
+                  "resolution": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/resolution"
+                      }
+                    ],
+                    "default": "1k",
+                    "x-order": 3,
+                    "description": "Resolution of the output image. Input images are resized to the closest bin, up to 2k."
+                  },
+                  "aspect_ratio": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/aspect_ratio"
+                      }
+                    ],
+                    "default": "auto",
+                    "x-order": 2,
+                    "description": "Aspect ratio of the generated image. 'auto' picks the ratio from the prompt and the first reference image."
+                  },
+                  "output_format": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/output_format"
+                      }
+                    ],
+                    "default": "webp",
+                    "x-order": 6,
+                    "description": "Format of the output images."
+                  },
+                  "output_quality": {
+                    "type": "integer",
+                    "title": "Output Quality",
+                    "default": 80,
+                    "maximum": 100,
+                    "minimum": 0,
+                    "x-order": 7,
+                    "description": "Quality when saving the output images, from 0 to 100. 100 is best quality, 0 is lowest quality. Not relevant for .png outputs"
+                  },
+                  "safety_tolerance": {
+                    "type": "integer",
+                    "title": "Safety Tolerance",
+                    "default": 2,
+                    "maximum": 4,
+                    "minimum": 0,
+                    "x-order": 5,
+                    "description": "Moderation tolerance for inputs and outputs. 0 is the strictest, 4 is the most permissive."
+                  }
+                }
+              },
+              "Output": {
+                "type": "string",
+                "title": "Output",
+                "format": "uri"
+              },
+              "Status": {
+                "enum": [
+                  "starting",
+                  "processing",
+                  "succeeded",
+                  "canceled",
+                  "failed"
+                ],
+                "type": "string",
+                "title": "Status",
+                "description": "An enumeration."
+              },
+              "resolution": {
+                "enum": [
+                  "768sq",
+                  "1k",
+                  "1.5k",
+                  "2k",
+                  "4k"
+                ],
+                "type": "string",
+                "title": "resolution",
+                "description": "An enumeration."
+              },
+              "aspect_ratio": {
+                "enum": [
+                  "auto",
+                  "21:9",
+                  "2:1",
+                  "16:9",
+                  "3:2",
+                  "7:5",
+                  "4:3",
+                  "5:4",
+                  "1:1",
+                  "4:5",
+                  "3:4",
+                  "5:7",
+                  "2:3",
+                  "9:16",
+                  "1:2",
+                  "9:21"
+                ],
+                "type": "string",
+                "title": "aspect_ratio",
+                "description": "An enumeration."
+              },
+              "output_format": {
+                "enum": [
+                  "webp",
+                  "jpg",
+                  "png"
+                ],
+                "type": "string",
+                "title": "output_format",
+                "description": "An enumeration."
+              },
+              "ValidationError": {
+                "type": "object",
+                "title": "ValidationError",
+                "required": [
+                  "loc",
+                  "msg",
+                  "type"
+                ],
+                "properties": {
+                  "loc": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
+                    "title": "Location"
+                  },
+                  "msg": {
+                    "type": "string",
+                    "title": "Message"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Error Type"
+                  }
+                }
+              },
+              "PredictionRequest": {
+                "type": "object",
+                "title": "PredictionRequest",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  }
+                }
+              },
+              "PredictionResponse": {
+                "type": "object",
+                "title": "PredictionResponse",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "logs": {
+                    "type": "string",
+                    "title": "Logs"
+                  },
+                  "error": {
+                    "type": "string",
+                    "title": "Error"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  },
+                  "output": {
+                    "$ref": "#/components/schemas/Output"
+                  },
+                  "status": {
+                    "type": "string",
+                    "title": "Status"
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "title": "Metrics"
+                  },
+                  "version": {
+                    "type": "string",
+                    "title": "Version"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "title": "Created At",
+                    "format": "date-time"
+                  },
+                  "started_at": {
+                    "type": "string",
+                    "title": "Started At",
+                    "format": "date-time"
+                  },
+                  "completed_at": {
+                    "type": "string",
+                    "title": "Completed At",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "HTTPValidationError": {
+                "type": "object",
+                "title": "HTTPValidationError",
+                "properties": {
+                  "detail": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ValidationError"
+                    },
+                    "title": "Detail"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "license_url": null,
+      "name": "flux-3-image",
+      "owner": "black-forest-labs",
+      "is_official": true,
+      "paper_url": null,
+      "run_count": 146044,
+      "url": "https://replicate.com/black-forest-labs/flux-3-image",
+      "visibility": "public",
+      "weights_url": null
+    },
+    {
+      "cover_image_url": "https://tjzk.replicate.delivery/models_models_featured_image/a812df95-e7d7-4c21-92f4-39ef53ba78d8/tmpqv6y78bf.jpeg",
+      "created_at": "2026-10-06T16:05:04.446836Z",
+      "default_example": {
+        "completed_at": "2026-10-06T16:53:56.146024Z",
+        "created_at": "2026-10-06T16:53:37.979000Z",
+        "data_removed": false,
+        "error": null,
+        "id": "hcp763cj7drmy0d128h80cz584",
+        "input": {
+          "prompt": "A photo of a monstera leaf against a simple backdrop, cleverly and organically appearing within the natural gaps of the leaf are the words Nano Banana",
+          "resolution": "2K",
+          "image_input": [],
+          "aspect_ratio": "16:9",
+          "image_search": false,
+          "google_search": false,
+          "output_format": "jpg"
+        },
+        "is_free_trial_prediction": false,
+        "logs": "No sid\nGenerating image with Gemini Flash...\nTokens: 1708\nGenerated image in 17.72 seconds",
+        "metrics": {
+          "resolution_target": "2K",
+          "image_output_count": 1,
+          "predict_time": 18.139341149,
+          "total_time": 18.167024345
+        },
+        "model": "google/nano-banana-2.1",
+        "output": "https://replicate.delivery/xezq/QYsBpLYjQhpKEhYb4SmO4s7b9hgZtmSSmPiVBEnIIMPpZL1F/tmpr9tk9id4.jpeg",
+        "source": "web",
+        "started_at": "2026-10-06T16:53:38.006683Z",
+        "status": "succeeded",
+        "urls": {
+          "stream": "https://stream.replicate.com/v1/files/jbxs-e6bi6wgwrf4ypxgpgmmpxrssz2qd4ncv6ulpgsk7rqlcczvge7xq",
+          "get": "https://api.replicate.com/v1/predictions/hcp763cj7drmy0d128h80cz584",
+          "cancel": "https://api.replicate.com/v1/predictions/hcp763cj7drmy0d128h80cz584/cancel"
+        },
+        "version": "hidden"
+      },
+      "description": "Google's latest fast image generation model with sharp text rendering, conversational editing, multi-image fusion, and up to 4K output",
+      "github_url": "https://github.com/replicate/cog-google-proxy",
+      "latest_version": {
+        "id": "157dff0de6db8f9a2613eefdcceab8767c86c1d50dcfea43e8fdf7a2a016b8cf",
+        "created_at": "2026-10-06T16:29:19.047028Z",
+        "cog_version": "0.23.0",
+        "openapi_schema": {
+          "info": {
+            "title": "Cog",
+            "version": "0.23.0"
+          },
+          "paths": {},
+          "openapi": "3.0.2",
+          "components": {
+            "schemas": {
+              "Input": {
+                "type": "object",
+                "title": "Input",
+                "required": [
+                  "prompt"
+                ],
+                "properties": {
+                  "prompt": {
+                    "type": "string",
+                    "title": "Prompt",
+                    "x-order": 0,
+                    "description": "A text description of the image you want to generate"
+                  },
+                  "resolution": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/resolution"
+                      }
+                    ],
+                    "default": "1K",
+                    "x-order": 3,
+                    "description": "Resolution of the generated image. Higher resolutions take longer to generate."
+                  },
+                  "image_input": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "title": "Image Input",
+                    "default": [],
+                    "x-order": 1,
+                    "description": "Input images to transform or use as reference (supports up to 14 images)"
+                  },
+                  "aspect_ratio": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/aspect_ratio"
+                      }
+                    ],
+                    "default": "match_input_image",
+                    "x-order": 2,
+                    "description": "Aspect ratio of the generated image"
+                  },
+                  "image_search": {
+                    "type": "boolean",
+                    "title": "Image Search",
+                    "default": false,
+                    "x-order": 5,
+                    "description": "Use Google Image Search grounding to find web images as visual context for generation. When enabled, web search is also used automatically."
+                  },
+                  "google_search": {
+                    "type": "boolean",
+                    "title": "Google Search",
+                    "default": false,
+                    "x-order": 4,
+                    "description": "Use Google Web Search grounding to generate images based on real-time information (e.g. weather, sports scores, recent events)."
+                  },
+                  "output_format": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/output_format"
+                      }
+                    ],
+                    "default": "jpg",
+                    "x-order": 6,
+                    "description": "Format of the output image"
+                  }
+                }
+              },
+              "Output": {
+                "type": "string",
+                "title": "Output",
+                "format": "uri"
+              },
+              "Status": {
+                "enum": [
+                  "starting",
+                  "processing",
+                  "succeeded",
+                  "canceled",
+                  "failed"
+                ],
+                "type": "string",
+                "title": "Status",
+                "description": "An enumeration."
+              },
+              "resolution": {
+                "enum": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "type": "string",
+                "title": "resolution",
+                "description": "An enumeration."
+              },
+              "aspect_ratio": {
+                "enum": [
+                  "match_input_image",
+                  "1:1",
+                  "1:4",
+                  "1:8",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:1",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "8:1",
+                  "9:16",
+                  "16:9",
+                  "21:9"
+                ],
+                "type": "string",
+                "title": "aspect_ratio",
+                "description": "An enumeration."
+              },
+              "output_format": {
+                "enum": [
+                  "jpg",
+                  "png"
+                ],
+                "type": "string",
+                "title": "output_format",
+                "description": "An enumeration."
+              },
+              "ValidationError": {
+                "type": "object",
+                "title": "ValidationError",
+                "required": [
+                  "loc",
+                  "msg",
+                  "type"
+                ],
+                "properties": {
+                  "loc": {
+                    "type": "array",
+                    "items": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "integer"
+                        }
+                      ]
+                    },
+                    "title": "Location"
+                  },
+                  "msg": {
+                    "type": "string",
+                    "title": "Message"
+                  },
+                  "type": {
+                    "type": "string",
+                    "title": "Error Type"
+                  }
+                }
+              },
+              "PredictionRequest": {
+                "type": "object",
+                "title": "PredictionRequest",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  }
+                }
+              },
+              "PredictionResponse": {
+                "type": "object",
+                "title": "PredictionResponse",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "title": "Id"
+                  },
+                  "logs": {
+                    "type": "string",
+                    "title": "Logs"
+                  },
+                  "error": {
+                    "type": "string",
+                    "title": "Error"
+                  },
+                  "input": {
+                    "$ref": "#/components/schemas/Input"
+                  },
+                  "output": {
+                    "$ref": "#/components/schemas/Output"
+                  },
+                  "status": {
+                    "type": "string",
+                    "title": "Status"
+                  },
+                  "metrics": {
+                    "type": "object",
+                    "title": "Metrics"
+                  },
+                  "version": {
+                    "type": "string",
+                    "title": "Version"
+                  },
+                  "created_at": {
+                    "type": "string",
+                    "title": "Created At",
+                    "format": "date-time"
+                  },
+                  "started_at": {
+                    "type": "string",
+                    "title": "Started At",
+                    "format": "date-time"
+                  },
+                  "completed_at": {
+                    "type": "string",
+                    "title": "Completed At",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "HTTPValidationError": {
+                "type": "object",
+                "title": "HTTPValidationError",
+                "properties": {
+                  "detail": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ValidationError"
+                    },
+                    "title": "Detail"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "license_url": null,
+      "name": "nano-banana-2.1",
+      "owner": "google",
+      "is_official": true,
+      "paper_url": null,
+      "run_count": 501378,
+      "url": "https://replicate.com/google/nano-banana-2.1",
       "visibility": "public",
       "weights_url": null
     },
@@ -16440,7 +17362,7 @@
       "owner": "openai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 16190473,
+      "run_count": 16198198,
       "url": "https://replicate.com/openai/gpt-image-1.5",
       "visibility": "public",
       "weights_url": null
@@ -16839,7 +17761,7 @@
       "owner": "ai-forever",
       "is_official": false,
       "paper_url": null,
-      "run_count": 6181715,
+      "run_count": 6181717,
       "url": "https://replicate.com/ai-forever/kandinsky-2",
       "visibility": "public",
       "weights_url": null
@@ -17233,7 +18155,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 12167266,
+      "run_count": 12215698,
       "url": "https://replicate.com/black-forest-labs/flux-2-pro",
       "visibility": "public",
       "weights_url": null
@@ -17652,7 +18574,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 497200,
+      "run_count": 497562,
       "url": "https://replicate.com/black-forest-labs/flux-2-flex",
       "visibility": "public",
       "weights_url": null
@@ -18198,7 +19120,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://about.ideogram.ai/3.0",
-      "run_count": 9598893,
+      "run_count": 9602075,
       "url": "https://replicate.com/ideogram-ai/ideogram-v3-turbo",
       "visibility": "public",
       "weights_url": null
@@ -18496,7 +19418,7 @@
       "owner": "google",
       "is_official": true,
       "paper_url": null,
-      "run_count": 21539167,
+      "run_count": 21630396,
       "url": "https://replicate.com/google/nano-banana-2",
       "visibility": "public",
       "weights_url": null
@@ -18889,7 +19811,7 @@
       "owner": "lucataco",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2305.15798",
-      "run_count": 1053795,
+      "run_count": 1053796,
       "url": "https://replicate.com/lucataco/ssd-1b",
       "visibility": "public",
       "weights_url": null
@@ -19402,7 +20324,7 @@
       "owner": "comfyui",
       "is_official": false,
       "paper_url": "https://github.com/replicate/cog-comfyui",
-      "run_count": 9101397,
+      "run_count": 9116529,
       "url": "https://replicate.com/comfyui/any-comfyui-workflow",
       "visibility": "public",
       "weights_url": null
@@ -19820,7 +20742,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 53035508,
+      "run_count": 53054125,
       "url": "https://replicate.com/black-forest-labs/flux-dev",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-dev"
@@ -20268,7 +21190,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2930725,
+      "run_count": 2930802,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2-turbo",
       "visibility": "public",
       "weights_url": "https://ideogram.ai/"
@@ -20730,7 +21652,7 @@
       "owner": "qwen",
       "is_official": true,
       "paper_url": "https://qianwen-res.oss-cn-beijing.aliyuncs.com/Qwen-Image/Qwen_Image.pdf",
-      "run_count": 2048635,
+      "run_count": 2050310,
       "url": "https://replicate.com/qwen/qwen-image",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Qwen/Qwen-Image"
@@ -21033,7 +21955,7 @@
       "owner": "prunaai",
       "is_official": true,
       "paper_url": null,
-      "run_count": 22995176,
+      "run_count": 23173636,
       "url": "https://replicate.com/prunaai/p-image",
       "visibility": "public",
       "weights_url": null
@@ -21400,7 +22322,7 @@
       "owner": "datacte",
       "is_official": false,
       "paper_url": null,
-      "run_count": 6495174,
+      "run_count": 6501120,
       "url": "https://replicate.com/datacte/proteus-v0.3",
       "visibility": "public",
       "weights_url": "https://huggingface.co/dataautogpt3/ProteusV0.3"
@@ -22184,7 +23106,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 12512182,
+      "run_count": 12512302,
       "url": "https://replicate.com/fofr/sdxl-emoji",
       "visibility": "public",
       "weights_url": null
@@ -22524,7 +23446,7 @@
       "owner": "bytedance",
       "is_official": false,
       "paper_url": "https://huggingface.co/ByteDance/SDXL-Lightning/resolve/main/sdxl_lightning_report.pdf",
-      "run_count": 1040244035,
+      "run_count": 1040297164,
       "url": "https://replicate.com/bytedance/sdxl-lightning-4step",
       "visibility": "public",
       "weights_url": "https://huggingface.co/ByteDance/SDXL-Lightning"
@@ -22972,7 +23894,7 @@
       "owner": "ideogram-ai",
       "is_official": true,
       "paper_url": "https://ideogram.ai/",
-      "run_count": 2877909,
+      "run_count": 2877971,
       "url": "https://replicate.com/ideogram-ai/ideogram-v2",
       "visibility": "public",
       "weights_url": "https://ideogram.ai/"
@@ -23601,7 +24523,7 @@
       "owner": "sdxl-based",
       "is_official": false,
       "paper_url": "https://huggingface.co/SG161222/RealVisXL_V3.0",
-      "run_count": 2561249,
+      "run_count": 2561858,
       "url": "https://replicate.com/sdxl-based/realvisxl-v3-multi-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -23990,7 +24912,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 14223692,
+      "run_count": 14224350,
       "url": "https://replicate.com/black-forest-labs/flux-pro",
       "visibility": "public",
       "weights_url": null
@@ -24302,7 +25224,7 @@
       "owner": "tstramer",
       "is_official": false,
       "paper_url": null,
-      "run_count": 2375068,
+      "run_count": 2375071,
       "url": "https://replicate.com/tstramer/material-diffusion",
       "visibility": "public",
       "weights_url": null
@@ -24700,7 +25622,7 @@
       "owner": "fermatresearch",
       "is_official": false,
       "paper_url": null,
-      "run_count": 1023600,
+      "run_count": 1023638,
       "url": "https://replicate.com/fermatresearch/sdxl-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -25010,7 +25932,7 @@
       "owner": "lucataco",
       "is_official": false,
       "paper_url": "https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE",
-      "run_count": 4317186,
+      "run_count": 4317768,
       "url": "https://replicate.com/lucataco/realistic-vision-v5.1",
       "visibility": "public",
       "weights_url": "https://huggingface.co/SG161222/Realistic_Vision_V5.1_noVAE"
@@ -25721,7 +26643,7 @@
       "owner": "stability-ai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2307.01952",
-      "run_count": 86497242,
+      "run_count": 86503153,
       "url": "https://replicate.com/stability-ai/sdxl",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0"
@@ -26074,7 +26996,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 2146326,
+      "run_count": 2146504,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-large",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large"
@@ -26429,7 +27351,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": "https://blackforestlabs.ai/flux-1-1-ultra/",
-      "run_count": 21444637,
+      "run_count": 21450302,
       "url": "https://replicate.com/black-forest-labs/flux-1.1-pro-ultra",
       "visibility": "public",
       "weights_url": null
@@ -26822,7 +27744,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 4252442,
+      "run_count": 4257067,
       "url": "https://replicate.com/black-forest-labs/flux-2-max",
       "visibility": "public",
       "weights_url": null
@@ -27198,7 +28120,7 @@
       "owner": "stability-ai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2112.10752",
-      "run_count": 111135690,
+      "run_count": 111136332,
       "url": "https://replicate.com/stability-ai/stable-diffusion",
       "visibility": "public",
       "weights_url": null
@@ -27516,7 +28438,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 2607629,
+      "run_count": 2609946,
       "url": "https://replicate.com/fofr/sticker-maker",
       "visibility": "public",
       "weights_url": null
@@ -27887,7 +28809,7 @@
       "owner": "playgroundai",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2206.00364",
-      "run_count": 3313713,
+      "run_count": 3314244,
       "url": "https://replicate.com/playgroundai/playground-v2.5-1024px-aesthetic",
       "visibility": "public",
       "weights_url": "https://huggingface.co/playgroundai/playground-v2.5-1024px-aesthetic"
@@ -28220,7 +29142,7 @@
       "owner": "jagilley",
       "is_official": false,
       "paper_url": null,
-      "run_count": 38358006,
+      "run_count": 38358032,
       "url": "https://replicate.com/jagilley/controlnet-scribble",
       "visibility": "public",
       "weights_url": null
@@ -28850,7 +29772,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 233181,
+      "run_count": 233200,
       "url": "https://replicate.com/fofr/sdxl-multi-controlnet-lora",
       "visibility": "public",
       "weights_url": null
@@ -29263,7 +30185,7 @@
       "owner": "fofr",
       "is_official": false,
       "paper_url": null,
-      "run_count": 1588935,
+      "run_count": 1589436,
       "url": "https://replicate.com/fofr/latent-consistency-model",
       "visibility": "public",
       "weights_url": null
@@ -29605,7 +30527,7 @@
       "owner": "lucataco",
       "is_official": false,
       "paper_url": null,
-      "run_count": 233380,
+      "run_count": 233384,
       "url": "https://replicate.com/lucataco/dreamshaper-xl-turbo",
       "visibility": "public",
       "weights_url": null
@@ -30740,7 +31662,7 @@
       "owner": "datacte",
       "is_official": false,
       "paper_url": null,
-      "run_count": 12903647,
+      "run_count": 12910574,
       "url": "https://replicate.com/datacte/proteus-v0.2",
       "visibility": "public",
       "weights_url": null
@@ -31093,7 +32015,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 124932,
+      "run_count": 124966,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-medium",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-medium"
@@ -31481,7 +32403,7 @@
       "owner": "black-forest-labs",
       "is_official": true,
       "paper_url": null,
-      "run_count": 699228941,
+      "run_count": 699485287,
       "url": "https://replicate.com/black-forest-labs/flux-schnell",
       "visibility": "public",
       "weights_url": "https://huggingface.co/black-forest-labs/FLUX.1-schnell"
@@ -31834,7 +32756,7 @@
       "owner": "stability-ai",
       "is_official": true,
       "paper_url": "https://arxiv.org/abs/2403.03206",
-      "run_count": 1148890,
+      "run_count": 1149166,
       "url": "https://replicate.com/stability-ai/stable-diffusion-3.5-large-turbo",
       "visibility": "public",
       "weights_url": "https://huggingface.co/stabilityai/stable-diffusion-3.5-large-turbo"
@@ -32201,7 +33123,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://recraft.ai",
-      "run_count": 8757357,
+      "run_count": 8759774,
       "url": "https://replicate.com/recraft-ai/recraft-v3",
       "visibility": "public",
       "weights_url": null
@@ -32554,7 +33476,7 @@
       "owner": "recraft-ai",
       "is_official": true,
       "paper_url": "https://recraft.ai",
-      "run_count": 472107,
+      "run_count": 472829,
       "url": "https://replicate.com/recraft-ai/recraft-v3-svg",
       "visibility": "public",
       "weights_url": null
@@ -32873,7 +33795,7 @@
       "owner": "nvidia",
       "is_official": false,
       "paper_url": "https://arxiv.org/abs/2410.10629",
-      "run_count": 265486,
+      "run_count": 265570,
       "url": "https://replicate.com/nvidia/sana",
       "visibility": "public",
       "weights_url": "https://huggingface.co/Efficient-Large-Model/Sana_1600M_1024px"

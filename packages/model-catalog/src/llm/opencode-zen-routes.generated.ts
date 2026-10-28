@@ -160,14 +160,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "anthropic",
     provider: "opencode",
   },
-  "opencode/deepseek-v4-flash": {
-    inputPer1M: 0.14,
-    outputPer1M: 0.28,
-    cacheReadMultiplier: 0.2,
-    addedAt: "2026-07-31",
-    vendor: "deepseek",
-    provider: "opencode",
-  },
   "opencode/deepseek-v4-pro": {
     inputPer1M: 1.74,
     outputPer1M: 3.48,
