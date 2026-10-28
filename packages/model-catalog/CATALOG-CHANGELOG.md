@@ -456,3 +456,22 @@ for that.
 
 ### llm:openai
 - Removed: gpt-3.5-turbo, gpt-3.5-turbo-instruct, gpt-3.5-turbo:batch
+
+## 2026-10-28
+
+### llm:openrouter
+- Added: openai/gpt-6.1-terra, openai/gpt-6.1-terra-pro, openai/gpt-6.1-terra-pro:batch, openai/gpt-6.1-terra:batch, prism-ml/ternary-bonsai-2-9b
+- Removed: arcee-ai/trinity-large-thinking, ibm-granite/granite-4.0-h-micro, mistralai/codestral-2508:batch, mistralai/ministral-8b-2512:batch, mistralai/mistral-large-2512:batch, mistralai/mistral-medium-3.1:batch, mistralai/mistral-small-2603:batch
+
+### llm:requesty
+- Added: azure/gpt-6.1-terra@francecentral, azure/gpt-6.1-terra@germanywestcentral, azure/gpt-6.1-terra@swedencentral, azure/gpt-6.1-terra@westeurope, openai/gpt-6.1-terra, openai/gpt-6.1-terra:flex
+
+### llm:opencode-zen
+- Removed: opencode/deepseek-v4-flash
+
+### llm:huggingface
+- Added: Qwen/Qwen3.8-Flash-Next-FP8, aisingapore/Gemma-SEA-LION-v4-27B-IT, aisingapore/Qwen-SEA-LION-v4-32B-IT, aisingapore/Qwen-SEA-LION-v4.5-27B-IT, stepfun-ai/Step-3.7-Flash, zai-org/GLM-4.5, zai-org/GLM-4.6-FP8, zai-org/GLM-4.7-FP8, zai-org/GLM-5.1-FP8
+- Removed: CohereLabs/command-a-vision-07-2025
+
+### llm:openai
+- Added: gpt-6.1-terra, gpt-6.1-terra-pro, gpt-6.1-terra-pro:batch, gpt-6.1-terra:batch
