@@ -539,6 +539,16 @@ source reading. Nothing here shows that a hook fired in a real session.
 
 The remaining unknowns are listed under NOT VERIFIED.
 
+## Derived at runtime
+
+`session_capabilities.interception` is the live answer for a session; it is derived, never declared, and reports the declared capability without installing anything.
+
+- Native tool calls, ACP arm with `permissionHold`: `permission-gate`. Without the hold the requests are auto-answered: `observe`.
+- Native tool calls, print arm: `observe`. Terminal and other sessions: `unavailable` (no `interception` key for terminals).
+- `intercept` is never produced: no tool proxy exists.
+- Per declared native hook event: `can_block: true` gives `permission-gate`, otherwise `observe`; the strongest entry wins; an undeclared event is `unavailable`.
+- A `can_block: true` plus `async: true` entry can block only when projected in the synchronous form.
+
 ## NOT VERIFIED
 
 - AIP-71's final field optionality and any validator behaviour beyond the
