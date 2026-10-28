@@ -26,8 +26,8 @@
  * agent, a memory, a workspace, a tool bundle, a model resolver) that only
  * the host can build. They are kept as an opaque `{ $resolver: string, ... }`
  * reference: this schema checks the shape and keeps every other key
- * untouched, and the host resolves it later (E48 PR 2,
- * `createAgentControllerHost({ resolvers })`). They are:
+ * untouched, and the host resolves it later
+ * (`createAgentControllerHost({ resolvers })`, `./host.ts`). They are:
  *
  *   - top level: `storage`, `memory`, `workspace`, `agent`, `tools`,
  *     `models.resolver`
