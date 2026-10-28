@@ -27,6 +27,11 @@
  *
  * Usage: node scripts/check-spec-drift.mjs
  *   --aip 36 --slug sandbox --doctype SANDBOX  (these defaults)
+ *   [--inline-refs]
+ *
+ * A manual run of a package DEFAULT_PACKAGES guards takes that entry's
+ * flags (`--inline-refs` for AIP-72), so it regens exactly as the scripted
+ * run does; `--inline-refs` sets the flag for any other package.
  *
  * With no arguments the CLI checks EVERY entry of DEFAULT_PACKAGES (not
  * just sandbox) — one regen per guarded package, all failures reported,
@@ -58,12 +63,37 @@ export const DEFAULT_PACKAGES = [
   { aip: 72, slug: "memory", doctype: "MEMORY", inlineRefs: true },
 ]
 
+const BOOLEAN_FLAGS = new Set(["inline-refs"])
+
 function parseArgs(argv) {
   const args = {}
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--")) args[argv[i].slice(2)] = argv[i + 1]
+    if (!argv[i].startsWith("--")) continue
+    const key = argv[i].slice(2)
+    if (BOOLEAN_FLAGS.has(key)) args[key] = true
+    else args[key] = argv[++i]
   }
   return args
+}
+
+/** The packages a CLI run checks: every DEFAULT_PACKAGES entry with no
+ *  arguments, otherwise the one named, with the flags of its guarded entry
+ *  when it has one. */
+export function cliTargets(argv) {
+  const args = parseArgs(argv)
+  const explicit =
+    args.aip !== undefined || args.slug !== undefined || args.doctype !== undefined
+  if (!explicit) return DEFAULT_PACKAGES
+  const named = {
+    aip: Number(args.aip ?? DEFAULTS.aip),
+    slug: args.slug ?? DEFAULTS.slug,
+    doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
+  }
+  const guarded = DEFAULT_PACKAGES.find(
+    p => p.aip === named.aip && p.slug === named.slug && p.doctype === named.doctype,
+  )
+  const inlineRefs = args["inline-refs"] === true || guarded?.inlineRefs === true
+  return [{ ...named, ...(inlineRefs ? { inlineRefs: true } : {}) }]
 }
 
 /** schema.ts without its leading `/** ... *\/` doc comment (and the blank
@@ -122,18 +152,7 @@ export async function checkSpecDrift(opts = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = parseArgs(process.argv.slice(2))
-  const explicit =
-    args.aip !== undefined || args.slug !== undefined || args.doctype !== undefined
-  const targets = explicit
-    ? [
-        {
-          aip: Number(args.aip ?? DEFAULTS.aip),
-          slug: args.slug ?? DEFAULTS.slug,
-          doctype: (args.doctype ?? DEFAULTS.doctype).toUpperCase(),
-        },
-      ]
-    : DEFAULT_PACKAGES
+  const targets = cliTargets(process.argv.slice(2))
   let ok = true
   for (const t of targets) {
     const result = await checkSpecDrift(t)

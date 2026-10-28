@@ -1441,9 +1441,9 @@ export async function restartAgentSession(
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
-      // AIP-72 binding: the store root the memory tools read, and the
-      // native-dir inject path + capture flag, so a restarted lineage keeps
-      // its projection and its turn-end capture.
+      // AIP-72 binding: the spawn role and store root the memory tools
+      // read, and the native-dir inject path + capture flag, so a restarted
+      // lineage keeps its commit gate, its projection and its turn-end capture.
       ...carryMemoryMeta(prev.meta),
     }
     const restartAppendsSystemPrompt =

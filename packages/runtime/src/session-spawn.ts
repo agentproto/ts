@@ -3923,7 +3923,8 @@ export async function spawnAgentSession(
   // `enabled: false`) gets the in-force items scoped to this session
   // appended to its system prompt, through the same channel the AGENT.md
   // body takes below. Only when the adapter's `capabilities.memory.inject`
-  // is absent, `none` or `system-prompt` and it has a usable channel: a
+  // is `system-prompt` and it has a usable channel; `none` or no
+  // declaration gets no digest (AIP-72 section 9, step 3). A
   // `native-dir` adapter gets the items as `memoryProjection` instead (the
   // driver writes them into its native dir, or appends the digest when the
   // session cannot read that dir), so no session ever gets the items

@@ -35,6 +35,14 @@ const LIFETIME_KEYS = Object.keys(
  * section 2 (`kind` set), rules 1, 2, 4 and 5 as errors, rule 8 as
  * warnings. Rules 6 and 7 compare two versions of an item and belong to
  * the store; `isAllowedStatusTransition` covers rule 7's table.
+ *
+ * Defaults: MEMORY.schema.json gives `tags` (and `evidence.anchorsResolved`,
+ * `evidence.flags`) `default: []`, and the generated zod carries it. This
+ * function only checks: it never returns the parsed data, so the default
+ * is never filled in. An item without `tags` stays without `tags` and
+ * reads as untagged (the digest treats it as `global`, AIP-72 section 9).
+ * An explicit `tags: []` validates: rule 4 rejects empty strings and empty
+ * objects, not empty arrays, though a writer omits it (`defineMemory`).
  */
 export function validateMemory(
   doc: unknown,
