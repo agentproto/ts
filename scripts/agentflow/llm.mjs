@@ -79,7 +79,41 @@ export async function runLlm({ system, user, engine = 'local', model, claudeBin 
     : runLocal({ system, user, model, claudeBin })
 }
 
-function runLocal({ system, user, model, claudeBin = 'claude' }) {
+/**
+ * Env for the spawned `claude`. Inside an agent session (CLAUDECODE set) the
+ * inherited CLAUDE_CONFIG_DIR is the session's isolated adapter-config dir,
+ * which holds no login: `claude -p` exits 1 with "Not logged in". Drop it so
+ * the CLI falls back to the developer's own config. Set
+ * AGENTFLOW_CLAUDE_CONFIG_DIR to point the child at a specific dir instead.
+ */
+export function buildLocalEnv(env = process.env) {
+  const out = { ...env }
+  if (env.AGENTFLOW_CLAUDE_CONFIG_DIR) {
+    out.CLAUDE_CONFIG_DIR = env.AGENTFLOW_CLAUDE_CONFIG_DIR
+  } else if (env.CLAUDECODE) {
+    delete out.CLAUDE_CONFIG_DIR
+  }
+  return out
+}
+
+const MAX_ERR_CHARS = 2000
+
+function bounded(text) {
+  const t = String(text ?? '').trim()
+  return t.length > MAX_ERR_CHARS ? `${t.slice(0, MAX_ERR_CHARS)}…` : t
+}
+
+/** `claude -p` prints its real failure (auth, config…) on stdout, so report both. */
+export function describeLocalFailure(res, claudeBin) {
+  const parts = []
+  const stderr = bounded(res.stderr)
+  const stdout = bounded(res.stdout)
+  if (stderr) parts.push(`stderr: ${stderr}`)
+  if (stdout) parts.push(`stdout: ${stdout}`)
+  return `[agentflow] local engine: ${claudeBin} exited ${res.status}: ${parts.join(' | ') || '(no output)'}`
+}
+
+export function runLocal({ system, user, model, claudeBin = 'claude', env = process.env }) {
   // The CLI has no separate system slot in print mode, so prepend it.
   const prompt = `${system}\n\n--- INPUT ---\n${user}`
   const args = ['-p', prompt]
@@ -87,6 +121,7 @@ function runLocal({ system, user, model, claudeBin = 'claude' }) {
   const res = spawnSync(claudeBin, args, {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
+    env: buildLocalEnv(env),
   })
   if (res.error) {
     throw new Error(
@@ -96,9 +131,7 @@ function runLocal({ system, user, model, claudeBin = 'claude' }) {
     )
   }
   if (res.status !== 0) {
-    throw new Error(
-      `[agentflow] local engine: ${claudeBin} exited ${res.status}: ${res.stderr?.trim() || '(no stderr)'}`,
-    )
+    throw new Error(describeLocalFailure(res, claudeBin))
   }
   return res.stdout.trim()
 }
