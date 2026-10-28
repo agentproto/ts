@@ -435,6 +435,16 @@ const capabilitiesSchema = z.object({
     })
     .strict()
     .optional(),
+  /**
+   * AIP-45: the harness emits `mode-changed` for every mode change the
+   * caller did not make itself. Absent reads as false.
+   */
+  mode_events: z.boolean().optional(),
+  /**
+   * AIP-45: the harness sets `request` on `agent-prompt` events with the
+   * `question` / `planApproval` payload. Absent reads as false.
+   */
+  typed_prompts: z.boolean().optional(),
   hooks: z
     .array(nativeHookCapabilitySchema)
     .optional()

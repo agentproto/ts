@@ -157,6 +157,43 @@ export interface BackgroundTaskInfo {
 }
 
 /**
+ * What an `agent-prompt` asks for (AIP-45 § `agent-prompt` requests).
+ * Absent on the event reads as `"tool-permission"`.
+ */
+export type AgentPromptRequestKind = "tool-permission" | "question" | "plan-approval"
+
+/**
+ * Payload of a `request: "question"` prompt. Every `optionId` it names is
+ * one of the event's `options`; a free-text answer selects
+ * `freeTextOptionId` and carries the text in the resolution's `feedback`.
+ */
+export interface AgentPromptQuestion {
+  /** The question text. */
+  prompt: string
+  choices: Array<{ optionId: string; label: string; description?: string }>
+  allowFreeText: boolean
+  /** Required when `allowFreeText` is true. */
+  freeTextOptionId?: string
+}
+
+/**
+ * Payload of a `request: "plan-approval"` prompt. Carries `plan`, `planRef`
+ * or both. `approveOptionId` is an `allow_once` option and
+ * `rejectOptionId` a `reject_once` one; the resolution's `feedback` on
+ * reject is the reason handed to the agent.
+ */
+export interface AgentPromptPlanApproval {
+  /** The plan text. */
+  plan?: string
+  /** A reference to the plan (a path inside the session's sandbox, or a URI). */
+  planRef?: string
+  /** The session mode the harness enters if the plan is approved. */
+  targetModeId?: string
+  approveOptionId: string
+  rejectOptionId: string
+}
+
+/**
  * Canonical stream-event taxonomy emitted from `createAcpClient`. The
  * client maps upstream ACP `session/update` notifications and
  * `requestPermission` callbacks into this closed set so consumers
@@ -219,6 +256,34 @@ export type StreamEvent =
        * carried through unmodified. Harness-shaped and untyped — normalize
        * defensively per-adapter rather than assuming a stable schema.
        */
+      _meta?: unknown
+      /**
+       * What the agent asks for (AIP-45). Absent reads as
+       * `"tool-permission"`, so a consumer that ignores it still answers a
+       * plain permission prompt from `options`.
+       */
+      request?: AgentPromptRequestKind
+      /** Set when `request` is `"question"`, absent otherwise. */
+      question?: AgentPromptQuestion
+      /** Set when `request` is `"plan-approval"`, absent otherwise. */
+      planApproval?: AgentPromptPlanApproval
+    }
+  | {
+      /**
+       * The session's current mode changed (AIP-45 `mode-changed`, the
+       * ACP `current_mode_update` plus `previousModeId` and `cause`).
+       * `cause: "agent"` for every change the caller did not make itself
+       * (a switch after an approved plan included); `"caller"` once the
+       * caller's own `setSessionMode` is applied. Never emitted for a
+       * no-op or for the initial mode.
+       */
+      kind: "mode-changed"
+      sessionId: string
+      modeId: string
+      previousModeId: string
+      cause: "caller" | "agent"
+      /** Human-readable reason, e.g. "plan approved". */
+      reason?: string
       _meta?: unknown
     }
   | {

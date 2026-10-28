@@ -205,6 +205,7 @@ const STREAM_EVENT_RECORD_KINDS = new Set([
   "tool-call",
   "tool-result",
   "agent-prompt",
+  "mode-changed",
   "permission-resolved",
   "turn-end",
   "notice",

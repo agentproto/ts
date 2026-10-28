@@ -109,6 +109,48 @@ describe("agentproto permissions ls — plan rendering", () => {
     expect(out).toContain("    1. Read sources.\n")
   })
 
+  it("renders a typed AIP-45 plan-approval's plan, preferred over the _meta alias", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          toolName: "submit_plan",
+          request: "plan-approval",
+          planApproval: {
+            plan: "# Typed plan\n1. Read sources.",
+            planRef: "plan.md",
+            approveOptionId: "approve",
+            rejectOptionId: "reject",
+          },
+          _meta: { [META_PLAN]: "stale alias" },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    # Typed plan\n")
+    expect(out).not.toContain("stale alias")
+  })
+
+  it("renders a typed plan-approval that only names a planRef", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          request: "plan-approval",
+          planApproval: { planRef: "plans/a.md", approveOptionId: "approve", rejectOptionId: "reject" },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    (plan at plans/a.md)\n")
+  })
+
   it("keeps the truncated rawInput preview for entries without a suspendPayload", async () => {
     httpGetJson.mockResolvedValue({
       permissions: [

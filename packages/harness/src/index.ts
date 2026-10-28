@@ -227,6 +227,9 @@ export type {
   RuntimeConfig,
   TurnContext,
   StreamEvent,
+  AgentPromptPlanApproval,
+  AgentPromptQuestion,
+  AgentPromptRequestKind,
   // Result vocabularies for the three mid-session switches, and the two
   // read-surface element types. Exported so a host can name what
   // `AgentCliRuntimeSession`'s members hand back.

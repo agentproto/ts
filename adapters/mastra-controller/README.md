@@ -79,7 +79,7 @@ pass through, so a host profile can add its own fields.
 
 - `mastraController`: the `defineHarness` handle (slug `mastra-controller`,
   `protocol: "proprietary"`, options `manifest` and `controller_mode`,
-  capability `streaming`).
+  capabilities `streaming`, `tool_calls`, `mode_events`, `typed_prompts`).
 - `createAgentCliClient(definition, { host?, manifest? })`: the proprietary
   arm factory.
 - `createAgentControllerHost({ resolvers?, defaults? })`: builds the

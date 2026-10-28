@@ -34,6 +34,9 @@ export type {
   AcpMcpServer,
   AcpPermissionResolution,
   Aip44Extensions,
+  AgentPromptPlanApproval,
+  AgentPromptQuestion,
+  AgentPromptRequestKind,
   BackgroundTaskInfo,
   StreamEvent,
 } from "./types.js"

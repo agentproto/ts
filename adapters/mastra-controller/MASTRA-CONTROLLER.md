@@ -28,6 +28,8 @@ capabilities:
   multimodal: false
   resumable: false
   bidirectional: false
+  mode_events: true
+  typed_prompts: true
 options:
   - id: manifest
     type: string
@@ -69,15 +71,24 @@ E48 PR 2 (this release): a live session with modes.
   `currentModeId` follows the controller, and `setSessionMode()` calls
   `session.mode.switch`. They are not static AIP-45 `modes` (those are
   context modes composed at spawn).
-- AIP-45 has no mode-change stream event. A switch the controller makes by
-  itself (a mode's `transitionsTo` after an approved plan) is emitted as a
-  `thought` notice (`[mastra-controller] mode switched by the controller:
-  plan -> execute`) and moves `currentModeId`.
+- Every change of the current mode is an AIP-45 `mode-changed` event
+  (`modeId`, `previousModeId`, `cause`, `reason?`) and moves
+  `currentModeId`. A switch the controller makes by itself (a mode's
+  `transitionsTo` after an approved plan) has `cause: "agent"`, with
+  `reason: "plan approved"` for the plan case. The host's own
+  `setSessionMode` is reported too, `cause: "caller"`, once applied (the
+  spec's SHOULD: other stream consumers do not see the return value). A
+  no-op switch and the mode entered at connect report nothing.
 
 - Requests. Controller suspensions become `agent-prompt` events, answered
   with `respondPermission(requestId, resolution)` (`requestId` is the
-  prompt's `toolCallId`). The prompt's `_meta["mastra-controller/request"]`
-  says which kind it is:
+  prompt's `toolCallId`). The prompt's AIP-45 `request` field says what it
+  asks for: `tool-permission` (tool approvals and generic suspensions),
+  `question` (with the `question` payload) or `plan-approval` (with the
+  `planApproval` payload). `_meta["mastra-controller/request"]` still names
+  the controller kind below; it, `mastra-controller/plan` and
+  `mastra-controller/transitionsTo` are deprecated aliases of the typed
+  fields, kept for one release:
   - `tool-approval` (`tool_approval_required`): options `approve`
     (allow_once), `always_allow` (allow_always) and `decline`
     (reject_once). `always_allow` grants that tool for the rest of the
@@ -91,16 +102,20 @@ E48 PR 2 (this release): a live session with modes.
     `feedback`, plus `decline`. An AIP-45 resolution names one option, so a
     `multi_select` question is single-pick: the one chosen label is sent
     as a one-element array. The selection mode is not advertised in
-    `_meta`.
+    `_meta`. `question` carries `prompt`, `choices` (`optionId`, `label`,
+    `description?`) and `allowFreeText`, true with `freeTextOptionId:
+    "answer"` when there are no choices.
   - `plan-approval` (`submit_plan` suspended): `approve` / `reject`. The
-    prompt carries the plan path in `rawInput`, the plan file's text under
-    `_meta["mastra-controller/plan"]` and the target mode under
-    `_meta["mastra-controller/transitionsTo"]`. The path comes from the
+    prompt carries the plan path in `rawInput` and `planApproval.planRef`,
+    the plan file's text in `planApproval.plan` (and the deprecated
+    `_meta["mastra-controller/plan"]`), the target mode in
+    `planApproval.targetModeId` (and `_meta["mastra-controller/transitionsTo"]`),
+    with `approveOptionId: "approve"` and `rejectOptionId: "reject"`. The path comes from the
     model, so the text is read only from a regular file under the session
     cwd (after symlink resolution on both sides), at most 256 KiB, with a
     truncation note past that. Otherwise the plan entry is `plan not
     readable: <reason>` and the prompt is still raised. On approve the controller
-    switches to the mode's `transitionsTo` (the `thought` notice above) and
+    switches to the mode's `transitionsTo` (the `mode-changed` above) and
     the run continues there; on reject it stays in the current mode and the
     model receives the resolution's `feedback` as its revision note.
   - `suspension` (any other tool's `suspend()`): `approve` / `decline`,
@@ -120,12 +135,8 @@ E48 PR 2 (this release): a live session with modes.
   attached" answer and a plan is rejected (an unattended session never
   leaves its mode), each answer noted as a `thought`.
 
-Capabilities claim `streaming` and `tool_calls`.
-
-AIP-45 has no plan-approval contract: a plan approval rides on the generic
-`agent-prompt` / `respondPermission` pair, told apart only by `_meta`, and a
-controller-driven mode switch has no stream event of its own. Both are
-candidates for a later AIP-45 note (E48 PR 5).
+Capabilities claim `streaming`, `tool_calls`, `mode_events` and
+`typed_prompts`.
 
 ## Host resolution and defaults
 

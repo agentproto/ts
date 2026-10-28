@@ -119,6 +119,12 @@ interface PermissionEntry {
    *  carrying a submit_plan's plan text), when the driver supplied one.
    *  Harness-shaped and untyped — don't assume a stable schema. */
   _meta?: unknown
+  /** AIP-45 request kind; absent reads as "tool-permission". */
+  request?: "tool-permission" | "question" | "plan-approval"
+  /** AIP-45 `question` payload, set when `request` is "question". */
+  question?: unknown
+  /** AIP-45 `planApproval` payload, set when `request` is "plan-approval". */
+  planApproval?: { plan?: string; planRef?: string; targetModeId?: string }
 }
 
 /** Compact one-line preview of a permission entry's raw input, for the `ls`
@@ -130,15 +136,23 @@ function previewRawInput(rawInput: unknown, maxLen = 40): string {
 }
 
 /** `_meta` key carrying a plan approval's plan text on mastra-controller
- *  prompts: `META_PLAN` of `@agentproto/adapter-mastra-controller`, spelled
- *  out so this command does not load the adapter (and `@mastra/core`). */
+ *  prompts: the deprecated `META_PLAN` of
+ *  `@agentproto/adapter-mastra-controller`, spelled out so this command does
+ *  not load the adapter (and `@mastra/core`). Read only when the entry has
+ *  no typed `planApproval`. */
 const MASTRA_CONTROLLER_PLAN = "mastra-controller/plan"
 
-/** Extract a plan-tool's `_meta` suspension payload from a permission entry:
- *  mastra-controller's plan text (`mastra-controller/plan`), else
+/** Extract a plan from a permission entry: the AIP-45 `planApproval` (its
+ *  `plan`, else a pointer to its `planRef`), else the `_meta` aliases:
+ *  mastra-controller's plan text (`mastra-controller/plan`), then
  *  mastra-agent's `mastra-agent/suspendPayload`. Returns undefined for
- *  entries that carry neither. */
+ *  entries that carry none. */
 function suspensionPayload(entry: PermissionEntry): unknown {
+  const typed = entry.request === "plan-approval" ? entry.planApproval : undefined
+  if (typed && typeof typed === "object") {
+    if (typeof typed.plan === "string") return typed.plan
+    if (typeof typed.planRef === "string") return `(plan at ${typed.planRef})`
+  }
   const meta = entry._meta
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined
   const record = meta as Record<string, unknown>

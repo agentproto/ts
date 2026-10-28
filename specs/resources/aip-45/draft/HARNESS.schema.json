@@ -344,6 +344,14 @@
         "multimodal":    { "type": "boolean" },
         "resumable":     { "type": "boolean" },
         "bidirectional": { "type": "boolean" },
+        "mode_events": {
+          "type": "boolean",
+          "description": "The harness exposes session modes and emits the mode-changed stream event for every change of the current mode the caller did not make itself (SHOULD for the caller's own setSessionMode too). Absent reads as false. A harness-extension capability, excluded from the ACP subset check."
+        },
+        "typed_prompts": {
+          "type": "boolean",
+          "description": "The harness sets `request` on agent-prompt events and carries the `question` or `planApproval` payload for those kinds (see STREAM-EVENTS.schema.json). Absent reads as false: every agent-prompt is a tool-permission. A harness-extension capability, excluded from the ACP subset check."
+        },
         "memory": {
           "type": "object",
           "additionalProperties": false,
