@@ -129,14 +129,20 @@ function previewRawInput(rawInput: unknown, maxLen = 40): string {
   return text.length > maxLen ? `${text.slice(0, maxLen - 1)}…` : text
 }
 
-/** Extract a plan-tool's `_meta` suspension payload (mastra-agent's
- *  `mastra-agent/suspendPayload` key) from a permission entry, when present.
- *  Returns undefined for entries that don't carry one. */
+/** `_meta` key carrying a plan approval's plan text on mastra-controller
+ *  prompts: `META_PLAN` of `@agentproto/adapter-mastra-controller`, spelled
+ *  out so this command does not load the adapter (and `@mastra/core`). */
+const MASTRA_CONTROLLER_PLAN = "mastra-controller/plan"
+
+/** Extract a plan-tool's `_meta` suspension payload from a permission entry:
+ *  mastra-controller's plan text (`mastra-controller/plan`), else
+ *  mastra-agent's `mastra-agent/suspendPayload`. Returns undefined for
+ *  entries that carry neither. */
 function suspensionPayload(entry: PermissionEntry): unknown {
   const meta = entry._meta
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return undefined
-  const payload = (meta as Record<string, unknown>)["mastra-agent/suspendPayload"]
-  return payload === undefined ? undefined : payload
+  const record = meta as Record<string, unknown>
+  return record[MASTRA_CONTROLLER_PLAN] ?? record["mastra-agent/suspendPayload"]
 }
 
 /** Best-effort human-readable plan text from a suspension payload: a plain

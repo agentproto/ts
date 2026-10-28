@@ -87,7 +87,6 @@ export {
   MODE_ENV_KEY,
   META_PLAN,
   META_REQUEST,
-  META_SELECTION_MODE,
   META_SUSPEND_PAYLOAD,
   META_TRANSITIONS_TO,
   type MastraControllerClientOptions,

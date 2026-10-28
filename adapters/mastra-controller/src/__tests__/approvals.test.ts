@@ -1,9 +1,11 @@
-import { mkdtempSync, writeFileSync } from "node:fs"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, join } from "node:path"
 import { InMemoryStore } from "@mastra/core/storage"
 import { MastraLanguageModelV2Mock } from "@mastra/core/test-utils/llm-mock"
 import { createTool } from "@mastra/core/tools"
+import type { Session } from "@mastra/core/agent-controller"
 import type { AgentCliClient, StreamEvent } from "@agentproto/harness"
 import { afterEach, describe, expect, it } from "vitest"
 import { z } from "zod"
@@ -11,6 +13,7 @@ import {
   createAgentCliClient,
   createAgentControllerHost,
   mastraController,
+  META_PLAN,
   parseControllerManifest,
   type PermissionRules,
 } from "../index.js"
@@ -77,6 +80,23 @@ const echo = createTool({
   },
 })
 
+const deployRuns: unknown[] = []
+/** A tool that parks on `suspend()` until resumed, then reports the resume data. */
+const deploy = createTool({
+  id: "deploy",
+  description: "Deploy after a confirmation.",
+  inputSchema: z.object({ target: z.string() }),
+  execute: async (input, context) => {
+    const resumeData = context?.agent?.resumeData as { approved?: boolean } | undefined
+    if (resumeData === undefined) {
+      await context?.agent?.suspend({ reason: "confirm the deploy" })
+      return { deployed: false }
+    }
+    deployRuns.push({ input, resumeData })
+    return { deployed: resumeData.approved === true }
+  },
+})
+
 function manifestWith(permissions?: PermissionRules) {
   return parseControllerManifest({
     id: "approvals",
@@ -99,12 +119,24 @@ async function connected(
   opts: { permissions?: PermissionRules; permissionHold?: boolean } = {},
 ) {
   const { model, prompts } = scriptedModel(steps)
+  const host = createAgentControllerHost({
+    resolvers: { "test/tools": () => ({ echo, deploy }) },
+    defaults: { storage: () => new InMemoryStore(), resolveModel: () => model as never },
+  })
+  // Keep the controller's session so a test can emit controller events on it.
+  const session: { current?: Session } = {}
   const client = createAgentCliClient(mastraController, {
     manifest: manifestWith(opts.permissions),
-    host: createAgentControllerHost({
-      resolvers: { "test/tools": () => ({ echo }) },
-      defaults: { storage: () => new InMemoryStore(), resolveModel: () => model as never },
-    }),
+    host: {
+      ...host,
+      async createController(manifest, ctx) {
+        const controller = await host.createController(manifest, ctx)
+        const createSession = controller.createSession.bind(controller)
+        controller.createSession = (async (o: Parameters<typeof createSession>[0]) =>
+          (session.current = await createSession(o))) as typeof createSession
+        return controller
+      },
+    },
   })
   clients.push(client)
   await client.connect({
@@ -113,7 +145,7 @@ async function connected(
     abortSignal: new AbortController().signal,
     permissionHold: opts.permissionHold ?? true,
   })
-  return { client, prompts }
+  return { client, prompts, session: session.current! }
 }
 
 type Prompt = Extract<StreamEvent, { kind: "agent-prompt" }>
@@ -152,6 +184,7 @@ function promptsIn(events: StreamEvent[]): Prompt[] {
 afterEach(async () => {
   for (const c of clients.splice(0)) await c.close()
   echoRuns.length = 0
+  deployRuns.length = 0
 })
 
 describe("mastra-controller approvals (stub model, permission hold)", () => {
@@ -392,5 +425,176 @@ describe("mastra-controller approvals (stub model, permission hold)", () => {
       }),
     )
     expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
+  })
+
+  it("a generic suspend() surfaces as a suspension; approve resumes it with { approved: true }", async () => {
+    const { client } = await connected(
+      [{ toolCall: { name: "deploy", input: { target: "prod" } } }, { text: "deployed" }],
+      { permissions: { tools: { deploy: "allow" } } },
+    )
+    const events = await runTurn(client, "deploy prod", p => {
+      expect(p.toolName).toBe("deploy")
+      expect(p.text).toBe('Continue "deploy"?')
+      expect(p.options).toEqual([
+        { optionId: "approve", name: "Continue", kind: "allow_once" },
+        { optionId: "decline", name: "Cancel", kind: "reject_once" },
+      ])
+      expect(p._meta).toEqual({
+        "mastra-controller/request": "suspension",
+        "mastra-controller/suspendPayload": { reason: "confirm the deploy" },
+      })
+      return { optionId: "approve" }
+    })
+
+    expect(promptsIn(events)).toHaveLength(1)
+    expect(deployRuns).toEqual([{ input: { target: "prod" }, resumeData: { approved: true } }])
+    expect(textOf(events)).toBe("deployed")
+    expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
+  })
+
+  it("a generic suspend() declined resumes with { approved: false, feedback }", async () => {
+    const { client } = await connected(
+      [{ toolCall: { name: "deploy", input: { target: "prod" } } }, { text: "not deployed" }],
+      { permissions: { tools: { deploy: "allow" } } },
+    )
+    const events = await runTurn(client, "deploy prod", () => ({
+      optionId: "decline",
+      feedback: "not today",
+    }))
+
+    expect(deployRuns).toEqual([
+      { input: { target: "prod" }, resumeData: { approved: false, feedback: "not today" } },
+    ])
+    expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
+  })
+
+  it("tool_suspension_cancelled drops the open request: its prompt can no longer be answered", async () => {
+    const { client, session } = await connected(
+      [{ toolCall: { name: "deploy", input: { target: "prod" } } }, { text: "never" }],
+      { permissions: { tools: { deploy: "allow" } } },
+    )
+    await client.send("turn-1", "deploy prod")
+    const events: StreamEvent[] = []
+    let answered: boolean | undefined
+    for await (const evt of client.events()) {
+      events.push(evt)
+      if (evt.kind !== "agent-prompt") continue
+      const toolCallId = evt.toolCallId.slice(0, evt.toolCallId.lastIndexOf("#"))
+      session.emit({ type: "tool_suspension_cancelled", toolCallId, toolName: "deploy", reason: "gone" })
+      answered = client.respondPermission!(evt.toolCallId, { optionId: "approve" })
+      await client.cancel("turn-1")
+    }
+
+    expect(answered).toBe(false)
+    expect(deployRuns).toEqual([])
+    expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "cancelled" })
+  })
+
+  it("tool_suspension_cancelled before the prompt is raised: no stale prompt is surfaced", async () => {
+    const { client, session } = await connected(
+      [{ toolCall: { name: "deploy", input: { target: "prod" } } }, { text: "never" }],
+      { permissions: { tools: { deploy: "allow" } } },
+    )
+    // The client's listener subscribed first, so the request is open when
+    // this one cancels it, before the async prompt build lands.
+    let parked!: () => void
+    const suspended = new Promise<void>(r => (parked = r))
+    session.subscribe(evt => {
+      if (evt.type !== "tool_suspended") return
+      session.emit({
+        type: "tool_suspension_cancelled",
+        toolCallId: evt.toolCallId,
+        toolName: evt.toolName,
+        reason: "gone",
+      })
+      parked()
+    })
+    await client.send("turn-1", "deploy prod")
+    void suspended.then(() => setTimeout(() => void client.cancel("turn-1"), 50))
+    const events: StreamEvent[] = []
+    for await (const evt of client.events()) events.push(evt)
+
+    expect(promptsIn(events)).toEqual([])
+    expect(deployRuns).toEqual([])
+    expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "cancelled" })
+  })
+
+  it("a multi_select question is single-pick: one answer, no selectionMode advertised", async () => {
+    const { client, prompts } = await connected([
+      {
+        toolCall: {
+          name: "ask_user",
+          input: {
+            question: "Which teas?",
+            options: [{ label: "Oolong" }, { label: "Puer" }],
+            selectionMode: "multi_select",
+          },
+        },
+      },
+      { text: "ok" },
+    ])
+    const events = await runTurn(client, "pick teas", p => {
+      expect(p._meta).not.toHaveProperty("mastra-controller/selectionMode")
+      return { optionId: "answer:1" }
+    })
+
+    expect(events.at(-1)).toMatchObject({ kind: "turn-end", reason: "completed" })
+    expect(JSON.stringify(prompts.at(-1))).toContain("Puer")
+  })
+})
+
+describe("mastra-controller plan read (confined to the session cwd, bounded)", () => {
+  const outside = mkdtempSync(join(tmpdir(), "mastra-controller-outside-"))
+  const secret = join(outside, "secret.md")
+  writeFileSync(secret, "TOP SECRET\n")
+
+  /** Run a `submit_plan` turn for `path`; return the prompt's plan `_meta` (rejecting the plan). */
+  async function planFor(path: string): Promise<unknown> {
+    const { client } = await connected([
+      { toolCall: { name: "submit_plan", input: { path } } },
+      { text: "ok" },
+    ])
+    let plan: unknown
+    const events = await runTurn(client, "plan it", p => {
+      expect(p.toolName).toBe("submit_plan")
+      plan = (p._meta as Record<string, unknown>)[META_PLAN]
+      return { optionId: "reject" }
+    })
+    expect(promptsIn(events)).toHaveLength(1)
+    return plan
+  }
+
+  it("refuses a ../ path that leaves the cwd", async () => {
+    const rel = join("..", basename(outside), "secret.md")
+    expect(await planFor(rel)).toBe("plan not readable: outside the session cwd")
+  })
+
+  it("refuses an absolute path outside the cwd", async () => {
+    expect(await planFor(secret)).toBe("plan not readable: outside the session cwd")
+  })
+
+  it("refuses a symlink inside the cwd that resolves outside it", async () => {
+    symlinkSync(secret, join(cwd, "escape.md"))
+    expect(await planFor("escape.md")).toBe("plan not readable: outside the session cwd")
+  })
+
+  it("reads an absolute path inside the cwd", async () => {
+    writeFileSync(join(cwd, "inside.md"), "inside plan")
+    expect(await planFor(join(cwd, "inside.md"))).toBe("inside plan")
+  })
+
+  it("truncates an oversized plan to MAX_PLAN_BYTES bytes, with a note", async () => {
+    const max = 256 * 1024
+    writeFileSync(join(cwd, "big.md"), "\u00e9".repeat(max))
+    expect(await planFor("big.md")).toBe(`${"\u00e9".repeat(max / 2)}\n[plan truncated at ${max} bytes]`)
+  })
+
+  it("refuses a non-regular file (a fifo) without blocking on it", async () => {
+    execFileSync("mkfifo", [join(cwd, "pipe.md")])
+    expect(await planFor("pipe.md")).toBe("plan not readable: not a regular file")
+  })
+
+  it("a missing plan still surfaces the prompt, with the reason", async () => {
+    expect(await planFor("missing.md")).toBe("plan not readable: ENOENT")
   })
 })

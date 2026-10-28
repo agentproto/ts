@@ -88,11 +88,18 @@ E48 PR 2 (this release): a live session with modes.
   - `question` (`ask_user` suspended): the prompt's `text` is the question,
     with one `answer:<i>` option per choice (the answer is that choice's
     label), or a single `answer` option whose free text is the resolution's
-    `feedback`, plus `decline`.
+    `feedback`, plus `decline`. An AIP-45 resolution names one option, so a
+    `multi_select` question is single-pick: the one chosen label is sent
+    as a one-element array. The selection mode is not advertised in
+    `_meta`.
   - `plan-approval` (`submit_plan` suspended): `approve` / `reject`. The
     prompt carries the plan path in `rawInput`, the plan file's text under
     `_meta["mastra-controller/plan"]` and the target mode under
-    `_meta["mastra-controller/transitionsTo"]`. On approve the controller
+    `_meta["mastra-controller/transitionsTo"]`. The path comes from the
+    model, so the text is read only from a regular file under the session
+    cwd (after symlink resolution on both sides), at most 256 KiB, with a
+    truncation note past that. Otherwise the plan entry is `plan not
+    readable: <reason>` and the prompt is still raised. On approve the controller
     switches to the mode's `transitionsTo` (the `thought` notice above) and
     the run continues there; on reject it stays in the current mode and the
     model receives the resolution's `feedback` as its revision note.

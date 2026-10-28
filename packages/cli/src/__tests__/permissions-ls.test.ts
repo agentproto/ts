@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { META_PLAN } from "@agentproto/adapter-mastra-controller"
 import { runPermissions } from "../commands/permissions.js"
 
 vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
@@ -83,6 +84,29 @@ describe("agentproto permissions ls — plan rendering", () => {
     const code = await runPermissions(["ls"])
     expect(code).toBe(0)
     expect(stdoutChunks.join("")).toContain("    plain plan text\n")
+  })
+
+  it("renders a mastra-controller plan approval's plan text", async () => {
+    httpGetJson.mockResolvedValue({
+      permissions: [
+        {
+          ...baseEntry,
+          toolName: "submit_plan",
+          rawInput: { path: "plan.md" },
+          _meta: {
+            "mastra-controller/request": "plan-approval",
+            "mastra-controller/suspendPayload": { path: "plan.md" },
+            [META_PLAN]: "# Plan\n1. Read sources.",
+          },
+        },
+      ],
+    } as never)
+    const code = await runPermissions(["ls"])
+    expect(code).toBe(0)
+    const out = stdoutChunks.join("")
+    expect(out).toContain("PLAN")
+    expect(out).toContain("    # Plan\n")
+    expect(out).toContain("    1. Read sources.\n")
   })
 
   it("keeps the truncated rawInput preview for entries without a suspendPayload", async () => {

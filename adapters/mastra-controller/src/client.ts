@@ -27,9 +27,14 @@
  *     `respondToToolApproval`.
  *   - `tool_suspended` for `ask_user`: one `answer:<i>` option per choice,
  *     or a single `answer` whose text is the resolution's `feedback`, plus
- *     `decline`; answered with `respondToToolSuspension(answer)`.
+ *     `decline`; answered with `respondToToolSuspension(answer)`. A
+ *     resolution names one option, so a `multi_select` question is answered
+ *     with a single pick (wrapped in an array, as the tool expects).
  *   - `tool_suspended` for `submit_plan`: `approve` / `reject`, answered
- *     with `respondToToolSuspension({ action })`.
+ *     with `respondToToolSuspension({ action })`. The plan path comes from
+ *     the model, so its text is read only from a regular file under the
+ *     session cwd (symlinks resolved), at most `MAX_PLAN_BYTES`; otherwise
+ *     the prompt carries "plan not readable: <reason>" instead.
  *   - `tool_suspended` for any other tool: `approve` / `decline`, answered
  *     with `respondToToolSuspension({ approved })`.
  *
@@ -51,8 +56,9 @@
  */
 
 import { randomUUID } from "node:crypto"
-import { readFile } from "node:fs/promises"
-import { isAbsolute, resolve as resolvePath } from "node:path"
+import { constants as fsConstants } from "node:fs"
+import { open, readFile, realpath, stat } from "node:fs/promises"
+import { isAbsolute, relative, resolve as resolvePath, sep } from "node:path"
 import type { AgentController, Session } from "@mastra/core/agent-controller"
 import {
   createMastraMapperState,
@@ -96,7 +102,6 @@ export const META_REQUEST = "mastra-controller/request"
 export const META_SUSPEND_PAYLOAD = "mastra-controller/suspendPayload"
 export const META_TRANSITIONS_TO = "mastra-controller/transitionsTo"
 export const META_PLAN = "mastra-controller/plan"
-export const META_SELECTION_MODE = "mastra-controller/selectionMode"
 
 /** Builtins whose suspension is the question itself, allowed past the approval gate by default. */
 const SELF_GATED_TOOLS = ["ask_user", "submit_plan"] as const
@@ -333,7 +338,7 @@ export function createAgentCliClient(
           _meta: { [META_REQUEST]: "tool-approval" },
         }
       case "question": {
-        const p = (evt.suspendPayload ?? {}) as { question?: unknown; selectionMode?: unknown }
+        const p = (evt.suspendPayload ?? {}) as { question?: unknown }
         return {
           ...base,
           text: typeof p.question === "string" ? p.question : "The agent asks a question.",
@@ -343,17 +348,13 @@ export function createAgentCliClient(
               : [{ optionId: "answer", name: "Answer", kind: "allow_once" }]),
             { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
           ],
-          _meta: {
-            [META_REQUEST]: "question",
-            ...payload,
-            ...(typeof p.selectionMode === "string" ? { [META_SELECTION_MODE]: p.selectionMode } : {}),
-          },
+          _meta: { [META_REQUEST]: "question", ...payload },
         }
       }
       case "plan-approval": {
         const path = (evt.suspendPayload as { path?: unknown } | undefined)?.path
         const target = transitionTarget()
-        const plan = typeof path === "string" ? await readPlan(path) : undefined
+        const plan = typeof path === "string" ? await readPlan(path, cwd) : undefined
         const where = typeof path === "string" ? `the plan in ${path}` : "the plan"
         return {
           ...base,
@@ -397,15 +398,6 @@ export function createAgentCliClient(
       manifest.modes.find(m => m.id === modeId)?.transitionsTo ??
       (manifest.modes.find(m => m.default) ?? manifest.modes[0])?.id
     return target !== modeId ? target : undefined
-  }
-
-  async function readPlan(path: string): Promise<string | undefined> {
-    try {
-      const text = await readFile(isAbsolute(path) ? path : resolvePath(cwd, path), "utf8")
-      return text.length > MAX_PLAN_BYTES ? text.slice(0, MAX_PLAN_BYTES) : text
-    } catch {
-      return undefined
-    }
   }
 
   /** Answer an open request. False when `requestId` names no open request. */
@@ -649,6 +641,56 @@ export function createAgentCliClient(
       if (s) await s.controller.destroy()
     },
   }
+}
+
+/**
+ * Text of the plan file at `path`, a model-supplied path: it must name a
+ * regular file under `cwd`, both sides compared after symlink resolution,
+ * and at most `MAX_PLAN_BYTES` of it are read. Anything else yields
+ * "plan not readable: <reason>" so the approval prompt is still raised.
+ */
+async function readPlan(path: string, cwd: string): Promise<string> {
+  const notReadable = (reason: string) => `plan not readable: ${reason}`
+  const outside = notReadable("outside the session cwd")
+  try {
+    const target = resolvePath(cwd, path)
+    if (!isWithin(resolvePath(cwd), target)) return outside
+    const [realCwd, realTarget] = await Promise.all([realpath(cwd), realpath(target)])
+    if (!isWithin(realCwd, realTarget)) return outside
+    if (!(await stat(realTarget)).isFile()) return notReadable("not a regular file")
+    // Non-blocking, so a file swapped for a fifo after the stat cannot hang the open.
+    const handle = await open(
+      realTarget,
+      fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW,
+    )
+    try {
+      const info = await handle.stat()
+      if (!info.isFile()) return notReadable("not a regular file")
+      const buf = Buffer.alloc(Math.min(info.size, MAX_PLAN_BYTES))
+      let filled = 0
+      while (filled < buf.length) {
+        const { bytesRead } = await handle.read(buf, filled, buf.length - filled, filled)
+        if (bytesRead === 0) break
+        filled += bytesRead
+      }
+      // `stream: true` holds back a character cut at the byte cap.
+      const text = new TextDecoder().decode(buf.subarray(0, filled), { stream: true })
+      return info.size > MAX_PLAN_BYTES
+        ? `${text}\n[plan truncated at ${MAX_PLAN_BYTES} bytes]`
+        : text
+    } finally {
+      await handle.close()
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code
+    return notReadable(code ?? (err instanceof Error ? err.message : String(err)))
+  }
+}
+
+/** Whether absolute `child` is `parent` or lies under it. */
+function isWithin(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel))
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
