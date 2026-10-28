@@ -6341,6 +6341,11 @@ export type AgentSessionResumer = (input: {
    *  same host-chosen toolset it had on the initial spawn (orchestrator
    *  WP1). Omitted for legacy rows spawned before this was persisted. */
   mcpServers?: AcpMcpServer[]
+  /** The posture to start the revived adapter in: the descriptor's current
+   *  posture clamped to the caller's ceiling (`restartPosture`). The hook
+   *  forwards it to `startSession({ posture })`; absent means the adapter
+   *  default. */
+  posture?: Posture
   /** Forwarded to the re-spawned adapter's `startSession({ onActivity })`
    *  so the resumed session keeps pulsing `lastActivityAt` the same way
    *  the original spawn did. */
@@ -9002,8 +9007,8 @@ export function createSessionsRegistry(opts?: {
     }
     // A restart/recovery clamps the descriptor's posture to the caller's
     // ceiling before the adapter starts, and reconciles the descriptor to the
-    // mode actually handed to `startSession` (the resume hook passes this same
-    // value). Source/ceiling stay in place so a non-clamping revival does not
+    // mode actually handed to `startSession` (passed to the resume hook as
+    // `posture`). Source/ceiling stay in place so a non-clamping revival does not
     // re-baseline the caller's last pick.
     const revivalPosture = restartPosture(rt.desc)
     rt.resumePromise = (async () => {
@@ -9032,6 +9037,7 @@ export function createSessionsRegistry(opts?: {
           // The prior descriptor — the hook re-resolves billing-auth off its
           // `auth.mode` echo / `accessProfile` / model / route (money bug fix).
           descriptor: rt.desc,
+          ...(revivalPosture !== undefined ? { posture: revivalPosture } : {}),
           // Re-mount the persisted spawn-time toolset (orchestrator WP1).
           ...(rt.desc.mcpServers ? { mcpServers: rt.desc.mcpServers } : {}),
           // Keep pulsing lastActivityAt across a resume the same way the
@@ -9053,8 +9059,20 @@ export function createSessionsRegistry(opts?: {
         bindAgentSession(rt, fresh)
         bindOutOfTurnEvents(rt)
         stampCapabilities(rt)
-        if (revivalPosture !== undefined) rt.desc.posture = revivalPosture
-        else delete rt.desc.posture
+        if (!samePosture(rt.desc.posture, revivalPosture)) {
+          if (revivalPosture !== undefined) rt.desc.posture = revivalPosture
+          else delete rt.desc.posture
+          if (revivalPosture !== undefined) {
+            sessionEvents?.emit({
+              type: "session:config-changed",
+              sessionId: rt.desc.id,
+              axis: "posture",
+              value: revivalPosture,
+              label: rt.desc.label,
+              ts: new Date().toISOString(),
+            })
+          }
+        }
         rt.adapterSlug = adapterSlug
         rt.desc.adapterSessionId = fresh.sessionId
         // The resumed session is a fresh child process — refresh pid so

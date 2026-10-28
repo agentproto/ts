@@ -26,7 +26,6 @@ import {
 } from "../sessions.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
 import { restartAgentSession, tryRestartInPlace } from "../session-restart-core.js"
-import { restartPosture } from "../canonical-posture.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { Posture } from "../session-config.js"
 
@@ -286,14 +285,16 @@ describe("restart keeps the current posture", () => {
 })
 
 describe("in-place revival clamps to the caller's ceiling", () => {
-  it("an ended row revived by triggerResume after an agent widening starts at the ceiling and reconciles the descriptor", async () => {
+  it("an ended row revived in place after an agent widening is handed the ceiling and reconciles the descriptor", async () => {
+    // The registry decides the revival posture and hands it to the resume
+    // hook as `posture`; index.ts's hook forwards exactly that value to
+    // `startSession`, so this records what the adapter is started in.
     const resumePostures: Array<Posture | undefined> = []
-    const resumeAgent: AgentSessionResumer = async ({ descriptor }) => {
-      // This is what index.ts's resume hook hands to `startSession`.
-      resumePostures.push(restartPosture(descriptor))
+    const resumeAgent: AgentSessionResumer = async input => {
+      resumePostures.push(input.posture)
       return scriptedSession([])
     }
-    const { reg, desc } = setup(
+    const { reg, desc, postureEvents } = setup(
       [[{ kind: "mode-changed", modeId: "bypassPermissions", previousModeId: "plan", cause: "agent" }]],
       { posture: "accept-edits" },
       {},
@@ -311,6 +312,29 @@ describe("in-place revival clamps to the caller's ceiling", () => {
     expect(revived?.posture).toBe("accept-edits")
     expect(revived?.postureCeiling).toBe("accept-edits")
     expect(revived?.postureSource).toBe("agent")
+    // The clamp is announced, so the chip and session list refresh.
+    expect(postureEvents().map(ev => ev.value)).toEqual(["bypass", "accept-edits"])
+    reg.shutdown()
+  })
+
+  it("a revival within the ceiling hands the current posture and emits nothing new", async () => {
+    const resumePostures: Array<Posture | undefined> = []
+    const resumeAgent: AgentSessionResumer = async input => {
+      resumePostures.push(input.posture)
+      return scriptedSession([])
+    }
+    const { reg, desc, postureEvents } = setup(
+      [[{ kind: "mode-changed", modeId: "default", previousModeId: "plan", cause: "agent" }]],
+      { posture: "plan" },
+      {},
+      { resumeAgent },
+    )
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.reapIdle(desc.id)).toBe(true)
+    const revived = await tryRestartInPlace(reg, reg.get(desc.id)!)
+    expect(resumePostures).toEqual(["default"])
+    expect(revived?.posture).toBe("default")
+    expect(postureEvents()).toHaveLength(1)
     reg.shutdown()
   })
 })
