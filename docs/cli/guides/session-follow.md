@@ -57,7 +57,9 @@ default `urgency: "next-turn"`, an idle follower runs it as a turn and a busy on
 queues it behind the current turn. With `urgency: "fyi"` the digest is parked in
 the follower's inbox and never starts a turn, so a supervisor following many
 sessions is not woken for every digest. If a batch is fed by both an `fyi` and a
-`next-turn` follow, it is delivered as `next-turn`. Same-session duplicates in a
+`next-turn` follow, it is delivered as `next-turn`. The always-wake set (a
+session awaiting input, a crash, or a turn-end carrying a question) is always
+delivered at least at `next-turn`, even on an `fyi` follow. Same-session duplicates in a
 batch collapse (the latest wins). Format:
 
 ```text

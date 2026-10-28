@@ -981,6 +981,13 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         text = formatFollowDigest(entries, textFor, id => registry.get(id))
       }
     }
+    // Floor: the always-wake set (`isMustWakeEntry`) is never delivered at
+    // `fyi`, even when every contributing follow is `fyi`. Applies on every
+    // path above (triage on, triage off, fail-open); a digest with no
+    // must-wake entry is unaffected.
+    if (urgency === "fyi" && deliveredEntries.some(isMustWakeEntry)) {
+      urgency = "next-turn"
+    }
     const digest = { entries: digestEntriesFor(deliveredEntries), omitted: 0 }
     const p = deliver(followerId, text, batch.followIds, urgency, digest)
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
