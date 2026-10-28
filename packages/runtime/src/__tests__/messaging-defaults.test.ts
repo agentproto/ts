@@ -36,6 +36,7 @@ describe("resolveMessagingDefaults", () => {
       allowSiblings: true,
       allowSameWorkspace: false,
       peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+      peerBinding: "slug",
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
     })
@@ -47,6 +48,16 @@ describe("resolveMessagingDefaults", () => {
     }))
     expect(result.peerGroups).toEqual([])
     expect(DEFAULT_MESSAGING_DEFAULTS.peerGroups).toEqual([])
+  })
+
+  it("P5 resolves peerBinding: slug by default, verified when configured", async () => {
+    const empty = await resolveMessagingDefaults(async () => ({}))
+    expect(empty.peerBinding).toBe("slug")
+    expect(DEFAULT_MESSAGING_DEFAULTS.peerBinding).toBe("slug")
+    const verified = await resolveMessagingDefaults(async () => ({
+      defaults: { messaging: { peerBinding: "verified" } },
+    }))
+    expect(verified.peerBinding).toBe("verified")
   })
 
   it("defaults the same-workspace allowance to ON", async () => {

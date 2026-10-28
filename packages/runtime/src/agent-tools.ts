@@ -91,6 +91,7 @@ import {
 import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
 import { registerPermissionsTools } from "./permissions-tools.js"
 import { decide } from "./permissions.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 import { postParentRelayMessage, relayTokenForSession } from "./parent-relay.js"
 import { SESSION_CHAT_APP_ID } from "@agentproto/apps"
 
@@ -549,6 +550,8 @@ export interface RegisterAgentToolsOptions {
    *  `message_send` / `message_reply` reach any session of the SAME
    *  workspace, even without a tree edge. Default true. */
   messagingAllowSameWorkspace?: boolean
+  /** config.json `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  messagingPeerBinding?: "slug" | "verified"
   /** config.json `defaults.messaging.peerGroups` - groups of workspace
    *  slugs. Lets `message_send` / `message_reply` reach a session whose
    *  workspace slug sits in the same group, even without a tree edge.
@@ -587,6 +590,7 @@ export function registerAgentTools(
     isSessionChatInstalled,
     messagingAllowSiblings,
     messagingAllowSameWorkspace,
+    messagingPeerBinding,
     messagingPeerGroups,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
@@ -1267,8 +1271,10 @@ export function registerAgentTools(
           allowSiblings: messagingAllowSiblings === true,
           ...(messagingAllowSameWorkspace !== undefined ? { allowSameWorkspace: messagingAllowSameWorkspace } : {}),
           ...(messagingPeerGroups ? { peerGroups: messagingPeerGroups } : {}),
+          ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
           agentInterrupt: messagingAgentInterrupt ?? "deny",
         },
+        workspaceOfCwd: createWorkspaceOfCwd(),
       }
       const decision = decide(principal, "session.message", resource, messagingPolicy)
       if (!decision.allow || !decision.relation) {
@@ -1358,6 +1364,8 @@ export function registerAgentTools(
     ...(callerSessionId ? { callerSessionId } : {}),
     ...(messagingAllowSiblings ? { allowSiblings: true } : {}),
     ...(messagingAllowSameWorkspace === false ? { allowSameWorkspace: false } : {}),
+    ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
+    workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
@@ -1375,6 +1383,8 @@ export function registerAgentTools(
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
+    workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
 

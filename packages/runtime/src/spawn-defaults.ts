@@ -189,6 +189,11 @@ export interface SpawnDefaultsConfig {
      *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
      *  no cross-workspace link. Independent of `allowSameWorkspace`. */
     peerGroups?: string[][]
+    /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
+     *  workspace slug (existing behaviour). "verified": peers only when both
+     *  cwds resolve to the same registered workspace (`findWorkspaceByPath`).
+     *  The tree is never affected; decisions report `peerVerified`. */
+    peerBinding?: "slug" | "verified"
     /** Whether a SESSION sender may use urgency `interrupt` (cancel the
      *  recipient's in-flight turn). Default "deny": downgraded to `steer`
      *  and reported as such. Human (HTTP/CLI) senders always may. */

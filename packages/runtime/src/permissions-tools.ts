@@ -19,6 +19,7 @@ import {
   type PermissionResource,
   type Principal,
 } from "./permissions.js"
+import { createWorkspaceOfCwd } from "./workspace-binding.js"
 
 export interface RegisterPermissionsToolsOptions {
   registry: SessionsRegistry
@@ -32,6 +33,10 @@ export interface RegisterPermissionsToolsOptions {
   peerGroups?: readonly (readonly string[])[]
   /** `defaults.messaging.agentInterrupt === "allow"`, resolved for this request. */
   allowInterrupt?: boolean
+  /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  peerBinding?: "slug" | "verified"
+  /** Workspace resolver for verified peer binding; defaults to the registry's lookup. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
@@ -42,8 +47,17 @@ const text = (body: Record<string, unknown>, isError = false): ToolResult => ({
 })
 
 export function registerPermissionsTools(server: McpServer, opts: RegisterPermissionsToolsOptions): void {
-  const { registry, callerScope, callerSessionId, allowSiblings, allowSameWorkspace, peerGroups, allowInterrupt } =
-    opts
+  const {
+    registry,
+    callerScope,
+    callerSessionId,
+    allowSiblings,
+    allowSameWorkspace,
+    peerGroups,
+    allowInterrupt,
+    peerBinding,
+    workspaceOfCwd,
+  } = opts
 
   server.tool(
     "permissions_explain",
@@ -119,8 +133,10 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
           allowSiblings: allowSiblings === true,
           ...(allowSameWorkspace !== undefined ? { allowSameWorkspace } : {}),
           ...(peerGroups ? { peerGroups } : {}),
+          ...(peerBinding ? { peerBinding } : {}),
           agentInterrupt: allowInterrupt ? "allow" : "deny",
         },
+        ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })

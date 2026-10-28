@@ -205,8 +205,14 @@ export interface PermissionContext {
     /** `defaults.messaging.peerGroups`: workspace families linked regardless
      *  of `allowSameWorkspace`. */
     peerGroups?: readonly (readonly string[])[]
+    /** `defaults.messaging.peerBinding` (default "slug"): "slug" links peers
+     *  by recorded workspace slug; "verified" requires both cwds to resolve
+     *  to the same registered workspace via `workspaceOfCwd`. */
+    peerBinding?: "slug" | "verified"
     agentInterrupt?: "allow" | "deny"
   }
+  /** cwd to registered workspace slug (undefined when unregistered). */
+  workspaceOfCwd?: (cwd: string) => string | undefined
   /** Registry lookups for the drive gate's ancestor and `label:` rules. */
   parentOf?: (id: string) => string | undefined
   operatorLabelOf?: (id: string) => string | undefined
@@ -232,6 +238,10 @@ export interface DecisionBody {
   /** `session.message*`: the strongest relation whose grant matched (allow),
    *  or the strongest that held (deny). Reported on the envelope. */
   relation?: MessageRelation
+  /** `session.message*`: set when a peer link is (or, under the verified
+   *  binding, would have been) involved. `true` when both cwds resolve to the
+   *  same registered workspace. */
+  peerVerified?: boolean
 }
 
 /** A decision minted by `decide()`. The brand keeps a caller from
@@ -246,6 +256,58 @@ function mint(body: DecisionBody): Decision {
 
 /** Strongest first. Also the order `resolveRelation` used to test them. */
 const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "peer", "human", "system"]
+
+function verifiedSlugOf(node: MessageTreeNode, ctx: PermissionContext): string | undefined {
+  if (!node.cwd || !ctx.workspaceOfCwd) return undefined
+  return ctx.workspaceOfCwd(node.cwd)?.trim() || undefined
+}
+
+/** Same-workspace and peer-group links by the VERIFIED slugs (cwd to registered workspace). */
+function verifiedLinks(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): { group: boolean; workspace: boolean } {
+  const a = verifiedSlugOf(sender, ctx)
+  const b = verifiedSlugOf(recipient, ctx)
+  if (!a || !b) return { group: false, workspace: false }
+  return {
+    group: samePeerGroup(
+      { id: sender.id, workspaceSlug: a },
+      { id: recipient.id, workspaceSlug: b },
+      ctx.messaging?.peerGroups,
+    ),
+    workspace: a === b && ctx.messaging?.allowSameWorkspace !== false,
+  }
+}
+
+function slugLinks(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): { group: boolean; workspace: boolean } {
+  return {
+    group: samePeerGroup(sender, recipient, ctx.messaging?.peerGroups),
+    workspace: sameWorkspace(sender, recipient) && ctx.messaging?.allowSameWorkspace !== false,
+  }
+}
+
+/**
+ * How a no-tree-edge pair is bound as peers under the slug rule: "verified"
+ * when the verified rule (both cwds resolve to one registered workspace)
+ * links them too, "unverified" when only the recorded slugs do, "none" when
+ * the slug rule does not link them.
+ */
+function peerBindingStatus(
+  sender: MessageTreeNode,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext = {},
+): "none" | "verified" | "unverified" {
+  const slug = slugLinks(sender, recipient, ctx)
+  if (!slug.group && !slug.workspace) return "none"
+  const ver = verifiedLinks(sender, recipient, ctx)
+  return ver.group || ver.workspace ? "verified" : "unverified"
+}
 
 /**
  * Every relation that holds between the principal (as a sender) and the
@@ -278,9 +340,13 @@ export function collectMessageRelations(
       // A DENIED sibling edge may still be overridden by an explicit peer
       // group, but never by the same-workspace convenience — the tree edge
       // decides first (see `resolveMessageAcl` in session-message.ts).
-      const peerGroup = samePeerGroup(sender, recipient, ctx.messaging?.peerGroups)
+      const links =
+        ctx.messaging?.peerBinding === "verified"
+          ? verifiedLinks(sender, recipient, ctx)
+          : slugLinks(sender, recipient, ctx)
+      const peerGroup = links.group
       if (out.length === 0) {
-        if (peerGroup || (sameWorkspace(sender, recipient) && ctx.messaging?.allowSameWorkspace !== false)) {
+        if (peerGroup || links.workspace) {
           out.push("peer")
         }
       } else if (sibling && peerGroup) {
@@ -325,7 +391,24 @@ function decideMessage(
   ctx: PermissionContext,
 ): Decision {
   const relations = collectMessageRelations(principal, recipient, ctx)
-  const base = { action: "session.message" as const, authoritative: true, resourceId: recipient.id, relations }
+  const verifiedMode = ctx.messaging?.peerBinding === "verified"
+  const slugRelations =
+    principal.kind === "session" && verifiedMode
+      ? collectMessageRelations(principal, recipient, { ...ctx, messaging: { ...ctx.messaging, peerBinding: "slug" } })
+      : relations
+  const peerInvolved = relations.includes("peer") || slugRelations.includes("peer")
+  const peerVerified =
+    principal.kind === "session" && peerInvolved
+      ? peerBindingStatus(principal.session, recipient, ctx) === "verified" ||
+        (verifiedMode && relations.includes("peer"))
+      : undefined
+  const base = {
+    action: "session.message" as const,
+    authoritative: true,
+    resourceId: recipient.id,
+    relations,
+    ...(peerVerified !== undefined ? { peerVerified } : {}),
+  }
   if (principal.kind === "session" && principal.session.id === recipient.id) {
     return mint({ ...base, allow: false, rule: "self", reason: "a session cannot message itself" })
   }
@@ -357,6 +440,15 @@ function decideMessage(
             : hit.r === "peer"
               ? "sender shares the recipient's workspace or peer group"
               : `sender is the recipient's ${hit.r}`,
+    })
+  }
+  if (verifiedMode && slugRelations.includes("peer") && !relations.includes("peer")) {
+    return mint({
+      ...base,
+      allow: false,
+      relation: "peer",
+      rule: "messaging.peerBinding",
+      reason: "peers need a verified workspace binding (defaults.messaging.peerBinding: verified)",
     })
   }
   const held = strongest(relations)

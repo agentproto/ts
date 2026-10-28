@@ -56,6 +56,10 @@ export interface RegisterMessageToolsOptions {
    *  group, even without a tree edge and even when the same-workspace
    *  allowance is off. Empty (the default) = no cross-workspace link. */
   peerGroups?: readonly (readonly string[])[]
+  /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
+  peerBinding?: "slug" | "verified"
+  /** cwd to registered workspace slug, for the verified peer binding. */
+  workspaceOfCwd?: (cwd: string) => string | undefined
   /** `defaults.messaging.agentInterrupt: "allow"` — let a session sender's
    *  `interrupt` cancel the recipient's turn. Off by default (→ `steer`). */
   allowInterrupt?: boolean
@@ -119,8 +123,10 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
       peerGroups,
+      peerBinding: opts.peerBinding ?? "slug",
       agentInterrupt: allowInterrupt ? "allow" : "deny",
     },
+    ...(opts.workspaceOfCwd ? { workspaceOfCwd: opts.workspaceOfCwd } : {}),
   }
 
   /** The verified caller, or a tool error explaining why there's none. */
@@ -166,6 +172,11 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
+    if (decision.allow && decision.relation === "peer" && decision.peerVerified === false) {
+      console.warn(
+        `[permissions] peer-unverified sender=${self.id} recipient=${recipient.id} slug=${self.workspaceSlug} rule=${decision.rule}`,
+      )
+    }
     if (!decision.allow || !relation) {
       return fail(
         "forbidden_recipient",
