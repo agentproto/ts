@@ -6,11 +6,38 @@ plan to execute transitions, per-mode instructions and tool allowlists,
 subagents, Observational Memory defaults, permissions. Implements the
 `protocol: "proprietary"` arm contract (no subprocess).
 
-> **Status: scaffold (E48 PR 1).** This release ships the manifest schema,
-> its parser and its JSON Schema. The client is shape only: `connect()`,
-> `send()`, `events()` and `cancel()` throw
-> `not implemented yet (E48 PR 2)`. Do not register this adapter for real
-> sessions yet; the live controller lands in E48 PR 2.
+> **Status: E48 PR 2.** Runs a live controller session with its modes
+> (stream mapping, spawn-time mode selection, `setSessionMode`, cancel).
+> Tool approvals, `ask_user` and `submit_plan` suspensions land in E48 PR 3,
+> so a tool call still parks on the controller's approval gate. See
+> MASTRA-CONTROLLER.md.
+
+## Running a session
+
+```ts
+import {
+  createAgentCliClient,
+  createAgentControllerHost,
+  mastraController,
+} from "@agentproto/adapter-mastra-controller"
+
+const client = createAgentCliClient(mastraController, {
+  host: createAgentControllerHost({
+    resolvers: { "@guilde/harness/storage/postgres": ref => makeStore(ref.input) },
+  }),
+})
+await client.connect({
+  cwd,
+  env: { AGENTPROTO_MASTRA_CONTROLLER_MANIFEST: ".harness/research-assistant.md" },
+  abortSignal,
+  mode: "plan",
+})
+await client.send("turn-1", "Research the history of tea.")
+for await (const evt of client.events()) console.log(evt) // text-delta ... turn-end
+```
+
+Through the daemon, the same two inputs are the adapter options `manifest`
+and `controller_mode`.
 
 ## The manifest
 
@@ -47,8 +74,13 @@ pass through, so a host profile can add its own fields.
 ## Exports
 
 - `mastraController`: the `defineHarness` handle (slug `mastra-controller`,
-  `protocol: "proprietary"`, no modes, no capability claimed yet).
-- `createAgentCliClient`: the proprietary arm factory (scaffold, see above).
+  `protocol: "proprietary"`, options `manifest` and `controller_mode`,
+  capability `streaming`).
+- `createAgentCliClient(definition, { host?, manifest? })`: the proprietary
+  arm factory.
+- `createAgentControllerHost({ resolvers?, defaults? })`: builds the
+  `AgentControllerConfig` / `AgentController` from a manifest;
+  `UnresolvedReferenceError`, `ResolvedValueError`.
 - `parseControllerManifest`, `ControllerManifestSchema` and the per-part
   schemas, `controllerManifestJsonSchema()`.
 
