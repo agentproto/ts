@@ -616,10 +616,19 @@ export async function runSessions(args: readonly string[]): Promise<number> {
   }
 
   // One-shot
-  const page = await fetchSessionsPage(endpoint.url, listQuery)
   const projected = parseFieldList(values.fields)
-  if (projected.length > 0) {
-    printProjectedTable(page.sessions as unknown as Record<string, unknown>[], projected)
+  const page =
+    projected.length > 0
+      ? {
+          projected: true as const,
+          ...(await fetchSessionsPage<Record<string, unknown>>(endpoint.url, listQuery)),
+        }
+      : {
+          projected: false as const,
+          ...(await fetchSessionsPage(endpoint.url, listQuery)),
+        }
+  if (page.projected) {
+    printProjectedTable(page.sessions, projected)
   } else {
     printTable(page.sessions, await resolveAttentionDelaySec())
   }
@@ -3747,15 +3756,15 @@ async function readRuntimeJson(workspacePath: string): Promise<DaemonEndpoint | 
   return out.endpoint
 }
 
-async function fetchSessionsPage(
+async function fetchSessionsPage<T = SessionDescriptor>(
   baseUrl: string,
   query?: string,
-): Promise<{ sessions: SessionDescriptor[]; total?: number }> {
+): Promise<{ sessions: T[]; total?: number }> {
   const body = await httpGetJson(`${baseUrl}/sessions${query ? `?${query}` : ""}`)
   if (!body || !Array.isArray((body as { sessions?: unknown }).sessions)) {
     return { sessions: [] }
   }
-  const { sessions, total } = body as { sessions: SessionDescriptor[]; total?: unknown }
+  const { sessions, total } = body as { sessions: T[]; total?: unknown }
   return typeof total === "number" ? { sessions, total } : { sessions }
 }
 
