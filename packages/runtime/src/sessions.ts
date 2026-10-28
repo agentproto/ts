@@ -3356,6 +3356,11 @@ interface SessionRuntime {
    *  `/compress`): its usage drop is the compaction the turn asked for, not
    *  a native one. Set with `turnStartedAtMs`, cleared when the turn ends. */
   compactionTurn?: boolean
+  /** Set when a compaction turn ends and consumed by the next accepted
+   *  usage sample: a harness may report the compacted window only after the
+   *  turn is over, and that late frame is the compaction the turn asked for,
+   *  not a native one. In memory only. */
+  compactionDropExpected?: boolean
   /** The autocompact controller for this session (absolute token
    *  threshold). Created lazily on the first turn boundary that reaches it. */
   autoCompact?: AutoCompactController
@@ -9281,6 +9286,10 @@ export function createSessionsRegistry(opts?: {
    */
   function noteNativeCompaction(rt: SessionRuntime, prev: UsageSample | undefined, next: UsageSample): void {
     if (rt.contextRescue || rt.compactionTurn) return
+    if (rt.compactionDropExpected) {
+      rt.compactionDropExpected = undefined
+      return
+    }
     const verdict = detectNativeCompaction(prev, next)
     if (!verdict) return
     const now = Date.now()
@@ -9318,6 +9327,7 @@ export function createSessionsRegistry(opts?: {
       (rt.desc.durationMs ?? 0) + Math.max(0, Date.now() - rt.turnStartedAtMs)
     rt.desc.toolCalls = (rt.desc.toolCalls ?? 0) + (rt.toolCallsThisTurn ?? 0)
     rt.turnStartedAtMs = undefined
+    if (rt.compactionTurn) rt.compactionDropExpected = true
     rt.compactionTurn = undefined
   }
 
