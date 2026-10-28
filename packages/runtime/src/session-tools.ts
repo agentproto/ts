@@ -2523,7 +2523,10 @@ export function registerSessionTools(
       "modes/posture (`availableModes`/`posture`/`canonicalPostures`), " +
       "model/effort, mounted MCP servers (name/transport/ref only — never " +
       "headers/env/credentials), resolved skills, and permission-hold state " +
-      "(`permissionHold`/`pendingPermissions`). Same lookup as `session_list` " +
+      "(`permissionHold`/`pendingPermissions`), and the derived `interception` " +
+      "(whether the daemon can block before execution or only observe, for the " +
+      "harness's own tool calls and per declared native hook event; a declared " +
+      "capability, nothing is installed). Same lookup as `session_list` " +
       "/ `session_restart` (by id or name); the REST twin is " +
       "`GET /sessions/:id/capabilities`.",
     {

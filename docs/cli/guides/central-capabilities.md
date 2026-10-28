@@ -154,7 +154,11 @@ curl -s $DAEMON/sessions/<session-id>/capabilities
 }
 ```
 
-(Trimmed. The full body also lists slash commands, modes and postures.) The
+(Trimmed. The full body also lists slash commands, modes and postures, the
+declared native `hooks`, and `interception`: for an agent session, whether the
+daemon can block before execution (`permission-gate`) or only observe
+(`observe`), for the harness's own tool calls and per declared hook event. It
+is derived and declared-only, nothing is installed.) The
 MCP tool is `session_capabilities`. It never returns headers, env or
 credentials, only name, transport and URL.
 

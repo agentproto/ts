@@ -391,6 +391,10 @@ describe("session_capabilities", () => {
       expect(body.arm).toBe("acp")
       expect(body.commands).toEqual([{ name: "/compact", description: "Compact context" }])
       expect(body.hooks).toEqual({ native: desc.nativeHooks })
+      expect(body.interception).toEqual({
+        nativeToolCalls: "observe",
+        nativeHooks: { "tool.call": "permission-gate" },
+      })
 
       expect((await fetch(`${base}/sessions/sess_nope/capabilities`)).status).toBe(404)
     } finally {

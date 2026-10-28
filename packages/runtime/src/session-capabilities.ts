@@ -16,6 +16,7 @@ import type { HookCapabilityView } from "@agentproto/provider-kit"
 import type { SessionDescriptor } from "./sessions.js"
 import { CANONICAL_POSTURES, postureEnforcement, type PostureEnforcement } from "./canonical-posture.js"
 import type { CanonicalPosture } from "./session-config.js"
+import { deriveInterception, type DerivedInterception } from "./action-hooks/interception.js"
 import { conversationTerminalSlugFor } from "./conversation-store.js"
 import {
   daemonMountStatus,
@@ -99,6 +100,16 @@ export interface SessionCapabilities {
    * Ownership (harness vs host) is resolved elsewhere.
    */
   hooks?: { native: readonly HookCapabilityView[] }
+  /**
+   * Whether the daemon can block before execution or only observe, derived
+   * from the session arm, `permissionHold` and the declared native hooks;
+   * never declared. A DECLARED capability, not an installed one: a native
+   * hook entry with `can_block: true` and `async: true` reports
+   * `permission-gate` but blocks only when projected in the synchronous form.
+   * Metadata only. Present for agent-cli sessions only. Optional for older
+   * readers.
+   */
+  interception?: DerivedInterception
   pendingPermissions: number
 }
 
@@ -184,6 +195,15 @@ export function buildSessionCapabilities(
     pendingPermissions,
     ...(desc.nativeHooks !== undefined && desc.nativeHooks.length > 0
       ? { hooks: { native: desc.nativeHooks } }
+      : {}),
+    ...(desc.kind === "agent-cli"
+      ? {
+          interception: deriveInterception({
+            arm: sessionArm(desc),
+            permissionHold: desc.permissionHold === true,
+            hooks: desc.nativeHooks,
+          }),
+        }
       : {}),
   }
 }
