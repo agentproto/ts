@@ -6338,11 +6338,17 @@ function spawnFailureStatus(code: string): number {
 /** `reason` of the projected PreCompact hook's checkpoint request. */
 const NATIVE_PRE_COMPACT_REASON = "native-pre-compact"
 const CHECKPOINT_REASON_MAX = 64
+/** `reason` lands in a transcript notice line: words, digits and ". _ : -"
+ *  only, no control character, no newline, no escape, never empty. */
+const CHECKPOINT_REASON_RE = /^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,63}$/
 const CHECKPOINT_OCCURRENCE_RE = /^[^\s/\u0000-\u001f\u007f-\u009f]{1,128}$/
 /** First response per occurrence key, in this process. Bounded: the oldest
  *  entry goes first. */
 const CHECKPOINT_OCCURRENCES_MAX = 500
 const checkpointOccurrences = new Map<string, Record<string, unknown>>()
+/** Builds in flight, so a concurrent request with the same key waits for the
+ *  first one instead of building a second checkpoint. */
+const checkpointInflight = new Map<string, Promise<Record<string, unknown>>>()
 
 function rememberCheckpointOccurrence(key: string, response: Record<string, unknown>): void {
   checkpointOccurrences.set(key, response)
@@ -8094,8 +8100,11 @@ code { color: #9ad; }
       json(400, { error: "invalid_notes", message: "notes must be a string" })
       return true
     }
-    if (b.reason !== undefined && (typeof b.reason !== "string" || b.reason.length > CHECKPOINT_REASON_MAX)) {
-      json(400, { error: "invalid_reason", message: `reason must be a string of at most ${CHECKPOINT_REASON_MAX} chars` })
+    if (b.reason !== undefined && (typeof b.reason !== "string" || !CHECKPOINT_REASON_RE.test(b.reason))) {
+      json(400, {
+        error: "invalid_reason",
+        message: `reason must be 1 to ${CHECKPOINT_REASON_MAX} chars: letters, digits, spaces and . _ : - (starting with a letter or digit)`,
+      })
       return true
     }
     if (b.occurrenceId !== undefined && (typeof b.occurrenceId !== "string" || !CHECKPOINT_OCCURRENCE_RE.test(b.occurrenceId))) {
@@ -8129,7 +8138,18 @@ code { color: #9ad; }
       json(200, { ...prior, deduped: true })
       return true
     }
-    try {
+    // A request for the same occurrence that is already building: wait for it
+    // and answer its checkpoint instead of building a second one.
+    const pending = occurrenceKey ? checkpointInflight.get(occurrenceKey) : undefined
+    if (pending) {
+      try {
+        json(200, { ...(await pending), deduped: true })
+      } catch (err) {
+        json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+      }
+      return true
+    }
+    const buildResponse = async (): Promise<Record<string, unknown>> => {
       const { source, policy } = withContextPolicy(desc)
       const pct = computeContextPct(desc.contextSize, desc.contextUsed) ?? policy.continueFreshAtPct
       const checkpoint = await buildContextCheckpoint(source, {
@@ -8141,19 +8161,36 @@ code { color: #9ad; }
       registry.noteCheckpointWritten(
         desc.id,
         reason
-          ? { checkpointId: checkpoint.checkpointId, checkpointPath: checkpoint.checkpointPath, before: reason }
+          ? {
+              checkpointId: checkpoint.checkpointId,
+              checkpointPath: checkpoint.checkpointPath,
+              // The trigger ("auto" | "manual") rides in the notice line so
+              // the transcript says which kind of compaction it preceded.
+              before: typeof b.trigger === "string" ? `${reason} (${b.trigger})` : reason,
+            }
           : undefined,
       )
-      const response = {
+      return {
         ok: true,
         checkpointId: checkpoint.checkpointId,
         path: checkpoint.checkpointPath,
         checkpoint,
       }
+    }
+    try {
+      const run = buildResponse()
+      if (occurrenceKey) checkpointInflight.set(occurrenceKey, run)
+      let response: Record<string, unknown>
+      try {
+        response = await run
+      } finally {
+        if (occurrenceKey) checkpointInflight.delete(occurrenceKey)
+      }
+      // Nothing awaits between the delete above and this store, so a request
+      // arriving now finds one of the two maps populated.
       if (occurrenceKey) rememberCheckpointOccurrence(occurrenceKey, response)
       json(200, response)
-    } catch (err) {
-      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
+    } catch (err) {      json(500, { error: "checkpoint_failed", message: err instanceof Error ? err.message : String(err) })
     }
     return true
   }
