@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -26,7 +26,12 @@ let registry: SessionsRegistry
 const allowDir: { current: string } = { current: "" }
 
 beforeEach(() => {
-  tmp = mkdtempSync(join(tmpdir(), "browser-upload-newtab-test-"))
+  // realpath-resolved: on macOS `tmpdir()` sits under the `/var` symlink to
+  // `/private/var`, but `checkUploadPaths` realpaths every candidate before
+  // comparing it to the allowlist (collapsing symlinks is the whole point —
+  // the check is on the REAL target). Resolving once here keeps every path
+  // built from `tmp` in this file matching what the tool actually returns.
+  tmp = realpathSync(mkdtempSync(join(tmpdir(), "browser-upload-newtab-test-")))
   allowDir.current = join(tmp, "uploads")
   mkdirSync(allowDir.current, { recursive: true })
   registry = createSessionsRegistry({ persistPath: join(tmp, "sessions.json") })
