@@ -719,7 +719,9 @@ describe("spawnAgentSession", () => {
         name: "agentproto",
         transport: "http",
         ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}`,
-        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+        // Shadow-mode session token (the default): on the ADAPTER's copy
+        // only, see session-credentials.test.ts.
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId, "x-agentproto-session-token": expect.stringMatching(/^apst_/) },
       },
     ])
   })
@@ -788,7 +790,9 @@ describe("spawnAgentSession", () => {
         name: "agentproto",
         transport: "http",
         ref: `${daemonMcpUrl}?deferred=0&callerSessionId=${ownId}`,
-        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+        // Shadow-mode session token (the default): on the ADAPTER's copy
+        // only, see session-credentials.test.ts.
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId, "x-agentproto-session-token": expect.stringMatching(/^apst_/) },
       },
     ])
   })
@@ -854,7 +858,9 @@ describe("spawnAgentSession", () => {
         name: "agentproto",
         transport: "http",
         ref: `${daemonMcpUrl}?callerSessionId=${ownId}`,
-        headers: { [CALLER_SESSION_ID_HEADER]: ownId },
+        // Shadow-mode session token (the default): on the ADAPTER's copy
+        // only, see session-credentials.test.ts.
+        headers: { [CALLER_SESSION_ID_HEADER]: ownId, "x-agentproto-session-token": expect.stringMatching(/^apst_/) },
       },
     ])
   })

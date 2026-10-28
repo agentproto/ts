@@ -350,6 +350,8 @@ import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
+import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
+import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
 import type { MemoryStore } from "@agentproto/memory"
 import {
   memoryProjectionEnabled,
@@ -1066,6 +1068,10 @@ export function buildDaemonSelfMountEntry(
     /** `?allowTools=` scope (see `SpawnAgentSessionInput.allowTools`);
      *  forces deferred loading off. */
     allowTools?: readonly string[]
+    /** Raw session token (`session-credentials.ts`), sent as
+     *  `SESSION_TOKEN_HEADER`. Only ever set on the ADAPTER's copy of the
+     *  mounts, never on one that reaches a descriptor. */
+    sessionToken?: string
   },
 ): AcpMcpServer {
   let ref = opts.delegationDenied
@@ -1087,7 +1093,10 @@ export function buildDaemonSelfMountEntry(
     name: "agentproto",
     transport: "http",
     ref,
-    headers: { [CALLER_SESSION_ID_HEADER]: opts.callerSessionId },
+    headers: {
+      [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+      ...(opts.sessionToken ? { [SESSION_TOKEN_HEADER]: opts.sessionToken } : {}),
+    },
   }
 }
 
@@ -1168,7 +1177,16 @@ function isLoopbackHost(hostname: string): boolean {
  */
 export function stampDaemonCallerSessionId(
   mcpServers: readonly AcpMcpServer[] | undefined,
-  opts: { daemonMcpUrl: string; callerSessionId: string },
+  opts: {
+    daemonMcpUrl: string
+    callerSessionId: string
+    /** Raw session token to add as `SESSION_TOKEN_HEADER` (shadow mode).
+     *  Pass it ONLY when stamping the adapter's copy of the mounts: the
+     *  descriptor copy is persisted and served by read surfaces. Added only
+     *  to an entry that speaks as `callerSessionId` (not a foreign pin), and
+     *  an existing token header is never overwritten. */
+    sessionToken?: string
+  },
 ): AcpMcpServer[] | undefined {
   if (!mcpServers) return undefined
   return mcpServers.map(entry => {
@@ -1176,25 +1194,104 @@ export function stampDaemonCallerSessionId(
     if (!targetsDaemonGateway(entry.ref, opts.daemonMcpUrl)) return entry
     // An entry that already carries a caller identity (an explicit pin, or
     // one left over from a prior stamp) is respected and never overwritten.
-    if (entry.ref.includes("callerSessionId=")) return entry
-    if (hasCallerSessionIdHeader(entry.headers)) return entry
-    const sep = entry.ref.includes("?") ? "&" : "?"
-    return {
-      ...entry,
-      ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
-      headers: {
-        ...entry.headers,
-        [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
-      },
+    let next = entry
+    if (!entry.ref.includes("callerSessionId=") && !hasHeader(entry.headers, CALLER_SESSION_ID_HEADER)) {
+      const sep = entry.ref.includes("?") ? "&" : "?"
+      next = {
+        ...entry,
+        ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(opts.callerSessionId)}`,
+        headers: {
+          ...entry.headers,
+          [CALLER_SESSION_ID_HEADER]: opts.callerSessionId,
+        },
+      }
     }
+    if (
+      opts.sessionToken &&
+      !hasHeader(next.headers, SESSION_TOKEN_HEADER) &&
+      speaksAs(next, opts.callerSessionId)
+    ) {
+      next = { ...next, headers: { ...next.headers, [SESSION_TOKEN_HEADER]: opts.sessionToken } }
+    }
+    return next
   })
 }
 
-/** Does this mount already carry the caller-identity header? Header names
- *  are case-insensitive on the wire, so the comparison is too. */
-function hasCallerSessionIdHeader(headers: Record<string, string> | undefined): boolean {
+/** Does this mount already carry header `name`? Header names are
+ *  case-insensitive on the wire, so the comparison is too. */
+function hasHeader(headers: Record<string, string> | undefined, name: string): boolean {
   if (!headers) return false
-  return Object.keys(headers).some(k => k.toLowerCase() === CALLER_SESSION_ID_HEADER)
+  return Object.keys(headers).some(k => k.toLowerCase() === name)
+}
+
+/** Does every caller identity this mount carries (query and header) name
+ *  `sessionId`? A mount pinned to another session must not carry this
+ *  session's token. */
+function speaksAs(entry: AcpMcpServer, sessionId: string): boolean {
+  let query: string | null = null
+  try {
+    query = new URL(entry.ref ?? "").searchParams.get("callerSessionId")
+  } catch {
+    return false
+  }
+  if (query !== null && query !== sessionId) return false
+  for (const [k, v] of Object.entries(entry.headers ?? {})) {
+    if (k.toLowerCase() === CALLER_SESSION_ID_HEADER && v !== sessionId) return false
+  }
+  return true
+}
+
+/** A copy of `mcpServers` without any `SESSION_TOKEN_HEADER`: the form that
+ *  may reach a descriptor (persisted, served by read surfaces). */
+export function stripSessionTokenHeaders(
+  mcpServers: readonly AcpMcpServer[] | undefined,
+): AcpMcpServer[] | undefined {
+  if (!mcpServers) return undefined
+  return mcpServers.map(entry => {
+    if (!hasHeader(entry.headers, SESSION_TOKEN_HEADER)) return entry
+    const kept = Object.entries(entry.headers ?? {}).filter(([k]) => k.toLowerCase() !== SESSION_TOKEN_HEADER)
+    const { headers: _drop, ...rest } = entry
+    return kept.length > 0 ? { ...rest, headers: Object.fromEntries(kept) } : rest
+  })
+}
+
+/**
+ * The ADAPTER's copy of a session's mounts: `mcpServers` (the descriptor
+ * copy, already caller-stamped) plus a freshly minted session token on the
+ * daemon self-mount, when `defaults.identity.sessionTokens` is `"shadow"`
+ * and the adapter receives its mounts in memory (`sessionTokenDeliverySafe`).
+ * Returns the input unchanged otherwise. Shared by the spawn, restart and
+ * lazy-resume paths, each of which mints a NEW token rather than reading one
+ * back from a descriptor (there is none there to read).
+ */
+export function withSessionToken(
+  mcpServers: AcpMcpServer[] | undefined,
+  opts: {
+    mode: SessionTokenMode
+    adapter: string | undefined
+    sandbox?: unknown
+    daemonMcpUrl: string | undefined
+    sessionId: string
+    mint?: (sessionId: string) => string
+  },
+): AcpMcpServer[] | undefined {
+  if (!mcpServers || opts.mode !== "shadow" || !opts.daemonMcpUrl) return mcpServers
+  if (!sessionTokenDeliverySafe(opts.adapter, opts.sandbox)) return mcpServers
+  const daemonMcpUrl = opts.daemonMcpUrl
+  const target = mcpServers.some(
+    e =>
+      e.transport === "http" &&
+      typeof e.ref === "string" &&
+      targetsDaemonGateway(e.ref, daemonMcpUrl) &&
+      !hasHeader(e.headers, SESSION_TOKEN_HEADER) &&
+      speaksAs(e, opts.sessionId),
+  )
+  if (!target) return mcpServers
+  return stampDaemonCallerSessionId(mcpServers, {
+    daemonMcpUrl,
+    callerSessionId: opts.sessionId,
+    sessionToken: (opts.mint ?? mintSessionToken)(opts.sessionId),
+  })
 }
 
 /** Slugify an imported-MCP alias into a valid `mcpServers[].name` — lowercase,
@@ -4675,6 +4772,24 @@ export async function spawnAgentSession(
     // Independent of cwd/the worktree — safe to resolve before either the
     // async or the synchronous provisioning branch below needs it.
     const resolvedMcpServers = await resolveMcpCredentialHeaders(mcpServers)
+    // SESSION IDENTITY TOKEN (ts#2165 step 5, shadow): two copies of the
+    // mounts from here on. The DESCRIPTOR copy is persisted and served by
+    // read surfaces (`session_list full`, `GET /sessions/...`,
+    // `session_capabilities`), so it never carries a session token, not even
+    // one a caller supplied. The ADAPTER copy gets a freshly minted token on
+    // the daemon self-mount and goes only to `startSession`. The mint is
+    // lazy: it runs right before `startSession`, so a spawn that is refused
+    // or fails while the worktree is provisioned never leaves a credential
+    // behind (one that fails AT `startSession` is revoked by the catches).
+    const descriptorMcpServers = stripSessionTokenHeaders(resolvedMcpServers)
+    const adapterMcpServersForStart = (): AcpMcpServer[] | undefined =>
+      withSessionToken(resolvedMcpServers, {
+        mode: sessionTokenModeOf(configDefaults),
+        adapter: input.adapter,
+        sandbox: input.sandbox,
+        daemonMcpUrl,
+        sessionId: mintedSessionId,
+      })
     // ── Async worktree provisioning ──────────────────────────────────
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
@@ -4730,7 +4845,7 @@ export async function spawnAgentSession(
         // a later relaunch names to resume THIS session's checkpoint.
         ...(resumeTaskId ? { taskId: resumeTaskId } : {}),
         ...(initialTitle ? { title: initialTitle } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
         ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
@@ -4873,6 +4988,7 @@ export async function spawnAgentSession(
             finalCwd,
           )
           if (effectiveCommandSandbox) pendingDesc.commandSandbox = effectiveCommandSandbox
+          const adapterMcpServers = adapterMcpServersForStart()
           const agentSession = await resolved!.startSession({
             cwd: finalCwd,
             ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
@@ -4889,7 +5005,7 @@ export async function spawnAgentSession(
             ...(input.posture !== undefined ? { posture: input.posture } : {}),
             ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
             ...(authSpec ? { auth: authSpec } : {}),
-            ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+            ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
             ...(input.permissionHold ? { permissionHold: true } : {}),
             ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
             ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
@@ -4942,6 +5058,8 @@ export async function spawnAgentSession(
             ...(asyncPrompt ? { initialPromptSystem: composedPreamble(asyncPrompt, input.prompt) } : {}),
           })
         } catch (err) {
+          // The row never went live: drop the credential minted for it.
+          revokeSessionTokens(mintedSessionId)
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
             message: `agent_start: spawn failed — ${
@@ -5122,7 +5240,7 @@ export async function spawnAgentSession(
         cwd,
         explicitCwd: explicitCwd && boxCwdRequest === undefined,
         ...(boxCwdRequest !== undefined ? { boxCwdRequest } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
         ...(input.model ? { model: input.model } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
@@ -5293,6 +5411,7 @@ export async function spawnAgentSession(
         input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
         cwd,
       )
+      const adapterMcpServers = adapterMcpServersForStart()
       const localStartArgs = {
         cwd,
         ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
@@ -5312,7 +5431,7 @@ export async function spawnAgentSession(
         ...(input.posture !== undefined ? { posture: input.posture } : {}),
         ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
         ...(authSpec ? { auth: authSpec } : {}),
-        ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+        ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
         ...(input.permissionHold ? { permissionHold: true } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
@@ -5497,7 +5616,7 @@ export async function spawnAgentSession(
       // as a belt-and-braces for the `wait` path (which sends the prompt
       // itself, not via `initialPrompt`).
       ...(initialTitle ? { title: initialTitle } : {}),
-      ...(resolvedMcpServers ? { mcpServers: resolvedMcpServers } : {}),
+      ...(descriptorMcpServers ? { mcpServers: descriptorMcpServers } : {}),
       ...(spawnDefaults.skills.length > 0 ? { skills: spawnDefaults.skills } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
       ...(input.appendSystemPrompt !== undefined
@@ -5747,6 +5866,9 @@ export async function spawnAgentSession(
       registry.forget(sandboxPendingId)
       sandboxPendingId = undefined
     }
+    // A spawn that failed before its row went live must not leave the
+    // credential minted for it (a live row keeps its own).
+    if (!registry.get(mintedSessionId)) revokeSessionTokens(mintedSessionId)
     return finish({
       ok: false,
       code: "agent_spawn_failed",

@@ -126,6 +126,13 @@ import {
 } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { sweepWiringLifecycle, wireRetirementCleanup } from "./retirement-cleanup.js"
+import {
+  attachSessionCredentialStore,
+  revokeSessionTokens,
+  sessionCredentialsFile,
+} from "./session-credentials.js"
+import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
+import { withSessionToken } from "./session-spawn.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import {
   DEFAULT_REATTACH_TIMEOUT_MS,
@@ -2830,8 +2837,19 @@ export async function createGateway(
                   : {}),
                 // Re-mount the persisted spawn-time toolset on resume
                 // (orchestrator WP1) — closes the gap where re-spawn
-                // dropped mcpServers.
-                ...(mcpServers ? { mcpServers } : {}),
+                // dropped mcpServers. The persisted list carries no session
+                // token; the revived adapter gets a FRESH one for the same
+                // id (shadow mode, see `withSessionToken`).
+                ...(mcpServers
+                  ? {
+                      mcpServers: withSessionToken(mcpServers, {
+                        mode: (await resolveIdentityDefaults()).sessionTokens,
+                        adapter: adapterSlug,
+                        daemonMcpUrl,
+                        sessionId: descriptor.id,
+                      }),
+                    }
+                  : {}),
                 // Re-deliver the persisted imported-skill folders on resume
                 // (skill imports) — the same set the original spawn delivered,
                 // so a revived session keeps its skills.
@@ -2875,6 +2893,24 @@ export async function createGateway(
       : {}),
   })
   sessionsRef = sessions
+
+  // SESSION CREDENTIALS (ts#2165 step 5, shadow): the hashes of the
+  // per-session identity tokens persist in `session-credentials.json`, so a
+  // daemon restart keeps live sessions verifiable. The boot prune drops
+  // tokens of sessions this registry no longer knows or that retired. A
+  // retirement revokes the session's tokens. Both are undone by `stop()`.
+  const detachSessionCredentials = persist
+    ? attachSessionCredentialStore({
+        path: sessionCredentialsFile(),
+        keep: id => {
+          const desc = sessions.get(id)
+          return desc !== undefined && desc.retiredAt === undefined
+        },
+      })
+    : undefined
+  const unsubscribeSessionCredentials = sessions.onSessionRetired(ev => {
+    revokeSessionTokens(ev.sessionId)
+  })
 
   // `agentproto:session-completed` host event: derived after `session:exited`
   // from the descriptor outcome or a recorded `policy:passed`. The bus has no
@@ -4864,6 +4900,13 @@ export async function createGateway(
       health: () => reactionRunner.health(),
       wiring: () => reactionWiring.current(),
     },
+    // Caller identity observation + `GET /identity` (ts#2165 step 5). The
+    // mode is re-read from config at most every few seconds (the observer
+    // runs on every /mcp call), so a `config_set` of
+    // `defaults.identity.sessionTokens` is hot within that window.
+    identity: {
+      mode: createIdentityModeReader(),
+    },
   })
 
   heartbeat.start()
@@ -5355,6 +5398,9 @@ export async function createGateway(
       // lost in the debounce window is a re-drive the target dedupes anyway.
       reactionRunner.stop()
       reactionReceiptStore.flushSync()
+      // Stop revoking session tokens and detach their store.
+      unsubscribeSessionCredentials()
+      detachSessionCredentials?.()
       // Flush the orchestrator scope-token registry so a token minted /
       // bound / revoked just before a restart isn't lost inside the
       // debounce window — same reasoning as the sentinel flush above.

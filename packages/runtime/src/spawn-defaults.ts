@@ -203,6 +203,13 @@ export interface SpawnDefaultsConfig {
      *  in `pendingPrompts`. Default 5. */
     pendingPromptStaleMinutes?: number
   }
+  /** Caller identity (ts#2165 step 5). */
+  identity?: {
+    /** `defaults.identity.sessionTokens` - "shadow" (default): a per-session
+     *  token is minted at spawn and callers are classified (`GET /identity`)
+     *  without refusing anything. "off": no token, no observation. */
+    sessionTokens?: "off" | "shadow"
+  }
   /** Action hook reactions (AIP-71). */
   reactions?: {
     /** Completed sessions of these workspace slugs are ingested into the
