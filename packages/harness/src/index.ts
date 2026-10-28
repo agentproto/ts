@@ -202,6 +202,7 @@ export type {
   NativeHookHandler,
   NativeHookContext,
   NativeHookCapability,
+  MemoryProjectionCapability,
   AgentCliInstallMethod,
   AgentCliVersionCheck,
   AgentCliUpgrade,

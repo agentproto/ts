@@ -423,6 +423,18 @@ const capabilitiesSchema = z.object({
    * this flag — defaults to false (conservative).
    */
   file_attach: z.boolean().optional(),
+  /**
+   * AIP-72 memory projection declaration (section 9). Metadata only: the
+   * host resolves the effective projection. Absent reads as
+   * `{ inject: "none", capture: "none" }`.
+   */
+  memory: z
+    .object({
+      inject: z.enum(["native-dir", "system-prompt", "none"]).optional(),
+      capture: z.enum(["native-dir-diff", "none"]).optional(),
+    })
+    .strict()
+    .optional(),
   hooks: z
     .array(nativeHookCapabilitySchema)
     .optional()

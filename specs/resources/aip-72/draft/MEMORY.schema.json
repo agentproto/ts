@@ -85,7 +85,7 @@
         "minLength": 1
       },
       "default": [],
-      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:fhcm', 'agent:assistant', 'pr:agentproto/ts#1858')."
+      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:acme', 'agent:assistant', 'pr:acme/app#42')."
     },
     "polarity": {
       "enum": [
@@ -123,7 +123,7 @@
         "rule": {
           "type": "string",
           "minLength": 1,
-          "description": "Classifier rule that produced the item (e.g. 'lens-confident', 'brain-memory-file')."
+          "description": "Classifier rule that produced the item (e.g. 'classifier-confident', 'memory-file')."
         },
         "source": {
           "type": "string",
@@ -155,7 +155,7 @@
         "producer": {
           "type": "string",
           "minLength": 1,
-          "description": "Who or what captured the item (e.g. a clerk lens, a migration, an importer). 'unknown' when the producer did not identify itself."
+          "description": "Who or what captured the item (e.g. a clerk, a migration, an importer). 'unknown' when the producer did not identify itself."
         },
         "capturedAt": {
           "type": "string",
@@ -277,7 +277,7 @@
         "source": {
           "type": "string",
           "minLength": 1,
-          "description": "Provenance source class (e.g. 'brain-transcript', 'brain-memory-file', 'converse', 'task-close', 'recall-gap')."
+          "description": "Provenance source class (e.g. 'transcript', 'memory-file', 'converse', 'task-close', 'recall-gap')."
         },
         "sessionId": {
           "type": "string",
@@ -301,7 +301,7 @@
         "extractorVersion": {
           "type": "string",
           "minLength": 1,
-          "description": "Identifier and version of the extractor that produced the claim (e.g. 'lens@3'), so a reader can tell items from different extractor generations apart."
+          "description": "Identifier and version of the extractor that produced the claim (e.g. 'extractor@3'), so a reader can tell items from different extractor generations apart."
         }
       },
       "description": "Where the item's claim was observed."
@@ -313,12 +313,12 @@
         "sourceKind": {
           "type": "string",
           "minLength": 1,
-          "description": "Kind of source the evidence came from (e.g. 'brain-transcript', 'brain-memory-file')."
+          "description": "Kind of source the evidence came from (e.g. 'transcript', 'memory-file')."
         },
         "trust": {
           "type": "string",
           "minLength": 1,
-          "description": "Trust class of the source (e.g. 'jeremy', 'internal')."
+          "description": "Trust class of the source (e.g. 'owner', 'internal')."
         },
         "explicitness": {
           "type": "string",
@@ -350,7 +350,7 @@
             "minLength": 1
           },
           "default": [],
-          "description": "Resolved anchor labels in their formatted form (e.g. 'global', 'project:fhcm', 'pr:agentproto/ts#1858', 'session:sess_…')."
+          "description": "Resolved anchor labels in their formatted form (e.g. 'global', 'project:acme', 'pr:acme/app#42', 'session:sess_…')."
         },
         "ageHours": {
           "type": "number",
