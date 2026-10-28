@@ -158,11 +158,15 @@ import type {
 import type { AgentsMdMode } from "./agents-md.js"
 import {
   buildAutoCompactCompactInstructions,
+  buildAutoCompactResumePrompt,
   buildAutoCompactTranscriptNote,
   compactCommandTakesInstructions,
   createAutoCompactController,
   deriveLastTurnOutcome,
+  hasWorkInProgress,
+  readFiniteTokens,
   type AutoCompactController,
+  type AutoCompactDecision,
   type AutoCompactOutcome,
   type WorkInProgressSnapshot,
 } from "./auto-compact.js"
@@ -9611,10 +9615,14 @@ export function createSessionsRegistry(opts?: {
       return
     }
     try {
-      const result = await continueAgentSessionFresh({ registry, resolveAgentAdapter }, rt.desc, {
-        harness,
-        baseDir: transcriptBaseDir,
-      })
+      const result = await continueAgentSessionFresh(
+        { registry, resolveAgentAdapter },
+        withContextPolicy(rt.desc).source,
+        {
+          harness,
+          baseDir: transcriptBaseDir,
+        },
+      )
       appendLine(
         rt,
         `[context] handed off to ${harnessDisplayName(harness)} as ${result.descriptor.id} (checkpoint ${result.checkpoint.checkpointId})`,
@@ -9874,8 +9882,9 @@ export function createSessionsRegistry(opts?: {
     // `/compact` would then collide with.
     const run = async (): Promise<AutoCompactOutcome> => {
       let compacted = false
+      let outcome: AutoCompactOutcome | undefined
       try {
-        const outcome = await sendAutoCompactPrompt(rt, snapshot)
+        outcome = await sendAutoCompactPrompt(rt, snapshot)
         compacted = true
         return outcome
       } finally {
@@ -9887,7 +9896,16 @@ export function createSessionsRegistry(opts?: {
         // changed nothing), and without re-scheduling auto-compact, so this
         // cannot loop. Before the queue drain: an action that takes the lock
         // holds the queue until it is done.
-        if (compacted && isSessionAlive(rt) && !rt.busy) {
+        // Do not re-evaluate while a resume turn will be injected for work in
+        // progress: that resume would race the re-evaluation and can be dropped
+        // or leave a stale question.
+        if (
+          compacted &&
+          isSessionAlive(rt) &&
+          !rt.busy &&
+          outcome &&
+          !hasWorkInProgress(outcome.snapshot)
+        ) {
           void evaluateContextContinuity(rt, { skipAutoCompact: true }).catch(() => undefined)
         }
         if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
