@@ -96,4 +96,31 @@ describe("agentproto sessions list --fields (table output)", () => {
     expect(await runSessions(["list", "--fields", "id,status"])).toBe(0)
     expect(lines()[0]).toBe("No sessions.")
   })
+
+  it.each([" ", ",", " , "])("blank --fields %j sends no fields param and renders the full table", async raw => {
+    httpGetJson.mockResolvedValue({
+      sessions: [
+        {
+          id: "sess_a",
+          kind: "agent-cli",
+          workspaceSlug: "default",
+          command: "claude",
+          status: "running",
+          startedAt: "2026-10-09T10:00:00.000Z",
+          cwd: "/tmp/ws",
+        },
+      ],
+    })
+    expect(await runSessions(["list", "--fields", raw])).toBe(0)
+    const url = new URL(String(httpGetJson.mock.calls.at(-1)?.[0]))
+    expect(url.searchParams.has("fields")).toBe(false)
+    expect(lines()[0]).toContain("WORKSPACE")
+  })
+
+  it("sends the normalized field list to the daemon", async () => {
+    httpGetJson.mockResolvedValue({ sessions: [{ id: "sess_a", status: "running" }] })
+    await runSessions(["list", "--fields", " id, status ,,id"])
+    const url = new URL(String(httpGetJson.mock.calls.at(-1)?.[0]))
+    expect(url.searchParams.get("fields")).toBe("id,status")
+  })
 })

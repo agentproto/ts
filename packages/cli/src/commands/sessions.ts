@@ -670,7 +670,7 @@ function buildSessionListQuery(v: SessionListFlags): string | undefined {
   put("status", v.status)
   if (v.alive) qs.set("onlyAlive", "true")
   put("limit", v.limit)
-  put("fields", v.fields)
+  put("fields", parseFieldList(v.fields).join(","))
   const text = qs.toString()
   return text === "" ? undefined : text
 }
