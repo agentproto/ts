@@ -33,11 +33,11 @@
     },
     "inputs": {
       "description": "Defined by AIP-16 — the IO `inputs` block.",
-      "$ref": "https://agentproto.sh/docs/aip-16/IO.schema.json#/$defs/inputs"
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/inputs"
     },
     "outputs": {
       "description": "Defined by AIP-16 — the IO `outputs` block.",
-      "$ref": "https://agentproto.sh/docs/aip-16/IO.schema.json#/$defs/outputs"
+      "$ref": "https://agentproto.sh/schemas/aip-16/IO.schema.json#/$defs/outputs"
     },
     "idempotent": {
       "type": "boolean",

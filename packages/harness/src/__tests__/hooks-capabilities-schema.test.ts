@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
 import { describe, it, expect } from "vitest"
 import { defineHarness } from "../define-agent-cli.js"
 import { agentCliFromManifest, parseAgentCliManifest } from "../manifest/index.js"
@@ -133,6 +135,125 @@ describe("capabilities.hooks (AIP-71)", () => {
     const handle = defineHarness(minimal({ capabilities: { streaming: true } }))
     expect(handle.capabilities).toEqual({ streaming: true })
     expect(handle.capabilities?.hooks).toBeUndefined()
+  })
+})
+
+describe("capabilities.hooks against the vendored HARNESS.schema.json", () => {
+  const schemaPath = fileURLToPath(
+    new URL("../../../../specs/resources/aip-45/draft/HARNESS.schema.json", import.meta.url),
+  )
+  const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as {
+    $defs: {
+      capabilities: { properties: { hooks: { type: string; items: { $ref: string } } } }
+      nativeHookCapability: {
+        required: string[]
+        additionalProperties: boolean
+        properties: Record<string, { enum?: string[]; items?: { enum: string[] } }>
+      }
+    }
+  }
+  const def = schema.$defs.nativeHookCapability
+
+  it("points capabilities.hooks at nativeHookCapability", () => {
+    expect(schema.$defs.capabilities.properties.hooks.items.$ref).toBe(
+      "#/$defs/nativeHookCapability",
+    )
+  })
+
+  it("refuses a missing required field of the schema entry", () => {
+    for (const field of def.required) {
+      const { [field as keyof NativeHookCapability]: _omitted, ...rest } = validHook
+      expect(
+        () => defineHarness(withHooks([rest as unknown as NativeHookCapability])),
+        field,
+      ).toThrow()
+    }
+  })
+
+  it("accepts every enum value the schema lists and refuses one it does not", () => {
+    for (const path of def.properties.path?.enum ?? []) {
+      expect(() =>
+        defineHarness(withHooks([{ ...validHook, path: path as "admission", can_block: false }])),
+      ).not.toThrow()
+    }
+    for (const context of def.properties.context?.enum ?? []) {
+      expect(() =>
+        defineHarness(withHooks([{ ...validHook, context: context as "none" }])),
+      ).not.toThrow()
+    }
+    for (const handler of def.properties.handlers?.items?.enum ?? []) {
+      expect(() =>
+        defineHarness(withHooks([{ ...validHook, handlers: [handler as "command"] }])),
+      ).not.toThrow()
+    }
+    expect(() =>
+      defineHarness(withHooks([{ ...validHook, path: "before" as "admission" }])),
+    ).toThrow()
+    expect(() =>
+      defineHarness(withHooks([{ ...validHook, handlers: ["shell" as "command"] }])),
+    ).toThrow()
+    expect(() =>
+      defineHarness(withHooks([{ ...validHook, context: "replace" as "append" }])),
+    ).toThrow()
+  })
+
+  it("parses the AIP-45 capabilities example: hooks + memory + mode_events + typed_prompts", () => {
+    const source = `---
+name: hermes
+id: hermes
+description: Nous Research Hermes Agent.
+version: 0.1.0
+bin: hermes
+bin_args: [acp]
+install:
+  - method: brew
+    package: hermes
+version_check:
+  cmd: hermes --version
+  parse: "(\\\\d+\\\\.\\\\d+\\\\.\\\\d+)"
+  range: ">=0.13.0"
+  timeout_ms: 5000
+sandbox: ./SANDBOX.md
+protocol: acp
+acp: ./hermes-acp.ACP.md
+capabilities:
+  streaming: true
+  tool_calls: true
+  sub_agents: true
+  file_io: true
+  multimodal: true
+  resumable: true
+  bidirectional: true
+  mode_events: true
+  typed_prompts: true
+  hooks:
+    - event: tool-call
+      native_event: PreToolUse
+      path: admission
+      can_block: true
+      handlers: [command, mcp]
+  memory:
+    inject: native-dir
+    capture: native-dir-diff
+---
+
+Body.
+`
+    const caps = agentCliFromManifest(parseAgentCliManifest(source)).capabilities
+    expect(caps).toMatchObject({
+      mode_events: true,
+      typed_prompts: true,
+      hooks: [
+        {
+          event: "tool-call",
+          native_event: "PreToolUse",
+          path: "admission",
+          can_block: true,
+          handlers: ["command", "mcp"],
+        },
+      ],
+      memory: { inject: "native-dir", capture: "native-dir-diff" },
+    })
   })
 })
 
