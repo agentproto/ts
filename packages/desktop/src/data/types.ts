@@ -91,6 +91,14 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: JsonValue }
   options?: JsonValue
+  /** `agent-prompt` records (AIP-45): what is asked, absent on older daemons. */
+  request?: string
+  question?: JsonValue
+  planApproval?: JsonValue
+  /** `mode-changed` records (AIP-45). */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   entries?: Array<{ content: string; priority: string; status: string }>
   size?: number
   used?: number
@@ -207,6 +215,10 @@ export interface PendingPermission {
   text: string
   options: Array<{ optionId: string; name?: string; kind?: string }>
   requestedAt: string
+  /** AIP-45 typed request; absent (or older daemons) reads as a tool permission. */
+  request?: string
+  question?: JsonValue
+  planApproval?: JsonValue
 }
 
 /** POST /permissions/:id body — copied field-for-field from the VS Code client. */
@@ -214,4 +226,6 @@ export interface RespondPermissionInput {
   decision: "approve" | "deny"
   optionId?: string
   scope?: "once" | "always"
+  /** Free-text answer of a question, or the reason of a rejected plan. */
+  feedback?: string
 }

@@ -27,6 +27,7 @@ import type {
   PresentedTurn,
   PresentedToolSegment,
   PresentedQuestionSegment,
+  PresentedSegment,
 } from "./conversation.js"
 import type { SessionDescriptor } from "../client/types.js"
 import type { DomWindow, DomDocument, DomElement, DomEvent } from "jsdom"
@@ -262,6 +263,180 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
     const nopermButtons = [...segNode(panel, "q-noperm")!.querySelectorAll("button.question-option")]
     expect(nopermButtons).toHaveLength(1)
     expect((nopermButtons[0] as unknown as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  describe("AIP-45 mode changes and typed prompts", () => {
+    const mount = (seg: PresentedSegment, onPost?: (msg: unknown) => void): Panel => {
+      const panel = renderPanel({
+        onPost: msg => {
+          if ((msg as { type?: string }).type === "resolveQuestion") onPost?.(msg)
+        },
+      })
+      const conv: PresentedConversation = {
+        version: 1,
+        sessionId: "s1",
+        turns: [{ id: "turn-1", role: "assistant", segments: [seg] }],
+      }
+      panel.send({ type: "init", session: session(), nonce: "n", mode: "structured", conversation: conv })
+      return panel
+    }
+    const click = (panel: Panel, node: DomElement | null | undefined): void => {
+      if (!node) throw new Error("node missing")
+      node.dispatchEvent(new panel.window.Event("click", { bubbles: true }))
+    }
+    const type = (panel: Panel, input: DomElement | null | undefined, value: string): void => {
+      if (!input) throw new Error("input missing")
+      ;(input as unknown as HTMLInputElement).value = value
+      input.dispatchEvent(new panel.window.Event("input", { bubbles: true }))
+    }
+
+    it("paints a mode change as a quiet one-line row", () => {
+      const panel = mount({ kind: "mode-changed", id: "m1", text: "Mode: plan -> execute · by agent" })
+      const node = segNode(panel, "m1")
+      expect(node?.className).toContain("mode-row")
+      expect(node?.textContent).toBe("Mode: plan -> execute · by agent")
+    })
+
+    it("paints a question's choices as buttons that post the chosen optionId", () => {
+      const posted: unknown[] = []
+      const panel = mount(
+        {
+          kind: "agent-question",
+          id: "q1",
+          toolCallId: "perm-1",
+          options: ["Yes", "No", "Decline to answer"],
+          optionItems: [
+            { id: "answer:0", label: "Yes" },
+            { id: "answer:1", label: "No" },
+            { id: "decline", label: "Decline to answer" },
+          ],
+          request: "question",
+          question: {
+            prompt: "Ship it?",
+            choices: [
+              { optionId: "answer:0", label: "Yes", description: "merge now" },
+              { optionId: "answer:1", label: "No" },
+            ],
+          },
+        },
+        msg => posted.push(msg),
+      )
+      const node = segNode(panel, "q1")
+      expect(node?.textContent).toContain("Ship it?")
+      expect(node?.textContent).not.toContain("Awaiting your decision")
+      const buttons = [...(node?.querySelectorAll("button.question-option") ?? [])]
+      expect(buttons.map(b => b.textContent)).toEqual(["Yes", "No", "Decline to answer"])
+      expect(buttons[0]?.getAttribute("title")).toBe("merge now")
+      click(panel, buttons[1])
+      expect(posted).toContainEqual({
+        type: "resolveQuestion",
+        toolCallId: "perm-1",
+        decision: "approve",
+        optionId: "answer:1",
+      })
+      expect(node?.querySelector("input")).toBeNull()
+    })
+
+    it("paints an open question with a text input that posts the answer as feedback", () => {
+      const posted: unknown[] = []
+      const panel = mount(
+        {
+          kind: "agent-question",
+          id: "q1",
+          toolCallId: "perm-1",
+          options: ["Answer"],
+          optionItems: [{ id: "answer", label: "Answer" }],
+          request: "question",
+          question: { prompt: "Which branch?", choices: [], freeTextOptionId: "answer" },
+        },
+        msg => posted.push(msg),
+      )
+      const node = segNode(panel, "q1")
+      expect(node?.textContent).toContain("Which branch?")
+      const input = node?.querySelector("input.question-text")
+      const send = node?.querySelector("button.question-send")
+      click(panel, send)
+      expect(posted).toEqual([]) // blank text is not an answer
+      type(panel, input, "  main  ")
+      click(panel, send)
+      expect(posted).toEqual([
+        { type: "resolveQuestion", toolCallId: "perm-1", decision: "approve", optionId: "answer", feedback: "main" },
+      ])
+    })
+
+    it("paints a plan approval with the plan, its target mode, and Approve / Reject", () => {
+      const posted: unknown[] = []
+      const panel = mount(
+        {
+          kind: "agent-question",
+          id: "q1",
+          toolCallId: "perm-1",
+          options: ["Approve", "Reject"],
+          optionItems: [
+            { id: "approve", label: "Approve" },
+            { id: "reject", label: "Reject" },
+          ],
+          request: "plan-approval",
+          plan: {
+            html: "<p>step <strong>one</strong></p>",
+            planRef: "plans/p.md",
+            targetModeId: "execute",
+            approveOptionId: "approve",
+            rejectOptionId: "reject",
+          },
+        },
+        msg => posted.push(msg),
+      )
+      const node = segNode(panel, "q1")
+      expect(node?.querySelector(".question-plan strong")?.textContent).toBe("one")
+      expect(node?.textContent).toContain("plans/p.md")
+      expect(node?.textContent).toContain("execute")
+
+      click(panel, node?.querySelector("button.plan-approve"))
+      expect(posted.pop()).toEqual({
+        type: "resolveQuestion",
+        toolCallId: "perm-1",
+        decision: "approve",
+        optionId: "approve",
+      })
+
+      click(panel, node?.querySelector("button.plan-reject"))
+      expect(posted.pop()).toEqual({
+        type: "resolveQuestion",
+        toolCallId: "perm-1",
+        decision: "deny",
+        optionId: "reject",
+      })
+
+      type(panel, node?.querySelector("input.question-text"), " too vague ")
+      click(panel, node?.querySelector("button.plan-reject"))
+      expect(posted.pop()).toEqual({
+        type: "resolveQuestion",
+        toolCallId: "perm-1",
+        decision: "deny",
+        optionId: "reject",
+        feedback: "too vague",
+      })
+    })
+
+    it("shows a resolved typed prompt as answered, with no controls", () => {
+      const panel = mount({
+        kind: "agent-question",
+        id: "q1",
+        toolCallId: "perm-1",
+        options: ["Approve", "Reject"],
+        optionItems: [
+          { id: "approve", label: "Approve" },
+          { id: "reject", label: "Reject" },
+        ],
+        request: "plan-approval",
+        plan: { approveOptionId: "approve", rejectOptionId: "reject" },
+        resolved: { decision: "approve", optionId: "approve", optionLabel: "Approve" },
+      })
+      const node = segNode(panel, "q1")
+      expect(node?.textContent).toContain("Approved")
+      expect(node?.querySelector("button")).toBeNull()
+    })
   })
 
   it("leaves untouched turns and segments referentially identical (===) across a patch touching one turn", () => {

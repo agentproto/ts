@@ -712,6 +712,10 @@ export interface PendingPermission {
   toolName?: string
   text: string
   options: Array<{ optionId: string; name?: string; kind?: string }>
+  /** AIP-45 typed request; absent or "tool-permission" for a plain permission. */
+  request?: string
+  question?: unknown
+  planApproval?: unknown
   requestedAt: string
 }
 
@@ -1273,6 +1277,19 @@ export interface SessionEventRecord {
   reason?: string
   error?: { message: string; code?: number; data?: unknown }
   options?: unknown
+  /** `agent-prompt` records (AIP-45): what is being asked. Absent or
+   *  "tool-permission" is the legacy permission ask. */
+  request?: string
+  /** `agent-prompt` with `request: "question"`: the typed question payload. */
+  question?: unknown
+  /** `agent-prompt` with `request: "plan-approval"`: the typed plan payload. */
+  planApproval?: unknown
+  /** `mode-changed` records (AIP-45): the mode now in force, the one it
+   *  replaced, and who switched it ("caller" | "agent"). The reason, when
+   *  stated, rides in `reason`. */
+  modeId?: string
+  previousModeId?: string
+  cause?: string
   /** `session-message` records: the daemon-attested envelope of a typed
    *  message from another session (AIP-46 §Session messages). */
   message?: {
