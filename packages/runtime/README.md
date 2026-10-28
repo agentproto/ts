@@ -40,6 +40,7 @@ A per-boot bearer token is generated automatically and written into `<workspace>
 | Health            | `GET /health`                            | Daemon status: workspace, uptime, `startedAt`, version, build identity (`sha`, `builtAt`, `source`), pid, node path, entry point — always public                     |
 | Events (SSE)      | `GET /events`                            | RuntimeEvents stream                                   |
 | MCP               | `POST /mcp` (Streamable HTTP)            | Stateless mode; per-request transport                  |
+| Identity          | `GET /identity`                          | Caller identity counters (session tokens, shadow mode) |
 | Conversations     | `GET /conversations` / `GET /conversations/<id>` | Markdown bodies                                |
 | Adapter discovery | `GET /adapters` / `POST /adapters/:slug/install` | When `listAgentAdapters` / `installAgentAdapter` is wired |
 | App scope mounts   | `POST /apps/:appId/apply` / `DELETE /apps/:appId/apply` / `GET /scopes/:scopeId/apps` | Mirrors MCP `app_apply` / `app_unapply` / `app_list_applied`; needs `appRegistry` |
@@ -110,6 +111,16 @@ and `by ∈ runner | human | policy | system`. Payloads are validated per kind
 - The optional `auth?: AuthOptions` field on `createGateway` is for the *tunnel* bearer (Cloudflare-fronted public surface), independent of the per-boot token. It gates `/mcp`, `/events`, `/conversations*`, and the heartbeat tick route, with a loopback bypass for requests that never crossed a tunnel (127.0.0.1/::1 with no `X-Forwarded-For`).
 - `agentproto serve` wires this from `daemon.authToken` in `~/.agentproto/config.json` (or `--auth-token`) when set, so the gateway can boot already gated with a stable token — no `remote_enable` call, and it survives restarts since it isn't held in memory. `RemoteController`'s `remote_enable` MCP tool is a separate, complementary mechanism: it always mints a fresh in-memory token and opens a Cloudflare quick tunnel, and takes precedence over `daemon.authToken` while active.
 
+
+### Session identity tokens (shadow mode)
+
+A `callerSessionId` (query or `x-agentproto-caller-session-id` header) is a claim, not proof. With `defaults.identity.sessionTokens: "shadow"` (the default) the daemon mints a token per spawned claude-code or hermes session and sends it as `x-agentproto-session-token` on the session's daemon self-mount.
+
+- Only the token's SHA-256 hash is kept, in `$AGENTPROTO_HOME/session-credentials.json` (mode 0600, reloaded at boot). The raw token goes to the adapter's own copy of its mounts and nowhere else: never on `SessionDescriptor.mcpServers`, `sessions.json`, `events.jsonl`, a log or a read route.
+- Every restart, lazy resume and continue-fresh mints a fresh token; a session's tokens are revoked when it retires.
+- On `/mcp` and on the routes that read the caller identity, each request is classified as `verified`, `mismatch`, `invalid_token`, `claim_only` or `anonymous`. `GET /identity` returns `{ mode, counters, byRoute, since }`. Nothing is refused or reclassified: this is the measurement for the enforcement step.
+- `"off"` mints nothing, adds no header and observes nothing. The value applies to sessions spawned after the change.
+- Not covered yet: the scoped `/mcp/orchestrator?scope=` mount (keeps its own scope token), sandbox and device forwards, and adapters that write their mounts to a file (mastracode print arm).
 ## Worktree isolation policy
 
 `agent_start.worktree` isolation is decided by `worktrees.isolation` in

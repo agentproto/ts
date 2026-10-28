@@ -4879,6 +4879,11 @@ export async function createGateway(
       health: () => reactionRunner.health(),
       wiring: () => reactionWiring.current(),
     },
+    // Caller identity observation + `GET /identity` (ts#2165 step 5). Read per
+    // request so a `config_set` of `defaults.identity.sessionTokens` is hot.
+    identity: {
+      mode: async () => (await resolveIdentityDefaults()).sessionTokens,
+    },
   })
 
   heartbeat.start()

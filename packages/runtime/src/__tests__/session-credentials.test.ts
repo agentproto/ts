@@ -14,8 +14,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs"
+import { createServer } from "node:http"
+import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createMcpServer } from "@agentproto/mcp-server"
 
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import {
@@ -26,8 +29,12 @@ import {
 } from "../session-spawn.js"
 import { restartAgentSession } from "../session-restart-core.js"
 import { continueAgentSessionFresh } from "../session-continue-fresh.js"
+import { startHttpServer } from "../http-server.js"
+import { createRuntimeEvents } from "../events.js"
 import { cdContractLine } from "../agents-md.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import type { ConversationStore } from "../conversations.js"
+import type { HeartbeatRunner } from "../heartbeat.js"
 import type { AcpMcpServer } from "@agentproto/acp"
 
 const TOKEN_HEADER = "x-agentproto-session-token"
@@ -330,5 +337,121 @@ describe("C4 restart and continue-fresh get a fresh token; the old one dies on r
     } finally {
       unsubscribe()
     }
+  })
+})
+
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once("error", reject)
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as AddressInfo).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
+
+function noopConversations(): ConversationStore {
+  return {
+    async open() {},
+    async appendTurn() {},
+    async read() {
+      return { meta: {} as never, turns: [] }
+    },
+    async list() {
+      return []
+    },
+    pathFor: (id: string) => id,
+  }
+}
+
+function noopHeartbeat(): HeartbeatRunner {
+  return { start() {}, stop() {}, async fireNow() {} }
+}
+
+describe("C5 observation of caller identity claims", () => {
+  async function runFive(mode: "off" | "shadow"): Promise<{
+    responses: Array<{ status: number; body: string }>
+    identity: { status: number; json: any }
+  }> {
+    const creds = await maybeCredentials()
+    creds?.clearSessionCredentials()
+    creds?.attachSessionCredentialStore({ path: join(tmp, `creds-${mode}.json`) })
+    const tokenA = creds?.mintSessionToken("sess_A") ?? "apst_unminted"
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => {
+        const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
+        server.tool("probe", "probe", {}, async () => ({ content: [{ type: "text" as const, text: "ok" }] }))
+        return server
+      },
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      identity: { mode: () => mode },
+    } as never)
+    try {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "c5", version: "0" } },
+      })
+      const base = `http://127.0.0.1:${port}/mcp`
+      const requests: Array<{ url: string; headers: Record<string, string> }> = [
+        { url: `${base}?callerSessionId=sess_A`, headers: { [TOKEN_HEADER]: tokenA } },
+        { url: `${base}?callerSessionId=sess_B`, headers: { [TOKEN_HEADER]: tokenA } },
+        { url: base, headers: { [TOKEN_HEADER]: "apst_bogus" } },
+        { url: `${base}?callerSessionId=sess_C`, headers: {} },
+        { url: base, headers: {} },
+      ]
+      const responses: Array<{ status: number; body: string }> = []
+      for (const r of requests) {
+        const res = await fetch(r.url, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            ...r.headers,
+          },
+          body,
+        })
+        responses.push({ status: res.status, body: await res.text() })
+      }
+      const idRes = await fetch(`http://127.0.0.1:${port}/identity`)
+      const json = idRes.status === 200 ? await idRes.json() : undefined
+      return { responses, identity: { status: idRes.status, json } }
+    } finally {
+      await http.stop()
+    }
+  }
+
+  it("shadow counts each kind exactly once; GET /identity reports them; off changes no response", async () => {
+    const shadow = await runFive("shadow")
+    expect(shadow.identity.status).toBe(200)
+    expect(shadow.identity.json.mode).toBe("shadow")
+    expect(shadow.identity.json.counters).toEqual({
+      verified: 1,
+      mismatch: 1,
+      invalid_token: 1,
+      claim_only: 1,
+      anonymous: 1,
+    })
+    expect(shadow.identity.json.byRoute.mcp).toEqual({
+      verified: 1,
+      mismatch: 1,
+      invalid_token: 1,
+      claim_only: 1,
+      anonymous: 1,
+    })
+    expect(typeof shadow.identity.json.since).toBe("string")
+
+    const off = await runFive("off")
+    expect(off.identity.json.mode).toBe("off")
+    expect(off.responses).toEqual(shadow.responses)
+    for (const r of shadow.responses) expect(r.status).toBe(200)
   })
 })

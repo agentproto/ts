@@ -341,6 +341,8 @@ import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import { writeSseHead } from "./sse-headers.js"
 import { parseStopOutcome } from "./session-outcome.js"
+import { SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
+import type { SessionTokenMode } from "./identity-defaults.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -1358,6 +1360,15 @@ export interface RuntimeHttpServerOptions {
     health(): import("./action-hooks/reaction-runner.js").ReactionHealth
     wiring?(): { active: string[]; refused: Array<{ bindingId: string; error: string }> }
   }
+  /** Optional - when wired, every `/mcp` request and every route that reads
+   *  the caller identity is OBSERVED (verified / mismatch / invalid_token /
+   *  claim_only / anonymous, see `observeCallerIdentity`), and `GET /identity`
+   *  serves the counters. `mode` is `defaults.identity.sessionTokens`, read
+   *  per request; `"off"` observes nothing. Observation never changes how a
+   *  request is handled. Without it the route 404s. */
+  identity?: {
+    mode(): SessionTokenMode | Promise<SessionTokenMode>
+  }
   /** Optional — when wired, exposes /workflows/* routes for starting and
    *  managing background workflow runs (stage-barrier parallel steps).
    *  Same service the MCP `workflow_start/status/cancel/
@@ -2094,6 +2105,65 @@ export async function startHttpServer(
     return parseCallerSessionIdHeader(req)
   }
 
+  // ── Caller identity observation (ts#2165 step 5, shadow) ──────────
+  // Counts, per process, how callers identify themselves: a daemon-minted
+  // session token (`SESSION_TOKEN_HEADER`) that backs the claim, one that
+  // contradicts it, an unknown token, a bare claim, or nothing. Measurement
+  // for the enforcement step: NOTHING here changes how a request is handled.
+  const identityCounters = emptyIdentityCounters()
+  const identityByRoute: Record<string, IdentityCounters> = {}
+  const identitySince = new Date().toISOString()
+  const identityLogged = new Set<string>()
+  const identityObserved = new WeakSet<IncomingMessage>()
+
+  /** Observe one request's caller identity, at most once per request. Never
+   *  throws and never touches the request or the response; no token is ever
+   *  logged. */
+  async function observeCallerIdentity(req: IncomingMessage, route: string): Promise<void> {
+    try {
+      if (!opts.identity || identityObserved.has(req)) return
+      identityObserved.add(req)
+      // The raw claim, whatever its trust: the point is to count claims.
+      const claim = parseCallerSessionIdQuery(req.url ?? "") ?? parseCallerSessionIdHeader(req)
+      const rawHeader = req.headers[SESSION_TOKEN_HEADER]
+      const token = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader)?.trim() || undefined
+      if ((await opts.identity.mode()) !== "shadow") return
+      const tokenSession = token ? verifySessionToken(token) : undefined
+      const kind: IdentityKind = token
+        ? tokenSession === undefined
+          ? "invalid_token"
+          : claim === undefined || claim === tokenSession
+            ? "verified"
+            : "mismatch"
+        : claim !== undefined
+          ? "claim_only"
+          : "anonymous"
+      const routeClass = identityRouteClass(route)
+      identityCounters[kind]++
+      ;(identityByRoute[routeClass] ??= emptyIdentityCounters())[kind]++
+      if (kind === "claim_only" || kind === "mismatch" || kind === "invalid_token") {
+        const key = `${kind}|${claim ?? ""}|${route}`
+        if (!identityLogged.has(key) && identityLogged.size < IDENTITY_LOG_KEYS_MAX) {
+          identityLogged.add(key)
+          console.warn(
+            `[identity] ${kind.replace("_", "-")} caller=${claim ?? "-"}` +
+              (kind === "mismatch" ? ` token-session=${tokenSession}` : "") +
+              ` route=${route}`,
+          )
+        }
+      }
+    } catch {
+      // Observation must never fail a request.
+    }
+  }
+
+  /** The routes that read the caller identity get it through this wrapper,
+   *  which observes the request first (once). */
+  function resolveCallerSessionIdObserved(req: IncomingMessage): string | undefined {
+    void observeCallerIdentity(req, (req.url ?? "/").split("?")[0] ?? "/")
+    return resolveCallerSessionId(req)
+  }
+
   /** Mirrors `parseCallerSessionIdQuery` for the `origin` query param
    *  (#session-visibility) — the connecting client's source label
    *  (cowork/vscode/codex/cron). A non-session bridge client that omits a
@@ -2144,6 +2214,7 @@ export async function startHttpServer(
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
+    void observeCallerIdentity(req, "/mcp")
     {
       const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
@@ -3248,7 +3319,7 @@ export async function startHttpServer(
             opts.deviceMirrorSync,
             opts.mcpObservations,
             opts.cronScheduler,
-            resolveCallerSessionId,
+            resolveCallerSessionIdObserved,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
           )
           if (handled) return
@@ -4833,6 +4904,20 @@ export async function startHttpServer(
         if (opts.reactions && path === "/reactions") {
           const handled = await handleReactionsHealth(req, res, path, opts.reactions)
           if (handled) return
+        }
+
+        // GET /identity - caller identity observation counters (shadow mode).
+        if (opts.identity && path === "/identity" && req.method === "GET") {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(
+            JSON.stringify({
+              mode: await opts.identity.mode(),
+              counters: identityCounters,
+              byRoute: identityByRoute,
+              since: identitySince,
+            }),
+          )
+          return
         }
 
         // Workflow routes — only registered when the gateway was built with
@@ -10505,6 +10590,24 @@ async function handleRoutinesListing(
   res.writeHead(200, { "content-type": "application/json" })
   res.end(JSON.stringify({ routines: routineRegistrar.list() }))
   return true
+}
+
+/** How a caller identified itself on one request (see `observeCallerIdentity`). */
+type IdentityKind = "verified" | "mismatch" | "invalid_token" | "claim_only" | "anonymous"
+type IdentityCounters = Record<IdentityKind, number>
+
+/** Distinct (kind, claim, route) log lines kept per process. */
+const IDENTITY_LOG_KEYS_MAX = 1000
+
+function emptyIdentityCounters(): IdentityCounters {
+  return { verified: 0, mismatch: 0, invalid_token: 0, claim_only: 0, anonymous: 0 }
+}
+
+/** The `byRoute` bucket of a path: `mcp`, `sessions`, else the path itself. */
+function identityRouteClass(path: string): string {
+  if (path === "/mcp" || path.startsWith("/mcp/")) return "mcp"
+  if (path === "/sessions" || path.startsWith("/sessions/")) return "sessions"
+  return path
 }
 
 /**
