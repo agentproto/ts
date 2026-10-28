@@ -4913,6 +4913,150 @@ export async function spawnAgentSession(
           : {}),
       }
     }
+    // The driver start options for a LOCAL spawn, built here ONCE for both
+    // the async-worktree branch below and the synchronous one (E77). The two
+    // branches used to build their own literal, and the async one drifted:
+    // no `env` (E75), no resume-target resolution (it handed the adapter the
+    // raw `resumeSessionId` and a fresh config dir), and no app-boundary
+    // `fsZones`/`isolateHostContext`. Only what legitimately differs per
+    // branch is a parameter: the cwd (the provisioned worktree on the async
+    // path, known only after provisioning) and the activity pulse.
+    const localStartOptions = async (startCwd: string, onActivity: () => void) => {
+      const startConfigDir = resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)
+      const adapterMcpServers = adapterMcpServersForStart()
+      return {
+        cwd: startCwd,
+        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
+        // Persistent isolated-config dir, keyed by this session's id —
+        // recorded on the descriptor so restart/lazy-resume can hand the
+        // respawned adapter the same dir (native-resume store). Adapters
+        // that don't isolate a config dir ignore it. A RESUME reuses the
+        // target's dir instead (see `resolveResumeTarget`) — the provider's
+        // conversation store lives inside it, so a fresh dir is exactly what
+        // turns a resume into a blank spawn.
+        configDir: startConfigDir,
+        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+        ...(input.mode ? { mode: input.mode } : {}),
+        ...(launchConfig.options ? { options: launchConfig.options } : {}),
+        ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
+        ...(input.effort ? { effort: input.effort } : {}),
+        ...(input.posture !== undefined ? { posture: input.posture } : {}),
+        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
+        ...(authSpec ? { auth: authSpec } : {}),
+        ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
+        ...(input.permissionHold ? { permissionHold: true } : {}),
+        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
+        // App boundary (computed above from `appBoundary`). An app-boundaried
+        // spawn is refused any worktree today (`app_boundary_worktree`), so
+        // the async branch never carries one, but the zones still ride
+        // through here so the two branches cannot diverge if that changes.
+        ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
+        ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
+        env: await localSpawnEnv(startConfigDir),
+        // Exact-file AGENTS.md read grant — the driver derives the
+        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
+        // extra read paths) from this option itself, so the option is the
+        // single authority. See additionalReadPathsForAgentsMd above.
+        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
+        // AGENT.md text on the adapter's declared system-prompt channel
+        // (channel decision computed above — never set for a sandbox or
+        // a no-channel adapter, which fell back to the prefix instead).
+        ...(appendSystemPromptChannel !== undefined
+          ? { appendSystemPrompt: appendSystemPromptChannel }
+          : {}),
+        // AIP-72 native-dir inject (decision above), the driver's channel.
+        ...(memoryProjection ? { memoryProjection } : {}),
+        onActivity,
+      }
+    }
+    // Start the local driver with `localStartOptions`, shared by both
+    // branches for the same reason. `resumed` is true only when the adapter
+    // accepted the resume id: same "not found" retry as `session_restart`
+    // (session-restart-core.ts) — the adapter rejected the resume id, or its
+    // transport died mid-load, so the stored conversation couldn't be
+    // rehydrated, and one fresh-spawn retry is strictly better than failing
+    // the whole start. Never retried without a resume id (that would just
+    // loop the original error).
+    const startLocalAgentSession = async (
+      startArgs: Awaited<ReturnType<typeof localStartOptions>>,
+    ): Promise<{ agentSession: AgentSessionLike; resumed: boolean }> => {
+      try {
+        return { agentSession: await resolved!.startSession(startArgs), resumed: !!resumeTarget }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (
+          !resumeTarget ||
+          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
+        ) {
+          throw err
+        }
+        const { resumeSessionId: _dropped, ...freshStartArgs } = startArgs
+        const agentSession = await resolved!.startSession({
+          ...freshStartArgs,
+          configDir: adapterConfigDirFor(mintedSessionId),
+        })
+        return { agentSession, resumed: false }
+      }
+    }
+    // Claimed only once a resume actually succeeded, so a fallback fresh
+    // spawn never wears a phantom `resumeVia` (resume-honesty).
+    const resumedLineageFields = (): { resumedFrom?: string; resumeVia?: string } => ({
+      ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
+      resumeVia: "resumed via ACP",
+    })
+    // The native-tool sandbox for a LOCAL spawn, also shared: an app boundary
+    // with enforced zones defaults it to "workspace".
+    const localCommandSandbox = (startCwd: string) =>
+      resolveEffectiveCommandSandbox(
+        input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
+        startCwd,
+      )
+    // AIP-66 cloud session identity (cloud-vendors.ts): persist the vendor
+    // binding as `meta.cloud` (JSON-encoded — descriptor meta values are
+    // strings). A fresh cloud spawn starts with just the vendor; a RE-ATTACH
+    // carries the full learned mapping (vendor + sessionId + url) forward
+    // from the source row so the revived descriptor keeps the vendor id.
+    const carriedCloudMeta = resumeSource ? cloudMetaOf(resumeSource) : undefined
+    const cloudMeta: CloudSessionMeta | undefined = cloudResolved
+      ? {
+          vendor: cloudResolved.vendor.slug,
+          ...(carriedCloudMeta?.sessionId !== undefined
+            ? { sessionId: carriedCloudMeta.sessionId }
+            : {}),
+          ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
+        }
+      : undefined
+    // The descriptor `meta` every spawn records, shared by the async
+    // placeholder and the synchronous `spawnAgent` (E77): restart reads the
+    // app boundary and `meta.cloud` back from here, and the gateway and
+    // `session_role_refresh` read the agent identity, so a branch that
+    // dropped them silently lost those on every async worktree session.
+    // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
+    // descriptor — the task ledger's board resolution reads it BEFORE the
+    // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
+    // generic `meta` hint map so future spawn-time hints need no new field.
+    // Always present: every spawn records at least its resolved `role`.
+    const spawnDescriptorMeta = (): Record<string, string> => ({
+      ...(input.boardId ? { boardId: input.boardId } : {}),
+      ...workflowOwnerMeta(input.workflowOwner),
+      ...(appBoundary ? boundaryMeta(appBoundary) : {}),
+      ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
+      // The caller's OWN AIP-42 manifest identity (see the capture
+      // above). Trusted because the daemon resolved it at spawn; the
+      // gateway reads it to bind the `create_tool`/`delete_tool` grant
+      // to the caller session, never a caller-supplied payload field.
+      ...(callerAgentId ? { agentId: callerAgentId } : {}),
+      ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
+      // The fingerprint THIS spawn rendered: `session_role_refresh`'s
+      // baseline (agent-role-refresh.ts). Only present alongside
+      // `agentManifestPath`, which is what makes a session eligible
+      // for a hot role refresh at all.
+      ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
+      ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
+      // Role, store root, memory disabled (see `memoryMeta` above).
+      ...memoryMeta,
+      ...(reactionStamp ? reactionStamp.meta : {}),
+    })
     // ── Async worktree provisioning ──────────────────────────────────
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
@@ -4975,12 +5119,7 @@ export async function spawnAgentSession(
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
-        meta: {
-          ...(input.boardId ? { boardId: input.boardId } : {}),
-          ...workflowOwnerMeta(input.workflowOwner),
-          ...memoryMeta,
-          ...(reactionStamp ? reactionStamp.meta : {}),
-        },
+        meta: spawnDescriptorMeta(),
         ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
         depth: recordedDepth,
         ...(input.maxCostUsd !== undefined ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -5020,6 +5159,10 @@ export async function spawnAgentSession(
       // Stamp the resolved per-workspace RULES.md path (WP-R4), when one was
       // found — present-or-absent, so an undefined field already means absent.
       if (workspaceRulesResolution.path) pendingDesc.rulesMd = workspaceRulesResolution.path
+      if (bundleIds.length > 0) pendingDesc.bundles = bundleIds
+      // Same harness warnings the sync path emits once its row exists.
+      if (boundaryWarnings.length > 0) registry.emitHarnessWarning(pendingDesc.id, boundaryWarnings, input.label)
+      if (input.harnessWarnings?.length) registry.emitHarnessWarning(pendingDesc.id, input.harnessWarnings, input.label)
       // Anything from here to the early return must never throw past this
       // point without settling the row it just registered — otherwise the
       // outer catch below would report `agent_spawn_failed` to the ORIGINAL
@@ -5106,42 +5249,12 @@ export async function spawnAgentSession(
           }
         }
         try {
-          const effectiveCommandSandbox = await resolveEffectiveCommandSandbox(
-            input.commandSandbox,
-            finalCwd,
-          )
+          const effectiveCommandSandbox = await localCommandSandbox(finalCwd)
           if (effectiveCommandSandbox) pendingDesc.commandSandbox = effectiveCommandSandbox
-          const adapterMcpServers = adapterMcpServersForStart()
-          const agentSession = await resolved!.startSession({
-            cwd: finalCwd,
-            ...(input.resumeSessionId ? { resumeSessionId: input.resumeSessionId } : {}),
-            // Persistent isolated-config dir, keyed by this session's id —
-            // recorded on the pending descriptor above so restart/lazy-resume
-            // can hand the respawned adapter the same dir (native-resume
-            // store). Adapters that don't isolate a config dir ignore it.
-            configDir: adapterConfigDirFor(mintedSessionId),
-            env: await localSpawnEnv(adapterConfigDirFor(mintedSessionId)),
-            ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
-            ...(input.mode ? { mode: input.mode } : {}),
-            ...(launchConfig.options ? { options: launchConfig.options } : {}),
-            ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
-            ...(input.effort ? { effort: input.effort } : {}),
-            ...(input.posture !== undefined ? { posture: input.posture } : {}),
-            ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
-            ...(authSpec ? { auth: authSpec } : {}),
-            ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
-            ...(input.permissionHold ? { permissionHold: true } : {}),
-            ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-            ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
-            // AGENT.md text on the adapter's declared system-prompt channel
-            // (channel decision computed above — never set for a sandbox or
-            // a no-channel adapter, which fell back to the prefix instead).
-            ...(appendSystemPromptChannel !== undefined
-              ? { appendSystemPrompt: appendSystemPromptChannel }
-              : {}),
-            ...(memoryProjection ? { memoryProjection } : {}),
-            onActivity: () => registry.pulseActivity(pendingDesc.id),
-          })
+          const { agentSession, resumed } = await startLocalAgentSession(
+            await localStartOptions(finalCwd, () => registry.pulseActivity(pendingDesc.id)),
+          )
+          if (resumed) Object.assign(pendingDesc, resumedLineageFields())
           let asyncPrompt = effectivePrompt
           if (input.posture !== undefined) {
             const resolution = resolvePosture(input.posture, agentSession.availableModes ?? [])
@@ -5507,84 +5620,17 @@ export async function spawnAgentSession(
       // undefined` branch above already returned `adapter_not_found`
       // otherwise.
       //
-      commandSandbox = await resolveEffectiveCommandSandbox(
-        input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
-        cwd,
-      )
-      const adapterMcpServers = adapterMcpServersForStart()
-      const localStartArgs = {
-        cwd,
-        ...(resumeTarget ? { resumeSessionId: resumeTarget.adapterSessionId } : {}),
-        // Persistent isolated-config dir, keyed by this session's id —
-        // recorded on the descriptor below so restart/lazy-resume can hand
-        // the respawned adapter the same dir (native-resume store).
-        // Adapters that don't isolate a config dir ignore it. A RESUME
-        // reuses the target's dir instead (see `resolveResumeTarget`) — the
-        // provider's conversation store lives inside it, so a fresh dir is
-        // exactly what turns a resume into a blank spawn.
-        configDir: resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
-        ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
-        ...(input.mode ? { mode: input.mode } : {}),
-        ...(launchConfig.options ? { options: launchConfig.options } : {}),
-        ...(launchConfig.wireModel ? { model: launchConfig.wireModel } : {}),
-        ...(input.effort ? { effort: input.effort } : {}),
-        ...(input.posture !== undefined ? { posture: input.posture } : {}),
-        ...(input.contextProfile ? { contextProfile: input.contextProfile } : {}),
-        ...(authSpec ? { auth: authSpec } : {}),
-        ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
-        ...(input.permissionHold ? { permissionHold: true } : {}),
-        ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
-        ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
-        ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
-        env: await localSpawnEnv(resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)),
-        // Exact-file AGENTS.md read grant — the driver derives the
-        // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
-        // extra read paths) from this option itself, so the option is the
-        // single authority. See additionalReadPathsForAgentsMd above.
-        ...(additionalReadPaths.length > 0 ? { additionalReadPaths } : {}),
-        // AGENT.md text on the adapter's declared system-prompt channel
-        // (channel decision computed above — never set for a sandbox or
-        // a no-channel adapter, which fell back to the prefix instead).
-        ...(appendSystemPromptChannel !== undefined
-          ? { appendSystemPrompt: appendSystemPromptChannel }
-          : {}),
-        // AIP-72 native-dir inject (decision above), the driver's channel.
-        ...(memoryProjection ? { memoryProjection } : {}),
-        onActivity: () => {
+      commandSandbox = await localCommandSandbox(cwd)
+      const localStart = await startLocalAgentSession(
+        await localStartOptions(cwd, () => {
           if (liveSessionId) registry.pulseActivity(liveSessionId)
-        },
-      }
-      try {
-        agentSession = await resolved!.startSession(localStartArgs)
-        // The adapter accepted the resume id — the conversation continues.
-        // Claimed only here (not up front) so a fallback fresh spawn never
-        // wears a phantom `resumeVia` (resume-honesty).
-        if (resumeTarget) {
-          resumeLineageFields = {
-            ...(resumeSource ? { resumedFrom: resumeSource.id } : {}),
-            resumeVia: "resumed via ACP",
-          }
-        }
-      } catch (err) {
-        // Same "not found" retry as `session_restart`
-        // (session-restart-core.ts): the adapter rejected the resume id, or
-        // its transport died mid-load — the stored conversation couldn't be
-        // rehydrated, and one fresh-spawn retry is strictly better than
-        // failing the whole start. Never retried without a resume id (that
-        // would just loop the original error).
-        const msg = err instanceof Error ? err.message : String(err)
-        if (
-          !resumeTarget ||
-          !(RESUME_ID_REJECTED_RE.test(msg) || RESUME_CONNECTION_LOST_RE.test(msg))
-        ) {
-          throw err
-        }
-        const { resumeSessionId: _dropped, ...freshStartArgs } = localStartArgs
-        agentSession = await resolved!.startSession({
-          ...freshStartArgs,
-          configDir: adapterConfigDirFor(mintedSessionId),
-        })
-      }
+        }),
+      )
+      agentSession = localStart.agentSession
+      // The adapter accepted the resume id — the conversation continues.
+      // Claimed only here (not up front) so a fallback fresh spawn never
+      // wears a phantom `resumeVia` (resume-honesty).
+      if (localStart.resumed) resumeLineageFields = resumedLineageFields()
       // A harness that advertises a matching ACP mode gets the canonical
       // posture as a real boundary before the initial prompt is sent. When no
       // native mode exists, the initial prompt carries the advisory preamble;
@@ -5623,21 +5669,6 @@ export async function spawnAgentSession(
     // `composedPreamble`) — the adapter still receives the single
     // concatenated `effectivePrompt`, unchanged.
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
-    // AIP-66 cloud session identity (cloud-vendors.ts): persist the vendor
-    // binding as `meta.cloud` (JSON-encoded — descriptor meta values are
-    // strings). A fresh cloud spawn starts with just the vendor; a RE-ATTACH
-    // carries the full learned mapping (vendor + sessionId + url) forward
-    // from the source row so the revived descriptor keeps the vendor id.
-    const carriedCloudMeta = resumeSource ? cloudMetaOf(resumeSource) : undefined
-    const cloudMeta: CloudSessionMeta | undefined = cloudResolved
-      ? {
-          vendor: cloudResolved.vendor.slug,
-          ...(carriedCloudMeta?.sessionId !== undefined
-            ? { sessionId: carriedCloudMeta.sessionId }
-            : {}),
-          ...(carriedCloudMeta?.url !== undefined ? { url: carriedCloudMeta.url } : {}),
-        }
-      : undefined
     const desc = registry.spawnAgent({
       id: mintedSessionId,
       ...resumeLineageFields,
@@ -5701,32 +5732,7 @@ export async function spawnAgentSession(
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
       ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
-      // Explicit board pin (`agent_start.boardId`) → `meta.boardId` on the
-      // descriptor — the task ledger's board resolution reads it BEFORE the
-      // lineage walk (see `resolveBoardId` in task-ledger.ts). Rides the
-      // generic `meta` hint map so future spawn-time hints need no new field.
-      // Always present: every spawn records at least its resolved `role`.
-      meta: {
-        ...(input.boardId ? { boardId: input.boardId } : {}),
-        ...workflowOwnerMeta(input.workflowOwner),
-        ...(appBoundary ? boundaryMeta(appBoundary) : {}),
-        ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
-        // The caller's OWN AIP-42 manifest identity (see the capture
-        // above). Trusted because the daemon resolved it at spawn; the
-        // gateway reads it to bind the `create_tool`/`delete_tool` grant
-        // to the caller session, never a caller-supplied payload field.
-        ...(callerAgentId ? { agentId: callerAgentId } : {}),
-        ...(callerAgentManifestPath ? { agentManifestPath: callerAgentManifestPath } : {}),
-        // The fingerprint THIS spawn rendered: `session_role_refresh`'s
-        // baseline (agent-role-refresh.ts). Only present alongside
-        // `agentManifestPath`, which is what makes a session eligible
-        // for a hot role refresh at all.
-        ...(callerAgentRoleHash ? { agentRoleHash: callerAgentRoleHash } : {}),
-        ...(callerAgentToolsHash ? { agentToolsHash: callerAgentToolsHash } : {}),
-        // Role, store root, memory disabled (see `memoryMeta` above).
-        ...memoryMeta,
-        ...(reactionStamp ? reactionStamp.meta : {}),
-      },
+      meta: spawnDescriptorMeta(),
       ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
       depth: recordedDepth,
       ...(commandPreview ? { commandPreview } : {}),
