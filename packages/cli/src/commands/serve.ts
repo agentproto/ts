@@ -502,7 +502,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         process.env,
       )
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt, memoryProjection }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, preCompactCommand, appendSystemPrompt, memoryProjection }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -551,6 +551,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
             // passes these to adapters that advertise support below).
             ...(fsZones ? { fsZones } : {}),
             ...(isolateHostContext ? { isolateHostContext: true } : {}),
+            // Projected PreCompact hook (`defaults.nativeHooks`); the driver
+            // writes it for claude-code only.
+            ...(preCompactCommand ? { preCompactCommand } : {}),
             // AGENT.md system-prompt text — only forwarded for adapters that
             // declare a channel (`supportsSystemPrompt` below); the runtime
             // (session-spawn.ts) already fell back to prefix+warning for the

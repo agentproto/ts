@@ -272,7 +272,12 @@ export function formatHttpError(status: number, raw: string): Error {
   return new Error(`HTTP ${status}: ${body}`)
 }
 
-export function httpPostJson<T>(url: string, body: unknown, token?: string): Promise<T> {
+export function httpPostJson<T>(
+  url: string,
+  body: unknown,
+  token?: string,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
     const payload = Buffer.from(JSON.stringify(body), "utf8")
@@ -282,7 +287,7 @@ export function httpPostJson<T>(url: string, body: unknown, token?: string): Pro
       "content-length": payload.byteLength.toString(),
     }
     if (token) headers.authorization = `Bearer ${token}`
-    const req = lib.request(u, { method: "POST", headers }, res => {
+    const req = lib.request(u, { method: "POST", headers, ...(opts?.signal ? { signal: opts.signal } : {}) }, res => {
       let raw = ""
       res.setEncoding("utf8")
       res.on("data", c => (raw += c))
