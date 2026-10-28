@@ -386,6 +386,9 @@ jobs:
       - name: Run daemon-mcp and agentflow config tests
         run: node --test scripts/lib/daemon-mcp.test.mjs scripts/agentflow/config.test.mjs
 
+      - name: Run agentflow llm engine tests
+        run: node --test scripts/agentflow/llm.test.mjs
+
       # Guards the two blind spots that made PR #1297's review job fail with no
       # usable diagnostics: the agentproto-run driver's poll heartbeat
       # (workflow-progress.mjs — the driver logged nothing for 15 minutes before

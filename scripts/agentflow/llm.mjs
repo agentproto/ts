@@ -110,7 +110,7 @@ export function describeLocalFailure(res, claudeBin) {
   const stdout = bounded(res.stdout)
   if (stderr) parts.push(`stderr: ${stderr}`)
   if (stdout) parts.push(`stdout: ${stdout}`)
-  return `[agentflow] local engine: ${claudeBin} exited ${res.status}: ${parts.join(' | ') || '(no output)'}`
+  return `[agentflow] local engine: ${claudeBin} ${res.signal ? `killed by ${res.signal}` : `exited ${res.status}`}: ${parts.join(' | ') || '(no output)'}`
 }
 
 export function runLocal({ system, user, model, claudeBin = 'claude', env = process.env }) {

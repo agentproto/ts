@@ -67,3 +67,8 @@ test('runLocal passes the sanitized env to the child', () => {
   const bin = fakeClaude('echo "cfg=${CLAUDE_CONFIG_DIR:-unset}"')
   assert.equal(call(bin, { CLAUDECODE: '1', CLAUDE_CONFIG_DIR: '/iso' }), 'cfg=unset')
 })
+
+test('runLocal names the signal when claude is killed', () => {
+  const bin = fakeClaude('kill -TERM $$')
+  assert.throws(() => call(bin, {}), /killed by SIGTERM: \(no output\)/)
+})
