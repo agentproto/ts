@@ -36,6 +36,7 @@ import type { AgentAdapterResolver } from "../http-server.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import type { AcpMcpServer } from "@agentproto/acp"
+import type { WorktreeProvisionOutcome } from "../worktree-isolation.js"
 
 const TOKEN_HEADER = "x-agentproto-session-token"
 const CALLER_HEADER = "x-agentproto-caller-session-id"
@@ -268,6 +269,46 @@ describe("C3 the raw token never leaks into a read surface or a persisted file",
       for (const f of files) expect({ path: f.path, leaked: f.text.includes(raw) }).toEqual({ path: f.path, leaked: false })
       // The credential store itself holds only the hash.
       expect(readFileSync(join(credsDir, "session-credentials.json"), "utf8")).not.toContain(raw)
+    } finally {
+      rmSync(credsDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("C3b the async-worktree pending row carries no token either", () => {
+  it("the row registered before the worktree is provisioned, and the row after it, hold no raw token", async () => {
+    const credsDir = mkdtempSync(join(tmpdir(), "session-credentials-store-"))
+    try {
+      ;(await maybeCredentials())?.attachSessionCredentialStore({ path: join(credsDir, "session-credentials.json") })
+      const persistPath = join(tmp, "sessions.json")
+      const registry = createSessionsRegistry({ persistPath, transcriptDir: join(tmp, "sessions") } as never)
+      const { resolver, calls } = recordingResolver()
+      // The provisioner is held open, so the session sits as a pending row.
+      let release!: (outcome: WorktreeProvisionOutcome) => void
+      const provisioned = new Promise<WorktreeProvisionOutcome>(r => (release = r))
+      const res = await spawnAgentSession(
+        spawnDeps({
+          registry,
+          resolveAgentAdapter: resolver,
+          mode: "shadow",
+          provisionWorktree: () => provisioned,
+          resolveWorktreeIsolation: async () => "always",
+        }),
+        { adapter: "claude-code", cwd: tmp },
+      )
+      if (!res.ok) throw new Error(`spawn failed: ${res.message}`)
+      // Pending: the adapter has not started, so no token is in use yet.
+      expect(calls).toHaveLength(0)
+      expect(registry.get(res.descriptor.id)?.mcpServers?.some(e => e.name === "agentproto")).toBe(true)
+
+      release({ isolated: true, cwd: tmp, branch: "wt/token-leak-check" })
+      await vi.waitFor(() => expect(calls).toHaveLength(1), { timeout: 5_000 })
+      const raw = tokenOf(calls[0]?.mcpServers)
+      expect(raw).toBeDefined()
+      expect(JSON.stringify(registry.get(res.descriptor.id))).not.toContain(raw as string)
+      expect(JSON.stringify(registry.list())).not.toContain(raw as string)
+      registry.shutdown()
+      for (const f of readTree(tmp)) expect({ path: f.path, leaked: f.text.includes(raw as string) }).toEqual({ path: f.path, leaked: false })
     } finally {
       rmSync(credsDir, { recursive: true, force: true })
     }
