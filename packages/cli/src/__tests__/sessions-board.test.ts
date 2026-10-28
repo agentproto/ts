@@ -381,8 +381,12 @@ describe("agentproto sessions board — CLI wiring (fake daemon)", () => {
     } finally {
       spy.mockRestore()
     }
-    // Default view: the command log row is NOT fetched (no includeCommands).
-    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions")
+    // Default view: the command log row is NOT fetched (no includeCommands),
+    // and the board always asks the daemon to collapse restart/continue-
+    // fresh/handover chains to their live tail (see sessions-board.ts's doc).
+    expect(httpGetJson).toHaveBeenCalledWith(
+      "http://127.0.0.1:1/sessions?collapseLineage=true",
+    )
     const out = writes.join("")
     expect(out).toContain("2 sessions — 1 active · 1 command")
     expect(out).toContain("ACTIVE")
@@ -412,7 +416,7 @@ describe("agentproto sessions board — CLI wiring (fake daemon)", () => {
       spy.mockRestore()
     }
     expect(httpGetJson).toHaveBeenCalledWith(
-      "http://127.0.0.1:1/sessions?includeCommands=true",
+      "http://127.0.0.1:1/sessions?includeCommands=true&collapseLineage=true",
     )
     expect(writes.join("")).toContain("COMMAND")
   })

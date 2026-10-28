@@ -382,9 +382,16 @@ export async function runBoard(args: readonly string[]): Promise<number> {
   // `--all` opts into the command-execution LOG rows (kind:"command") —
   // the same rows `command_list` returns — via the daemon's existing
   // `?includeCommands=true` opt-in. Default view excludes them.
+  //
+  // `collapseLineage=true` is always on, not an opt-in: a restarted/continue-
+  // fresh'd/handed-over session mints a new id every time (see
+  // `collapseLineageChains`'s doc in session-list-filters.ts), so without
+  // this a long-lived label (a persistent brain, a PM) accumulates one dead
+  // row per restart under the SAME label and the board — one glanceable
+  // line per session — stops being glanceable.
   const url = values.all
-    ? `${endpoint.url}/sessions?includeCommands=true`
-    : `${endpoint.url}/sessions`
+    ? `${endpoint.url}/sessions?includeCommands=true&collapseLineage=true`
+    : `${endpoint.url}/sessions?collapseLineage=true`
 
   const colour = !values["no-color"] && process.stdout.isTTY === true
 

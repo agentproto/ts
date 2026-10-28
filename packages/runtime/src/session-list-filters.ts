@@ -166,6 +166,46 @@ export function sortNewestActivityFirst<T extends Pick<SessionDescriptor, "id" |
   return [...rows].sort((a, b) => sessionActivityMs(b) - sessionActivityMs(a) || a.id.localeCompare(b.id))
 }
 
+type LineageView = Pick<SessionDescriptor, "id" | "resumedFrom" | "continuedFrom" | "succeeds">
+
+/** The predecessor ids `s` points at via the lineage links `collapseLineageChains`
+ *  collapses on — the same three links `transcript-search.ts`'s `predecessorLinks`
+ *  walks for the opposite read (recovering a predecessor's transcript). */
+function lineagePredecessorIds(s: LineageView): string[] {
+  const ids: string[] = []
+  if (s.resumedFrom) ids.push(s.resumedFrom)
+  if (s.continuedFrom && s.continuedFrom !== s.resumedFrom) ids.push(s.continuedFrom)
+  if (s.succeeds) ids.push(s.succeeds)
+  return ids
+}
+
+/**
+ * Collapse a lineage to its tail: hide any row for which some OTHER row in
+ * the SAME set points back to it via `resumedFrom`, `continuedFrom` or
+ * `succeeds`. Transitive (A→B→C collapses to just C, since both A and B end
+ * up pointed at), order-preserving, and a predecessor missing from `rows` is
+ * never hidden — only a row whose successor is actually present in the set
+ * disappears.
+ *
+ * Each of those three links means "same conversation, replaced id": a plain
+ * `session_restart` or one carrying override axes (`resumedFrom` +
+ * `continuedFrom`, always set together — see `sessions.ts`'s `resumeLineage`),
+ * `session_continue_fresh` (`continuedFrom` alone), and an explicit
+ * `agent_start.succeeds` handover (`succeeds`, no resume at all). Left
+ * uncollapsed, a session restarted N times shows N+1 rows under the same
+ * label with only one of them actually alive — this is what
+ * `session_list`'s `collapseLineage:true`, `GET /sessions?collapseLineage=true`
+ * and `agentproto sessions board` (unconditionally) apply to stop that.
+ */
+export function collapseLineageChains<T extends LineageView>(rows: readonly T[]): T[] {
+  const superseded = new Set<string>()
+  for (const row of rows) {
+    for (const id of lineagePredecessorIds(row)) superseded.add(id)
+  }
+  if (superseded.size === 0) return [...rows]
+  return rows.filter(row => !superseded.has(row.id))
+}
+
 /** True when `input` carries at least one filter (an empty `q` / `false` flag does not count). */
 export function hasSessionListFilters(input: SessionListFilterInput): boolean {
   return (
