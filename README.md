@@ -154,6 +154,7 @@ packages/mcp-server/ @agentproto/mcp-server  Per-doctype CRUD MCP tools (create/
 | `app_data_read` / `app_data_write` / `app_data_list` / `app_data_migrate` | App-scoped durable data plane (read/write/list + legacy migration), anchored at the app's `dataDir` (default `<dir>/data`) |
 | `harness_preset_list` / `harness_preset_create` / `harness_preset_delete` / `harness_preset_set_default` | Persisted harness→auth-profile presets |
 | `workspace_brain_query` / `workspace_brain_status` / `workspace_brain_ingest` | Per-workspace transcript recall (BM25) |
+| `memory_search` / `memory_list` / `memory_read` / `memory_write` / `memory_supersede` / `memory_archive` / `memory_dismiss` | AIP-72 memory store (`memory.root`, default `~/.agentproto/memory`); anyone proposes, the operator or a supervisor commits; memory-bound agents get a spawn digest in their system prompt |
 | `conversation_export` | Export a daemon transcript to a target adapter's native store (claude-code today) |
 | `llm_endpoint_start` / `llm_endpoint_stop` / `llm_endpoint_status` / `llm_endpoint_set_upstream_link` / `llm_endpoint_list_links` | Local LLM Endpoint proxy sidecar (requires `features.llmEndpoint`) |
 | `tunnel_create` / `tunnel_list` / `tunnel_stop` / `tunnel_revoke` / `tunnel_status` | Public URL tunnels for local ports (private signed link by default; `public: true` opts out; `tunnel_revoke` invalidates the link) |

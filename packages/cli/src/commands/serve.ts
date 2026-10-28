@@ -613,6 +613,11 @@ export async function runServe(args: readonly string[]): Promise<number> {
         adapter.handle.capabilities.hooks.length > 0
           ? { nativeHooks: adapter.handle.capabilities.hooks }
           : {}),
+        // AIP-72 `capabilities.memory.inject`: decides whether the spawn
+        // digest rides the system prompt (memory-digest.ts in the runtime).
+        ...(adapter.handle.capabilities?.memory?.inject !== undefined
+          ? { memoryInject: adapter.handle.capabilities.memory.inject }
+          : {}),
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }
           : {}),

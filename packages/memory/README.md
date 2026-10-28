@@ -79,6 +79,18 @@ const hits = await store.search("pnpm") // in-force items by default
   of the store (`metadata.memoryId` or its `sourceId`) is checked against
   the files, anything else comes back as `source: "knowledge"`.
 
+## Daemon tools and spawn digest
+
+The agentproto daemon (`@agentproto/runtime`) serves a `FilesMemoryStore`
+as MCP tools: `memory_search`, `memory_list`, `memory_read` and
+`memory_write` (default mode `propose`) for every caller, and a `commit`
+mode plus `memory_supersede`, `memory_archive` and `memory_dismiss` for the
+operator or a supervisor session only. Its default root is
+`~/.agentproto/memory` (daemon config `memory.root`). An agent whose
+AGENT.md binds memory (`memory.enabled: true`, `store` or `anchors`) also
+gets the section 9 digest of its in-force, in-scope items appended to its
+system prompt at spawn. See the runtime README's MCP tool surface.
+
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE).

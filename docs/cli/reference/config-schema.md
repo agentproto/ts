@@ -118,6 +118,11 @@ agentproto config set daemon.port 18791
     "provisionLoadFactor": 0
   },
 
+  // The default AIP-72 memory store. See "memory" below.
+  "memory": {
+    "root": "~/.agentproto/memory"
+  },
+
   // Spawn-time policy for `agent_start` (dedupe, attach). See "spawn" below.
   "spawn": {
     "dedupe": "always",
@@ -325,6 +330,15 @@ Session-presence and transcript-storage policy.
 | ------------------ | -------- | ------- |
 | `attentionDelaySec`| `number` | How long (seconds) a session stays shown as `running` after its last turn ends before the dashboard settles it into `attention`/`quiet`. Absent ⇒ `60`. Env override: `AGENTPROTO_SESSIONS_ATTENTION_DELAY_SEC`. |
 | `eventsDir`        | `string` | Root directory the daemon stores per-session transcripts under: each session's `events.jsonl` (and a terminal session's `terminal.jsonl`) lives at `<eventsDir>/<sessionId>/events.jsonl`. Every writer and reader (the transcript writer, `GET /sessions/:id/events`, `sessions export`, tool-call/usage logs) resolves through this single key. Relative paths resolve against the home directory. Absent ⇒ the hardcoded default `~/.agentproto/sessions` — zero behaviour change out of the box. Takes effect on daemon restart; existing transcripts are not moved. Spawn responses (`agent_start` descriptor) carry the resolved absolute path of the current session's `events.jsonl` as `descriptor.eventsPath`. |
+
+### `memory: object`
+
+The daemon's default [AIP-72](https://agentproto.sh/docs/aip-72) memory store,
+read and written by the `memory_*` MCP tools and by the spawn digest.
+
+| Field  | Type     | Meaning |
+| ------ | -------- | ------- |
+| `root` | `string` | Root of the reference-layout store (`items/<type>/<id>.md`, `proposals/<id>.md`). Absolute, `~/`, or relative to the home directory. Absent means `~/.agentproto/memory`. Read at daemon boot. An agent whose AGENT.md `memory.store` names a files root (`./memory`, `/abs/path`, `~/x`) uses that store instead, resolved against the session's workspace; a bare store id is not resolved yet and falls back to this root with a spawn warning. |
 
 ### `features: object`
 
