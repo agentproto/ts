@@ -18,9 +18,15 @@
 import { describe, it, expect } from "vitest"
 import type { SessionMode } from "@agentproto/acp/client"
 
-import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
+import {
+  createSessionsRegistry,
+  type AgentSessionLike,
+  type AgentSessionResumer,
+  type AgentStreamEvent,
+} from "../sessions.js"
 import { createSessionEventBus, type SessionEvent } from "../session-event-bus.js"
-import { restartAgentSession } from "../session-restart-core.js"
+import { restartAgentSession, tryRestartInPlace } from "../session-restart-core.js"
+import { restartPosture } from "../canonical-posture.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { Posture } from "../session-config.js"
 
@@ -48,11 +54,12 @@ function setup(
   events: AgentStreamEvent[][],
   spawn: { posture?: Posture; adapterSlug?: string } = {},
   overrides: Partial<AgentSessionLike> = {},
+  registryOpts: { resumeAgent?: AgentSessionResumer } = {},
 ) {
   const bus = createSessionEventBus()
   const seen: SessionEvent[] = []
   bus.onAny(ev => seen.push(ev))
-  const reg = createSessionsRegistry({ persist: false, sessionEvents: bus })
+  const reg = createSessionsRegistry({ persist: false, sessionEvents: bus, ...registryOpts })
   const desc = reg.spawnAgent({
     workspaceSlug: "default",
     cwd: "/tmp",
@@ -274,6 +281,89 @@ describe("restart keeps the current posture", () => {
     })
     expect(postures).toEqual([undefined])
     expect(restarted.desc.posture).toBeUndefined()
+    reg.shutdown()
+  })
+})
+
+describe("in-place revival clamps to the caller's ceiling", () => {
+  it("an ended row revived by triggerResume after an agent widening starts at the ceiling and reconciles the descriptor", async () => {
+    const resumePostures: Array<Posture | undefined> = []
+    const resumeAgent: AgentSessionResumer = async ({ descriptor }) => {
+      // This is what index.ts's resume hook hands to `startSession`.
+      resumePostures.push(restartPosture(descriptor))
+      return scriptedSession([])
+    }
+    const { reg, desc } = setup(
+      [[{ kind: "mode-changed", modeId: "bypassPermissions", previousModeId: "plan", cause: "agent" }]],
+      { posture: "accept-edits" },
+      {},
+      { resumeAgent },
+    )
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.get(desc.id)?.posture).toBe("bypass")
+    // End the row the way `session_restart`'s in-place branch expects to find
+    // it: dead, resumable, binding cleared.
+    expect(reg.reapIdle(desc.id)).toBe(true)
+
+    const revived = await tryRestartInPlace(reg, reg.get(desc.id)!)
+    expect(revived?.id).toBe(desc.id)
+    expect(resumePostures).toEqual(["accept-edits"])
+    expect(revived?.posture).toBe("accept-edits")
+    expect(revived?.postureCeiling).toBe("accept-edits")
+    expect(revived?.postureSource).toBe("agent")
+    reg.shutdown()
+  })
+})
+
+describe("a restart carries the caller's ceiling", () => {
+  it("a non-clamping new-id restart keeps the ceiling, so returning to the caller-allowed mode raises no warning", async () => {
+    const { reg, desc, seen } = setup(
+      [[{ kind: "mode-changed", modeId: "plan", previousModeId: "acceptEdits", cause: "agent" }]],
+      { posture: "accept-edits" },
+    )
+    await reg.sendPrompt(desc.id, "go")
+    expect(reg.get(desc.id)?.posture).toBe("plan")
+
+    const postures: unknown[] = []
+    const resolver: AgentAdapterResolver = async () => ({
+      startSession: async (o: { posture?: unknown }) => {
+        postures.push(o.posture)
+        return scriptedSession([
+          [{ kind: "mode-changed", modeId: "acceptEdits", previousModeId: "plan", cause: "agent" }],
+        ])
+      },
+      commandPreview: "mock-adapter",
+    })
+    const restarted = await restartAgentSession(reg, resolver, reg.get(desc.id)!, {
+      forceAgentResume: true,
+    })
+    expect(postures).toEqual(["plan"])
+    expect(restarted.desc.posture).toBe("plan")
+    expect(restarted.desc.postureCeiling).toBe("accept-edits")
+    expect(restarted.desc.postureSource).toBe("agent")
+
+    await reg.sendPrompt(restarted.desc.id, "go")
+    const after = reg.get(restarted.desc.id)
+    expect(after?.posture).toBe("accept-edits")
+    expect(after?.postureCeiling).toBe("accept-edits")
+    expect(seen.find(ev => ev.type === "session:harness-warning")).toBeUndefined()
+    reg.shutdown()
+  })
+})
+
+describe("the widening warning with no caller posture", () => {
+  it("names the adapter default instead of rendering \"the caller's the adapter default\"", async () => {
+    const { reg, desc, seen } = setup([
+      [{ kind: "mode-changed", modeId: "bypassPermissions", previousModeId: "default", cause: "agent" }],
+    ])
+    await reg.sendPrompt(desc.id, "go")
+    const warning = seen.find(ev => ev.type === "session:harness-warning") as
+      | { warnings: string[] }
+      | undefined
+    expect(warning).toBeDefined()
+    const text = warning!.warnings.join(" ")
+    expect(text).not.toContain("caller's the adapter default")
+    expect(text).toContain("wider than the adapter default; a restart starts at the adapter default")
     reg.shutdown()
   })
 })

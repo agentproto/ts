@@ -125,6 +125,7 @@ import {
   type PtyFactory,
 } from "./sessions.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
+import { restartPosture } from "./canonical-posture.js"
 import { sweepWiringLifecycle, wireRetirementCleanup } from "./retirement-cleanup.js"
 import {
   attachSessionCredentialStore,
@@ -2836,9 +2837,11 @@ export async function createGateway(
                 )
                 return undefined
               })
+              const resumePosture = restartPosture(descriptor)
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
+                ...(resumePosture !== undefined ? { posture: resumePosture } : {}),
                 ...(resumeBoundary
                   ? boundaryRestartOptions(resumeBoundary, {
                       supportsFsZones: adapter.supportsFsZones === true,

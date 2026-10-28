@@ -1142,6 +1142,11 @@ export async function restartAgentSession(
   const effEffort = overrides.effort ?? prev.effort
   const effRoute = reconciled.route ?? prev.route
   const effPosture = overrides.posture ?? restartPosture(prev)
+  // An explicit posture override is a NEW caller pick (its own ceiling), so it
+  // clears the agent-owned ceiling. A bare restart carries the ceiling across
+  // instead of re-baselining it to the resumed posture (which may be narrower
+  // than what the caller allowed).
+  const carryAgentPosture = overrides.posture === undefined && prev.postureSource === "agent"
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
   // AIP-66 cloud: a cloud session's recorded harness is the VENDOR's harness
   // (`claude-code`), never the local relay adapter slug (`claude-code-cloud`)
@@ -1590,6 +1595,12 @@ export async function restartAgentSession(
       // whose spawn-env apply-path isn't wired here yet (route/posture/context).
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(carryAgentPosture
+        ? {
+            postureSource: "agent" as const,
+            ...(prev.postureCeiling !== undefined ? { postureCeiling: prev.postureCeiling } : {}),
+          }
+        : {}),
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
@@ -2335,6 +2346,12 @@ export async function restartAgentSession(
       ...(effModel ? { model: effModel } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
+      ...(carryAgentPosture
+        ? {
+            postureSource: "agent" as const,
+            ...(prev.postureCeiling !== undefined ? { postureCeiling: prev.postureCeiling } : {}),
+          }
+        : {}),
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
