@@ -194,7 +194,7 @@ describe("claude-code native memory projection (driver)", () => {
   })
 })
 
-describe("claude-code native memory on a respawn without a projection", () => {
+describe("claude-code native memory on a spawn without a projection", () => {
   beforeEach(() => {
     spawnCalls.length = 0
     newSessions.length = 0
@@ -212,15 +212,14 @@ describe("claude-code native memory on a respawn without a projection", () => {
     rmSync(repo, { recursive: true, force: true })
   })
 
-  it("keeps the lineage's memory dir pinned and its files as they are", async () => {
+  it("does not pin the dir for a spawn without a projection, even after a projected one", async () => {
     const runtime = createAgentCliRuntime(defineHarness(claudeCode()))
     await runtime.start({ cwd: repo, configDir, memoryProjection: { items, digest: DIGEST } })
-    const index = readFileSync(join(configDir, "memory", "MEMORY.md"), "utf8")
-    // A restart that does not recompute the digest (no memoryProjection).
+    // Memory turned off (or the binding dropped): the runtime sends no
+    // projection, so the stale projected items must not be read again.
     await runtime.start({ cwd: repo, configDir })
     const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"))
-    expect(settings.autoMemoryDirectory).toBe(join(configDir, "memory"))
-    expect(readFileSync(join(configDir, "memory", "MEMORY.md"), "utf8")).toBe(index)
+    expect(settings.autoMemoryDirectory).toBeUndefined()
     expect(newSessions[1]!.meta).toBeUndefined()
   })
 })

@@ -47,6 +47,9 @@
  * `restartAgentSession`.
  */
 
+import type { MemoryStore } from "@agentproto/memory"
+import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
+import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
 import {
   adapterConfigDirFor,
@@ -816,6 +819,10 @@ export interface RestartAgentSessionOptions {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Memory store for a root (AIP-72), for the restarted lineage's
+   *  native-dir projection. Defaults to the daemon's shared per-root stores
+   *  (`memory-stores.ts`); tests inject a temp store. */
+  memoryStoreAt?: (root: string) => MemoryStore
   /**
    * Axis overrides applied to this restart (SPEC §4.3, build step 6). Overlaid
    * onto the prior descriptor's axes: an axis present here wins, an axis omitted
@@ -1433,6 +1440,31 @@ export async function restartAgentSession(
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
+      // AIP-72 binding: the store root the memory tools read, and the
+      // native-dir inject path + capture flag, so a restarted lineage keeps
+      // its projection and its turn-end capture.
+      ...carryMemoryMeta(prev.meta),
+    }
+    const restartAppendsSystemPrompt =
+      !!prev.appendSystemPrompt &&
+      resolved.supportsSystemPrompt === true &&
+      (resolved.systemPromptMaxChars === undefined ||
+        prev.appendSystemPrompt.length <= resolved.systemPromptMaxChars)
+    let memoryProjection: NativeMemoryProjection | undefined
+    try {
+      memoryProjection = await respawnMemoryProjection(prev.meta, {
+        sessionId: restartedSessionId,
+        memoryStoreAt: opts.memoryStoreAt ?? defaultMemoryStoreAt,
+        ...(resolved.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+        ...(resolved.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
+        ...(restartAppendsSystemPrompt ? { existingSystemPromptChars: prev.appendSystemPrompt!.length } : {}),
+      })
+    } catch (err) {
+      console.warn(
+        `restartAgentSession: native memory not projected for ${restartedSessionId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
     }
     // SESSION IDENTITY TOKEN (shadow): a fresh token for the restarted id,
     // on the adapter's copy only; `restartMcpServers` (the descriptor copy)
@@ -1466,12 +1498,7 @@ export async function restartAgentSession(
       // and only when it still fits the channel's char budget: an over-limit
       // text was prefixed at spawn, and re-applying it through the channel
       // would silently exceed the harness's cap.
-      ...(prev.appendSystemPrompt &&
-      resolved.supportsSystemPrompt === true &&
-      (resolved.systemPromptMaxChars === undefined ||
-        prev.appendSystemPrompt.length <= resolved.systemPromptMaxChars)
-        ? { appendSystemPrompt: prev.appendSystemPrompt }
-        : {}),
+      ...(restartAppendsSystemPrompt ? { appendSystemPrompt: prev.appendSystemPrompt! } : {}),
       ...(authSpec ? { auth: authSpec } : {}),
       ...(launchConfig.options ? { options: launchConfig.options } : {}),
       // Spawn-time guarantees survive a restart: the adapter runs under the
@@ -1482,6 +1509,8 @@ export async function restartAgentSession(
       // the human inbox instead of auto-answering them.
       ...(prev.commandSandbox ? { commandSandbox: prev.commandSandbox } : {}),
       ...(prev.permissionHold ? { permissionHold: true } : {}),
+      // AIP-72 native-dir inject, recomputed for the restarted id.
+      ...(memoryProjection ? { memoryProjection } : {}),
       env: {
         ...cloudRestartEnv,
         [SESSION_ID_ENV]: restartedSessionId,

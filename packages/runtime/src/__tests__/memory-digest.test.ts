@@ -305,8 +305,9 @@ describe("spawnAgentSession memory digest", () => {
     // The capture runs only for this session, against the agent's store.
     if (result.ok) {
       expect(result.descriptor.meta).toMatchObject({
+        memoryInject: "native-dir",
         memoryCapture: "native-dir-diff",
-        memoryCaptureTags: "agent:scout,project:default",
+        memoryAnchors: "agent:scout,project:default",
       })
     }
   })
@@ -319,8 +320,12 @@ describe("spawnAgentSession memory digest", () => {
     const opts = startSession.mock.calls[0]![0]
     expect(opts.memoryProjection?.items).toHaveLength(1)
     expect(opts.memoryProjection?.digest).toBeUndefined()
-    // No capture declared, no capture flag.
-    if (result.ok) expect(result.descriptor.meta?.memoryCapture).toBeUndefined()
+    // No capture declared, no capture flag; the inject path is still recorded
+    // so a respawn recomputes the projection.
+    if (result.ok) {
+      expect(result.descriptor.meta?.memoryCapture).toBeUndefined()
+      expect(result.descriptor.meta?.memoryInject).toBe("native-dir")
+    }
   })
 
   it("an agent with memory.enabled: false and a store records both, so its tools read that store and refuse writes", async () => {

@@ -741,18 +741,14 @@ export function createAgentCliRuntime(
         // Pin the auto-memory dir inside the config dir (E62 run 8: the
         // setting replaces the git-root slug dir from any cwd), so the
         // projection never has to re-derive the CLI's path rule.
-        // A respawn that carries no projection (a restart that did not
-        // recompute the digest) keeps a lineage that was projected before
-        // on the same dir: the files stay as they are, and the agent's
-        // memory does not silently move back to the slug dir.
+        // Only a spawn that carries a projection pins the dir: the runtime
+        // recomputes it on every respawn of a memory-enabled lineage
+        // (restart and lazy resume included), so a spawn without one has
+        // memory off and must not read the stale projected items.
         const nativeMemoryDir = projectNativeMemoryItems ? join(claudeConfigDir, NATIVE_MEMORY_DIR) : undefined
-        const keepNativeMemoryDir =
-          !memoryProjection && readNativeMemorySnapshot(claudeConfigDir) !== undefined
-            ? join(claudeConfigDir, NATIVE_MEMORY_DIR)
-            : undefined
-        if (nativeMemoryDir ?? keepNativeMemoryDir) {
-          isolatedSettings.autoMemoryDirectory = nativeMemoryDir ?? keepNativeMemoryDir
-          nativeMemoryWritePath = nativeMemoryDir ?? keepNativeMemoryDir
+        if (nativeMemoryDir) {
+          isolatedSettings.autoMemoryDirectory = nativeMemoryDir
+          nativeMemoryWritePath = nativeMemoryDir
         }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),

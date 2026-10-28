@@ -229,3 +229,79 @@ export function decideMemoryInject(input: {
   }
   return { path: "system-prompt" }
 }
+
+/** What the driver's `memoryProjection` start option carries. */
+export interface NativeMemoryProjection {
+  items: MemoryDocument[]
+  /** The fallback digest, when the session has a system-prompt channel. */
+  digest?: string
+}
+
+/**
+ * The native-dir projection for a session: the selection, plus the digest
+ * the driver falls back to when the session cannot read its native dir,
+ * sized to what the system-prompt channel has left.
+ */
+export async function buildNativeMemoryProjection(
+  store: MemoryStore,
+  opts: {
+    anchors: SessionMemoryAnchors
+    supportsSystemPrompt?: boolean
+    systemPromptMaxChars?: number
+    /** Length of the system-prompt text already on the channel. */
+    existingSystemPromptChars?: number
+  },
+): Promise<NativeMemoryProjection> {
+  const items = await selectMemoryItems(store, { anchors: opts.anchors })
+  const room =
+    opts.supportsSystemPrompt === true
+      ? Math.min(
+          DEFAULT_MEMORY_DIGEST_MAX_CHARS,
+          opts.systemPromptMaxChars !== undefined
+            ? opts.systemPromptMaxChars -
+                (opts.existingSystemPromptChars !== undefined ? opts.existingSystemPromptChars + 2 : 0)
+            : DEFAULT_MEMORY_DIGEST_MAX_CHARS,
+        )
+      : 0
+  const digest = room > 0 ? renderMemoryDigest(items, room) : null
+  return { items, ...(digest ? { digest: digest.text } : {}) }
+}
+
+/** Descriptor `meta` keys of the AIP-72 binding, carried to a restarted
+ *  descriptor so its memory tools, projection and capture keep working. */
+export const MEMORY_META_KEYS = ["memoryStoreRoot", "memory", "memoryInject", "memoryAnchors", "memoryCapture"] as const
+
+export function carryMemoryMeta(meta: Readonly<Record<string, string>> | undefined): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const key of MEMORY_META_KEYS) if (meta?.[key] !== undefined) out[key] = meta[key]
+  return out
+}
+
+/**
+ * Recompute the native-dir projection on a respawn (session restart, lazy
+ * resume) of a lineage whose spawn chose that path (`meta.memoryInject`).
+ * Undefined for any other lineage, or one whose memory is disabled. The
+ * anchors are the ones recorded at spawn (`meta.memoryAnchors`) plus the
+ * respawned session's own.
+ */
+export async function respawnMemoryProjection(
+  meta: Readonly<Record<string, string>> | undefined,
+  opts: {
+    sessionId: string
+    memoryStoreAt: (root: string) => MemoryStore
+    supportsSystemPrompt?: boolean
+    systemPromptMaxChars?: number
+    existingSystemPromptChars?: number
+  },
+): Promise<NativeMemoryProjection | undefined> {
+  if (meta?.memoryInject !== "native-dir" || !meta.memoryStoreRoot || meta.memory === "disabled") return undefined
+  const extra = (meta.memoryAnchors ?? "").split(",").filter(Boolean)
+  return buildNativeMemoryProjection(opts.memoryStoreAt(meta.memoryStoreRoot), {
+    anchors: { session: opts.sessionId, ...(extra.length > 0 ? { extra } : {}) },
+    ...(opts.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: opts.supportsSystemPrompt } : {}),
+    ...(opts.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: opts.systemPromptMaxChars } : {}),
+    ...(opts.existingSystemPromptChars !== undefined
+      ? { existingSystemPromptChars: opts.existingSystemPromptChars }
+      : {}),
+  })
+}

@@ -1066,6 +1066,7 @@ import { registerCatalogDiffTool } from "./catalog-diff-tool.js"
 import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
 import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
+import { respawnMemoryProjection } from "./memory-digest.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -2816,6 +2817,25 @@ export async function createGateway(
                   : {}
               // App boundary survives a lazy resume (fs zones + host-context isolation).
               const resumeBoundary = boundaryFromMeta(descriptor.meta)
+              // AIP-72 native-dir inject, recomputed for a lineage whose spawn
+              // projected (`meta.memoryInject`); never fails the resume.
+              const resumeMemoryProjection = await respawnMemoryProjection(descriptor.meta, {
+                sessionId: descriptor.id,
+                memoryStoreAt,
+                ...(adapter.supportsSystemPrompt !== undefined
+                  ? { supportsSystemPrompt: adapter.supportsSystemPrompt }
+                  : {}),
+                ...(adapter.systemPromptMaxChars !== undefined
+                  ? { systemPromptMaxChars: adapter.systemPromptMaxChars }
+                  : {}),
+              }).catch(err => {
+                console.warn(
+                  `[resume] native memory not projected for ${descriptor.id}: ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                )
+                return undefined
+              })
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
@@ -2855,6 +2875,7 @@ export async function createGateway(
                 // (skill imports) — the same set the original spawn delivered,
                 // so a revived session keeps its skills.
                 ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
+                ...(resumeMemoryProjection ? { memoryProjection: resumeMemoryProjection } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
                   ? { options: { base_url: resolvedBaseUrl } }

@@ -352,7 +352,7 @@ import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
 import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
-import type { MemoryDocument, MemoryStore } from "@agentproto/memory"
+import type { MemoryStore } from "@agentproto/memory"
 import {
   memoryProjectionEnabled,
   memoryStoreAt as defaultMemoryStoreAt,
@@ -362,10 +362,10 @@ import {
 import {
   DEFAULT_MEMORY_DIGEST_MAX_CHARS,
   buildMemoryDigest,
+  buildNativeMemoryProjection,
   decideMemoryInject,
-  renderMemoryDigest,
-  selectMemoryItems,
   sessionAnchorTags,
+  type NativeMemoryProjection,
 } from "./memory-digest.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
@@ -3944,8 +3944,8 @@ export async function spawnAgentSession(
   // The native-dir half (rule 25: one path per session): the same selection
   // goes to the driver as `memoryProjection`, with the rendered digest as its
   // fallback for a session that cannot read its native dir.
-  let memoryProjection: { items: MemoryDocument[]; digest?: string } | undefined
-  let memoryCaptureTags: string[] | undefined
+  let memoryProjection: NativeMemoryProjection | undefined
+  let memoryAnchorTags: string[] | undefined
   if (storeRoot !== undefined && memoryProjectionEnabled(callerAgentMemory)) {
     const anchors = {
       session: mintedSessionId,
@@ -3988,27 +3988,22 @@ export async function spawnAgentSession(
       }
     } else if (decision.path === "native-dir") {
       try {
-        const items = await selectMemoryItems((deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root), {
-          anchors,
-        })
-        const fallbackRoom =
-          resolved?.supportsSystemPrompt === true
-            ? Math.min(
-                DEFAULT_MEMORY_DIGEST_MAX_CHARS,
-                resolved.systemPromptMaxChars !== undefined
-                  ? resolved.systemPromptMaxChars -
-                      (input.appendSystemPrompt !== undefined ? input.appendSystemPrompt.length + 2 : 0)
-                  : DEFAULT_MEMORY_DIGEST_MAX_CHARS,
-              )
-            : 0
-        const digest = fallbackRoom > 0 ? renderMemoryDigest(items, fallbackRoom) : null
-        memoryProjection = { items, ...(digest ? { digest: digest.text } : {}) }
-        if (resolved?.memoryCapture === "native-dir-diff") {
-          memoryCaptureTags = sessionAnchorTags({
-            ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
-            ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
-          }).filter(tag => tag !== "global")
-        }
+        memoryProjection = await buildNativeMemoryProjection(
+          (deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root),
+          {
+            anchors,
+            ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
+            ...(resolved?.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
+            ...(input.appendSystemPrompt !== undefined ? { existingSystemPromptChars: input.appendSystemPrompt.length } : {}),
+          },
+        )
+        // Recorded so a respawn (restart, lazy resume) recomputes the same
+        // projection and the capture tags what it proposes with them.
+        memoryAnchorTags = sessionAnchorTags({
+          ...(callerAgentId !== undefined ? { agent: callerAgentId } : {}),
+          ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
+          ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
+        }).filter(tag => tag !== "global")
       } catch (err) {
         spawnWarnings.push(
           `agent_start: native memory not projected, the store at ${storeRoot.root} could not be read: ${
@@ -4038,10 +4033,16 @@ export async function spawnAgentSession(
     role: role.name,
     ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
     ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
-    // AIP-72 capture: the turn-end/exit diff (`memory-capture.ts`) runs only
-    // for a session whose native dir this spawn projected.
-    ...(memoryCaptureTags !== undefined
-      ? { memoryCapture: "native-dir-diff", memoryCaptureTags: memoryCaptureTags.join(",") }
+    // AIP-72 native-dir path: the inject path and anchors a respawn
+    // recomputes the projection from, and the capture flag the
+    // turn-end/exit diff (`memory-capture.ts`) runs on, only for a session
+    // whose native dir this spawn projected.
+    ...(memoryAnchorTags !== undefined
+      ? {
+          memoryInject: "native-dir",
+          memoryAnchors: memoryAnchorTags.join(","),
+          ...(resolved?.memoryCapture === "native-dir-diff" ? { memoryCapture: "native-dir-diff" } : {}),
+        }
       : {}),
   }
   // ── System-prompt channel (AIP-42 AGENT.md projection) ──────────────────

@@ -70,7 +70,7 @@ export function createNativeMemoryCapture(opts: NativeMemoryCaptureOptions): Nat
     if (!snapshot) return 0
     const store = opts.memoryStoreAt(root)
     const diff = diffNativeMemory(join(configDir, NATIVE_MEMORY_DIR), snapshot)
-    const tags = (meta.memoryCaptureTags ?? "").split(",").filter(Boolean)
+    const tags = (meta.memoryAnchors ?? "").split(",").filter(Boolean)
     const proposals = await nativeMemoryProposals(diff, {
       sessionId,
       producer: "adapter:claude-code",

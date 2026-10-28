@@ -42,7 +42,7 @@ beforeEach(async () => {
     meta: {
       memoryCapture: "native-dir-diff",
       memoryStoreRoot: join(root, "store"),
-      memoryCaptureTags: "agent:scout,project:acme",
+      memoryAnchors: "agent:scout,project:acme",
     },
   })
   const snapshot = projectNativeMemory(join(configDir, "memory"), [])
