@@ -2722,6 +2722,7 @@ export function registerSessionTools(
         ...(input.askSource !== undefined ? { askSource: input.askSource } : {}),
       })
       await persistCheckpoint(checkpoint)
+      registry.noteCheckpointWritten(desc.id)
       return {
         content: [
           {

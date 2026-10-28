@@ -30,6 +30,7 @@ import { toAgentStartCall } from "../agent-start-schema.js"
 const LOG_PREFIX = "[reaction-bindings]"
 
 const SESSION_COMPLETED_EVENT = "agentproto:session-completed"
+const SESSION_CONTEXT_COMPACTED_EVENT = "agentproto:context-compacted"
 
 const RESERVED_CATEGORY = "agentproto"
 
@@ -149,8 +150,31 @@ const sessionCompletedSupport: ReactionEventSupport = {
   },
 }
 
+const contextCompactedSupport: ReactionEventSupport = {
+  occurrenceIdOf(event) {
+    if (event.type !== SESSION_CONTEXT_COMPACTED_EVENT) return undefined
+    return event.occurrenceId
+  },
+  project(event, getSessionFacts) {
+    if (event.type !== SESSION_CONTEXT_COMPACTED_EVENT) return undefined
+    const facts = getSessionFacts(event.sessionId)
+    return {
+      type: event.type,
+      sessionId: event.sessionId,
+      occurrenceId: event.occurrenceId,
+      usedBefore: event.usedBefore,
+      usedAfter: event.usedAfter,
+      ...(event.contextSize !== undefined ? { contextSize: event.contextSize } : {}),
+      guarded: event.guarded,
+      ...(event.label !== undefined ? { label: event.label } : {}),
+      ...(facts !== undefined ? { session: facts } : {}),
+    }
+  },
+}
+
 export const REACTION_EVENT_SUPPORT: ReadonlyMap<string, ReactionEventSupport> = new Map([
   [SESSION_COMPLETED_EVENT, sessionCompletedSupport],
+  [SESSION_CONTEXT_COMPACTED_EVENT, contextCompactedSupport],
 ])
 
 // ── Dispatch result mapping ───────────────────────────────────────────

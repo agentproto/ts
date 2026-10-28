@@ -185,11 +185,12 @@ describe("createActionRegistry", () => {
 })
 
 describe("REACTION_EVENT_SUPPORT", () => {
-  it("supports exactly the session-completed event of a real SessionCompletedEvent", () => {
+  it("supports session-completed and agentproto:context-compacted", () => {
     const event: SessionCompletedEvent = completed()
-    expect(REACTION_EVENT_SUPPORT.size).toBe(1)
-    expect([...REACTION_EVENT_SUPPORT.keys()]).toEqual([EVENT])
+    expect(REACTION_EVENT_SUPPORT.size).toBe(2)
+    expect([...REACTION_EVENT_SUPPORT.keys()]).toEqual(expect.arrayContaining([EVENT, "agentproto:context-compacted"]))
     expect(REACTION_EVENT_SUPPORT.has(event.type)).toBe(true)
+    expect(REACTION_EVENT_SUPPORT.has("agentproto:context-compacted")).toBe(true)
   })
 
   it("occurrenceIdOf returns the occurrence for session-completed and undefined otherwise", () => {
@@ -213,6 +214,36 @@ describe("REACTION_EVENT_SUPPORT", () => {
     const withoutFacts = support.project(completed(), () => undefined)!
     expect("session" in withoutFacts).toBe(false)
     expect("label" in support.project(completed(), () => facts)!).toBe(false)
+  })
+
+  it("supports agentproto:context-compacted projection with facts", () => {
+    const support = REACTION_EVENT_SUPPORT.get("agentproto:context-compacted")!
+    expect(support).toBeDefined()
+    const compacted = {
+      type: "agentproto:context-compacted",
+      sessionId: "sess-2",
+      occurrenceId: "compact:2026-01-01T00:00:00.000Z",
+      usedBefore: 200000,
+      usedAfter: 10000,
+      contextSize: 200000,
+      guarded: true,
+      label: "agent",
+      ts: "2026-01-01T00:00:00.000Z",
+    } as any
+    expect(support.occurrenceIdOf(compacted)).toBe(compacted.occurrenceId)
+    const facts = { kind: "agent-cli", isChild: false }
+    const getSessionFacts = vi.fn(() => facts)
+    const projected = support.project(compacted, getSessionFacts)!
+    expect(projected.type).toBe("agentproto:context-compacted")
+    expect(projected.usedBefore).toBe(200000)
+    expect(projected.usedAfter).toBe(10000)
+    expect(projected.contextSize).toBe(200000)
+    expect(projected.guarded).toBe(true)
+    expect(projected.label).toBe("agent")
+    expect(projected.session).toBe(facts)
+    expect(getSessionFacts).toHaveBeenCalledWith("sess-2")
+    expect(support.project({ type: "other" } as any, () => facts)).toBeUndefined()
+    expect(support.occurrenceIdOf({ type: "other" } as any)).toBeUndefined()
   })
 })
 

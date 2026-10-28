@@ -317,7 +317,7 @@ describe("agent on maps end to end", () => {
       expect(result.reactions?.refused).toContainEqual({
         bindingId: "turned/on/turn-end/0",
         error:
-          "event 'turn-end' is not supported by reaction bindings; only agentproto:session-completed are supported",
+          "event 'turn-end' is not supported by reaction bindings; only agentproto:session-completed, agentproto:context-compacted are supported",
       })
       expect(result.reactions?.active).toContain(ctx.receiptBinding)
       const insider = ctx.spawn("archiver")
