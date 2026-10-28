@@ -181,6 +181,13 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       })
       .passthrough()
       .optional(),
+    nativeHooks: z
+      .object({
+        preCompactCheckpoint: z.enum(["off", "on"]).optional(),
+        command: z.string().min(1).optional(),
+      })
+      .passthrough()
+      .optional(),
     reactions: z
       .object({
         brainIngest: z
@@ -1387,6 +1394,28 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Per-session identity tokens",
     help: "\"shadow\" (default): each spawned session gets a daemon-minted token on its daemon self-mount, and the daemon counts verified, claim-only, mismatching and anonymous callers (GET /identity) without refusing anything. \"off\": no token, no observation. Applies to sessions spawned after the change.",
     default: "shadow",
+  },
+
+  // ── defaults: nativeHooks ──
+  {
+    path: "defaults.nativeHooks.preCompactCheckpoint",
+    schema: z.enum(["off", "on"]),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Checkpoint before a native compaction",
+    help: "\"on\": a local claude-code session gets a synchronous PreCompact hook (auto compactions only) that runs `<defaults.nativeHooks.command> hook pre-compact`, which writes a daemon checkpoint before the harness compacts its own context. The hook always exits 0, so a missed checkpoint never blocks the compaction. \"off\" (default): no hook. Applies to sessions spawned or restarted after the change.",
+    default: "off",
+  },
+  {
+    path: "defaults.nativeHooks.command",
+    schema: z.string().min(1),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "agentproto CLI for native hooks",
+    help: "The agentproto CLI a projected native hook runs (default \"agentproto\", resolved on the daemon's PATH). Set an absolute path when the daemon's PATH has no agentproto. Applies to sessions spawned or restarted after the change.",
+    default: "agentproto",
   },
 
   // ── defaults: reactions ──

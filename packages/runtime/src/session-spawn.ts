@@ -352,6 +352,7 @@ import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
 import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import type { MemoryStore } from "@agentproto/memory"
 import {
   memoryProjectionEnabled,
@@ -4921,6 +4922,7 @@ export async function spawnAgentSession(
     // `fsZones`/`isolateHostContext`. Only what legitimately differs per
     // branch is a parameter: the cwd (the provisioned worktree on the async
     // path, known only after provisioning) and the activity pulse.
+    const preCompactCommand = preCompactCommandFor(configDefaults, { adapter: input.adapter, sandbox: input.sandbox })
     const localStartOptions = async (startCwd: string, onActivity: () => void) => {
       const startConfigDir = resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)
       const adapterMcpServers = adapterMcpServersForStart()
@@ -4952,6 +4954,10 @@ export async function spawnAgentSession(
         // through here so the two branches cannot diverge if that changes.
         ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
         ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
+        // Projected PreCompact hook (`defaults.nativeHooks`), local
+        // claude-code only: this helper never serves a sandbox spawn, the
+        // resolver still checks so the rule lives in one place.
+        ...(preCompactCommand ? { preCompactCommand } : {}),
         env: await localSpawnEnv(startConfigDir),
         // Exact-file AGENTS.md read grant — the driver derives the
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
