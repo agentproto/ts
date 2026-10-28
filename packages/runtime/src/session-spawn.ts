@@ -4790,6 +4790,70 @@ export async function spawnAgentSession(
         daemonMcpUrl,
         sessionId: mintedSessionId,
       })
+    // The driver env for a LOCAL spawn, shared by the async-worktree branch
+    // below and the synchronous one. Both must hand the child the same
+    // vars: the async branch used to start the driver with no `env` at all,
+    // so a default worktree spawn's child had no identity vars and no `gh`
+    // provenance shim, and the PRs it opened carried no footer (E75).
+    // `configDir` is the isolated config dir that branch hands the driver.
+    const localSpawnEnv = async (configDir: string): Promise<Record<string, string>> => {
+      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
+      // a shim dir to this session's PATH so any `gh pr create` it — or an
+      // adapter subprocess shelling out — runs gets the daemon's provenance
+      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
+      // Off by default; only local spawns — a sandbox spawn runs on the box's
+      // own daemon, which owns its own provenance.
+      let ghProvenanceEnv: Record<string, string> = {}
+      try {
+        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
+        if (wrapGh) {
+          const shimDir = await ensureGhShimDir()
+          ghProvenanceEnv = buildGhShimEnv({
+            shimDir,
+            basePath: process.env.PATH ?? "",
+            adapter: input.harness ?? input.adapter,
+            ...(input.model ?? resolved?.defaultModel
+              ? { model: input.model ?? resolved?.defaultModel }
+              : {}),
+          })
+        }
+      } catch {
+        // Stamping is cosmetic — a shim-preparation failure must never block a
+        // spawn. Fall through with no PATH shim (unchanged behaviour).
+        ghProvenanceEnv = {}
+      }
+      // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
+      // above as `mintedSessionId` (not left to `spawnAgent`'s own
+      // default) specifically so it's known here, before the child ever
+      // exec's. `agent_start` has no caller-facing `env` passthrough to
+      // collide with, so this is the entire env for this spawn.
+      return {
+        // Provenance shim env FIRST (PATH + adapter/model) so the identity
+        // vars below always win — they must never be forgeable or shadowed,
+        // and `ghProvenanceEnv` never carries an identity var anyway.
+        ...ghProvenanceEnv,
+        [SESSION_ID_ENV]: mintedSessionId,
+        [WORKSPACE_SLUG_ENV]: resolvedSlug,
+        // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
+        // the descriptor's `parentSessionId` so the child can discover
+        // who spawned it without a registry round-trip. Absent on a
+        // parentless root spawn.
+        ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
+        // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
+        // `app_run` spawn, so a daemon-tool proxy the child builds can
+        // auto-fill `appId` into an `app_*` call that omits one.
+        ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
+        // AIP-66 cloud (cloud-vendors.ts): tell the cloud relay where to
+        // write the learned vendor session id — a path inside the SAME
+        // isolated config dir the adapter was handed, never a credential.
+        ...(cloudResolved
+          ? {
+              [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(configDir),
+              ...cloudRepoEnv,
+            }
+          : {}),
+      }
+    }
     // ── Async worktree provisioning ──────────────────────────────────
     // WP-F: `git worktree add` + the repo's `agentproto.json` setup hooks
     // can run minutes, and every prior guard (PR #803's claim window, #805's
@@ -4997,6 +5061,7 @@ export async function spawnAgentSession(
             // can hand the respawned adapter the same dir (native-resume
             // store). Adapters that don't isolate a config dir ignore it.
             configDir: adapterConfigDirFor(mintedSessionId),
+            env: await localSpawnEnv(adapterConfigDirFor(mintedSessionId)),
             ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
             ...(input.mode ? { mode: input.mode } : {}),
             ...(launchConfig.options ? { options: launchConfig.options } : {}),
@@ -5382,31 +5447,6 @@ export async function spawnAgentSession(
       // undefined` branch above already returned `adapter_not_found`
       // otherwise.
       //
-      // Opt-in `gh` provenance shim (provenance.wrapGh): when enabled, prepend
-      // a shim dir to this session's PATH so any `gh pr create` it — or an
-      // adapter subprocess shelling out — runs gets the daemon's provenance
-      // footer stamped onto the created PR's body (see `gh-provenance-shim.ts`).
-      // Off by default; only the local (non-sandbox) branch — a sandbox spawn
-      // runs on the box's own daemon, which owns its own provenance.
-      let ghProvenanceEnv: Record<string, string> = {}
-      try {
-        const wrapGh = await (resolveProvenanceWrapGh ?? loadProvenanceWrapGh)()
-        if (wrapGh) {
-          const shimDir = await ensureGhShimDir()
-          ghProvenanceEnv = buildGhShimEnv({
-            shimDir,
-            basePath: process.env.PATH ?? "",
-            adapter: input.harness ?? input.adapter,
-            ...(input.model ?? resolved?.defaultModel
-              ? { model: input.model ?? resolved?.defaultModel }
-              : {}),
-          })
-        }
-      } catch {
-        // Stamping is cosmetic — a shim-preparation failure must never block a
-        // spawn. Fall through with no PATH shim (unchanged behaviour).
-        ghProvenanceEnv = {}
-      }
       commandSandbox = await resolveEffectiveCommandSandbox(
         input.commandSandbox ?? (boundaryFsZones ? "workspace" : undefined),
         cwd,
@@ -5436,40 +5476,7 @@ export async function spawnAgentSession(
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         ...(boundaryFsZones ? { fsZones: boundaryFsZones } : {}),
         ...(boundaryIsolateContext ? { isolateHostContext: true } : {}),
-        // Session identity (SESSION_ID_ENV's doc, sessions.ts) — minted
-        // above as `mintedSessionId` (not left to `spawnAgent`'s own
-        // default) specifically so it's known here, before the child ever
-        // exec's. `agent_start` has no caller-facing `env` passthrough to
-        // collide with, so this is the entire env for this spawn.
-        env: {
-          // Provenance shim env FIRST (PATH + adapter/model) so the identity
-          // vars below always win — they must never be forgeable or shadowed,
-          // and `ghProvenanceEnv` never carries an identity var anyway.
-          ...ghProvenanceEnv,
-          [SESSION_ID_ENV]: mintedSessionId,
-          [WORKSPACE_SLUG_ENV]: resolvedSlug,
-          // Lineage (PARENT_SESSION_ID_ENV's doc, sessions.ts) — mirrors
-          // the descriptor's `parentSessionId` so the child can discover
-          // who spawned it without a registry round-trip. Absent on a
-          // parentless root spawn.
-          ...(parentSessionId ? { [PARENT_SESSION_ID_ENV]: parentSessionId } : {}),
-          // App identity (APP_ID_ENV's doc, sessions.ts) — set only for an
-          // `app_run` spawn, so a daemon-tool proxy the child builds can
-          // auto-fill `appId` into an `app_*` call that omits one.
-          ...(input.appId ? { [APP_ID_ENV]: input.appId } : {}),
-          // AIP-66 cloud (cloud-vendors.ts): tell the cloud relay where to
-          // write the learned vendor session id — a path inside the SAME
-          // isolated config dir the adapter was handed above, never a
-          // credential.
-          ...(cloudResolved
-            ? {
-                [CLOUD_SESSION_META_FILE_ENV]: cloudSessionMetaFilePath(
-                  resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId),
-                ),
-                ...cloudRepoEnv,
-              }
-            : {}),
-        },
+        env: await localSpawnEnv(resumeTarget?.configDir ?? adapterConfigDirFor(mintedSessionId)),
         // Exact-file AGENTS.md read grant — the driver derives the
         // AGENTPROTO_ADDITIONAL_READ_PATHS env var (and the confinement
         // extra read paths) from this option itself, so the option is the

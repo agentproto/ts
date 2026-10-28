@@ -3644,6 +3644,45 @@ describe("spawnAgentSession — async worktree provisioning (WP-F)", () => {
     expect(registry.get(result.descriptor.id)?.cwd).toBe(WORKTREE)
   })
 
+  // E75: executor PRs opened from daemon worktrees carried no provenance
+  // footer. The async branch started the driver with no `env` at all, so
+  // the child had neither its identity vars nor the `gh` provenance shim on
+  // PATH (`provenance.wrapGh`), and its own `gh pr create` went unstamped.
+  it("hands the driver the same identity + gh provenance shim env as a synchronous spawn", async () => {
+    const startSession = vi.fn(async (_opts: { env?: Record<string, string> }) =>
+      fakeAgentSession(),
+    )
+    const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
+    const { provisionWorktree, resolve } = deferredProvisioner()
+
+    const result = await spawnAgentSession(
+      {
+        ...deps,
+        provisionWorktree,
+        resolveWorktreeIsolation: pinMode("on-request"),
+        resolveProvenanceWrapGh: async () => true,
+      },
+      {
+        adapter: "mock",
+        cwd: ORIGINAL,
+        worktree: { async: true },
+        workspaceSlug: "real-workspace",
+      },
+    )
+    if (!result.ok) throw new Error("expected success")
+    resolve(isolated)
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(1))
+
+    const env = startSession.mock.calls[0]?.[0]?.env
+    expect(env).toMatchObject({
+      [SESSION_ID_ENV]: result.descriptor.id,
+      [WORKSPACE_SLUG_ENV]: "real-workspace",
+      AGENTPROTO_GH_PROVENANCE: "1",
+      AGENTPROTO_ADAPTER: "mock",
+    })
+    expect(env?.PATH?.split(":")[0]).toMatch(/\.agentproto\/shims$/)
+  })
+
   it("a provisioning failure ends the session in status \"error\" with a readable lastError — never stuck in \"starting\"", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
     const { registry, deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })
