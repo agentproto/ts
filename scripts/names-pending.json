@@ -1,3 +1,5 @@
 {
-  "pending": []
+  "pending": [
+    "ts:package:@agentproto/memory:unregistered"
+  ]
 }

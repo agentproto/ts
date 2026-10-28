@@ -49,6 +49,9 @@ export const DEFAULTS = { aip: 36, slug: "sandbox", doctype: "SANDBOX" }
 export const DEFAULT_PACKAGES = [
   DEFAULTS,
   { aip: 20, slug: "work", doctype: "WORK" },
+  // AIP-72's lifetime/provenance/evidence are `$ref`s; without
+  // `--inline-refs` they would generate as `z.any()`.
+  { aip: 72, slug: "memory", doctype: "MEMORY", inlineRefs: true },
 ]
 
 function parseArgs(argv) {
@@ -60,7 +63,7 @@ function parseArgs(argv) {
 }
 
 export async function checkSpecDrift(opts = {}) {
-  const { aip, slug, doctype } = { ...DEFAULTS, ...opts }
+  const { aip, slug, doctype, inlineRefs } = { ...DEFAULTS, ...opts }
   const specJsonPath = resolve(ROOT, "specs", "resources", `aip-${aip}`, "draft", `${doctype}.schema.json`)
   if (!existsSync(specJsonPath)) {
     return { ok: false, message: `JSON draft not found: ${specJsonPath}` }
@@ -74,6 +77,7 @@ export async function checkSpecDrift(opts = {}) {
       "--slug", slug,
       "--doctype", doctype,
       "--schema-only",
+      ...(inlineRefs ? ["--inline-refs"] : []),
     ],
     { encoding: "utf8", cwd: ROOT },
   )
@@ -99,7 +103,7 @@ export async function checkSpecDrift(opts = {}) {
     ok: false,
     message:
       `spec/codegen DRIFT in packages/${slug}/src/schema.ts — regenerate with ` +
-      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only\` ` +
+      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only${inlineRefs ? " --inline-refs" : ""}\` ` +
       `(or update the JSON draft first, then regen):\n${lines.join("\n")}`,
   }
 }

@@ -10,7 +10,7 @@ test("checkSpecDrift passes on the in-sync vendored JSON draft", async () => {
 test("every no-arg-CLI-guarded package is in sync with its vendored draft", async () => {
   assert.deepEqual(
     DEFAULT_PACKAGES.map(p => p.slug),
-    [DEFAULTS.slug, "work"],
+    [DEFAULTS.slug, "work", "memory"],
   )
   for (const pkg of DEFAULT_PACKAGES) {
     const result = await checkSpecDrift(pkg)
