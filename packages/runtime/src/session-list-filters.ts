@@ -166,22 +166,30 @@ export function sortNewestActivityFirst<T extends Pick<SessionDescriptor, "id" |
   return [...rows].sort((a, b) => sessionActivityMs(b) - sessionActivityMs(a) || a.id.localeCompare(b.id))
 }
 
-type LineageView = Pick<SessionDescriptor, "id" | "resumedFrom" | "continuedFrom" | "succeeds">
+type LineageView = Pick<SessionDescriptor, "id" | "resumedFrom" | "continuedFrom" | "succeeds"> & {
+  /** Optional on purpose: a caller that never passes `status` (every
+   *  existing unit-test fixture before this field was added) gets the
+   *  pre-liveness-guard behaviour — treated as not-live, so it still
+   *  collapses — while a real row's real status gets the guard below. */
+  status?: SessionDescriptor["status"]
+}
 
 /** The predecessor ids `s` points at via the lineage links `collapseLineageChains`
  *  collapses on — the same three links `transcript-search.ts`'s `predecessorLinks`
- *  walks for the opposite read (recovering a predecessor's transcript). */
+ *  walks for the opposite read (recovering a predecessor's transcript). Never
+ *  returns `s.id` itself: a corrupt/legacy sidecar that self-links would
+ *  otherwise make a one-row set collapse to nothing. */
 function lineagePredecessorIds(s: LineageView): string[] {
   const ids: string[] = []
-  if (s.resumedFrom) ids.push(s.resumedFrom)
-  if (s.continuedFrom && s.continuedFrom !== s.resumedFrom) ids.push(s.continuedFrom)
-  if (s.succeeds) ids.push(s.succeeds)
+  if (s.resumedFrom && s.resumedFrom !== s.id) ids.push(s.resumedFrom)
+  if (s.continuedFrom && s.continuedFrom !== s.id && s.continuedFrom !== s.resumedFrom) ids.push(s.continuedFrom)
+  if (s.succeeds && s.succeeds !== s.id) ids.push(s.succeeds)
   return ids
 }
 
 /**
- * Collapse a lineage to its tail: hide any row for which some OTHER row in
- * the SAME set points back to it via `resumedFrom`, `continuedFrom` or
+ * Collapse a lineage to its tail: hide any NOT-LIVE row for which some OTHER
+ * row in the SAME set points back to it via `resumedFrom`, `continuedFrom` or
  * `succeeds`. Transitive (A→B→C collapses to just C, since both A and B end
  * up pointed at), order-preserving, and a predecessor missing from `rows` is
  * never hidden — only a row whose successor is actually present in the set
@@ -196,6 +204,17 @@ function lineagePredecessorIds(s: LineageView): string[] {
  * label with only one of them actually alive — this is what
  * `session_list`'s `collapseLineage:true`, `GET /sessions?collapseLineage=true`
  * and `agentproto sessions board` (unconditionally) apply to stop that.
+ *
+ * A row whose own `status` is `running`/`starting` is NEVER hidden, even
+ * when pointed at — a plain restart or `session_continue_fresh` always
+ * retires the predecessor before linking it (`sessions.ts`'s
+ * `linkContinuedTo`, `session-continue-fresh.ts`'s `markRetired` call), so
+ * for `resumedFrom`/`continuedFrom` this guard never fires in practice; an
+ * `agent_start.succeeds` handover only records the two pointers
+ * (`handoverLineage` re-parents children and sets the succession, nothing
+ * else) and never retires `from`, so its predecessor can legitimately still
+ * be running — collapsing it would make a live, driveable session vanish
+ * from the one place an operator looks.
  */
 export function collapseLineageChains<T extends LineageView>(rows: readonly T[]): T[] {
   const superseded = new Set<string>()
@@ -203,7 +222,9 @@ export function collapseLineageChains<T extends LineageView>(rows: readonly T[])
     for (const id of lineagePredecessorIds(row)) superseded.add(id)
   }
   if (superseded.size === 0) return [...rows]
-  return rows.filter(row => !superseded.has(row.id))
+  return rows.filter(
+    row => !superseded.has(row.id) || row.status === "running" || row.status === "starting",
+  )
 }
 
 /** True when `input` carries at least one filter (an empty `q` / `false` flag does not count). */
