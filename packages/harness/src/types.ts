@@ -1539,6 +1539,15 @@ export interface AgentCliStartOptions {
    */
   isolateHostContext?: boolean
   /**
+   * The exact command line the host wants run as a synchronous Claude Code
+   * `PreCompact` hook (matcher `auto` only, timeout 30 s), e.g.
+   * `agentproto hook pre-compact`. Written only for claude-code, into the
+   * isolated `settings.json` rewritten at every spawn, so it never outlives
+   * the spawn that asked for it. Never marked approved. Other adapters
+   * ignore it.
+   */
+  preCompactCommand?: string
+  /**
    * Extra system-prompt text for this session (an AIP-42 AGENT.md projection
    * that resolved a real channel — see {@link AgentCliDefinition.systemPrompt}).
    * Applied per the manifest's declared `systemPrompt.via`: `acp-meta` rides
