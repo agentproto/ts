@@ -25,6 +25,12 @@
  */
 
 import type { SessionEventRecord } from "../client/types.js"
+import {
+  modeChangedLabel,
+  parseAgentPrompt,
+  type PromptChoice,
+  type TypedAgentPrompt,
+} from "./agentPrompt.logic.js"
 
 /** Bump when the semantic record shape changes incompatibly. */
 export const CONVERSATION_SCHEMA_VERSION = 1
@@ -36,6 +42,7 @@ export type SegmentKind =
   | "tool"
   | "plan"
   | "agent-question"
+  | "mode-changed"
   | "error"
 
 interface SegmentBase {
@@ -109,9 +116,20 @@ export interface QuestionSegment extends SegmentBase {
    *  resolve back to a human label without a second daemon round-trip. Not
    *  forwarded to the presented layer. */
   optionsById?: Record<string, string>
+  /** AIP-45 typed request (question / plan-approval); absent for a plain tool
+   *  permission, which is also what an older daemon's prompt reduces to. */
+  prompt?: TypedAgentPrompt
   /** Set once a "permission-resolved" record for this toolCallId arrives —
    *  an ask with this set is ANSWERED, not still awaiting a human. */
   resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
+}
+
+export interface ModeChangedSegment extends SegmentBase {
+  kind: "mode-changed"
+  modeId: string
+  previousModeId?: string
+  cause?: string
+  reason?: string
 }
 
 export interface ErrorSegment extends SegmentBase {
@@ -124,6 +142,7 @@ export type ConversationSegment =
   | ToolSegment
   | PlanSegment
   | QuestionSegment
+  | ModeChangedSegment
   | ErrorSegment
 
 export interface ConversationTurn {
@@ -373,6 +392,12 @@ export function reduceConversation(
         const turn = openAssistant(rec)
         const optionItems = normalizeOptionItems(rec.options)
         const optionsById = optionsByIdFrom(optionItems)
+        const typed = parseAgentPrompt({
+          request: rec.request,
+          question: rec.question,
+          planApproval: rec.planApproval,
+          options: rec.options,
+        })
         const seg: QuestionSegment = {
           kind: "agent-question",
           id: `seg-${rec.seq}`,
@@ -382,9 +407,25 @@ export function reduceConversation(
           ...(optionItems.length > 0 ? { optionItems } : {}),
           ...(rec.toolCallId ? { toolCallId: rec.toolCallId } : {}),
           ...(optionsById ? { optionsById } : {}),
+          ...(typed ? { prompt: typed } : {}),
         }
         turn.segments.push(seg)
         if (rec.toolCallId) questionIndex.set(rec.toolCallId, seg)
+        break
+      }
+      case "mode-changed": {
+        if (!rec.modeId) break
+        const turn = openAssistant(rec)
+        turn.segments.push({
+          kind: "mode-changed",
+          id: `seg-${rec.seq}`,
+          seq: rec.seq,
+          ts: rec.ts,
+          modeId: rec.modeId,
+          ...(rec.previousModeId ? { previousModeId: rec.previousModeId } : {}),
+          ...(rec.cause ? { cause: rec.cause } : {}),
+          ...(rec.reason ? { reason: rec.reason } : {}),
+        })
         break
       }
       case "permission-resolved": {
@@ -602,9 +643,29 @@ export interface PresentedQuestionSegment {
   /** optionId → display label for THIS ask's offered options — kept for the
    *  resolved-state label lookup; chips render from `optionItems`. */
   optionsById?: Record<string, string>
+  /** AIP-45 typed request; absent for a plain tool permission. */
+  request?: "question" | "plan-approval"
+  /** `request: "question"`: the ask, its choices and its free-text option. */
+  question?: { prompt: string; choices: PromptChoice[]; freeTextOptionId?: string }
+  /** `request: "plan-approval"`: the plan (markdown rendered to safe HTML),
+   *  the mode approval switches to, and the options Approve / Reject answer. */
+  plan?: {
+    html?: string
+    planRef?: string
+    targetModeId?: string
+    approveOptionId: string
+    rejectOptionId: string
+  }
   /** Set once this ask has been answered — see `QuestionSegment.resolved`.
    *  Absent means still awaiting a human/orchestrator decision. */
   resolved?: { decision: "approve" | "deny" | "cancelled"; optionId?: string; optionLabel?: string }
+}
+
+export interface PresentedModeChangedSegment {
+  kind: "mode-changed"
+  id: string
+  /** Plain label, e.g. "Mode: plan -> execute · by agent". The webview sets it as textContent. */
+  text: string
 }
 
 export interface PresentedErrorSegment {
@@ -647,6 +708,7 @@ export type PresentedSegment =
   | PresentedToolSegment
   | PresentedPlanSegment
   | PresentedQuestionSegment
+  | PresentedModeChangedSegment
   | PresentedErrorSegment
   | PresentedActivitySegment
 
@@ -852,10 +914,40 @@ function presentSegment(seg: ConversationSegment, r: Renderers): PresentedSegmen
         ...(seg.optionItems ? { optionItems: seg.optionItems } : {}),
         ...(seg.toolCallId ? { toolCallId: seg.toolCallId } : {}),
         ...(seg.optionsById ? { optionsById: seg.optionsById } : {}),
+        ...presentPrompt(seg.prompt, r),
         ...(seg.resolved ? { resolved: seg.resolved } : {}),
       }
+    case "mode-changed":
+      return { kind: "mode-changed", id: seg.id, text: modeChangedLabel(seg) }
     case "error":
       return { kind: "error", id: seg.id, text: r.escapeHtml(seg.message) }
+  }
+}
+
+function presentPrompt(
+  prompt: TypedAgentPrompt | undefined,
+  r: Renderers,
+): Pick<PresentedQuestionSegment, "request" | "question" | "plan"> {
+  if (!prompt) return {}
+  if (prompt.request === "question") {
+    return {
+      request: "question",
+      question: {
+        prompt: prompt.prompt,
+        choices: prompt.choices,
+        ...(prompt.freeTextOptionId ? { freeTextOptionId: prompt.freeTextOptionId } : {}),
+      },
+    }
+  }
+  return {
+    request: "plan-approval",
+    plan: {
+      ...(prompt.plan ? { html: r.renderMarkdown(prompt.plan) } : {}),
+      ...(prompt.planRef ? { planRef: prompt.planRef } : {}),
+      ...(prompt.targetModeId ? { targetModeId: prompt.targetModeId } : {}),
+      approveOptionId: prompt.approveOptionId,
+      rejectOptionId: prompt.rejectOptionId,
+    },
   }
 }
 

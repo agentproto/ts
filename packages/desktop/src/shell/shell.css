@@ -635,6 +635,40 @@
   gap: 7px;
 }
 
+.perm-plan {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  color: var(--color-ink);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.perm-plan p {
+  margin: 0 0 7px;
+}
+.perm-plan p:last-child {
+  margin: 0;
+}
+.perm-reply {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+.perm-reply input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--rounded-md);
+  background: var(--color-background);
+  color: var(--color-ink);
+  font: inherit;
+  font-size: 12px;
+}
+
 /* structured awaiting-question banner, pinned above the composer */
 .question-banner {
   display: flex;

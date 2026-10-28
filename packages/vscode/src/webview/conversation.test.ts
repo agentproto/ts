@@ -926,3 +926,157 @@ describe("reduceConversation — session-message (typed inter-session message)",
     expect(conv.turns).toEqual([])
   })
 })
+
+describe("mode-changed", () => {
+  const present = (records: SessionEventRecord[]) =>
+    presentConversation(reduceConversation("s1", records), {
+      renderMarkdown: t => `<p>${t}</p>`,
+      escapeHtml: t => t,
+    }).turns.flatMap(t => t.segments)
+
+  it("renders a compact row for a caller switch", () => {
+    freshSeq()
+    expect(
+      present([rec({ kind: "mode-changed", modeId: "execute", previousModeId: "plan", cause: "caller" })]),
+    ).toEqual([{ kind: "mode-changed", id: "seg-1", text: "Mode: plan -> execute" }])
+  })
+
+  it("says by agent and carries the reason", () => {
+    freshSeq()
+    expect(
+      present([
+        rec({
+          kind: "mode-changed",
+          modeId: "execute",
+          previousModeId: "plan",
+          cause: "agent",
+          reason: "plan approved",
+        }),
+      ]),
+    ).toEqual([{ kind: "mode-changed", id: "seg-1", text: "Mode: plan -> execute · by agent · plan approved" }])
+  })
+
+  it("keeps the row in order between the agent's text", () => {
+    freshSeq()
+    const out = present([
+      rec({ kind: "text-delta", text: "before\n" }),
+      rec({ kind: "mode-changed", modeId: "execute", previousModeId: "plan", cause: "agent" }),
+      rec({ kind: "text-delta", text: "after\n" }),
+    ])
+    expect(out.map(s => s.kind)).toEqual(["assistant-text", "mode-changed", "assistant-text"])
+  })
+
+  it("ignores a record with no mode id", () => {
+    freshSeq()
+    expect(present([rec({ kind: "mode-changed", cause: "agent" })])).toEqual([])
+  })
+})
+
+describe("typed agent-prompt", () => {
+  const options = [
+    { optionId: "allow_once", name: "Allow", kind: "allow_once" },
+    { optionId: "deny", name: "Deny", kind: "reject_once" },
+  ]
+  const present = (records: SessionEventRecord[]) =>
+    presentConversation(reduceConversation("s1", records), {
+      renderMarkdown: t => `<p>${t}</p>`,
+      escapeHtml: t => t,
+    }).turns.flatMap(t => t.segments)
+
+  it("renders a legacy prompt exactly as before", () => {
+    freshSeq()
+    const [seg] = present([rec({ kind: "agent-prompt", toolCallId: "p1", options })])
+    expect(seg).toEqual({
+      kind: "agent-question",
+      id: "seg-1",
+      options: ["Allow", "Deny"],
+      optionItems: [
+        { id: "allow_once", label: "Allow" },
+        { id: "deny", label: "Deny" },
+      ],
+      toolCallId: "p1",
+      optionsById: { allow_once: "Allow", deny: "Deny" },
+    })
+  })
+
+  it("renders an explicit tool-permission prompt exactly as a legacy one", () => {
+    freshSeq()
+    const [legacy] = present([rec({ kind: "agent-prompt", toolCallId: "p1", options })])
+    freshSeq()
+    const [typed] = present([rec({ kind: "agent-prompt", toolCallId: "p1", options, request: "tool-permission" })])
+    expect(typed).toEqual(legacy)
+  })
+
+  it("carries the question and its choices", () => {
+    freshSeq()
+    const [seg] = present([
+      rec({
+        kind: "agent-prompt",
+        toolCallId: "p1",
+        request: "question",
+        options: [
+          { optionId: "answer:0", name: "Yes", kind: "allow_once" },
+          { optionId: "decline", name: "Decline to answer", kind: "reject_once" },
+        ],
+        question: { prompt: "Ship it?", choices: [{ optionId: "answer:0", label: "Yes" }], allowFreeText: false },
+      }),
+    ])
+    expect(seg).toMatchObject({
+      kind: "agent-question",
+      toolCallId: "p1",
+      request: "question",
+      question: { prompt: "Ship it?", choices: [{ optionId: "answer:0", label: "Yes" }] },
+    })
+    expect((seg as { question: { freeTextOptionId?: string } }).question.freeTextOptionId).toBeUndefined()
+  })
+
+  it("carries the free-text option of an open question", () => {
+    freshSeq()
+    const [seg] = present([
+      rec({
+        kind: "agent-prompt",
+        toolCallId: "p1",
+        request: "question",
+        options: [{ optionId: "answer", name: "Answer", kind: "allow_once" }],
+        question: { prompt: "Which branch?", choices: [], allowFreeText: true, freeTextOptionId: "answer" },
+      }),
+    ])
+    expect(seg).toMatchObject({ request: "question", question: { prompt: "Which branch?", freeTextOptionId: "answer" } })
+  })
+
+  it("renders the plan of a plan-approval prompt through the markdown renderer, with its target mode", () => {
+    freshSeq()
+    const [seg] = present([
+      rec({
+        kind: "agent-prompt",
+        toolCallId: "p1",
+        request: "plan-approval",
+        options: [
+          { optionId: "approve", name: "Approve", kind: "allow_once" },
+          { optionId: "reject", name: "Reject", kind: "reject_once" },
+        ],
+        planApproval: {
+          plan: "step one",
+          targetModeId: "execute",
+          approveOptionId: "approve",
+          rejectOptionId: "reject",
+        },
+      }),
+    ])
+    expect(seg).toMatchObject({
+      kind: "agent-question",
+      request: "plan-approval",
+      plan: { html: "<p>step one</p>", targetModeId: "execute", approveOptionId: "approve", rejectOptionId: "reject" },
+    })
+  })
+
+  it("falls back to the legacy shape when the typed payload is malformed", () => {
+    freshSeq()
+    const [legacy] = present([rec({ kind: "agent-prompt", toolCallId: "p1", options })])
+    freshSeq()
+    const [seg] = present([
+      rec({ kind: "agent-prompt", toolCallId: "p1", options, request: "question", question: { prompt: 1 } }),
+    ])
+    expect(seg).toEqual(legacy)
+  })
+})

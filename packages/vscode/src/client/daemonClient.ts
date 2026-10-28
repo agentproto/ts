@@ -287,6 +287,8 @@ export interface RespondPermissionInput {
   decision: "approve" | "deny"
   optionId?: string
   scope?: "once" | "always"
+  /** Free-text answer to a question, or the reason for rejecting a plan. */
+  feedback?: string
 }
 
 /** One `GET /brain/query` hit — the lean shape the daemon route maps

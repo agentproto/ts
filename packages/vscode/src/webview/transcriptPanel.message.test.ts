@@ -169,6 +169,27 @@ describe("handleWebviewMessage", () => {
       expect(vscode.window.showWarningMessage).not.toHaveBeenCalled()
     })
 
+    it("forwards the free-text feedback of a typed answer", async () => {
+      client.listPermissions = vi
+        .fn()
+        .mockResolvedValue([{ id: "perm-db-id", toolCallId: "tc-1" }]) as DaemonClient["listPermissions"]
+      client.respondPermission = vi.fn().mockResolvedValue(undefined) as DaemonClient["respondPermission"]
+
+      await handleWebviewMessage(
+        { type: "resolveQuestion", toolCallId: "tc-1", decision: "approve", optionId: "answer", feedback: "main" },
+        panel,
+        controller,
+        outputDocs,
+        client,
+      )
+
+      expect(client.respondPermission).toHaveBeenCalledWith("perm-db-id", {
+        decision: "approve",
+        optionId: "answer",
+        feedback: "main",
+      })
+    })
+
     it("warns and does nothing when the message carries no toolCallId", async () => {
       client.listPermissions = vi.fn() as unknown as DaemonClient["listPermissions"]
       client.respondPermission = vi.fn() as unknown as DaemonClient["respondPermission"]

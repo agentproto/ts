@@ -139,5 +139,7 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve" })).toBe(false)
     expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: 1 })).toBe(false)
     expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: 42, decision: "approve", optionId: "a" })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a", feedback: "main" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a", feedback: 3 })).toBe(false)
   })
 })

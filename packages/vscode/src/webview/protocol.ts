@@ -438,7 +438,14 @@ export type WebviewMessage =
    * `permissions_respond` on the daemon — no daemon data crosses into the
    * webview; only ids do.
    */
-  | { type: "resolveQuestion"; toolCallId?: string; decision: "approve" | "deny"; optionId: string }
+  | {
+      type: "resolveQuestion"
+      toolCallId?: string
+      decision: "approve" | "deny"
+      optionId: string
+      /** A typed question's free-text answer, or the reason a plan was rejected. */
+      feedback?: string
+    }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
   if (typeof msg !== "object" || msg === null) return false
@@ -497,7 +504,8 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
       return (
         (m.decision === "approve" || m.decision === "deny") &&
         typeof m.optionId === "string" &&
-        (m.toolCallId === undefined || typeof m.toolCallId === "string")
+        (m.toolCallId === undefined || typeof m.toolCallId === "string") &&
+        (m.feedback === undefined || typeof m.feedback === "string")
       )
     default:
       return false
