@@ -343,7 +343,22 @@
         "file_io":       { "type": "boolean" },
         "multimodal":    { "type": "boolean" },
         "resumable":     { "type": "boolean" },
-        "bidirectional": { "type": "boolean" }
+        "bidirectional": { "type": "boolean" },
+        "memory": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "AIP-72 memory projection declaration (section 9). Metadata only: the host resolves the effective projection, native first with the system prompt as the fallback. Absent reads as { inject: none, capture: none }. A harness-extension capability, excluded from the ACP subset check.",
+          "properties": {
+            "inject": {
+              "enum": ["native-dir", "system-prompt", "none"],
+              "description": "How a digest of in-force memory items reaches a session at spawn: written into the harness's native memory location, appended to the system prompt, or not at all."
+            },
+            "capture": {
+              "enum": ["native-dir-diff", "none"],
+              "description": "Whether the native memory location can be diffed after the session so its changes become memory store proposals."
+            }
+          }
+        }
       }
     },
     "mode": {
