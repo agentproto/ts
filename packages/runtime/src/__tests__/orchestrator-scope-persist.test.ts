@@ -255,6 +255,64 @@ describe("adoptLegacyOrchestratorScopes", () => {
   })
 })
 
+describe("adoptLegacyOrchestratorScopes against a persisted registry", () => {
+  function makeRegistry() {
+    const sessionEvents = createSessionEventBus()
+    return createSessionsRegistry({
+      sessionEvents,
+      persist: false,
+      transcriptDir: tmpTranscriptDir(),
+    })
+  }
+
+  const orchRef = (token: string) =>
+    `http://127.0.0.1:18790/mcp/orchestrator?scope=${token}`
+
+  function spawnWith(sessions: ReturnType<typeof makeRegistry>, token: string, meta?: Record<string, string>) {
+    return sessions.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeSession(`legacy_${token.slice(0, 6)}`),
+      adapterSlug: "mock",
+      depth: 0,
+      mcpServers: [{ name: "agentproto", transport: "http", ref: orchRef(token) }],
+      ...(meta ? { meta } : {}),
+    })
+  }
+
+  it("no persist file yet (true pre-persistence legacy): a supervisor's token is still adopted", () => {
+    const sessions = makeRegistry()
+    const token = "c".repeat(64)
+    spawnWith(sessions, token)
+    const scopes = createScopeTokenRegistry({ persistPath: tmpPersistPath() })
+    expect(adoptLegacyOrchestratorScopes(scopes, sessions.list())).toBe(1)
+    expect(scopes.verify(token)?.role).toBe("supervisor")
+  })
+
+  it("a persist file exists: a token it does not know is dead, never adopted", () => {
+    const sessions = makeRegistry()
+    const token = "d".repeat(64)
+    spawnWith(sessions, token)
+    const persistPath = tmpPersistPath()
+    const writer = createScopeTokenRegistry({ persistPath })
+    writer.mint()
+    writer.flushSync()
+
+    const boot = createScopeTokenRegistry({ persistPath })
+    expect(adoptLegacyOrchestratorScopes(boot, sessions.list())).toBe(0)
+    expect(boot.verify(token)).toBeNull()
+  })
+
+  it("a descriptor whose spawn role is not supervisor is never adopted with the supervisor defaults", () => {
+    const sessions = makeRegistry()
+    const token = "e".repeat(64)
+    spawnWith(sessions, token, { role: "executor" })
+    const scopes = createScopeTokenRegistry()
+    expect(adoptLegacyOrchestratorScopes(scopes, sessions.list())).toBe(0)
+    expect(scopes.verify(token)).toBeNull()
+  })
+})
+
 describe("pruneOrchestratorScopesOnBoot", () => {
   function makeRegistry() {
     const sessionEvents = createSessionEventBus()

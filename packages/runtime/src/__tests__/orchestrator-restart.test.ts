@@ -14,11 +14,14 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import {
+  adoptLegacyOrchestratorScopes,
   createOrchestratorInjector,
   createOrchestratorScopeHooks,
   createScopeTokenRegistry,
+  pruneOrchestratorScopesOnBoot,
   reapOrphanedDescendants,
   type OrchestratorScope,
+  type ScopeTokenRegistry,
 } from "../orchestrator-gateway.js"
 import { collectSubtree } from "../agent-tools.js"
 import { restartAgentSession, tryRestartInPlace } from "../session-restart-core.js"
@@ -226,5 +229,119 @@ describe("restarting an orchestrator session", () => {
     expect(announced).toHaveLength(1)
     expect(JSON.stringify(announced)).toContain("/mcp/orchestrator")
     expect(JSON.stringify(t.events)).not.toContain(t.injection.scope.token)
+  })
+})
+
+// A daemon restart, in process: the sessions registry stands in for the
+// restored history, while the scope registry is rebuilt from the same
+// persist file and put through the same boot steps as `index.ts`.
+function setupPersisted() {
+  const persistPath = join(mkdtempSync(join(tmpdir(), "orch-restart-persist-")), "orchestrator-scopes.json")
+  const sessionEvents = createSessionEventBus()
+  let scopeTokens: ScopeTokenRegistry = createScopeTokenRegistry({ persistPath })
+  let hooks = createOrchestratorScopeHooks(scopeTokens)
+  const registry = createSessionsRegistry({
+    sessionEvents,
+    persist: false,
+    transcriptDir: join(mkdtempSync(join(tmpdir(), "orch-restart-")), "transcripts"),
+    orchestratorScopes: {
+      reinstate: id => hooks.reinstate(id),
+      transfer: (from, to) => hooks.transfer(from, to),
+    },
+    resumeAgent: async () => fakeAgentSession(),
+  })
+  // Registered once: the owner-keyed exit handler reads `scopeTokens`
+  // through this proxy, so it follows the registry across the restart.
+  createOrchestratorInjector({
+    scopeTokens: {
+      ...scopeTokens,
+      ownedBy: id => scopeTokens.ownedBy(id),
+      revoke: token => scopeTokens.revoke(token),
+    },
+    sessionEvents,
+    port: 4999,
+  })
+  // A scope narrower than every default: fewer tools, a non-supervisor
+  // role, lower depth and child limits.
+  const scope = scopeTokens.mint({
+    tools: ["message_parent", "inbox_wait"],
+    maxDepth: 1,
+    maxChildren: 1,
+    role: "executor",
+  })
+  const owner = registry.spawnAgent({
+    workspaceSlug: "w",
+    cwd: process.cwd(),
+    agentSession: fakeAgentSession(),
+    adapterSlug: "mock",
+    mcpServers: [
+      { name: "agentproto", transport: "http", ref: `http://127.0.0.1:4999/mcp/orchestrator?scope=${scope.token}` },
+    ],
+  })
+  scopeTokens.bindOwner(scope.token, owner.id)
+  const before = paramsOf(scope)
+  const restartDaemon = (): ScopeTokenRegistry => {
+    scopeTokens.flushSync()
+    scopeTokens = createScopeTokenRegistry({ persistPath })
+    pruneOrchestratorScopesOnBoot(scopeTokens, registry.list())
+    adoptLegacyOrchestratorScopes(scopeTokens, registry.list())
+    hooks = createOrchestratorScopeHooks(scopeTokens)
+    return scopeTokens
+  }
+  return { registry, scope, owner, before, restartDaemon, scopes: () => scopeTokens }
+}
+
+describe("an orchestrator scope across a daemon restart", () => {
+  it("owner crashed, daemon restarted, session restarted: the scope comes back with its original parameters", async () => {
+    const t = setupPersisted()
+    expect(t.registry.markCrashed(t.owner.id)).toBe(true)
+    expect(t.scopes().verify(t.scope.token)).toBeNull()
+
+    const scopes = t.restartDaemon()
+    // Still revoked until a restart asks for it.
+    expect(scopes.verify(t.scope.token)).toBeNull()
+
+    const restarted = await restartAgentSession(t.registry, resolver, t.registry.get(t.owner.id)!, {
+      forceAgentResume: true,
+      daemonMcpUrl,
+    })
+    const back = scopes.verify(tokenOf(t.registry.get(restarted.desc.id)))
+    expect(back).not.toBeNull()
+    expect(paramsOf(back!)).toEqual(t.before)
+    expect(back!.ownerSessionId).toBe(restarted.desc.id)
+  })
+
+  it("owner exited normally, daemon restarted, no restart asked: the token does not verify", () => {
+    const t = setupPersisted()
+    t.registry.kill(t.owner.id)
+    expect(t.scopes().verify(t.scope.token)).toBeNull()
+
+    const scopes = t.restartDaemon()
+    expect(scopes.verify(t.scope.token)).toBeNull()
+    // A second boot does not resurrect it either.
+    expect(t.restartDaemon().verify(t.scope.token)).toBeNull()
+  })
+
+  it("the boot prune drops a tombstone whose owner can never be revived, and keeps a resumable one", () => {
+    const t = setupPersisted()
+    const doomed = t.registry.spawnAgent({
+      workspaceSlug: "w",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession(),
+      adapterSlug: "mock",
+    })
+    const doomedScope = t.scopes().mint({ tools: ["message_parent"], role: "executor" })
+    t.scopes().bindOwner(doomedScope.token, doomed.id)
+    t.registry.kill(doomed.id)
+    t.registry.kill(t.owner.id)
+    // Strip the resume essentials: the doomed owner can never come back.
+    t.registry.get(doomed.id)!.adapterSessionId = undefined
+
+    t.restartDaemon()
+    const scopes = t.restartDaemon()
+    const kept = scopes.reinstate(t.owner.id)
+    expect(kept.map(paramsOf)).toEqual([t.before])
+    expect(scopes.reinstate(doomed.id)).toEqual([])
+    expect(scopes.isRevoked(doomedScope.token)).toBe(false)
   })
 })

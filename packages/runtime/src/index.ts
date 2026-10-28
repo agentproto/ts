@@ -3816,6 +3816,7 @@ export async function createGateway(
   // are absent from orchestrator-scopes.json but still baked into live /
   // resumable session descriptors' mcpServers — adopt them so those
   // already-persisted URLs keep authorizing without a session restart.
+  // A no-op once the file exists: an unknown token is then a dead one.
   adoptLegacyOrchestratorScopes(scopeTokens, sessions.list())
   // Restart support: a revived row gets its revoked scope back, a restarted
   // row hands its scope to the successor (session-restart-core.ts).
