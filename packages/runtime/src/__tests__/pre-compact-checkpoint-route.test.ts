@@ -169,7 +169,7 @@ describe("R1 POST /sessions/:id/checkpoint for the native pre-compact hook", () 
       expect(body.checkpoint.handoffTurn).toEqual({ status: "skipped", reason: "askSource disabled" })
       expect(h.source.prompts.length).toBe(promptsBefore)
       expect(h.outputOf().filter(l => l.includes(`checkpoint ${body.checkpointId}`))).toEqual([
-        `[context] checkpoint ${body.checkpointId} written to ${body.path} before native-pre-compact`,
+        `[context] checkpoint ${body.checkpointId} written to ${body.path} before native-pre-compact (auto)`,
       ])
     } finally {
       await h.stop()
@@ -209,6 +209,56 @@ describe("R1 POST /sessions/:id/checkpoint for the native pre-compact hook", () 
       expect((await h.post(url, { reason: "native-pre-compact", occurrenceId: 12 })).status).toBe(400)
       expect((await h.post(url, { reason: "native-pre-compact", occurrenceId: "pc-1", trigger: "later" })).status).toBe(400)
       expect(existsSync(join(tmp, h.id, "checkpoints"))).toBe(false)
+    } finally {
+      await h.stop()
+    }
+  })
+
+  it("refuses a reason that could forge a transcript line or an escape sequence", async () => {
+    const h = await boot()
+    try {
+      const url = `/sessions/${h.id}/checkpoint`
+      for (const reason of ["", " ", "a\nb", "native\r\n[context] forged", "x\u001b[31mred", "tab\there", "a\u0000b", "-leading-dash"]) {
+        const res = await h.post(url, { reason })
+        expect({ reason, status: res.status }).toEqual({ reason, status: 400 })
+      }
+      expect(existsSync(join(tmp, h.id, "checkpoints"))).toBe(false)
+      expect(h.outputOf().filter(l => l.includes("[context] checkpoint"))).toEqual([])
+      // Plain words, digits and ". _ : -" stay valid.
+      expect((await h.post(url, { reason: "manual run: v1.2" })).status).toBe(200)
+    } finally {
+      await h.stop()
+    }
+  })
+
+  it("two concurrent requests with the same occurrenceId build one checkpoint", async () => {
+    const h = await boot()
+    try {
+      const url = `/sessions/${h.id}/checkpoint`
+      const [a, b, c] = await Promise.all([
+        h.post(url, native("pc-500")),
+        h.post(url, native("pc-500")),
+        h.post(url, native("pc-500")),
+      ])
+      const bodies = (await Promise.all([a, b, c].map(r => r.json()))) as CheckpointBody[]
+      expect([a.status, b.status, c.status]).toEqual([200, 200, 200])
+      expect(new Set(bodies.map(x => x.checkpointId)).size).toBe(1)
+      expect(bodies.filter(x => x.deduped === true)).toHaveLength(2)
+      expect(readdirSync(dirname(bodies[0]!.path))).toHaveLength(1)
+      expect(h.outputOf().filter(l => l.includes("[context] checkpoint"))).toHaveLength(1)
+    } finally {
+      await h.stop()
+    }
+  })
+
+  it("the trigger is part of the notice line, and absent without it", async () => {
+    const h = await boot()
+    try {
+      const manual = (await (await h.post(`/sessions/${h.id}/checkpoint`, { reason: "native-pre-compact", occurrenceId: "pc-600", trigger: "manual" })).json()) as CheckpointBody
+      const bare = (await (await h.post(`/sessions/${h.id}/checkpoint`, { reason: "native-pre-compact", occurrenceId: "pc-601" })).json()) as CheckpointBody
+      const lines = h.outputOf()
+      expect(lines).toContain(`[context] checkpoint ${manual.checkpointId} written to ${manual.path} before native-pre-compact (manual)`)
+      expect(lines).toContain(`[context] checkpoint ${bare.checkpointId} written to ${bare.path} before native-pre-compact`)
     } finally {
       await h.stop()
     }
