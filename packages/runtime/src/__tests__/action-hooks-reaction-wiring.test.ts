@@ -141,6 +141,25 @@ describe("reaction wiring", () => {
     expect(second.active).toEqual(["builtin:test", "routine:notify"])
     expect(second.refused).toContainEqual({ bindingId: "*", error: "scan exploded" })
   })
+
+  it("a routine bound to agentproto:context-compacted is active after refresh", () => {
+    const { w, replaceBindings } = wiring({
+      eventBindings: () => [
+        {
+          bindingId: "routine:compacted",
+          event: { raw: "agentproto:context-compacted", event: "agentproto:context-compacted", kind: "host", portable: false, host: "agentproto" },
+          target: { tool: "notify", inputs: { message: "compacted" } },
+          source: { kind: "routine", routineId: "on-native-compaction" },
+          configRevision: "cfg-1",
+        },
+      ],
+    })
+    const result = w.refresh()
+    expect(result.active).toEqual(["builtin:test", "routine:compacted"])
+    expect(result.refused).toEqual([])
+    const actions = replaceBindings.mock.calls[0]?.[0].map((binding: ReactionBinding) => binding.actionId)
+    expect(actions).toContain("tool:notify")
+  })
 })
 
 describe("sessionFactsOf", () => {
