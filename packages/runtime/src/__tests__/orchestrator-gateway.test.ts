@@ -219,8 +219,20 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         headers: { "x-agentproto-caller-session-id": desc.id },
       },
     ]
+    // Two copies of the mounts (ts#2165 step 5, shadow): the adapter's copy
+    // carries a daemon-minted session token, the descriptor's never does.
     expect(startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpServers: expectedEntry }),
+      expect.objectContaining({
+        mcpServers: [
+          {
+            ...expectedEntry[0],
+            headers: {
+              ...expectedEntry[0]!.headers,
+              "x-agentproto-session-token": expect.stringMatching(/^apst_/),
+            },
+          },
+        ],
+      }),
     )
     expect(desc.mcpServers).toEqual(expectedEntry)
 
@@ -274,8 +286,20 @@ describe("orchestrator sub-gateway — scoped tool subset", () => {
         headers: { "x-agentproto-caller-session-id": desc.id },
       },
     ]
+    // Two copies of the mounts (ts#2165 step 5, shadow): the adapter's copy
+    // carries a daemon-minted session token, the descriptor's never does.
     expect(startSession).toHaveBeenCalledWith(
-      expect.objectContaining({ mcpServers: expectedEntry }),
+      expect.objectContaining({
+        mcpServers: [
+          {
+            ...expectedEntry[0],
+            headers: {
+              ...expectedEntry[0]!.headers,
+              "x-agentproto-session-token": expect.stringMatching(/^apst_/),
+            },
+          },
+        ],
+      }),
     )
     expect(desc.mcpServers).toEqual(expectedEntry)
 
