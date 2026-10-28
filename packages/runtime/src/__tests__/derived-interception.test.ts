@@ -55,6 +55,14 @@ describe("I1 nativeToolCalls per arm", () => {
 describe("I2 nativeHooks", () => {
   const derive = (hooks?: readonly Hook[]) => deriveInterception({ arm: "acp", permissionHold: false, hooks })
 
+  it("an event named like an Object.prototype member survives as an own key", () => {
+    const d = derive([hook("__proto__", true), hook("toString", false)])
+    expect(Object.keys(d.nativeHooks).sort()).toEqual(["__proto__", "toString"])
+    expect(interceptionFor(d, "__proto__")).toBe("permission-gate")
+    expect(interceptionFor(d, "toString")).toBe("observe")
+    expect(interceptionFor(d, "constructor")).toBe("unavailable")
+  })
+
   it("a blocking entry is permission-gate, a non-blocking one is observe", () => {
     expect(derive([hook("tool.call", true)]).nativeHooks).toEqual({ "tool.call": "permission-gate" })
     expect(derive([hook("tool.call", false)]).nativeHooks).toEqual({ "tool.call": "observe" })

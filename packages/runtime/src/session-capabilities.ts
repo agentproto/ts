@@ -103,8 +103,11 @@ export interface SessionCapabilities {
   /**
    * Whether the daemon can block before execution or only observe, derived
    * from the session arm, `permissionHold` and the declared native hooks;
-   * never declared. Metadata only. Present for agent-cli sessions only.
-   * Optional for older readers.
+   * never declared. A DECLARED capability, not an installed one: a native
+   * hook entry with `can_block: true` and `async: true` reports
+   * `permission-gate` but blocks only when projected in the synchronous form.
+   * Metadata only. Present for agent-cli sessions only. Optional for older
+   * readers.
    */
   interception?: DerivedInterception
   pendingPermissions: number
