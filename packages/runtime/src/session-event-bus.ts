@@ -1221,7 +1221,8 @@ export type ContextRescueOutcome = "compacted" | "continued" | "hard-stopped"
  * `from` is the replaced session, `to` its successor; `adopted` lists the
  * children whose `parentSessionId` was moved to `to` (their drive rights and
  * their `message_parent` routing follow that pointer). `reason` names what
- * triggered the handover (`continue-fresh`, `succeeds`, `session_adopt`),
+ * triggered the handover (`continue-fresh`, `succeeds`, `session_adopt`,
+ * `restart`),
  * `actor` who asked for it (the operator, or the session id that declared
  * the succession). `skipped` lists the children that were NOT moved
  * (not children of the replaced row, not re-parentable, or dead rows named

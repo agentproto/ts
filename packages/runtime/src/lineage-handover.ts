@@ -22,7 +22,8 @@
  *
  * Two ways a handover happens:
  *   1. AUTOMATIC - a session is created as the successor of another
- *      (continue-fresh, or an explicit `agent_start.succeeds` declaration).
+ *      (continue-fresh, a new-id `session_restart`, or an explicit
+ *      `agent_start.succeeds` declaration).
  *   2. EXPLICIT - the `session_adopt` MCP verb
  *      (`{ childIds, from }`), reserved to the human operator and to the
  *      DECLARED successor of `from`.
@@ -35,7 +36,7 @@
 import type { SessionDescriptor, SessionsRegistry } from "./sessions.js"
 
 /** Why a handover ran - recorded on the `session:lineage-handover` event. */
-export type LineageHandoverReason = "continue-fresh" | "succeeds" | "session_adopt"
+export type LineageHandoverReason = "continue-fresh" | "succeeds" | "session_adopt" | "restart"
 
 /** The outcome of one handover. */
 export interface LineageHandoverOutcome {
