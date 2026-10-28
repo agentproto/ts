@@ -198,6 +198,9 @@ export const hermes: AgentCliHandle = defineHarness({
       const [major, minor] = process.versions.node.split(".").map(Number)
       return (major ?? 0) > 22 || ((major ?? 0) === 22 && (minor ?? 0) >= 5)
     })(),
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   modes: [
     {

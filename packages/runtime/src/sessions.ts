@@ -5759,8 +5759,13 @@ export interface SessionsRegistry {
   /** Record that a checkpoint was just written for a live session (the
    *  checkpoint route, the `session_checkpoint` tool), so a native
    *  compaction right after it is reported as guarded. No-op for an
-   *  unknown id. */
-  noteCheckpointWritten(sessionId: string): void
+   *  unknown id. With `before`, also writes the same notice line a daemon
+   *  `/compact` writes (`[context] checkpoint <id> written to <path> before
+   *  <before>`) to the session output and its transcript. */
+  noteCheckpointWritten(
+    sessionId: string,
+    notice?: { checkpointId: string; checkpointPath: string; before: string },
+  ): void
   /** Stop persisting + close all sessions. Killed children are not
    *  awaited — the daemon shutdown loop handles process tree teardown. */
   shutdown(): void
@@ -15666,9 +15671,15 @@ export function createSessionsRegistry(opts?: {
         },
       }
     },
-    noteCheckpointWritten(sessionId) {
+    noteCheckpointWritten(sessionId, notice) {
       const rt = sessions.get(sessionId)
-      if (rt) rt.lastCheckpointAtMs = Date.now()
+      if (!rt) return
+      rt.lastCheckpointAtMs = Date.now()
+      if (notice) {
+        const line = `[context] checkpoint ${notice.checkpointId} written to ${notice.checkpointPath} before ${notice.before}`
+        appendLine(rt, line, "stdout")
+        transcriptWriter.recordEvent(rt.desc.id, { kind: "notice", text: line })
+      }
     },
     shutdown() {
       cancelDaemonGatePermissions("shutdown")

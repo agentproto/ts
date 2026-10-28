@@ -347,7 +347,7 @@
         "hooks": {
           "type": "array",
           "items": { "$ref": "#/$defs/nativeHookCapability" },
-          "description": "AIP-71 native hook declaration (section 3): an open list of the native hook seams this harness can project. Metadata only: it does not enable a hook, install user code, or grant a permission. A harness-extension capability, excluded from the ACP subset check."
+          "description": "AIP-71 native hook declaration (section 3): an open list of the native hook seams this harness can project. Metadata only: it does not enable a hook, install user code, or grant a permission. Two entries MUST NOT share the same (event, native_event) pair (AIP-71 section 3 rule 4; not expressible in JSON Schema). A harness-extension capability, excluded from the ACP subset check."
         },
         "mode_events": {
           "type": "boolean",
@@ -378,17 +378,19 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["event", "native_event", "path", "can_block", "handlers"],
-      "description": "One native hook seam (AIP-71 NativeHookCapability).",
+      "description": "One native hook seam (AIP-71 NativeHookCapability, section 3 rules 1 to 4). A lifecycle seam cannot block (rule 3); the uniqueness of (event, native_event) pairs across the hooks array (rule 4) cannot be expressed in JSON Schema and is enforced by the reader.",
       "properties": {
         "event": {
           "type": "string",
           "minLength": 1,
-          "description": "The portable AIP-37 semantic event (e.g. tool-call). A namespaced <host>:<event> name is non-portable and MUST be registered by that host."
+          "pattern": "^\\S+$",
+          "description": "The portable AIP-37 semantic event (e.g. tool-call). A namespaced <host>:<event> name is non-portable and MUST be registered by that host. MUST NOT contain whitespace."
         },
         "native_event": {
           "type": "string",
           "minLength": 1,
-          "description": "The harness callback identifier (e.g. PreToolUse). Descriptive and harness-owned; portable configuration MUST NOT reference it."
+          "pattern": "^\\S+$",
+          "description": "The harness callback identifier (e.g. PreToolUse). Descriptive and harness-owned; portable configuration MUST NOT reference it. MUST NOT contain whitespace."
         },
         "path": {
           "enum": ["admission", "lifecycle"],
@@ -396,13 +398,14 @@
         },
         "can_block": {
           "type": "boolean",
-          "description": "True only when a successful native callback can prevent the corresponding operation. A timeout or malformed callback response MUST NOT be advertised as a successful denial."
+          "description": "True only when a successful native callback can prevent the corresponding operation. A timeout or malformed callback response MUST NOT be advertised as a successful denial. MUST be false when path is lifecycle."
         },
         "handlers": {
           "type": "array",
           "items": { "enum": ["command", "mcp", "http", "prompt", "agent"] },
+          "minItems": 1,
           "uniqueItems": true,
-          "description": "Mechanisms the harness can execute at that seam."
+          "description": "Mechanisms the harness can execute at that seam. MUST list at least one mechanism, without duplicates."
         },
         "async": {
           "type": "boolean",
@@ -412,6 +415,13 @@
           "enum": ["none", "append"],
           "description": "append = a successful handler may add bounded context to the next model turn. It does not permit replacing the user's prompt."
         }
+      },
+      "if": {
+        "properties": { "path": { "const": "lifecycle" } },
+        "required": ["path"]
+      },
+      "then": {
+        "properties": { "can_block": { "const": false } }
       }
     },
     "mode": {

@@ -234,6 +234,9 @@ export const pi: AgentCliHandle = defineHarness({
     resumable: true,
     // Pi's RPC mode is a live duplex — steer / follow_up / abort mid-turn.
     bidirectional: true,
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   modes: [
     {

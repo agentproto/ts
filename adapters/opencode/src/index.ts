@@ -351,6 +351,9 @@ export const opencode: AgentCliHandle = defineHarness({
     // itself eagerly for this adapter (G5, sess_cfa279bb). Explicit false so
     // the intent is visible; absent would mean the same thing.
     deferredToolDiscovery: false,
+    // AIP-72 section 9: no native memory projection here, the in-force
+    // memory digest rides the declared system-prompt channel at spawn.
+    memory: { inject: "system-prompt", capture: "none" },
   },
   // `modes[]` carries ONE entry, the `context` axis (`lean`). opencode's
   // operation profiles (default / plan / build) are POSTURE, which no longer

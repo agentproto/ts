@@ -132,6 +132,7 @@ import {
   sessionCredentialsFile,
 } from "./session-credentials.js"
 import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { withSessionToken } from "./session-spawn.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
 import {
@@ -2837,6 +2838,10 @@ export async function createGateway(
                 )
                 return undefined
               })
+              const resumePreCompactCommand = preCompactCommandFor(
+                (await loadConfig().catch(() => undefined))?.defaults,
+                { adapter: adapterSlug },
+              )
               return await adapter.startSession({
                 cwd,
                 resumeSessionId,
@@ -2879,6 +2884,9 @@ export async function createGateway(
                 // so a revived session keeps its skills.
                 ...(descriptor.sessionSkills ? { sessionSkills: descriptor.sessionSkills } : {}),
                 ...(resumeMemoryProjection ? { memoryProjection: resumeMemoryProjection } : {}),
+                // Projected PreCompact hook: the resume rewrites the isolated
+                // settings.json whole, so the current config decides here too.
+                ...(resumePreCompactCommand ? { preCompactCommand: resumePreCompactCommand } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
                 ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
                   ? { options: { base_url: resolvedBaseUrl } }

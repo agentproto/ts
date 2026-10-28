@@ -107,6 +107,7 @@ import {
   withSessionToken,
 } from "./session-spawn.js"
 import { sessionTokenModeOf } from "./identity-defaults.js"
+import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { revokeSessionTokens } from "./session-credentials.js"
 import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
 import { sandboxConfigForReattach } from "./sandbox-session-holder.js"
@@ -1446,9 +1447,9 @@ export async function restartAgentSession(
     const restartMeta: Record<string, string> = {
       ...(prevBoundary ? boundaryMeta(prevBoundary) : {}),
       ...(prevCloudMeta ? { cloud: encodeCloudSessionMeta(prevCloudMeta) } : {}),
-      // AIP-72 binding: the store root the memory tools read, and the
-      // native-dir inject path + capture flag, so a restarted lineage keeps
-      // its projection and its turn-end capture.
+      // AIP-72 binding: the spawn role and store root the memory tools
+      // read, and the native-dir inject path + capture flag, so a restarted
+      // lineage keeps its commit gate, its projection and its turn-end capture.
       ...carryMemoryMeta(prev.meta),
     }
     const restartAppendsSystemPrompt =
@@ -1476,14 +1477,14 @@ export async function restartAgentSession(
     // on the adapter's copy only; `restartMcpServers` (the descriptor copy)
     // stays token-free. Mode read now: it applies to sessions spawned after
     // a config change, restarts included.
+    const restartDefaults = opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults
     const adapterMcpServers = withSessionToken(restartMcpServers, {
-      mode: sessionTokenModeOf(
-        opts.loadDefaultsConfig ? await opts.loadDefaultsConfig() : (await loadConfig()).defaults,
-      ),
+      mode: sessionTokenModeOf(restartDefaults),
       adapter: adapterSlug,
       daemonMcpUrl: opts.daemonMcpUrl,
       sessionId: restartedSessionId,
     })
+    const restartPreCompactCommand = preCompactCommandFor(restartDefaults, { adapter: adapterSlug })
     const agentSession = await resolved.startSession({
       cwd,
       ...boundaryStart,
@@ -1497,6 +1498,9 @@ export async function restartAgentSession(
       // prior descriptor's mode forward so a plain restart preserves it.
       ...(effMode ? { mode: effMode } : {}),
       ...(adapterMcpServers ? { mcpServers: adapterMcpServers } : {}),
+      // Projected PreCompact hook, re-read now: the respawn rewrites the
+      // isolated settings.json whole, so the current config decides.
+      ...(restartPreCompactCommand ? { preCompactCommand: restartPreCompactCommand } : {}),
       ...(prev.sessionSkills ? { sessionSkills: prev.sessionSkills } : {}),
       // Re-apply the AGENT.md system-prompt text on the SAME declared channel
       // (the original spawn already warned + prefixed when the adapter had

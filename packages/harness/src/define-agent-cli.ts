@@ -738,6 +738,17 @@ export function createAgentCliRuntime(
         if (opts?.isolateHostContext) {
           isolatedSettings.claudeMdExcludes = hostContextExcludes(cwd)
         }
+        // Host-projected PreCompact hook: synchronous (Claude Code awaits it
+        // before compacting) and `auto` only, a `/compact` the daemon sends
+        // already checkpoints first. The file is rewritten whole at each
+        // spawn, so a spawn without the option carries no hook.
+        if (opts?.preCompactCommand) {
+          isolatedSettings.hooks = {
+            PreCompact: [
+              { matcher: "auto", hooks: [{ type: "command", command: opts.preCompactCommand, timeout: 30 }] },
+            ],
+          }
+        }
         // Pin the auto-memory dir inside the config dir (E62 run 8: the
         // setting replaces the git-root slug dir from any cwd), so the
         // projection never has to re-derive the CLI's path rule.

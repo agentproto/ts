@@ -210,6 +210,16 @@ export interface SpawnDefaultsConfig {
      *  without refusing anything. "off": no token, no observation. */
     sessionTokens?: "off" | "shadow"
   }
+  /** Hooks projected into a harness's own settings (`native-hooks-defaults.ts`). */
+  nativeHooks?: {
+    /** `defaults.nativeHooks.preCompactCheckpoint` - "on": a local claude-code
+     *  spawn gets a synchronous PreCompact (auto) hook that writes a daemon
+     *  checkpoint before the harness compacts. "off" (default): no hook. */
+    preCompactCheckpoint?: "off" | "on"
+    /** `defaults.nativeHooks.command` - the agentproto CLI the hook runs
+     *  (default "agentproto", resolved on the daemon's PATH). */
+    command?: string
+  }
   /** Action hook reactions (AIP-71). */
   reactions?: {
     /** Completed sessions of these workspace slugs are ingested into the

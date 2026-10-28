@@ -47,9 +47,13 @@ export function parseMemory(markdown: string): MemoryDocument {
  *
  * Every string value is double-quoted, so a YAML 1.1 or 1.2 reader
  * reads it back as a string (rule 3); undefined fields are omitted
- * (rule 4); key order is the document's own, so a status-only rewrite
- * changes only the `status` line (rule 6). `parseMemory(renderMemory(d))`
- * deep-equals `d`.
+ * (rule 4); key order is the document's own. So re-rendering a file this
+ * function wrote, with only `status` changed, changes only the `status`
+ * line (rule 6). That does not hold for a file another writer produced
+ * (unquoted strings, other key styles, comments): re-rendering it
+ * normalizes every line, which is why the store rewrites the status line
+ * in place instead (`setStatusLine`, `files-store.ts`).
+ * `parseMemory(renderMemory(d))` deep-equals `d`.
  */
 export function renderMemory(doc: MemoryDocument): string {
   const result = validateMemory(doc)

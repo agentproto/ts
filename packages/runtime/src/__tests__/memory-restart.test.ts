@@ -3,7 +3,8 @@
  * descriptor keeps the memory meta (store root, inject path, anchors,
  * capture flag), so the turn-end capture keeps running, and the respawned
  * adapter gets a recomputed projection. A lineage without the native path
- * gets none. Temp store, stub adapter.
+ * gets none. The spawn role (`meta.role`, the memory commit gate) survives
+ * the restart too. Temp store, stub adapter.
  */
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -14,6 +15,7 @@ import { restartAgentSession } from "../session-restart-core.js"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import { respawnMemoryProjection } from "../memory-digest.js"
+import { memoryCommitAllowed, resolveMemoryCaller } from "../memory-tools.js"
 
 const NOW = new Date("2026-10-28T12:00:00.000Z")
 let root: string
@@ -129,8 +131,7 @@ describe("restartAgentSession keeps the native memory projection", () => {
         memoryStoreAt: () => store,
       })
       expect(captured[0]?.items.map(i => i.slug)).toEqual(["cite-sources"])
-      const { role: _role, ...memory } = nativeMeta()
-      expect(restarted.desc.meta).toMatchObject(memory)
+      expect(restarted.desc.meta).toMatchObject(nativeMeta())
       // And again: the restart of the restart still projects.
       await restartAgentSession(registry, resolver, restarted.desc, {
         forceAgentResume: true,
@@ -160,6 +161,66 @@ describe("restartAgentSession keeps the native memory projection", () => {
       expect(captured[0]).toBeUndefined()
       expect(restarted.desc.meta).toMatchObject({ memoryStoreRoot: join(root, "store"), memory: "disabled" })
       expect(restarted.desc.meta?.memoryCapture).toBeUndefined()
+    } finally {
+      registry.shutdown()
+    }
+  })
+})
+
+describe("restartAgentSession keeps the spawn role", () => {
+  // `meta.role` is what the memory_* commit gate reads (rule 21): a restart
+  // that dropped it turned a supervisor into a proposer.
+  for (const role of ["executor", "supervisor"] as const) {
+    it(`a restarted ${role} keeps its role and the same commit-gate answer`, async () => {
+      const { resolver } = makeResolver()
+      const registry = createSessionsRegistry({ persist: false })
+      const gate = (id: string) => memoryCommitAllowed(resolveMemoryCaller(id, sid => registry.get(sid)?.meta))
+      try {
+        const prev = registry.spawnAgent({
+          workspaceSlug: "default",
+          cwd: process.cwd(),
+          agentSession: fakeAgentSession(),
+          adapterSlug: "mock",
+          meta: { role, memoryStoreRoot: join(root, "store") },
+        })
+        const before = gate(prev.id)
+        expect(before).toBe(role === "supervisor")
+        const restarted = await restartAgentSession(registry, resolver, prev, {
+          forceAgentResume: true,
+          memoryStoreAt: () => store,
+        })
+        expect(restarted.desc.meta?.role).toBe(role)
+        expect(gate(restarted.desc.id)).toBe(before)
+        // And the restart of the restart.
+        const again = await restartAgentSession(registry, resolver, restarted.desc, {
+          forceAgentResume: true,
+          memoryStoreAt: () => store,
+        })
+        expect(again.desc.meta?.role).toBe(role)
+        expect(gate(again.desc.id)).toBe(before)
+      } finally {
+        registry.shutdown()
+      }
+    })
+  }
+
+  it("a lineage spawned with no recorded role gets none on restart", async () => {
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const prev = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession(),
+        adapterSlug: "mock",
+        meta: { memoryStoreRoot: join(root, "store") },
+      })
+      const restarted = await restartAgentSession(registry, resolver, prev, {
+        forceAgentResume: true,
+        memoryStoreAt: () => store,
+      })
+      expect(restarted.desc.meta?.role).toBeUndefined()
+      expect(memoryCommitAllowed(resolveMemoryCaller(restarted.desc.id, sid => registry.get(sid)?.meta))).toBe(false)
     } finally {
       registry.shutdown()
     }
