@@ -2,13 +2,13 @@
 "@agentproto/acp": minor
 "@agentproto/harness": minor
 "@agentproto/adapter-mastra-controller": minor
-"@agentproto/runtime": patch
-"@agentproto/cli": patch
+"@agentproto/runtime": minor
+"@agentproto/cli": minor
 ---
 
 Adopt the AIP-45 `mode-changed` stream event and typed `agent-prompt` requests (agentproto/agentproto #121).
 
-`@agentproto/acp`: `StreamEvent` gains the `mode-changed` variant (`modeId`, `previousModeId`, `cause: "caller" | "agent"`, `reason?`) and the `agent-prompt` event gains `request?` (`tool-permission | question | plan-approval`, absent reads as `tool-permission`) with the `question` and `planApproval` payloads (new `AgentPromptRequestKind`, `AgentPromptQuestion`, `AgentPromptPlanApproval` types). The ACP client turns a `current_mode_update` into `mode-changed`: `cause: "caller"` when it echoes the caller's own `setSessionMode`, `"agent"` otherwise, with `previousModeId` from the tracked mode. A `setSessionMode` the agent does not echo is reported once it is applied. No-op updates are not reported.
+`@agentproto/acp`: `StreamEvent` gains the `mode-changed` variant (`modeId`, `previousModeId`, `cause: "caller" | "agent"`, `reason?`) and the `agent-prompt` event gains `request?` (`tool-permission | question | plan-approval`, absent reads as `tool-permission`) with the `question` and `planApproval` payloads (new `AgentPromptRequestKind`, `AgentPromptQuestion`, `AgentPromptPlanApproval` types). The ACP client turns a `current_mode_update` into `mode-changed`: `cause: "caller"` when it echoes the caller's own `setSessionMode`, `"agent"` otherwise, with `previousModeId` from the tracked mode. A `setSessionMode` the agent does not echo is reported once it is applied; when the agent reports another mode during the call, that report stands. No-op updates are not reported.
 
 `@agentproto/harness`: `capabilities` accepts `mode_events` and `typed_prompts` (booleans, the `HARNESS.schema.json` fields), and re-exports the new acp types.
 

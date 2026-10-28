@@ -498,6 +498,9 @@ interface SessionState {
   /** Mode of the caller's own `setSessionMode` while it is in flight, so its
    *  `current_mode_update` echo is reported `cause: "caller"`. */
   pendingCallerModeId?: string
+  /** Count of `current_mode_update`s applied, so `setSessionMode` can tell
+   *  whether the agent reported a mode while its RPC was in flight. */
+  modeUpdates?: number
   /** Listeners registered via `AcpClientSession.onOutOfTurnEvent`. */
   outOfTurnListeners: Set<(event: StreamEvent) => void>
   /** See `AcpClientOptions.orphanedPromptTimeoutMs`. */
@@ -1097,12 +1100,16 @@ function buildSession(
     },
     async setSessionMode(modeId) {
       state.pendingCallerModeId = modeId
+      const updatesBefore = state.modeUpdates ?? 0
       try {
         await connection.setSessionMode({ sessionId, modeId })
         onActivity?.()
         if (state.pendingCallerModeId === modeId) state.pendingCallerModeId = undefined
-        // No echo before the response: report the caller's switch here (AIP-45
-        // SHOULD). A later echo then finds the mode already current, a no-op.
+        // The agent reported a mode while the RPC was in flight: that report
+        // (echo or not) is the current mode, already delivered.
+        if ((state.modeUpdates ?? 0) !== updatesBefore) return { applied: true }
+        // No report before the response: report the caller's switch here
+        // (AIP-45 SHOULD). A later echo then finds the mode current, a no-op.
         const previousModeId = state.currentModeId
         state.currentModeId = modeId
         if (previousModeId !== undefined && previousModeId !== modeId) {
@@ -1509,6 +1516,7 @@ function translateModeUpdate(
   if (typeof modeId !== "string" || modeId === "") return null
   const previousModeId = state.currentModeId
   state.currentModeId = modeId
+  state.modeUpdates = (state.modeUpdates ?? 0) + 1
   const byCaller = state.pendingCallerModeId === modeId
   if (byCaller) state.pendingCallerModeId = undefined
   if (previousModeId === undefined || previousModeId === modeId) return null

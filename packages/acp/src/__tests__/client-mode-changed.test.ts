@@ -15,6 +15,8 @@ const SESSION_ID = "sess-modes"
 
 interface FakeAgent {
   echoSetMode: boolean
+  /** Mode the agent echoes for a `session/set_mode`, when it picks another one. */
+  echoAs?: string
   /** Mode updates the agent sends during its next prompt. */
   promptModes: string[]
   sendModeUpdate(modeId: string): Promise<void>
@@ -46,12 +48,13 @@ function startFakeAgent(): {
               availableModes: [
                 { id: "default", name: "Default" },
                 { id: "plan", name: "Plan" },
+                { id: "auto", name: "Auto" },
               ],
             },
           }
         },
         async setSessionMode(params) {
-          if (agent.echoSetMode) await agent.sendModeUpdate(params.modeId)
+          if (agent.echoSetMode) await agent.sendModeUpdate(agent.echoAs ?? params.modeId)
           return {}
         },
         async authenticate() {
@@ -118,6 +121,21 @@ describe("createAcpClient: current_mode_update to mode-changed", () => {
     expect(outOfTurn).toEqual([
       { kind: "mode-changed", sessionId: SESSION_ID, modeId: "plan", previousModeId: "default", cause: "caller" },
       { kind: "mode-changed", sessionId: SESSION_ID, modeId: "default", previousModeId: "plan", cause: "agent" },
+    ])
+  })
+
+  it("keeps the mode the agent reported during setSessionMode when it differs from the request", async () => {
+    const { agent, clientStreams } = startFakeAgent()
+    agent.echoAs = "auto"
+    const client = await createAcpClient(clientStreams)
+    const session = await client.newSession({ cwd: "/tmp" })
+    const outOfTurn: StreamEvent[] = []
+    session.onOutOfTurnEvent(evt => outOfTurn.push(evt))
+    await session.setSessionMode("plan")
+    await agent.sendModeUpdate("auto") // still current: a no-op
+    await tick()
+    expect(outOfTurn).toEqual([
+      { kind: "mode-changed", sessionId: SESSION_ID, modeId: "auto", previousModeId: "default", cause: "agent" },
     ])
   })
 })
