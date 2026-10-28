@@ -193,3 +193,34 @@ describe("claude-code native memory projection (driver)", () => {
     expect(existsSync(join(configDir, "memory"))).toBe(false)
   })
 })
+
+describe("claude-code native memory on a respawn without a projection", () => {
+  beforeEach(() => {
+    spawnCalls.length = 0
+    newSessions.length = 0
+    saved.HOME = process.env.HOME
+    home = mkdtempSync(join(tmpdir(), "nm-home-"))
+    process.env.HOME = home
+    repo = mkdtempSync(join(tmpdir(), "nm-repo-"))
+    mkdirSync(join(repo, ".git"))
+    configDir = join(home, ".agentproto", "adapter-config", "sess_test")
+  })
+  afterEach(() => {
+    if (saved.HOME === undefined) delete process.env.HOME
+    else process.env.HOME = saved.HOME
+    rmSync(home, { recursive: true, force: true })
+    rmSync(repo, { recursive: true, force: true })
+  })
+
+  it("keeps the lineage's memory dir pinned and its files as they are", async () => {
+    const runtime = createAgentCliRuntime(defineHarness(claudeCode()))
+    await runtime.start({ cwd: repo, configDir, memoryProjection: { items, digest: DIGEST } })
+    const index = readFileSync(join(configDir, "memory", "MEMORY.md"), "utf8")
+    // A restart that does not recompute the digest (no memoryProjection).
+    await runtime.start({ cwd: repo, configDir })
+    const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"))
+    expect(settings.autoMemoryDirectory).toBe(join(configDir, "memory"))
+    expect(readFileSync(join(configDir, "memory", "MEMORY.md"), "utf8")).toBe(index)
+    expect(newSessions[1]!.meta).toBeUndefined()
+  })
+})

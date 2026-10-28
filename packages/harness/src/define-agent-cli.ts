@@ -741,8 +741,19 @@ export function createAgentCliRuntime(
         // Pin the auto-memory dir inside the config dir (E62 run 8: the
         // setting replaces the git-root slug dir from any cwd), so the
         // projection never has to re-derive the CLI's path rule.
+        // A respawn that carries no projection (a restart that did not
+        // recompute the digest) keeps a lineage that was projected before
+        // on the same dir: the files stay as they are, and the agent's
+        // memory does not silently move back to the slug dir.
         const nativeMemoryDir = projectNativeMemoryItems ? join(claudeConfigDir, NATIVE_MEMORY_DIR) : undefined
-        if (nativeMemoryDir) isolatedSettings.autoMemoryDirectory = nativeMemoryDir
+        const keepNativeMemoryDir =
+          !memoryProjection && readNativeMemorySnapshot(claudeConfigDir) !== undefined
+            ? join(claudeConfigDir, NATIVE_MEMORY_DIR)
+            : undefined
+        if (nativeMemoryDir ?? keepNativeMemoryDir) {
+          isolatedSettings.autoMemoryDirectory = nativeMemoryDir ?? keepNativeMemoryDir
+          nativeMemoryWritePath = nativeMemoryDir ?? keepNativeMemoryDir
+        }
         writeFileSync(
           join(claudeConfigDir, "settings.json"),
           JSON.stringify(isolatedSettings),
@@ -755,7 +766,6 @@ export function createAgentCliRuntime(
             const prior = readNativeMemorySnapshot(claudeConfigDir)
             const snapshot = projectNativeMemory(nativeMemoryDir, memoryProjection.items, prior ? { prior } : {})
             writeNativeMemorySnapshot(claudeConfigDir, snapshot)
-            nativeMemoryWritePath = nativeMemoryDir
           } catch (err) {
             console.warn(
               `[agent-cli] native memory: projection into ${nativeMemoryDir} failed: ${
