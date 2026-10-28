@@ -3311,8 +3311,15 @@ interface SessionRuntime {
   contextUsedInconsistent?: boolean
   /** In flight while the runtime rescues a session that reached
    *  `hardStopAtPct` (auto-compact, then continue fresh, then — last resort —
-   *  stop). Prompts are held (queued / answered "retry") until it settles. */
+   *  stop). Prompts are held (queued / answered "retry") until it settles.
+   *  The one lock for every runtime-initiated compaction: the absolute
+   *  auto-compact and the turn-boundary continue-fresh hold it too, and skip
+   *  when another owner already does. */
   contextRescue?: Promise<void>
+  /** The checkpoint the `/compact` gate in `runAgentTurn` wrote last, so the
+   *  auto-compaction reads its goal without writing a second one. In memory
+   *  only: never persisted, never on the descriptor. */
+  lastCompactionCheckpoint?: ContextCheckpoint
   /** The autocompact controller for this session (absolute token
    *  threshold). Created lazily on the first turn boundary that reaches it. */
   autoCompact?: AutoCompactController
@@ -9484,37 +9491,6 @@ export function createSessionsRegistry(opts?: {
     )
   }
 
-  async function attemptContextCompact(rt: SessionRuntime): Promise<void> {
-    if (!adapterSupportsCompact(rt.agentSession)) {
-      appendLine(
-        rt,
-        "[context] compact threshold reached but harness does not advertise compact support; waiting for continue-fresh threshold",
-        "stderr",
-      )
-      return
-    }
-    try {
-      await checkpointBeforeContextLoss(rt, "runtime compaction", false)
-    } catch (err) {
-      appendLine(
-        rt,
-        `[context] compact skipped: no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
-        "stderr",
-      )
-      return
-    }
-    try {
-      await rt.agentSession?.setSessionMode?.("compact")
-      appendLine(rt, "[context] compact requested from harness", "stdout")
-    } catch (err) {
-      appendLine(
-        rt,
-        `[context] compact failed: ${err instanceof Error ? err.message : String(err)}`,
-        "stderr",
-      )
-    }
-  }
-
   /**
    * Announce — never perform — a cross-harness handoff: a
    * `session:handoff-suggested` event plus readable transcript lines carrying
@@ -9846,30 +9822,42 @@ export function createSessionsRegistry(opts?: {
    * same one-line reminder as a pending note that rides along with the
    * NEXT prompt the session receives, never as a turn of its own.
    */
-  async function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+  function requestAutoCompact(rt: SessionRuntime): Promise<AutoCompactOutcome> {
+    // Another owner (the floor rescue, a turn-boundary continue-fresh) is
+    // already acting on the context: skip, no queued retry.
+    if (rt.contextRescue) {
+      return Promise.reject(new Error("another context compaction is in progress"))
+    }
     // The snapshot is taken FIRST, on purpose: the compaction is a turn of
     // its own, and a turn overwrites the turn-end markers
     // (`lastTurnReason` / `lastTurnErroredAt`) and clears `awaitingInput`.
     // Read after it, every session would look like a clean, completed turn
     // and nothing would ever be resumed.
     const snapshot = autoCompactSnapshot(rt)
-    let goal: string | undefined
-    try {
-      const checkpoint = await checkpointBeforeContextLoss(rt, "auto compaction", false)
-      // The checkpoint's goal section falls back to the session TITLE when
-      // the transcript carries no goal, and a title is not a mission: it is
-      // not repeated as one. The goal is optional TEXT in the resume
-      // prompt; it never decides whether that prompt is sent.
-      const checkpointGoal = checkpoint.sections.goal?.trim()
-      const title = rt.desc.title?.trim()
-      if (checkpointGoal && checkpointGoal !== title) goal = checkpointGoal
-    } catch (err) {
-      appendLine(
-        rt,
-        `[auto-compact] no checkpoint could be written: ${err instanceof Error ? err.message : String(err)}`,
-        "stderr",
-      )
+    // The lock is taken in the same synchronous run as the controller's idle
+    // check, and held until the compaction turn has ended: a prompt arriving
+    // meanwhile is queued or answered "retry" instead of starting a turn the
+    // `/compact` would then collide with.
+    const run = async (): Promise<AutoCompactOutcome> => {
+      try {
+        return await sendAutoCompactPrompt(rt, snapshot)
+      } finally {
+        rt.contextRescue = undefined
+        if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
+      }
     }
+    const outcome = run()
+    rt.contextRescue = outcome.then(
+      () => undefined,
+      () => undefined,
+    )
+    return outcome
+  }
+
+  async function sendAutoCompactPrompt(
+    rt: SessionRuntime,
+    snapshot: WorkInProgressSnapshot,
+  ): Promise<AutoCompactOutcome> {
     const harness = rt.desc.harness ?? rt.desc.adapterSlug ?? ""
     const cmd = compactCommandFor(rt)
     // Harness support for a compact ARGUMENT (the instructions that tell
@@ -9889,7 +9877,22 @@ export function createSessionsRegistry(opts?: {
     // (`agent:<id>`), so a policy that reserves compaction for the operator
     // (`compactRequiresOperator`) still refuses session-initiated
     // compactions while the runtime may rescue a session on its own.
+    // The `/compact` gate in `runAgentTurn` writes the one checkpoint: a
+    // compaction prompt is admitted while the lock is held, and a gate that
+    // cannot write it refuses the compaction, which throws out of here.
+    rt.lastCompactionCheckpoint = undefined
     await registry.sendPrompt(rt.desc.id, prompt, { source: "runtime:auto-compact" })
+    // The checkpoint's goal section falls back to the session TITLE when the
+    // transcript carries no goal, and a title is not a mission: it is not
+    // repeated as one. The goal is optional TEXT in the resume prompt; it
+    // never decides whether that prompt is sent.
+    // (Cast: the narrowing from the reset above does not see the gate's write.)
+    const checkpoint = rt.lastCompactionCheckpoint as ContextCheckpoint | undefined
+    rt.lastCompactionCheckpoint = undefined
+    let goal: string | undefined
+    const checkpointGoal = checkpoint?.sections.goal?.trim()
+    const title = rt.desc.title?.trim()
+    if (checkpointGoal && checkpointGoal !== title) goal = checkpointGoal
     // The pointer to the full transcript must reach the session after EVERY
     // autocompaction, also when no resume prompt is sent (the idle case):
     // arm it for the next prompt the session receives. It never starts a
@@ -10060,11 +10063,27 @@ export function createSessionsRegistry(opts?: {
         return
       }
       case "compact":
-        await attemptContextCompact(rt)
+        // Percent-band compaction is not performed: the absolute auto-compact controller owns compaction.
         return
-      case "continue-fresh":
-        await performContextContinueFresh(rt)
+      case "continue-fresh": {
+        // The same lock as auto-compact and the floor rescue: skip when
+        // another owner already acts on the context. Taken here, not inside
+        // `performContextContinueFresh`, which the rescue calls while it
+        // already holds the lock.
+        if (rt.contextRescue) return
+        const run = async (): Promise<void> => {
+          try {
+            await performContextContinueFresh(rt)
+          } finally {
+            rt.contextRescue = undefined
+            if (isSessionAlive(rt)) dispatchQueuedPrompt(rt)
+          }
+        }
+        const fresh = run()
+        rt.contextRescue = fresh
+        await fresh
         return
+      }
       case "hard-stop":
         // The latest frame's `used` contradicted the window (see
         // `contextUsedInconsistent`), so `pct` is a stale reading — ending a
@@ -10514,7 +10533,7 @@ export function createSessionsRegistry(opts?: {
         compactHandoffTurn && turnOpts?.promptSource !== CONTEXT_RESCUE_SOURCE
       try {
         // The rescue runs at the window's edge: no handoff turn into it.
-        await checkpointBeforeContextLoss(rt, "compaction", askSource)
+        rt.lastCompactionCheckpoint = await checkpointBeforeContextLoss(rt, "compaction", askSource)
       } catch (err) {
         throw new Error(
           `runAgentTurn: compaction refused — no checkpoint could be written first (${err instanceof Error ? err.message : String(err)})`,
