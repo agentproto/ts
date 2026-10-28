@@ -285,6 +285,17 @@ describe("session-follow", () => {
       expect(lines[0]).toContain("Deploy now?")
     })
 
+    it("keeps an awaiting-input entry when a later turn-end arrives in the same batch", async () => {
+      const { sent } = setup([running("chief"), running("a")], { selector: { all: true } })
+      bus.emit({ type: "session:awaiting-input", sessionId: "a", ts: NOW })
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      const lines = sent[0]!.text.split("\n").filter(l => l.includes("(a)"))
+      expect(lines).toHaveLength(2)
+      expect(lines.some(l => l.includes("awaiting-input"))).toBe(true)
+      expect(lines.some(l => l.includes(" turn-end"))).toBe(true)
+    })
+
     it("with only turn-end subscribed, an awaiting turn-end still reads as turn-end", async () => {
       const { sent } = setup([running("chief"), running("a")], {
         selector: { all: true },

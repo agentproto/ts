@@ -368,10 +368,26 @@ interface BatchEntry {
 
 const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-input"])
 
+/** The always-wake events (`follow-triage.ts` rule `always-wake`): a session
+ *  waiting on the human, a crash, or a turn-end carrying a question. These
+ *  are pinned through both digest caps. */
+function isMustWakeEntry(entry: { event: string; awaitingInput?: boolean }): boolean {
+  return (
+    entry.event === "awaiting-input" ||
+    entry.event === "crashed" ||
+    (entry.event === "turn-end" && entry.awaitingInput === true)
+  )
+}
+
 function sameCollapseGroup(a: BatchEntry, b: BatchEntry): boolean {
   if (a.sessionId !== b.sessionId) return false
   if ((a.key ?? "") !== (b.key ?? "")) return false
-  return a.event === b.event || (TURN_FAMILY.has(a.event) && TURN_FAMILY.has(b.event))
+  if (!(a.event === b.event || (TURN_FAMILY.has(a.event) && TURN_FAMILY.has(b.event)))) return false
+  // A must-wake entry is never replaced by a later event of the same session:
+  // the later event is kept next to it. An identical must-wake event (the
+  // same awaiting-input reported twice) still collapses to one line.
+  if (isMustWakeEntry(a)) return a.event === b.event && isMustWakeEntry(b)
+  return true
 }
 
 /** Squeeze to one line, <= {@link FOLLOW_EXCERPT_MAX} chars. The TAIL is kept
@@ -406,7 +422,21 @@ export function formatFollowDigest(
     omitted > 0
       ? `[session-follow] ${omitted} earlier event${omitted === 1 ? "" : "s"} omitted`
       : undefined
-  const lines = entries.slice(0, FOLLOW_DIGEST_MAX_LINES).map(entry => {
+  // Must-wake lines are pinned: when the render cap bites, non-must-wake
+  // lines are dropped first. A digest with no must-wake entry keeps the
+  // original oldest-first prefix, byte-identical to before.
+  const mustWakeCount = entries.reduce((n, entry) => n + (isMustWakeEntry(entry) ? 1 : 0), 0)
+  let nonMustWakeBudget = Math.max(0, FOLLOW_DIGEST_MAX_LINES - mustWakeCount)
+  const rendered =
+    mustWakeCount === 0
+      ? entries.slice(0, FOLLOW_DIGEST_MAX_LINES)
+      : entries.filter(entry => {
+          if (isMustWakeEntry(entry)) return true
+          if (nonMustWakeBudget <= 0) return false
+          nonMustWakeBudget--
+          return true
+        })
+  const lines = rendered.map(entry => {
     if (entry.boardId !== undefined) {
       const parts = [`[session-follow] board ${entry.boardId} task ${entry.taskId ?? "?"} ${entry.event}`]
       const text = excerptOf(entry.detail)
@@ -423,19 +453,36 @@ export function formatFollowDigest(
     if (text) parts.push(text)
     return parts.join(" — ")
   })
-  if (entries.length > FOLLOW_DIGEST_MAX_LINES) {
-    lines.push(`[session-follow] … and ${entries.length - FOLLOW_DIGEST_MAX_LINES} more event(s)`)
+  const hidden = entries.length - rendered.length
+  if (hidden > 0) {
+    lines.push(`[session-follow] … and ${hidden} more event(s)`)
   }
   return [header, ...(omittedLine ? [omittedLine] : []), ...lines].join("\n")
 }
 
 /** Union two queued digest payloads, keeping the newest
  *  {@link FOLLOW_DIGEST_MERGE_MAX_ENTRIES} events and counting the rest as
- *  `omitted`. */
+ *  `omitted`. Must-wake events are pinned: they are never dropped by the cap,
+ *  and only non-must-wake events count toward the omitted total. */
 export function mergeQueuedDigests(existing: QueuedDigest | undefined, incoming: QueuedDigest): QueuedDigest {
   const all = [...(existing?.entries ?? []), ...incoming.entries]
-  const retained = all.slice(-FOLLOW_DIGEST_MERGE_MAX_ENTRIES)
-  const overflow = all.length - retained.length
+  const mustWakeCount = all.reduce((n, entry) => n + (isMustWakeEntry(entry) ? 1 : 0), 0)
+  let nonMustWakeBudget = Math.max(0, FOLLOW_DIGEST_MERGE_MAX_ENTRIES - mustWakeCount)
+  let overflow = 0
+  const retained: DigestEntry[] = []
+  // Walk backwards so the newest non-must-wake events win, then emit the kept
+  // entries in their original chronological order.
+  for (let i = all.length - 1; i >= 0; i--) {
+    const entry = all[i]!
+    if (isMustWakeEntry(entry)) {
+      retained.unshift(entry)
+    } else if (nonMustWakeBudget > 0) {
+      nonMustWakeBudget--
+      retained.unshift(entry)
+    } else {
+      overflow++
+    }
+  }
   return {
     entries: retained,
     omitted: (existing?.omitted ?? 0) + incoming.omitted + overflow,
