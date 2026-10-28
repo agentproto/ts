@@ -632,6 +632,15 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
      *  warning when that flag is absent/false, so the text is never
      *  silently dropped. */
     appendSystemPrompt?: string
+    /** AIP-72 native-dir inject: the session's in-force items plus their
+     *  system-prompt digest as the driver's fallback, forwarded verbatim to
+     *  `start({ memoryProjection })` (see
+     *  `AgentCliStartOptions.memoryProjection`). Set only for an adapter
+     *  whose `memoryInject` is `native-dir`. */
+    memoryProjection?: {
+      items: readonly import("@agentproto/memory").MemoryDocument[]
+      digest?: string
+    }
   }): Promise<AgentSessionLike>
   /** True when `startSession` honours `fsZones` (native tools confined by the
    *  OS sandbox). Omitted/false ⇒ an app-boundary spawn on this adapter gets
@@ -676,11 +685,16 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    *  NAMED `agent` (antigravity's `agy` agent name) is not this. */
   agentManifestOption?: string
   /** Manifest-declared AIP-72 `capabilities.memory.inject` (AIP-45). Read
-   *  by the spawn digest (`memory-digest.ts`): `native-dir` gets no
-   *  system-prompt digest (its native projection is a separate path);
-   *  absent, `none` and `system-prompt` get it through the system-prompt
-   *  channel when there is one. */
+   *  by the spawn digest (`memory-digest.ts`): `native-dir` gets the native
+   *  projection (`startSession({ memoryProjection })`, the driver falls back
+   *  to the system prompt); absent, `none` and `system-prompt` get the
+   *  digest through the system-prompt channel when there is one. */
   memoryInject?: "native-dir" | "system-prompt" | "none"
+  /** Manifest-declared AIP-72 `capabilities.memory.capture`. `native-dir-diff`
+   *  makes the daemon diff the session's projected native memory dir at
+   *  turn end and exit and write what changed as proposals
+   *  (`memory-capture.ts`). */
+  memoryCapture?: "native-dir-diff" | "none"
   /** Display label for the descriptor's `command` field. */
   commandPreview?: string
   /** Best-effort per-session usage reader (adapter-specific, e.g. hermes

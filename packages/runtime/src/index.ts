@@ -289,6 +289,7 @@ import { AnthropicRemainingQuotaReader } from "./remaining-quota.js"
 import { toQuotaReadableProfile } from "./usage-rollup-service.js"
 import { createRoutineRegistrar } from "./routine-registrar.js"
 import { createClerkTurnEndController } from "@agentproto/clerk"
+import { createNativeMemoryCapture } from "./memory-capture.js"
 import { createClerkPassRunner } from "@agentproto/clerk"
 import type { ClerkSessionLike } from "@agentproto/clerk"
 import {
@@ -3263,6 +3264,14 @@ export async function createGateway(
     resolveConfig: resolveClerkConfig,
     runPass: clerkReaction.dispatch,
   })
+  // AIP-72 native-dir-diff capture: at each turn end and at exit, a
+  // session whose spawn projected its native memory dir gets that dir
+  // diffed and the changes written to its store as proposals.
+  const nativeMemoryCapture = createNativeMemoryCapture({
+    registry: sessions,
+    sessionEvents,
+    memoryStoreAt,
+  })
 
   // Installed-app registry — singleton per daemon, shared between
   // `registerAppTools` (app_install/app_run/…) and the workflow runner's
@@ -5386,6 +5395,7 @@ export async function createGateway(
       // Detach the clerk turn-end subscriber + cancel its pending debounce
       // timers (a pending pass must not fire into a shutting-down daemon).
       clerkTurnEnd.dispose()
+      nativeMemoryCapture.dispose()
       // Flush inbound-watcher cursor state before sessions shut down.
       inboundWatcher?.shutdown()
       permissionTelegram?.stop()

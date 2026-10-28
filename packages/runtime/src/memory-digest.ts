@@ -12,9 +12,13 @@
  * whole items are cut from the tail and the cut is announced with the
  * number left out (rule 26).
  *
- * Native-dir projection (writing the items into a harness's own memory
- * location) is a separate path and is not implemented here; the inject
- * decision below never routes a session through both (rule 25).
+ * Native-dir projection: for an adapter declaring `inject: native-dir` the
+ * same selection (`selectMemoryItems`) is handed to the driver with the
+ * rendered digest as its fallback (`AgentCliStartOptions.memoryProjection`);
+ * the driver writes the items into the harness's native memory dir, or,
+ * when the session cannot read it, appends the digest to the system
+ * prompt. The inject decision below never routes a session through both
+ * (rule 25).
  */
 
 import type { MemoryDocument, MemoryStore } from "@agentproto/memory"
@@ -123,14 +127,14 @@ export interface MemoryDigest {
 }
 
 /**
- * Build the digest for a session, or null when no in-force item is scoped
- * to it. `maxChars` bounds the whole block, delimiters included.
+ * The in-force items scoped to a session, in digest order (type, then most
+ * specific anchor, then newest). Shared by the system-prompt digest and the
+ * native-dir projection, so both channels see the same selection.
  */
-export async function buildMemoryDigest(
+export async function selectMemoryItems(
   store: MemoryStore,
-  opts: { anchors: SessionMemoryAnchors; maxChars?: number },
-): Promise<MemoryDigest | null> {
-  const maxChars = opts.maxChars ?? DEFAULT_MEMORY_DIGEST_MAX_CHARS
+  opts: { anchors: SessionMemoryAnchors },
+): Promise<MemoryDocument[]> {
   const sessionTags = new Set(sessionAnchorTags(opts.anchors))
   const sessionAnchor = opts.anchors.session ? `session:${opts.anchors.session}` : undefined
   const records = await store.list({ inForce: true })
@@ -146,7 +150,6 @@ export async function buildMemoryDigest(
     const parsed = Date.parse(item.updated_at ?? item.written ?? "")
     scoped.push({ item, rank, typeIndex, at: Number.isNaN(parsed) ? 0 : parsed })
   }
-  if (scoped.length === 0) return null
   scoped.sort(
     (a, b) =>
       a.typeIndex - b.typeIndex ||
@@ -154,8 +157,19 @@ export async function buildMemoryDigest(
       b.at - a.at ||
       String(a.item.id).localeCompare(String(b.item.id)),
   )
+  return scoped.map(s => s.item)
+}
 
-  const entries = scoped.map(s => renderEntry(s.item))
+/**
+ * Render already selected items as the bounded digest block, or null when
+ * there is none. `maxChars` bounds the whole block, delimiters included.
+ */
+export function renderMemoryDigest(
+  items: readonly MemoryDocument[],
+  maxChars: number = DEFAULT_MEMORY_DIGEST_MAX_CHARS,
+): MemoryDigest | null {
+  if (items.length === 0) return null
+  const entries = items.map(renderEntry)
   const head = `${OPEN}\n${PREAMBLE}`
   // `head` + "\n" + entries joined by "\n" + optional "\n" + left-out line + "\n" + CLOSE.
   let used = head.length + 1 + CLOSE.length
@@ -176,17 +190,30 @@ export async function buildMemoryDigest(
   return { text, included: kept.length, omitted }
 }
 
+/**
+ * Build the digest for a session, or null when no in-force item is scoped
+ * to it. `maxChars` bounds the whole block, delimiters included.
+ */
+export async function buildMemoryDigest(
+  store: MemoryStore,
+  opts: { anchors: SessionMemoryAnchors; maxChars?: number },
+): Promise<MemoryDigest | null> {
+  return renderMemoryDigest(await selectMemoryItems(store, opts), opts.maxChars)
+}
+
 export type MemoryInjectDecision =
   | { path: "system-prompt" }
+  | { path: "native-dir" }
   | { path: "none"; reason: string }
 
 /**
- * The inject path for one session. The digest rides the system prompt when
- * the adapter declares `capabilities.memory.inject` as `system-prompt`,
- * `none` or nothing, and the host can actually append to that session's
- * system prompt. A `native-dir` adapter gets nothing here: its native
- * projection is a separate path, and one session never gets the items
- * through two (rule 25).
+ * The inject path for one session. A `native-dir` adapter gets the native
+ * projection (the driver owns the last word: it falls back to the
+ * system-prompt digest when the session cannot read its native dir). The
+ * digest rides the system prompt when the adapter declares
+ * `capabilities.memory.inject` as `system-prompt`, `none` or nothing, and
+ * the host can actually append to that session's system prompt. One
+ * session never gets the items through two paths (rule 25).
  */
 export function decideMemoryInject(input: {
   inject?: "native-dir" | "system-prompt" | "none"
@@ -196,12 +223,7 @@ export function decideMemoryInject(input: {
   if (input.sandbox) {
     return { path: "none", reason: "a sandbox spawn starts the adapter on the box, which owns its own configuration" }
   }
-  if (input.inject === "native-dir") {
-    return {
-      path: "none",
-      reason: "the adapter declares capabilities.memory.inject native-dir, whose native projection this daemon does not implement yet",
-    }
-  }
+  if (input.inject === "native-dir") return { path: "native-dir" }
   if (input.supportsSystemPrompt !== true) {
     return { path: "none", reason: "the adapter has no usable system-prompt channel" }
   }

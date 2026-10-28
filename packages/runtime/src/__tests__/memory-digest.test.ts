@@ -179,10 +179,10 @@ describe("decideMemoryInject", () => {
     }
   })
 
-  it("leaves a native-dir adapter to its native projection", () => {
-    const decision = decideMemoryInject({ inject: "native-dir", supportsSystemPrompt: true })
-    expect(decision.path).toBe("none")
-    if (decision.path === "none") expect(decision.reason).toMatch(/native-dir/)
+  it("routes a native-dir adapter to its native projection, with or without a system-prompt channel", () => {
+    expect(decideMemoryInject({ inject: "native-dir", supportsSystemPrompt: true })).toEqual({ path: "native-dir" })
+    expect(decideMemoryInject({ inject: "native-dir" })).toEqual({ path: "native-dir" })
+    expect(decideMemoryInject({ inject: "native-dir", sandbox: true }).path).toBe("none")
   })
 
   it("skips an adapter with no usable system-prompt channel, and a sandbox spawn", () => {
@@ -215,7 +215,11 @@ async function writeAgent(memoryLines: string[]): Promise<string> {
   return path
 }
 
-function setup(caps: { supportsSystemPrompt?: boolean; memoryInject?: "native-dir" | "system-prompt" | "none" }) {
+function setup(caps: {
+  supportsSystemPrompt?: boolean
+  memoryInject?: "native-dir" | "system-prompt" | "none"
+  memoryCapture?: "native-dir-diff" | "none"
+}) {
   const session: AgentSessionLike = {
     sessionId: "acp_test",
     // eslint-disable-next-line require-yield
@@ -223,7 +227,10 @@ function setup(caps: { supportsSystemPrompt?: boolean; memoryInject?: "native-di
     async cancel() {},
     async close() {},
   }
-  const startSession = vi.fn(async (_opts: { appendSystemPrompt?: string }) => session)
+  const startSession = vi.fn(
+    async (_opts: { appendSystemPrompt?: string; memoryProjection?: { items: readonly MemoryDocument[]; digest?: string } }) =>
+      session,
+  )
   const resolveAgentAdapter: AgentAdapterResolver = async () => ({
     startSession,
     commandPreview: "mock-adapter (agent)",
@@ -280,14 +287,40 @@ describe("spawnAgentSession memory digest", () => {
     expect(startSession.mock.calls[0]![0].appendSystemPrompt ?? "").not.toContain("<agentproto-memory")
   })
 
-  it("injects nothing through the system prompt for a native-dir adapter", async () => {
+  it("hands a native-dir adapter the items and the fallback digest, never the system prompt", async () => {
     const agentPath = await writeAgent(["memory:", "  enabled: true"])
-    const { startSession, deps } = setup({ supportsSystemPrompt: true, memoryInject: "native-dir" })
+    const { startSession, deps } = setup({
+      supportsSystemPrompt: true,
+      memoryInject: "native-dir",
+      memoryCapture: "native-dir-diff",
+    })
     const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
     expect(result.ok).toBe(true)
-    const appended = startSession.mock.calls[0]![0].appendSystemPrompt ?? ""
+    const opts = startSession.mock.calls[0]![0]
+    const appended = opts.appendSystemPrompt ?? ""
     expect(appended).toContain("You are scout.")
     expect(appended).not.toContain("<agentproto-memory")
+    expect(opts.memoryProjection?.items.map(i => i.id)).toEqual(["f-scout"])
+    expect(opts.memoryProjection?.digest).toContain("id: f-scout;")
+    // The capture runs only for this session, against the agent's store.
+    if (result.ok) {
+      expect(result.descriptor.meta).toMatchObject({
+        memoryCapture: "native-dir-diff",
+        memoryCaptureTags: "agent:scout,project:default",
+      })
+    }
+  })
+
+  it("gives a native-dir adapter without a system-prompt channel the items and no digest", async () => {
+    const agentPath = await writeAgent(["memory:", "  enabled: true"])
+    const { startSession, deps } = setup({ memoryInject: "native-dir" })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", agentPath })
+    expect(result.ok).toBe(true)
+    const opts = startSession.mock.calls[0]![0]
+    expect(opts.memoryProjection?.items).toHaveLength(1)
+    expect(opts.memoryProjection?.digest).toBeUndefined()
+    // No capture declared, no capture flag.
+    if (result.ok) expect(result.descriptor.meta?.memoryCapture).toBeUndefined()
   })
 
   it("an agent with memory.enabled: false and a store records both, so its tools read that store and refuse writes", async () => {

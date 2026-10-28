@@ -142,6 +142,29 @@ export {
   type ApplySessionSkillsArgs,
   type ApplySessionSkillsResult,
 } from "./session-skills.js"
+// AIP-72 section 9 native-dir projection and native-dir-diff capture
+// (claude-code's auto-memory dir); the daemon diffs and proposes.
+export {
+  NATIVE_MEMORY_BLOCK_BEGIN,
+  NATIVE_MEMORY_BLOCK_END,
+  NATIVE_MEMORY_DIR,
+  NATIVE_MEMORY_INDEX_MAX_BYTES,
+  NATIVE_MEMORY_INDEX_MAX_LINES,
+  NATIVE_MEMORY_SNAPSHOT_FILE,
+  diffNativeMemory,
+  nativeMemoryProposals,
+  nativeMemoryUnavailable,
+  nativeToMemoryV1,
+  projectNativeMemory,
+  readNativeMemorySnapshot,
+  writeNativeMemorySnapshot,
+  type NativeMemoryDiff,
+  type NativeMemoryFile,
+  type NativeMemoryProposal,
+  type NativeMemorySnapshot,
+  type NativeToMemoryContext,
+  type ProjectedNativeFile,
+} from "./native-memory.js"
 export {
   agentCliFrontmatterSchema,
   runtimeConfigSchema,
@@ -203,6 +226,7 @@ export type {
   NativeHookContext,
   NativeHookCapability,
   MemoryProjectionCapability,
+  AgentCliMemoryProjection,
   AgentCliInstallMethod,
   AgentCliVersionCheck,
   AgentCliUpgrade,

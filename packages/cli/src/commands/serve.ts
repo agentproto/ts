@@ -502,7 +502,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
         process.env,
       )
       return {
-        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt }) {
+        async startSession({ cwd, resumeSessionId, configDir, mode, options, model, effort, posture, contextProfile, mcpServers, sessionSkills, onActivity, permissionHold, auth, commandSandbox, additionalReadPaths, env, fsZones, isolateHostContext, appendSystemPrompt, memoryProjection }) {
           // Build config.options only when there's something to set — an
           // empty object would pass undefined validation but trips the
           // "no declared options" early-return in composeSpawn. Caller-
@@ -556,6 +556,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
             // (session-spawn.ts) already fell back to prefix+warning for the
             // ones that don't.
             ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
+            // AIP-72 native-dir inject (items + fallback digest), for an
+            // adapter whose `memoryInject` below is `native-dir`.
+            ...(memoryProjection ? { memoryProjection } : {}),
           })
         },
         // Every agent-cli arm except `proprietary` (which owns its own
@@ -617,6 +620,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // digest rides the system prompt (memory-digest.ts in the runtime).
         ...(adapter.handle.capabilities?.memory?.inject !== undefined
           ? { memoryInject: adapter.handle.capabilities.memory.inject }
+          : {}),
+        ...(adapter.handle.capabilities?.memory?.capture !== undefined
+          ? { memoryCapture: adapter.handle.capabilities.memory.capture }
           : {}),
         ...(adapter.handle.capabilities?.nativeToolSearch === true
           ? { nativeToolSearch: true }

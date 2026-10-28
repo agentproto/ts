@@ -73,6 +73,11 @@ capabilities:
   # across cold starts (API restart, sandbox reap, multi-machine).
   resumable: true
   bidirectional: true
+  # AIP-72 section 9: in-force memory is projected into the session's
+  # auto-memory dir and native writes are captured back as proposals.
+  memory:
+    inject: native-dir
+    capture: native-dir-diff
 modes:
   - id: default
     description: Standard interactive mode with per-tool permission prompts.
@@ -196,3 +201,32 @@ per-spawn by setting the `--base-url` and `--auth-token` options:
 
 Pair the two options when targeting a non-Anthropic endpoint. Omit both to use
 the default Anthropic endpoint with the ambient `ANTHROPIC_API_KEY`.
+
+## Native memory
+
+The adapter declares `capabilities.memory { inject: native-dir, capture:
+native-dir-diff }` (AIP-72 section 9). For an agent that binds memory:
+
+- **Where.** The driver adds `autoMemoryDirectory: <configDir>/memory` to the
+  session's isolated `settings.json`, so Claude Code's auto memory lives at
+  `~/.agentproto/adapter-config/<lineage>/memory` from any cwd, worktrees
+  included. The user's real `~/.claude` is never written.
+- **What.** One topic file per in-force item (`agentproto_<slug>.md`, native
+  frontmatter plus `metadata.agentprotoId` / `agentprotoSlug` /
+  `agentprotoSha`) and one fenced block at the top of `MEMORY.md`
+  (`<!-- agentproto:begin -->` ... `<!-- agentproto:end -->`) with one index
+  line per item, the fact in the hook. The block stays well under the CLI's
+  200 lines / 25KB load cut and ends with the number of items left out. The
+  agent's own lines and files are never touched; each spawn and resume
+  rewrites only the block and the `agentproto_*` files.
+- **Fallback.** With `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the spawn env, a
+  repo `.claude/settings*.json` that sets `autoMemoryEnabled: false`, or one
+  that pins its own `autoMemoryDirectory`, nothing is projected: the digest
+  rides the system prompt (`acp-meta`) instead. Never both channels.
+- **Capture.** At each turn end and at session exit the daemon diffs the dir
+  against the snapshot written at spawn (`<configDir>/.agentproto-memory.json`)
+  and writes each new or changed native file to the agent's memory store as a
+  `memory/v1` proposal (`provenance.ref: claude-code:<originSessionId>`). An
+  edit of a projected file is a proposal on the same item, a deletion a
+  proposal to archive it. Nothing is committed. Sandbox sessions are not
+  captured yet.

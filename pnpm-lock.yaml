@@ -2674,6 +2674,9 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/memory':
+        specifier: workspace:*
+        version: link:../memory
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

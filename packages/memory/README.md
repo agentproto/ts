@@ -91,6 +91,35 @@ AGENT.md binds memory (`memory.enabled: true`, `store` or `anchors`) also
 gets the section 9 digest of its in-force, in-scope items appended to its
 system prompt at spawn. See the runtime README's MCP tool surface.
 
+## Native memory (claude-code)
+
+An adapter declaring `capabilities.memory { inject: "native-dir", capture:
+"native-dir-diff" }` (claude-code) gets the same in-force items written into
+its own memory dir instead of the system prompt:
+
+- The dir is `<session config dir>/memory`, pinned through
+  `autoMemoryDirectory` in the session's isolated `settings.json`
+  (`~/.agentproto/adapter-config/<lineage>/memory`). The user's real
+  `~/.claude` is never written.
+- One topic file per item, `agentproto_<slug>.md`, with the native
+  frontmatter plus `metadata.agentprotoId`, `agentprotoSlug` and
+  `agentprotoSha`. The index lines live in one fenced block at the top of
+  `MEMORY.md` (`<!-- agentproto:begin -->` ... `<!-- agentproto:end -->`),
+  bounded well under the CLI's 200 lines / 25KB cut and ending with the
+  number of items left out. Lines and files the agent wrote are not
+  touched; every spawn rewrites only the block and the `agentproto_*` files.
+- Fallback: when auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`, a
+  repo `.claude/settings*.json` with `autoMemoryEnabled: false`) or the repo
+  pins its own `autoMemoryDirectory`, nothing is projected and the digest
+  rides the system prompt. Never both.
+- Capture: at each turn end and at exit the daemon diffs the dir against
+  the spawn snapshot (`.agentproto-memory.json`) and writes every new or
+  changed native file to the agent's store as a proposal (`memory/v1`,
+  `provenance.source: native-memory`, `capture.mode: live`). An edited
+  projected file is a proposal on the same `id`, a deleted one a proposal
+  with `status: archived`. Nothing is committed; a file is proposed once
+  per content. Sandbox sessions are not captured yet.
+
 ## License
 
 Apache-2.0. See [LICENSE](./LICENSE).
