@@ -1,5 +1,5 @@
 /**
- * must-wake floor — a `fyi` follow still delivers the always-wake set
+ * must-wake floor: a `fyi` follow still delivers the always-wake set
  * (`awaiting-input`, `crashed`, a `turn-end` carrying a question) at
  * `next-turn`, never silenced down to the inbox.
  */
@@ -201,7 +201,7 @@ describe("must-wake floor on a fyi follow", () => {
       // consulted, so it cannot force the throw on its own. A plain
       // `turn-end` on a second followed session reaches the
       // `reportedTurnEnd` rule (on by default), which does call
-      // `reportedRecently` and throws — aborting classification for the
+      // `reportedRecently` and throws, aborting classification for the
       // whole batch and exercising the fail-open path alongside the
       // must-wake entry.
       const logs: string[] = []
