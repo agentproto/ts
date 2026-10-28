@@ -320,26 +320,17 @@ describe("context-losing paths checkpoint first", () => {
   })
 
   describe("the runtime's own compaction (auto mode)", () => {
+    // The percent band (`compactAtPct`) no longer switches the harness into
+    // a compact mode: the absolute auto-compact owns compaction, see
+    // context-single-owner.test.ts.
     const auto = { mode: "auto" as const, warnAtPct: 50, compactAtPct: 60, continueFreshAtPct: 80 }
 
-    it("switches the harness to compact only after the checkpoint is on disk", async () => {
+    it("does not switch the harness to compact in the percent band", async () => {
       const { id, harness } = spawn(70, auto)
-      await reg.sendPrompt(id, "Let's decide which database we use")
-
-      expect(harness.modeSwitches).toEqual(["compact"])
-      expect(harness.checkpointsAtModeSwitch).toHaveLength(1)
-      const ckpt = readCheckpoint(id, harness.checkpointsAtModeSwitch![0]!)
-      expect(ckpt.recentDigest).toContain("decide which database")
-      expect(ckpt.recentDigest).toContain("going with Postgres")
-    })
-
-    it("does not compact at all when the checkpoint cannot be written", async () => {
-      const { id, harness } = spawn(70, auto)
-      breakCheckpointDir(id)
       await reg.sendPrompt(id, "Let's decide which database we use")
 
       expect(harness.modeSwitches).toEqual([])
-      expect(outputOf(id).join("\n")).toMatch(/compact skipped: no checkpoint could be written/)
+      expect(harness.checkpointsAtModeSwitch).toBeUndefined()
       expect(reg.get(id)?.status).toBe("running")
     })
   })
