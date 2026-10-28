@@ -16,7 +16,6 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import tsupConfig from "../../tsup.config"
 
 describe("bundling an optional native peer that is installed but not compiled", () => {
   let dir: string
@@ -45,8 +44,11 @@ describe("bundling an optional native peer that is installed but not compiled", 
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it("builds with the cli external list and keeps the guarded require(\"canvas\") unbundled", () => {
-    const external = (tsupConfig as { external?: string[] }).external
+  it("builds with the cli external list and keeps the guarded require(\"canvas\") unbundled", async () => {
+    // Imported by a computed path so the type-check of the package does not
+    // pull tsup.config.ts into its program.
+    const configPath = join(import.meta.dirname, "..", "..", "tsup.config.ts")
+    const external = ((await import(configPath)) as { default: { external?: string[] } }).default.external
     expect(external).toBeDefined()
 
     // A child process: the plugin failure kills esbuild's service and would
@@ -70,8 +72,9 @@ describe("bundling an optional native peer that is installed but not compiled", 
     })
     expect(run.status, run.stderr.slice(0, 400)).toBe(0)
 
-    const [file] = readdirSync(join(dir, "dist")).filter((f) => /^entry\.[cm]?js$/.test(f))
-    const out = readFileSync(join(dir, "dist", file), "utf8")
+    const files = readdirSync(join(dir, "dist")).filter((f) => /^entry\.[cm]?js$/.test(f))
+    expect(files).toHaveLength(1)
+    const out = readFileSync(join(dir, "dist", files[0] as string), "utf8")
     expect(out).toMatch(/require\(["']canvas["']\)/)
     expect(out).not.toContain("canvas.node")
   })
