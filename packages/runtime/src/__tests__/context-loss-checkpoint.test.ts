@@ -155,11 +155,10 @@ describe("context-losing paths checkpoint first", () => {
   const checkpointDir = (id: string): string => join(dirOf(id), "checkpoints")
   const readCheckpoint = (id: string, file: string): ContextCheckpoint =>
     JSON.parse(readFileSync(join(checkpointDir(id), file), "utf8")) as ContextCheckpoint
-  const outputOf = (id: string): string[] => {
-    const lines: string[] = []
-    reg.attach(id, line => lines.push(line))?.()
-    return lines
-  }
+  // A terminal row's output rings are dropped at exit, so capture the live
+  // stream from spawn instead of reading the (now-empty) replay buffer later.
+  const outputs = new Map<string, string[]>()
+  const outputOf = (id: string): string[] => outputs.get(id) ?? []
   /** Make checkpoint persistence fail for real: a regular file where the directory must go. */
   const breakCheckpointDir = (id: string): void => {
     mkdirSync(dirOf(id), { recursive: true })
@@ -177,6 +176,9 @@ describe("context-losing paths checkpoint first", () => {
       contextContinuity: policy(p),
     })
     id = desc.id
+    const lines: string[] = []
+    outputs.set(id, lines)
+    reg.attach(id, line => lines.push(line))
     return { id, harness }
   }
 

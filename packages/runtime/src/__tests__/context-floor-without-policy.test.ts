@@ -112,21 +112,25 @@ describe("the context floor holds without a policy", () => {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
+  // A terminal row's output rings are dropped at exit, so capture the live
+  // stream from spawn instead of reading the (now-empty) replay buffer later.
+  const outputs = new Map<string, string[]>()
   /** No `contextContinuity` unless one is given: `reg.spawnAgent` stores what it gets. */
-  const spawn = (h: AgentSessionLike, partial?: Partial<ResolvedContextContinuityPolicy>) =>
-    reg.spawnAgent({
+  const spawn = (h: AgentSessionLike, partial?: Partial<ResolvedContextContinuityPolicy>) => {
+    const desc = reg.spawnAgent({
       workspaceSlug: "default",
       cwd: tmp,
       agentSession: h,
       adapterSlug: "fake",
       ...(partial ? { contextContinuity: { ...CONTEXT_CONTINUITY_DEFAULTS, ...partial } } : {}),
-    }).id
-
-  const outputOf = (id: string): string[] => {
+    })
     const lines: string[] = []
-    reg.attach(id, line => lines.push(line))?.()
-    return lines
+    outputs.set(desc.id, lines)
+    reg.attach(desc.id, line => lines.push(line))
+    return desc.id
   }
+
+  const outputOf = (id: string): string[] => outputs.get(id) ?? []
 
   it("F1: admission refuses a prompt into a full window and starts the rescue", async () => {
     makeRegistry()

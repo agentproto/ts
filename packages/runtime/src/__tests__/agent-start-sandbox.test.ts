@@ -421,13 +421,13 @@ describe("agent_start sandbox — boot box + proxy session", () => {
     expect(desc?.status).toBe("killed")
 
     // Transcript survives the (now-stopped) box — read via the HOST's own
-    // registry, no round-trip to the box required. The composed prompt is
-    // multi-line (role context + the literal prompt), so "please respond"
-    // (the tail) and the "echo: " prefix (only on the FIRST resulting
-    // line) are asserted separately rather than as one substring.
-    const lines: string[] = []
-    const unsub = registry.attach(id, line => lines.push(line))
-    unsub?.()
+    // registry, no round-trip to the box required. The terminal row's live
+    // ring has been dropped, so this is the registry's final-text fallback.
+    // The composed prompt is multi-line (role context + the literal prompt),
+    // so "please respond" (the tail) and the "echo: " prefix (only on the
+    // FIRST resulting line) are asserted separately rather than as one
+    // substring.
+    const lines = registry.readOutputTail(id, 500)
     expect(lines.some(line => line.includes("please respond"))).toBe(true)
     expect(lines.some(line => line.includes("echo:"))).toBe(true)
   })

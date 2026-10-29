@@ -5406,6 +5406,12 @@ export interface SessionsRegistry {
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
+  /** Last `lastN` output lines for an agent-cli/command row. Serves the
+   *  live ring while the row still has one; a finished row's rings are
+   *  cleared at exit, so it falls back to the last assistant text kept on
+   *  the runtime and then to the bounded transcript tail on disk. Returns
+   *  `[]` for a missing session or a row with no recoverable text. */
+  readOutputTail(id: string, lastN: number): string[]
   /** SIGTERM the underlying child + close the agent protocol session.
    *  `reason`, when given, is stamped onto `SessionDescriptor.endedReason`
    *  (see {@link SessionEndReason}) — pass it from every call site that
@@ -7117,6 +7123,18 @@ export function createSessionsRegistry(opts?: {
     // Refresh the sidecar now: an exit is a terminal state, so its index
     // must land regardless of the throttled turn-end writes.
     writeIndexNow(rt)
+    // The row is terminal: its live replay buffers have done their job. The
+    // final text was captured above (`recordOutcome` / the index write), and
+    // durable history lives in `events.jsonl` / the command log, so a finished
+    // row must not keep its output rings for the rest of the daemon's life.
+    // Every terminal path funnels through here (kill, crash, pty exit, idle
+    // reap, steward close).
+    rt.recentLines.length = 0
+    rt.recentLinesChars = 0
+    rt.recentBytes.length = 0
+    rt.recentBytesSize = 0
+    rt.textBuf = ""
+    rt.thoughtBuf = ""
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
@@ -7847,6 +7865,7 @@ export function createSessionsRegistry(opts?: {
         availableModes: _availableModes,
         spawnEnforcedPostures: _spawnEnforcedPostures,
         configOptions: _configOptions,
+        availableCommands: _availableCommands,
         ...rest
       } = s.desc
       if (rest.remoteParent) {
@@ -14364,6 +14383,29 @@ export function createSessionsRegistry(opts?: {
       }
       return joined
     },
+    readOutputTail(id, lastN) {
+      const rt = sessions.get(id)
+      if (!rt) return []
+      if (rt.recentLines.length > 0) {
+        return rt.recentLines.slice(-lastN)
+      }
+      // A live row with an empty ring has simply not emitted yet; only a
+      // terminal row (whose ring was cleared at exit) gets the fallback.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") return []
+      // The live ring is gone (a terminal row — see `emitExited`). Keep
+      // `agent_output` answering with the final text: the same-process
+      // buffer is still here, and a row reloaded after a restart recovers
+      // it from the bounded transcript tail instead.
+      let text = rt.lastAssistantText
+      if (!text) {
+        text = readTranscriptTail(
+          sessionEventsPath(rt.desc.id, transcriptBaseDir),
+          INDEX_TAIL_BYTES,
+        ).lastOutputText
+      }
+      if (!text) return []
+      return text.split(/\r?\n/).slice(-lastN)
+    },
     kill(id, signal = "SIGTERM", reason, outcome) {
       const rt = sessions.get(id)
       if (!rt) return false
@@ -16156,6 +16198,12 @@ function loadHistorySnapshot(
     }
     // A row loaded from disk has no live provisioning, whatever it recorded.
     delete reclassified.provisioning
+    // `availableCommands` is a live read-surface stamped by the ACP
+    // `available_commands_update` event, never a durable property. Snapshots
+    // written by older daemons may still carry it; drop it on the way back in
+    // so a ghost never holds a stale command list (and the next persist drops
+    // it from disk for good).
+    delete reclassified.availableCommands
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/
     // agentSession, so it is idle whatever the snapshot claimed — and rows
     // that were ALREADY terminal can carry frozen flags too. Two ways in: a

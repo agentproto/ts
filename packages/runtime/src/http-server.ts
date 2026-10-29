@@ -379,12 +379,26 @@ function parseSessionFields(params: URLSearchParams): ReadonlySet<string> | unde
   return new Set(["id", ...names])
 }
 
+/** Heavy LIVE-only fields omitted from the default `GET /sessions` list
+ *  body. They are not routing/identity data — a list consumer that really
+ *  needs one asks for it with `?fields=`, or reads the per-session
+ *  descriptor. Keeping them out of the list is what stops the registry
+ *  listing from re-serializing every session's whole slash-command table. */
+const SESSION_LIST_OMIT_FIELDS = new Set<string>(["availableCommands"])
+
 function projectSessionForHttp(
   session: SessionDescriptor,
   fields: ReadonlySet<string> | undefined,
+  omit: ReadonlySet<string> = SESSION_LIST_OMIT_FIELDS,
 ): Record<string, unknown> {
   const pub = sessionDescriptorForHttp(session) as unknown as Record<string, unknown>
-  if (!fields) return pub
+  if (!fields) {
+    const out: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(pub)) {
+      if (!omit.has(key)) out[key] = value
+    }
+    return out
+  }
   const out: Record<string, unknown> = {}
   for (const key of fields) {
     if (key in pub && pub[key] !== undefined) out[key] = pub[key]
@@ -8463,12 +8477,9 @@ code { color: #9ad; }
     const lastNRaw = Number(query.get("lastN") ?? "80")
     const limit = Number.isInteger(lastNRaw) && lastNRaw >= 1 ? Math.min(lastNRaw, 500) : 80
     const clean = ["1", "true"].includes(query.get("clean") ?? "")
-    const lines: string[] = []
-    const unsub = registry.attach(desc.id, (line: string) => {
-      lines.push(line)
-    })
-    if (unsub) unsub()
-    const tail = lines.slice(-limit)
+    // Live ring while the session has one; a terminal row's rings are cleared
+    // at exit, so this recovers its final text instead of returning nothing.
+    const tail = registry.readOutputTail(desc.id, limit)
     let output = clean ? cleanAgentLines(tail) : tail
     let activityFallback = false
     if (clean && output.length === 0 && tail.length > 0) {
@@ -9687,7 +9698,14 @@ code { color: #9ad; }
     const qsForFields = reqUrlForFields.includes("?")
       ? reqUrlForFields.slice(reqUrlForFields.indexOf("?") + 1)
       : ""
-    json(200, projectSessionForHttp(resolvedDesc, parseSessionFields(new URLSearchParams(qsForFields))))
+    // The per-session descriptor is the live read surface: it keeps
+    // `availableCommands` (the VS Code transcript panel reads it from here),
+    // unlike the default list projection.
+    json(200, projectSessionForHttp(
+      resolvedDesc,
+      parseSessionFields(new URLSearchParams(qsForFields)),
+      new Set(),
+    ))
     return true
   }
 
