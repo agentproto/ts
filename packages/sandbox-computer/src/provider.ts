@@ -69,6 +69,12 @@ const DEFAULT_WORKSPACE = "/home/user"
 /** Tenant every computer is created under when config doesn't name one. */
 export const DEFAULT_TENANT_ID = "agentproto"
 export const DEFAULT_TEMPLATE = "agentproto-workstation"
+
+/** Default Node heap for work in the box. A monorepo `pnpm install`/build on a
+ *  12 GB workstation dies at Node's ~4 GB default heap; 8 GB leaves headroom
+ *  for the build while staying below the box's memory reservation. An
+ *  explicit `NODE_OPTIONS` in the spawn env wins. */
+export const DEFAULT_BOX_NODE_OPTIONS = "--max-old-space-size=8192"
 /** Cap on one exec call: the controller accepts `timeoutSec ≤ 600`. */
 const EXEC_TIMEOUT_MAX_SEC = 600
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
@@ -996,6 +1002,7 @@ async function bootOnClient(
     const v = typeof raw === "string" ? raw : undefined
     if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
   }
+  if (createEnv.NODE_OPTIONS === undefined) createEnv.NODE_OPTIONS = DEFAULT_BOX_NODE_OPTIONS
 
   throwIfBootCancelled(opts.signal)
   let created
