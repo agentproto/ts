@@ -1051,6 +1051,8 @@ export interface RuntimeHttpServerOptions {
     deferred?: boolean,
     allowTools?: ReadonlySet<string>,
     surface?: string,
+    /** The session a valid session token on the request was minted for. */
+    credentialSessionId?: string,
   ) => Promise<McpServer>
   /**
    * Optional — when wired, every `/mcp` request carrying a
@@ -2254,6 +2256,13 @@ export async function startHttpServer(
     return true
   }
 
+  /** The session a valid session token on the request was minted for. */
+  function credentialSessionOf(req: IncomingMessage): string | undefined {
+    const raw = req.headers[SESSION_TOKEN_HEADER]
+    const token = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined
+    return token ? verifySessionToken(token) : undefined
+  }
+
   /** The routes that read the caller identity get it through this wrapper,
    *  which observes the request first (once). Each of them is also behind
    *  `enforceCallerIdentity`, see `IDENTITY_GATED_SESSION_ROUTES`. */
@@ -2343,7 +2352,15 @@ export async function startHttpServer(
       )
       return
     }
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
+    const server = await opts.mcpServerFactory(
+      denyTools,
+      callerSessionId,
+      origin,
+      deferred,
+      allowTools,
+      surface,
+      credentialSessionOf(req),
+    )
     await serveMcp(req, res, server, callerSessionId)
   }
 
@@ -4233,10 +4250,18 @@ export async function startHttpServer(
               ...(typeof body.revision === "string" ? { revision: body.revision } : {}),
             },
             opts.configTools,
+            {
+              credentialSessionId: credentialSessionOf(req),
+              claimedSessionId: resolveCallerSessionId(req),
+              isHostSpawned: id => {
+                const desc = opts.sessions?.get(id)
+                return desc !== undefined && desc.kind !== "external"
+              },
+            },
           )
           if (!result.ok) {
             const status =
-              result.error === "not_writable"
+              result.error === "not_writable" || result.error === "operator_only"
                 ? 403
                 : result.error === "stale_revision"
                   ? 409

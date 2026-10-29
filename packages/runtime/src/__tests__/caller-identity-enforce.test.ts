@@ -13,11 +13,14 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent, type SessionsRegistry } from "../sessions.js"
@@ -25,7 +28,7 @@ import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import { cdContractLine } from "../agents-md.js"
-import { configSet, type ConfigToolsDeps } from "../config-tools.js"
+import { configSet, registerConfigTools, type ConfigToolsDeps, type ConfigWriteCaller } from "../config-tools.js"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "../config.js"
 import { validateConfig } from "../config-schema.js"
 import {
@@ -390,4 +393,93 @@ describe("identity enforce mode", () => {
     const off = await fixture("off")
     expect(tokenOf(off.spawnCalls[0]?.mcpServers)).toBeUndefined()
   })
+})
+
+describe("operator-only configuration", () => {
+  async function configFixture(): Promise<{ deps: ConfigToolsDeps; configPath: string; read: () => string }> {
+    const configPath = join(tmp, "config.json")
+    await saveConfig({ defaults: { messaging: { allowSiblings: false } } } as AgentprotoConfig, configPath)
+    return {
+      configPath,
+      deps: {
+        loadCfg: () => loadConfig(configPath),
+        saveCfg: next => saveConfig(next, configPath),
+        configPath: () => configPath,
+        bootConfig: {} as AgentprotoConfig,
+        events: createRuntimeEvents(),
+      },
+      read: () => readFileSync(configPath, "utf8"),
+    }
+  }
+
+  async function mcpConfigClient(deps: ConfigToolsDeps, caller: ConfigWriteCaller): Promise<Client> {
+    const server = new McpServer({ name: "operator-only", version: "0" })
+    registerConfigTools(server, deps, caller)
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "operator-only-client", version: "0" })
+    await client.connect(clientTransport)
+    return client
+  }
+
+  for (const mode of ["shadow", "enforce"] as const) {
+    it(`T7 ${mode}: a session caller cannot write a messaging or identity key, over MCP or PATCH /config; the operator can`, async () => {
+      const f = await fixture()
+      const cfg = await configFixture()
+      const before = cfg.read()
+      const isHostSpawned = (id: string): boolean => {
+        const d = f.registry.get(id)
+        return d !== undefined && d.kind !== "external"
+      }
+
+      // MCP: the caller the /mcp factory knows (its trusted claim).
+      const session = await mcpConfigClient(cfg.deps, { claimedSessionId: f.claude, isHostSpawned })
+      const refused = await session.callTool({ name: "config_set", arguments: { key: "defaults.messaging.allowSiblings", value: true } })
+      expect(refused.isError).toBe(true)
+      expect(JSON.stringify(refused.content)).toContain("operator_only")
+      expect(JSON.stringify(refused.content)).toContain("defaults.messaging.allowSiblings")
+      const byToken = await mcpConfigClient(cfg.deps, { credentialSessionId: f.claude, isHostSpawned })
+      expect((await byToken.callTool({ name: "config_set", arguments: { key: "defaults.identity.sessionTokens", value: "off" } })).isError).toBe(true)
+      expect(cfg.read()).toBe(before)
+
+      // REST: PATCH /config, a session caller by token, by trusted claim, an ancestor key, an unset.
+      const srv = await startServer(mode, f.registry, cfg.deps)
+      try {
+        const patch = (body: unknown, headers: Record<string, string> = {}, query = ""): Promise<Response> =>
+          fetch(`${srv.base}/config${query}`, {
+            method: "PATCH",
+            headers: { "content-type": "application/json", ...headers },
+            body: JSON.stringify(body),
+          })
+        const asSession = { [TOKEN_HEADER]: f.claudeToken }
+        const r1 = await patch({ key: "defaults.messaging.allowSiblings", value: true }, asSession)
+        expect(r1.status).toBe(403)
+        const j1 = (await r1.json()) as { error?: string; message?: string }
+        expect(j1.error).toBe("operator_only")
+        expect(j1.message).toContain("defaults.messaging.allowSiblings")
+        expect(JSON.stringify(j1)).not.toContain(f.claudeToken)
+        expect((await patch({ key: "defaults.messaging", value: { allowSiblings: true } }, asSession)).status).toBe(403)
+        expect((await patch({ key: "defaults.messaging.allowSiblings", unset: true }, asSession)).status).toBe(403)
+        expect((await patch({ key: "defaults.tasks.operatorDelegates", value: [] }, asSession)).status).toBe(403)
+        const claimOnly = await patch({ key: "defaults.messaging.allowSiblings", value: true }, {}, `?callerSessionId=${f.claude}`)
+        expect(claimOnly.status).toBe(403)
+        expect(cfg.read()).toBe(before)
+
+        // Every key under defaults.messaging is protected, the staleness knob
+        // included; a key outside the protected set is accepted.
+        expect((await patch({ key: "defaults.messaging.pendingPromptStaleMinutes", value: 7 }, asSession)).status).toBe(403)
+        expect((await patch({ key: "defaults.agentPromptInterrupt", value: true }, asSession)).status).toBe(200)
+
+        // The operator (anonymous loopback) and an external identifier are accepted.
+        expect((await patch({ key: "defaults.messaging.allowSiblings", value: true })).status).toBe(200)
+        expect((await patch({ key: "defaults.messaging.allowSiblings", value: false }, {}, "?callerSessionId=sess_ext")).status).toBe(200)
+      } finally {
+        await srv.stop()
+      }
+
+      // MCP from the operator: accepted.
+      const operator = await mcpConfigClient(cfg.deps, { isHostSpawned })
+      expect((await operator.callTool({ name: "config_set", arguments: { key: "defaults.messaging.allowSiblings", value: true } })).isError).toBeFalsy()
+    })
+  }
 })

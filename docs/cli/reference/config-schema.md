@@ -265,6 +265,12 @@ counts the requests enforce would refuse as claim-only, `counters.mismatch` and
 `counters.invalid_token` the others, and `enforces` lists the surfaces and
 adapters it covers; `refused` counts what it refused since the daemon started.
 
+Whatever the mode, a session caller (a valid session token, or a trusted claim
+naming a session the daemon spawned) cannot write `defaults.messaging.*`,
+`defaults.identity.*` or `defaults.tasks.operatorDelegates` (or an ancestor of
+them) through `config_set` or `PATCH /config`: `operator_only`, 403 on the
+route. The operator (anonymous loopback, an external identifier) can.
+
 Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.options`
 < the explicit `options` passed at spawn time. For `skills`, an explicit
 `skills` array at spawn time *replaces* the union of `defaults.skills` and
