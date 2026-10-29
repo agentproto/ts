@@ -47,10 +47,10 @@ describe("parseOperatorManifest", () => {
   it("parses a full OPERATOR.md", () => {
     const m = parseOperatorManifest(SAMPLE)
     expect(m.frontmatter.id).toBe("lex")
-    expect(m.frontmatter.profile.boundaries).toHaveLength(1)
+    expect(m.frontmatter.profile?.boundaries).toHaveLength(1)
     expect(m.frontmatter.skills).toHaveLength(2)
     expect(m.frontmatter.tools).toHaveLength(1)
-    expect(m.frontmatter.governance?.autonomy).toBe("supervised")
+    expect(m.frontmatter.governance).toEqual({ audit_log: "audit:lex", autonomy: "supervised" })
     expect(m.body).toContain("# Lex")
   })
 
@@ -92,9 +92,39 @@ describe("parseOperatorManifest", () => {
     expect(() => parseOperatorManifest(bad)).toThrow(/schema/)
   })
 
-  it("rejects missing required field (profile)", () => {
-    const bad = SAMPLE.replace(/profile:[\s\S]*?boundaries:[\s\S]*?\.\n/, "")
-    expect(() => parseOperatorManifest(bad)).toThrow(/profile/)
+  it("rejects a missing required field (persona_summary)", () => {
+    const bad = SAMPLE.replace(/^persona_summary: .*\n/m, "")
+    expect(() => parseOperatorManifest(bad)).toThrow(/persona_summary/)
+  })
+
+  it("accepts a manifest with neither version nor profile", () => {
+    const lean = SAMPLE.replace(/^version: .*\n/m, "").replace(
+      /^profile:\n(?: {2}.*\n| {4}.*\n)+/m,
+      "",
+    )
+    const m = parseOperatorManifest(lean)
+    expect(m.frontmatter.version).toBeUndefined()
+    expect(m.frontmatter.profile).toBeUndefined()
+  })
+
+  it("rejects an unknown top-level key", () => {
+    const bad = SAMPLE.replace(/^tags: .*$/m, "tags: [research]\nstray: 1")
+    expect(() => parseOperatorManifest(bad)).toThrow(/stray/)
+  })
+
+  it("does not invent the AGENT defaults an operator never wrote", () => {
+    const m = parseOperatorManifest(SAMPLE)
+    expect(m.frontmatter.autonomy).toBeUndefined()
+    expect(m.frontmatter.version).toBe("1.0.0")
+    const lean = parseOperatorManifest(
+      "---\nid: lex\nname: Lex\npersona_summary: Researcher.\n---\n",
+    )
+    expect(lean.frontmatter).toEqual({ id: "lex", name: "Lex", persona_summary: "Researcher." })
+  })
+
+  it("holds an object written in the deprecated memory form to that form", () => {
+    const bad = SAMPLE.replace("kind: operator-context", "kind: forever")
+    expect(() => parseOperatorManifest(bad)).toThrow(/memory\.kind/)
   })
 
   it("rejects invalid id shape", () => {
@@ -108,9 +138,9 @@ describe("operatorFromManifest", () => {
     const m = parseOperatorManifest(SAMPLE)
     const op = operatorFromManifest(m)
     expect(op.id).toBe("lex")
-    expect(op.governance?.audit_log).toBe("audit:lex")
-    expect(op.memory?.kind).toBe("operator-context")
-    expect(op.memory?.policy).toBe("summarising") // default applied
+    expect(op.legacy?.governance?.audit_log).toBe("audit:lex")
+    expect(op.legacy?.memory?.kind).toBe("operator-context")
+    expect(op.autonomy).toBe(5)
     expect(op.participation?.reactions).toBe(true)
     expect(op.metadata).toEqual({ "vendor.namespace": "katchy" })
     expect(Object.isFrozen(op)).toBe(true)
