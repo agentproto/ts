@@ -13,3 +13,19 @@ describe("defineAgent (AIP-42)", () => {
   // TODO: spec-42 tests — see @agentproto/operator's test suite as
   // a reference once you wire defaults + cross-field rules.
 })
+
+describe("defineAgent model requirement", () => {
+  const base = { schema: "agent/v1" as const, id: "synthetic", description: "A synthetic agent." }
+
+  it("refuses a missing model with 'model is required'", () => {
+    expect(() => defineAgent(base as never)).toThrow("model is required")
+  })
+
+  it("refuses a blank model with 'model is required'", () => {
+    expect(() => defineAgent({ ...base, model: "  " })).toThrow("model is required")
+  })
+
+  it("accepts a model string", () => {
+    expect(defineAgent({ ...base, model: "provider/model" }).model).toBe("provider/model")
+  })
+})

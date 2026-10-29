@@ -67,6 +67,13 @@ export interface DoctypeSpec<
    * shapes diverge non-trivially.
    */
   toFrontmatter?(params: TParams): Record<string, unknown>
+  /**
+   * Optional full renderer: validated handle + body → manifest text. When set,
+   * `create` and `update` use it instead of `toFrontmatter` + `matter.stringify`,
+   * so a doctype that already owns a renderer (AIP-42's `renderAgentMd`) has
+   * exactly one. `body` is undefined when the caller gave none.
+   */
+  render?(handle: THandle, body: string | undefined): string
 }
 
 export interface CreateOptions {
@@ -159,11 +166,16 @@ export function createVerbs<
     const handle = spec.define(params)
     const relativePath = spec.pathOf(handle)
     const path = join(opts.dir, relativePath)
-    const frontmatter = toFrontmatter(params)
-    const rendered = matter.stringify(
-      opts.body ?? defaultBody(spec, frontmatter),
-      frontmatter,
-    )
+    let rendered: string
+    if (spec.render) {
+      rendered = spec.render(handle, opts.body)
+    } else {
+      const frontmatter = toFrontmatter(params)
+      rendered = matter.stringify(
+        opts.body ?? defaultBody(spec, frontmatter),
+        frontmatter,
+      )
+    }
     if (!opts.dryRun) {
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, rendered, "utf8")
@@ -240,11 +252,9 @@ export function createVerbs<
     const params = frontmatter as unknown as TParams
     const mutated = await mutator(params, { handle, body })
     const newHandle = spec.define(mutated)
-    const newFrontmatter = toFrontmatter(mutated)
-    const rendered = matter.stringify(
-      opts.body ?? body,
-      newFrontmatter,
-    )
+    const rendered = spec.render
+      ? spec.render(newHandle, opts.body ?? body)
+      : matter.stringify(opts.body ?? body, toFrontmatter(mutated))
     if (!opts.dryRun) {
       await mkdir(dirname(path), { recursive: true })
       await writeFile(path, rendered, "utf8")

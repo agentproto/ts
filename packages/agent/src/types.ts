@@ -8,7 +8,7 @@
  */
 
 /**
- * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+ * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
  */
 export type AnyRef =
   | string
@@ -152,7 +152,7 @@ export interface AgentDefinition {
   delegates_to?: AnyRef[]
   memory?: MemoryConfig
   /**
-   * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+   * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
    */
   governance?:
     | string
@@ -164,7 +164,7 @@ export interface AgentDefinition {
         }
       }
   /**
-   * AIP-27 ref primitive — string shorthand or { ref | file | inline }.
+   * AIP-54 ref primitive: string shorthand or { ref | file | inline }.
    */
   policy?:
     | string

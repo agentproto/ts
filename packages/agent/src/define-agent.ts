@@ -33,6 +33,13 @@ export const defineAgent = createDoctype<AgentDefinition, AgentHandle>({
   // across registries (e.g. `@agentik/writer`). Bare ids stay valid.
   idPattern: AGENT_ID_PATTERN,
   validate(def) {
+    // `model` is `z.any()` in the generated schema, so zod's own message
+    // for a missing one is "expected nonoptional" and an empty string
+    // passes. AIP-42 requires a model; say so plainly.
+    const model = (def as { model?: unknown }).model
+    if (model === undefined || model === null || (typeof model === "string" && model.trim() === "")) {
+      throw new Error("defineAgent (AIP-42): model is required")
+    }
     const result = agentFrontmatterSchema.safeParse(def)
     if (!result.success) {
       throw new Error(

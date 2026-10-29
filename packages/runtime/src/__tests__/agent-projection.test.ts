@@ -48,7 +48,7 @@ describe("projectAgentToSpawn", () => {
     expect(p.options).toBeUndefined()
     expect(p.instructions).toContain("You are a trip scout.")
     expect(p.instructions).toContain("Name: Scout")
-    expect(p.instructions).toContain("Hard rules — these MUST be followed:\n- Never invent a sourceUrl")
+    expect(p.instructions).toContain("Hard rules (these MUST be followed):\n- Never invent a sourceUrl")
     expect(joined(p.warnings)).toMatch(/no system-prompt channel.*boundaries, persona.*first prompt's prefix/)
   })
 
