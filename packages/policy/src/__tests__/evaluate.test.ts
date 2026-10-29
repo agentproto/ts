@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { evaluateGrants, PolicyGrantError, type GrantRequest } from "../evaluate.js"
+import { combineDecisions, evaluateGrants, PolicyGrantError, type GrantDecision, type GrantRequest } from "../evaluate.js"
 import type { Grant } from "../types.js"
 
 const WHO = "operator://bob"
@@ -67,6 +67,25 @@ describe("evaluateGrants: composition (AIP-38 conformance 1, 2)", () => {
     expect(evaluateGrants([grant({ action: "@agentik/actions/standard/storage-commit" })], req()).decision).toBe("allow")
     expect(evaluateGrants([grant({ action: "storage:*" })], req()).decision).toBe("allow")
     expect(evaluateGrants([grant({ action: "model:*" })], req()).decision).toBe("deny")
+  })
+})
+
+describe("evaluateGrants: principal forms", () => {
+  it("matches a { ref } object principal by its ref", () => {
+    const allow: Grant = { principal: { ref: WHO }, actions: [{ action: "storage:commit" }] }
+    expect(evaluateGrants([allow], req()).decision).toBe("allow")
+    const deny: Grant = { principal: { ref: "operator://eve" }, effect: "deny", actions: [{ action: "storage:commit" }] }
+    expect(evaluateGrants([grant({}), deny], req()).decision).toBe("allow")
+  })
+
+  it("rejects { name, email } and { file } principals instead of denying every principal", () => {
+    const unsupported: Grant[] = [
+      { principal: { name: "Bob", email: "bob@example.com" }, effect: "deny", actions: [{ action: "storage:commit" }] },
+      { principal: { file: "principals/bob.yaml" }, effect: "deny", actions: [{ action: "storage:commit" }] },
+    ]
+    for (const g of unsupported) {
+      expect(() => evaluateGrants([grant({}), g], req())).toThrow(PolicyGrantError)
+    }
   })
 })
 
@@ -194,6 +213,19 @@ describe("evaluateGrants: unresolvable scopes fail closed (rule 4)", () => {
 
   it("reads a typed-looking scope as a plain name when the action declares no such form", () => {
     expect(evaluateGrants([grant({ scope: "label:ops" })], req({ scope: "label:ops" })).decision).toBe("allow")
+  })
+})
+
+describe("combineDecisions: deterministic deny precedence", () => {
+  function decision(reason: GrantDecision["reason"]): GrantDecision {
+    return { decision: "deny", reason, via: "default", warnings: [] }
+  }
+
+  it("prefers a more specific deny reason over no-grant regardless of order", () => {
+    expect(combineDecisions([decision("no-grant"), decision("ttl-expired")]).reason).toBe("ttl-expired")
+    expect(combineDecisions([decision("ttl-expired"), decision("no-grant")]).reason).toBe("ttl-expired")
+    expect(combineDecisions([decision("no-grant"), decision("condition-failed")]).reason).toBe("condition-failed")
+    expect(combineDecisions([decision("ttl-expired"), decision("explicit-revoke")]).reason).toBe("explicit-revoke")
   })
 })
 

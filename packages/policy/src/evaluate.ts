@@ -84,12 +84,24 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v)
 }
 
+function validatePrincipal(p: unknown, path: string): void {
+  if (typeof p === "string" && p.length > 0) return
+  if (isObject(p) && typeof p.ref === "string" && p.ref.length > 0) return
+  if (isObject(p)) {
+    // `{ name, email, ... }` and `{ file, ... }` cannot be resolved to an
+    // AIP-23 ref here, and an unresolved deny matches every principal, so
+    // reject them rather than turn a targeted deny into a blanket one.
+    throw new PolicyGrantError(
+      path,
+      "object-form principal must carry a non-empty `ref`; {name, email} and {file} forms cannot be resolved",
+    )
+  }
+  throw new PolicyGrantError(path, "must be a non-empty string or an identity-ref object")
+}
+
 function validateGrant(g: unknown, path: string): asserts g is Grant {
   if (!isObject(g)) throw new PolicyGrantError(path, "must be an object")
-  const p = g.principal
-  if (!((typeof p === "string" && p.length > 0) || isObject(p))) {
-    throw new PolicyGrantError(`${path}.principal`, "must be a non-empty string or an identity-ref object")
-  }
+  validatePrincipal(g.principal, `${path}.principal`)
   if (g.effect !== undefined && g.effect !== "allow" && g.effect !== "deny") {
     throw new PolicyGrantError(`${path}.effect`, 'must be "allow" or "deny"')
   }
@@ -292,6 +304,16 @@ export function evaluateGrants(inputs: readonly GrantInput[], request: GrantRequ
   return { decision: "deny", reason, via: "default", warnings }
 }
 
+/** Deterministic precedence for a deny so the most specific reason is reported (lower wins). */
+const DENY_REASON_RANK: Readonly<Record<GrantDecisionReason, number>> = {
+  "explicit-deny": 0,
+  "explicit-revoke": 1,
+  "ttl-expired": 2,
+  "condition-failed": 3,
+  "no-grant": 4,
+  "matched-grant": 5,
+}
+
 /**
  * Decide one operation known under several names (a tool and the action it
  * implements): a matching deny on any refuses, a matching allow on any admits.
@@ -300,6 +322,12 @@ export function combineDecisions(decisions: readonly GrantDecision[]): GrantDeci
   const first = decisions[0]
   if (!first) throw new PolicyGrantError("decisions", "needs at least one decision")
   const warnings = decisions.flatMap(d => d.warnings)
-  const pick = decisions.find(d => d.reason === "explicit-deny") ?? decisions.find(d => d.decision === "allow" && d.via === "grant") ?? decisions.find(d => d.decision === "allow") ?? first
+  const bestDeny = decisions
+    .filter(d => d.decision === "deny")
+    .reduce<GrantDecision | undefined>(
+      (best, d) => (best === undefined || DENY_REASON_RANK[d.reason] < DENY_REASON_RANK[best.reason] ? d : best),
+      undefined,
+    )
+  const pick = decisions.find(d => d.reason === "explicit-deny") ?? decisions.find(d => d.decision === "allow" && d.via === "grant") ?? decisions.find(d => d.decision === "allow") ?? bestDeny ?? first
   return { ...pick, warnings }
 }
