@@ -16,8 +16,10 @@
  *      from the workspace remote, `restoreCheckpointSteps` puts the work back
  *      (commits as commits, uncommitted files left uncommitted) and the context
  *      checkpoint carries the transcript over as the first prompt.
- *   4. retire the old session, killing its box if it is still alive. A failed
- *      spawn leaves the old session untouched.
+ *   4. hand the old session's host orchestrator scope to the new one (its
+ *      live children were re-parented by the continuation), then retire the
+ *      old session, killing its box if it is still alive. A failed spawn
+ *      leaves the old session untouched, its scope included.
  *
  * `migrateSandboxSession` is the one entry point for the MCP/HTTP/CLI verbs
  * and for in-daemon callers (turnRetry's "migrate" action).
@@ -41,7 +43,11 @@ import type { ContextCheckpoint } from "./context-checkpoint.js"
 import type { CheckpointSources } from "./checkpoint-extract.js"
 import { loadConfig } from "./config.js"
 import { continueAgentSessionFresh } from "./session-continue-fresh.js"
-import { parseSandboxProviderSlug } from "./session-restart-core.js"
+import {
+  handOverOrchestratorScopes,
+  parseSandboxProviderSlug,
+  withReinstatedOrchestratorScopes,
+} from "./session-restart-core.js"
 import type { SpawnAgentSessionDeps } from "./session-spawn.js"
 import type { SessionDescriptor } from "./sessions.js"
 import { sessionTranscriptDir } from "./transcript-writer.js"
@@ -358,36 +364,52 @@ export async function migrateSandboxSession(
   }
 
   const sandbox = opts.sandbox ?? plan.providerSlug
-  const fresh = await continueAgentSessionFresh(deps, prev, {
-    // Asking the old session to summarise itself would run another turn in the
-    // box after the checkpoint just taken.
-    askSource: false,
-    stampHandoff: false,
-    notes: migrationNotes(plan, config, opts.notes),
-    ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.access ? { access: opts.access } : {}),
-    ...(opts.baseDir ? { baseDir: opts.baseDir } : {}),
-    ...(opts.sources ? { sources: opts.sources } : {}),
-    spawn: {
-      sandbox,
-      workspaceSlug: plan.workspace.slug,
-      // A host path is meaningless in the new box; the workspace remote names the checkout.
-      cwd: undefined,
-      worktree: { slug: plan.branch.slice(SANDBOX_BRANCH_PREFIX.length) },
-      sandboxCheckpoint: prev.sandboxCheckpointOverride,
-      sandboxCheckpointRestore: chosen.snapshot,
-      label: prev.label ? `${prev.label} (migrated)` : undefined,
-      title: prev.title ? `${prev.title} (migrated)` : undefined,
-      // The policy rides along exactly like `session-restart-core.ts` carries
-      // `prev.turnRetry`: without it the replacement box has no `turnRetry`
-      // at all, so the next transient failure could neither retry nor migrate
-      // (and `turnRetry.action: "migrate"` would be silently lost by its own
-      // first migration). `spawnAgentSession` re-resolves it with
-      // `resolveTurnRetryPolicy`, which is idempotent on a resolved policy.
-      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
-      ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
-    },
-  })
+  // Orchestrator scope: the new session carries `prev`'s mounts, including a
+  // host `/mcp/orchestrator?scope=<token>` entry. A box that died for real had
+  // that scope revoked, so it is reinstated for the spawn (and revoked again
+  // when the spawn fails), exactly as `restartAgentSession` does.
+  const fresh = await withReinstatedOrchestratorScopes(deps.registry, prev.id, () =>
+    continueAgentSessionFresh(deps, prev, {
+      // Asking the old session to summarise itself would run another turn in the
+      // box after the checkpoint just taken.
+      askSource: false,
+      stampHandoff: false,
+      notes: migrationNotes(plan, config, opts.notes),
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.access ? { access: opts.access } : {}),
+      ...(opts.baseDir ? { baseDir: opts.baseDir } : {}),
+      ...(opts.sources ? { sources: opts.sources } : {}),
+      spawn: {
+        sandbox,
+        workspaceSlug: plan.workspace.slug,
+        // A host path is meaningless in the new box; the workspace remote names the checkout.
+        cwd: undefined,
+        worktree: { slug: plan.branch.slice(SANDBOX_BRANCH_PREFIX.length) },
+        sandboxCheckpoint: prev.sandboxCheckpointOverride,
+        sandboxCheckpointRestore: chosen.snapshot,
+        label: prev.label ? `${prev.label} (migrated)` : undefined,
+        title: prev.title ? `${prev.title} (migrated)` : undefined,
+        // The policy rides along exactly like `session-restart-core.ts` carries
+        // `prev.turnRetry`: without it the replacement box has no `turnRetry`
+        // at all, so the next transient failure could neither retry nor migrate
+        // (and `turnRetry.action: "migrate"` would be silently lost by its own
+        // first migration). `spawnAgentSession` re-resolves it with
+        // `resolveTurnRetryPolicy`, which is idempotent on a resolved policy.
+        ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+        ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
+      },
+    }),
+  )
+
+  // The migration is a hand-over, not an exit. `continueAgentSessionFresh`
+  // already re-parented `prev`'s live children onto the new session; the
+  // scope follows the same way BEFORE the old row closes, so the old row's
+  // `restarted` exit owns no scope (nothing revoked, no child reaped) and the
+  // new session's real exit later revokes and reaps. A scope the BOX daemon
+  // minted itself (`agent_start({ sandbox, orchestrator })`) is box-local: it
+  // is not recorded on the host and ends with the old box, together with any
+  // child that box ran.
+  handOverOrchestratorScopes(deps.registry, prev.id, fresh.descriptor.id)
 
   // The new box is up and owns the branch: stop the old session (its teardown
   // pushes whatever is left and releases the box). A no-op on an ended row.
