@@ -245,6 +245,33 @@ describe("checkWorkspaceTree — broken trees", () => {
     ).toBe(true)
   })
 
+  it("reports a TYPES.md extends cycle as an error instead of overflowing the stack", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "TYPES.md"),
+      writeTypesManifest({
+        ...TYPES,
+        types: { ...TYPES.types, alpha: { extends: "beta" }, beta: { extends: "alpha" } },
+      }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(report.findings.some((f) => f.level === "error" && f.message.includes("`extends` cycle"))).toBe(true)
+  })
+
+  it("reports a TYPES.md extends naming an undeclared type as an error", () => {
+    buildValidTree(root)
+    writeFileSync(
+      join(root, "TYPES.md"),
+      writeTypesManifest({ ...TYPES, types: { ...TYPES.types, guild: { extends: "projet" } } }),
+    )
+    const report = checkWorkspaceTree(root)
+    expect(report.ok).toBe(false)
+    expect(
+      report.findings.some((f) => f.level === "error" && f.message.includes('extends "projet", which TYPES.md does not declare')),
+    ).toBe(true)
+  })
+
   it("flags a missing required file (COMPANY.md) for type company", () => {
     buildValidTree(root)
     rmSync(join(root, "agentik", "COMPANY.md"))

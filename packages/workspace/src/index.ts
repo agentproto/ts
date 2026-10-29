@@ -37,8 +37,36 @@ export {
   parseTypesManifest,
   writeTypesManifest,
   resolveTypeEntry,
+  validateTypesRegistry,
 } from "./types-registry.js"
-export type { TypesManifestFrontmatter, TypesManifestFrontmatterInput, TypeEntry } from "./types-registry.js"
+export type {
+  TypesManifestFrontmatter,
+  TypesManifestFrontmatterInput,
+  TypeEntry,
+  TypesRegistryIssue,
+} from "./types-registry.js"
+
+export {
+  WALL_LEVELS,
+  wallRank,
+  strictestWall,
+  NodeScopeError,
+  resolveNodeScope,
+  nodeChain,
+  nodeProjection,
+  composeNodeChainPolicy,
+} from "./node-scope.js"
+export type {
+  WallLevel,
+  TreeNode,
+  NodeTree,
+  NodeScope,
+  NodeProjection,
+  ChainPolicyDocument,
+  OriginGrant,
+  ComposedNodePolicy,
+  PolicyDecision,
+} from "./node-scope.js"
 
 export { agentprotoLockSchema, parseLock, writeLock } from "./lock.js"
 export type { AgentprotoLock, AgentprotoLockInput, LockedApp, LockedPack } from "./lock.js"
