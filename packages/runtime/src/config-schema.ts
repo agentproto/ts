@@ -68,6 +68,10 @@ import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
 import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
+import {
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+} from "./brain-ingest-limits.js"
 
 // ── nested zod schemas, one per `config.ts` / `spawn-defaults.ts` interface ──
 
@@ -193,6 +197,8 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
         brainIngest: z
           .object({
             workspaces: z.array(z.string().min(1)).optional(),
+            maxTranscriptBytes: z.number().positive().optional(),
+            maxTranscriptTextBytes: z.number().positive().optional(),
           })
           .passthrough()
           .optional(),
@@ -1428,6 +1434,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Brain-ingest reaction workspaces",
     help: "Workspace slugs whose completed sessions are ingested into the workspace brain by a durable reaction instead of the legacy exit subscriber. Empty (the default) = every workspace stays with the legacy subscriber. Takes effect on the next completion.",
     default: [],
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxTranscriptBytes",
+    schema: z.number().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest transcript file ceiling",
+    help: "Maximum events.jsonl size, in bytes, the workspace brain will materialize. A larger session is recorded as a \"too-large\" skip instead of being parsed. Default 32 MB. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxTranscriptTextBytes",
+    schema: z.number().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain-ingest transcript text ceiling",
+    help: "Maximum accumulated message text, in bytes, the workspace brain will materialize from one transcript. A smaller file can still expand past this, so it is checked while parsing. Default 8 MB. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
   },
   {
     path: "defaults.reactions.clerk.workspaces",

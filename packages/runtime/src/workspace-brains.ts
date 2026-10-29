@@ -26,10 +26,12 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   createBrainManager,
+  isSkippedTranscript,
   parseKnowledgeConfig,
   type BrainManager,
   type ExportedSessionLike,
   type KnowledgeConfig,
+  type SessionReadResult,
 } from "@agentproto/workspace-brain"
 import {
   findConversationRecord,
@@ -37,7 +39,9 @@ import {
   readConversationIndex,
 } from "./conversation-index.js"
 import { CONVERSATION_STORES } from "./conversation-store.js"
-import { exportDaemonEventsSession } from "./transcript-export.js"
+import { resolveBrainIngestLimits, type BrainIngestLimits } from "./brain-ingest-limits.js"
+import { exportDaemonEventsSession, TranscriptTooLargeError } from "./transcript-export.js"
+import { measureMessageTextBytes } from "./transcript-text-budget.js"
 import {
   BUCKETS_ROOT,
   listBuckets,
@@ -57,10 +61,26 @@ export interface WorkspaceBrains {
 }
 
 /** Resolve a session id to its exported transcript, native first then daemon
- *  events — `null` (never throws) when neither store has anything readable. */
+ *  events — `null` (never throws) when neither store has anything readable.
+ *  This is the uncapped, public operator-facing reader; the brain uses
+ *  {@link readSessionForBrainWithLimits} so it never materializes an
+ *  oversized transcript. */
 export async function readSessionForBrain(
   sessionId: string,
 ): Promise<ExportedSessionLike | null> {
+  const result = await readSessionForBrainWithLimits(sessionId)
+  return result && !isSkippedTranscript(result) ? result : null
+}
+
+/** Internal brain reader: same ladder as {@link readSessionForBrain}, with
+ *  optional ingest ceilings. An oversized transcript resolves to a
+ *  `SkippedTranscript` result instead of throwing or loading; the ingest
+ *  pipeline records it as a durable skip. Explicit operator exports never go
+ *  through this function, so they keep their uncapped behavior. */
+export async function readSessionForBrainWithLimits(
+  sessionId: string,
+  limits?: BrainIngestLimits,
+): Promise<SessionReadResult> {
   const located = await locateConversationBySessionId(
     BUCKETS_ROOT(),
     () => listBuckets(BUCKETS_ROOT()),
@@ -74,7 +94,22 @@ export async function readSessionForBrain(
     if (store) {
       try {
         const exported = await store.read(record.adapterSessionId, record.cwd, record.adapterConfigDir)
-        if (exported?.messages?.length) return exported
+        if (exported?.messages?.length) {
+          // The native store has no file path with a predictable size, so
+          // only the text ceiling applies: the read already happened, but a
+          // transcript this large must not reach the chunking/ingest stage.
+          if (limits) {
+            const textBytes = measureMessageTextBytes(exported.messages)
+            if (textBytes > limits.maxTranscriptTextBytes) {
+              return {
+                skippedReason: "too-large",
+                skippedSizeBytes: textBytes,
+                skippedCeilingBytes: limits.maxTranscriptTextBytes,
+              }
+            }
+          }
+          return exported
+        }
       } catch {
         // native store unreadable — fall through to daemon events
       }
@@ -82,14 +117,40 @@ export async function readSessionForBrain(
   }
 
   try {
-    return await exportDaemonEventsSession(record.sessionId)
-  } catch {
+    return await exportDaemonEventsSession(
+      record.sessionId,
+      undefined,
+      undefined,
+      limits
+        ? {
+            maxFileBytes: limits.maxTranscriptBytes,
+            maxTextBytes: limits.maxTranscriptTextBytes,
+          }
+        : undefined,
+    )
+  } catch (err) {
+    if (err instanceof TranscriptTooLargeError) {
+      return {
+        skippedReason: "too-large",
+        skippedSizeBytes: err.sizeBytes,
+        skippedCeilingBytes: err.ceilingBytes,
+      }
+    }
     return null
   }
 }
 
-export function createWorkspaceBrains(): WorkspaceBrains {
+export interface CreateWorkspaceBrainsOptions {
+  /** Ingest ceilings for the transcript reader. Defaults to
+   *  {@link resolveBrainIngestLimits} values (32 MB file / 8 MB text). */
+  readonly limits?: BrainIngestLimits
+}
+
+export function createWorkspaceBrains(
+  opts: CreateWorkspaceBrainsOptions = {},
+): WorkspaceBrains {
   const brains = new Map<string, BrainManager>()
+  const limits = opts.limits ?? resolveBrainIngestLimits()
 
   return {
     getBrain(workspace) {
@@ -104,7 +165,7 @@ export function createWorkspaceBrains(): WorkspaceBrains {
         brain = createBrainManager({
           workspace: slug,
           brainDir,
-          readSession: readSessionForBrain,
+          readSession: ref => readSessionForBrainWithLimits(ref, limits),
           listSessionRefs: async () =>
             (await readConversationIndex(BUCKETS_ROOT(), slug)).map(r => r.sessionId),
           // Optional per-workspace knowledge.json — the brain defaults to a

@@ -20,9 +20,37 @@ export interface ExportedSessionLike {
   readonly messages: ReadonlyArray<{
     readonly role: string
     readonly text?: string
+    readonly reasoning?: string
     readonly ts?: number
     readonly toolName?: string
+    readonly toolCalls?: ReadonlyArray<{
+      readonly name: string
+      readonly args: string
+    }>
   }>
+}
+
+/**
+ * A transcript the host refused to materialize because it exceeded the
+ * configured ingest ceiling. Returned instead of an
+ * {@link ExportedSessionLike} so the reader can say WHY it skipped (and how
+ * big the transcript was) without loading it. The pipeline records this as a
+ * durable skip, same as an unreadable transcript.
+ */
+export interface SkippedTranscript {
+  readonly skippedReason: "too-large"
+  /** The measured size that tripped the ceiling: file bytes for a file-size
+   *  skip, accumulated text bytes for a text-size skip. */
+  readonly skippedSizeBytes: number
+  readonly skippedCeilingBytes: number
+}
+
+/** What `readSession` can resolve a ref to: a transcript, an explicit
+ *  too-large skip, or nothing readable. */
+export type SessionReadResult = ExportedSessionLike | SkippedTranscript | null
+
+export function isSkippedTranscript(value: ExportedSessionLike | SkippedTranscript): value is SkippedTranscript {
+  return "skippedReason" in value
 }
 
 /** One ingested session, as recorded in `brain-state.json`. */
@@ -63,9 +91,13 @@ export interface BrainStateRecord {
  */
 export interface BrainStateSkip {
   readonly sessionId: string
-  readonly reason: "no-transcript" | "empty-transcript"
+  readonly reason: "no-transcript" | "empty-transcript" | "too-large"
   /** ISO-8601 timestamp of the skip. */
   readonly skippedAt: string
+  /** For `too-large`: the measured size that tripped the ceiling. */
+  readonly sizeBytes?: number
+  /** For `too-large`: the configured ceiling it exceeded. */
+  readonly ceilingBytes?: number
 }
 
 // ── Knowledge provider configuration ──────────────────────────────────
@@ -125,7 +157,7 @@ export interface BrainConfig {
    * the session has nothing readable (unknown, no store, empty). Returning
    * `null` makes the pipeline skip the session with a warning, never throw.
    */
-  readSession(ref: string): Promise<ExportedSessionLike | null>
+  readSession(ref: string): Promise<SessionReadResult>
   /**
    * Optional — enumerate every session reference this workspace knows about
    * (used by `ingestPending`). Omitted → `ingestPending` becomes a no-op.
@@ -150,8 +182,13 @@ export interface IngestResult {
   readonly pipelineVersion?: number
   /** Present when already ingested (and not forced). */
   readonly skipped?: "already-ingested"
-  /** Present when `readSession` returned nothing usable. */
-  readonly skippedReason?: "no-transcript" | "empty-transcript"
+  /** Present when `readSession` returned nothing usable (or an explicit
+   *  too-large refusal). */
+  readonly skippedReason?: "no-transcript" | "empty-transcript" | "too-large"
+  /** For `too-large`: the measured size that tripped the ceiling. */
+  readonly skippedSizeBytes?: number
+  /** For `too-large`: the configured ceiling it exceeded. */
+  readonly skippedCeilingBytes?: number
   /** Present on an unexpected failure. */
   readonly error?: string
 }

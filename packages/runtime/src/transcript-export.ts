@@ -33,6 +33,13 @@ import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { claudeCodeProjectDir } from "./conversation-store.js"
 import type { ConversationCandidate } from "./conversation-store.js"
+import {
+  TranscriptTextBudget,
+  TranscriptTooLargeError,
+  type TranscriptTooLargeReason,
+} from "./transcript-text-budget.js"
+
+export { TranscriptTooLargeError, type TranscriptTooLargeReason } from "./transcript-text-budget.js"
 
 // ── Common model ──────────────────────────────────────────────────────
 
@@ -914,6 +921,15 @@ export interface DaemonEventsExportOptions {
    *  checkpoint's `cutoffSeq`). Records past the cutoff are skipped, so the
    *  result is exactly the messages whose originating record is `<= X`. */
   untilSeq?: number
+  /** Brain-ingest safety: refuse a file larger than this many bytes BEFORE
+   *  parsing any of it. Unset = no file-size ceiling (explicit operator
+   *  exports). */
+  maxFileBytes?: number
+  /** Brain-ingest safety: a running ceiling on accumulated message text
+   *  while parsing. A file under `maxFileBytes` can still expand past this
+   *  (repetitive delta records, command output, escaped strings). Unset = no
+   *  text ceiling. */
+  maxTextBytes?: number
 }
 
 export async function exportDaemonEventsSession(
@@ -923,6 +939,20 @@ export async function exportDaemonEventsSession(
   opts?: DaemonEventsExportOptions,
 ): Promise<ExportedSession> {
   const filePath = sessionEventsPath(sessionId, baseDir)
+
+  // Check the file size BEFORE opening the stream: an oversized capture is
+  // refused without parsing (or even reading) a single line. A stat failure
+  // falls through to the stream's own open error, which carries the precise
+  // ENOENT/permission message the callers already map.
+  if (opts?.maxFileBytes !== undefined) {
+    const size = await fs.stat(filePath).then(
+      st => st.size,
+      () => undefined,
+    )
+    if (size !== undefined && size > opts.maxFileBytes) {
+      throw new TranscriptTooLargeError("file-size", size, opts.maxFileBytes, sessionId)
+    }
+  }
 
   let stream: ReturnType<typeof createReadStream>
   try {
@@ -943,6 +973,12 @@ export async function exportDaemonEventsSession(
   }
 
   const messages: ExportedMessage[] = []
+  // Running byte total of every string this export retains in `messages`
+  // (text, reasoning, tool-call args, tool results). Checked as records are
+  // parsed so an expansive small file aborts before it becomes a large
+  // array — the file-size ceiling alone cannot see this.
+  const textBudget = new TranscriptTextBudget(opts?.maxTextBytes, sessionId)
+  const accountText = (text: string | undefined): void => textBudget.add(text)
   const toolNameById = new Map<string, string>()
   let toolCallCount = 0
   let lastUsage: { size?: number; used?: number; cost?: { amount: number; currency: string } } | undefined
@@ -1024,6 +1060,7 @@ export async function exportDaemonEventsSession(
         args: Array.isArray(rec.args) ? rec.args : [],
         ...(rec.cwd !== undefined ? { cwd: rec.cwd } : {}),
       })
+      accountText(argsJson)
       messages.push({
         role: "assistant",
         toolCalls: [{ name: toolName, args: argsJson }],
@@ -1040,6 +1077,7 @@ export async function exportDaemonEventsSession(
       if (rec.truncated) sections.push("(output truncated)")
       if (rec.timedOut) sections.push("(timed out)")
       const text = sections.join("\n")
+      accountText(text)
       messages.push({
         role: "tool",
         text: rec.exitCode !== 0 ? `[error] ${text}` : text,
@@ -1058,6 +1096,7 @@ export async function exportDaemonEventsSession(
         if (rec.source === HANDOFF_PROMPT_SOURCE || rec.text?.startsWith(HANDOFF_PROMPT_OPENER)) {
           handoffStart = messages.length
         }
+        accountText(rec.text)
         messages.push({
           role: "user",
           text: rec.text ?? "",
@@ -1073,6 +1112,7 @@ export async function exportDaemonEventsSession(
         closeHandoffTurn()
         const m = rec.message
         if (!m) break
+        accountText(m.text)
         const relation = (m.from?.relation ?? "system") as NonNullable<ExportedMessage["from"]>["relation"]
         messages.push({
           role: "user",
@@ -1096,6 +1136,7 @@ export async function exportDaemonEventsSession(
         // message (never a user bubble).
         flushAssistant()
         closeHandoffTurn()
+        accountText(rec.text)
         messages.push({
           role: "system",
           text: rec.text ?? "",
@@ -1111,11 +1152,13 @@ export async function exportDaemonEventsSession(
         // and that's exactly the byte-for-byte original content.
         if (asmTs === undefined) asmTs = tsOrUndefined
         if (asmSeq === undefined && rec.seq !== undefined) asmSeq = rec.seq
+        accountText(rec.text)
         asmText += rec.text ?? ""
         break
       case "thought":
         if (asmTs === undefined) asmTs = tsOrUndefined
         if (asmSeq === undefined && rec.seq !== undefined) asmSeq = rec.seq
+        accountText(rec.text)
         asmReasoning += rec.text ?? ""
         break
       case "tool-call": {
@@ -1125,6 +1168,7 @@ export async function exportDaemonEventsSession(
         if (rec.toolCallId) toolNameById.set(rec.toolCallId, name)
         const args =
           typeof rec.arguments === "string" ? rec.arguments : JSON.stringify(rec.arguments ?? {})
+        accountText(args)
         asmToolCalls.push({ name, args })
         toolCallCount += 1
         break
@@ -1133,6 +1177,7 @@ export async function exportDaemonEventsSession(
         flushAssistant()
         const name = rec.toolCallId ? toolNameById.get(rec.toolCallId) : undefined
         const text = typeof rec.result === "string" ? rec.result : JSON.stringify(rec.result ?? "")
+        accountText(text)
         messages.push({
           role: "tool",
           text: rec.isError ? `[error] ${text}` : text,
@@ -1149,9 +1194,11 @@ export async function exportDaemonEventsSession(
       case "mode-changed": {
         flushAssistant()
         const why = rec.reason ? `${rec.cause ?? "agent"}: ${rec.reason}` : (rec.cause ?? "agent")
+        const modeText = `[mode] ${rec.previousModeId ?? "?"} -> ${rec.modeId ?? "?"} (${why})`
+        accountText(modeText)
         messages.push({
           role: "system",
-          text: `[mode] ${rec.previousModeId ?? "?"} -> ${rec.modeId ?? "?"} (${why})`,
+          text: modeText,
           ...seqStamp,
         })
         break
@@ -1161,16 +1208,21 @@ export async function exportDaemonEventsSession(
         const entries = rec.entries ?? []
         const done = entries.filter(e => e.status === "completed").length
         const list = entries.map(e => e.content).join("; ")
-        messages.push({ role: "system", text: `[plan] ${done}/${entries.length} ${list}`.trim(), ...seqStamp })
+        const planText = `[plan] ${done}/${entries.length} ${list}`.trim()
+        accountText(planText)
+        messages.push({ role: "system", text: planText, ...seqStamp })
         break
       }
       case "usage_update":
         lastUsage = { size: rec.size, used: rec.used, cost: rec.cost }
         break
-      case "error":
+      case "error": {
         flushAssistant()
-        messages.push({ role: "system", text: `[error] ${rec.error?.message ?? "unknown"}`, ...seqStamp })
+        const errorText = `[error] ${rec.error?.message ?? "unknown"}`
+        accountText(errorText)
+        messages.push({ role: "system", text: errorText, ...seqStamp })
         break
+      }
       case "turn-end":
         flushAssistant()
         break
@@ -1178,6 +1230,7 @@ export async function exportDaemonEventsSession(
         // Daemon-side system notice (e.g. the interrupted-turn resume banner)
         // — surfaced as a system message, same as plan/error notices above.
         flushAssistant()
+        accountText(rec.text)
         messages.push({ role: "system", text: rec.text ?? "", ...seqStamp })
         break
       default:

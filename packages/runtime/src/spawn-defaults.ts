@@ -230,6 +230,14 @@ export interface SpawnDefaultsConfig {
      *  legacy subscriber. */
     brainIngest?: {
       workspaces?: string[]
+      /** File-size ceiling for a session's `events.jsonl` before the brain
+       *  refuses to materialize it. Default 32 MB. Applies to both the
+       *  legacy exit subscriber and the brain-ingest reaction (they share
+       *  the reader). */
+      maxTranscriptBytes?: number
+      /** Running ceiling on accumulated message text while the brain reader
+       *  parses a transcript. Default 8 MB. */
+      maxTranscriptTextBytes?: number
     }
     /** Debounced clerk passes for these workspace slugs are dispatched by the
      *  durable clerk reaction instead of the legacy dispatch. Default []:

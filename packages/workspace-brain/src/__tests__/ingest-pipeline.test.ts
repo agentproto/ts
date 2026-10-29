@@ -13,7 +13,7 @@ import { FilesKnowledgeAdapter, LocalFs } from "@agentproto/adapter-knowledge-fi
 import { createBrainState } from "../brain-state.js"
 import { IngestPipeline } from "../ingest-pipeline.js"
 import { PIPELINE_VERSION } from "../pipeline-version.js"
-import type { ExportedSessionLike } from "../types.js"
+import type { ExportedSessionLike, SessionReadResult } from "../types.js"
 
 function transcript(title: string, body: string): ExportedSessionLike {
   return {
@@ -56,7 +56,7 @@ describe("IngestPipeline", () => {
   let state: ReturnType<typeof createBrainState>
   let adapter: FilesKnowledgeAdapter
   let pipeline: IngestPipeline
-  let readSessionImpl: (ref: string) => Promise<ExportedSessionLike | null>
+  let readSessionImpl: (ref: string) => Promise<SessionReadResult>
 
   const getProvider = () => adapter
 
@@ -157,6 +157,30 @@ describe("IngestPipeline", () => {
       sessionId: "sess-empty",
       reason: "empty-transcript",
     })
+  })
+
+  it("records a too-large skip, with the measured size and ceiling, when the reader refuses", async () => {
+    readSessionImpl = async () => ({
+      skippedReason: "too-large",
+      skippedSizeBytes: 40_000_000,
+      skippedCeilingBytes: 33_554_432,
+    })
+
+    const result = await pipeline.ingest("sess-huge")
+
+    expect(result.ok).toBe(false)
+    expect(result.skippedReason).toBe("too-large")
+    expect(result.skippedSizeBytes).toBe(40_000_000)
+    expect(result.skippedCeilingBytes).toBe(33_554_432)
+
+    const skips = await state.readSkips()
+    expect(skips["sess-huge"]).toMatchObject({
+      sessionId: "sess-huge",
+      reason: "too-large",
+      sizeBytes: 40_000_000,
+      ceilingBytes: 33_554_432,
+    })
+    expect(await state.read()).toEqual({})
   })
 
   it("explicit re-ingest retries a previously skipped session regardless of the skip", async () => {
