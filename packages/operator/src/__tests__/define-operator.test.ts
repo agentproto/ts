@@ -7,13 +7,8 @@ const MINIMAL: OperatorDefinition = {
   name: "Lex",
   persona_summary: "Researcher who validates sources before recommending.",
   version: "1.0.0",
-  profile: {
-    role: "Lead researcher.",
-    voice: "Direct, source-citing, second-person.",
-    boundaries: [
-      "Never recommend a paper without checking the publication date.",
-    ],
-  },
+  role: "researcher",
+  boundaries: ["Never recommend a paper without checking the publication date."],
 }
 
 describe("defineOperator (AIP-9) — basic shape", () => {
@@ -23,7 +18,9 @@ describe("defineOperator (AIP-9) — basic shape", () => {
     expect(op.name).toBe("Lex")
     expect(op.persona_summary).toContain("validates sources")
     expect(op.version).toBe("1.0.0")
-    expect(op.profile.boundaries).toHaveLength(1)
+    expect(op.role).toEqual({ ref: "researcher" })
+    expect(op.boundaries).toHaveLength(1)
+    expect(op.warnings).toEqual([])
     expect(op.skills).toEqual([])
     expect(op.tools).toEqual([])
     expect(op.capabilities).toEqual([])
@@ -32,15 +29,139 @@ describe("defineOperator (AIP-9) — basic shape", () => {
     expect(op.participation?.mode).toBe("mention-only")
     expect(op.participation?.reactions).toBe(false)
     expect(Object.isFrozen(op)).toBe(true)
-    expect(Object.isFrozen(op.profile)).toBe(true)
+    expect(Object.isFrozen(op.role)).toBe(true)
   })
 
-  it("memory.policy defaults to 'summarising' when memory is provided", () => {
+  it("needs neither version nor profile", () => {
+    const op = defineOperator({
+      id: "lex",
+      name: "Lex",
+      persona_summary: "Researcher.",
+      role: "researcher",
+    })
+    expect(op.version).toBeUndefined()
+    expect(op.profile).toBeUndefined()
+  })
+
+  it("keeps a structured role with its bind and with", () => {
     const op = defineOperator({
       ...MINIMAL,
-      memory: { kind: "operator-context" },
+      role: { ref: "researcher", bind: { board: "ws://collections/b" }, with: { language: "en" } },
     })
-    expect(op.memory?.policy).toBe("summarising")
+    expect(op.role).toEqual({
+      ref: "researcher",
+      bind: { board: "ws://collections/b" },
+      with: { language: "en" },
+    })
+  })
+
+  it("rejects an empty role ref and a non-scalar with value", () => {
+    expect(() => defineOperator({ ...MINIMAL, role: "" })).toThrow(/role must be/)
+    expect(() =>
+      defineOperator({ ...MINIMAL, role: { ref: "" } }),
+    ).toThrow(/role must be/)
+    expect(() =>
+      defineOperator({
+        ...MINIMAL,
+        role: { ref: "researcher", with: { x: {} as never } },
+      }),
+    ).toThrow(/role.with.x/)
+  })
+
+  it("rejects an autonomy outside 0 to 10", () => {
+    expect(() => defineOperator({ ...MINIMAL, autonomy: 11 })).toThrow(/autonomy/)
+  })
+})
+
+describe("defineOperator: deprecated forms are accepted and warned about", () => {
+  const fields = (op: { warnings: readonly { code: string; field?: string }[] }) =>
+    op.warnings
+      .filter((w) => w.code === "operator_field_deprecated")
+      .map((w) => w.field)
+
+  it("maps profile.voice and profile.boundaries onto persona and boundaries", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      profile: {
+        role: "Lead researcher.",
+        voice: "Direct.",
+        boundaries: ["Never recommend a paper without checking the publication date.", "Cite sources."],
+      },
+    })
+    expect(op.persona).toEqual({ inline: { voice: "Direct." } })
+    expect(op.boundaries).toEqual([
+      "Never recommend a paper without checking the publication date.",
+      "Cite sources.",
+    ])
+    expect(op.profile).toEqual({ role: "Lead researcher." })
+    expect(fields(op).sort()).toEqual(["profile.boundaries", "profile.voice"])
+  })
+
+  it("does not override an explicit persona with profile.voice", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      persona: "persona:calm",
+      profile: { voice: "Direct." },
+    })
+    expect(op.persona).toBe("persona:calm")
+  })
+
+  it("reads company as home", () => {
+    const op = defineOperator({ ...MINIMAL, company: "ws://companies/acme" })
+    expect(op.home).toBe("ws://companies/acme")
+    expect(fields(op)).toEqual(["company"])
+    const both = defineOperator({
+      ...MINIMAL,
+      home: "ws://workspaces/w",
+      company: "ws://companies/acme",
+    })
+    expect(both.home).toBe("ws://workspaces/w")
+  })
+
+  it("maps the legacy memory kinds onto the AGENT memory config", () => {
+    const memory = (m: object) =>
+      defineOperator({ ...MINIMAL, memory: m as never }).memory
+    expect(memory({ kind: "none" })).toEqual({ enabled: false })
+    expect(memory({ kind: "thread" })).toEqual({ scope: "per-thread" })
+    expect(memory({ kind: "operator-context" })).toEqual({})
+    expect(
+      memory({ kind: "external", external: { uri: "pg://db" } }),
+    ).toEqual({ store: "pg://db" })
+  })
+
+  it("keeps the legacy memory as written and warns about share_with", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      memory: { kind: "operator-context", policy: "redactable", share_with: ["atlas"] },
+    })
+    expect(op.legacy?.memory?.policy).toBe("redactable")
+    expect(fields(op)).toEqual(expect.arrayContaining(["memory", "memory.share_with"]))
+  })
+
+  it("maps the legacy governance autonomy onto the 0 to 10 scale", () => {
+    const autonomy = (a: "gated" | "supervised" | "autonomous") =>
+      defineOperator({
+        ...MINIMAL,
+        governance: { audit_log: "audit:lex", autonomy: a },
+      }).autonomy
+    expect(autonomy("gated")).toBe(0)
+    expect(autonomy("supervised")).toBe(5)
+    expect(autonomy("autonomous")).toBe(10)
+    const op = defineOperator({
+      ...MINIMAL,
+      autonomy: 7,
+      governance: { audit_log: "audit:lex", autonomy: "gated" },
+    })
+    expect(op.autonomy).toBe(7)
+    expect(op.legacy?.governance?.audit_log).toBe("audit:lex")
+  })
+
+  it("warns that runtime.session is a hint", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      runtime: { kind: "in-process", session: { mode: "persistent" } },
+    })
+    expect(fields(op)).toEqual(["runtime.session"])
   })
 })
 
@@ -90,6 +211,13 @@ describe("defineOperator — spec-9 cross-field invariants", () => {
     expect(() => defineOperator({ ...MINIMAL, version: "v1" })).toThrow(
       /version must match/,
     )
+  })
+
+  it("autonomy 0 forbids participation.mode='proactive'", () => {
+    expect(() =>
+      defineOperator({ ...MINIMAL, autonomy: 0, participation: { mode: "proactive" } }),
+    ).toThrow(/autonomy=0 forbids participation.mode='proactive'/)
+    expect(defineOperator({ ...MINIMAL, autonomy: 0 }).participation.mode).toBe("mention-only")
   })
 
   it("requires audit_log shape audit:<slug>", () => {

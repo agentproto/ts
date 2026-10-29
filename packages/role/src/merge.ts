@@ -12,6 +12,7 @@
  *     `{ add, remove }` patch form
  *   - extends + appliesTo: local-only (never inherited)
  *   - metadata: deep-merge
+ *   - slots: merge by key (child redeclaration replaces the parent's)
  *
  * Body merge is handled by `mergeBodies` (separate concern — handles
  * `metadata['aip-47'].bodyMerge` switch).
@@ -228,6 +229,11 @@ export function mergeRoles(parent: RoleHandle, child: RoleChildInput): MergeResu
   const knowledge =
     parent.knowledge || child.knowledge ? { packs: mergedPacks } : undefined
 
+  // slots: merge by key (AIP-47 §Slots); a key the child redeclares replaces
+  // the parent's. Only emitted when some layer declares slots.
+  const slots =
+    parent.slots || child.slots ? { ...parent.slots, ...child.slots } : undefined
+
   const merged: RoleDefinition = {
     // Doctype identity — child wins if set.
     schema: "role/v1",
@@ -254,6 +260,9 @@ export function mergeRoles(parent: RoleHandle, child: RoleChildInput): MergeResu
 
     // Nested knowledge binding — append-and-dedupe union (computed above).
     ...(knowledge ? { knowledge } : {}),
+
+    // Typed slots — merged by key (computed above).
+    ...(slots ? { slots } : {}),
 
     // Local-only fields — child's value carries; parent's is dropped.
     extends: child.extends,

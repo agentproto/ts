@@ -7,6 +7,8 @@
  * by hand for fields that get defaults applied in build().
  */
 
+import type { RoleSlots } from "./slots.js"
+
 /**
  * Validates the YAML frontmatter portion of an AIP-47 ROLE.md manifest. Single-doc, no oneOf — every role is the same shape. The body is markdown and not validated by this schema.
  */
@@ -126,6 +128,10 @@ export interface RoleDefinition {
      */
     packs?: string[]
   }
+  /**
+   * Typed slots an operator fills with its AIP-9 'role.bind' (refs and tools) and 'role.with' (scalars). Merged by key across 'extends': a key the child redeclares replaces the parent's. A slot grants nothing and MUST NOT be typed as a policy. See AIP-47 §Slots.
+   */
+  slots?: RoleSlots
   /**
    * Catalog tags. Lowercase kebab-case. Append-and-dedupe across 'extends'.
    */

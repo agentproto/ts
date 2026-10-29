@@ -16,7 +16,7 @@
  * Missing parent: warning, fallback to the local manifest.
  */
 
-import { roleFrontmatterSchema } from "./schema.js"
+import { roleFrontmatterSchema } from "./frontmatter.js"
 import { mergeBodies, mergeRoles, type MergeWarning } from "./merge.js"
 import type { RoleDefinition, RoleHandle } from "./types.js"
 import type { RoleManifestRaw, RoleRef, RoleSource } from "./sources/types.js"
