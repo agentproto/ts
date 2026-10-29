@@ -114,6 +114,7 @@ export type {
 
 // Resolution / merge — the heart of role composition.
 export { resolveRole } from "./resolve.js"
+export { RoleUnresolvableError } from "./errors.js"
 export type {
   ResolveOptions,
   ResolveWarning,
@@ -145,3 +146,12 @@ export type {
   RoleRef,
   RoleSource,
 } from "./sources/types.js"
+
+export {
+  InstalledRoleSource,
+  roleSourceChain,
+} from "./sources/installed.js"
+export type {
+  InstalledRoleCatalog,
+  InstalledRoleMember,
+} from "./sources/installed.js"

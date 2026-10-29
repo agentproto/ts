@@ -34,6 +34,7 @@
  * Spec: https://agentproto.sh/docs/aip-47
  */
 
+import { fileURLToPath } from "node:url"
 import { BuiltinRoleSource, type BuiltinRoleEntry } from "@agentproto/role"
 import { BUILTIN_ROLE_ENTRIES } from "./builtins.js"
 
@@ -47,6 +48,25 @@ export {
   BUILTIN_POLICY_HANDLES,
   talentAcquisitionBaselinePolicy,
 } from "./policies.js"
+
+/**
+ * Root directory of the AIP-64 pack that ships this catalogue: a PACK.md
+ * whose `roles` members are the entries above, rendered by
+ * `scripts/render-pack.mjs` (the in-code entries stay the content, the pack
+ * is generated from them and a test fails on drift).
+ *
+ * A host makes the roles resolvable by installing the pack, not by also
+ * registering a second source:
+ *
+ *   import { InstalledCatalog, readPackCatalog } from "@agentproto/pack"
+ *   const catalog = new InstalledCatalog()
+ *   catalog.install(await readPackCatalog(roleCatalogPackRoot()))
+ *
+ * Installing registers the roles and binds nothing (AIP-64 §Catalog members).
+ */
+export function roleCatalogPackRoot(): string {
+  return fileURLToPath(new URL("../pack", import.meta.url))
+}
 
 /**
  * Process-wide singleton — the canonical builtin registry for this

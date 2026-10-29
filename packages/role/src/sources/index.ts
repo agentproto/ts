@@ -15,3 +15,9 @@ export type {
 } from "./types.js"
 
 export { BuiltinRoleSource, builtinSourceFromRecord } from "./builtin.js"
+export {
+  InstalledRoleSource,
+  roleSourceChain,
+  type InstalledRoleCatalog,
+  type InstalledRoleMember,
+} from "./installed.js"

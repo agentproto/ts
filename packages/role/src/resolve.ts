@@ -16,6 +16,7 @@
  * Missing parent: warning, fallback to the local manifest.
  */
 
+import { RoleUnresolvableError } from "./errors.js"
 import { roleFrontmatterSchema } from "./frontmatter.js"
 import { mergeBodies, mergeRoles, type MergeWarning } from "./merge.js"
 import type { RoleDefinition, RoleHandle } from "./types.js"
@@ -76,7 +77,7 @@ export interface ResolvedRole {
 
 /**
  * Resolve a role ref through the source chain and merge any
- * `extends` lineage. Throws iff the leaf ref cannot be loaded AND no
+ * `extends` lineage. Throws `RoleUnresolvableError` iff the leaf ref cannot be loaded AND no
  * partial result is recoverable (i.e. the top-level lookup fails).
  *
  * Intermediate failures (cycle, depth, missing parent) MUST NOT
@@ -183,13 +184,13 @@ export async function resolveRole(
     // Leaf miss (or hard chain failure with no fallback). Per AIP-47,
     // the resolver MUST surface `role_unresolvable` and throw — the
     // caller cannot proceed without a role.
-    const w: ResolveWarning = {
+    const message = `role ref '${ref}' did not resolve in any source`
+    warnings.push({
       code: "role_unresolvable",
-      message: `role ref '${ref}' did not resolve in any source`,
+      message,
       ref,
-    }
-    warnings.push(w)
-    throw Object.assign(new Error(w.message), { warnings, chain })
+    })
+    throw new RoleUnresolvableError(ref, warnings, chain)
   }
 
   // Defensive validation of the merged frontmatter.
