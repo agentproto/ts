@@ -42,6 +42,31 @@ describe("buildRouteAwareLaunchConfig", () => {
     expect("base_url" in (result.options ?? {})).toBe(false)
   })
 
+  it("strips a persisted undeclared base_url for a derived-from-model adapter (opencode resume)", () => {
+    // A row persisted by an older build (or by the pre-fix lazy resume hook)
+    // can carry `options.base_url`. opencode is `derived-from-model` and
+    // declares no `base_url` option, so replaying that stale option on resume
+    // failed with `unknown_option at config.options.base_url`. The builder
+    // must strip it rather than pass it through.
+    const result = buildRouteAwareLaunchConfig({
+      adapter: "opencode",
+      model: "opencode-go/beam-free",
+      route: { gateway: "opencode-go" },
+      options: { base_url: "https://opencode.ai/zen/go", model: "opencode-go/beam-free" },
+      declaredOptions: [
+        { id: "model", type: "string" },
+        { id: "effort", type: "string" },
+        { id: "small_model", type: "string" },
+      ],
+      routeSelection: "derived-from-model",
+      modelDerivedApiKey: true,
+      prefix: "resume",
+    })
+    expect(result.options?.base_url).toBeUndefined()
+    expect("base_url" in (result.options ?? {})).toBe(false)
+    expect(result.options?.model).toBe("opencode-go/beam-free")
+  })
+
   it("fails loud for a free-route adapter that cannot accept base_url and cannot derive route", () => {
     expect(() =>
       buildRouteAwareLaunchConfig({

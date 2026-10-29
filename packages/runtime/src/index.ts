@@ -1080,6 +1080,7 @@ import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
 import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
 import { respawnMemoryProjection } from "./memory-digest.js"
+import { buildRouteAwareLaunchConfig } from "./launch-config.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -2828,7 +2829,30 @@ export async function createGateway(
                   : {}),
                 prefix: "resume",
               })
-              const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
+              // Build the resume's launch config through the SAME builder a
+              // fresh spawn and a restart use. The old inline
+              // `options: { base_url: resolvedBaseUrl }` ignored the manifest's
+              // declared option vocabulary, so an opencode-Go row (route
+              // `opencode-go`, `routeSelection: "derived-from-model"`, no
+              // `base_url` option) was handed an undeclared option and every
+              // eager/lazy resume failed with `unknown_option`. The builder
+              // drops a gateway base_url for a derived-from-model adapter and
+              // only injects it when the manifest declares the option.
+              const launchConfig = buildRouteAwareLaunchConfig({
+                adapter: adapterSlug,
+                ...(descriptor.model ? { model: descriptor.model } : {}),
+                ...(descriptor.route ? { route: descriptor.route } : {}),
+                ...(authSpec ? { authSpec } : {}),
+                ...(adapter.declaredOptions ? { declaredOptions: adapter.declaredOptions } : {}),
+                ...(adapter.routeSelection ? { routeSelection: adapter.routeSelection } : {}),
+                ...(adapter.authDescriptor?.provider
+                  ? { adapterProvider: adapter.authDescriptor.provider }
+                  : {}),
+                ...(adapter.authDescriptor?.modelDerivedApiKey !== undefined
+                  ? { modelDerivedApiKey: adapter.authDescriptor.modelDerivedApiKey }
+                  : {}),
+                prefix: "resume",
+              })
               // A cloud relay re-attaches with the same meta file and (for a
               // declared workspace remote) clone source as `session_restart`;
               // without them it validates the host cwd, which holds no clone.
@@ -2912,9 +2936,7 @@ export async function createGateway(
                 // settings.json whole, so the current config decides here too.
                 ...(resumePreCompactCommand ? { preCompactCommand: resumePreCompactCommand } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
-                ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
-                  ? { options: { base_url: resolvedBaseUrl } }
-                  : {}),
+                ...(launchConfig.options ? { options: launchConfig.options } : {}),
                 ...(onActivity ? { onActivity } : {}),
                 // Lazy in-place resume (daemon restart / crash): unlike
                 // `session_restart` this revives the SAME descriptor row, not
