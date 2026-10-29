@@ -26,7 +26,7 @@ containing the closing tag has it neutralised, and each item is truncated at
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--session <id>` | `$CLAUDE_CODE_SESSION_ID`, else the hook payload's `session_id` | Session whose inbox to read. |
+| `--session <id>` | `$AGENTPROTO_SESSION_ID` | Session whose inbox to read. The payload's `session_id` and `$CLAUDE_CODE_SESSION_ID` are the harness's own and are ignored. |
 | `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse`). |
 | `--max <n>` | `20` | Maximum items per invocation (capped at 20), oldest first. |
 
