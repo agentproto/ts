@@ -4,7 +4,7 @@
 /** Every MCP tool a daemon's gateway can register (conditional surfaces
  *  included: pairing/devices, llm-endpoint). Read by `agentproto app
  *  validate` to check an app's `ui.tools`. */
-export const DAEMON_TOOL_NAMES: readonly string[] = [
+const DAEMON_TOOL_NAME_LIST = [
   "activities_list",
   "adapter_install",
   "adapter_list",
@@ -341,4 +341,9 @@ export const DAEMON_TOOL_NAMES: readonly string[] = [
   "worktree_gc",
   "worktree_gc_status",
   "worktree_status",
-]
+] as const
+
+/** The union of every daemon tool name, derived from `DAEMON_TOOL_NAME_LIST`. */
+export type DaemonToolName = (typeof DAEMON_TOOL_NAME_LIST)[number]
+
+export const DAEMON_TOOL_NAMES: readonly DaemonToolName[] = DAEMON_TOOL_NAME_LIST

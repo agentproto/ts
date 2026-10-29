@@ -132,9 +132,14 @@ function render(names: readonly string[]): string {
     "/** Every MCP tool a daemon's gateway can register (conditional surfaces",
     " *  included: pairing/devices, llm-endpoint). Read by `agentproto app",
     " *  validate` to check an app's `ui.tools`. */",
-    "export const DAEMON_TOOL_NAMES: readonly string[] = [",
+    "const DAEMON_TOOL_NAME_LIST = [",
     ...names.map(n => `  ${JSON.stringify(n)},`),
-    "]",
+    "] as const",
+    "",
+    "/** The union of every daemon tool name, derived from `DAEMON_TOOL_NAME_LIST`. */",
+    "export type DaemonToolName = (typeof DAEMON_TOOL_NAME_LIST)[number]",
+    "",
+    "export const DAEMON_TOOL_NAMES: readonly DaemonToolName[] = DAEMON_TOOL_NAME_LIST",
     "",
   ].join("\n")
 }
@@ -147,8 +152,9 @@ describe("DAEMON_TOOL_NAMES", () => {
       await writeFile(GENERATED, render(actual), "utf8")
       return
     }
-    const missing = actual.filter(n => !DAEMON_TOOL_NAMES.includes(n))
-    const stale = DAEMON_TOOL_NAMES.filter(n => !actual.includes(n))
+    const known: ReadonlySet<string> = new Set(DAEMON_TOOL_NAMES)
+    const missing = actual.filter(n => !known.has(n))
+    const stale = [...known].filter(n => !actual.includes(n))
     expect(
       { missing, stale },
       "daemon-tool-names.generated.ts is out of date: run pnpm --filter @agentproto/runtime gen:daemon-tool-names",
