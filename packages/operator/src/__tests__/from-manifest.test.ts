@@ -21,7 +21,7 @@ skills:
     source: agentik
 tools:
   - kind: mcp
-    server: https://mcp.local
+    server: mcp-local
     allow:
       - search
 memory:

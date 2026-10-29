@@ -384,7 +384,7 @@ describe("defineOperator — skills + tools accept ref shapes", () => {
   it("accepts MCP tool refs", () => {
     const op = defineOperator({
       ...MINIMAL,
-      tools: [{ kind: "mcp", server: "https://mcp.local", allow: ["search"] }],
+      tools: [{ kind: "mcp", server: "mcp-local", allow: ["search"] }],
     })
     expect(op.tools).toHaveLength(1)
   })

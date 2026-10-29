@@ -35,6 +35,6 @@ export function loadAipSchemaBundle(): AipSchemaBundle {
       workflow: loadSchema(15, "WORKFLOW"),
       routine: loadSchema(41, "ROUTINE"),
     },
-    externals: [loadSchema(16, "IO"), loadSchema(17, "RUNNER")],
+    externals: [loadSchema(16, "IO"), loadSchema(17, "RUNNER"), loadSchema(42, "AGENT")],
   }
 }

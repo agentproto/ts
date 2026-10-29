@@ -238,3 +238,94 @@ test("a recursive $ref in a oneOf branch is left as z.any(), not expanded foreve
   assert.equal(res.status, 0, res.stderr)
   assert.ok(res.stdout.includes('"tree": z.union([z.string(), z.array(z.any())])'), res.stdout)
 })
+
+// ── --inline-ref <def>: inline one $def, leave the other $refs as z.any() ──
+test("--inline-ref inlines only the named def and leaves the other refs as z.any()", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "PARTIAL", {
+    properties: {
+      id: { type: "string" },
+      named: { $ref: "#/$defs/wanted" },
+      other: { $ref: "#/$defs/skipped" },
+    },
+    $defs: {
+      wanted: { type: "string", minLength: 4 },
+      skipped: { type: "string", minLength: 9 },
+    },
+  })
+  const argv = ["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "PARTIAL"]
+  const plain = run(argv)
+  assert.equal(plain.status, 0, plain.stderr)
+  assert.ok(plain.stdout.includes('"named": z.any()'), plain.stdout)
+
+  const res = run([...argv, "--inline-ref", "wanted"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes('"named": z.string().min(4)'), res.stdout)
+  assert.ok(res.stdout.includes('"other": z.any()'), res.stdout)
+})
+
+test("--inline-ref inlines the refs held inside the named def", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "NESTED", {
+    properties: {
+      id: { type: "string" },
+      items: { type: "array", items: { $ref: "#/$defs/outer" } },
+    },
+    $defs: {
+      outer: { oneOf: [{ $ref: "#/$defs/inner" }, { type: "number" }] },
+      inner: { type: "string", minLength: 2 },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "NESTED", "--inline-ref", "outer"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("z.string().min(2)"), res.stdout)
+  assert.ok(!res.stdout.includes("z.any()"), res.stdout)
+})
+
+// ── oneOf of closed objects that cannot both match ───────────────────
+test("a oneOf of a closed object and an object requiring a key it does not declare renders a union", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CLOSED", {
+    properties: {
+      id: { type: "string" },
+      item: {
+        oneOf: [
+          { type: "string" },
+          {
+            type: "object",
+            properties: { ref: { type: "string" } },
+            additionalProperties: false,
+          },
+          {
+            type: "object",
+            required: ["server"],
+            properties: { server: { type: "string" } },
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CLOSED"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+  assert.match(res.stdout, /"item": z\.union\(\[z\.string\(\), z\.object\(/, res.stdout)
+})
+
+test("a oneOf of open objects is not provably disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "OPENOBJ", {
+    properties: {
+      id: { type: "string" },
+      item: {
+        oneOf: [
+          { type: "object", properties: { a: { type: "string" } } },
+          { type: "object", required: ["b"], properties: { b: { type: "string" } } },
+        ],
+      },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "OPENOBJ"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})

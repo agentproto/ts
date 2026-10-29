@@ -33,6 +33,8 @@ export type {
   AgentDefinition,
   AgentHandle,
   AnyRef,
+  McpToolRef,
+  ToolRef,
   ActionRef,
   ModelRef,
   MemoryConfig,

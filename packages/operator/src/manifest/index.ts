@@ -7,12 +7,9 @@
  * (cross-field rules, ref shapes, length caps) run uniformly with the
  * TS authoring path.
  *
- * The frontmatter schema tracks the merged AIP-9 shape, which the vendored
- * `OPERATOR.schema.json` (resources/aip-9/draft/) lags: the draft still
- * requires `version`/`profile` and carries no `role`, `home`, `reports_to` or
- * AGENT fields. Until it is re-vendored, this schema (and the TS
- * `OperatorDefinition`) is the source of truth for OPERATOR.md; do not validate
- * a merged-shape OPERATOR.md against the stale draft. AIP-9 forbids
+ * The frontmatter schema tracks the vendored `OPERATOR.schema.json`
+ * (resources/aip-9/draft/), and keeps the deprecated item forms (scoped
+ * `tools`, `skills`, `memory`, `governance`) the draft still accepts. AIP-9 forbids
  * `additionalProperties` at the top level and in every operator-owned object,
  * so those are strict. The AGENT fields are NOT redeclared: each one is taken
  * from `agentFrontmatterSchema.shape` so a tightening of AIP-42 reaches the
@@ -60,15 +57,10 @@ const anyRefSchema = z.union([
     .strict(),
 ])
 
-/** AIP-42 `mcpToolRef` (the AGENT schema does not carry it yet, see S1). */
-const mcpToolRefSchema = z
-  .object({
-    kind: z.literal("mcp"),
-    server: z.string().min(1),
-    allow: z.array(z.string()).optional(),
-    deny: z.array(z.string()).optional(),
-  })
-  .strict()
+/** The AGENT `tools` item (AIP-42 `toolRef`: an AIP-54 ref or an `mcp` server ref), taken from the AGENT schema. */
+const agentToolItemSchema = (agentShape.tools as unknown as z.ZodDefault<z.ZodArray<z.ZodType>>)
+  .unwrap()
+  .element
 
 /** Deprecated: an AIP-14 tool narrowed for this operator. */
 const legacyScopedToolRefSchema = z
@@ -141,7 +133,7 @@ const roleSchema = z.union([
   z
     .object({
       ref: z.string().min(1),
-      bind: z.record(z.string(), z.union([mcpToolRefSchema, anyRefSchema])).optional(),
+      bind: z.record(z.string(), agentToolItemSchema).optional(),
       with: z
         .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
         .optional(),
@@ -187,21 +179,14 @@ export const operatorManifestFrontmatterSchema = z
     tags: z.array(z.string().regex(KEBAB)).optional(),
     metadata: agentField("metadata"),
 
-    // AGENT item shapes widened by what an operator also accepts. The specific
-    // deprecated/mcp shapes are tried first; the AGENT item shape is the
-    // AIP-42 `anyRef` (string or `{ref|file|inline}`), not `z.any()`, so an
-    // invalid item is rejected instead of swallowed by the last union member.
+    // AGENT item shapes widened by what an operator also accepts: the
+    // deprecated forms are tried first, then the AGENT item schema itself, so
+    // an invalid item is rejected instead of swallowed by a loose member.
     skills: z
       .array(z.union([legacySkillRefSchema, anyRefSchema]))
       .optional(),
     tools: z
-      .array(
-        z.union([
-          mcpToolRefSchema,
-          legacyScopedToolRefSchema,
-          anyRefSchema,
-        ]),
-      )
+      .array(z.union([legacyScopedToolRefSchema, agentToolItemSchema]))
       .optional(),
     memory: agentOrLegacy("memory", isLegacyMemory, legacyMemorySchema),
     governance: agentOrLegacy(

@@ -43,11 +43,12 @@ const ajv = new Ajv2020({
 addFormats(ajv)
 
 // Pre-register every external schema the 6 AIPs we test might reference.
-// Discovered via grep: only AIP-16 IO and AIP-17 RUNNER are cross-referenced today.
+// Discovered via grep: AIP-16 IO, AIP-17 RUNNER and AIP-42 AGENT (OPERATOR refs its fields) are cross-referenced today.
 function registerExternalSchemas() {
   const externals: Array<[number, string]> = [
     [16, "IO"],
     [17, "RUNNER"],
+    [42, "AGENT"],
   ]
   for (const [aip, doctype] of externals) {
     const file = path.join(SPECS_ROOT, `aip-${aip}`, "draft", `${doctype}.schema.json`)

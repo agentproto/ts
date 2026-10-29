@@ -10,7 +10,7 @@
  */
 
 import { Agent } from "@mastra/core/agent"
-import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { AgentHandle, AnyRef, ToolRef } from "@agentproto/agent"
 import { composeInstructions } from "./instructions.js"
 import type {
   BuildMastraAgentOptions,
@@ -80,7 +80,7 @@ interface ResolveToolsCtx {
 }
 
 async function resolveTools(
-  refs: AnyRef[] | undefined,
+  refs: ToolRef[] | undefined,
   resolve: ToolResolver | undefined,
   ctx: ResolveToolsCtx,
 ): Promise<{
@@ -108,7 +108,9 @@ async function resolveTools(
   }
 
   for (const ref of refs) {
-    const resolved = await resolve(ref)
+    // A structured server ref names a server's tools, not one tool: there is
+    // nothing for a single-tool resolver to return.
+    const resolved = isServerRef(ref) ? undefined : await resolve(ref)
     if (!resolved) {
       droppedTools.push(refKey(ref))
       if (ctx.strict) {
@@ -161,8 +163,13 @@ async function resolveWorkflows(
   return { resolvedWorkflows, droppedWorkflows }
 }
 
-function refKey(ref: AnyRef): string {
+function isServerRef(ref: ToolRef): ref is Extract<ToolRef, { kind: "mcp" }> {
+  return typeof ref === "object" && "kind" in ref && ref.kind === "mcp"
+}
+
+function refKey(ref: ToolRef): string {
   if (typeof ref === "string") return ref
+  if (isServerRef(ref)) return `mcp:${ref.server}`
   return ref.ref ?? ref.file ?? JSON.stringify(ref.inline ?? ref)
 }
 

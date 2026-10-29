@@ -88,4 +88,44 @@ describe("an operator carries the AGENT fields by reference (C2)", () => {
     expect(parse({ skills: [{ id: "NOT A SLUG" }] }).success).toBe(false)
     expect(parse({ tools: [{ id: "search", source: "x" }] }).success).toBe(true)
   })
+
+  it("refuses a malformed structured tool item exactly as the AGENT schema does", () => {
+    const malformed = [
+      { kind: "mcp" },
+      { kind: "mcp", server: "gh/hub" },
+      { kind: "mcp", server: "github", allow: ["github/create_issue"] },
+      { kind: "mcp", server: "github", deny: ["a/b"] },
+      { kind: "mcp", server: "github", scope: {} },
+      { kind: "http", server: "github" },
+    ]
+    for (const item of malformed) {
+      const asAgent = agentFrontmatterSchema.safeParse({
+        schema: "agent/v1",
+        id: "lex",
+        description: "d",
+        model: "p/m",
+        tools: [item],
+      })
+      const asOperator = operatorManifestFrontmatterSchema.safeParse({
+        id: "lex",
+        name: "Lex",
+        persona_summary: "Researcher.",
+        tools: [item],
+      })
+      expect(asAgent.success, JSON.stringify(item)).toBe(false)
+      expect(asOperator.success, JSON.stringify(item)).toBe(false)
+    }
+  })
+
+  it("accepts a structured item with allow and deny, and still the deprecated scoped form", () => {
+    const parse = (tools: unknown[]) =>
+      operatorManifestFrontmatterSchema.safeParse({
+        id: "lex",
+        name: "Lex",
+        persona_summary: "Researcher.",
+        tools,
+      })
+    expect(parse([{ kind: "mcp", server: "github", allow: ["a"], deny: ["b"] }]).success).toBe(true)
+    expect(parse([{ id: "search", scope: { workspace: "w" } }]).success).toBe(true)
+  })
 })

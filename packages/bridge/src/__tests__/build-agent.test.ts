@@ -89,6 +89,25 @@ describe("buildMastraAgent", () => {
     ).rejects.toThrow(/did not resolve/)
   })
 
+  it("a structured server ref never reaches the single-tool resolver and is reported as dropped", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const resolveTool = vi.fn(() => ({ name: "x", tool: { id: "x", description: "x" } }))
+    const handle = defineAgent({
+      schema: "agent/v1",
+      id: "serverful",
+      description: "Holds a server ref.",
+      model: "anthropic/claude-opus-4-7",
+      tools: [{ kind: "mcp", server: "github", allow: ["create_issue"] }],
+    })
+    const result = await buildMastraAgent(handle, { resolveModel: () => fakeModel, resolveTool })
+    expect(resolveTool).not.toHaveBeenCalled()
+    expect(result.droppedTools).toEqual(["mcp:github"])
+    warnSpy.mockRestore()
+    await expect(
+      buildMastraAgent(handle, { resolveModel: () => fakeModel, resolveTool, strict: true }),
+    ).rejects.toThrow(/did not resolve/)
+  })
+
   it("builds memory when buildMemory is provided", async () => {
     const fakeMemory = { kind: "fake-memory" }
     const buildMemory = vi.fn(() => fakeMemory)

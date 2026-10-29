@@ -54,6 +54,7 @@ const KNOWN_FLAGS = new Set([
   "doctype",
   "schema-only",
   "inline-refs",
+  "inline-ref",
   "resources-dir",
 ])
 const args = parseArgs(process.argv.slice(2))
@@ -73,7 +74,7 @@ if (!existsSync(RESOURCES_DIR)) {
 }
 if (!args.aip || !args.slug || !args.doctype) {
   console.error(
-    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only] [--inline-refs] [--resources-dir <dir>]",
+    "Usage: scaffold-aip --aip <N> --slug <slug> --doctype <DOCTYPE> [--schema-only] [--inline-refs | --inline-ref <def>[,<def>]] [--resources-dir <dir>]",
   )
   process.exit(2)
 }
@@ -82,6 +83,12 @@ if (!args.aip || !args.slug || !args.doctype) {
 // packages when the JSON Schema or this generator's logic changes.
 const SCHEMA_ONLY = Boolean(args["schema-only"])
 const INLINE_REFS = Boolean(args["inline-refs"])
+// `--inline-ref a,b` inlines only those `$defs` (and what they reference),
+// leaving every other `$ref` as `z.any()`: a package adopts one tightened
+// field without tightening the rest.
+const INLINE_REF_NAMES = args["inline-ref"]
+  ? new Set(String(args["inline-ref"]).split(",").filter(Boolean))
+  : undefined
 // The non-recursive `$defs` of the draft being rendered (set once external
 // refs are inlined). `oneOfOverride` runs inside json-schema-to-zod, which
 // gives it no way back to the root, so the local `$ref`s of a `oneOf` branch
@@ -186,7 +193,11 @@ definitionInterface = relaxMixedIndexSignatures(compiled.trim())
   // `#/$defs/<key>` ref inlined (opt-in: it tightens every ref'd field from
   // `z.any()` to its real shape, which an existing package must adopt
   // deliberately). The TS interface above still uses the ref'd original.
-  const zodSchema = INLINE_REFS ? inlineLocalRefs(schema, schema.$defs ?? {}) : schema
+  const zodSchema = INLINE_REFS
+    ? inlineLocalRefs(schema, schema.$defs ?? {})
+    : INLINE_REF_NAMES
+      ? inlineLocalRefs(schema, schema.$defs ?? {}, [], INLINE_REF_NAMES)
+      : schema
   const discriminatedUnionExpr = tryDiscriminatedUnion(zodSchema)
   // json-schema-to-zod emits the zod v3 `.refine(pred, "msg")` shape;
   // zod v4 takes `.refine(pred, { message: "msg" })`. Walk the output
@@ -766,22 +777,23 @@ function relaxMixedIndexSignatures(tsSrc) {
  * 2020-12). A ref that would recurse into itself is left in place. `$defs`
  * itself is passed through untouched. Returns a new tree.
  */
-function inlineLocalRefs(node, defs, stack = []) {
-  if (Array.isArray(node)) return node.map((n) => inlineLocalRefs(n, defs, stack))
+function inlineLocalRefs(node, defs, stack = [], only = undefined) {
+  if (Array.isArray(node)) return node.map((n) => inlineLocalRefs(n, defs, stack, only))
   if (!node || typeof node !== "object") return node
   if (typeof node.$ref === "string") {
     const m = node.$ref.match(/^#\/\$defs\/([^/]+)$/)
-    if (m && defs[m[1]] && !stack.includes(m[1])) {
+    if (m && defs[m[1]] && !stack.includes(m[1]) && (!only || only.has(m[1]))) {
       const { $ref: _ref, ...siblings } = node
+      // Inside a def that was asked for, every ref it holds is inlined too.
       return {
         ...inlineLocalRefs(defs[m[1]], defs, [...stack, m[1]]),
-        ...inlineLocalRefs(siblings, defs, stack),
+        ...inlineLocalRefs(siblings, defs, stack, only),
       }
     }
   }
   const out = {}
   for (const [k, v] of Object.entries(node)) {
-    out[k] = k === "$defs" ? v : inlineLocalRefs(v, defs, stack)
+    out[k] = k === "$defs" ? v : inlineLocalRefs(v, defs, stack, only)
   }
   return out
 }
@@ -854,6 +866,39 @@ function oneOfOverride(schema, refs) {
       return `z.union([${branches.map(render).join(", ")}])${tail}`
     }
   }
+
+  const leaves = branches.flatMap(leafBranches)
+  if (leaves.every((l) => l !== undefined && branchKinds(l) !== undefined)) {
+    let disjoint = true
+    for (let i = 0; i < leaves.length && disjoint; i++) {
+      for (let j = i + 1; j < leaves.length && disjoint; j++) {
+        disjoint = provablyDisjoint(leaves[i], leaves[j])
+      }
+    }
+    if (disjoint) return `z.union([${branches.map(render).join(", ")}])${tail}`
+  }
+}
+
+/** The non-`oneOf` branches under a branch (itself when it has no nested union). */
+function leafBranches(b) {
+  const nested = b.oneOf ?? b.anyOf
+  if (!Array.isArray(nested) || nested.length === 0) return [b]
+  return nested.flatMap((n) => (n && typeof n === "object" ? leafBranches(n) : [undefined]))
+}
+
+/**
+ * No value can satisfy both leaf branches: their types differ, or both are
+ * objects and one is closed (`additionalProperties: false`) while the other
+ * requires a key the closed one does not declare.
+ */
+function provablyDisjoint(a, b) {
+  const ka = branchKinds(a)
+  const kb = branchKinds(b)
+  if (!ka.some((k) => kb.includes(k))) return true
+  const rejects = (closed, other) =>
+    closed.additionalProperties === false &&
+    (other.required ?? []).some((k) => !(k in (closed.properties ?? {})))
+  return a.type === "object" && b.type === "object" && (rejects(a, b) || rejects(b, a))
 }
 
 /**

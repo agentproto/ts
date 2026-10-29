@@ -39,6 +39,7 @@ describe("projectAgentToSpawn", () => {
       model: "opencode-go/kimi-k2",
       options: { agent: PATH },
       tools: ["file_write", "file_read"],
+      servers: { agentproto: { allowTools: ["file_write", "file_read"] } },
       warnings: [],
     })
   })
@@ -99,6 +100,85 @@ describe("projectAgentToSpawn", () => {
     expect(p.tools).toEqual(["file_write", "file_read"])
     expect(joined(p.warnings)).toMatch(/native tools stay available/)
     expect(joined(p.warnings)).toMatch(/1 structured tool ref\(s\)/)
+  })
+
+  describe("structured { kind: mcp } tool items", () => {
+    const project = (tools: Parameters<typeof defineAgent>[0]["tools"]) =>
+      projectAgentToSpawn(input(scout({ tools })), { agentManifestOption: "agent" })
+
+    it("a structured item reaches the projection as that server's allowTools and denyTools", () => {
+      const p = project([{ kind: "mcp", server: "github", allow: ["create_issue", "list_prs"], deny: ["delete_repo"] }])
+      expect(p.servers).toEqual({
+        github: { allowTools: ["create_issue", "list_prs"], denyTools: ["delete_repo"] },
+      })
+      expect(p.tools).toBeUndefined()
+    })
+
+    it("a server item with no allow admits the whole server (no allowTools)", () => {
+      expect(project([{ kind: "mcp", server: "github" }]).servers).toEqual({ github: {} })
+    })
+
+    it("allow: [] admits nothing on that server", () => {
+      expect(project([{ kind: "mcp", server: "github", allow: [] }]).servers).toEqual({
+        github: { allowTools: [] },
+      })
+    })
+
+    it("deny wins over allow within one item", () => {
+      const p = project([{ kind: "mcp", server: "github", allow: ["a", "b"], deny: ["b"] }])
+      expect(p.servers?.github).toEqual({ allowTools: ["a"], denyTools: ["b"] })
+    })
+
+    it("deny wins over another item of the same server admitting the tool", () => {
+      const p = project([
+        { kind: "mcp", server: "github", allow: ["a", "b"] },
+        { kind: "mcp", server: "github", allow: [], deny: ["a"] },
+      ])
+      expect(p.servers?.github).toEqual({ allowTools: ["b"], denyTools: ["a"] })
+    })
+
+    it("a deny-only item (no allow) means the whole server minus the denied names", () => {
+      const p = project([
+        { kind: "mcp", server: "github", allow: ["a", "b"] },
+        { kind: "mcp", server: "github", deny: ["a"] },
+      ])
+      expect(p.servers?.github).toEqual({ denyTools: ["a"] })
+    })
+
+    it("deny wins over a whole-server item of the same server", () => {
+      const p = project([
+        { kind: "mcp", server: "github" },
+        { kind: "mcp", server: "github", deny: ["delete_repo"] },
+      ])
+      expect(p.servers?.github).toEqual({ denyTools: ["delete_repo"] })
+    })
+
+    it("deny wins over a bare string admitting the same built-in", () => {
+      const p = project(["file_write", "file_read", { kind: "mcp", server: "agentproto", allow: [], deny: ["file_write"] }])
+      expect(p.servers?.agentproto).toEqual({ allowTools: ["file_read"], denyTools: ["file_write"] })
+      expect(p.tools).toEqual(["file_read"])
+    })
+
+    it("a deny on one server does not touch another", () => {
+      const p = project([
+        { kind: "mcp", server: "a", allow: ["x"] },
+        { kind: "mcp", server: "b", allow: ["x"], deny: ["x"] },
+      ])
+      expect(p.servers).toEqual({ a: { allowTools: ["x"] }, b: { allowTools: [], denyTools: ["x"] } })
+    })
+
+    it("is no longer dropped with the 'structured tool ref' warning", () => {
+      const p = projectAgentToSpawn(
+        input(scout({ tools: [{ kind: "mcp", server: "github", allow: ["a"] }] })),
+        {},
+      )
+      expect(joined(p.warnings)).not.toMatch(/structured tool ref/)
+    })
+
+    it("still warns about a structured ref that is not a server item", () => {
+      const p = projectAgentToSpawn(input(scout({ tools: [{ kind: "mcp", server: "s" }, { ref: "@x/y" }] })), {})
+      expect(joined(p.warnings)).toMatch(/1 structured tool ref\(s\)/)
+    })
   })
 
   it("skills go to a harness with session-skill delivery", () => {

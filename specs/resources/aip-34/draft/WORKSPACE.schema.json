@@ -57,7 +57,7 @@
     "wall": {
       "enum": ["shared", "isolated", "sealed", "hard"],
       "default": "isolated",
-      "description": "Visibility level toward sibling/ancestor nodes. shared: siblings read the whole node (implicit export `to: \"children\"` of the PARENT). isolated (default): nothing crosses without an explicit includes/exports door; ancestors still see everything. sealed: as isolated, PLUS ancestors see only this node's EXPORT.md, never raw files; inbound includes require host-side approval (AIP-7). hard: as sealed, PLUS enforced by a separate process/identity — no shared daemon, no shared auth profile, no shared MCP surface; the only traffic in or out is the declared exports, delivered by message, never by mount. A child MAY raise its own wall (shared→isolated→sealed→hard) but MUST NOT set a level looser than its parent's or its TYPES.md entry's `default_wall`."
+      "description": "Visibility level toward sibling/ancestor nodes. shared: siblings read the whole node (implicit export `to: \"children\"` of the PARENT). isolated (default): nothing crosses without an explicit includes/exports door; ancestors still see everything. sealed: as isolated, PLUS ancestors see only this node's EXPORT.md, never raw files; inbound includes require host-side approval (AIP-7). hard: as sealed, PLUS enforced by a separate process/identity — no shared daemon, no shared auth profile, no shared MCP surface; the only traffic in or out is the declared exports, delivered by message, never by mount. Walls are evaluated against the requesting SESSION's node scope (the nearest declared node whose folder contains the session's AIP-46 `ground`), never against an operator or agent. A child MAY raise its own wall (shared→isolated→sealed→hard) but MUST NOT set a level looser than its TYPES.md entry's `default_wall` (conformance rule 7)."
     },
     "includes": {
       "type": "array",
@@ -100,7 +100,10 @@
       "default": [],
       "description": "Provider-side consent for an `apps[].attach` pointed at THIS node by another node — same two-sided-consent shape as `exports`/`uses_secrets`. An attach with no matching entry here is a conformance error, never silently honoured."
     },
-    "policy": { "$ref": "#/$defs/policyRefBlock" },
+    "policy": {
+      "$ref": "#/$defs/policyRefBlock",
+      "description": "AIP-38 POLICY block for this node. A session scoped to a node is evaluated under the AIP-38 composition of the policy of every node on its chain, from this node up to the root of its tree: a matching deny in any node wins, `default: deny` in any node prevails, every requirement applies. The chain stops at the tree root; doors never extend it."
+    },
     "defaults": {
       "type": "object",
       "additionalProperties": true,
