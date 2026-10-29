@@ -75,6 +75,7 @@ import {
   type MessageUrgency,
 } from "./session-message.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
+import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
@@ -1084,6 +1085,8 @@ export interface RuntimeHttpServerOptions {
    * read per request). A seam for tests.
    */
   resolveMessagingDefaults?: () => Promise<ResolvedMessagingDefaults>
+  /** Resolver for `defaults.tasks.operatorDelegates` used by `GET /permissions/grants`. A seam for tests. */
+  resolveOperatorDelegates?: () => Promise<string[]>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -5207,7 +5210,14 @@ export async function startHttpServer(
               return
             }
           }
-          const handled = await handlePermissions(req, res, path, opts.sessions)
+          const handled = await handlePermissions(
+            req,
+            res,
+            path,
+            opts.sessions,
+            opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
+            opts.resolveOperatorDelegates ?? resolveOperatorDelegates,
+          )
           if (handled) return
         }
 
@@ -11505,6 +11515,10 @@ async function handleTasks(
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
+ *   GET  /permissions/grants     → { grants, unmapped, inputs }: the effective
+ *                                  grants derived from the messaging switches
+ *                                  and allowPromptFrom, plus the entries no
+ *                                  grant expresses. Read-only.
  *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
@@ -11517,6 +11531,8 @@ async function handlePermissions(
   res: ServerResponse,
   path: string,
   registry: SessionsRegistry,
+  messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
+  operatorDelegatesFor: () => Promise<string[]> = resolveOperatorDelegates,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -11533,6 +11549,27 @@ async function handlePermissions(
       .listPendingPermissions(sessionId ? { sessionId } : undefined)
       .map(p => enrichPermission(p, registry))
     json(200, { permissions })
+    return true
+  }
+
+  if (path === "/permissions/grants" && req.method === "GET") {
+    const messaging = await messagingDefaultsFor()
+    const operatorDelegates = await operatorDelegatesFor()
+    const report = deriveEffectiveGrants({
+      messaging: {
+        allowSiblings: messaging.allowSiblings,
+        allowSameWorkspace: messaging.allowSameWorkspace,
+        peerGroups: messaging.peerGroups.map(g => [...g]),
+        peerBinding: messaging.peerBinding,
+      },
+      operatorDelegates,
+      sessions: registry.list().map(d => ({
+        id: d.id,
+        ...(d.operatorLabel ? { operatorLabel: d.operatorLabel } : {}),
+        ...(d.allowPromptFrom ? { allowPromptFrom: d.allowPromptFrom } : {}),
+      })),
+    })
+    json(200, report)
     return true
   }
 
