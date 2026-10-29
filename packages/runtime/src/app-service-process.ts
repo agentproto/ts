@@ -549,9 +549,11 @@ function defaultSchedule(fn: () => void, delayMs: number): () => void {
  * Linux reads `/proc/<pid>/stat` field 22 directly (process-start jiffies).
  * Darwin has no `/proc`; `ps -o lstart=` reports the process' start time at
  * one-second resolution, which is parsed to epoch seconds, coarser than
- * jiffies but still unforgeable across a pid recycle (a new process gets a
- * new wall-clock start second almost always, and the mismatch path treats
- * ties as agreeing, never as compromising safety).
+ * jiffies. A recycled pid is told apart from its previous owner unless the
+ * new process starts within the SAME wall-clock second as the old one; that
+ * tie reads as a match and would be signalled. macOS allocates pids
+ * sequentially, so a recycle inside one second is not a realistic case, but
+ * the guarantee is weaker than the Linux jiffies one.
  */
 export function readProcessStartTicks(pid: number): number | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined
@@ -575,12 +577,27 @@ function readProcessStartTicksLinux(pid: number): number | undefined {
   }
 }
 
+/** Epoch seconds from a C-locale `ps -o lstart=` line; `undefined` if unparsable. */
+export function parsePsLstart(raw: string): number | undefined {
+  const text = raw.trim()
+  if (text.length === 0) return undefined
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+}
+
 function readProcessStartTicksDarwin(pid: number): number | undefined {
   try {
-    const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim()
-    if (raw.length === 0) return undefined
-    const ms = Date.parse(raw)
-    return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+    // LC_ALL=C: `lstart` month/day names are localized otherwise and
+    // Date.parse would fail. The timeout bounds a wedged `ps`, which runs
+    // synchronously on the spawn and reconcile paths.
+    const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 2000,
+      maxBuffer: 4096,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    return parsePsLstart(raw)
   } catch {
     return undefined
   }
