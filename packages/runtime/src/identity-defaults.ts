@@ -4,8 +4,11 @@
  * `defaults.identity.sessionTokens`: `"shadow"` (default) mints a per-session
  * token at spawn, puts it on the session's daemon self-mount and counts, on
  * the receiving side, how many calls are verified, claim-only, mismatching
- * or anonymous (`GET /identity`). Nothing is refused. `"off"`: no mint, no
- * header, no observation.
+ * or anonymous (`GET /identity`). Nothing is refused. `"enforce"` mints and
+ * delivers exactly like `"shadow"` and also refuses, per request, an invalid
+ * token, a mismatching claim and a claim without token naming a session the
+ * token was delivered to (AIP-46 §Session principals rules 3, 4 and 8).
+ * `"off"`: no mint, no header, no observation, nothing refused.
  *
  * Hot, read the same way as `messaging-defaults.ts`: the spawn paths read it
  * when a session is spawned (so a change applies to sessions spawned after
@@ -15,7 +18,7 @@
 import { loadConfig } from "./config.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 
-export type SessionTokenMode = "off" | "shadow"
+export type SessionTokenMode = "off" | "shadow" | "enforce"
 
 export const DEFAULT_SESSION_TOKEN_MODE: SessionTokenMode = "shadow"
 
@@ -24,10 +27,11 @@ export interface ResolvedIdentityDefaults {
 }
 
 /** `defaults.identity.sessionTokens` out of an already-loaded `defaults`
- *  block; anything but `"off"` / `"shadow"` falls back to the default. */
+ *  block; anything but `"off"` / `"shadow"` / `"enforce"` falls back to the
+ *  default. */
 export function sessionTokenModeOf(defaults: SpawnDefaultsConfig | undefined): SessionTokenMode {
   const mode = defaults?.identity?.sessionTokens
-  return mode === "off" || mode === "shadow" ? mode : DEFAULT_SESSION_TOKEN_MODE
+  return mode === "off" || mode === "shadow" || mode === "enforce" ? mode : DEFAULT_SESSION_TOKEN_MODE
 }
 
 export async function resolveIdentityDefaults(
@@ -80,7 +84,13 @@ export function createIdentityModeReader(
  * token in this step. Sandbox spawns get none either (the mounts are
  * forwarded to the box daemon, which persists them on its own descriptor).
  */
-const SESSION_TOKEN_ADAPTERS: ReadonlySet<string> = new Set(["claude-code", "hermes"])
+export const SESSION_TOKEN_ADAPTERS: ReadonlySet<string> = new Set(["claude-code", "hermes"])
+
+/** Whether `mode` mints and delivers a session token (`"shadow"` and
+ *  `"enforce"` alike; only `"off"` does not). */
+export function sessionTokensMinted(mode: SessionTokenMode): boolean {
+  return mode !== "off"
+}
 
 export function sessionTokenDeliverySafe(adapter: string | undefined, sandbox?: unknown): boolean {
   return sandbox === undefined && adapter !== undefined && SESSION_TOKEN_ADAPTERS.has(adapter)

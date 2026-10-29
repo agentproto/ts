@@ -207,8 +207,10 @@ export interface SpawnDefaultsConfig {
   identity?: {
     /** `defaults.identity.sessionTokens` - "shadow" (default): a per-session
      *  token is minted at spawn and callers are classified (`GET /identity`)
-     *  without refusing anything. "off": no token, no observation. */
-    sessionTokens?: "off" | "shadow"
+     *  without refusing anything. "enforce": minted the same way, and an
+     *  invalid token, a mismatching claim or a claim without token naming a
+     *  token-delivered session is refused. "off": no token, no observation. */
+    sessionTokens?: "off" | "shadow" | "enforce"
   }
   /** Hooks projected into a harness's own settings (`native-hooks-defaults.ts`). */
   nativeHooks?: {

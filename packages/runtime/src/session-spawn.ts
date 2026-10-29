@@ -352,7 +352,12 @@ import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-age
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
-import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
+import {
+  sessionTokenDeliverySafe,
+  sessionTokenModeOf,
+  sessionTokensMinted,
+  type SessionTokenMode,
+} from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import type { MemoryScope, MemoryStore } from "@agentproto/memory"
 import {
@@ -1268,7 +1273,8 @@ export function stripSessionTokenHeaders(
 /**
  * The ADAPTER's copy of a session's mounts: `mcpServers` (the descriptor
  * copy, already caller-stamped) plus a freshly minted session token on the
- * daemon self-mount, when `defaults.identity.sessionTokens` is `"shadow"`
+ * daemon self-mount, when `defaults.identity.sessionTokens` mints (`"shadow"`
+ * or `"enforce"`)
  * and the adapter receives its mounts in memory (`sessionTokenDeliverySafe`).
  * Returns the input unchanged otherwise. Shared by the spawn, restart and
  * lazy-resume paths, each of which mints a NEW token rather than reading one
@@ -1285,7 +1291,7 @@ export function withSessionToken(
     mint?: (sessionId: string) => string
   },
 ): AcpMcpServer[] | undefined {
-  if (!mcpServers || opts.mode !== "shadow" || !opts.daemonMcpUrl) return mcpServers
+  if (!mcpServers || !sessionTokensMinted(opts.mode) || !opts.daemonMcpUrl) return mcpServers
   if (!sessionTokenDeliverySafe(opts.adapter, opts.sandbox)) return mcpServers
   const daemonMcpUrl = opts.daemonMcpUrl
   const target = mcpServers.some(
