@@ -1,0 +1,5 @@
+---
+"@agentproto/operator": minor
+---
+
+Add `resolveOperator(entry, sources)`, the pure AIP-9 §Resolution step that turns an operator and its OPERATOR.md body into an AGENT entry. Every referenced template (base agent chain, identity, persona, role chain, role skills, policy) is read through an injected `OperatorSources` loader; the function does no I/O. The body follows the merge table (agent, identity, persona, role, slot bindings, operator, host sections, boundaries), role slot bindings are checked with `validateRoleBinding`, the agent chain (5) and role chain (8) limits are enforced, and tools are the union of agent, role intent, slot-bound and operator tools filtered by the operator's AIP-38 `tool:invoke` policy: a declared tool with no grant refuses resolution, a role-intent tool with no grant is dropped with an `intent_unsatisfied` warning. The result carries a stable sha256 `digest` of its inputs for the AIP-46 `operatorDigest`, anchors memory on `operator:<slug>`, and `toolDenyGrants` turns an `{kind: mcp, deny}` tool item into AIP-38 deny grants. Adds `@agentproto/identity`, `persona`, `policy`, `role` and `skill` as dependencies.
