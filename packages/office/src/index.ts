@@ -15,3 +15,17 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineOffice } from "./define-office.js"
 export type { OfficeDefinition, OfficeHandle } from "./types.js"
+export {
+  analyzeOfficeTree,
+  parseHolder,
+  type ExecutorLens,
+  type HolderRef,
+  type OfficeItemInput,
+  type OfficeSeat,
+  type OfficeTreeAnalysis,
+  type OfficeTreeInput,
+  type OfficeTreeIssue,
+  type OfficeTreeIssueCode,
+  type OfficeTreeNodeInput,
+  type OfficeTreeOptions,
+} from "./tree.js"

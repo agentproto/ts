@@ -14,10 +14,13 @@
  * any constraint the converter doesn't capture cleanly).
  */
 
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { join } from "node:path"
 import matter from "gray-matter"
 import { officeFrontmatterSchema, type OfficeFrontmatter } from "../schema.js"
 import { defineOffice } from "../define-office.js"
 import type { OfficeDefinition, OfficeHandle } from "../types.js"
+import type { OfficeItemInput, OfficeTreeInput } from "../tree.js"
 
 // Re-export so consumers can import the schema + inferred type either
 // from "@@agentproto/office/manifest" or directly from "@@agentproto/office/schema".
@@ -50,4 +53,46 @@ export function officeFromManifest(manifest: OfficeManifest): OfficeHandle {
   // schema and the TS interface diverge (e.g. handle has frozen fields
   // a literal config doesn't carry yet).
   return defineOffice(manifest.frontmatter as unknown as OfficeDefinition)
+}
+
+export interface ReadOfficeTreeOptions {
+  /** Folder of the tree root (the company node). */
+  root: string
+  /** Declared nodes of the tree (AIP-34); `dir` is relative to `root`, "" for the root node. */
+  nodes: readonly { ref: string; dir: string }[]
+}
+
+/**
+ * Read the OFFICE.md of every declared node and the items of the office
+ * (`items/<collection>/*.md` under the root) into an `OfficeTreeInput` for
+ * `analyzeOfficeTree`. Frontmatter is passed through raw: validation is the
+ * analysis's job, so a malformed OFFICE.md surfaces as an issue, not a throw.
+ */
+export function readOfficeTree(opts: ReadOfficeTreeOptions): OfficeTreeInput {
+  const rootNode = opts.nodes.find((n) => n.dir === "")
+  if (!rootNode) throw new Error("readOfficeTree: no node with dir \"\" (the tree root)")
+  const nodes = opts.nodes.map((n) => {
+    const file = join(opts.root, n.dir, "OFFICE.md")
+    return existsSync(file)
+      ? { ...n, office: matter(readFileSync(file, "utf8")).data }
+      : { ...n }
+  })
+  const items: OfficeItemInput[] = []
+  const itemsDir = join(opts.root, "items")
+  if (existsSync(itemsDir)) {
+    for (const collection of readdirSync(itemsDir).sort()) {
+      const dir = join(itemsDir, collection)
+      if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue
+      for (const f of readdirSync(dir).sort()) {
+        if (!f.endsWith(".md")) continue
+        const data = matter(readFileSync(join(dir, f), "utf8")).data
+        items.push({
+          ...data,
+          collection: typeof data.collection === "string" ? data.collection : collection,
+          id: typeof data.id === "string" ? data.id : f.slice(0, -3),
+        })
+      }
+    }
+  }
+  return { root: rootNode.ref, nodes, items }
 }
