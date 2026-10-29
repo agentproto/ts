@@ -159,7 +159,6 @@ test("archived override packages remain zero-dependent", () => {
       "@agentproto/catalog",
       "@agentproto/driver-sdk",
       "@agentproto/egress",
-      "@agentproto/identity",
       "@agentproto/role-catalog",
       "@agentproto/workflow-ai-sdk",
     ],

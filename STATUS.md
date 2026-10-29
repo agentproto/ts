@@ -49,7 +49,6 @@ Package | Path | Tier | Reason (one line) |
 @agentproto/catalog | `packages/catalog` | archived | dead: zero workspace dependents (override list) |
 @agentproto/driver-sdk | `packages/driver/sdk` | archived | dead: zero workspace dependents (override list) |
 @agentproto/egress | `packages/egress` | archived | dead: zero workspace dependents (override list) |
-@agentproto/identity | `packages/identity` | archived | dead: zero workspace dependents (override list) |
 @agentproto/role-catalog | `packages/role-catalog` | archived | dead: zero workspace dependents (override list) |
 @agentproto/workflow-ai-sdk | `packages/workflow-ai-sdk` | archived | dead: zero workspace dependents (override list) |
 @agentproto/a2a | `packages/a2a` | core | product runtime package consumed by the runtime/cli |
@@ -102,6 +101,7 @@ agentproto-desktop | `packages/desktop` | core | product runtime package consume
 @agentproto/model-catalog | `packages/model-catalog` | core | core runtime family (runtime/cli/driver/sandbox/auth/model-catalog) |
 @agentproto/model-intel | `packages/model-intel` | core | product runtime package consumed by the runtime/cli |
 @agentproto/model-routing | `packages/model-routing` | core | product runtime package consumed by the runtime/cli |
+@agentproto/operator | `packages/operator` | core | product runtime package consumed by the runtime/cli |
 @agentproto/pair-page | `packages/pair-page` | core | product runtime package consumed by the runtime/cli |
 @agentproto/pairing | `packages/pairing` | core | product runtime package consumed by the runtime/cli |
 @agentproto/pairing-host | `packages/pairing-host` | core | product runtime package consumed by the runtime/cli |
@@ -160,6 +160,7 @@ agentproto-vscode | `packages/vscode` | core | product runtime package consumed 
 @agentproto/doctype | `packages/doctype` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/extension | `packages/extension` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/governance | `packages/governance/core` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
+@agentproto/identity | `packages/identity` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/intent | `packages/intent` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/io | `packages/io` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/knowledge | `packages/knowledge` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
@@ -167,7 +168,6 @@ agentproto-vscode | `packages/vscode` | core | product runtime package consumed 
 @agentproto/manifest | `packages/manifest` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/memory | `packages/memory` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/office | `packages/office` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
-@agentproto/operator | `packages/operator` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/pack | `packages/pack` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/persona | `packages/persona` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |
 @agentproto/playbook | `packages/playbook` | spec-reference | spec/doctype-only: workspace deps limited to doctype meta-packages |

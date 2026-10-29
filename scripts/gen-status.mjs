@@ -50,7 +50,6 @@ const ARCHIVED = new Set([
   "@agentproto/driver-sdk", // packages/driver/sdk
   "@agentproto/workflow-ai-sdk", // packages/workflow-ai-sdk
   "@agentproto/egress", // packages/egress
-  "@agentproto/identity", // packages/identity
   "@agentproto/catalog", // packages/catalog
   "@agentproto/role-catalog", // packages/role-catalog
   "@agentproto/adapter-ai-sdk", // adapters/ai-sdk
