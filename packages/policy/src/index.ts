@@ -16,4 +16,15 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 export { definePolicy } from "./define-policy.js"
 export { policyFrontmatterSchema } from "./schema.js"
 export type { PolicyFrontmatter } from "./schema.js"
-export type { PolicyDefinition, PolicyHandle } from "./types.js"
+export type { PolicyDefinition, PolicyHandle, Grant, ActionGrant, Condition } from "./types.js"
+export { evaluateGrants, combineDecisions, PolicyGrantError } from "./evaluate.js"
+export type {
+  GrantDecision,
+  GrantDecisionReason,
+  GrantInput,
+  GrantRequest,
+  PolicyGrants,
+  TypedScopeValues,
+} from "./evaluate.js"
+export { evaluateToolInvoke, qualifyToolName, TOOL_INVOKE_ACTION, BUILTIN_TOOL_SERVER } from "./tool-invoke.js"
+export type { ToolInvokeRequest } from "./tool-invoke.js"
