@@ -56,9 +56,9 @@ agentproto sessions export   <id-or-name> [--json] [-o <file>]
 agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
-agentproto sessions wait     <id-or-name> [--until <event>] [--since <seq>]
-                                           [--timeout <duration>] [--policy <policyId>]
-                                           [--json]
+agentproto sessions wait     <id-or-name>... [--until <event>] [--any]
+                                           [--since <seq>] [--timeout <duration>]
+                                           [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions gc       --retention [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
@@ -806,18 +806,32 @@ fields are stored on the session (`outcome.reason`, `outcome.errorKind`, …,
 "completed" (it conflicts with an `--outcome` other than `done`). On an already-ended session the same flags relabel its
 outcome instead of erroring.
 
-### `wait <id-or-name>`
+### `wait <id-or-name>...`
 
 ```bash
 agentproto sessions wait ses_abc12
 agentproto sessions wait ses_abc12 --until turn-end --timeout 5m
 agentproto sessions wait ses_abc12 --until turn-end --since 0 --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --any
 agentproto sessions wait --policy pol_abc12 --timeout 2m
 ```
 
 Blocking long-poll: blocks the caller until the session fires a lifecycle
 event or the timeout expires. Chains calls across the daemon's ~55s
-per-call ceiling so the CLI-side timeout can be arbitrarily long.
+per-call ceiling so the CLI-side timeout can be arbitrarily long. With
+several ids it waits concurrently for all of them, or for the first real
+match with `--any`; the `--timeout` budget is shared across the fan-out
+(one deadline for every id, not a fresh budget per id). In `--policy` mode
+at most one session id may be given and it is ignored; more than one is a
+usage error (exit `2`).
+
+With `--any`, only exit code `0` (a real match) settles the group. A
+sibling that times out (`2`), is not found (`3`), produces an empty/errored
+turn (`4`), or is idle (`5`) is remembered and the wait keeps blocking for
+the others. Those remembered outcomes are surfaced only if every sibling
+fails too, or the shared `--timeout` budget runs out. Sibling waits are
+aborted only after a real match.
 
 This is the scriptable equivalent of the `session_monitor` MCP tool, but
 without the 49s MCP constraint — prefer it when you have shell access.
@@ -825,10 +839,37 @@ without the 49s MCP constraint — prefer it when you have shell access.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--until <event>` | `any` | Which lifecycle event to wait on: `turn-end`, `awaiting-input`, `exited`, `any`. |
+| `--any` | `false` | With several session ids, return as soon as one of them really matches (exit `0`). Non-zero outcomes are remembered and only surfaced if every sibling fails or the shared budget runs out. |
 | `--since <seq>` | none | Event-ring cursor. Replays matching events after `seq` before blocking. Use `--since 0` from a spawn-then-wait caller when the first turn may end before this process starts; without a cursor the daemon cannot distinguish that turn-end from stale history and the CLI's idle pre-flight exits 5. |
-| `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
-| `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
-| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. |
+| `--timeout <duration>` | `60s` / `15m` | Total wait budget, shared by every id in a multi-id wait. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
+| `--policy <policyId>` | - | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, at most one positional `<id-or-name>` is accepted and ignored; extra positionals are a usage error. |
+| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. With several ids it emits one aggregate document (see below) instead of one document per id. |
+
+#### Multi-id `--json` shape
+
+A single id keeps the historical output: the matched/idle/timeout object
+itself, printed on its own (byte-identical to earlier releases). With two
+or more ids, `--json` prints exactly one JSON document so
+`JSON.parse(stdout)` works:
+
+```json
+{
+  "results": [
+    { "idOrName": "ses_abc12", "event": "turn-end", "sessionId": "ses_abc12", "status": "running", "timeoutMs": 300000, "timeout": "5m" },
+    { "idOrName": "ses_def34", "event": "turn-end", "sessionId": "ses_def34", "status": "running", "timeoutMs": 300000, "timeout": "5m" }
+  ],
+  "mode": "all"
+}
+```
+
+`results` has one entry per id, in the order the ids were given. Each entry
+is the same object the single-id path would print for that session (matched
+result, `idle: true`, or `timedOut: true`), plus `idOrName`; an id that
+failed before producing a result (for example an unknown session) appears
+as `{ "idOrName": "...", "exitCode": 3 }`. Under `--any`, ids still waiting
+when a match settled the group appear as
+`{ "idOrName": "...", "aborted": true }`. `mode` is `"all"` or `"any"`.
+
 
 Before blocking, the CLI prints its interpreted budget to stderr
 (`waiting up to 5m (300000ms) for turn-end on ses_abc12…`) so a units
@@ -844,6 +885,11 @@ mistake is caught immediately — the incident this module exists for was a
 | `3` | Session/policy not found, or daemon unreachable. |
 | `4` | The matched turn-end was a silent no-op — `empty: true` (zero assistant output, zero tool calls) — or ended with `reason: "error"` (the adapter reported a failed turn). The wait DID resolve; the turn it resolved on produced nothing. Commonly a bad auth/model config. |
 
+For a multi-id wait without `--any`, the exit code is the first non-zero
+code among the ids (`0` only when all matched). With `--any` the group
+exits `0` on the first real match; otherwise it reports a remembered
+failure once every sibling has failed or the shared budget has run out.
+
 #### `status` vs `wait`
 
 `agentproto sessions` (or `--json`) is a **non-blocking snapshot** — it
@@ -855,7 +901,7 @@ and humans.
 
 | Surface | Max timeout | Multi-session | Use when |
 |---------|-------------|---------------|----------|
-| `sessions wait` (CLI) | Unlimited (chains calls) | No (one session) | You have a shell and want to script a gate or supervisor loop. |
+| `sessions wait` (CLI) | Unlimited (chains calls) | Yes (`--any` for first) | You have a shell and want to script a gate or supervisor loop. |
 | `session_monitor` (MCP) | 49s (MCP constraint) | Yes (up to 20) | You're an agent with MCP tools and need to fan-in across children. |
 
 Both hit the same daemon endpoint (`GET /sessions/:id/wait`); the CLI

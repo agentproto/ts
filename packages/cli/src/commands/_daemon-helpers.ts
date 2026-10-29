@@ -310,12 +310,15 @@ export function httpPostJson<T>(
   })
 }
 
-export function httpGetJson<T = unknown>(url: string): Promise<T> {
+export function httpGetJson<T = unknown>(
+  url: string,
+  opts?: { signal?: AbortSignal },
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const u = new URL(url)
     const lib = u.protocol === "https:" ? https : http
     lib
-      .get(u, res => {
+      .get(u, { signal: opts?.signal }, res => {
         let body = ""
         res.setEncoding("utf8")
         res.on("data", c => (body += c))

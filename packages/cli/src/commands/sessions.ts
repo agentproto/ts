@@ -240,8 +240,11 @@ Usage:
                               (list sessions the LAST daemon restart cut off
                                mid-turn; --send prompts each to continue —
                                without it, a dry run that sends nothing)
-  agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
-                              [--since <seq>] [--timeout <duration>] [--json]
+  agentproto sessions wait <id-or-name>... [--until <event>] [--any]
+                              [--policy <policyId>] [--since <seq>]
+                              [--timeout <duration>] [--json]
+                              (several ids: waits for all by default, or the
+                               first with --any; --policy takes no ids)
                               (duration: bare integer = ms, unchanged — or an
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
@@ -2817,7 +2820,11 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
 }
 
 /**
- * `agentproto sessions wait <id-or-name>` — scriptable blocking wait.
+ * `agentproto sessions wait <id-or-name>...` - scriptable blocking wait.
+ *
+ * With several session ids it fans out concurrently and returns when all of
+ * them match (default) or the first one does (`--any`); a single id keeps
+ * the original path byte-identical.
  *
  * Blocks until the session fires a lifecycle event (default: any) or, when
  * `--policy <policyId>` is set, until the named policy resolves
@@ -2886,18 +2893,29 @@ export function resolveWaitDefaultTimeout(hasExplicitUntil: boolean): number {
 }
 
 async function runWait(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      until: { type: "string" },
-      policy: { type: "string" },
-      since: { type: "string" },
-      timeout: { type: "string" },
-      json: { type: "boolean" },
-    },
-  })
+  const parsed = (() => {
+    try {
+      return parseArgs({
+        args: [...args],
+        allowPositionals: true,
+        strict: true,
+        options: {
+          until: { type: "string" },
+          policy: { type: "string" },
+          since: { type: "string" },
+          timeout: { type: "string" },
+          any: { type: "boolean" },
+          json: { type: "boolean" },
+        },
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return null
+    }
+  })()
+  if (parsed === null) return 2
+  const { values, positionals } = parsed
 
   const target = positionals[0]
   if (!target && !values.policy) {
@@ -2905,11 +2923,15 @@ async function runWait(args: readonly string[]): Promise<number> {
       "agentproto sessions wait: missing session id or policy id.\n" +
         "  Try: agentproto sessions wait <id-or-name>\n" +
         "       agentproto sessions wait <id-or-name> --until turn-end --timeout 30000\n" +
+        "       agentproto sessions wait <id1> <id2> [--any]\n" +
         "       agentproto sessions wait --policy <policyId> --timeout 60000\n",
     )
     return 2
   }
-  if (positionals.length > 1) {
+  // --policy mode takes no session positionals; a single one is documented
+  // as ignored, but more than that is a usage error rather than a silent
+  // no-op.
+  if (values.policy && positionals.length > 1) {
     process.stderr.write(
       `agentproto sessions wait: unexpected extra positionals: ${positionals
         .slice(1)
@@ -2986,20 +3008,44 @@ async function runWait(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  return runWaitSession({
+  const shared = {
     endpoint,
-    idOrName: target,
     untilEvent,
     totalTimeout,
     json: values.json === true,
     ...(since !== undefined ? { since } : {}),
+  }
+  if (positionals.length === 1) {
+    return runWaitSession({ ...shared, idOrName: target })
+  }
+  return runWaitMany({
+    ...shared,
+    idOrNames: positionals,
+    any: values.any === true,
   })
+}
+
+type WaitJsonWriter = (value: Record<string, unknown>) => void
+type WaitTextWriter = (text: string) => void
+
+const writeWaitJson: WaitJsonWriter = value => {
+  process.stdout.write(JSON.stringify(value, null, 2) + "\n")
+}
+const writeWaitText: WaitTextWriter = text => {
+  process.stdout.write(text)
 }
 
 /**
  * Loop GET /sessions/:id/wait with an advancing `since` cursor until the
  * total timeout budget is exhausted or a matching event fires. Mirrors how
  * a client would chain multiple `session_monitor` calls.
+ *
+ * `deadline` lets a fan-out pass ONE precomputed group deadline down to
+ * every sibling, so pre-flight latency is charged against the documented
+ * single `--timeout` budget instead of being added on top per session.
+ * `jsonWriter`/`textWriter` let a multi-id caller capture per-session
+ * output and emit one aggregate document; the defaults write straight to
+ * stdout, which is the single-id path.
  */
 async function runWaitSession(opts: {
   endpoint: DaemonEndpoint
@@ -3008,8 +3054,14 @@ async function runWaitSession(opts: {
   totalTimeout: number
   json: boolean
   since?: number
+  signal?: AbortSignal
+  deadline?: number
+  jsonWriter?: WaitJsonWriter
+  textWriter?: WaitTextWriter
 }): Promise<number> {
-  const { endpoint, idOrName, untilEvent, totalTimeout, json, since } = opts
+  const { endpoint, idOrName, untilEvent, totalTimeout, json, since, signal } = opts
+  const jsonWriter = opts.jsonWriter ?? writeWaitJson
+  const textWriter = opts.textWriter ?? writeWaitText
 
   // Pre-flight: read the session's current descriptor before blocking at
   // all. `monitorSessionWait`'s already-finished-turn check deliberately
@@ -3020,13 +3072,17 @@ async function runWaitSession(opts: {
   // reporting a timeout that lies about why. `--until exited` is exempt:
   // the daemon's terminal-status check already fires without `since`, so
   // there's nothing to pre-empt here.
+  if (signal?.aborted) return -1
+  const getJson = <T,>(url: string): Promise<T> =>
+    signal ? httpGetJson<T>(url, { signal }) : httpGetJson<T>(url)
   if (untilEvent !== "exited") {
     let desc: SessionDescriptor
     try {
-      desc = await httpGetJson<SessionDescriptor>(
+      desc = await getJson<SessionDescriptor>(
         `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}`,
       )
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(`agentproto sessions wait: no session "${idOrName}".\n`)
@@ -3073,21 +3129,26 @@ async function runWaitSession(opts: {
     // cursor-independent (and also avoid skipping terminal short-circuit when
     // --since is passed).
     if (idle && (since === undefined || terminalStatus)) {
-      return emitWaitIdle(json, {
-        sessionId: desc.id,
-        idOrName,
-        status: desc.status,
-        busy: desc.busy === true,
-        awaitingInput: desc.awaitingInput === true,
-        turnsCompleted: desc.turnsCompleted,
-        lastTurnReason: desc.lastTurnReason,
-        lastTurnErrorMessage: desc.lastTurnErrorMessage,
-        lastTurnEmpty: desc.lastTurnEmpty === true,
-      })
+      return emitWaitIdle(
+        json,
+        {
+          sessionId: desc.id,
+          idOrName,
+          status: desc.status,
+          busy: desc.busy === true,
+          awaitingInput: desc.awaitingInput === true,
+          turnsCompleted: desc.turnsCompleted,
+          lastTurnReason: desc.lastTurnReason,
+          lastTurnErrorMessage: desc.lastTurnErrorMessage,
+          lastTurnEmpty: desc.lastTurnEmpty === true,
+        },
+        jsonWriter,
+        textWriter,
+      )
     }
   }
 
-  const deadline = Date.now() + totalTimeout
+  const deadline = opts.deadline ?? Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
   let cursor: number | undefined = since
@@ -3107,9 +3168,10 @@ async function runWaitSession(opts: {
   }
 
   for (;;) {
+    if (signal?.aborted) return -1
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
-      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout })
+      return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout }, jsonWriter, textWriter)
     }
     const callTimeout = Math.min(sliceMs, remaining)
     const qs = new URLSearchParams({
@@ -3120,8 +3182,9 @@ async function runWaitSession(opts: {
     const url = `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}/wait?${qs.toString()}`
     let result: Record<string, unknown>
     try {
-      result = await httpGetJson<Record<string, unknown>>(url)
+      result = await getJson<Record<string, unknown>>(url)
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(
@@ -3138,6 +3201,7 @@ async function runWaitSession(opts: {
       process.stderr.write(`agentproto sessions wait: ${msg}\n`)
       return 3
     }
+    if (signal?.aborted) return -1
     if (result.timedOut === true) {
       // Advance the cursor from the server's response when available so the
       // next call doesn't replay the same window.
@@ -3155,17 +3219,15 @@ async function runWaitSession(opts: {
     const empty = result.empty === true
     const erroredReason = result.reason === "error"
     if (json) {
-      process.stdout.write(
-        JSON.stringify(
-          { ...result, timeoutMs: totalTimeout, timeout: formatDuration(totalTimeout) },
-          null,
-          2,
-        ) + "\n",
-      )
+      jsonWriter({
+        ...result,
+        timeoutMs: totalTimeout,
+        timeout: formatDuration(totalTimeout),
+      })
     } else {
       const ev = typeof result.event === "string" ? result.event : "event"
       const status = typeof result.status === "string" ? result.status : ""
-      process.stdout.write(
+      textWriter(
         `agentproto sessions wait: ${sid} → ${ev}` +
           (status ? ` (${status})` : "") +
           "\n",
@@ -3190,6 +3252,151 @@ async function runWaitSession(opts: {
     }
     return 0
   }
+}
+
+/**
+ * Wait on several sessions at once. Default: resolve when ALL of them
+ * reached the target event; `--any`: settle only on a real MATCH (exit 0),
+ * aborting the rest only once that match lands. A sibling's non-zero
+ * outcome (timeout 2, not-found 3, empty/errored turn 4, idle 5) is
+ * remembered, not treated as the win condition: it is surfaced only if
+ * every sibling also fails or the shared budget runs out.
+ *
+ * One group deadline is computed here and passed to every sibling, so the
+ * documented single `--timeout` budget is literal across the fan-out.
+ *
+ * Under `--json`, multi-id waits emit ONE document
+ * (`{ results: [...], mode: "all"|"any" }`) with one entry per id instead
+ * of concatenated per-session documents. The single-id path still writes
+ * its own document byte-for-byte as before.
+ */
+async function runWaitMany(opts: {
+  endpoint: DaemonEndpoint
+  idOrNames: string[]
+  untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
+  totalTimeout: number
+  json: boolean
+  since?: number
+  any: boolean
+}): Promise<number> {
+  const { endpoint, idOrNames, untilEvent, totalTimeout, json, since, any } = opts
+  const deadline = Date.now() + totalTimeout
+  const shared = {
+    endpoint,
+    untilEvent,
+    totalTimeout,
+    json,
+    deadline,
+    ...(since !== undefined ? { since } : {}),
+  }
+  const mode = any ? "any" : "all"
+
+  if (!any) {
+    const entries: Array<Record<string, unknown> | undefined> = new Array(idOrNames.length)
+    const codes = await Promise.all(
+      idOrNames.map((idOrName, i) =>
+        runWaitSession({
+          ...shared,
+          idOrName,
+          ...(json
+            ? {
+                jsonWriter: (value: Record<string, unknown>) => {
+                  entries[i] = { idOrName, ...value }
+                },
+              }
+            : {}),
+        }),
+      ),
+    )
+    if (json) {
+      writeWaitJson({
+        results: idOrNames.map(
+          (idOrName, i) => entries[i] ?? { idOrName, exitCode: codes[i] },
+        ),
+        mode,
+      })
+    }
+    const failure = codes.find(code => code !== 0)
+    if (failure === undefined) return 0
+    return failure === -1 ? 2 : failure
+  }
+
+  const controller = new AbortController()
+  const codes: Array<number | undefined> = new Array(idOrNames.length)
+  const entries: Array<Record<string, unknown> | undefined> = new Array(idOrNames.length)
+  const texts: string[][] = idOrNames.map(() => [])
+
+  return new Promise<number>(resolve => {
+    let settled = false
+    let remaining = idOrNames.length
+
+    const firstFailure = (): number => {
+      const failure = codes.find(code => code !== undefined && code !== 0 && code !== -1)
+      return failure ?? 2
+    }
+
+    const finish = (code: number) => {
+      if (settled) return
+      settled = true
+      const exitCode = code === -1 ? 2 : code
+      if (json) {
+        writeWaitJson({
+          results: idOrNames.map(
+            (idOrName, i) => entries[i] ?? { idOrName, aborted: true },
+          ),
+          mode,
+        })
+      } else if (exitCode === 0) {
+        // Only the real match is surfaced; a sibling's remembered failure
+        // stays silent because it did not decide the group.
+        idOrNames.forEach((_, i) => {
+          if (codes[i] === 0) process.stdout.write(texts[i]?.join("") ?? "")
+        })
+      } else {
+        // Every sibling failed (or the shared budget ran out): surface
+        // their buffered messages together with the failure code.
+        idOrNames.forEach((_, i) => process.stdout.write(texts[i]?.join("") ?? ""))
+      }
+      resolve(exitCode)
+    }
+
+    idOrNames.forEach((idOrName, i) => {
+      runWaitSession({
+        ...shared,
+        idOrName,
+        signal: controller.signal,
+        ...(json
+          ? {
+              jsonWriter: (value: Record<string, unknown>) => {
+                entries[i] = { idOrName, ...value }
+              },
+            }
+          : {}),
+        textWriter: text => {
+          texts[i]?.push(text)
+        },
+      }).then(
+        code => {
+          codes[i] = code
+          if (code === 0) {
+            // A real match settles the group; only now are siblings aborted.
+            controller.abort()
+            finish(0)
+            return
+          }
+          if (json && entries[i] === undefined) entries[i] = { idOrName, exitCode: code }
+          remaining -= 1
+          if (remaining === 0) finish(firstFailure())
+        },
+        () => {
+          codes[i] = 3
+          if (json && entries[i] === undefined) entries[i] = { idOrName, exitCode: 3 }
+          remaining -= 1
+          if (remaining === 0) finish(firstFailure())
+        },
+      )
+    })
+  })
 }
 
 /**
@@ -3235,27 +3442,23 @@ function emitWaitIdle(
     lastTurnErrorMessage?: string
     lastTurnEmpty?: boolean
   },
+  jsonWriter: WaitJsonWriter = writeWaitJson,
+  textWriter: WaitTextWriter = writeWaitText,
 ): number {
   if (json) {
-    process.stdout.write(
-      JSON.stringify(
-        {
-          idle: true,
-          sessionId: ctx.sessionId,
-          status: ctx.status,
-          busy: ctx.busy,
-          awaitingInput: ctx.awaitingInput,
-          ...(ctx.turnsCompleted !== undefined ? { turnsCompleted: ctx.turnsCompleted } : {}),
-          ...(ctx.lastTurnReason !== undefined ? { reason: ctx.lastTurnReason } : {}),
-          ...(ctx.lastTurnErrorMessage !== undefined ? { error: ctx.lastTurnErrorMessage } : {}),
-          ...(ctx.lastTurnEmpty === true ? { empty: true } : {}),
-        },
-        null,
-        2,
-      ) + "\n",
-    )
+    jsonWriter({
+      idle: true,
+      sessionId: ctx.sessionId,
+      status: ctx.status,
+      busy: ctx.busy,
+      awaitingInput: ctx.awaitingInput,
+      ...(ctx.turnsCompleted !== undefined ? { turnsCompleted: ctx.turnsCompleted } : {}),
+      ...(ctx.lastTurnReason !== undefined ? { reason: ctx.lastTurnReason } : {}),
+      ...(ctx.lastTurnErrorMessage !== undefined ? { error: ctx.lastTurnErrorMessage } : {}),
+      ...(ctx.lastTurnEmpty === true ? { empty: true } : {}),
+    })
   } else {
-    process.stdout.write(
+    textWriter(
       `agentproto sessions wait: session "${ctx.idOrName}" is idle right now — no turn is ` +
         `in flight and nothing is queued to run (status: ${ctx.status}). There is nothing to ` +
         `wait for.\n`,
@@ -3267,17 +3470,17 @@ function emitWaitIdle(
 function emitWaitTimeout(
   json: boolean,
   ctx: { idOrName: string; timeoutMs: number },
+  jsonWriter: WaitJsonWriter = writeWaitJson,
+  textWriter: WaitTextWriter = writeWaitText,
 ): number {
   if (json) {
-    process.stdout.write(
-      JSON.stringify(
-        { timedOut: true, ...ctx, timeout: formatDuration(ctx.timeoutMs) },
-        null,
-        2,
-      ) + "\n",
-    )
+    jsonWriter({
+      timedOut: true,
+      ...ctx,
+      timeout: formatDuration(ctx.timeoutMs),
+    })
   } else {
-    process.stdout.write(
+    textWriter(
       `agentproto sessions wait: session "${ctx.idOrName}" timed out after ` +
         `${formatDuration(ctx.timeoutMs)}. Pass a longer --timeout ` +
         `(e.g. --timeout 30s) if the task is still running.\n`,
