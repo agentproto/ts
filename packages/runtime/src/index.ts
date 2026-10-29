@@ -4555,14 +4555,9 @@ export async function createGateway(
     // Heuristic today (no LLM in @agentproto/runtime) — see summarize-session-tool.ts.
     registerSummarizeSessionTool(server, {
       getSession: (id) => sessions.get(id),
-      tailLines: (id, lastN) => {
-        // Same source as agent_output: attach replays the ring
-        // buffer synchronously, then we unsubscribe immediately.
-        const lines: string[] = []
-        const unsub = sessions.attach(id, (line) => { lines.push(line) })
-        if (unsub) unsub()
-        return lines.slice(-lastN)
-      },
+      // Same source as agent_output — including its terminal-row fallback to
+      // the final text, since a finished row's rings are cleared at exit.
+      tailLines: (id, lastN) => sessions.readOutputTail(id, lastN),
     })
     // Transcript exporter — reads the adapter's native persistence
     // (claude-code JSONL / hermes SQLite) and renders a clean markdown or

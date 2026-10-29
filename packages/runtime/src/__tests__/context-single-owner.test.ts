@@ -127,12 +127,15 @@ describe("context compaction has one owner", () => {
     rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
+  // A terminal row's output rings are dropped at exit, so capture the live
+  // stream from spawn instead of reading the (now-empty) replay buffer later.
+  const outputs = new Map<string, string[]>()
   const spawn = (
     h: AgentSessionLike,
     partial: Partial<ResolvedContextContinuityPolicy>,
     extra?: { trace?: boolean; adapterSlug?: string; title?: string },
-  ) =>
-    reg.spawnAgent({
+  ) => {
+    const desc = reg.spawnAgent({
       workspaceSlug: "default",
       cwd: tmp,
       agentSession: h,
@@ -140,13 +143,14 @@ describe("context compaction has one owner", () => {
       contextContinuity: { ...CONTEXT_CONTINUITY_DEFAULTS, ...partial },
       ...(extra?.trace ? { trace: true } : {}),
       ...(extra?.title ? { title: extra.title } : {}),
-    }).id
-
-  const outputOf = (id: string): string[] => {
+    })
     const lines: string[] = []
-    reg.attach(id, line => lines.push(line))?.()
-    return lines
+    outputs.set(desc.id, lines)
+    reg.attach(desc.id, line => lines.push(line))
+    return desc.id
   }
+
+  const outputOf = (id: string): string[] => outputs.get(id) ?? []
 
   describe("S1: the percent-band compaction is not performed", () => {
     it("never switches a harness with a compact mode into it between compactAtPct and continueFreshAtPct", async () => {

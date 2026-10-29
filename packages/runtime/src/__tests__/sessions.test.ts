@@ -946,7 +946,12 @@ describe("createSessionsRegistry", () => {
       await reg.sendPrompt(desc.id, "go")
       expect(reg.get(desc.id)?.awaitingQuestion?.options).toEqual(["continue-fresh", "keep-going"])
 
+      // Capture live: the row is killed by the handoff, and a terminal row's
+      // output rings are dropped at exit.
+      const lines: string[] = []
+      const unsub = reg.attach(desc.id, line => { lines.push(line) })
       await reg.sendPrompt(desc.id, "continue-fresh")
+      if (unsub) unsub()
 
       expect(call).toBe(1) // the original session's agent never got a second turn
       expect(answeredHandler).toHaveBeenCalledWith(
@@ -956,9 +961,6 @@ describe("createSessionsRegistry", () => {
           answer: "continue-fresh",
         }),
       )
-      const lines: string[] = []
-      const unsub = reg.attach(desc.id, line => { lines.push(line) })
-      if (unsub) unsub()
       expect(
         lines.some(l => l.includes("continue-fresh requested but no adapter resolver is configured")),
       ).toBe(true)

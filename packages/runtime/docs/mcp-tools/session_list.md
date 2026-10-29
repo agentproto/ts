@@ -84,3 +84,8 @@ parentSessionId, continuedFrom, lastTurnErroredAt, interrupted);
 `kind:"command"` rows are hidden unless asked for (`kind:"command"` or
 `includeCommands:true`). For ranked text search over past sessions' index
 sidecars use `session_search`.
+
+On `GET /sessions`, the live-only `availableCommands` table is omitted from
+the default row (and from the `?since=` delta view). Ask for it with
+`?fields=availableCommands`; the per-session descriptor (`GET /sessions/<id>`)
+always carries it.

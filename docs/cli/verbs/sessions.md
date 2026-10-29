@@ -149,6 +149,12 @@ activity first, and the response carries `total` (the filtered count before
 50 rows plus `truncated`, `total` and `nextCursor` (pass `limit` up to 200 and
 `cursor` to page).
 
+The default `GET /sessions` row omits the live-only `availableCommands` table
+(large, and only useful for a specific session). Add
+`?fields=availableCommands` to the list query when you need it, or read the
+per-session descriptor (`GET /sessions/<id>`), which always carries it. The
+`?since=` delta view uses the same projection.
+
 | Filter | Meaning |
 |---|---|
 | `ids` | only these session ids (exact; string or list): the cheap read of known sessions. MCP also falls back to cold history when none is live |

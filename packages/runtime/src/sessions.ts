@@ -141,7 +141,10 @@ import {
   writeBucketSnapshot,
   writeBucketSnapshotSync,
 } from "./workspace-buckets.js"
-import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
+import {
+  createTerminalTranscriptWriter,
+  readTerminalLogTail,
+} from "./terminal-transcript-writer.js"
 import {
   deriveSessionUsage,
   pickUsageDetail,
@@ -3556,6 +3559,11 @@ interface SessionRuntime {
    *  derived outcome's `summary` without re-reading the transcript. Not
    *  persisted. */
   lastAssistantText?: string
+  /** Snapshot of `lastAssistantText` taken at the moment this row went
+   *  terminal (see `emitExited`). A late relayed event can still append to
+   *  the live buffer after death, but the output-tail reader must keep
+   *  serving what the session actually finished with, not that straggler. */
+  finalOutputText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
   /** Assistant text accumulated during the CURRENT turn, tail-capped like
@@ -5444,6 +5452,12 @@ export interface SessionsRegistry {
    *  bytes at the end; `lastBytes` caps the returned size from the
    *  tail. Returns null when the session is missing or not a PTY. */
   readTerminalOutput(id: string, lastBytes?: number): Buffer | null
+  /** Last `lastN` output lines for an agent-cli/command row. Serves the
+   *  live ring while the row still has one; a finished row's rings are
+   *  cleared at exit, so it falls back to the last assistant text kept on
+   *  the runtime and then to the bounded transcript tail on disk. Returns
+   *  `[]` for a missing session or a row with no recoverable text. */
+  readOutputTail(id: string, lastN: number): string[]
   /** SIGTERM the underlying child + close the agent protocol session.
    *  `reason`, when given, is stamped onto `SessionDescriptor.endedReason`
    *  (see {@link SessionEndReason}) — pass it from every call site that
@@ -7158,6 +7172,28 @@ export function createSessionsRegistry(opts?: {
     // Refresh the sidecar now: an exit is a terminal state, so its index
     // must land regardless of the throttled turn-end writes.
     writeIndexNow(rt)
+    // The row is terminal: its live replay buffers have done their job. The
+    // final text was captured above (`recordOutcome` / the index write), and
+    // durable history lives in `events.jsonl` / the command log, so a finished
+    // row must not keep its output rings for the rest of the daemon's life.
+    // Every terminal path funnels through here (kill, crash, pty exit, idle
+    // reap, steward close). Freeze the final text first: a relayed event can
+    // still land after this point and append to `lastAssistantText`, and the
+    // output-tail reader must keep serving the real result, not that late line.
+    if (rt.lastAssistantText !== undefined) rt.finalOutputText = rt.lastAssistantText
+    rt.recentLines.length = 0
+    rt.recentLinesChars = 0
+    // Keep a PTY's byte ring: it is already capped at 64 KiB, and it is the
+    // scrollback `terminal_output` / `/preview` must serve the instant the
+    // process exits. The durable `terminal.jsonl` write is asynchronous, so
+    // clearing the ring here would race that flush and briefly answer with
+    // zero bytes. Agent-cli rows drop their byte buffer as before.
+    if (!rt.pty) {
+      rt.recentBytes.length = 0
+      rt.recentBytesSize = 0
+    }
+    rt.textBuf = ""
+    rt.thoughtBuf = ""
     // A dead PTY has no transcript left to discover — stop its link probe.
     rt.linkProbeStop?.()
     // A dying session must never leave a held permission RPC dangling — cancel
@@ -7888,6 +7924,7 @@ export function createSessionsRegistry(opts?: {
         availableModes: _availableModes,
         spawnEnforcedPostures: _spawnEnforcedPostures,
         configOptions: _configOptions,
+        availableCommands: _availableCommands,
         ...rest
       } = s.desc
       if (rest.remoteParent) {
@@ -14403,11 +14440,42 @@ export function createSessionsRegistry(opts?: {
     readTerminalOutput(id, lastBytes) {
       const rt = sessions.get(id)
       if (!rt || !rt.pty) return null
-      const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
-      if (typeof lastBytes === "number" && lastBytes > 0 && joined.byteLength > lastBytes) {
-        return joined.subarray(joined.byteLength - lastBytes)
+      const cap =
+        typeof lastBytes === "number" && lastBytes > 0 ? lastBytes : RECENT_BYTES_CAP
+      if (rt.recentBytes.length > 0) {
+        const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
+        return joined.byteLength > cap ? joined.subarray(joined.byteLength - cap) : joined
       }
-      return joined
+      // The ring is empty. A LIVE row simply has no output yet: never read
+      // disk for it, or stale scrollback from an earlier run would surface.
+      // A terminal row falls back to the durable `terminal.jsonl` copy.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") {
+        return Buffer.alloc(0)
+      }
+      return readTerminalLogTail(rt.desc.id, cap, transcriptBaseDir)
+    },
+    readOutputTail(id, lastN) {
+      const rt = sessions.get(id)
+      if (!rt) return []
+      const terminal =
+        rt.desc.status !== "running" && rt.desc.status !== "starting"
+      if (!terminal) {
+        return rt.recentLines.slice(-lastN)
+      }
+      // Terminal-row reads must not be fooled by a late stream event that
+      // appended after `emitExited` cleared the ring: prefer the text frozen
+      // at the terminal transition over the still-mutable live buffer.
+      let text = rt.finalOutputText ?? rt.lastAssistantText
+      if (!text) {
+        text = readTranscriptTail(
+          sessionEventsPath(rt.desc.id, transcriptBaseDir),
+          INDEX_TAIL_BYTES,
+        ).lastOutputText
+      }
+      // External rows go terminal without passing through `emitExited`, so
+      // their ring may still be the only readable tail.
+      if (!text) return rt.recentLines.slice(-lastN)
+      return text.split(/\r?\n/).slice(-lastN)
     },
     kill(id, signal = "SIGTERM", reason, outcome) {
       const rt = sessions.get(id)
@@ -16213,6 +16281,12 @@ function loadHistorySnapshot(
     }
     // A row loaded from disk has no live provisioning, whatever it recorded.
     delete reclassified.provisioning
+    // `availableCommands` is a live read-surface stamped by the ACP
+    // `available_commands_update` event, never a durable property. Snapshots
+    // written by older daemons may still carry it; drop it on the way back in
+    // so a ghost never holds a stale command list (and the next persist drops
+    // it from disk for good).
+    delete reclassified.availableCommands
     // Unconditional, not `if (wasAlive)`: a ghost carries no child/
     // agentSession, so it is idle whatever the snapshot claimed — and rows
     // that were ALREADY terminal can carry frozen flags too. Two ways in: a

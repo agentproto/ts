@@ -1437,15 +1437,11 @@ export function registerAgentTools(
           isError: true,
         }
       }
-      // Best-effort tail — re-attach with a temp listener, capture
-      // backfill (which is the recent ring buffer), unsubscribe.
+      // Best-effort tail — the live ring while the session has one, or the
+      // final text recovered from the row / transcript once it is terminal
+      // (its rings are cleared at exit — see SessionsRegistry.readOutputTail).
       const limit = input.lastN ?? 80
-      const lines: string[] = []
-      const unsub = registry.attach(sessionId, (line, _stream) => {
-        lines.push(line)
-      })
-      if (unsub) unsub()
-      const tail = lines.slice(-limit)
+      const tail = registry.readOutputTail(sessionId, limit)
       let output = input.clean ? cleanAgentLines(tail) : tail
       // Resilience: a tool-busy turn emits `[tool]`/`[tool-result]` lines but
       // little or no assistant text, and clean mode strips those — so an agent
