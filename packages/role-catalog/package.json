@@ -34,6 +34,7 @@
   },
   "files": [
     "dist",
+    "pack",
     "README.md",
     "LICENSE"
   ],
@@ -44,6 +45,7 @@
     "dev": "tsup --watch",
     "build": "tsup",
     "clean": "rm -rf dist",
+    "render:pack": "node scripts/render-pack.mjs",
     "check-types": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest"
@@ -53,8 +55,10 @@
     "@agentproto/role": "workspace:*"
   },
   "devDependencies": {
+    "@agentproto/pack": "workspace:*",
     "@agentproto/tooling": "workspace:*",
     "@types/node": "^25.9.9",
+    "gray-matter": "^4.0.3",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.7"

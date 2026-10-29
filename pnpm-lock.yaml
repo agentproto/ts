@@ -3234,6 +3234,15 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/persona':
+        specifier: workspace:*
+        version: link:../persona
+      '@agentproto/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@agentproto/role':
+        specifier: workspace:*
+        version: link:../role
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3810,12 +3819,18 @@ importers:
         specifier: workspace:*
         version: link:../role
     devDependencies:
+      '@agentproto/pack':
+        specifier: workspace:*
+        version: link:../pack
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling
       '@types/node':
         specifier: ^25.9.9
         version: 25.9.9
+      gray-matter:
+        specifier: ^4.0.3
+        version: 4.0.3
       tsup:
         specifier: ^8.5.1
         version: 8.5.1(jiti@2.7.0)(postcss@8.5.31)(tsx@4.23.15)(typescript@5.9.3)(yaml@2.9.1)
