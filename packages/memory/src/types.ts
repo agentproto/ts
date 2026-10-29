@@ -17,10 +17,14 @@ export const MEMORY_STATUSES = ["active", "superseded", "archived"] as const
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number]
 
 export interface MemoryAnchor {
-  kind: "global" | "project" | "task" | "session" | "pr" | "contact" | "agent"
+  kind: "global" | "project" | "task" | "session" | "pr" | "contact" | "agent" | "node" | "operator"
   /** Anchor target slug (project, contact, agent). */
   slug?: string
-  /** Anchor target id (task, session). */
+  /**
+   * Anchor target id (task, session, node, operator). A node's is its
+   * AIP-34 id (`@<owner>/<slug>`), an operator's the body of its AIP-54
+   * `operator:` ref (`<slug>` or `<slug>@<workspace>`). Section 10.
+   */
   id?: string
   /** Repository `owner/name` for a pr anchor. */
   repo?: string

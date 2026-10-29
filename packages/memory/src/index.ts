@@ -14,6 +14,10 @@
  *
  * Store (section 8): the `MemoryStore` port and `FilesMemoryStore`, the
  * reference layout (`items/<type>/<id>.md`, `proposals/<id>.md`).
+ *
+ * Node scope (section 10): `MemoryScope`, the `node:` and `operator:`
+ * anchors, and the projection and write rules over a scope the host
+ * computed (`isInNodeProjection`, `applyWriteScope`).
  */
 
 export const SPEC_NAME = "memory/v1" as const
@@ -26,6 +30,18 @@ export { isAllowedStatusTransition, isInForce, memoryStatus } from "./lifecycle.
 export { MemoryParseError, MemoryValidationError } from "./errors.js"
 export { memoryFrontmatterSchema } from "./schema.js"
 export {
+  applyWriteScope,
+  assertRetagOnly,
+  isInNodeProjection,
+  isNodeOrOperatorTag,
+  nodeAnchorIds,
+  nodeTag,
+  operatorAnchorIds,
+  operatorTag,
+  type NodeProjectionOptions,
+  type WriteScopeOptions,
+} from "./node-scope.js"
+export {
   MemoryConflictError,
   MemoryNotFoundError,
   MemorySlugTakenError,
@@ -34,6 +50,7 @@ export {
   type IMemoryStore,
   type MemoryFilter,
   type MemoryRecord,
+  type MemoryScope,
   type MemorySearchHit,
   type MemorySearchOptions,
   type MemoryStore,

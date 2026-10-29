@@ -4,6 +4,7 @@ import { join } from "node:path"
 import { MemoryValidationError } from "./errors.js"
 import { isInForce, memoryStatus } from "./lifecycle.js"
 import { parseMemory, renderMemory } from "./markdown.js"
+import { applyWriteScope, assertRetagOnly, isInNodeProjection } from "./node-scope.js"
 import {
   MemoryConflictError,
   MemoryNotFoundError,
@@ -11,6 +12,7 @@ import {
   MemoryTransitionError,
   type MemoryFilter,
   type MemoryRecord,
+  type MemoryScope,
   type MemorySearchHit,
   type MemorySearchOptions,
   type MemoryStore,
@@ -56,6 +58,12 @@ export interface FilesMemoryStoreOptions {
   knowledge?: MemoryKnowledgeProvider
   /** The store's clock: `updated_at` on commits, and the in-force check. */
   now?: () => Date
+  /**
+   * The host declares AIP-34 trees (section 10, rule 33): a host call that
+   * creates an item or a proposal with no node anchor is refused. Off: the
+   * store behaves as sections 8 and 9 alone.
+   */
+  declaresTrees?: boolean
 }
 
 interface StoredItem {
@@ -92,22 +100,26 @@ export class FilesMemoryStore implements MemoryStore {
   readonly #root: string
   readonly #knowledge: MemoryKnowledgeProvider | undefined
   readonly #now: () => Date
+  readonly #declaresTrees: boolean
   #tail: Promise<unknown> = Promise.resolve()
 
   constructor(options: FilesMemoryStoreOptions) {
     this.#root = options.root
     this.#knowledge = options.knowledge
     this.#now = options.now ?? (() => new Date())
+    this.#declaresTrees = options.declaresTrees ?? false
   }
 
   write(item: MemoryDocument, opts: MemoryWriteOptions): Promise<MemoryRecord> {
     return this.#exclusive(() =>
-      opts.mode === "propose" ? this.#propose(item) : this.#commit(item, opts),
+      opts.mode === "propose" ? this.#propose(item, opts) : this.#commit(item, opts),
     )
   }
 
-  async read(id: string): Promise<MemoryRecord | null> {
-    return (await this.#find(id))?.record ?? null
+  async read(id: string, opts: { scope?: MemoryScope } = {}): Promise<MemoryRecord | null> {
+    const stored = await this.#find(id)
+    // Rule 28: outside the projection reads as absent.
+    return stored && visible(stored.record, opts.scope) ? stored.record : null
   }
 
   async list(filter: MemoryFilter = {}): Promise<readonly MemoryRecord[]> {
@@ -128,6 +140,9 @@ export class FilesMemoryStore implements MemoryStore {
         if (statuses && !statuses.includes(memoryStatus(item))) return false
         if (filter.slug !== undefined && item.slug !== filter.slug) return false
         if (filter.tags && !filter.tags.some((t) => item.tags?.includes(t))) return false
+        // Rule 27, 29: the projection is applied here, before the slug
+        // lookup below, and (for `search`) before ranking, snippets and limit.
+        if (filter.scope && !isInNodeProjection(item, filter.scope)) return false
         if (inForce !== undefined) {
           const holds = !filter.proposals && isInForce(item, now)
           if (holds !== inForce) return false
@@ -163,7 +178,9 @@ export class FilesMemoryStore implements MemoryStore {
     }
 
     const foreign: MemorySearchHit[] = []
-    if (this.#knowledge) {
+    // Rule 29: this store cannot restrict a provider's index to a projection,
+    // so a scoped search is not delegated.
+    if (this.#knowledge && !opts.filter?.scope) {
       const result = await this.#knowledge.query({ query, topK: limit })
       for (const kh of result.hits) {
         const named = kh.metadata?.memoryId
@@ -199,10 +216,10 @@ export class FilesMemoryStore implements MemoryStore {
   supersede(
     oldId: string,
     next: MemoryDocument,
-    opts: { ifRevision?: string } = {},
+    opts: { ifRevision?: string; scope?: MemoryScope } = {},
   ): Promise<{ old: MemoryRecord; next: MemoryRecord }> {
     return this.#exclusive(async () => {
-      const old = await this.#mustFind(oldId)
+      const old = await this.#mustFind(oldId, opts.scope)
       checkRevision(oldId, opts.ifRevision, old.record.revision)
       const from = memoryStatus(old.record.item)
       if (from !== "active") throw new MemoryTransitionError(oldId, from, "superseded")
@@ -210,15 +227,20 @@ export class FilesMemoryStore implements MemoryStore {
         throw invalid("id", "the next item must have a new id (rule 20)")
       }
       // Rule 20: commit the new item first, then retire the old one.
-      const committed = await this.#commit(next, { mode: "commit" }, oldId)
+      const committed = await this.#commit(
+        next,
+        { mode: "commit", ...(opts.scope ? { scope: opts.scope } : {}) },
+        oldId,
+        old.record.item,
+      )
       const retired = await this.#rewriteStatus(old, "superseded")
       return { old: retired, next: committed }
     })
   }
 
-  archive(id: string, opts: { ifRevision?: string } = {}): Promise<MemoryRecord> {
+  archive(id: string, opts: { ifRevision?: string; scope?: MemoryScope } = {}): Promise<MemoryRecord> {
     return this.#exclusive(async () => {
-      const stored = await this.#mustFind(id)
+      const stored = await this.#mustFind(id, opts.scope)
       checkRevision(id, opts.ifRevision, stored.record.revision)
       const from = memoryStatus(stored.record.item)
       if (from === "archived") return stored.record
@@ -227,9 +249,12 @@ export class FilesMemoryStore implements MemoryStore {
     })
   }
 
-  dismiss(proposalId: string): Promise<void> {
+  dismiss(proposalId: string, opts: { scope?: MemoryScope } = {}): Promise<void> {
     return this.#exclusive(async () => {
       if (!PROPOSAL_ID.test(proposalId)) throw new MemoryNotFoundError("proposal", proposalId)
+      if (opts.scope && !(await this.#proposalVisible(proposalId, opts.scope))) {
+        throw new MemoryNotFoundError("proposal", proposalId)
+      }
       try {
         await unlink(this.#proposalPath(proposalId))
       } catch (err) {
@@ -239,8 +264,13 @@ export class FilesMemoryStore implements MemoryStore {
     })
   }
 
-  async #propose(item: MemoryDocument): Promise<MemoryRecord> {
-    const doc = clean(item)
+  async #propose(item: MemoryDocument, opts: MemoryWriteOptions): Promise<MemoryRecord> {
+    const doc = clean(
+      applyWriteScope(item, opts.scope, {
+        ...(opts.owner ? { owner: opts.owner } : {}),
+        declaresTrees: this.#declaresTrees,
+      }),
+    )
     const result = validateMemory(doc)
     if (!result.ok) {
       throw new MemoryValidationError("FilesMemoryStore.write (AIP-72 rule 13)", result.errors)
@@ -253,17 +283,23 @@ export class FilesMemoryStore implements MemoryStore {
     return { item: parseMemory(text), revision: proposalId, proposalId }
   }
 
-  /** The commit half of `write`, unlocked; `ignoreSlugOf` is the item being superseded. */
+  /**
+   * The commit half of `write`, unlocked. `ignoreSlugOf` is the item being
+   * superseded, `superseded` its document: the new item inherits its node
+   * and ownership when it names none.
+   */
   async #commit(
     item: MemoryDocument,
     opts: MemoryWriteOptions,
     ignoreSlugOf?: string,
+    superseded?: MemoryDocument,
   ): Promise<MemoryRecord> {
-    const doc = clean(item)
+    let doc = clean(item)
     if (opts.fromProposal !== undefined) {
       const known =
         PROPOSAL_ID.test(opts.fromProposal) &&
-        (await readText(this.#proposalPath(opts.fromProposal))) !== null
+        (await readText(this.#proposalPath(opts.fromProposal))) !== null &&
+        (!opts.scope || (await this.#proposalVisible(opts.fromProposal, opts.scope)))
       if (!known) throw new MemoryNotFoundError("proposal", opts.fromProposal)
     }
     if (doc.id !== undefined && !SAFE_ID.test(doc.id)) {
@@ -271,6 +307,19 @@ export class FilesMemoryStore implements MemoryStore {
     }
 
     const existing = doc.id === undefined ? null : await this.#find(doc.id)
+    // Rules 27, 28: an item outside the projection cannot be changed, and
+    // reads as absent.
+    if (existing && !visible(existing.record, opts.scope)) {
+      throw new MemoryNotFoundError("item", doc.id as string)
+    }
+    doc = clean(
+      applyWriteScope(doc, opts.scope, {
+        ...(opts.owner ? { owner: opts.owner } : {}),
+        ...(existing || superseded ? { basis: (existing?.record.item ?? superseded) as MemoryDocument } : {}),
+        declaresTrees: this.#declaresTrees && !existing,
+      }),
+    )
+    if (existing && opts.scope) assertRetagOnly(existing.record.item, doc)
     const now = this.#now().toISOString()
     let next: MemoryDocument
 
@@ -370,10 +419,15 @@ export class FilesMemoryStore implements MemoryStore {
     }
   }
 
-  async #mustFind(id: string): Promise<StoredItem> {
+  async #mustFind(id: string, scope?: MemoryScope): Promise<StoredItem> {
     const stored = await this.#find(id)
-    if (!stored) throw new MemoryNotFoundError("item", id)
+    if (!stored || !visible(stored.record, scope)) throw new MemoryNotFoundError("item", id)
     return stored
+  }
+
+  async #proposalVisible(proposalId: string, scope: MemoryScope): Promise<boolean> {
+    const text = await readText(this.#proposalPath(proposalId))
+    return text !== null && isInNodeProjection(parseMemory(text), scope)
   }
 
   async #find(id: string): Promise<StoredItem | null> {
@@ -425,6 +479,11 @@ export class FilesMemoryStore implements MemoryStore {
     this.#tail = run.catch(() => undefined)
     return run
   }
+}
+
+/** Rule 27: no scope is a host call, which sees everything. */
+function visible(record: MemoryRecord, scope: MemoryScope | undefined): boolean {
+  return scope === undefined || isInNodeProjection(record.item, scope)
 }
 
 function itemRecord(text: string, id: string): MemoryRecord {

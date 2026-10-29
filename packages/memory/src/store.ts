@@ -18,6 +18,23 @@ export interface MemoryRecord {
   proposalId?: string
 }
 
+/**
+ * AIP-72 section 10. Built by the host from the calling session, never by
+ * the store, and handed in on every operation made on a session's behalf.
+ * A call with no `scope` is a host call (rule 30).
+ */
+export interface MemoryScope {
+  /**
+   * The node projection: AIP-34 node ids, nearest first, already cut at a
+   * sealed or hard node. Empty: the session has no node scope.
+   */
+  readonly nodes: readonly string[]
+  /** Id of the root node of the session's tree. */
+  readonly tree?: string
+  /** The operator anchor id, when the session runs an operator. */
+  readonly operator?: string
+}
+
 export interface MemoryFilter {
   type?: MemoryType | readonly MemoryType[]
   status?: MemoryStatus | readonly MemoryStatus[]
@@ -29,6 +46,8 @@ export interface MemoryFilter {
   inForce?: boolean
   /** List proposals instead of items. */
   proposals?: boolean
+  /** Section 10: only the items in the scope's node projection. Absent: a host call. */
+  scope?: MemoryScope
 }
 
 export interface MemorySearchHit {
@@ -49,6 +68,13 @@ export interface MemoryWriteOptions {
   ifRevision?: string
   /** The proposal this commit promotes; dropped once the item is written (rule 21). */
   fromProposal?: string
+  /** Section 10: the calling session's scope. Absent: a host call. */
+  scope?: MemoryScope
+  /**
+   * Rule 32, on a create. `"operator"` (the default) owns the item by the
+   * session's operator; `"node"` shares it with every operator of the node.
+   */
+  owner?: "operator" | "node"
 }
 
 export interface MemorySearchOptions {
@@ -58,16 +84,16 @@ export interface MemorySearchOptions {
 
 export interface MemoryStore {
   write(item: MemoryDocument, opts: MemoryWriteOptions): Promise<MemoryRecord>
-  read(id: string): Promise<MemoryRecord | null>
+  read(id: string, opts?: { scope?: MemoryScope }): Promise<MemoryRecord | null>
   list(filter?: MemoryFilter): Promise<readonly MemoryRecord[]>
   search(query: string, opts?: MemorySearchOptions): Promise<readonly MemorySearchHit[]>
   supersede(
     oldId: string,
     next: MemoryDocument,
-    opts?: { ifRevision?: string },
+    opts?: { ifRevision?: string; scope?: MemoryScope },
   ): Promise<{ old: MemoryRecord; next: MemoryRecord }>
-  archive(id: string, opts?: { ifRevision?: string }): Promise<MemoryRecord>
-  dismiss(proposalId: string): Promise<void>
+  archive(id: string, opts?: { ifRevision?: string; scope?: MemoryScope }): Promise<MemoryRecord>
+  dismiss(proposalId: string, opts?: { scope?: MemoryScope }): Promise<void>
 }
 
 /** The section 8 port under the `I*` name its knowledge sibling uses. */
