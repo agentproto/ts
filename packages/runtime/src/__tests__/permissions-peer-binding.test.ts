@@ -24,7 +24,7 @@ describe("peer binding", () => {
   it("P1 slug mode allows same-slug peers and reports peerVerified=false", () => {
     const d = send(X, Y, { messaging: { peerBinding: "slug" }, workspaceOfCwd: () => undefined })
     expect(d.allow).toBe(true)
-    expect(d.relation).toBe("peer")
+    expect(d.relation).toBe("granted")
     expect(d.peerVerified).toBe(false)
   })
 
@@ -51,7 +51,7 @@ describe("peer binding", () => {
       workspaceOfCwd: cwd => (cwd === "/ws/a" || cwd === "/ws/b" ? "ws" : undefined),
     })
     expect(d.allow).toBe(true)
-    expect(d.relation).toBe("peer")
+    expect(d.relation).toBe("granted")
     expect(d.peerVerified).toBe(true)
   })
 
@@ -106,7 +106,7 @@ describe("peer binding", () => {
     expect(slug.peerVerified).toBeUndefined()
     const verified = send(a, b, { messaging: { peerBinding: "verified" }, workspaceOfCwd })
     expect(verified.allow).toBe(true)
-    expect(verified.relation).toBe("peer")
+    expect(verified.relation).toBe("granted")
     expect(verified.peerVerified).toBe(true)
   })
 })

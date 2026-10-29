@@ -155,9 +155,20 @@ export interface AgentprotoRawSessionMessageEnvelope {
   from: {
     sessionId?: string
     label?: string
+    /** @deprecated use `agentSlug`. */
     role?: string
     adapter?: string
-    relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
+    relation:
+      | "child"
+      | "parent"
+      | "sibling"
+      | "granted"
+      | "human"
+      | "system"
+      /** @deprecated legacy value written before `granted` replaced it */
+      | "peer"
+    /** The sender's AIP-42 agent, when one was bound. */
+    agentSlug?: string
   }
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"

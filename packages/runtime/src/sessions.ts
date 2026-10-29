@@ -250,6 +250,7 @@ import {
   isProtectedMessage,
   matchesMessageFilter,
   MESSAGE_PREAMBLE,
+  normalizeMessageRelation,
   renderInboxDigest,
   renderSessionMessages,
   type MessageDeliveryVia,
@@ -10766,7 +10767,9 @@ export function createSessionsRegistry(opts?: {
       sessionId: msg.to,
       messageId: msg.id,
       ...(msg.from.sessionId ? { fromSessionId: msg.from.sessionId } : {}),
-      relation: msg.from.relation,
+      // A message persisted in an inbox before `granted` replaced `peer`
+      // is delivered with its stored value: the bus speaks the new one.
+      relation: normalizeMessageRelation(msg.from.relation) ?? msg.from.relation,
       kind: msg.kind,
       urgency: msg.urgency,
       ...(msg.delivered ? { delivered: msg.delivered } : {}),

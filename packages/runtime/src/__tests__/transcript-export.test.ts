@@ -685,6 +685,27 @@ describe("daemon-events exporter", () => {
     expect(md.content).toContain("from child `executor-2` (done)")
   })
 
+  it("a session-message recorded with the legacy relation `peer` still exports, and `granted` exports as is", async () => {
+    writeEvents([
+      {
+        kind: "session-message",
+        sessionId: SESSION_ID,
+        message: { id: "msg_old", text: "from a peer", kind: "report", from: { sessionId: "sess_a", relation: "peer" } },
+      },
+      {
+        kind: "session-message",
+        sessionId: SESSION_ID,
+        message: { id: "msg_new", text: "granted", kind: "report", from: { sessionId: "sess_a", relation: "granted" } },
+      },
+    ])
+    const json = await exportAgentSession({ sessionId: SESSION_ID, registry: makeRegistry(), source: "daemon", format: "json" })
+    const parsed = JSON.parse(json.content) as ExportedSession
+    expect(parsed.messages.map(m => [m.from?.messageId, m.from?.relation])).toEqual([
+      ["msg_old", "peer"],
+      ["msg_new", "granted"],
+    ])
+  })
+
   it("reconstructs a user -> assistant+tool_call -> tool_result -> assistant flow", async () => {
     writeEvents([
       { kind: "user-prompt", sessionId: SESSION_ID, text: "List files." },
