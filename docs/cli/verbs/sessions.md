@@ -1239,7 +1239,7 @@ daemon predates this route — restart it.
 Sessions in the same tree talk through **typed messages**, separate from
 prompts. A prompt is an instruction from whoever drives a session; a
 message is a report between sessions whose sender the daemon **attests**:
-the `from` block (session id, relation, label) is computed from the
+the `from` block (session id, relation, label, and the sender's agent slug when one is bound) is computed from the
 caller's verified identity and the session tree, and no send request can
 set it. The recipient's agent sees each message as its own
 `<agentproto-message id=… from="child" session=… kind=…><body>…</body></agentproto-message>`
@@ -1250,7 +1250,7 @@ it can't forge a header. The recipient's transcript records a
 Who may message whom: child → parent, parent → direct child, human/daemon
 → anyone. Siblings only with `defaults.messaging.allowSiblings: true`. Any
 session of the **same workspace** may also message any other session of that
-workspace, even without a tree edge (relation `peer`) - that allowance is on
+workspace, even without a tree edge (relation `granted`) - that allowance is on
 by default and is turned off with `defaults.messaging.allowSameWorkspace:
 false`.
 
@@ -1269,7 +1269,7 @@ pass; a sibling passes only with `allowSiblings` - **except** that a sibling
 pair whose workspaces are linked by a peer group is allowed even without
 `allowSiblings` (the operator explicitly grouped those workspaces, and agents
 spawned under one orchestrator are always siblings); the message then carries
-relation `peer`. Two siblings of the SAME workspace are still gated by
+relation `granted`. Two siblings of the SAME workspace are still gated by
 `allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
 and a peer-group link always passes.
 

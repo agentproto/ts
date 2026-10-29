@@ -300,7 +300,7 @@ function mint(body: DecisionBody): Decision {
 // ── Messaging relations ────────────────────────────────────────────────
 
 /** Strongest first. Also the order `resolveRelation` used to test them. */
-const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "peer", "human", "system"]
+const RELATION_STRENGTH: readonly MessageRelation[] = ["parent", "child", "sibling", "granted", "human", "system"]
 
 function verifiedSlugOf(node: MessageTreeNode, ctx: PermissionContext): string | undefined {
   if (!node.cwd || !ctx.workspaceOfCwd) return undefined
@@ -392,10 +392,10 @@ export function collectMessageRelations(
       const peerGroup = links.group
       if (out.length === 0) {
         if (peerGroup || links.workspace) {
-          out.push("peer")
+          out.push("granted")
         }
       } else if (sibling && peerGroup) {
-        out.push("peer")
+        out.push("granted")
       }
       return out
     }
@@ -422,8 +422,9 @@ function relationGrant(
       return { allow: true, rule: "system" }
     case "sibling":
       return { allow: ctx.messaging?.allowSiblings === true, rule: "messaging.allowSiblings" }
-    case "peer":
-      // `collectMessageRelations` only reports `peer` when the link is
+    case "granted":
+    case "peer": // legacy value, never collected; read as `granted`
+      // `collectMessageRelations` only reports `granted` when the link is
       // allowed (same workspace with the allowance on, or a peer group), so
       // the grant is already established.
       return { allow: true, rule: "messaging.peer" }
@@ -433,7 +434,7 @@ function relationGrant(
 // ── AIP-38 grants ──────────────────────────────────────────────────────
 
 /** Relations that exist because of configuration (a grant), not a tree edge. */
-const GRANT_DERIVED_RELATIONS: ReadonlySet<MessageRelation> = new Set<MessageRelation>(["sibling", "peer"])
+const GRANT_DERIVED_RELATIONS: ReadonlySet<MessageRelation> = new Set<MessageRelation>(["sibling", "granted"])
 
 function policyPrincipals(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext): readonly string[] {
   if (policy.principals) return policy.principals(principal)
@@ -542,11 +543,11 @@ function decideMessage(
     principal.kind === "session" && verifiedMode
       ? collectMessageRelations(principal, recipient, { ...ctx, messaging: { ...ctx.messaging, peerBinding: "slug" } })
       : relations
-  const peerInvolved = relations.includes("peer") || slugRelations.includes("peer")
+  const peerInvolved = relations.includes("granted") || slugRelations.includes("granted")
   const peerVerified =
     principal.kind === "session" && peerInvolved
       ? peerBindingStatus(principal.session, recipient, ctx) === "verified" ||
-        (verifiedMode && relations.includes("peer"))
+        (verifiedMode && relations.includes("granted"))
       : undefined
   const base = {
     action: "session.message" as const,
@@ -590,7 +591,7 @@ function decideMessage(
             ? principal.kind === "operator" && principal.via === "anonymous-local"
               ? "a local caller with no session identity acts as the operator"
               : "the operator may message any session"
-            : hit.r === "peer"
+            : hit.r === "granted"
               ? "sender shares the recipient's workspace or peer group"
               : `sender is the recipient's ${hit.r}`,
     })
@@ -598,11 +599,11 @@ function decideMessage(
   if (refusal && candidates.some(x => x.g.allow)) {
     return mint({ ...base, allow: false, relation: strongest(relations), rule: refusal.rule, reason: refusal.reason })
   }
-  if (verifiedMode && slugRelations.includes("peer") && !relations.includes("peer")) {
+  if (verifiedMode && slugRelations.includes("granted") && !relations.includes("granted")) {
     return mint({
       ...base,
       allow: false,
-      relation: "peer",
+      relation: "granted",
       rule: "messaging.peerBinding",
       reason: "peers need a verified workspace binding (defaults.messaging.peerBinding: verified)",
     })

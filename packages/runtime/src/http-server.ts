@@ -8150,7 +8150,7 @@ code { color: #9ad; }
     const resource = { kind: "session", session: recipient } as const
     const decision = decide(principal, "session.message", resource, policy)
     const relation = decision.relation
-    if (decision.allow && decision.relation === "peer" && decision.peerVerified === false) {
+    if (decision.allow && decision.relation === "granted" && decision.peerVerified === false) {
       warnPeerUnverified({
         senderId: sender?.id,
         recipientId: recipient.id,

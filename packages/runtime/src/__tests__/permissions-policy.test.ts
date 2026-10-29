@@ -75,7 +75,7 @@ describe("session.message: an explicit deny", () => {
     expect(decide(as(x), "session.message", to(y), { policy: { inputs: [grant("deny", "Y")] } })).toMatchObject({
       allow: false,
       rule: "policy.explicit-deny",
-      relation: "peer",
+      relation: "granted",
     })
   })
 

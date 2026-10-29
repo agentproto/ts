@@ -742,7 +742,15 @@ export interface SessionMessageEvent {
   sessionId: string
   messageId: string
   fromSessionId?: string
-  relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
+  relation:
+    | "child"
+    | "parent"
+    | "sibling"
+    | "granted"
+    | "human"
+    | "system"
+    /** @deprecated legacy value; the daemon emits `granted` for a stored `peer`. */
+    | "peer"
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"
   delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }

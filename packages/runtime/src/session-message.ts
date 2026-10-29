@@ -14,9 +14,38 @@
 
 import { randomUUID } from "node:crypto"
 
-/** Sender's position in the tree, relative to the recipient. `peer` = no tree
- *  edge, but the same workspace (the `allowSameWorkspace` allowance). */
-export type MessageRelation = "child" | "parent" | "sibling" | "peer" | "human" | "system"
+/** Sender's position in the tree, relative to the recipient. `granted` = no
+ *  tree edge, but an allowance admitted the send (same workspace via
+ *  `allowSameWorkspace`, or a peer group). `peer` is the value `granted`
+ *  replaced: the daemon no longer produces it, but a message stored before
+ *  that change still carries it, so the type keeps modelling what is read. */
+export type MessageRelation =
+  | "child"
+  | "parent"
+  | "sibling"
+  | "granted"
+  | "human"
+  | "system"
+  /** @deprecated legacy value written before `granted` replaced it; never produced, read as `granted`. */
+  | "peer"
+
+/** Map a stored relation to the current vocabulary: the legacy value `peer`
+ *  (written before `granted` replaced it) reads as `granted`; anything that is
+ *  not a relation is `undefined`. */
+export function normalizeMessageRelation(value: string): MessageRelation | undefined {
+  if (value === "peer") return "granted"
+  switch (value) {
+    case "child":
+    case "parent":
+    case "sibling":
+    case "granted":
+    case "human":
+    case "system":
+      return value
+    default:
+      return undefined
+  }
+}
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
@@ -29,7 +58,10 @@ export interface SessionMessageFrom {
   sessionId?: string
   /** Registry label at send time — display only, never identity. */
   label?: string
+  /** @deprecated use `agentSlug`. */
   role?: string
+  /** The sender's AIP-42 agent, when one was bound. */
+  agentSlug?: string
   adapter?: string
   relation: MessageRelation
 }
@@ -90,6 +122,10 @@ export interface MessageTreeNode {
   parentSessionId?: string
   label?: string
   role?: string
+  /** The sender's AIP-42 agent id, when one was bound at spawn. */
+  agentSlug?: string
+  /** Spawn-time hints; `meta.agentId` is the bound AIP-42 agent. */
+  meta?: Readonly<Record<string, string>>
   adapterSlug?: string
   /** The workspace the session belongs to. Two sessions of the SAME
    *  workspace may message each other even without a tree edge - see
@@ -179,7 +215,7 @@ export function samePeerGroup(
 
 /**
  * The relation the messaging ACL is evaluated against: the tree relation
- * when there IS a tree edge, else `peer` for two sessions of the same
+ * when there IS a tree edge, else `granted` for two sessions of the same
  * workspace (the `allowSameWorkspace` allowance) OR of the same peer group
  * (the `peerGroups` allowance), else `undefined` (a refusal - a different
  * workspace, or a session messaging itself).
@@ -192,15 +228,15 @@ export function resolveEffectiveRelation(
   const relation = resolveRelation(sender, recipient)
   if (relation) return relation
   if (!sender || sender.id === recipient.id) return undefined
-  if (sameWorkspace(sender, recipient)) return "peer"
-  return samePeerGroup(sender, recipient, peerGroups) ? "peer" : undefined
+  if (sameWorkspace(sender, recipient)) return "granted"
+  return samePeerGroup(sender, recipient, peerGroups) ? "granted" : undefined
 }
 
 /**
  * ACL: child→parent, parent→direct child, human/system→any. Sibling↔sibling
- * only when `allowSiblings` (config-gated, default off). A `peer` - two
+ * only when `allowSiblings` (config-gated, default off). A `granted` - two
  * sessions of the same workspace with no tree edge - is allowed when
- * `allowSameWorkspace` (config-gated, default ON); a `peer` linked by a PEER
+ * `allowSameWorkspace` (config-gated, default ON); a `granted` linked by a PEER
  * GROUP (`peerGroup: true`) is allowed whatever `allowSameWorkspace` says -
  * the group list is an independent operator decision. Anything else - a
  * cousin of another workspace, a stranger, yourself - is refused.
@@ -221,7 +257,8 @@ export function isMessageAllowed(
       return true
     case "sibling":
       return opts?.allowSiblings === true
-    case "peer":
+    case "granted":
+    case "peer": // legacy value, read as `granted`
       return opts?.peerGroup === true || opts?.allowSameWorkspace !== false
     default:
       return false
@@ -262,7 +299,7 @@ export function resolveMessageAcl(
   const peerGroup =
     !!sender && sender.id !== recipient.id && samePeerGroup(sender, recipient, opts.peerGroups)
   let relation = resolveEffectiveRelation(sender, recipient, opts.peerGroups)
-  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "peer"
+  if (relation === "sibling" && opts.allowSiblings !== true && peerGroup) relation = "granted"
   const allowed = isMessageAllowed(relation, {
     allowSiblings: opts.allowSiblings,
     allowSameWorkspace: opts.allowSameWorkspace,
@@ -277,10 +314,12 @@ export function messageFrom(
   relation: MessageRelation,
 ): SessionMessageFrom {
   if (!sender || relation === "human" || relation === "system") return { relation }
+  const agentSlug = sender.agentSlug || sender.meta?.agentId
   return {
     sessionId: sender.id,
     ...(sender.label ? { label: sender.label } : {}),
     ...(sender.role ? { role: sender.role } : {}),
+    ...(agentSlug ? { agentSlug } : {}),
     ...(sender.adapterSlug ? { adapter: sender.adapterSlug } : {}),
     relation,
   }
@@ -335,7 +374,7 @@ export interface MessageFilter {
 
 export function matchesMessageFilter(msg: SessionMessage, filter: MessageFilter): boolean {
   if (filter.from === "children") {
-    if (msg.from.relation !== "child") return false
+    if (normalizeMessageRelation(msg.from.relation) !== "child") return false
   } else if (filter.from && filter.from.length) {
     if (!msg.from.sessionId || !filter.from.includes(msg.from.sessionId)) return false
   }
@@ -383,7 +422,8 @@ export function escapeHumanPrompt(text: string): string {
 }
 
 export function renderSessionMessage(msg: SessionMessage): string {
-  const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${msg.from.relation}"`]
+  const relation = normalizeMessageRelation(msg.from.relation) ?? msg.from.relation
+  const attrs: string[] = [`id="${attr(msg.id)}"`, `from="${relation}"`]
   if (msg.from.sessionId) attrs.push(`session="${attr(msg.from.sessionId)}"`)
   const label = sanitizeLabel(msg.from.label)
   if (label) attrs.push(`label="${label}"`)
@@ -412,7 +452,8 @@ export function renderInboxDigest(msgs: readonly SessionMessage[]): string {
   const who = msgs
     .map(m => {
       const label = sanitizeLabel(m.from.label)
-      const sender = m.from.sessionId ? `${m.from.relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : m.from.relation
+      const relation = normalizeMessageRelation(m.from.relation) ?? m.from.relation
+      const sender = m.from.sessionId ? `${relation} ${m.from.sessionId}${label ? ` (${label})` : ""}` : relation
       return `${m.id} from ${sender} [${m.kind}]`
     })
     .join("; ")

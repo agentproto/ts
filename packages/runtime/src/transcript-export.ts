@@ -41,11 +41,21 @@ export interface ExportedMessage {
   text?: string
   /** Set on a `user`-role message that is a typed inter-session message
    *  (a `session-message` record) rather than the human: the daemon-attested
-   *  sender. Absent for a human prompt. */
+   *  sender. Absent for a human prompt. Only the session id, label, relation,
+   *  kind and message id travel — `role`, `adapter` and `from.agentSlug` stay
+   *  on the live/stored envelope and are intentionally not exported. */
   from?: {
     sessionId?: string
     label?: string
-    relation: "child" | "parent" | "sibling" | "peer" | "human" | "system"
+    relation:
+      | "child"
+      | "parent"
+      | "sibling"
+      | "granted"
+      | "human"
+      | "system"
+      /** @deprecated legacy value written before `granted` replaced it */
+      | "peer"
     kind: string
     messageId: string
   }
