@@ -26,7 +26,7 @@
  * it, then SIGKILLs anything that survived a grace poll.
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { execFileSync, spawn, type ChildProcess } from "node:child_process"
 import { createWriteStream, mkdirSync, readFileSync, unlinkSync, type WriteStream } from "node:fs"
 import { dirname, join, resolve as nodeResolve } from "node:path"
 import type { AppService } from "@agentproto/app"
@@ -207,11 +207,11 @@ export interface AppServiceProcess {
   readonly sessionId: string
   /** Process-group leader pid of the current attempt, when known. */
   readonly pid: number | undefined
-  /** The process' `/proc/<pid>/stat` start ticks at spawn time — the
-   *  UNFORGEABLE identity token persisted with the owner record so a later
-   *  boot reconcile signals the recorded pid ONLY if it still names the
-   *  same live process (a recycled pid has different start ticks; see
-   *  `isSameProcess`). */
+  /** The process' start ticks at spawn time (see `readProcessStartTicks`):
+   *  the UNFORGEABLE identity token persisted with the owner record so a
+   *  later boot reconcile signals the recorded pid ONLY if it still names
+   *  the same live process (a recycled pid has different start ticks; see
+   *  `assessRecordedServicePid`). */
   readonly startTicks: number | undefined
   /** True once stop() ran — no further spawn/restart will happen. */
   readonly disposed: boolean
@@ -541,13 +541,27 @@ function defaultSchedule(fn: () => void, delayMs: number): () => void {
 // ── process identity (survives pid recycling) ───────────────────────────────
 
 /**
- * The process' start ticks from `/proc/<pid>/stat` (field 22) — stable for
- * the lifetime of the machine's pid space, so a recycled pid never shares it
- * with its previous owner. `undefined` on a dead pid or a platform without
- * `/proc` — callers treat undefined as "identity unverifiable".
+ * The process' start ticks, stable for the lifetime of the machine's pid
+ * space, so a recycled pid never shares it with its previous owner.
+ * `undefined` on a dead pid or a platform where identity cannot be read at
+ * all; callers treat undefined as "identity unverifiable".
+ *
+ * Linux reads `/proc/<pid>/stat` field 22 directly (process-start jiffies).
+ * Darwin has no `/proc`; `ps -o lstart=` reports the process' start time at
+ * one-second resolution, which is parsed to epoch seconds, coarser than
+ * jiffies. A recycled pid is told apart from its previous owner unless the
+ * new process starts within the SAME wall-clock second as the old one; that
+ * tie reads as a match and would be signalled. macOS allocates pids
+ * sequentially, so a recycle inside one second is not a realistic case, but
+ * the guarantee is weaker than the Linux jiffies one.
  */
 export function readProcessStartTicks(pid: number): number | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined
+  if (process.platform === "darwin") return readProcessStartTicksDarwin(pid)
+  return readProcessStartTicksLinux(pid)
+}
+
+function readProcessStartTicksLinux(pid: number): number | undefined {
   try {
     const raw = readFileSync(`/proc/${pid}/stat`, "utf8")
     // The comm field may contain spaces AND parentheses — split on the LAST
@@ -558,6 +572,32 @@ export function readProcessStartTicks(pid: number): number | undefined {
     // After comm, field 3 is the first entry; starttime is field 22 → index 19.
     const ticks = Number.parseInt(fields[19] ?? "", 10)
     return Number.isFinite(ticks) ? ticks : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** Epoch seconds from a C-locale `ps -o lstart=` line; `undefined` if unparsable. */
+export function parsePsLstart(raw: string): number | undefined {
+  const text = raw.trim()
+  if (text.length === 0) return undefined
+  const ms = Date.parse(text)
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
+}
+
+function readProcessStartTicksDarwin(pid: number): number | undefined {
+  try {
+    // LC_ALL=C: `lstart` month/day names are localized otherwise and
+    // Date.parse would fail. The timeout bounds a wedged `ps`, which runs
+    // synchronously on the spawn and reconcile paths.
+    const raw = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      timeout: 2000,
+      maxBuffer: 4096,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    return parsePsLstart(raw)
   } catch {
     return undefined
   }

@@ -22,6 +22,7 @@ import {
   appServiceLogPath,
   DEFAULT_APP_SERVICE_RESTART_POLICY,
   readProcessStartTicks,
+  parsePsLstart,
   assessRecordedServicePid,
   cleanupLegacyServicePidFile,
 } from "../app-service-process.js"
@@ -341,6 +342,30 @@ describe("cleanup kills the process group", () => {
   it("killServiceProcess is a no-op for a stale/invalid pid", async () => {
     await expect(killServiceProcess(undefined)).resolves.toBeUndefined()
     await expect(killServiceProcess(1_999_999_999)).resolves.toBeUndefined()
+  })
+})
+
+describe("parsePsLstart (macOS start-time identity)", () => {
+  it("parses a C-locale lstart line to epoch seconds, ignoring padding", () => {
+    const expected = Math.floor(new Date("Thu Oct 29 02:07:01 2026").getTime() / 1000)
+    expect(parsePsLstart("Thu Oct 29 02:07:01 2026")).toBe(expected)
+    expect(parsePsLstart("  Thu Oct 29 02:07:01 2026  \n")).toBe(expected)
+    expect(parsePsLstart("Thu Oct  9 02:07:01 2026")).toBe(
+      Math.floor(new Date("Thu Oct 9 02:07:01 2026").getTime() / 1000),
+    )
+  })
+
+  it("returns undefined for empty or unparsable output", () => {
+    expect(parsePsLstart("")).toBeUndefined()
+    expect(parsePsLstart("   \n")).toBeUndefined()
+    expect(parsePsLstart("not a date")).toBeUndefined()
+  })
+
+  it.skipIf(process.platform !== "darwin")("reads this process' own start second via ps", () => {
+    const ticks = readProcessStartTicks(process.pid)
+    const startedAt = Math.floor(Date.now() / 1000 - process.uptime())
+    expect(ticks).toBeDefined()
+    expect(Math.abs(ticks! - startedAt)).toBeLessThanOrEqual(2)
   })
 })
 
