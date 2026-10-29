@@ -167,6 +167,11 @@ describe("validateTypesRegistry", () => {
     ])
   })
 
+  it("resolveTypeEntry does not treat a prototype-named extends as a parent", () => {
+    const resolved = resolveTypeEntry({ guild: { ...entry, extends: "constructor" } }, "guild")
+    expect(resolved?.requires_files).toEqual([])
+  })
+
   it("resolveTypeEntry terminates on a cycle instead of overflowing the stack", () => {
     const cyclic = { a: { ...entry, extends: "b" }, b: { ...entry, extends: "a" } }
     expect(() => resolveTypeEntry(cyclic, "a")).not.toThrow()

@@ -66,9 +66,7 @@ export function loadNodeTree(rootDir: string): NodeTree {
       }
       if (cursor === dirname(cursor)) break
     }
-    // The type floor only. AIP-34 also forbids a child looser than its parent,
-    // which is not applied here: a host enforcing walls from this tree must
-    // apply the ancestor floor too (e.g. via `nodeChain`).
+    // AIP-34 rule 7 floors a wall against the node's type only, not its parent.
     const floor = types ? resolveTypeEntry(types.types, fm.type)?.default_wall : undefined
     nodes.push({
       id: fm.id,

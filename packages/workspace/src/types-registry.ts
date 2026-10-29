@@ -77,6 +77,7 @@ function resolveEntry(
   type: string,
   visiting: Set<string>,
 ): TypeEntry | undefined {
+  if (!Object.hasOwn(types, type)) return undefined
   const entry = types[type]
   if (!entry) return undefined
   if (!entry.extends || visiting.has(type)) return entry
