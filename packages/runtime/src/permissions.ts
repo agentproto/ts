@@ -24,9 +24,27 @@
  *    site) but not routed: `decide()` answers `allow: false,
  *    authoritative: false` and names the site that enforces it today.
  *
+ * AIP-38 grants are consulted at call time through `PermissionContext.policy`
+ * (`evaluateGrants` from `@agentproto/policy`): an explicit deny removes the
+ * grant-derived reasons of `session.message` (sibling, peer) and refuses
+ * `tool.invoke`. A tree edge, the operator and the system are never removed
+ * by a deny (AIP-46 §Who may message whom rule 3). The context is read per
+ * call, so a revoked grant applies on the next call. No caller passes
+ * `policy` yet, so every existing decision is unchanged.
+ *
  * Pure module: no registry, no I/O. Callers resolve the principal and the
  * policy (config) and pass them in.
  */
+
+import {
+  evaluateGrants,
+  evaluateToolInvoke,
+  PolicyGrantError,
+  qualifyToolName,
+  type GrantDecision,
+  type GrantInput,
+  type GrantRequest,
+} from "@agentproto/policy"
 
 import {
   samePeerGroup,
@@ -55,6 +73,7 @@ export const PERMISSION_ACTIONS = [
   "cron.schedule",
   "approval.decide",
   "box.relay",
+  "tool.invoke",
 ] as const
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number]
@@ -162,6 +181,11 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     enforcedAt: "parent-relay.ts relay grant (delivery itself goes through session.message)",
     surfaces: ["POST /relay/parent-message"],
   },
+  "tool.invoke": {
+    routed: false,
+    enforcedAt: "none (no dispatch site calls decide() for a tool call yet; AIP-42 allow/deny is a spawn-time projection)",
+    surfaces: [],
+  },
 }
 
 // ── Principals and resources ───────────────────────────────────────────
@@ -193,7 +217,26 @@ export interface SessionResource {
   session: MessageTreeNode & { allowPromptFrom?: readonly string[] }
 }
 
-export type PermissionResource = SessionResource | { kind: "none" }
+/** A tool call. `name` is the registry's full name `<server>/<name>`, or a legacy bare built-in. */
+export interface ToolResource {
+  kind: "tool"
+  name: string
+  /** Actions the tool declares in `implements`. */
+  implements?: string | readonly string[]
+}
+
+export type PermissionResource = SessionResource | ToolResource | { kind: "none" }
+
+/** AIP-38 grants consulted at call time. Read per call: build a fresh object when the grants change. */
+export interface PermissionPolicy {
+  /** Composed policies and/or bare grants. */
+  inputs: readonly GrantInput[]
+  /** Identity refs of the principal. Default: `session-label://<operator label>` for a session with one. */
+  principals?: (principal: Principal) => readonly string[]
+  now?: GrantRequest["now"]
+  resolveSelector?: GrantRequest["resolveSelector"]
+  evaluateCondition?: GrantRequest["evaluateCondition"]
+}
 
 export interface PermissionContext {
   /** `defaults.messaging.*`, resolved per call (messaging-defaults.ts). */
@@ -216,6 +259,8 @@ export interface PermissionContext {
   /** Registry lookups for the drive gate's ancestor and `label:` rules. */
   parentOf?: (id: string) => string | undefined
   operatorLabelOf?: (id: string) => string | undefined
+  /** AIP-38 grants for `session.message` denies and `tool.invoke`. Absent: no grant is consulted. */
+  policy?: PermissionPolicy
 }
 
 // ── Decision ───────────────────────────────────────────────────────────
@@ -385,6 +430,107 @@ function relationGrant(
   }
 }
 
+// ── AIP-38 grants ──────────────────────────────────────────────────────
+
+/** Relations that exist because of configuration (a grant), not a tree edge. */
+const GRANT_DERIVED_RELATIONS: ReadonlySet<MessageRelation> = new Set<MessageRelation>(["sibling", "peer"])
+
+function policyPrincipals(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext): readonly string[] {
+  if (policy.principals) return policy.principals(principal)
+  if (principal.kind !== "session") return []
+  const label = ctx.operatorLabelOf?.(principal.session.id)?.trim()
+  return label ? [`session-label://${label}`] : []
+}
+
+function grantRequest(principal: Principal, policy: PermissionPolicy, ctx: PermissionContext) {
+  return {
+    principals: policyPrincipals(principal, policy, ctx),
+    ...(policy.now !== undefined ? { now: policy.now } : {}),
+    ...(policy.resolveSelector ? { resolveSelector: policy.resolveSelector } : {}),
+    ...(policy.evaluateCondition ? { evaluateCondition: policy.evaluateCondition } : {}),
+  }
+}
+
+function describeGrantSource(d: GrantDecision): string {
+  return d.inputIndex === undefined
+    ? "a policy grant"
+    : `policy input ${d.inputIndex}${d.grantIndex !== undefined ? `, grant ${d.grantIndex}` : ""}`
+}
+
+/**
+ * Does an AIP-38 explicit deny (or a policy that cannot be read) refuse a
+ * `session:message` to the recipient? Only a deny counts: a policy allow
+ * cannot admit a message, because the envelope needs a relation to carry.
+ */
+function messageRefusal(
+  principal: Principal,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): { rule: string; reason: string } | undefined {
+  const policy = ctx.policy
+  if (!policy) return undefined
+  const label = ctx.operatorLabelOf ? ctx.operatorLabelOf(recipient.id)?.trim() || null : undefined
+  const workspace =
+    ctx.workspaceOfCwd && recipient.cwd ? ctx.workspaceOfCwd(recipient.cwd)?.trim() || null : undefined
+  try {
+    const d = evaluateGrants(policy.inputs, {
+      ...grantRequest(principal, policy, ctx),
+      action: "session:message",
+      scope: recipient.id,
+      typed: { label, workspace },
+    })
+    return d.reason === "explicit-deny"
+      ? {
+          rule: "policy.explicit-deny",
+          reason: `an explicit deny (${describeGrantSource(d)}) refuses session:message to "${recipient.id}"`,
+        }
+      : undefined
+  } catch (err) {
+    if (err instanceof PolicyGrantError) {
+      return { rule: "policy.invalid", reason: `the policy grants cannot be read, so the send is refused: ${err.message}` }
+    }
+    throw err
+  }
+}
+
+function decideTool(principal: Principal, resource: PermissionResource, ctx: PermissionContext, policy: PermissionPolicy): Decision {
+  const base = { action: "tool.invoke" as const, authoritative: false }
+  if (resource.kind !== "tool") {
+    return mint({ ...base, allow: false, rule: "resource", reason: "tool.invoke needs a tool resource" })
+  }
+  const name = qualifyToolName(resource.name)
+  try {
+    const d = evaluateToolInvoke(policy.inputs, {
+      ...grantRequest(principal, policy, ctx),
+      tool: resource.name,
+      ...(resource.implements !== undefined ? { implements: resource.implements } : {}),
+    })
+    const allow = d.decision === "allow"
+    return mint({
+      ...base,
+      allow,
+      resourceId: name,
+      rule: allow ? (d.via === "default" ? "policy.default-allow" : "policy.matched-grant") : `policy.${d.reason}`,
+      reason: allow
+        ? `${name} is admitted by ${d.via === "default" ? "the composed policy default" : describeGrantSource(d)}`
+        : d.reason === "explicit-deny"
+          ? `an explicit deny (${describeGrantSource(d)}) refuses ${name}`
+          : `no grant admits ${name} (${d.reason})`,
+    })
+  } catch (err) {
+    if (err instanceof PolicyGrantError) {
+      return mint({
+        ...base,
+        allow: false,
+        resourceId: name,
+        rule: "policy.invalid",
+        reason: `the policy grants cannot be read, so the call is refused: ${err.message}`,
+      })
+    }
+    throw err
+  }
+}
+
 function decideMessage(
   principal: Principal,
   recipient: MessageTreeNode,
@@ -421,7 +567,14 @@ function decideMessage(
     })
   }
   // Union of grants: allow when ANY relation that holds has a matching grant.
-  const granted = RELATION_STRENGTH.filter(r => relations.includes(r)).map(r => ({ r, g: relationGrant(r, ctx) }))
+  // A matching AIP-38 deny removes only the grant-derived reasons (sibling,
+  // peer); a tree edge, the operator and the system stay (AIP-46 rule 3).
+  const candidates = RELATION_STRENGTH.filter(r => relations.includes(r)).map(r => ({ r, g: relationGrant(r, ctx) }))
+  const refusal =
+    principal.kind === "session" && relations.some(r => GRANT_DERIVED_RELATIONS.has(r))
+      ? messageRefusal(principal, recipient, ctx)
+      : undefined
+  const granted = refusal ? candidates.filter(x => !GRANT_DERIVED_RELATIONS.has(x.r)) : candidates
   const hit = granted.find(x => x.g.allow)
   if (hit) {
     const rule = principal.kind === "relay" ? "relay.grant" : hit.g.rule
@@ -441,6 +594,9 @@ function decideMessage(
               ? "sender shares the recipient's workspace or peer group"
               : `sender is the recipient's ${hit.r}`,
     })
+  }
+  if (refusal && candidates.some(x => x.g.allow)) {
+    return mint({ ...base, allow: false, relation: strongest(relations), rule: refusal.rule, reason: refusal.reason })
   }
   if (verifiedMode && slugRelations.includes("peer") && !relations.includes("peer")) {
     return mint({
@@ -564,18 +720,24 @@ export function decide(
         return mint({ action, allow: false, authoritative: false, rule: "resource", reason: "session.drive needs a target session" })
       }
       return decideDrive(principal, recipient, context)
-    default: {
-      const info = PERMISSION_ACTION_INFO[action]
-      return mint({
-        action,
-        allow: false,
-        authoritative: false,
-        rule: "not-routed",
-        ...(recipient ? { resourceId: recipient.id } : {}),
-        reason: `${action} is not routed through decide() yet; today it is enforced at: ${info.enforcedAt}`,
-      })
-    }
+    case "tool.invoke":
+      if (context.policy) return decideTool(principal, resource, context, context.policy)
+      return notRouted(action, recipient)
+    default:
+      return notRouted(action, recipient)
   }
+}
+
+function notRouted(action: PermissionAction, recipient: MessageTreeNode | undefined): Decision {
+  const info = PERMISSION_ACTION_INFO[action]
+  return mint({
+    action,
+    allow: false,
+    authoritative: false,
+    rule: "not-routed",
+    ...(recipient ? { resourceId: recipient.id } : {}),
+    reason: `${action} is not routed through decide() yet; today it is enforced at: ${info.enforcedAt}`,
+  })
 }
 
 /** Thrown by a sink handed a decision that does not allow what it is asked to do. */

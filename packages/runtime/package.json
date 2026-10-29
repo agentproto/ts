@@ -258,6 +258,7 @@
     "@agentproto/model-intel": "workspace:*",
     "@agentproto/pairing-host": "workspace:*",
     "@agentproto/plugin-local-browser": "workspace:*",
+    "@agentproto/policy": "workspace:*",
     "@agentproto/provider-kit": "workspace:*",
     "@agentproto/provider-presets": "workspace:*",
     "@agentproto/providers-store": "workspace:*",

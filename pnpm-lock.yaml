@@ -3969,6 +3969,9 @@ importers:
       '@agentproto/plugin-local-browser':
         specifier: workspace:*
         version: link:../plugin-local-browser
+      '@agentproto/policy':
+        specifier: workspace:*
+        version: link:../policy
       '@agentproto/processor':
         specifier: workspace:*
         version: link:../processor

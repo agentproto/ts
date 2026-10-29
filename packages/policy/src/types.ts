@@ -77,6 +77,10 @@ export interface Grant {
       }
     | string
   /**
+   * Grant effect. A matching `deny` wins over any allow in any composed policy (added 2026-10-23). Default `allow`.
+   */
+  effect?: "allow" | "deny"
+  /**
    * @minItems 1
    */
   actions: [ActionGrant, ...ActionGrant[]]
