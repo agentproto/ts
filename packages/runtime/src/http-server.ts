@@ -2152,6 +2152,7 @@ export async function startHttpServer(
   const identitySince = new Date().toISOString()
   const identityLogged = new Set<string>()
   const identityObserved = new WeakMap<IncomingMessage, Promise<IdentityObservation | undefined>>()
+  let identityClassifyFailureLogged = false
 
   /** What a claim without token names (AIP-46 rules 7 and 8): an external
    *  label, a host-spawned session the token was delivered to, one it could
@@ -2161,7 +2162,12 @@ export async function startHttpServer(
     const desc = opts.sessions?.get(claim)
     if (!desc) return "unknown"
     if (desc.kind === "external") return "external"
-    return sessionTokenDeliverySafe(desc.adapterSlug, desc.remote ? true : undefined) && hasSessionCredential(claim)
+    // Every sandbox provider (the built-in `local` included) stamps
+    // `remote: true` alongside its `sandboxId`; treating either as a
+    // sandboxed placement keeps a boxed claude-code row `undelivered`
+    // (rule 8) even if one of the two fields is missing.
+    const sandboxed = desc.remote === true || desc.sandboxId !== undefined ? true : undefined
+    return sessionTokenDeliverySafe(desc.adapterSlug, sandboxed) && hasSessionCredential(claim)
       ? "delivered"
       : "undelivered"
   }
@@ -2215,8 +2221,16 @@ export async function startHttpServer(
         }
       }
       return { mode, kind, ...(claimClass ? { claimClass } : {}) }
-    } catch {
-      // Observation must never fail a request.
+    } catch (err) {
+      // Observation must never fail a request. In enforce mode a failure
+      // here is fail-open, so say so once rather than silently not refusing.
+      if (!identityClassifyFailureLogged) {
+        identityClassifyFailureLogged = true
+        console.warn(
+          `[identity] caller classification failed; requests stay unidentified and enforce mode cannot refuse them: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
       return undefined
     }
   }
@@ -2233,6 +2247,13 @@ export async function startHttpServer(
    * refused. The body names no token, hash or session id.
    */
   async function enforceCallerIdentity(req: IncomingMessage, res: ServerResponse, route: string): Promise<boolean> {
+    if (!opts.identity) return false
+    // Read the (cached) mode before classifying: outside enforce mode the
+    // observation stays fire-and-forget, so shadow costs no awaited work.
+    if ((await opts.identity.mode()) !== "enforce") {
+      void observeCallerIdentity(req, route)
+      return false
+    }
     const obs = await observeCallerIdentity(req, route)
     if (!obs || obs.mode !== "enforce") return false
     const refusal =

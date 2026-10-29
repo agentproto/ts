@@ -335,6 +335,19 @@ describe("identity enforce mode", () => {
     }
   })
 
+  it("T6b enforce: a claude-code session spawned while off passes as undelivered (rule 8)", async () => {
+    const f = await fixture("off")
+    const srv = await startServer("enforce", f.registry)
+    try {
+      expect((await mcp(srv.base, `?callerSessionId=${f.claude}`)).status).toBe(200)
+      const id = await identity(srv.base)
+      expect(id.claimOnlyByClass).toMatchObject({ delivered: 0, undelivered: 1 })
+      expect(id.refused.claim_only).toBe(0)
+    } finally {
+      await srv.stop()
+    }
+  })
+
   it("T8 GET /identity reports claimOnlyByClass and what it enforces", async () => {
     const { SESSION_TOKEN_ADAPTERS } = (await import("../identity-defaults.js")) as unknown as {
       SESSION_TOKEN_ADAPTERS?: ReadonlySet<string>
@@ -482,4 +495,24 @@ describe("operator-only configuration", () => {
       expect((await operator.callTool({ name: "config_set", arguments: { key: "defaults.messaging.allowSiblings", value: true } })).isError).toBeFalsy()
     })
   }
+
+  it("T7b a spawned session that drops both token and claim counts as the operator (loopback trust model)", async () => {
+    const f = await fixture()
+    const cfg = await configFixture()
+    const srv = await startServer("shadow", f.registry, cfg.deps)
+    try {
+      // `operator_only` is a write policy on the existing loopback trust
+      // model, not an authentication boundary: with no token and no claim the
+      // request is indistinguishable from the operator, so the key is written.
+      const res = await fetch(`${srv.base}/config`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: "defaults.messaging.allowSiblings", value: true }),
+      })
+      expect(res.status).toBe(200)
+      expect(JSON.parse(cfg.read()).defaults.messaging.allowSiblings).toBe(true)
+    } finally {
+      await srv.stop()
+    }
+  })
 })

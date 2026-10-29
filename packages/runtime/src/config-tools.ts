@@ -230,7 +230,9 @@ export interface ConfigWriteCaller {
 
 /** The keys only the operator may write: who may message or drive whom, and
  *  the identity mode. An ancestor of one of them is protected too, since a
- *  write there would rewrite it. */
+ *  write there would rewrite it. This is a write policy on the loopback trust
+ *  model, not an authentication boundary: a session that omits both its token
+ *  and its caller claim is indistinguishable from the operator. */
 const OPERATOR_ONLY_KEYS = ["defaults.messaging", "defaults.identity", "defaults.tasks.operatorDelegates"] as const
 
 export function isOperatorOnlyConfigKey(key: string): boolean {

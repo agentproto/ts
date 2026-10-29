@@ -34,12 +34,24 @@ export function sessionTokenModeOf(defaults: SpawnDefaultsConfig | undefined): S
   return mode === "off" || mode === "shadow" || mode === "enforce" ? mode : DEFAULT_SESSION_TOKEN_MODE
 }
 
+let warnedResolveFailure = false
+
 export async function resolveIdentityDefaults(
   loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
 ): Promise<ResolvedIdentityDefaults> {
   try {
     return { sessionTokens: sessionTokenModeOf((await loadCfg()).defaults) }
-  } catch {
+  } catch (err) {
+    // The fallback is fail-open: in enforce mode a broken config read would
+    // silently stop refusing. Say so once so an operator can tell.
+    if (!warnedResolveFailure) {
+      warnedResolveFailure = true
+      console.warn(
+        `[identity] could not resolve defaults.identity.sessionTokens; falling back to ` +
+          `"${DEFAULT_SESSION_TOKEN_MODE}" (enforce is not active): ` +
+          (err instanceof Error ? err.message : String(err)),
+      )
+    }
     return { sessionTokens: DEFAULT_SESSION_TOKEN_MODE }
   }
 }

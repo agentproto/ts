@@ -269,7 +269,13 @@ Whatever the mode, a session caller (a valid session token, or a trusted claim
 naming a session the daemon spawned) cannot write `defaults.messaging.*`,
 `defaults.identity.*` or `defaults.tasks.operatorDelegates` (or an ancestor of
 them) through `config_set` or `PATCH /config`: `operator_only`, 403 on the
-route. The operator (anonymous loopback, an external identifier) can.
+route. The operator (anonymous loopback, an external identifier) can. Like the
+memory write policy, this is a write policy on the existing loopback trust
+model, not an authentication boundary: a spawned session that deliberately
+omits both its session token and its caller claim is indistinguishable from the
+operator and can still write these keys. It stops the session's normal
+identity-carrying self-mount from reconfiguring the daemon it runs on, not a
+host process that drops its identity on purpose.
 
 Merge precedence (low → high): `defaults.options` < `defaults.adapters.<slug>.options`
 < the explicit `options` passed at spawn time. For `skills`, an explicit
