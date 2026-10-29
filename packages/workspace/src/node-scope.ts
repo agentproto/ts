@@ -66,14 +66,16 @@ function isInside(folder: string, path: string): boolean {
   return folder === "" || path === folder || path.startsWith(`${folder}/`)
 }
 
-function cleanSegments(raw: string[], what: string): string[] {
+function cleanSegments(raw: string[], what: string, decode: boolean): string[] {
   const out: string[] = []
   for (const part of raw) {
-    let seg: string
-    try {
-      seg = decodeURIComponent(part)
-    } catch {
-      throw new NodeScopeError(`${what}: malformed percent-encoding in "${part}"`)
+    let seg = part
+    if (decode) {
+      try {
+        seg = decodeURIComponent(part)
+      } catch {
+        throw new NodeScopeError(`${what}: malformed percent-encoding in "${part}"`)
+      }
     }
     if (seg === "" || seg === "." || seg === ".." || seg.includes("/") || seg.includes("\\") || seg.includes("#")) {
       throw new NodeScopeError(`${what}: segment "${part}" is not a plain folder name (no empty, "." or ".." segment, no "#")`)
@@ -102,7 +104,7 @@ function groundToTreePath(tree: NodeTree, ground: string): string | undefined {
     if (!WORKSPACE_ID.test(id)) throw new NodeScopeError(`ground "${ground}": workspace body must start with @<owner>/<slug>`)
     const base = tree.nodes.find((n) => n.id === id)
     if (!base) return undefined
-    const sub = cleanSegments(subtree, `ground "${ground}"`)
+    const sub = cleanSegments(subtree, `ground "${ground}"`, true)
     return [base.path, ...sub].filter((s) => s !== "").join("/")
   }
   if (/^[a-z][a-z0-9+.-]*:/i.test(ground)) return undefined
@@ -117,7 +119,9 @@ function groundToTreePath(tree: NodeTree, ground: string): string | undefined {
     rel = ground
   }
   const parts = rel.split("/").filter((s) => s !== "" && s !== ".")
-  return cleanSegments(parts, `ground "${ground}"`).join("/")
+  // A filesystem path is not URI-encoded: a folder literally named `a%41`
+  // must stay `a%41`, not become `aA` (nor throw on `100%`).
+  return cleanSegments(parts, `ground "${ground}"`, false).join("/")
 }
 
 /**

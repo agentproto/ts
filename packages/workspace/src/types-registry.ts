@@ -104,7 +104,7 @@ export function validateTypesRegistry(types: TypesManifestFrontmatter["types"]):
   const inReportedCycle = new Set<string>()
   for (const name of Object.keys(types)) {
     const entry = types[name]
-    if (entry?.extends !== undefined && !(entry.extends in types)) {
+    if (entry?.extends !== undefined && !Object.hasOwn(types, entry.extends)) {
       issues.push({
         kind: "unknown-parent",
         type: name,
@@ -114,7 +114,7 @@ export function validateTypesRegistry(types: TypesManifestFrontmatter["types"]):
     }
     const path: string[] = []
     let cursor: string | undefined = name
-    while (cursor !== undefined && types[cursor] && !path.includes(cursor)) {
+    while (cursor !== undefined && Object.hasOwn(types, cursor) && !path.includes(cursor)) {
       path.push(cursor)
       cursor = types[cursor]?.extends
     }

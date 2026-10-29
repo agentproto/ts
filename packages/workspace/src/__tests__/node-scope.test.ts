@@ -160,6 +160,17 @@ describe("node scope of a ground (C3)", () => {
     expect(resolveNodeScope(tree, join(tree.rootDir, "only", "x"))?.node.id).toBe("@t/only")
   })
 
+  it("keeps a literal percent in a path segment instead of URI-decoding it", () => {
+    const tree = load()
+    mkdirSync(join(tree.rootDir, "agentik", "simone", "a%41"), { recursive: true })
+    mkdirSync(join(tree.rootDir, "agentik", "simone", "aA"), { recursive: true })
+    const literal = join(tree.rootDir, "agentik", "simone", "a%41")
+    expect(resolveNodeScope(tree, literal)?.subpath).toBe("a%41")
+    expect(resolveNodeScope(tree, join(tree.rootDir, "agentik", "simone", "100%"))?.subpath).toBe("100%")
+    // A ref body is URI-encoded, so there `%41` does decode to `A`.
+    expect(resolveNodeScope(tree, "ws://workspaces/@t/agentik/simone/a%41")?.subpath).toBe("aA")
+  })
+
   it("refuses a malformed ground instead of treating it as unscoped", () => {
     const tree = load()
     expect(() => resolveNodeScope(tree, "ws://workspaces/@t/agentik/../perso")).toThrow(NodeScopeError)

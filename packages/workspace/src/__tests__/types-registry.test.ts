@@ -156,6 +156,17 @@ describe("validateTypesRegistry", () => {
     expect(issues).toMatchObject([{ kind: "unknown-parent", type: "guild", extends: "projet" }])
   })
 
+  it("reports a prototype-named extends as unknown instead of accepting it", () => {
+    const issues = validateTypesRegistry({
+      guild: { ...entry, extends: "__proto__" },
+      team: { ...entry, extends: "constructor" },
+    })
+    expect(issues).toMatchObject([
+      { kind: "unknown-parent", type: "guild", extends: "__proto__" },
+      { kind: "unknown-parent", type: "team", extends: "constructor" },
+    ])
+  })
+
   it("resolveTypeEntry terminates on a cycle instead of overflowing the stack", () => {
     const cyclic = { a: { ...entry, extends: "b" }, b: { ...entry, extends: "a" } }
     expect(() => resolveTypeEntry(cyclic, "a")).not.toThrow()
