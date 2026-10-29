@@ -2413,6 +2413,7 @@ async function restartAgentSessionOnce(
       ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
     })
     for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
@@ -2509,6 +2510,7 @@ async function restartAgentSessionOnce(
       sandboxTeardown: box.sandboxTeardown,
       ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
         ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }
         : {}),

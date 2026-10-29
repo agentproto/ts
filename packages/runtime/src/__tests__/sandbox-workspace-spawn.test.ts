@@ -226,6 +226,9 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(bootEnvs[0]?.GH_TOKEN).toBe(FAKE_TOKEN)
     expect(receivedStarts[0]?.cwd).toBe("/home/user/agentproto")
     expect(result.descriptor.cwd).toBe("/home/user/agentproto")
+    // The exit-time checkpoint gc needs the HOST repo root: the session cwd
+    // above is a path inside the box and does not exist on this host.
+    expect(result.descriptor.sandboxRepoRoot).toBe("/Users/op/projects/agentproto")
 
     const commands = execCalls.map(c => c.command)
     expect(commands.some(c => c.includes("git clone -- 'https://github.com/acme/agentproto.git'"))).toBe(true)
