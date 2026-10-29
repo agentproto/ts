@@ -6206,7 +6206,7 @@ export function buildSpawnSessionHttpArgs(
       ? { boardId: b.boardId }
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
-    ...(typeof b.role === "string" && b.role.length > 0 && b.agent === undefined
+    ...(typeof b.role === "string" && b.role.length > 0 && !(typeof b.agent === "string" && b.agent.length > 0)
       ? { harnessWarnings: [ROLE_ALIAS_DEPRECATION] }
       : {}),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
@@ -6484,6 +6484,7 @@ function spawnFailureStatus(code: string): number {
   if (code === "delegation_denied") return 403
   if (
     code === "invalid_role" ||
+    code === "invalid_agent" ||
     code === "browser_unsupported" ||
     code === "worktree_requires_explicit_repo" ||
     code === "device_spawn_requires_repo_identity" ||
