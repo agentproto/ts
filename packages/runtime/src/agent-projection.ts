@@ -230,10 +230,16 @@ export function projectAgentToSpawn(
     )
   }
 
-  if (Object.keys(tools.servers).length > 0) {
+  const serverNames = Object.keys(tools.servers)
+  if (serverNames.length > 0) {
     warnings.push(
       `agent "${id}": declared tools scope the daemon gateway only — this harness's own ` +
         "native tools stay available (no native tool allowlist).",
+    )
+  }
+  if (serverNames.some((s) => s !== BUILTIN_SERVER)) {
+    warnings.push(
+      `agent "${id}": structured tool ref(s) for non-agentproto servers are not applied (no consumer wired).`,
     )
   }
   if (tools.servers[BUILTIN_SERVER]?.allowTools?.length === 0) {
