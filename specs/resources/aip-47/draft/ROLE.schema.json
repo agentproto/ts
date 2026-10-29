@@ -167,7 +167,7 @@
     "defaultPolicy": {
       "type": "string",
       "minLength": 1,
-      "description": "AIP-38 POLICY ref recommended for operators adopting this role. ADVISORY ONLY — role declares intent, policy decides effect. The runtime MUST NOT apply defaultPolicy to an operator without the operator's own 'policy:' field or a governance signature attesting the binding. See AIP-47 §Role vs Policy vs Governance."
+      "description": "AIP-38 POLICY ref recommended for operators adopting this role. ADVISORY ONLY, denies included: role declares intent, policy decides effect; it may pre-fill the form that hires an operator and nothing more. The runtime MUST NOT apply defaultPolicy to an operator without the operator's own 'policy:' field or a governance signature attesting the binding. See AIP-47 §Role vs Policy vs Governance."
     },
     "knowledge": {
       "type": "object",
@@ -183,6 +183,13 @@
       },
       "description": "Generic knowledge this role consults — AIP-10 corpus packs mounted read-only as a floor beneath the operator's own corpus. Distinct from 'skills' (what the role knows how to DO): knowledge is what it CONSULTS. The host unions these with any operator-level packs."
     },
+    "slots": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,63}$" },
+      "additionalProperties": { "$ref": "#/$defs/slot" },
+      "default": {},
+      "description": "Typed slots an operator fills with its AIP-9 'role.bind' (refs and tools) and 'role.with' (scalars). Merged by key across 'extends': a key the child redeclares replaces the parent's. A slot grants nothing and MUST NOT be typed as a policy. See AIP-47 §Slots."
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*[a-z0-9]$" },
@@ -194,6 +201,91 @@
       "type": "object",
       "default": {},
       "description": "Vendor extensions, namespaced under '<vendor>'. Hosts MUST tolerate unknown vendor namespaces; they MUST NOT honour metadata that overrides AIP-defined fields."
+    }
+  },
+  "$defs": {
+    "slot": {
+      "description": "One slot declaration. Exactly one type key: 'aip', 'collection', 'tool' or 'scalar'.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["aip"],
+          "additionalProperties": false,
+          "properties": {
+            "aip": {
+              "type": "integer",
+              "minimum": 1,
+              "not": { "const": 38 },
+              "description": "The slot takes an AIP-54 ref to an artifact whose doctype is owned by this AIP number. 38 (policy) is forbidden: a slot never carries a policy."
+            },
+            "description": { "$ref": "#/$defs/slotDescription" },
+            "optional": { "$ref": "#/$defs/slotOptional" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["collection"],
+          "additionalProperties": false,
+          "properties": {
+            "collection": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*$",
+              "not": { "const": "policies" },
+              "description": "The slot takes an AIP-54 ref whose kind belongs to this collection: a ws:// collection of the AIP-54 table, or a base collection. 'policies' is forbidden: a slot never carries a policy."
+            },
+            "description": { "$ref": "#/$defs/slotDescription" },
+            "optional": { "$ref": "#/$defs/slotOptional" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["tool"],
+          "additionalProperties": false,
+          "properties": {
+            "tool": {
+              "enum": ["mcp", "ref"],
+              "description": "'mcp': the slot takes a structured server ref {kind: mcp, server, allow?, deny?} (AIP-42 tools). 'ref': the slot takes one tool named <server>/<name> (AIP-54 tool-body). The bound tool joins the operator's tools and is still subject to policy."
+            },
+            "description": { "$ref": "#/$defs/slotDescription" },
+            "optional": { "$ref": "#/$defs/slotOptional" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["scalar"],
+          "additionalProperties": false,
+          "properties": {
+            "scalar": {
+              "enum": ["string", "number", "boolean"],
+              "description": "The slot takes a JSON scalar of this type, filled through 'role.with'."
+            },
+            "enum": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": ["string", "number", "boolean"] },
+              "description": "The allowed values."
+            },
+            "default": {
+              "type": ["string", "number", "boolean"],
+              "description": "Value used when the operator gives none. A scalar with a default is optional."
+            },
+            "description": { "$ref": "#/$defs/slotDescription" },
+            "optional": { "$ref": "#/$defs/slotOptional" }
+          }
+        }
+      ]
+    },
+    "slotDescription": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 280,
+      "description": "Label shown in the rendered bindings block and in a hiring UI."
+    },
+    "slotOptional": {
+      "type": "boolean",
+      "default": false,
+      "description": "An optional slot may be left unbound."
     }
   }
 }

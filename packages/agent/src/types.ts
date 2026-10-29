@@ -19,6 +19,21 @@ export type AnyRef =
         [k: string]: unknown
       }
     }
+/**
+ * Structured server ref (AIP-42 mcpToolRef): offers the tools of one server,
+ * optionally narrowed. A tool is named `<server>/<name>`; `allow`/`deny` hold
+ * the `<name>` part only, and a denied name is never offered.
+ */
+export interface McpToolRef {
+  kind: "mcp"
+  server: string
+  allow?: string[]
+  deny?: string[]
+}
+/**
+ * AIP-14/AIP-54 ref, or a structured server ref.
+ */
+export type ToolRef = AnyRef | McpToolRef
 export type ActionRef =
   | string
   | {
@@ -125,9 +140,9 @@ export interface AgentDefinition {
         }
       }
   /**
-   * AIP-14 tool refs.
+   * AIP-14 tool refs, or structured server refs { kind: mcp, server, allow?, deny? }. A tool is named <server>/<name> (AIP-54 tool-body); deny wins.
    */
-  tools?: AnyRef[]
+  tools?: ToolRef[]
   /**
    * Explicit action allow-list. POLICY checks union of this + tools' implements.
    */

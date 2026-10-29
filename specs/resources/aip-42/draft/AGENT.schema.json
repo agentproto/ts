@@ -53,7 +53,7 @@
       "type": "array",
       "items": { "$ref": "#/$defs/toolRef" },
       "default": [],
-      "description": "AIP-14 tool refs."
+      "description": "AIP-14 tool refs, or structured server refs { kind: mcp, server, allow?, deny? }. A tool is named <server>/<name> (AIP-54 tool-body); deny wins."
     },
     "actions": {
       "type": "object",
@@ -161,7 +161,8 @@
     },
     "metadata": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "description": "Free-form, namespaced under '<vendor>'. Hosts MUST tolerate unknown vendor namespaces; they MUST NOT honour metadata that overrides AIP-defined fields. Session configuration (harness, posture, preset, auth) is AIP-46, not an AGENT field."
     }
   },
   "$defs": {
@@ -184,7 +185,34 @@
       "$ref": "#/$defs/anyRef"
     },
     "toolRef": {
-      "$ref": "#/$defs/anyRef"
+      "oneOf": [
+        { "$ref": "#/$defs/anyRef" },
+        { "$ref": "#/$defs/mcpToolRef" }
+      ],
+      "description": "An AIP-14/AIP-54 ref, or a structured server ref."
+    },
+    "mcpToolRef": {
+      "type": "object",
+      "required": ["kind", "server"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "const": "mcp" },
+        "server": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "description": "The server that exposes the tools, as the host names it. Mandatory; no '/'."
+        },
+        "allow": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+          "description": "Tool names on this server the agent is offered (the <name> part of <server>/<name>). Absent = every tool the server exposes; [] = none."
+        },
+        "deny": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+$" },
+          "description": "Tool names on this server the agent is never offered. Deny wins over allow and over any other tools item; it is the AGENT-level projection of an AIP-38 explicit deny and never grants permission."
+        }
+      }
     },
     "actionRef": {
       "oneOf": [

@@ -61,6 +61,10 @@ export const DEFAULT_PACKAGES = [
   // AIP-72's lifetime/provenance/evidence are `$ref`s; without
   // `--inline-refs` they would generate as `z.any()`.
   { aip: 72, slug: "memory", doctype: "MEMORY", inlineRefs: true },
+  // AIP-42's `tools` items are `$ref: toolRef` (an AIP-54 ref or the
+  // structured `mcp` server ref); only that def is inlined, so the other
+  // ref'd AGENT fields keep their `z.any()` shape.
+  { aip: 42, slug: "agent", doctype: "AGENT", inlineRef: ["toolRef"] },
 ]
 
 const BOOLEAN_FLAGS = new Set(["inline-refs"])
@@ -93,7 +97,16 @@ export function cliTargets(argv) {
     p => p.aip === named.aip && p.slug === named.slug && p.doctype === named.doctype,
   )
   const inlineRefs = args["inline-refs"] === true || guarded?.inlineRefs === true
-  return [{ ...named, ...(inlineRefs ? { inlineRefs: true } : {}) }]
+  const inlineRef = args["inline-ref"]
+    ? String(args["inline-ref"]).split(",").filter(Boolean)
+    : guarded?.inlineRef
+  return [
+    {
+      ...named,
+      ...(inlineRefs ? { inlineRefs: true } : {}),
+      ...(inlineRef ? { inlineRef } : {}),
+    },
+  ]
 }
 
 /** schema.ts without its leading `/** ... *\/` doc comment (and the blank
@@ -103,7 +116,7 @@ export function schemaCode(src) {
 }
 
 export async function checkSpecDrift(opts = {}) {
-  const { aip, slug, doctype, inlineRefs } = { ...DEFAULTS, ...opts }
+  const { aip, slug, doctype, inlineRefs, inlineRef } = { ...DEFAULTS, ...opts }
   const specJsonPath = resolve(ROOT, "specs", "resources", `aip-${aip}`, "draft", `${doctype}.schema.json`)
   if (!existsSync(specJsonPath)) {
     return { ok: false, message: `JSON draft not found: ${specJsonPath}` }
@@ -118,6 +131,7 @@ export async function checkSpecDrift(opts = {}) {
       "--doctype", doctype,
       "--schema-only",
       ...(inlineRefs ? ["--inline-refs"] : []),
+      ...(inlineRef ? ["--inline-ref", inlineRef.join(",")] : []),
     ],
     { encoding: "utf8", cwd: ROOT },
   )
@@ -146,7 +160,7 @@ export async function checkSpecDrift(opts = {}) {
     ok: false,
     message:
       `spec/codegen DRIFT in packages/${slug}/src/schema.ts — regenerate with ` +
-      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only${inlineRefs ? " --inline-refs" : ""}\` ` +
+      `\`node scripts/scaffold-aip.mjs --aip ${aip} --slug ${slug} --doctype ${doctype} --schema-only${inlineRefs ? " --inline-refs" : ""}${inlineRef ? ` --inline-ref ${inlineRef.join(",")}` : ""}\` ` +
       `(or update the JSON draft first, then regen):\n${lines.join("\n")}`,
   }
 }

@@ -27,7 +27,7 @@
         },
         "extends": {
           "type": "string",
-          "description": "Another type this one inherits unset fields from (e.g. a `client` type extending `project`)."
+          "description": "Another type of the same registry this one inherits from (e.g. a `guild` or `client` type extending `project`). Fields left unset here (`parents`, `default_wall`, `requires_files`, `starter`, `max_per_tree`, `adds_fields`) are inherited whole from the resolved base; a field set here replaces the inherited one, nothing is merged. An omitted or empty `requires_files` counts as unset."
         },
         "default_wall": {
           "enum": ["shared", "isolated", "sealed", "hard"],

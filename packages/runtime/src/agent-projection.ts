@@ -19,7 +19,11 @@
  *    prefix — said out loud as a warning, never silently.
  *  - `tools` (string ids) → the daemon gateway's `allowTools` scope, for
  *    every adapter (manifest-native included). The harness's OWN native
- *    tools are not filtered by that; warned.
+ *    tools are not filtered by that; warned. A structured
+ *    `{ kind: mcp, server, allow?, deny? }` item (AIP-42 §Tools) becomes that
+ *    server's `allowTools`/`denyTools` (`servers`); a bare string is a legacy
+ *    daemon built-in, so it joins the `agentproto` server. Deny wins over
+ *    allow and over any other item admitting the same tool.
  *  - `skills` (string ids) → the spawn's `skills`. A harness that can take
  *    none (no session-skill delivery, no `skills` option) is warned about.
  *  - `model` → the spawn model (a caller-pinned model wins).
@@ -80,11 +84,112 @@ export interface AgentSpawnProjection {
    *  `startSession({ appendSystemPrompt })`, not as a prompt prefix. */
   systemPrompt?: string
   skills?: string[]
-  /** Gateway allowlist (`?allowTools=`). */
+  /** Gateway allowlist (`?allowTools=`): the daemon built-ins (`agentproto`
+   *  server) the agent is offered, denied names already removed. Absent when
+   *  the manifest names none, or admits every built-in. */
   tools?: string[]
+  /** Per-server tool filters from the manifest's tool items, keyed by server
+   *  name (`agentproto` = the daemon's own built-ins). `allowTools` absent =
+   *  every tool of the server; `denyTools` always wins over it. */
+  servers?: Record<string, ServerToolFilter>
   /** Everything the harness cannot honour as declared — each becomes a
    *  `session:harness-warning`, never a silent drop. */
   warnings: string[]
+}
+
+/** One server's tool filter, by the tool's `<name>` part (no `<server>/`). */
+export interface ServerToolFilter {
+  allowTools?: string[]
+  denyTools?: string[]
+}
+
+/** The server a bare (legacy) tool name belongs to: the daemon's built-ins. */
+const BUILTIN_SERVER = "agentproto"
+
+interface McpToolItem {
+  kind: "mcp"
+  server: string
+  allow?: readonly string[]
+  deny?: readonly string[]
+}
+
+function isMcpToolItem(r: unknown): r is McpToolItem {
+  return (
+    typeof r === "object" &&
+    r !== null &&
+    (r as { kind?: unknown }).kind === "mcp" &&
+    typeof (r as { server?: unknown }).server === "string"
+  )
+}
+
+/**
+ * Fold the `tools` items into one filter per server. A tool is offered when
+ * some item admits it and no item denies it (AIP-42 §Tools, rule 2):
+ *  - a bare string admits that name on `agentproto`;
+ *  - `{ kind: mcp, server }` without `allow` admits every tool of the server;
+ *  - `allow` admits the listed names (`[]` admits none);
+ *  - `deny` names are never offered, whatever else admits them.
+ * `allowTools` is the union of what is admitted minus the denied names, and
+ * is absent when an item admits the whole server.
+ */
+function projectToolServers(refs: readonly unknown[] | undefined): {
+  servers: Record<string, ServerToolFilter>
+  unprojected: number
+} {
+  const acc = new Map<string, { all: boolean; allow: Set<string>; deny: Set<string> }>()
+  const slot = (server: string) => {
+    let s = acc.get(server)
+    if (!s) acc.set(server, (s = { all: false, allow: new Set(), deny: new Set() }))
+    return s
+  }
+  let unprojected = 0
+  for (const r of refs ?? []) {
+    if (typeof r === "string") {
+      if (r.trim().length > 0) slot(BUILTIN_SERVER).allow.add(r.trim())
+    } else if (isMcpToolItem(r)) {
+      const s = slot(r.server)
+      if (r.allow === undefined) s.all = true
+      else for (const n of r.allow) s.allow.add(n)
+      for (const n of r.deny ?? []) s.deny.add(n)
+    } else {
+      unprojected++
+    }
+  }
+  const servers: Record<string, ServerToolFilter> = {}
+  for (const [server, s] of acc) {
+    const deny = [...s.deny]
+    const allow = s.all ? undefined : [...s.allow].filter(n => !s.deny.has(n))
+    servers[server] = {
+      ...(allow !== undefined ? { allowTools: allow } : {}),
+      ...(deny.length > 0 ? { denyTools: deny } : {}),
+    }
+  }
+  return { servers, unprojected }
+}
+
+/**
+ * The spawn carries one `allowTools` list, applied to the daemon gateway only.
+ * A filter on any other server, or a `denyTools` that no allowlist already
+ * absorbed, therefore reaches `servers` but not the running session: say so.
+ */
+function unappliedServerFilters(id: string, servers: Record<string, ServerToolFilter>): string[] {
+  const out: string[] = []
+  for (const [server, f] of Object.entries(servers)) {
+    if (server !== BUILTIN_SERVER) {
+      if (f.allowTools !== undefined || f.denyTools !== undefined) {
+        out.push(
+          `agent "${id}": the tool filter for server "${server}" is declared but the spawn cannot scope ` +
+            "a server other than the daemon's own — not applied.",
+        )
+      }
+    } else if (f.denyTools !== undefined && f.allowTools === undefined) {
+      out.push(
+        `agent "${id}": denyTools for the daemon's tools cannot be applied on their own (the spawn carries ` +
+          "only an allowlist) — not applied.",
+      )
+    }
+  }
+  return out
 }
 
 /** String ids only: a structured `{ ref | file | inline }` entry has no
@@ -118,14 +223,19 @@ export function projectAgentToSpawn(
 
   // Tools always scope the daemon gateway — whatever else the harness does
   // with the manifest, the declared list is the agent's capability ask.
-  const tools = splitRefs(agent.handle.tools)
-  const toolsField = tools.ids.length > 0 ? { tools: tools.ids } : {}
+  const tools = projectToolServers(agent.handle.tools)
+  const gatewayAllow = tools.servers[BUILTIN_SERVER]?.allowTools ?? []
+  const toolsField = {
+    ...(gatewayAllow.length > 0 ? { tools: gatewayAllow } : {}),
+    ...(Object.keys(tools.servers).length > 0 ? { servers: tools.servers } : {}),
+  }
+  const unappliedFilters = unappliedServerFilters(id, tools.servers)
 
   if (caps.agentManifestOption) {
-    return { ...base, options: { [caps.agentManifestOption]: agent.path }, ...toolsField, warnings: [] }
+    return { ...base, options: { [caps.agentManifestOption]: agent.path }, ...toolsField, warnings: unappliedFilters }
   }
 
-  const warnings: string[] = []
+  const warnings: string[] = [...unappliedFilters]
   const instructions = composeInstructions(agent.handle, agent.body)
   // A declared channel takes the composed text as `systemPrompt` (delivered
   // through `startSession({ appendSystemPrompt })`, no prefix, no warning)
@@ -146,14 +256,20 @@ export function projectAgentToSpawn(
     )
   }
 
-  if (tools.ids.length > 0) {
+  if (Object.keys(tools.servers).length > 0) {
     warnings.push(
       `agent "${id}": declared tools scope the daemon gateway only — this harness's own ` +
         "native tools stay available (no native tool allowlist).",
     )
   }
-  if (tools.structured > 0) {
-    warnings.push(`agent "${id}": ${tools.structured} structured tool ref(s) have no gateway tool name — not applied.`)
+  if (tools.servers[BUILTIN_SERVER]?.allowTools?.length === 0) {
+    warnings.push(
+      `agent "${id}": the manifest admits no daemon tool, but the gateway scope cannot express an ` +
+        "empty allowlist — not applied.",
+    )
+  }
+  if (tools.unprojected > 0) {
+    warnings.push(`agent "${id}": ${tools.unprojected} structured tool ref(s) have no gateway tool name — not applied.`)
   }
 
   const skills = splitRefs(agent.handle.skills)

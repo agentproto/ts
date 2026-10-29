@@ -30,7 +30,7 @@ import { loadAppHandle, loadAppBundledTools, peekAppUi, versionSatisfies, type A
 import { ensureAppUiBuilt } from "./app-ui-build.js"
 import { parseModelRoleRef } from "./model-roles.js"
 import { loadAgent } from "@agentproto/agent"
-import type { AgentHandle, AnyRef } from "@agentproto/agent"
+import type { AgentHandle, ToolRef } from "@agentproto/agent"
 import type { AgentRefResolution } from "@agentproto/workflow-runtime"
 import { APP_UI_DISCOVERY_TOOLS } from "@agentproto/app-client/runner-select"
 import type { ToolHandle } from "@agentproto/tool"
@@ -1092,8 +1092,9 @@ export async function performAppCall(
   }
 }
 
-function refIdOf(ref: AnyRef): string {
+function refIdOf(ref: ToolRef): string {
   if (typeof ref === "string") return ref
+  if ("kind" in ref) return `mcp:${ref.server}`
   return ref.ref ?? ref.file ?? "inline"
 }
 

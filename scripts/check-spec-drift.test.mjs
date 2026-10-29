@@ -10,7 +10,7 @@ test("checkSpecDrift passes on the in-sync vendored JSON draft", async () => {
 test("every no-arg-CLI-guarded package is in sync with its vendored draft", async () => {
   assert.deepEqual(
     DEFAULT_PACKAGES.map(p => p.slug),
-    [DEFAULTS.slug, "work", "memory"],
+    [DEFAULTS.slug, "work", "memory", "agent"],
   )
   for (const pkg of DEFAULT_PACKAGES) {
     const result = await checkSpecDrift(pkg)
@@ -72,4 +72,13 @@ test("a manual check of AIP-72 is in sync", async () => {
     const result = await checkSpecDrift(t)
     assert.equal(result.ok, true, result.message)
   }
+})
+
+test("a guarded package that inlines one def keeps --inline-ref on a manual run", () => {
+  assert.deepEqual(cliTargets(["--aip", "42", "--slug", "agent", "--doctype", "AGENT"]), [
+    DEFAULT_PACKAGES.find(p => p.slug === "agent"),
+  ])
+  assert.deepEqual(cliTargets(["--aip", "99", "--slug", "x", "--doctype", "X", "--inline-ref", "a,b"]), [
+    { aip: 99, slug: "x", doctype: "X", inlineRef: ["a", "b"] },
+  ])
 })

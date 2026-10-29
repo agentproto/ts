@@ -85,7 +85,7 @@
         "minLength": 1
       },
       "default": [],
-      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:acme', 'agent:assistant', 'pr:acme/app#42')."
+      "description": "Free-form labels. Scope anchors are carried here in their formatted form (e.g. 'global', 'project:acme', 'agent:assistant', 'pr:acme/app#42'). Two anchors tie an item to an AIP-34 tree and an AIP-9 operator: 'node:<id>' (the AIP-34 node id, e.g. 'node:@acme/agentik') scopes visibility, and 'operator:<id>' (e.g. 'operator:pm-simone') marks ownership and never widens visibility. An item carries at most one of each; the node projection and write rules are in AIP-72 section 10."
     },
     "polarity": {
       "enum": [
@@ -186,9 +186,11 @@
             "session",
             "pr",
             "contact",
-            "agent"
+            "agent",
+            "node",
+            "operator"
           ],
-          "description": "Anchor kind. 'agent' extends the conversation-contract set for per-agent anchoring."
+          "description": "Anchor kind. 'agent' extends the conversation-contract set for per-agent anchoring. 'node' names an AIP-34 node and scopes visibility; 'operator' names an AIP-9 operator and marks ownership (AIP-72 section 10)."
         },
         "slug": {
           "type": "string",
@@ -198,7 +200,7 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "Anchor target id (task, session)."
+          "description": "Anchor target id (task, session, node, operator). For a node, the AIP-34 id ('@<owner>/<slug>'); for an operator, the operator body of an AIP-54 'operator:' ref ('<slug>' or '<slug>@<workspace>')."
         },
         "repo": {
           "type": "string",
@@ -211,7 +213,7 @@
           "description": "Pull-request number for a pr anchor."
         }
       },
-      "description": "A scope anchor, used by `lifetime` kind 'while'. Loose but typed: { kind: 'project'|'contact'|'agent', slug }, { kind: 'task'|'session', id }, { kind: 'pr', repo, number }, { kind: 'global' }."
+      "description": "A scope anchor, used by `lifetime` kind 'while'. Loose but typed: { kind: 'project'|'contact'|'agent', slug }, { kind: 'task'|'session'|'node'|'operator', id }, { kind: 'pr', repo, number }, { kind: 'global' }."
     },
     "lifetime": {
       "type": "object",

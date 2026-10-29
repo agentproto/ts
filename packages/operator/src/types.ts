@@ -13,7 +13,14 @@
  * forms readable.
  */
 
-import type { AgentDefinition, AnyRef } from "@agentproto/agent"
+import type {
+  AgentDefinition,
+  AnyRef,
+  McpToolRef,
+  ToolRef as AgentToolRef,
+} from "@agentproto/agent"
+
+export type { AgentToolRef, McpToolRef }
 
 /** AGENT fields an operator carries as-is, all optional on an operator. */
 type InheritedAgentFields = Partial<
@@ -41,14 +48,6 @@ type InheritedAgentFields = Partial<
   >
 >
 
-/** The `tools` item an AGENT accepts, plus the structured MCP server ref (AIP-42 mcpToolRef). */
-export type AgentToolRef = NonNullable<AgentDefinition["tools"]>[number]
-export interface McpToolRef {
-  kind: "mcp"
-  server: string
-  allow?: readonly string[]
-  deny?: readonly string[]
-}
 /** Deprecated: an AIP-14 tool narrowed for this operator. */
 export interface LegacyScopedToolRef {
   id: string
@@ -59,7 +58,7 @@ export interface LegacyScopedToolRef {
     secrets?: readonly string[]
   }
 }
-export type ToolRef = AgentToolRef | McpToolRef | LegacyScopedToolRef
+export type ToolRef = AgentToolRef | LegacyScopedToolRef
 
 export type AgentSkillRef = NonNullable<AgentDefinition["skills"]>[number]
 /** Deprecated: an AIP-3 skill pinned for this operator. */
@@ -99,7 +98,7 @@ export interface LegacyGovernance {
 export type OperatorGovernance = LegacyGovernance
 
 /** A value bound to a role slot: an AIP-54 ref or a tool ref. */
-export type RoleSlotValue = AnyRef | AgentToolRef | McpToolRef
+export type RoleSlotValue = AnyRef | AgentToolRef
 
 /** The AIP-47 role an operator holds. A bare string is `{ ref }`. */
 export interface OperatorRoleBinding {
