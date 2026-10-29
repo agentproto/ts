@@ -1784,6 +1784,14 @@ export interface AgentCliRuntimeSession {
    */
   readonly pid?: number
   /**
+   * Set when the connect-time model apply was rejected by the ACP server, and
+   * the adapter is NOT a `derived-from-model` one (those refuse the spawn
+   * outright). The session is live on the adapter's own default model. Hosts
+   * record this on the session descriptor so it stops claiming the requested
+   * model. See `@agentproto/acp/client`'s `AcpClientSession.modelApplyRejection`.
+   */
+  readonly modelApplyRejection?: { requested: string; reason: string }
+  /**
    * Whether the adapter's transport is still usable, read FRESH at call
    * time. The pull half of the transport-liveness surface (the push half is
    * {@link AgentCliStartOptions.onDisconnect}) and the answer to a question

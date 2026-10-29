@@ -132,6 +132,7 @@ import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./suba
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import { checkModelPolicy } from "./model-policy.js"
+import { modelApplyMismatch, modelApplyWarning } from "./model-apply-mismatch.js"
 import { getModelListSource } from "./model-list-store.js"
 import {
   checkModelAdapterEligibility,
@@ -1648,6 +1649,15 @@ async function restartAgentSessionOnce(
       : opts.forceAgentResume
         ? "resumed via ACP"
         : describeResumePath(augmented)
+    // Boot/resume re-assert can be rejected transiently (429) or permanently.
+    // When it is, the descriptor must record the divergence and prefer the
+    // model the adapter reports — otherwise every restart keeps the lie.
+    const modelMismatch = modelApplyMismatch({
+      ...(agentSession.modelApplyRejection ? { rejection: agentSession.modelApplyRejection } : {}),
+      ...(agentSession.availableConfigOptions
+        ? { availableConfigOptions: agentSession.availableConfigOptions }
+        : {}),
+    })
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
@@ -1684,7 +1694,12 @@ async function restartAgentSessionOnce(
         ? { appendSystemPrompt: prev.appendSystemPrompt }
         : {}),
       ...(Object.keys(restartMeta).length > 0 ? { meta: restartMeta } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...(modelMismatch?.reportedModel
+        ? { model: modelMismatch.reportedModel, activeModel: modelMismatch.reportedModel }
+        : effModel
+          ? { model: effModel }
+          : {}),
+      ...(modelMismatch ? { modelApplyRejection: modelMismatch.rejection } : {}),
       // Decomposed config-axis echoes (SPEC §3.7) — carried forward from `prev`
       // and overlaid with any override so every axis round-trips onto the fresh
       // descriptor and the picker re-opens on it (SPEC §3.8), even the axes
@@ -1743,6 +1758,7 @@ async function restartAgentSessionOnce(
       resumedFrom: prev.id,
       resumeVia,
     })
+    if (modelMismatch) registry.emitHarnessWarning(desc.id, [modelApplyWarning(modelMismatch)], prev.label)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)

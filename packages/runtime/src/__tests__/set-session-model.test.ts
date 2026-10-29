@@ -8,7 +8,7 @@
  * and the MCP tool doesn't exist.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 import { createMcpServer } from "@agentproto/mcp-server"
@@ -23,6 +23,18 @@ import { registerAgentTools } from "../agent-tools.js"
 import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+
+// Deterministic named-profile resolution for the live-switch allow-list gate.
+const authProfileState = vi.hoisted(() => ({
+  profiles: {} as Record<string, import("@agentproto/auth").AuthProfile>,
+}))
+vi.mock("@agentproto/auth", async importOriginal => {
+  const actual = await importOriginal<typeof import("@agentproto/auth")>()
+  return {
+    ...actual,
+    getAuthProfile: vi.fn(async (id: string) => authProfileState.profiles[id]),
+  }
+})
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -165,6 +177,37 @@ describe("SessionsRegistry.setModel", () => {
       label: "my-conversation",
       ts: expect.any(String),
     })
+    reg.shutdown()
+  })
+
+  it("refuses a live switch outside the attached profile's models.mode:\"allow\" list", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      models: { mode: "allow", ids: ["claude-sonnet-5-5"] },
+    }
+    const reg = createSessionsRegistry({ persist: false })
+    const session = recordingAgentSession()
+    const desc = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: session,
+      adapterSlug: "fake",
+      model: "claude-sonnet-5-5",
+      accessProfile: { profileRef: "anthropic-sub", endpoint: "anthropic", method: "oauth-bearer" },
+    })
+
+    const refused = await reg.setModel(desc.id, "claude-sonnet-5")
+    expect(refused.applied).toBe(false)
+    expect(refused.reason).toContain('does not allow model "claude-sonnet-5"')
+    // The adapter never saw the excluded id.
+    expect(session.lastSetModel).toBeUndefined()
+    expect(reg.get(desc.id)?.model).toBe("claude-sonnet-5-5")
+
+    // The [1m] lane hint is not part of identity, so the allowed id still works.
+    const allowed = await reg.setModel(desc.id, "claude-sonnet-5-5[1m]")
+    expect(allowed.applied).toBe(true)
     reg.shutdown()
   })
 

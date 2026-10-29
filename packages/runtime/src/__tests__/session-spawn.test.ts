@@ -4538,6 +4538,47 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     })
   })
 
+  it("refuses a spawn whose model is outside a models.mode:\"allow\" profile, naming the allowed ids", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      models: { mode: "allow", ids: ["claude-sonnet-5-5"] },
+    }
+    const { registry, deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      model: "claude-sonnet-5",
+      access: { profileRef: "anthropic-sub" },
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected refusal")
+    expect(result.code).toBe("access_profile_ineligible")
+    expect(result.message).toContain('does not allow model "claude-sonnet-5"')
+    expect(result.message).toContain("claude-sonnet-5-5")
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("accepts a model whose only difference is a [1m] context-lane hint", async () => {
+    authProfileState.profiles["anthropic-sub"] = {
+      id: "anthropic-sub",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      models: { mode: "allow", ids: ["claude-sonnet-5-5"] },
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      model: "claude-sonnet-5-5[1m]",
+      access: { profileRef: "anthropic-sub" },
+    })
+    expect(result.ok).toBe(true)
+  })
+
   it("a credential-backed profile still does the static keychain read (regression, unchanged)", async () => {
     authProfileState.profiles["anthropic-sub"] = {
       id: "anthropic-sub",
@@ -6779,5 +6820,48 @@ describe("spawnAgentSession — provisioning progress and cancellation (daemon-w
     if (!result.ok) throw new Error("expected success")
     // The event carried the id the session then adopted.
     expect(seen[0]!.sessionId).toBe(result.descriptor.id)
+  })
+})
+
+describe("spawnAgentSession — rejected connect-time model apply", () => {
+  it("stops claiming the requested model and records the mismatch, preferring the adapter's reported model", async () => {
+    const session: AgentSessionLike = {
+      ...fakeAgentSession(),
+      modelApplyRejection: {
+        requested: "claude-sonnet-5-5[1m]",
+        reason: "API error: 429 rate_limit_error",
+      },
+      availableConfigOptions: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "claude-sonnet-5",
+          options: [{ value: "claude-sonnet-5", name: "Claude Sonnet 5" }],
+        },
+      ],
+    }
+    const { deps } = baseDeps({
+      resolveAgentAdapter: async () => ({
+        startSession: async () => session,
+        commandPreview: "mock-adapter",
+      }),
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      model: "claude-sonnet-5-5[1m]",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.model).toBe("claude-sonnet-5")
+    expect(result.descriptor.activeModel).toBe("claude-sonnet-5")
+    expect(result.descriptor.modelApplyRejection).toEqual({
+      requested: "claude-sonnet-5-5[1m]",
+      reason: "API error: 429 rate_limit_error",
+    })
+    expect(result.warnings?.join("\n")).toContain("claude-sonnet-5-5[1m]")
+    expect(result.warnings?.join("\n")).toContain("claude-sonnet-5")
   })
 })

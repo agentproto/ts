@@ -87,6 +87,8 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { profileAllowsModelId, profileModelAllowlistMessage } from "./auth-profile-model-allowlist.js"
+import { modelApplyMismatch, modelApplyWarning } from "./model-apply-mismatch.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -817,6 +819,20 @@ export async function resolveAccessProfileAuth(input: {
   }
   const { profile, projected } = selected
   const resolvedRouteGateway = selected.resolvedRouteGateway
+  // Per-profile model curation is an ENFORCEMENT gate here, not just the
+  // catalog's read-side hint: a `models.mode: "allow"` profile must refuse a
+  // spawn whose model it does not service. Observed live: a profile naming only
+  // `claude-sonnet-5-5` happily billed `claude-sonnet-5` because this path
+  // checked endpoint/method eligibility only.
+  const requestedModel = model ?? defaultModel
+  if (requestedModel && !profileAllowsModelId(profile, requestedModel, { route: projected.routeId })) {
+    return {
+      ok: false,
+      code: "access_profile_ineligible",
+      message: profileModelAllowlistMessage(profile.id, requestedModel, profile.models?.ids ?? []),
+      details: { adapter, profile: profile.id, model: requestedModel },
+    }
+  }
   const authMode = profileMethodToAuthMode(profile.method)
   // Subscription-credential resolution: a source-backed profile
   // (`profile.source`) resolves the credential FRESH via Mode 3 on every
@@ -5738,6 +5754,17 @@ export async function spawnAgentSession(
     }
 
     const defaultModel = resolved?.defaultModel
+    // A connect-time model-apply rejection means the live session is NOT on the
+    // requested model. Record it on the descriptor (plus a visible warning) and
+    // prefer whatever model the adapter actually reports, instead of letting
+    // the descriptor and every usage_snapshot keep claiming the request.
+    const mismatch = modelApplyMismatch({
+      ...(agentSession.modelApplyRejection ? { rejection: agentSession.modelApplyRejection } : {}),
+      ...(agentSession.availableConfigOptions
+        ? { availableConfigOptions: agentSession.availableConfigOptions }
+        : {}),
+    })
+    if (mismatch) spawnWarnings.push(modelApplyWarning(mismatch))
     // The daemon-composed part of the initial prompt (role disposition +
     // lineage line + AGENTS.md + posture) sits AHEAD of the caller's own
     // `prompt`. Recover it now that `effectivePrompt` is final so it can be
@@ -5774,7 +5801,14 @@ export async function spawnAgentSession(
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
-      ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
+      ...(mismatch?.reportedModel
+        ? { model: mismatch.reportedModel, activeModel: mismatch.reportedModel }
+        : input.model
+          ? { model: input.model }
+          : defaultModel
+            ? { model: defaultModel }
+            : {}),
+      ...(mismatch ? { modelApplyRejection: mismatch.rejection } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
@@ -5883,6 +5917,7 @@ export async function spawnAgentSession(
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
+    if (mismatch) registry.emitHarnessWarning(desc.id, [modelApplyWarning(mismatch)], input.label)
     for (const notice of sandboxSourceNotices) registry.recordNotice(desc.id, notice)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +
