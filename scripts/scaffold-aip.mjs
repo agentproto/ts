@@ -862,7 +862,7 @@ function oneOfOverride(schema, refs) {
   const kinds = branches.map(branchKinds)
   if (kinds.every((k) => k !== undefined)) {
     const all = kinds.flat()
-    if (new Set(all).size === all.length) {
+    if (all.every((k, i) => all.every((o, j) => i === j || !kindsOverlap(k, o)))) {
       return `z.union([${branches.map(render).join(", ")}])${tail}`
     }
   }
@@ -894,7 +894,7 @@ function leafBranches(b) {
 function provablyDisjoint(a, b) {
   const ka = branchKinds(a)
   const kb = branchKinds(b)
-  if (!ka.some((k) => kb.includes(k))) return true
+  if (!ka.some((k) => kb.some((o) => kindsOverlap(k, o)))) return true
   const rejects = (closed, other) =>
     closed.additionalProperties === false &&
     (other.required ?? []).some((k) => !(k in (closed.properties ?? {})))
@@ -925,6 +925,21 @@ function acyclicDefs(defs) {
     return false
   }
   return Object.fromEntries(Object.entries(defs).filter(([k]) => !reaches(k, k)))
+}
+
+/**
+ * Two branch kinds can match the same value: equal, a `const:<typeof>` and
+ * that plain type (`"x"` is a string), or `integer` and `number`.
+ */
+function kindsOverlap(a, b) {
+  if (a === b) return true
+  const aConst = a.startsWith("const:")
+  const bConst = b.startsWith("const:")
+  if (aConst !== bConst) {
+    const [c, t] = aConst ? [a.slice(6), b] : [b.slice(6), a]
+    return c === t || (c === "number" && t === "integer")
+  }
+  return (a === "integer" && b === "number") || (a === "number" && b === "integer")
 }
 
 /**

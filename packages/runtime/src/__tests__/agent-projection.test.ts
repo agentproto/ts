@@ -175,6 +175,29 @@ describe("projectAgentToSpawn", () => {
       expect(joined(p.warnings)).not.toMatch(/structured tool ref/)
     })
 
+    describe("filters the spawn cannot carry are warned about, not silently dropped", () => {
+      type Tools = NonNullable<Parameters<typeof defineAgent>[0]["tools"]>
+      const both = (tools: Tools) => [
+        projectAgentToSpawn(input(scout({ tools })), { agentManifestOption: "agent" }).warnings,
+        projectAgentToSpawn(input(scout({ tools })), {}).warnings,
+      ]
+
+      it.each<[string, Tools]>([
+        ["an allow on another server", [{ kind: "mcp", server: "github", allow: ["a"] }]],
+        ["a deny on another server", [{ kind: "mcp", server: "github", deny: ["a"] }]],
+        ["a deny on the daemon tools with no allowlist", [{ kind: "mcp", server: "agentproto", deny: ["file_write"] }]],
+      ])("%s", (_label, tools) => {
+        for (const w of both(tools)) expect(joined(w)).toMatch(/not applied/)
+      })
+
+      it.each<[string, Tools]>([
+        ["a whole-server item", [{ kind: "mcp", server: "github" }]],
+        ["string tools with a deny absorbed into the allowlist", ["file_read", { kind: "mcp", server: "agentproto", allow: [], deny: ["file_write"] }]],
+      ])("%s needs no such warning", (_label, tools) => {
+        for (const w of both(tools)) expect(joined(w)).not.toMatch(/not applied/)
+      })
+    })
+
     it("still warns about a structured ref that is not a server item", () => {
       const p = projectAgentToSpawn(input(scout({ tools: [{ kind: "mcp", server: "s" }, { ref: "@x/y" }] })), {})
       expect(joined(p.warnings)).toMatch(/1 structured tool ref\(s\)/)

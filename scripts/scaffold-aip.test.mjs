@@ -329,3 +329,42 @@ test("a oneOf of open objects is not provably disjoint and keeps the exactly-one
   assert.equal(res.status, 0, res.stderr)
   assert.ok(res.stdout.includes("superRefine"), res.stdout)
 })
+
+test("a oneOf of a const and its own primitive type is not disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CONSTOVERLAP", {
+    properties: {
+      id: { type: "string" },
+      pick: { oneOf: [{ const: "x" }, { type: "string" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CONSTOVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})
+
+test("a oneOf of integer and number is not disjoint and keeps the exactly-one check", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "NUMOVERLAP", {
+    properties: {
+      id: { type: "string" },
+      n: { oneOf: [{ type: "integer" }, { type: "number" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "NUMOVERLAP"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(res.stdout.includes("superRefine"), res.stdout)
+})
+
+test("a oneOf of a string-const and a number type stays a plain union", (t) => {
+  const { tmp, run } = makeFixture(t)
+  writeDraft(tmp, "CONSTDISJOINT", {
+    properties: {
+      id: { type: "string" },
+      pick: { oneOf: [{ const: "x" }, { type: "number" }] },
+    },
+  })
+  const res = run(["--schema-only", "--aip", "99", "--slug", "test", "--doctype", "CONSTDISJOINT"])
+  assert.equal(res.status, 0, res.stderr)
+  assert.ok(!res.stdout.includes("superRefine"), res.stdout)
+})

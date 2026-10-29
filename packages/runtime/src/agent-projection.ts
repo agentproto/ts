@@ -167,6 +167,31 @@ function projectToolServers(refs: readonly unknown[] | undefined): {
   return { servers, unprojected }
 }
 
+/**
+ * The spawn carries one `allowTools` list, applied to the daemon gateway only.
+ * A filter on any other server, or a `denyTools` that no allowlist already
+ * absorbed, therefore reaches `servers` but not the running session: say so.
+ */
+function unappliedServerFilters(id: string, servers: Record<string, ServerToolFilter>): string[] {
+  const out: string[] = []
+  for (const [server, f] of Object.entries(servers)) {
+    if (server !== BUILTIN_SERVER) {
+      if (f.allowTools !== undefined || f.denyTools !== undefined) {
+        out.push(
+          `agent "${id}": the tool filter for server "${server}" is declared but the spawn cannot scope ` +
+            "a server other than the daemon's own — not applied.",
+        )
+      }
+    } else if (f.denyTools !== undefined && f.allowTools === undefined) {
+      out.push(
+        `agent "${id}": denyTools for the daemon's tools cannot be applied on their own (the spawn carries ` +
+          "only an allowlist) — not applied.",
+      )
+    }
+  }
+  return out
+}
+
 /** String ids only: a structured `{ ref | file | inline }` entry has no
  *  gateway tool name / skill id to pass on. Returned separately so the
  *  caller can warn about what it had to leave out. */
@@ -204,12 +229,13 @@ export function projectAgentToSpawn(
     ...(gatewayAllow.length > 0 ? { tools: gatewayAllow } : {}),
     ...(Object.keys(tools.servers).length > 0 ? { servers: tools.servers } : {}),
   }
+  const unappliedFilters = unappliedServerFilters(id, tools.servers)
 
   if (caps.agentManifestOption) {
-    return { ...base, options: { [caps.agentManifestOption]: agent.path }, ...toolsField, warnings: [] }
+    return { ...base, options: { [caps.agentManifestOption]: agent.path }, ...toolsField, warnings: unappliedFilters }
   }
 
-  const warnings: string[] = []
+  const warnings: string[] = [...unappliedFilters]
   const instructions = composeInstructions(agent.handle, agent.body)
   // A declared channel takes the composed text as `systemPrompt` (delivered
   // through `startSession({ appendSystemPrompt })`, no prefix, no warning)
