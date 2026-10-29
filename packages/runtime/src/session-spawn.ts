@@ -87,6 +87,8 @@ import {
   type RouteAwareLaunchConfig,
 } from "./launch-config.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { profileAllowsModelId, profileModelAllowlistMessage } from "./auth-profile-model-allowlist.js"
+import { modelApplyMismatch, modelApplyWarning } from "./model-apply-mismatch.js"
 import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
@@ -767,8 +769,15 @@ export async function resolveAccessProfileAuth(input: {
   let selected: Candidate | undefined
   const firstProfile = resolvedCandidates[0]!.profile
   let firstProjected: ReturnType<typeof spawnEligibilityManifest>
+  // Per-profile model curation is part of ELIGIBILITY, not a gate applied
+  // after the ladder has locked a candidate: `access.profileRefs` means "bill
+  // the FIRST profile eligible for the model's route", so a route-eligible
+  // profile whose allow-list excludes the model must fall through to the next
+  // candidate rather than fail the spawn.
+  const requestedModel = model ?? defaultModel
+  let modelRefusal: { profileId: string; ids: readonly string[] } | undefined
   for (const [index, { profile }] of resolvedCandidates.entries()) {
-    let projected = spawnEligibilityManifest(adapter, authDescriptor, route, model ?? defaultModel)
+    let projected = spawnEligibilityManifest(adapter, authDescriptor, route, requestedModel)
     // The naive/prefix-guessed route above is only ever a GUESS when the
     // caller didn't pin one explicitly (`route?.gateway` still wins outright,
     // untouched, above); when the guess leaves the named profile ineligible,
@@ -776,9 +785,9 @@ export async function resolveAccessProfileAuth(input: {
     let resolvedRouteGateway: string | undefined
     if (
       route?.gateway === undefined &&
-      (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length === 0)
+      (!projected || eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, requestedModel).length === 0)
     ) {
-      const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, model ?? defaultModel)
+      const resolved = resolveProfileAwareRoute(adapter, authDescriptor, profile, requestedModel)
       if (resolved) {
         projected = resolved
         // A GATEWAY resolution (routeId ≠ the adapter's direct endpoint) must
@@ -793,15 +802,34 @@ export async function resolveAccessProfileAuth(input: {
       }
     }
     if (index === 0) firstProjected = projected
-    if (
-      projected &&
-      eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, model ?? defaultModel).length > 0
-    ) {
+    const routeEligible =
+      projected !== undefined &&
+      eligibleProfilesForRoute([profile], projected.manifest, projected.routeId, requestedModel).length > 0
+    if (projected && routeEligible) {
+      if (
+        requestedModel &&
+        !profileAllowsModelId(profile, requestedModel, { route: projected.routeId })
+      ) {
+        modelRefusal ??= { profileId: profile.id, ids: profile.models?.ids ?? [] }
+        continue
+      }
       selected = { profile, projected, ...(resolvedRouteGateway !== undefined ? { resolvedRouteGateway } : {}) }
       break
     }
   }
   if (!selected) {
+    if (modelRefusal && requestedModel) {
+      return {
+        ok: false,
+        code: "access_profile_ineligible",
+        message:
+          profileModelAllowlistMessage(modelRefusal.profileId, requestedModel, modelRefusal.ids) +
+          (candidates.length > 1
+            ? ` None of the ${candidates.length} candidate profiles [${candidates.join(", ")}] allow it.`
+            : ""),
+        details: { adapter, profile: modelRefusal.profileId, model: requestedModel },
+      }
+    }
     const endpoint = firstProjected?.manifest.endpointByRoute[firstProjected.routeId] ?? "an unknown endpoint"
     const suffix =
       candidates.length > 1
@@ -5738,6 +5766,36 @@ export async function spawnAgentSession(
     }
 
     const defaultModel = resolved?.defaultModel
+    // A connect-time model-apply rejection means the live session is NOT on the
+    // requested model. Record it on the descriptor (plus a visible warning) and
+    // prefer whatever model the adapter actually reports, instead of letting
+    // the descriptor and every usage_snapshot keep claiming the request.
+    const mismatch = modelApplyMismatch({
+      ...(agentSession.modelApplyRejection ? { rejection: agentSession.modelApplyRejection } : {}),
+      ...(agentSession.availableConfigOptions
+        ? { availableConfigOptions: agentSession.availableConfigOptions }
+        : {}),
+    })
+    const mismatchWarnings: string[] = mismatch ? [modelApplyWarning(mismatch)] : []
+    if (mismatch) spawnWarnings.push(...mismatchWarnings)
+    // The adapter-reported fallback can itself sit outside the attached
+    // profile's allow-list (the spawn gate validated the REQUESTED model). Do
+    // not silently bill past the contract: surface it as a warning.
+    if (mismatch?.reportedModel && accessProfileEcho) {
+      const profile = await getAuthProfile(accessProfileEcho.profileRef)
+      if (
+        profile &&
+        !profileAllowsModelId(profile, mismatch.reportedModel, {
+          ...(descriptorRoute?.gateway ? { route: descriptorRoute.gateway } : {}),
+        })
+      ) {
+        mismatchWarnings.push(
+          `[model] adapter is running "${mismatch.reportedModel}", which auth profile ` +
+            `"${profile.id}" does not allow; this session may bill outside the profile's curation.`,
+        )
+        spawnWarnings.push(mismatchWarnings.at(-1)!)
+      }
+    }
     // The daemon-composed part of the initial prompt (role disposition +
     // lineage line + AGENTS.md + posture) sits AHEAD of the caller's own
     // `prompt`. Recover it now that `effectivePrompt` is final so it can be
@@ -5774,7 +5832,16 @@ export async function spawnAgentSession(
       ...(resolved?.authDescriptor?.modelDerivedApiKey !== undefined
         ? { modelDerivedApiKey: resolved.authDescriptor.modelDerivedApiKey }
         : {}),
-      ...(input.model ? { model: input.model } : defaultModel ? { model: defaultModel } : {}),
+      ...(mismatch
+        ? mismatch.reportedModel
+          ? { model: mismatch.reportedModel, activeModel: mismatch.reportedModel }
+          : {}
+        : input.model
+          ? { model: input.model }
+          : defaultModel
+            ? { model: defaultModel }
+            : {}),
+      ...(mismatch ? { modelApplyRejection: mismatch.rejection } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
       ...(input.effort ? { effort: input.effort as EffortLevel } : {}),
       ...(input.posture !== undefined ? { posture: input.posture } : {}),
@@ -5883,6 +5950,7 @@ export async function spawnAgentSession(
     if (initialTitle) desc.title = initialTitle
     if (boundaryWarnings.length > 0) registry.emitHarnessWarning(desc.id, boundaryWarnings, input.label)
     if (input.harnessWarnings?.length) registry.emitHarnessWarning(desc.id, input.harnessWarnings, input.label)
+    if (mismatchWarnings.length > 0) registry.emitHarnessWarning(desc.id, mismatchWarnings, input.label)
     for (const notice of sandboxSourceNotices) registry.recordNotice(desc.id, notice)
     // Stamp the AGENTS.md resolution onto the descriptor (WP-R2) so
     // `sessions --json` / the summaries view can report the resolved path +

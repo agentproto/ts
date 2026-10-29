@@ -56,7 +56,8 @@ import type {
   Posture,
   RouteSpec,
 } from "./session-config.js"
-import type { CostBudget } from "@agentproto/auth"
+import { getAuthProfile, type CostBudget } from "@agentproto/auth"
+import { profileAllowsModelId, profileModelAllowlistMessage } from "./auth-profile-model-allowlist.js"
 import type { Grant } from "@agentproto/policy"
 import type { HookCapabilityView } from "@agentproto/provider-kit"
 import type { SandboxProviderChoice } from "@agentproto/sandbox"
@@ -398,6 +399,12 @@ export interface AgentSessionLike {
    *  `@agentproto/driver-agent-cli`'s `AgentCliRuntimeSession.steeringSupported`
    *  (ACP `_session/steering`, advertised at initialize). */
   readonly steeringSupported?: boolean
+  /** Set by the driver when the connect-time model apply was REJECTED: the
+   *  session is alive on the adapter's own default model, not the requested
+   *  one. Recorded onto {@link SessionDescriptor.modelApplyRejection} at spawn
+   *  and restart so the descriptor stops claiming the requested model. Absent
+   *  for arms/adapters with no connect-time config apply. */
+  readonly modelApplyRejection?: { requested: string; reason: string }
   /** Inject content into the turn in flight — mirrors
    *  `AgentCliRuntimeSession.steer`: `"steered"` (injected), `"promptRequired"`
    *  (no host turn in flight — deliver as a normal prompt), `"unsupported"`.
@@ -2449,6 +2456,16 @@ export interface SessionDescriptor {
    * thing that lets a client show the two facts diverging.
    */
   activeModel?: string
+  /**
+   * Set when the adapter REJECTED the model requested at spawn/resume: the
+   * session is running the adapter's own default (or whatever model the
+   * wrapper reports) instead. Records the requested id + the server's reason,
+   * so the divergence is visible instead of the descriptor silently claiming
+   * a model the adapter never applied. When the adapter reports a model
+   * (config-option `currentValue` or a usage frame), `model` is moved to that
+   * reported id; this field preserves what was asked for. PERSISTED.
+   */
+  modelApplyRejection?: { requested: string; reason: string }
   // ── Decomposed per-session config axes (SPEC §3.1/§3.7,
   //    `agentproto-session-config-axes`). Each is the DESCRIPTOR ECHO of one
   //    orthogonal axis, recorded here so a picker chip renders that axis
@@ -6062,6 +6079,12 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.mode}. See that field's doc for why a client
    *  needs it (mode-mismatch detection for mid-session model switching). */
   mode?: string
+  /** Connect-time model-apply rejection (see
+   *  {@link SessionDescriptor.modelApplyRejection}), recorded verbatim. */
+  modelApplyRejection?: { requested: string; reason: string }
+  /** The model the adapter reports as active at spawn/resume, when it differs
+   *  from the requested one (see {@link SessionDescriptor.activeModel}). */
+  activeModel?: string
   /** Resolved auth echo (mode + fingerprint + provider/source/setEnv) —
    *  recorded verbatim onto {@link SessionDescriptor.auth}. See that field's
    *  doc for the full contract; the caller (`session-spawn.ts`) computes this
@@ -8597,6 +8620,21 @@ export function createSessionsRegistry(opts?: {
       // the descriptor here so the latest context window + any adapter-
       // reported cost/tokens are available live to session_list / session_usage.
       case "usage_update": {
+        // A session whose connect-time model apply was rejected must stop
+        // claiming the requested model once the adapter tells us what it is
+        // actually on. Usage frames are the live truth (claude-agent-acp names
+        // the model in `_meta`); prefer that id over the rejected request.
+        if (
+          rt.desc.modelApplyRejection &&
+          typeof evt.model === "string" &&
+          evt.model.length > 0 &&
+          evt.model !== rt.desc.model
+        ) {
+          rt.desc.model = evt.model
+          rt.desc.activeModel = evt.model
+          resetContextWindowForModel(rt.desc, evt.model)
+          schedulePersist()
+        }
         // Not "latest frame wins": an adapter's in-turn frames can carry an
         // INFERRED window (claude-agent-acp guesses 200k for a bare 1M model
         // id until its first result) — `foldUsageFrameWindow` keeps a
@@ -12436,6 +12474,8 @@ export function createSessionsRegistry(opts?: {
         // caller mutating its own input map can't reach the descriptor.
         ...(input.meta ? { meta: { ...input.meta } } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.activeModel ? { activeModel: input.activeModel } : {}),
+        ...(input.modelApplyRejection ? { modelApplyRejection: input.modelApplyRejection } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
         // Decomposed config-axis echoes (SPEC §3.7), same optional-spread
@@ -12683,6 +12723,8 @@ export function createSessionsRegistry(opts?: {
         depth: input.depth ?? 0,
         ...(input.meta ? { meta: { ...input.meta } } : {}),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.activeModel ? { activeModel: input.activeModel } : {}),
+        ...(input.modelApplyRejection ? { modelApplyRejection: input.modelApplyRejection } : {}),
         ...(input.mode ? { mode: input.mode } : {}),
         ...(input.auth ? { auth: input.auth } : {}),
         ...(input.effort ? { effort: input.effort } : {}),
@@ -13982,6 +14024,23 @@ export function createSessionsRegistry(opts?: {
           suggestedOverride: { route: { gateway: targetRoute }, model: modelId },
         }
       }
+      // Auth-profile model curation is enforced on the LIVE switch too, not
+      // only at spawn: the profile's allow-list is the wallet's contract, and
+      // `agent_set_model` can otherwise bill a model the profile excludes.
+      // Resolve the CURRENT profile (not a spawn-time snapshot) so an edited
+      // allow-list takes effect on the next switch; a since-deleted profile is
+      // left to the spawn/restart gate rather than blocking a live switch.
+      const accessProfileRef = rt.desc.accessProfile?.profileRef
+      if (accessProfileRef) {
+        const profile = await getAuthProfile(accessProfileRef)
+        const route = targetRoute ?? currentRoute
+        if (profile && !profileAllowsModelId(profile, modelId, { ...(route ? { route } : {}) })) {
+          return {
+            applied: false,
+            reason: profileModelAllowlistMessage(profile.id, modelId, profile.models?.ids ?? []),
+          }
+        }
+      }
       if (!rt.agentSession.setModel) {
         return { applied: false, reason: "not-supported" }
       }
@@ -14058,6 +14117,9 @@ export function createSessionsRegistry(opts?: {
         // agree — mirror onto `activeModel` too (SessionDescriptor's doc)
         // rather than leaving it stale from a prior divergence.
         rt.desc.activeModel = modelId
+        // A successful live switch resolves an earlier connect-time rejection:
+        // the descriptor now genuinely runs what it names.
+        delete rt.desc.modelApplyRejection
         // The sticky window belonged to the previous model.
         resetContextWindowForModel(rt.desc, modelId)
         schedulePersist()

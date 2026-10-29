@@ -196,6 +196,27 @@ export interface AcpClientOptions {
    * `completed`: its work was done inside the cycle.
    */
   orphanedPromptTimeoutMs?: number
+  /**
+   * Bounded retry for a connect-time model apply (`session/set_config_option`
+   * `configId:"model"`) the server rejects TRANSIENTLY — a 429 / rate limit /
+   * "Couldn't confirm model" from the wrapper's validation probe. The probe
+   * hits the provider API, so a resume storm after a daemon restart can hit a
+   * rate limit and silently leave a resumed session on the adapter's default
+   * model; a short retry turns that into the requested model instead of a
+   * downgrade. Non-transient rejections (an unknown/gated id) are never
+   * retried. Attempts are capped so a burst of eager resumes cannot hang boot.
+   *
+   * Defaults: 3 attempts total, 1500ms base delay, jittered. Override in
+   * tests or for a tighter/looser boot budget.
+   */
+  modelApplyRetry?: {
+    /** Total attempts including the first. Default 3. */
+    maxAttempts?: number
+    /** First retry delay; doubles per attempt. Default 1500ms. */
+    baseDelayMs?: number
+    /** Ceiling on any single retry delay. Default 8000ms. */
+    maxDelayMs?: number
+  }
 }
 
 export const DEFAULT_ORPHANED_PROMPT_TIMEOUT_MS = 60_000
@@ -627,20 +648,39 @@ export async function createAcpClient(
   ): Promise<{ modelApplyRejection?: { requested: string; reason: string } }> => {
     let modelApplyRejection: { requested: string; reason: string } | undefined
     if (params.model) {
-      try {
-        await connection.setSessionConfigOption({
-          configId: "model",
-          value: params.model,
-          sessionId,
-        } as never)
-        options.onActivity?.()
-      } catch (err) {
-        const reason = configOptionErrorDetail(err)
-        modelApplyRejection = { requested: params.model, reason }
-        console.warn(
-          `[acp] set_config_option model="${params.model}" rejected by server ` +
-            `— keeping the agent's default model. Reason: ${reason}`,
-        )
+      const retry = {
+        maxAttempts: Math.max(1, options.modelApplyRetry?.maxAttempts ?? 3),
+        baseDelayMs: Math.max(0, options.modelApplyRetry?.baseDelayMs ?? 1500),
+        maxDelayMs: Math.max(0, options.modelApplyRetry?.maxDelayMs ?? 8000),
+      }
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await connection.setSessionConfigOption({
+            configId: "model",
+            value: params.model,
+            sessionId,
+          } as never)
+          options.onActivity?.()
+          break
+        } catch (err) {
+          const reason = configOptionErrorDetail(err)
+          const retryable = isTransientModelApplyFailure(reason) && attempt < retry.maxAttempts
+          if (retryable) {
+            const delay = jitteredBackoff(attempt, retry.baseDelayMs, retry.maxDelayMs)
+            console.warn(
+              `[acp] set_config_option model="${params.model}" rejected transiently ` +
+                `(attempt ${attempt}/${retry.maxAttempts}) — retrying in ${delay}ms. Reason: ${reason}`,
+            )
+            await sleep(delay)
+            continue
+          }
+          modelApplyRejection = { requested: params.model, reason }
+          console.warn(
+            `[acp] set_config_option model="${params.model}" rejected by server ` +
+              `— keeping the agent's default model. Reason: ${reason}`,
+          )
+          break
+        }
       }
     }
     if (params.effort) {
@@ -1764,6 +1804,31 @@ export function enrichInternalAcpError<T>(err: T): T | Error {
   })
   if (typeof wrapped.stack === "string") enriched.stack = wrapped.stack
   return enriched
+}
+
+/**
+ * A model-apply rejection worth retrying: the wrapper's `setModel` validation
+ * probe hits the provider API, so a resume storm can trip a 429 / rate limit
+ * (or its own "Couldn't confirm model" translation of one). Anything else —
+ * an unknown id, a gated value — is permanent and must not be retried.
+ */
+function isTransientModelApplyFailure(reason: string): boolean {
+  return (
+    /\b429\b|rate[\s_-]?limit|too many requests|couldn'?t confirm model|temporarily unavailable/i.test(
+      reason,
+    )
+  )
+}
+
+/** Exponential backoff with +/-25% jitter, capped. */
+function jitteredBackoff(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
+  if (baseDelayMs === 0) return 0
+  const exponential = Math.min(maxDelayMs, baseDelayMs * 2 ** (attempt - 1))
+  return Math.round(exponential * (0.75 + Math.random() * 0.5))
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms <= 0 ? Promise.resolve() : new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**

@@ -1167,6 +1167,10 @@ export function createAgentCliRuntime(
       return {
         sessionId,
         pid: child?.pid,
+        // Expose the connect-time rejection to the HOST even for adapters the
+        // derived-from-model guard does not refuse: the runtime records it on
+        // the descriptor so the session stops claiming the requested model.
+        ...(arm.modelApplyRejection ? { modelApplyRejection: arm.modelApplyRejection } : {}),
         // Transport liveness, delegated to the arm (see the fields' docs on
         // AgentCliRuntimeSession). An arm that models no long-lived
         // connection reports nothing, which reads as "connected" — there is
