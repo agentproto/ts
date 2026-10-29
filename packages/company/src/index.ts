@@ -16,7 +16,7 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 export { defineCompany } from "./define-company.js"
 export { CompanyAliasError } from "./aliases.js"
 export { companyPositions } from "./structure.js"
-export { renderCompanyMd, type CompanyEntry } from "./render.js"
+export { renderCompanyMd, CompanyLegacyFieldError, type CompanyEntry } from "./render.js"
 export { companySpec, companyVerbs } from "./spec.js"
 export type {
   CompanyDefinition,
