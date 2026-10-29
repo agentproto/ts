@@ -1,5 +1,5 @@
 ---
-"@agentproto/pack": minor
+"@agentproto/pack": major
 "@agentproto/role": minor
 "@agentproto/role-catalog": minor
 ---

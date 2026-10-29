@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
@@ -251,6 +251,19 @@ describe("AIP-64 install rules", () => {
     const err = await readPackCatalog(root).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PackCatalogInvalidError)
     expect((err as Error).message).toContain("pm")
+  })
+
+  it("refuses a declared member that is a symlink to a file outside the pack root", async () => {
+    const root = await makePack({ name: "escape-pack", roles: { pm: roleMd("pm") } })
+    const outside = join(tmp, "outside-ROLE.md")
+    await writeFile(outside, roleMd("pm"))
+    const member = join(root, "roles", "pm", "ROLE.md")
+    await rm(member)
+    await symlink(outside, member)
+
+    const err = await readPackCatalog(root).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PackCatalogInvalidError)
+    expect((err as Error).message).toContain("outside the pack root")
   })
 
   it("refuses a gated pack, surfacing its blockers verbatim and registering none of its members", async () => {

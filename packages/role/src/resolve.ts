@@ -184,13 +184,13 @@ export async function resolveRole(
     // Leaf miss (or hard chain failure with no fallback). Per AIP-47,
     // the resolver MUST surface `role_unresolvable` and throw — the
     // caller cannot proceed without a role.
-    const err = new RoleUnresolvableError(ref, warnings, chain)
+    const message = `role ref '${ref}' did not resolve in any source`
     warnings.push({
       code: "role_unresolvable",
-      message: err.message,
+      message,
       ref,
     })
-    throw err
+    throw new RoleUnresolvableError(ref, warnings, chain)
   }
 
   // Defensive validation of the merged frontmatter.
