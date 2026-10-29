@@ -7,19 +7,14 @@
  * `companyPositions()` rather than touching either field directly.
  */
 
-import type { CompanyDefinition } from "./types.js"
-
-type CompanyStructure = Extract<
-  CompanyDefinition,
-  { doctype: "company" }
->["structure"]
+import type { CompanyStructure } from "./types.js"
 
 /**
  * The company's seat slugs. Prefers `structure.positions`, falls back
  * to the deprecated `structure.roles` alias.
  */
 export function companyPositions(
-  company: { structure?: CompanyStructure } | undefined
+  company: { structure?: CompanyStructure | undefined } | undefined
 ): readonly string[] {
   const structure = company?.structure
   if (!structure) return []

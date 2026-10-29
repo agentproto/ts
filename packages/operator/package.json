@@ -56,6 +56,7 @@
   "dependencies": {
     "@agentproto/agent": "workspace:*",
     "@agentproto/doctype": "workspace:*",
+    "@agentproto/manifest": "workspace:*",
     "@agentproto/identity": "workspace:*",
     "@agentproto/persona": "workspace:*",
     "@agentproto/policy": "workspace:*",

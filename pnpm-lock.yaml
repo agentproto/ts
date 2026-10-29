@@ -1952,6 +1952,9 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/manifest':
+        specifier: workspace:*
+        version: link:../manifest
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3
@@ -3188,6 +3191,9 @@ importers:
       '@agentproto/identity':
         specifier: workspace:*
         version: link:../identity
+      '@agentproto/manifest':
+        specifier: workspace:*
+        version: link:../manifest
       '@agentproto/persona':
         specifier: workspace:*
         version: link:../persona
@@ -3775,6 +3781,9 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/manifest':
+        specifier: workspace:*
+        version: link:../manifest
       '@agentproto/registry':
         specifier: workspace:*
         version: link:../registry
@@ -4371,6 +4380,9 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/manifest':
+        specifier: workspace:*
+        version: link:../manifest
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

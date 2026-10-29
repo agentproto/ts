@@ -17,6 +17,8 @@ export const SPEC_NAME = "operator/v1" as const
 export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineOperator } from "./define-operator.js"
+export { renderOperatorMd, OperatorLegacyFieldError, type OperatorRenderInput } from "./render.js"
+export { operatorSpec, operatorVerbs } from "./spec.js"
 export type {
   AgentSkillRef,
   AgentToolRef,
