@@ -134,6 +134,14 @@ describe("workspace_brain_query", () => {
     await h.close()
   })
 
+  it("a walled caller never causes the provider to answer an unscoped query", async () => {
+    const h = await harness(fx.caller(SESSION.notes))
+    await h.texts({ query: "anything", topK: 5 })
+    expect(h.queries.length).toBeGreaterThan(0)
+    expect(h.queries.every((q) => (q.topK ?? 0) >= 100)).toBe(true)
+    await h.close()
+  })
+
   it("a host call and a session in no declared tree are not filtered", async () => {
     for (const caller of [HOST_CALLER, fx.caller(SESSION.free)]) {
       const h = await harness(caller)

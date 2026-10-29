@@ -85,7 +85,7 @@ export interface MemoryToolsDeps {
   store: () => MemoryStore
   caller: MemoryCaller
   /** Who the node scope is derived for. Missing or refused: every tool refuses. */
-  callerScope: CallerScope
+  callerScope?: CallerScope
 }
 
 class CommitNotAllowedError extends Error {

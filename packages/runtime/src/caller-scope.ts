@@ -241,7 +241,7 @@ export const callerScopes = new CallerScopes()
  * scope the spawn digest has always applied, so a tool answer and the digest
  * agree. A host call has none.
  */
-export function memoryScopeOf(caller: CallerScope): MemoryScope | undefined {
+export function memoryScopeOf(caller: CallerScope | undefined): MemoryScope | undefined {
   assertServed(caller)
   if (caller.kind === "host") return undefined
   const operator = operatorAnchor(caller.operator)

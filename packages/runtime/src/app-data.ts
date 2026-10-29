@@ -378,7 +378,7 @@ async function readDossierJobId(dossierDir: string): Promise<string | undefined>
 export interface RegisterAppDataToolsOptions {
   appRegistry: AppRegistry
   /** Whose node scope decides which installed apps exist. Missing or refused: every tool refuses. */
-  callerScope: CallerScope
+  callerScope?: CallerScope
   /** Where trees are read from. Default: the daemon's shared instance. */
   scopes?: CallerScopes
 }

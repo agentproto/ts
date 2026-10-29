@@ -53,7 +53,7 @@ export interface RegisterFsToolsOptions {
    */
   boundary?: AppBoundary
   /** Whose node scope confines the paths. Missing or refused: every tool refuses. */
-  callerScope: CallerScope
+  callerScope?: CallerScope
   /** Where trees are read from. Default: the daemon's shared instance. */
   scopes?: CallerScopes
 }

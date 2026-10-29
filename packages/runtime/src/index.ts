@@ -448,6 +448,8 @@ export type {
   WebSearchResult,
 } from "./web-search-tools.js"
 export type { RegisterBrainToolsOptions } from "./brain-tools.js"
+export { HOST_CALLER, CallerScopes, callerScopes, CallerRefusedError } from "./caller-scope.js"
+export type { CallerScope } from "./caller-scope.js"
 export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
 export type { WorkspaceBrains } from "./workspace-brains.js"
 export {
@@ -4378,7 +4380,7 @@ export async function createGateway(
     // dir). No write/delete tool exists here by design; binary files are
     // never read into a tool response — see GET /apps/:appId/external-blob
     // in http-server.ts for that.
-    registerAppExternalTools(server, { appRegistry })
+    registerAppExternalTools(server, { appRegistry, callerScope })
     registerTelegramBotTools(server, { telegramCreds: telegramBotCreds })
     // MCP Apps — agentproto_sessions panel via the AgnoMcpApp adapter.
     // Tool: agentproto_sessions  Resource: ui://agentproto_sessions/view

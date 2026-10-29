@@ -494,7 +494,7 @@ describe("app_external_list (paginated transformer)", () => {
       unvalidatedAgentTools: [],
       externalReadRoots: [externalDir],
     })
-    return mcpClient(server => registerAppExternalTools(server, { appRegistry }))
+    return mcpClient(server => registerAppExternalTools(server, { appRegistry, callerScope: HOST_CALLER }))
   }
 
   it("default call keeps the {appId, root, path, entries} envelope; fields filters; page-walk unchanged", async () => {

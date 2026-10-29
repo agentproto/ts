@@ -45,7 +45,7 @@ export interface RegisterBrainToolsOptions {
   /** The calling agent session id (from `?callerSessionId=` on `/mcp`). */
   callerSessionId?: string
   /** Whose node scope filters the answers. Missing or refused: every tool refuses. */
-  callerScope: CallerScope
+  callerScope?: CallerScope
   /** Where trees are read from. Default: the daemon's shared instance. */
   scopes?: CallerScopes
 }
@@ -127,10 +127,7 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
       try {
         const brain = brains.getBrain(workspace)
         const provider = brain.getProvider()
-        let result = await provider.query({
-          query: input.query,
-          ...(input.topK !== undefined ? { topK: input.topK } : {}),
-        })
+        let result: Awaited<ReturnType<typeof provider.query>>
         if (walled) {
           const wanted = input.topK ?? 10
           let fetch = Math.max(SCOPED_FETCH_FLOOR, wanted * 10)
@@ -144,6 +141,11 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
             }
             fetch *= 2
           }
+        } else {
+          result = await provider.query({
+            query: input.query,
+            ...(input.topK !== undefined ? { topK: input.topK } : {}),
+          })
         }
         return {
           content: [
