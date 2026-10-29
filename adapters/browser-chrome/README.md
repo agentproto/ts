@@ -132,7 +132,7 @@ dedicated Chrome. `autoLaunch: false` disables dedicated launching globally
 | `createChromeLiveProvider({ port })` / `CHROME_LIVE_PORT` | `9222` | Port on 127.0.0.1 |
 | `createChromeLiveProvider({ wsUrl })` / `CHROME_LIVE_WS_URL` | `ws://127.0.0.1:<port>/devtools/browser` | Full browser websocket URL; beats the port |
 | `consentTimeoutMs` | `60000` | How long to wait for the Allow click |
-| `discover` | `false` | Opt-in: try `GET /json/version` for a `webSocketDebuggerUrl` first |
+| `discover` | `true` | Read `GET /json/version` and connect to the advertised `webSocketDebuggerUrl` (Chrome 155+ per-launch browser UUID). `false` is a legacy escape hatch for a pre-155 toggle whose `/json/version` is unreachable but fixed endpoint still answers |
 | `autoLaunch` | `true` | May the provider ever launch a dedicated Chrome at all (as the default, or as the attach path's fallback) |
 | `preferDedicated` | `true` | `false` restores the old attach-first default for every call on this provider instance |
 | `launch({ attachIntent })` | `false` | Per-call explicit ask to attach to the user's own Chrome instead of the dedicated default |
@@ -140,13 +140,16 @@ dedicated Chrome. `autoLaunch: false` disables dedicated launching globally
 | `CHROME_LIVE_LAUNCH_DATA_DIR` | `~/.agentproto/browser/chrome/live` | Persisted profile dir for the auto-launched Chrome |
 
 `launch({ wsUrl, port })` wins over the provider config, which wins over the
-env. In toggle mode Chrome answers only the browser websocket without an id:
-`/json/version` and `/json/list` come back empty. So by default the provider
-connects straight to `ws://127.0.0.1:<port>/devtools/browser` and sends no HTTP
-request at all, which also avoids any extra consent prompt. `discover: true`
-probes `/json/version` first (for a Chrome started with
-`--remote-debugging-port`) and falls back to the fixed URL. `DevToolsActivePort` in the Chrome profile is not
-read (macOS does not let other apps read it); the port comes from config.
+env. By default (`discover: true`) the provider reads `GET /json/version` and
+connects to the advertised `webSocketDebuggerUrl` — Chrome 155+ exposes a
+per-launch browser UUID there (`ws://127.0.0.1:<port>/devtools/browser/<uuid>`);
+the id-less fixed URL answers 404. A closed port fails loudly with
+`browser:remote-debugging-off` instead of dialing a dead endpoint; an empty or
+non-JSON `/json/version` (a pre-155 toggle) falls back to the fixed id-less URL.
+`discover: false` skips the probe and connects straight to
+`ws://127.0.0.1:<port>/devtools/browser`. `DevToolsActivePort` in the Chrome
+profile is not read (macOS does not let other apps read it); the port comes
+from config.
 
 ### One connection, one consent
 
