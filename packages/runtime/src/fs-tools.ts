@@ -19,6 +19,13 @@
  * escape guard used by `WorkspaceFs`. Absolute paths inside the root
  * are accepted (so callers that prefix `basePath` with the absolute
  * workspace path keep working).
+ *
+ * Node confinement (AIP-34) sits next to the root confinement: once a path
+ * is inside the root, it must also be visible to the CALLER session's node
+ * scope, derived from that session's ground (`callerScope`). A path in a
+ * sealed sibling, above the caller's sealed wall, or in another tree is
+ * reported as absent. A caller that cannot be identified is refused. A host
+ * call, and a session whose ground lies in no declared tree, are not walled.
  */
 
 import {
@@ -33,6 +40,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { type AppBoundary, resolveBoundaryPath } from "./app-boundary.js"
+import { assertServed, callerScopes, type CallerScope, type CallerScopes } from "./caller-scope.js"
 import { paginate } from "./tool-envelope.js"
 
 export interface RegisterFsToolsOptions {
@@ -44,6 +52,10 @@ export interface RegisterFsToolsOptions {
    * `app-boundary.ts`.
    */
   boundary?: AppBoundary
+  /** Whose node scope confines the paths. Missing or refused: every tool refuses. */
+  callerScope?: CallerScope
+  /** Where trees are read from. Default: the daemon's shared instance. */
+  scopes?: CallerScopes
 }
 
 class FsPathError extends Error {
@@ -89,10 +101,21 @@ export function registerFsTools(
 ): void {
   const workspaceAnchor = makeAnchor(opts.workspace)
   const boundary = opts.boundary
-  const readAnchor = (input: string): string =>
-    boundary ? resolveBoundaryPath(boundary, input, "read") : workspaceAnchor(input)
-  const writeAnchor = (input: string): string =>
-    boundary ? resolveBoundaryPath(boundary, input, "write") : workspaceAnchor(input)
+  const scopes = opts.scopes ?? callerScopes
+  const visibleTo = (abs: string, input: string, subtree = false): string => {
+    if (!scopes.pathVisible(opts.callerScope, abs, { subtree })) {
+      throw new FsPathError(`ENOENT: no such file or directory '${input}'`)
+    }
+    return abs
+  }
+  const readAnchor = (input: string): string => {
+    assertServed(opts.callerScope)
+    return visibleTo(boundary ? resolveBoundaryPath(boundary, input, "read") : workspaceAnchor(input), input)
+  }
+  const writeAnchor = (input: string, subtree = false): string => {
+    assertServed(opts.callerScope)
+    return visibleTo(boundary ? resolveBoundaryPath(boundary, input, "write") : workspaceAnchor(input), input, subtree)
+  }
 
   server.tool(
     "file_read",
@@ -195,7 +218,10 @@ export function registerFsTools(
     async ({ path, limit, cursor }) => {
       const abs = readAnchor(path && path.length > 0 ? path : ".")
       const entries = await readdir(abs, { withFileTypes: true })
-      const lines = entries.map(e =>
+      // Filter before pagination. A regular file belongs to the node of the
+      // directory already checked, so only directories and links are located.
+      const shown = entries.filter(e => e.isFile() || scopes.pathVisible(opts.callerScope, join(abs, e.name)))
+      const lines = shown.map(e =>
         e.isDirectory() ? `[DIR]  ${e.name}` : `[FILE] ${e.name}`,
       )
       if (limit === undefined && cursor === undefined) {
@@ -240,7 +266,7 @@ export function registerFsTools(
     "Delete a file or empty directory in the workspace.",
     { path: z.string().describe("Workspace-relative path.") },
     async ({ path }) => {
-      const abs = writeAnchor(path)
+      const abs = writeAnchor(path, true)
       await rm(abs, { recursive: true, force: true })
       return text("ok")
     },

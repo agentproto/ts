@@ -4038,6 +4038,9 @@ importers:
       '@agentproto/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime
+      '@agentproto/workspace':
+        specifier: workspace:*
+        version: link:../workspace
       '@agentproto/workspace-brain':
         specifier: workspace:*
         version: link:../workspace-brain

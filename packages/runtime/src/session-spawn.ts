@@ -354,7 +354,7 @@ import { fingerprintAgentRole } from "./agent-role-refresh.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
 import { sessionTokenDeliverySafe, sessionTokenModeOf, type SessionTokenMode } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
-import type { MemoryStore } from "@agentproto/memory"
+import type { MemoryScope, MemoryStore } from "@agentproto/memory"
 import {
   memoryProjectionEnabled,
   memoryStoreAt as defaultMemoryStoreAt,
@@ -369,6 +369,7 @@ import {
   sessionAnchorTags,
   type NativeMemoryProjection,
 } from "./memory-digest.js"
+import { sessionMemoryScope } from "./caller-scope.js"
 
 /** `agent_start.sandbox`'s inline-spec form, plus the PR3 reuse field. See
  *  `SpawnAgentSessionInput.sandbox`. */
@@ -3987,12 +3988,31 @@ export async function spawnAgentSession(
       ...(resolvedSlug !== undefined ? { project: resolvedSlug } : {}),
       ...(callerAgentMemory?.anchors !== undefined ? { extra: callerAgentMemory.anchors } : {}),
     }
+    // AIP-34/AIP-72 section 10: the digest is the projection of THIS session's
+    // node, derived from its own ground and operator. A ground the tree cannot
+    // place injects nothing, never an unscoped digest.
+    let memoryScope: MemoryScope | undefined
+    try {
+      memoryScope = sessionMemoryScope({
+        sessionId: mintedSessionId,
+        ...(cwd !== undefined ? { ground: cwd } : {}),
+        ...(recordedOperator !== undefined ? { operator: recordedOperator } : {}),
+      })
+    } catch (err) {
+      spawnWarnings.push(
+        `agent_start: memory not injected, the node scope of this session could not be derived: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
+    }
     const decision = decideMemoryInject({
       ...(resolved?.memoryInject !== undefined ? { inject: resolved.memoryInject } : {}),
       ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
       sandbox: input.sandbox !== undefined,
     })
-    if (decision.path === "system-prompt") {
+    if (memoryScope === undefined) {
+      // fail closed: nothing is injected or projected for this session.
+    } else if (decision.path === "system-prompt") {
       const existing = input.appendSystemPrompt
       const channelRoom =
         resolved?.systemPromptMaxChars !== undefined
@@ -4005,6 +4025,7 @@ export async function spawnAgentSession(
             ? await buildMemoryDigest((deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root), {
                 anchors,
                 maxChars,
+                scope: memoryScope,
               })
             : null
         if (digest) {
@@ -4026,6 +4047,7 @@ export async function spawnAgentSession(
           (deps.memoryStoreAt ?? defaultMemoryStoreAt)(storeRoot.root),
           {
             anchors,
+            scope: memoryScope,
             ...(resolved?.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
             ...(resolved?.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
             ...(input.appendSystemPrompt !== undefined ? { existingSystemPromptChars: input.appendSystemPrompt.length } : {}),

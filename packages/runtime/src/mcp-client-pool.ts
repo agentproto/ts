@@ -13,6 +13,7 @@
  * / sse behave the same whichever registry asked.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks"
 import { createHash } from "node:crypto"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
@@ -47,6 +48,51 @@ export interface McpConnectionConfig {
   oauth?: McpOAuthConfig
 }
 
+const callHeaders = new AsyncLocalStorage<Record<string, string>>()
+
+/** Run `fn` with `headers` added to every request a forwarding connection sends inside it. */
+export function withCallHeaders<T>(headers: Record<string, string> | undefined, fn: () => T): T {
+  return headers === undefined ? fn() : callHeaders.run(headers, fn)
+}
+
+/** The per-call headers of the call in flight, if any. */
+export function currentCallHeaders(): Record<string, string> | undefined {
+  return callHeaders.getStore()
+}
+
+/**
+ * A `fetch` that adds the in-flight call's headers (the caller session and
+ * node, `caller-scope.ts`) to each request, replacing any header of the same
+ * name the connection config carries so a configured value cannot forge them.
+ */
+export function callerForwardingFetch(base: typeof fetch = fetch): typeof fetch {
+  return ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const extra = callHeaders.getStore()
+    if (extra === undefined) return base(input, init)
+    const headers = new Headers(init?.headers)
+    for (const [name, value] of Object.entries(extra)) headers.set(name, value)
+    return base(input, { ...init, headers })
+  }) as typeof fetch
+}
+
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"])
+
+/**
+ * Whether a connection receives the caller headers: an http/sse server on this
+ * machine, or one that opted in (`forwardCaller` on its import entry). A
+ * third-party server is never told which node a session runs in by default.
+ */
+export function shouldForwardCallerHeaders(config: McpConnectionConfig, optIn = false): boolean {
+  if (config.type !== "http" && config.type !== "sse") return false
+  if (optIn) return true
+  if (!config.url) return false
+  try {
+    return LOOPBACK_HOSTS.has(new URL(config.url).hostname)
+  } catch {
+    return false
+  }
+}
+
 export interface OpenMcpClientOptions {
   /** Prefix for config errors, e.g. `import "chrome-devtools"`. */
   label: string
@@ -61,6 +107,8 @@ export interface OpenMcpClientOptions {
    *  for why the fallback is bundling-topology-dependent and should not be
    *  relied on by a caller in a different tsup entry than the daemon). */
   oauthSecrets?: McpOAuthSecretIO
+  /** http/sse only: send the in-flight call's caller headers (see `withCallHeaders`). Default false. */
+  forwardCallHeaders?: boolean
 }
 
 /**
@@ -157,6 +205,7 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: { headers },
+      ...(opts.forwardCallHeaders ? { fetch: callerForwardingFetch() } : {}),
       ...(config.oauth
         ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url, opts.oauthSecrets) }
         : {}),
@@ -168,6 +217,7 @@ export async function openMcpClient(
     if (!config.url) throw new Error(`${opts.label} has no url`)
     const transport = new SSEClientTransport(new URL(config.url), {
       requestInit: { headers },
+      ...(opts.forwardCallHeaders ? { fetch: callerForwardingFetch() } : {}),
       ...(config.oauth
         ? { authProvider: createDaemonOAuthProvider(config.oauth, config.url, opts.oauthSecrets) }
         : {}),

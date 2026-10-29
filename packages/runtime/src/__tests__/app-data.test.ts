@@ -4,6 +4,7 @@
  * parseToolJson pattern — no heavy mocking.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtemp, mkdir, rm, readFile, writeFile, symlink } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -45,7 +46,7 @@ async function setup(dir: string, dataDir?: string) {
     unvalidatedAgentTools: [],
   })
   const server = new McpServer({ name: "app-data-test-server", version: "0.0.0" })
-  registerAppDataTools(server, { appRegistry })
+  registerAppDataTools(server, { appRegistry, callerScope: HOST_CALLER })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "app-data-test-client", version: "0.0.0" })
