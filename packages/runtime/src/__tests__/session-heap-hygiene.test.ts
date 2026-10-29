@@ -348,4 +348,63 @@ describe("output rings of a finished session", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("serves the final text, never a late line appended after the terminal clear", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "e91-race-"))
+    let release: () => void = () => {}
+    const gate = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const registry = createSessionsRegistry({
+      persist: false,
+      transcriptDir: join(dir, "sessions"),
+    })
+    try {
+      const fakeAgent: AgentSessionLike = {
+        sessionId: "acp-race-1",
+        async *send(): AsyncIterable<AgentStreamEvent> {
+          yield { kind: "text-delta", text: "FINAL RESULT\n" }
+          await gate
+          yield { kind: "text-delta", text: "LATE AFTER KILL\n" }
+        },
+        async cancel() {},
+        async close() {},
+      }
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: dir,
+        agentSession: fakeAgent,
+        adapterSlug: "fake",
+        initialPrompt: "go",
+      })
+      for (let i = 0; i < 40; i++) {
+        if (registry.readOutputTail(desc.id, 10).some(l => l.includes("FINAL RESULT"))) break
+        await new Promise(r => setTimeout(r, 10))
+      }
+
+      expect(registry.kill(desc.id, "SIGTERM", "operator-stopped")).toBe(true)
+      release()
+
+      // Prove the race happened: the straggler landed in the ring after the
+      // terminal clear.
+      let lateInRing = false
+      for (let i = 0; i < 40; i++) {
+        const ring: string[] = []
+        registry.attach(desc.id, line => ring.push(line))?.()
+        if (ring.some(l => l.includes("LATE AFTER KILL"))) {
+          lateInRing = true
+          break
+        }
+        await new Promise(r => setTimeout(r, 10))
+      }
+      expect(lateInRing).toBe(true)
+
+      const tail = registry.readOutputTail(desc.id, 10).join("\n")
+      expect(tail).toContain("FINAL RESULT")
+      expect(tail).not.toContain("LATE AFTER KILL")
+    } finally {
+      registry.shutdown()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

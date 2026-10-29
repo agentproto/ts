@@ -3530,6 +3530,11 @@ interface SessionRuntime {
    *  derived outcome's `summary` without re-reading the transcript. Not
    *  persisted. */
   lastAssistantText?: string
+  /** Snapshot of `lastAssistantText` taken at the moment this row went
+   *  terminal (see `emitExited`). A late relayed event can still append to
+   *  the live buffer after death, but the output-tail reader must keep
+   *  serving what the session actually finished with, not that straggler. */
+  finalOutputText?: string
   /** Set by a tool call: the next text-delta starts a new message. */
   lastAssistantTextSealed?: boolean
   /** Assistant text accumulated during the CURRENT turn, tail-capped like
@@ -7131,7 +7136,10 @@ export function createSessionsRegistry(opts?: {
     // durable history lives in `events.jsonl` / the command log, so a finished
     // row must not keep its output rings for the rest of the daemon's life.
     // Every terminal path funnels through here (kill, crash, pty exit, idle
-    // reap, steward close).
+    // reap, steward close). Freeze the final text first: a relayed event can
+    // still land after this point and append to `lastAssistantText`, and the
+    // output-tail reader must keep serving the real result, not that late line.
+    if (rt.lastAssistantText !== undefined) rt.finalOutputText = rt.lastAssistantText
     rt.recentLines.length = 0
     rt.recentLinesChars = 0
     rt.recentBytes.length = 0
@@ -14401,9 +14409,9 @@ export function createSessionsRegistry(opts?: {
         return rt.recentLines.slice(-lastN)
       }
       // Terminal-row reads must not be fooled by a late stream event that
-      // appended after `emitExited` cleared the ring: prefer the captured
-      // final text whenever we have one.
-      let text = rt.lastAssistantText
+      // appended after `emitExited` cleared the ring: prefer the text frozen
+      // at the terminal transition over the still-mutable live buffer.
+      let text = rt.finalOutputText ?? rt.lastAssistantText
       if (!text) {
         text = readTranscriptTail(
           sessionEventsPath(rt.desc.id, transcriptBaseDir),
