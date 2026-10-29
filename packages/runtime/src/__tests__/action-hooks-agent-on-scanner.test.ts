@@ -69,6 +69,24 @@ describe("createAgentOnScanner", () => {
     ])
   })
 
+  it("leaves a turn-end session:clerk-pass entry to the clerk, so it is neither bound nor refused", async () => {
+    const ws = tmp("agent-on-scanner-")
+    writeAgent(ws, "clerked", "clerked", [
+      "on:",
+      "  turn-end:",
+      "    - session:clerk-pass",
+      "    - session:archive",
+      "  agentproto:session-completed: session:archive",
+    ])
+    const scanner = createAgentOnScanner({ workspace: ws, log: () => {} })
+    const result = await scanner.rescan()
+    expect(result.bindings.map(binding => binding.bindingId)).toEqual([
+      "clerked/on/turn-end/1",
+      "clerked/on/agentproto:session-completed/0",
+    ])
+    expect(result.errors).toEqual([])
+  })
+
   it("stores an @owner/name manifest id without the owner prefix", async () => {
     const ws = tmp("agent-on-scanner-")
     writeAgent(ws, "owned", "@owner/owned", ARCHIVE_ON)

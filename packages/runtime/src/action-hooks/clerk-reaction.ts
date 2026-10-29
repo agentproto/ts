@@ -22,11 +22,12 @@ import type { SessionDescriptor } from "../sessions.js"
 import { loadConfig } from "../config.js"
 import type { ActionHandler } from "./reaction-bindings.js"
 import type { ReactionBinding, ReactionTargetOutcome } from "./reaction-runner.js"
+import { CLERK_REACTION_ACTION_ID } from "./clerk-on-entry.js"
 import { sessionFactsOf } from "./reaction-wiring.js"
 
 export const CLERK_REACTION_BINDING_ID = "builtin:clerk-pass"
 
-export const CLERK_REACTION_ACTION_ID = "session:clerk-pass"
+export { CLERK_REACTION_ACTION_ID }
 
 const CLERK_REACTION_CONFIG_REVISION = "clerk-pass-v1"
 
