@@ -223,6 +223,7 @@ import {
 } from "./session-end-reason.js"
 import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
+import { emptyTurnWarningLine } from "./turn-retry.js"
 import type { ModelPolicy } from "./model-policy.js"
 import { checkModelPolicy } from "./model-policy.js"
 import { getModelListSource } from "./model-list-store.js"
@@ -11436,10 +11437,10 @@ export function createSessionsRegistry(opts?: {
         if (emptyTurn) {
           appendLine(
             rt,
-            `\x1b[33m[warning] empty turn — no assistant output, no tool call, ` +
-              `cost ${rt.desc.costUsd !== undefined ? `$${rt.desc.costUsd}` : "unknown"}. ` +
-              `Likely an invalid model id or a provider that returned nothing; ` +
-              `verify the model slug (agentproto models <adapter>).\x1b[0m`,
+            emptyTurnWarningLine({
+              ...(rt.desc.costUsd !== undefined ? { costUsd: rt.desc.costUsd } : {}),
+              ...(turnErrorMessage !== undefined ? { errorMessage: turnErrorMessage } : {}),
+            }),
             "stderr",
           )
         }

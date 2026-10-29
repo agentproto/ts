@@ -117,6 +117,10 @@ const RATE_LIMIT_RE =
   /\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bresource[ _-]exhausted\b|\bthrottl(?:ed|ing)\b/i
 const UPSTREAM_5XX_RE =
   /\binternal server error\b|\bbad gateway\b|\bservice unavailable\b|\bgateway time-?out\b|\boverloaded(?:_error)?\b|\bupstream (?:error|connect|request timeout)\b|\bserver_error\b|\bendpoint (?:is )?(?:currently )?unavailable\b/i
+/** A provider refusing new work while its serving capacity is full ("the cell
+ *  is at capacity; retry shortly", OpenCode Go's `ttft_admission_refused`):
+ *  a temporary server-side refusal, retried like a 5xx. */
+const CAPACITY_RE = /\bttft_admission_refused\b|\b(?:at|over) capacity\b|\bretry shortly\b/i
 
 /**
  * Classify a turn's error text. Order matters: the stall marker is exact;
@@ -130,18 +134,23 @@ export function classifyTurnError(message: string | undefined): TurnErrorClass {
   const status = extractHttpStatus(message)
   if (status === 401 || status === 402 || status === 403 || AUTH_RE.test(message)) return "auth"
   if (status === 429 || RATE_LIMIT_RE.test(message)) return "rate-limit"
-  if ((status !== undefined && status >= 500 && status <= 599) || UPSTREAM_5XX_RE.test(message)) {
+  if (
+    (status !== undefined && status >= 500 && status <= 599) ||
+    UPSTREAM_5XX_RE.test(message) ||
+    CAPACITY_RE.test(message)
+  ) {
     return "upstream-5xx"
   }
   return "other"
 }
 
 /** Provider "retry after" hint in ms, when the message carries one
- *  ("retry after 30s", "Retry-After: 12", "try again in 2 minutes"). */
+ *  ("retry after 30s", "Retry-After: 12", "try again in 2 minutes",
+ *  "retry shortly (after 8 s)"). */
 export function extractRetryAfterMs(message: string | undefined): number | undefined {
   if (!message) return undefined
   const m =
-    /\b(?:retry[ -]after|try again in|retry in)\b["':\s]*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)?\b/i.exec(
+    /\b(?:retry[ -]after|try again in|retry in|retry shortly\s*\(?\s*after)\b["':\s]*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|secs?|seconds?|m|mins?|minutes?)?\b/i.exec(
       message,
     )
   if (!m?.[1]) return undefined
@@ -257,7 +266,9 @@ export function decideTurnRetry(
   }
   const attempts = desc.turnRetryAttempts ?? 0
   if (attempts >= policy.maxRetries) return { action: "exhausted", errorClass, attempts, error }
-  const retryAfterMs = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
+  // A 503 / capacity refusal can name its delay too ("retry shortly (after 8 s)").
+  const retryAfterMs =
+    errorClass === "rate-limit" || errorClass === "upstream-5xx" ? extractRetryAfterMs(message) : undefined
   return {
     action: "retry",
     errorClass,
@@ -270,6 +281,27 @@ export function decideTurnRetry(
 /** The continuation prompt sent to the session. */
 export function buildContinuationPrompt(error: string | undefined): string {
   return `Continue where you stopped; the previous turn failed with: ${error ?? "an unknown provider error"}`
+}
+
+/** The `[warning] empty turn` line the registry writes when a turn produced
+ *  no assistant text and no tool call. The model-id hint only fits a turn
+ *  that ended with no error: when the provider failed the turn, the line
+ *  names that error instead (and says so when it is a transient one). */
+export function emptyTurnWarningLine(opts: { costUsd?: number; errorMessage?: string }): string {
+  const cost = opts.costUsd !== undefined ? `$${opts.costUsd}` : "unknown"
+  let cause: string
+  if (opts.errorMessage === undefined) {
+    cause =
+      `Likely an invalid model id or a provider that returned nothing; ` +
+      `verify the model slug (agentproto models <adapter>).`
+  } else {
+    const errorClass = classifyTurnError(opts.errorMessage)
+    const transient = errorClass === "rate-limit" || errorClass === "upstream-5xx" || errorClass === "no-output-stall"
+    cause = transient
+      ? `The provider refused the turn with a transient error (${errorClass}): ${echo(opts.errorMessage)}`
+      : `The provider failed the turn: ${echo(opts.errorMessage)}`
+  }
+  return `\x1b[33m[warning] empty turn — no assistant output, no tool call, cost ${cost}. ${cause}\x1b[0m`
 }
 
 /** The `[turn-retry]` give-up notice, shared by every path that stops for
