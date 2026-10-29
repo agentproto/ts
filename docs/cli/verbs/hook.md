@@ -77,3 +77,5 @@ token, the environment or the payload.
 The command is `<defaults.nativeHooks.command> hook pre-compact`. When the
 key is unset it runs the CLI that serves the daemon, by absolute path, so a
 daemon with a minimal PATH still finds it; set a value there to override it.
+That absolute-path fallback is POSIX-only: a win32 daemon falls back to the
+bare `agentproto`, resolved on the harness's PATH.

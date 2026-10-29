@@ -51,7 +51,12 @@ export function servingCliCommand(
 
 let servingCli: string | undefined
 
-/** Set once by the CLI's `serve` command: the command line that runs the CLI serving this daemon. */
+/**
+ * Set once by the CLI's `serve` command: the command line that runs the CLI
+ * serving this daemon. Process-wide module state, read by every in-process
+ * spawn/restart in this daemon; only `agentproto serve` calls it (a host that
+ * loads two runtime instances gets one fallback per instance).
+ */
 export function setServingCli(command: string | undefined): void {
   servingCli = command
 }

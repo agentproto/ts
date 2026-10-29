@@ -35,6 +35,21 @@ describe("serve.ts boot order", () => {
   })
 })
 
+describe("serve.ts native hook wiring", () => {
+  const text = readFileSync(new URL("../commands/serve.ts", import.meta.url), "utf8")
+
+  it("registers the serving CLI before the gateway boots", () => {
+    const register = text.indexOf("setServingCli(")
+    const boot = text.indexOf("bootGatewayIdempotent(")
+    expect(register).toBeGreaterThan(-1)
+    expect(boot).toBeGreaterThan(-1)
+    expect(register).toBeLessThan(boot)
+    expect(text).toContain(
+      "setServingCli(servingCliCommand(process.execPath, resolveCliEntry(process.argv[1]) ?? undefined))",
+    )
+  })
+})
+
 describe("reconcileReactionsAtBoot", () => {
   it("still reconciles when the workspace config failed to load", async () => {
     const gateway = { reconcileReactionsOnBoot: vi.fn(async () => summary) }
