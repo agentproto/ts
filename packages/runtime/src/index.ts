@@ -30,6 +30,7 @@ import { makeCwdAnchor, registerCommandTools } from "./command-tools.js"
 import { isCommandAllowed, loadAllowlistEntries } from "./command-allowlist.js"
 import { fileConversationStore } from "./conversations.js"
 import { createRuntimeEvents } from "./events.js"
+import { callerScopes } from "./caller-scope.js"
 import { registerFsTools } from "./fs-tools.js"
 import {
   registerSessionTools,
@@ -2832,6 +2833,8 @@ export async function createGateway(
               const resumeMemoryProjection = await respawnMemoryProjection(descriptor.meta, {
                 sessionId: descriptor.id,
                 memoryStoreAt,
+                ...(descriptor.cwd !== undefined ? { ground: descriptor.cwd } : {}),
+                ...(descriptor.operator !== undefined ? { operator: descriptor.operator } : {}),
                 ...(adapter.supportsSystemPrompt !== undefined
                   ? { supportsSystemPrompt: adapter.supportsSystemPrompt }
                   : {}),
@@ -3612,8 +3615,9 @@ export async function createGateway(
     alias: string,
     tool: string,
     args: Record<string, unknown>,
+    callerSessionId?: string,
   ): Promise<unknown> => {
-    const out = await mcpProxy.callTool(alias, tool, args)
+    const out = await mcpProxy.callTool(alias, tool, args, callerSessionId ? { callerSessionId } : undefined)
     if (!out.ok) throw new Error(`app_tool_call: imported "${alias}".${tool}: ${out.error}`)
     return out.result
   }
@@ -4006,6 +4010,10 @@ export async function createGateway(
     const boundary = callerSessionId
       ? boundaryFromMeta(sessions.get(callerSessionId)?.meta)
       : undefined
+    // AIP-34 node scope of THIS request's caller: no id is a host call, an id
+    // the daemon does not know is refused by every scoped read below. Derived
+    // from the session's own ground, never from server config.
+    const callerScope = callerScopes.resolve(callerSessionId, sessions)
     if (boundary) {
       server = withToolExclusion(
         server,
@@ -4016,7 +4024,7 @@ export async function createGateway(
     // workspace-providers, IDEs, ad-hoc tooling) can read/write the
     // workspace without each implementing AIP-aware glue. Names match
     // `@modelcontextprotocol/server-filesystem` for drop-in compat.
-    registerFsTools(server, { workspace, ...(boundary ? { boundary } : {}) })
+    registerFsTools(server, { workspace, callerScope, ...(boundary ? { boundary } : {}) })
     // Cheap, read-only liveness probe. Registered early so it is available
     // even when deferred tools hide the rest of the surface.
     registerDaemonHealthTools(server, {
@@ -4064,6 +4072,7 @@ export async function createGateway(
     // else the daemon default.
     registerMemoryTools(server, {
       caller: resolveMemoryCaller(callerSessionId, id => sessions.get(id)?.meta),
+      callerScope,
       store: () =>
         memoryStoreAt(
           (callerSessionId ? sessions.get(callerSessionId)?.meta?.memoryStoreRoot : undefined) ??
@@ -4231,6 +4240,7 @@ export async function createGateway(
     registerBrainTools(server, {
       brains: workspaceBrains,
       registry: sessions,
+      callerScope,
       ...(callerSessionId ? { callerSessionId } : {}),
     })
     // Named auth-profile lifecycle (auth_profile_create/delete/list). No
@@ -4351,7 +4361,7 @@ export async function createGateway(
       listRegisteredToolIds,
       appRegistry,
       dispatchTool,
-      callImportedTool: callImportedAppTool,
+      callImportedTool: (alias, tool, args) => callImportedAppTool(alias, tool, args, callerSessionId),
       daemonWorkspace: workspace,
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
@@ -4361,7 +4371,7 @@ export async function createGateway(
     })
     // App-scoped durable data plane (app-data.ts) — app_data_read/write/list/
     // migrate, anchored to each installed app's own dir with traversal guard.
-    registerAppDataTools(server, { appRegistry })
+    registerAppDataTools(server, { appRegistry, callerScope })
     // Read-only external filesystem plane (app-external.ts) —
     // app_external_list/app_external_read, anchored to each installed app's
     // opted-in InstalledApp.externalReadRoots (never the app's own sandbox

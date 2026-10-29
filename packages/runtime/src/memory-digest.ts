@@ -35,6 +35,8 @@ import {
   type MemoryStore,
 } from "@agentproto/memory"
 
+import { sessionMemoryScope } from "./caller-scope.js"
+
 /** The host-chosen digest bound, in characters (section 9: "a few thousand"). */
 export const DEFAULT_MEMORY_DIGEST_MAX_CHARS = 4000
 
@@ -356,12 +358,21 @@ export async function respawnMemoryProjection(
     supportsSystemPrompt?: boolean
     systemPromptMaxChars?: number
     existingSystemPromptChars?: number
+    /** The respawned session's ground (`desc.cwd`) and operator; the node scope of the projection derives from them. */
+    ground?: string
+    operator?: string
   },
 ): Promise<NativeMemoryProjection | undefined> {
   if (meta?.memoryInject !== "native-dir" || !meta.memoryStoreRoot || meta.memory === "disabled") return undefined
   const extra = (meta.memoryAnchors ?? "").split(",").filter(Boolean)
+  const scope = sessionMemoryScope({
+    sessionId: opts.sessionId,
+    ...(opts.ground !== undefined ? { ground: opts.ground } : {}),
+    ...(opts.operator !== undefined ? { operator: opts.operator } : {}),
+  })
   return buildNativeMemoryProjection(opts.memoryStoreAt(meta.memoryStoreRoot), {
     anchors: { session: opts.sessionId, ...(extra.length > 0 ? { extra } : {}) },
+    scope,
     ...(opts.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: opts.supportsSystemPrompt } : {}),
     ...(opts.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: opts.systemPromptMaxChars } : {}),
     ...(opts.existingSystemPromptChars !== undefined

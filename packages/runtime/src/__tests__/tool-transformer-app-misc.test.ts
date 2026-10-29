@@ -9,6 +9,7 @@
  * pre-existing guard/error replies keep their shape.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -418,7 +419,7 @@ describe("app_data_list (paginated transformer)", () => {
       workflows: [],
       unvalidatedAgentTools: [],
     })
-    return mcpClient(server => registerAppDataTools(server, { appRegistry }))
+    return mcpClient(server => registerAppDataTools(server, { appRegistry, callerScope: HOST_CALLER }))
   }
 
   it("default call keeps the {appId, dir, entries} envelope; entries are already compact and unchanged", async () => {

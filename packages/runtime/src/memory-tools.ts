@@ -20,6 +20,12 @@
  * the same loopback identity claim every gateway tool trusts, so a local
  * process that omits `?callerSessionId=` is the operator.
  *
+ * Node scope (AIP-34, AIP-72 section 10): every store operation is made with
+ * the `MemoryScope` of the CALLER session, derived from that session's ground
+ * (`deps.callerScope`, never from server config), so the store filters before
+ * pagination and snippets. A host call has no scope. A caller that cannot be
+ * identified is refused (`caller_refused`), never served unscoped.
+ *
  * The store's typed failures come back as structured tool errors
  * (`{ error, message, ... }`), never a bare message.
  */
@@ -39,8 +45,10 @@ import {
   memoryStatus,
   type MemoryDocument,
   type MemoryRecord,
+  type MemoryScope,
   type MemoryStore,
 } from "@agentproto/memory"
+import { CallerRefusedError, memoryScopeOf, type CallerScope } from "./caller-scope.js"
 import { SUPERVISOR_ROLE, mergeRoleRegistry } from "./role.js"
 
 export type MemoryCaller =
@@ -76,6 +84,8 @@ export interface MemoryToolsDeps {
   /** The store this caller reads and writes. */
   store: () => MemoryStore
   caller: MemoryCaller
+  /** Who the node scope is derived for. Missing or refused: every tool refuses. */
+  callerScope: CallerScope
 }
 
 class CommitNotAllowedError extends Error {
@@ -108,6 +118,7 @@ function text(payload: unknown, isError = false): McpTextResult {
 
 /** The structured error payload for one failure. */
 export function memoryToolError(err: unknown): Record<string, unknown> {
+  if (err instanceof CallerRefusedError) return { error: "caller_refused", message: err.message }
   if (err instanceof CommitNotAllowedError) return { error: "commit_not_allowed", message: err.message }
   if (err instanceof MemoryDisabledError) return { error: "memory_disabled", message: err.message }
   if (err instanceof MemoryConflictError) {
@@ -183,6 +194,8 @@ function compactRecord(record: MemoryRecord) {
 }
 
 export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): void {
+  /** First thing every handler does: a refused caller is refused before anything else is judged. */
+  const scopeOf = (): MemoryScope | undefined => memoryScopeOf(deps.callerScope)
   const writable = (op: string): void => {
     if (deps.caller.kind === "session" && deps.caller.memoryDisabled) throw new MemoryDisabledError(op)
   }
@@ -206,8 +219,13 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "Read one with memory_read.",
     inputSchema: searchSchema,
     handler: async input => {
+      const scope = scopeOf()
+      const filter = {
+        ...(input.type !== undefined ? { type: input.type } : {}),
+        ...(scope !== undefined ? { scope } : {}),
+      }
       const hits = await deps.store().search(input.query, {
-        ...(input.type !== undefined ? { filter: { type: input.type } } : {}),
+        ...(Object.keys(filter).length > 0 ? { filter } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
       })
       return text({ hits })
@@ -241,14 +259,17 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "DEFAULT (id, type, slug, title, status, tags, updated_at, revision); `full: true` " +
       "returns whole records with the body. Paginate with `limit`/`cursor`.",
     inputSchema: listSchema,
-    handler: async input =>
-      deps.store().list({
+    handler: async input => {
+      const scope = scopeOf()
+      return deps.store().list({
+        ...(scope !== undefined ? { scope } : {}),
         ...(input.type !== undefined ? { type: input.type } : {}),
         ...(input.status !== undefined ? { status: input.status } : {}),
         ...(input.tags !== undefined ? { tags: input.tags } : {}),
         ...(input.inForce !== undefined ? { inForce: input.inForce } : {}),
         ...(input.proposals !== undefined ? { proposals: input.proposals } : {}),
-      }),
+      })
+    },
     transformers: [
       memoryErrors(),
       paginated({
@@ -271,7 +292,8 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "(pass it as `ifRevision` to change the item).",
     inputSchema: readSchema,
     handler: async input => {
-      const record = await deps.store().read(input.id)
+      const scope = scopeOf()
+      const record = await deps.store().read(input.id, scope !== undefined ? { scope } : undefined)
       if (!record) throw new MemoryNotFoundError("item", input.id)
       return text({ revision: record.revision, item: record.item })
     },
@@ -309,11 +331,13 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "(or proposalId) and the revision.",
     inputSchema: writeSchema,
     handler: async input => {
+      const scope = scopeOf()
       const mode = input.mode ?? "propose"
       if (mode === "commit") gate("memory_write commit")
       else writable("memory_write")
       const record = await deps.store().write(toDocument(input.item), {
         mode,
+        ...(scope !== undefined ? { scope } : {}),
         ...(input.ifRevision !== undefined ? { ifRevision: input.ifRevision } : {}),
         ...(mode === "commit" && input.fromProposal !== undefined ? { fromProposal: input.fromProposal } : {}),
       })
@@ -342,8 +366,10 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "`ifRevision`.",
     inputSchema: supersedeSchema,
     handler: async input => {
+      const scope = scopeOf()
       gate("memory_supersede")
       const { old, next } = await deps.store().supersede(input.id, toDocument(input.next), {
+        ...(scope !== undefined ? { scope } : {}),
         ...(input.ifRevision !== undefined ? { ifRevision: input.ifRevision } : {}),
       })
       return text({
@@ -367,8 +393,10 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "no longer in force. Operator or supervisor only; needs `ifRevision`.",
     inputSchema: archiveSchema,
     handler: async input => {
+      const scope = scopeOf()
       gate("memory_archive")
       const record = await deps.store().archive(input.id, {
+        ...(scope !== undefined ? { scope } : {}),
         ...(input.ifRevision !== undefined ? { ifRevision: input.ifRevision } : {}),
       })
       return text({ id: record.item.id, status: memoryStatus(record.item), revision: record.revision })
@@ -388,8 +416,9 @@ export function registerMemoryTools(server: McpServer, deps: MemoryToolsDeps): v
       "erased. Operator or supervisor only.",
     inputSchema: dismissSchema,
     handler: async input => {
+      const scope = scopeOf()
       gate("memory_dismiss")
-      await deps.store().dismiss(input.proposalId)
+      await deps.store().dismiss(input.proposalId, scope !== undefined ? { scope } : undefined)
       return text({ proposalId: input.proposalId, dismissed: true })
     },
     transformers: [memoryErrors()],

@@ -6,6 +6,7 @@
  * the createMcpServer + InMemoryTransport pattern; no network.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -57,7 +58,7 @@ function doc(overrides: Partial<MemoryDocument> = {}): MemoryDocument {
 
 async function harness(caller: MemoryCaller) {
   const { server } = await createMcpServer({ specs: [], name: "main", version: "0" })
-  registerMemoryTools(server, { store: () => store, caller })
+  registerMemoryTools(server, { store: () => store, caller, callerScope: HOST_CALLER })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "test", version: "0.0.1" })

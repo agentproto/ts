@@ -14,10 +14,18 @@
  * used (from its descriptor's `workspaceSlug`). Resolution applies the bucket
  * membership rule, so an unregistered slug degrades to `default` rather than
  * pointing a brain at an arbitrary path.
+ *
+ * Node scope (AIP-34): a hit is a fragment of one session's transcript, and a
+ * session belongs to the node of its ground. A caller scoped to a node only
+ * receives hits from sessions whose node is visible to it; the filter runs
+ * before the top-K cut, and a hit whose session cannot be placed is dropped,
+ * never served unscoped. A caller that cannot be identified is refused. A host
+ * call, and a session whose ground lies in no declared tree, are not filtered.
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
+import { assertServed, callerScopes, type CallerScope, type CallerScopes } from "./caller-scope.js"
 import type { SessionsRegistry } from "./sessions.js"
 import { archivedInclusiveRegistry, sessionRefSchema, resolveSessionRef } from "./session-ref.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
@@ -36,6 +44,23 @@ export interface RegisterBrainToolsOptions {
   registry: SessionsRegistry
   /** The calling agent session id (from `?callerSessionId=` on `/mcp`). */
   callerSessionId?: string
+  /** Whose node scope filters the answers. Missing or refused: every tool refuses. */
+  callerScope: CallerScope
+  /** Where trees are read from. Default: the daemon's shared instance. */
+  scopes?: CallerScopes
+}
+
+/** First page asked of the provider for a node-scoped caller, doubled until enough allowed hits remain. */
+const SCOPED_FETCH_FLOOR = 100
+const SCOPED_FETCH_CEILING = 3200
+
+function refusal(tool: string, err: unknown) {
+  return {
+    content: [
+      { type: "text" as const, text: `${tool} ${err instanceof Error ? err.message : String(err)}` },
+    ],
+    isError: true as const,
+  }
 }
 
 /** Resolve the target workspace: explicit arg wins, else the caller's slug.
@@ -55,7 +80,17 @@ function resolveTargetWorkspace(
 }
 
 export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOptions): void {
-  const { brains, registry, callerSessionId } = opts
+  const { brains, registry, callerSessionId, callerScope } = opts
+  const scopes = opts.scopes ?? callerScopes
+  const walled = callerScope?.kind === "session" && callerScope.node !== undefined
+
+  const hitVisible = (hit: { metadata?: Record<string, unknown> }): boolean => {
+    const sid = hit.metadata?.sessionId
+    if (typeof sid !== "string") return false
+    const cwd = registry.get(sid)?.cwd
+    if (cwd === undefined) return false
+    return scopes.pathVisible(callerScope, cwd)
+  }
 
   // ── workspace_brain_query ────────────────────────────────────────
   server.tool(
@@ -83,13 +118,33 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         ),
     },
     async input => {
+      try {
+        assertServed(callerScope)
+      } catch (err) {
+        return refusal("workspace_brain_query:", err)
+      }
       const workspace = resolveTargetWorkspace(brains, registry, callerSessionId, input.workspace)
       try {
         const brain = brains.getBrain(workspace)
-        const result = await brain.getProvider().query({
+        const provider = brain.getProvider()
+        let result = await provider.query({
           query: input.query,
           ...(input.topK !== undefined ? { topK: input.topK } : {}),
         })
+        if (walled) {
+          const wanted = input.topK ?? 10
+          let fetch = Math.max(SCOPED_FETCH_FLOOR, wanted * 10)
+          for (;;) {
+            const asked = await provider.query({ query: input.query, topK: fetch })
+            const allowed = asked.hits.filter(hitVisible)
+            const exhausted = asked.hits.length < fetch || fetch >= SCOPED_FETCH_CEILING
+            if (allowed.length >= wanted || exhausted) {
+              result = { ...asked, hits: allowed.slice(0, wanted) }
+              break
+            }
+            fetch *= 2
+          }
+        }
         return {
           content: [
             {
@@ -131,6 +186,11 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         .describe("Workspace slug. Omit to use the calling session's workspace."),
     },
     async input => {
+      try {
+        assertServed(callerScope)
+      } catch (err) {
+        return refusal("workspace_brain_status:", err)
+      }
       const workspace = resolveTargetWorkspace(brains, registry, callerSessionId, input.workspace)
       try {
         const status = await brains.getBrain(workspace).status()
@@ -187,6 +247,11 @@ export function registerBrainTools(server: McpServer, opts: RegisterBrainToolsOp
         ),
     },
     async input => {
+      try {
+        assertServed(callerScope)
+      } catch (err) {
+        return refusal("workspace_brain_ingest:", err)
+      }
       const workspace = resolveTargetWorkspace(brains, registry, callerSessionId, input.workspace)
       try {
         const brain = brains.getBrain(workspace)

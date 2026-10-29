@@ -1552,6 +1552,8 @@ async function restartAgentSessionOnce(
       memoryProjection = await respawnMemoryProjection(prev.meta, {
         sessionId: restartedSessionId,
         memoryStoreAt: opts.memoryStoreAt ?? defaultMemoryStoreAt,
+        ...(prev.cwd !== undefined ? { ground: prev.cwd } : {}),
+        ...(prev.operator !== undefined ? { operator: prev.operator } : {}),
         ...(resolved.supportsSystemPrompt !== undefined ? { supportsSystemPrompt: resolved.supportsSystemPrompt } : {}),
         ...(resolved.systemPromptMaxChars !== undefined ? { systemPromptMaxChars: resolved.systemPromptMaxChars } : {}),
         ...(restartAppendsSystemPrompt ? { existingSystemPromptChars: prev.appendSystemPrompt!.length } : {}),

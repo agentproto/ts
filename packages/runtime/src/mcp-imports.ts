@@ -72,6 +72,10 @@ export interface ImportedMcpEntry {
   /** http/sse only: the server authenticates with OAuth. Tokens live in the
    *  keychain (`mcpOAuthRef`), never in this file. Set by `mcp login`. */
   auth?: ImportedMcpAuth
+  /** http/sse only: also send the caller session and node headers
+   *  (`x-agentproto-caller-session`, `x-agentproto-caller-node`) to this server
+   *  when it is not on this machine. Loopback servers always receive them. */
+  forwardCaller?: boolean
 }
 
 export interface ImportedMcpAuth {
@@ -353,6 +357,7 @@ function normalize(parsed: unknown): ImportedMcpsConfig {
       if (secretRefs) extra.secretRefs = secretRefs
       const auth = parseAuth(e.auth)
       if (auth) extra.auth = auth
+      if (e.forwardCaller === true) extra.forwardCaller = true
       imports.push({ id, alias, addedAt, snapshot, ...extra })
     }
   }

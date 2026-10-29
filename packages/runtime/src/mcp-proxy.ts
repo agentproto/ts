@@ -32,7 +32,13 @@
 
 import { promises as fs } from "node:fs"
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { DEAD_CONNECTION_RE, openMcpClient, safeClose } from "./mcp-client-pool.js"
+import {
+  DEAD_CONNECTION_RE,
+  openMcpClient,
+  safeClose,
+  shouldForwardCallerHeaders,
+  withCallHeaders,
+} from "./mcp-client-pool.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import { liveSourcePaths, resolveImportConnection } from "./mcp-import-resolve.js"
 import {
@@ -109,14 +115,17 @@ export interface ProxyCallContext {
 /**
  * Pre-dispatch hook consulted by every `callTool`. Returning `{allow:false}`
  * short-circuits the call with `reason` as its error; the upstream is never
- * contacted. Unset by default, so a bare registry dispatches exactly as before.
+ * contacted. `allow` may carry per-call `headers` (the caller session and node,
+ * `caller-scope.ts`) that a connection opened for forwarding sends with that
+ * call and no other. Unset by default, so a bare registry dispatches exactly
+ * as before.
  */
 export type ProxyCallGuard = (call: {
   alias: string
   toolName: string
   args: unknown
   context?: ProxyCallContext
-}) => Promise<{ allow: true } | { allow: false; reason: string }>
+}) => Promise<{ allow: true; headers?: Record<string, string> } | { allow: false; reason: string }>
 
 export class McpProxyRegistry {
   private callGuard: ProxyCallGuard | undefined
@@ -302,9 +311,11 @@ export class McpProxyRegistry {
     args: unknown,
     context?: ProxyCallContext
   ): Promise<ProxyCallOutcome> {
+    let callHeaders: Record<string, string> | undefined
     if (this.callGuard) {
       const verdict = await this.callGuard({ alias, toolName, args, ...(context ? { context } : {}) })
       if (!verdict.allow) return { ok: false, error: verdict.reason }
+      callHeaders = verdict.headers
     }
     const handle = await this.connectIfNeeded(alias)
     if (!handle) return { ok: false, error: `unknown alias "${alias}"` }
@@ -321,13 +332,16 @@ export class McpProxyRegistry {
       | undefined
     const resolved = await applyClientResolve(hint, args)
     try {
-      const result = await handle.client.callTool({
-        name: toolName,
-        arguments:
-          resolved && typeof resolved === "object"
-            ? (resolved as Record<string, unknown>)
-            : {},
-      })
+      const client = handle.client
+      const result = await withCallHeaders(callHeaders, () =>
+        client.callTool({
+          name: toolName,
+          arguments:
+            resolved && typeof resolved === "object"
+              ? (resolved as Record<string, unknown>)
+              : {},
+        }),
+      )
       return { ok: true, result }
     } catch (err) {
       // Mark the client as dirty — the connection may have died
@@ -413,6 +427,7 @@ async function openClient(entry: ImportedMcpEntry): Promise<{
     label: `import "${entry.alias}"`,
     // claude-code `.mcp.json` semantics; parity with McpClientPool.
     expandHeaders: true,
+    forwardCallHeaders: shouldForwardCallerHeaders(config, entry.forwardCaller === true),
     // Pass explicitly rather than relying on `openMcpClient`'s own
     // `getMcpCredentialDeps()` fallback: this module and `serve.ts`'s
     // `setMcpCredentialDeps` call happen to share a bundle today (both

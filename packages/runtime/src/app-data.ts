@@ -55,6 +55,7 @@ import { dirname, isAbsolute, join, normalize, resolve, sep } from "node:path"
 import { z, type ZodRawShape } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { AppRegistry, InstalledApp } from "./app-registry.js"
+import { assertServed, callerScopes, type CallerScope, type CallerScopes } from "./caller-scope.js"
 import {
   APP_STATE_APPEND_TOOL_NAME,
   APP_STATE_KINDS,
@@ -376,10 +377,25 @@ async function readDossierJobId(dossierDir: string): Promise<string | undefined>
 
 export interface RegisterAppDataToolsOptions {
   appRegistry: AppRegistry
+  /** Whose node scope decides which installed apps exist. Missing or refused: every tool refuses. */
+  callerScope: CallerScope
+  /** Where trees are read from. Default: the daemon's shared instance. */
+  scopes?: CallerScopes
 }
 
 export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToolsOptions): void {
   const { appRegistry } = opts
+  const scopes = opts.scopes ?? callerScopes
+  // AIP-34 node scope: an app whose dir or data dir lies in a node the caller
+  // cannot see is not installed as far as this caller is concerned.
+  const visibleApp = (appId: string): InstalledApp | undefined => {
+    assertServed(opts.callerScope)
+    const app = appRegistry.getApp(appId)
+    if (!app) return undefined
+    const visible =
+      scopes.pathVisible(opts.callerScope, app.dir) && scopes.pathVisible(opts.callerScope, appDataDir(app))
+    return visible ? app : undefined
+  }
 
   server.tool(
     "app_data_read",
@@ -392,7 +408,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       "either root is rejected.",
     { appId: z.string(), path: z.string().describe("App-relative path under the app's data dir.") },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_data_read: no installed app "${input.appId}".`)
       let target: string
       try {
@@ -430,7 +446,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       content: z.unknown().describe("JSON value for `.json` paths, or `{ text }` / string for others."),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_data_write: no installed app "${input.appId}".`)
       let target: string
       try {
@@ -483,7 +499,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       "outside either root is rejected.",
     inputSchema: appDataListSchema,
     handler: async (input) => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_data_list: no installed app "${input.appId}".`)
       const relDir = input.dir ?? "."
       const dirs: string[] = []
@@ -548,7 +564,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       force: z.boolean().optional().describe("Re-run even if already migrated."),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_data_migrate: no installed app "${input.appId}".`)
       let roots: AppDataRoots
       try {
@@ -644,7 +660,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       ),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_state_append: no installed app "${input.appId}".`)
       try {
         const stored = await appendAppStateEvent(installed, input.event as never)
@@ -666,7 +682,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       tail: z.number().int().positive().optional().describe("How many trailing events to include. Default 20."),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_state_get: no installed app "${input.appId}".`)
       const { events, malformedLines } = await readAppStateEvents(installed)
       const snapshot = await appStateSnapshot(installed)
@@ -694,7 +710,7 @@ export function registerAppDataTools(server: McpServer, opts: RegisterAppDataToo
       limit: z.number().int().positive().optional().describe("Max events returned. Default 100."),
     },
     async input => {
-      const installed = appRegistry.getApp(input.appId)
+      const installed = visibleApp(input.appId)
       if (!installed) return errorResult(`app_state_list: no installed app "${input.appId}".`)
       const { events, malformedLines } = await readAppStateEvents(installed)
       const kinds = input.kinds !== undefined ? new Set<string>(input.kinds) : undefined

@@ -4,6 +4,7 @@
  * InMemoryTransport pattern — no heavy mocking.
  */
 
+import { HOST_CALLER } from "../caller-scope.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -51,7 +52,7 @@ async function setup(dir: string, opts?: { deny?: ReadonlySet<string> }) {
   })
   let server: McpServer = new McpServer({ name: "app-state-test-server", version: "0.0.0" })
   const target = opts?.deny ? withToolExclusion(server, opts.deny) : server
-  registerAppDataTools(target, { appRegistry })
+  registerAppDataTools(target, { appRegistry, callerScope: HOST_CALLER })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "app-state-test-client", version: "0.0.0" })

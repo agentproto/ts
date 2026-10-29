@@ -19,8 +19,17 @@
  * no matching rule, nothing is held and the call is dispatched untouched.
  * Any non-allow action (`hold`, `deny`, `gate`) routes to the human hold: this
  * seam has no shell-gate runner and does not auto-deny real work.
+ *
+ * Node scope (AIP-34): the guard derives the CALLER's scope itself and hands
+ * it to the proxy as per-call headers (`x-agentproto-caller-session`, and
+ * `x-agentproto-caller-node` when the session's ground lies in a declared
+ * node), which the proxy sends to http/sse servers on this machine or ones
+ * that opted in. A call that names a session the daemon does not know is
+ * refused before anything is dispatched, hooks or not; a call that names no
+ * session is a host call and is dispatched with no headers.
  */
 
+import { callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import type { ProxyCallGuard } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -31,19 +40,25 @@ export interface ImportedCallGuardOptions {
   workspace: string
   /** Fail-closed ceiling on waiting for a human. Default 10 minutes. */
   timeoutMs?: number
+  /** Where trees are read from. Default: the daemon's shared instance. */
+  scopes?: CallerScopes
 }
 
 export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCallGuard {
   return async ({ alias, toolName, args, context }) => {
     const callerSessionId = context?.callerSessionId
+    const callerScope = (opts.scopes ?? callerScopes).resolve(callerSessionId, opts.registry)
+    if (callerScope.kind === "refused") return { allow: false, reason: callerScope.reason }
+    const headers = callerHeaders(callerScope)
+    const proceed = { allow: true as const, ...(headers ? { headers } : {}) }
     const caller = callerSessionId ? opts.registry.get(callerSessionId) : undefined
     const rules = loadHooksConfig(caller?.cwd ?? opts.workspace)
-    if (rules.length === 0) return { allow: true }
+    if (rules.length === 0) return proceed
 
     const held = [toolName, `imported:${alias}/${toolName}`].some(
       name => decideRule(rules, { tool: name }, "allow").decision !== "allow",
     )
-    if (!held) return { allow: true }
+    if (!held) return proceed
 
     const outcome = await opts.registry.requestToolPermission({
       ...(callerSessionId ? { sessionId: callerSessionId } : {}),
@@ -52,7 +67,7 @@ export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCa
       rawInput: { alias, toolName, args },
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     })
-    if (outcome.decision === "approve") return { allow: true }
+    if (outcome.decision === "approve") return proceed
     if (outcome.decision === "deny") {
       return { allow: false, reason: `${toolName} on ${alias} was rejected by the operator; nothing was sent.` }
     }
