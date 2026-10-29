@@ -48,7 +48,13 @@ export interface SessionDescriptor {
   contextSize?: number
   contextUsed?: number
   awaitingInput?: boolean
-  awaitingQuestion?: { text: string; options?: string[]; source: string }
+  awaitingQuestion?: {
+    text: string
+    options?: string[]
+    source: string
+    /** Mirrors the runtime's SessionAwaitingQuestion.kind; absent = unclassified. */
+    kind?: "permission" | "context" | "harness"
+  }
   awaitingPermission?: boolean
   turnsCompleted?: number
   busy?: boolean

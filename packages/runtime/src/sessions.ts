@@ -832,6 +832,24 @@ function normalizePermissionOptions(
 }
 
 /**
+ * Classify an "agent-prompt" for `SessionAwaitingQuestion.kind` on its real
+ * fields, never its text: an AIP-45 `request: "question"` is the harness
+ * asking; otherwise a tool name, an explicit `tool-permission` /
+ * `plan-approval` request, or ACP permission options (`kind: allow_*` /
+ * `reject_*`) make it a permission. Anything else is a plain harness prompt.
+ */
+function agentPromptQuestionKind(evt: AgentStreamEvent): "permission" | "harness" {
+  if (evt.request === "question") return "harness"
+  if (evt.toolName || evt.request === "tool-permission" || evt.request === "plan-approval") {
+    return "permission"
+  }
+  const permissionShaped = normalizePermissionOptions(evt.options).some(o =>
+    /^(allow|reject)_/.test(o.kind ?? ""),
+  )
+  return permissionShaped ? "permission" : "harness"
+}
+
+/**
  * Map an inbox decision onto one of the offered permission options.
  *   - explicit `optionId` wins (must be one of the offered options)
  *   - approve → an `allow_*` option (allow-always when `scope: "always"` and
@@ -4423,7 +4441,12 @@ function deriveHeuristicQuestion(
   if (i < 0) return undefined
   const candidate = visible[i]!
   if (!candidate.endsWith("?")) return undefined
-  return { text: candidate, ...(options.length > 0 ? { options } : {}), source: "heuristic" }
+  return {
+    text: candidate,
+    ...(options.length > 0 ? { options } : {}),
+    source: "heuristic",
+    kind: "harness",
+  }
 }
 
 /**
@@ -8360,6 +8383,7 @@ export function createSessionsRegistry(opts?: {
             text: evt.text ?? (evt.toolName ? `Allow "${evt.toolName}"?` : "Agent is requesting input."),
             options,
             source: "structured",
+            kind: agentPromptQuestionKind(evt),
           }
         }
         // The rule table (`.agentproto/hooks.json`) generalizes the old
@@ -10370,6 +10394,7 @@ export function createSessionsRegistry(opts?: {
           // The question IS the recommendation — "Continue fresh" is the
           // daemon's own sentence — so surface it for one-click answers.
           recommended: "continue-fresh",
+          kind: "context",
         }
         appendLine(
           rt,
@@ -15524,7 +15549,10 @@ export function createSessionsRegistry(opts?: {
       // false ALWAYS clears the question too — a question cannot outlive
       // its awaiting-input flag. `source: "structured"` because an explicit
       // human/orchestrator override is at least as authoritative as a
-      // driver-reported prompt (the other "structured" producer).
+      // driver-reported prompt (the other "structured" producer). No
+      // `kind`: the operator classified the wait in their own words, and
+      // the daemon cannot tell a permission from a question in free text,
+      // so it stays unclassified rather than guessed.
       rt.desc.awaitingQuestion =
         patch.awaitingInput && patch.question !== undefined
           ? { text: patch.question, source: "structured" }

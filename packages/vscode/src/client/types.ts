@@ -60,6 +60,9 @@ export interface SessionAwaitingQuestion {
    *  daemon-recommended option (exact match against `options[i]`), shown as
    *  the recommended quick-pick/button. Absent when the daemon has none. */
   recommended?: string
+  /** Mirrors `@agentproto/runtime` SessionAwaitingQuestion.kind: what kind of
+   *  wait this is. Absent = unclassified. Not read by the extension yet. */
+  kind?: "permission" | "context" | "harness"
 }
 
 /** Mirrors @agentproto/runtime SessionWatcherInfo — one live waiter behind
