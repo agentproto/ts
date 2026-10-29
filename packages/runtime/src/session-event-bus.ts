@@ -128,6 +128,16 @@ export interface SessionAwaitingQuestion {
    * classification logic. Absent when the daemon has no recommendation —
    * clients must render nothing rather than guess one. */
   recommended?: string
+  /**
+   * WHAT kind of wait this is, set by the daemon writer that raised it:
+   * `permission` = a driver-reported tool or action permission request;
+   * `context` = the daemon's own context-continuity question; `harness` = a
+   * question the harness or the model itself asked (a driver-reported
+   * prompt that is not a permission, or the heuristic guess from the
+   * transcript tail). Absent = unclassified: a descriptor persisted before
+   * this field existed, or an operator override (`session_flag_status`).
+   * Nothing reads it yet; clients must treat absent as "unknown". */
+  kind?: "permission" | "context" | "harness"
 }
 
 export interface SessionTurnEndEvent {

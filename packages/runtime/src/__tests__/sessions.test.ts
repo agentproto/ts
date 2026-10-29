@@ -744,10 +744,11 @@ describe("createSessionsRegistry", () => {
       text: 'Allow "Bash"?',
       options: ["Allow once", "Reject"],
       source: "structured",
+      kind: "permission",
     })
     expect(awaitingHandler).toHaveBeenCalledWith(
       expect.objectContaining({
-        question: { text: 'Allow "Bash"?', options: ["Allow once", "Reject"], source: "structured" },
+        question: { text: 'Allow "Bash"?', options: ["Allow once", "Reject"], source: "structured", kind: "permission" },
       }),
     )
     reg.shutdown()
@@ -788,6 +789,7 @@ describe("createSessionsRegistry", () => {
       text: "Which environment should I target?",
       options: ["staging", "production"],
       source: "heuristic",
+      kind: "harness",
     })
     expect(turnEndHandler).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -795,6 +797,7 @@ describe("createSessionsRegistry", () => {
           text: "Which environment should I target?",
           options: ["staging", "production"],
           source: "heuristic",
+          kind: "harness",
         },
       }),
     )
@@ -874,6 +877,7 @@ describe("createSessionsRegistry", () => {
         text: "Context is at 25%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
         recommended: "continue-fresh",
+        kind: "context",
       })
 
       await reg.sendPrompt(desc.id, "  Keep-Going  ") // case/whitespace-insensitive match
@@ -902,6 +906,7 @@ describe("createSessionsRegistry", () => {
         text: "Context is at 30%. Continue fresh to avoid losing continuity?",
         options: ["continue-fresh", "keep-going"],
         recommended: "continue-fresh",
+        kind: "context",
       })
 
       reg.shutdown()
