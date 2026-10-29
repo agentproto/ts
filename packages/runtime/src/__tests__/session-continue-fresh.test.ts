@@ -62,6 +62,7 @@ const fakeRegistry = {
   get: vi.fn(),
   markRetired: vi.fn(),
   setPromptPolicy: vi.fn(),
+  setOperator: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
 const wireMarkRetired = (): void => {
@@ -81,6 +82,7 @@ describe("continueAgentSessionFresh", () => {
     vi.mocked(fakeResolveAdapter).mockReset()
     fakeRegistry.get = vi.fn()
     fakeRegistry.setPromptPolicy = vi.fn()
+    fakeRegistry.setOperator = vi.fn()
     wireMarkRetired()
   })
 
@@ -293,6 +295,45 @@ describe("continueAgentSessionFresh", () => {
       "sess_peer",
       "label:pygmalion-brain-persistent",
     ])
+  })
+
+  it("copies operator and operatorDigest from the source row onto the fresh session (AIP-46 operator binding, rule 5)", async () => {
+    const prev = {
+      ...makePrev(),
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    } as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setOperator).toHaveBeenCalledWith("sess_new", "operator:cto", "sha256:aaa")
+    // Never read from the request the spawn core receives.
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.operator).toBeUndefined()
+    expect(input.operatorDigest).toBeUndefined()
+  })
+
+  it("stamps no operator on the fresh session when the source row has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setOperator).not.toHaveBeenCalled()
   })
 
   it("stamps handoff with matching from/to harness on a same-harness continuation", async () => {

@@ -1735,6 +1735,11 @@ export interface SessionDescriptor {
    *  `withMemory: true`) since it costs a `ps` spawn; absent otherwise, and
    *  absent for a row with no `pid` or that `ps` didn't report. */
   rssBytes?: number
+  /** True when {@link operatorDigest} differs from the current digest a
+   *  `session_list` caller supplied for this session's operator. Ephemeral,
+   *  never persisted, absent unless the caller supplied a current digest and
+   *  the session records one. */
+  operatorStale?: boolean
   /** Process-tree resource sample for this session (`process-stats.ts`):
    *  RSS, %CPU, process count, top commands by RSS - plus, at `stats:"full"`,
    *  every process. Ephemeral and opt-in (`session_list`/`agent_sessions_list`
@@ -2185,6 +2190,18 @@ export interface SessionDescriptor {
    *  `checkSessionOwnerGate`. Absent for every session spawned by another
    *  session. */
   operatorLabel?: string
+  /** The AIP-9 operator this session runs for, as a canonical AIP-54 ref
+   *  (`operator:<slug>[@<owner>/<workspace>]`) - AIP-46 §Operator binding.
+   *  Recorded at spawn from `agent_start.operator` once the ref is well formed
+   *  and the caller may name it, and copied from this registry onto a
+   *  continuation successor (restart, continue-fresh), never from a request.
+   *  It binds the session to the operator and grants nothing. Unrelated to
+   *  {@link operatorLabel}. */
+  operator?: string
+  /** The host's digest of what it resolved for {@link operator} at spawn
+   *  (opaque to the daemon). `session_list` and `session_role_refresh` compare
+   *  it with a current digest the caller supplies to flag a stale session. */
+  operatorDigest?: string
   /** Ascending position among pinned sessions — the stored order behind
    *  the pinned group of the CLI table / VS Code webview list. Set by
    *  `registry.setPinned` (append-at-end) and `registry.reorderPinned`
@@ -5267,6 +5284,10 @@ export interface SessionsRegistry {
    *  by the operator-only `agent_set_operator_label` MCP tool
    *  (`agent-tools.ts`). No session-scoped caller may invoke it. */
   setOperatorLabel(id: string, operatorLabel: string | undefined): SessionDescriptor
+  /** Stamp (or clear, with `operator` undefined) the AIP-46 `operator` and its
+   *  `operatorDigest`. Daemon-internal: the restart / continue-fresh
+   *  carry-forward copies them from the source row. No request path calls it. */
+  setOperator(id: string, operator: string | undefined, operatorDigest?: string): SessionDescriptor
   /** Record on the session event bus that a drive-tool prompt was accepted
    *  for `id`, and WHO sent it (`caller` = the trusted calling session id,
    *  or the literal `"operator"`). No-op when the registry was constructed
@@ -6043,6 +6064,11 @@ export interface SpawnAgentInput {
    *  {@link SessionDescriptor.clerkHook}. Absent ⇒ this session contributes
    *  no agent level and the less specific level applies. */
   clerkHook?: Partial<ClerkHookConfig>
+  /** AIP-46 operator binding, recorded verbatim onto
+   *  {@link SessionDescriptor.operator} / {@link SessionDescriptor.operatorDigest}.
+   *  Already validated by the spawn core. */
+  operator?: string
+  operatorDigest?: string
   /** Resolved context-continuity policy — recorded verbatim onto
    *  {@link SessionDescriptor.contextContinuity}. */
   contextContinuity?: ResolvedContextContinuityPolicy
@@ -12374,6 +12400,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
+        ...(input.operator ? { operator: input.operator } : {}),
+        ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -12611,6 +12639,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.turnRetry ? { turnRetry: input.turnRetry } : {}),
         ...(input.modelPolicy ? { modelPolicy: input.modelPolicy } : {}),
         ...(input.clerkHook ? { clerkHook: input.clerkHook } : {}),
+        ...(input.operator ? { operator: input.operator } : {}),
+        ...(input.operator && input.operatorDigest ? { operatorDigest: input.operatorDigest } : {}),
         ...(input.contextContinuity ? { contextContinuity: input.contextContinuity } : {}),
         ...(input.keepAlive ? { keepAlive: true } : {}),
       }
@@ -15295,6 +15325,21 @@ export function createSessionsRegistry(opts?: {
         delete rt.desc.operatorLabel
       } else {
         rt.desc.operatorLabel = operatorLabel
+      }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setOperator(id, operator, operatorDigest) {
+      const rt = sessions.get(id)
+      if (!rt) throw new Error(`setOperator: no session "${id}"`)
+      if (operator === undefined || operator === "") {
+        delete rt.desc.operator
+        delete rt.desc.operatorDigest
+      } else {
+        rt.desc.operator = operator
+        if (operatorDigest) rt.desc.operatorDigest = operatorDigest
+        else delete rt.desc.operatorDigest
       }
       schedulePersist()
       stampReadLiveness(rt.desc)

@@ -924,6 +924,57 @@ wins when both are set; `0` disables the timer AND the turn-end hook even
 when `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs`
 (per-checkpoint wall-clock budget).
 
+## agentId
+
+AIP-42 agent by logical id. The daemon loads `<cwd>/.agents/<agentId>/AGENT.md`
+and applies its prompt, persona, model, skills and tools as spawn DEFAULTS; a
+field you pass on the call always wins. The by-id twin of `agentPath`; when
+both are set, `agentPath` wins. This is the same field `POST /sessions/agent`
+already takes. A manifest that cannot be found or read fails the spawn with
+`agent_manifest_unresolved` / `agent_manifest_unreadable`.
+
+## agentPath
+
+AIP-42 agent by explicit AGENT.md path, absolute or relative to the resolved
+`cwd`. Same default-filling semantics as `agentId`, and it wins when both are
+set. The session records the manifest identity in `meta.agentManifestPath`,
+`meta.agentId` and `meta.agentRoleHash`.
+
+## operator
+
+AIP-46 operator binding. The session records which operator it works for:
+`operator:<slug>`, `operator:<slug>@<owner>/<workspace>` or
+`ws://operators/<slug>`. A bare slug is not a ref. The `ws://` form is stored
+in its compact form `operator:<slug>` and never gains a workspace suffix.
+
+It binds, it does not authorize: it grants no permission and does not choose
+the node scope (that comes from the spawn's ground).
+
+The daemon has no operator resolver, so "resolved at spawn" means the ref is
+well formed; a malformed ref is refused with `operator_unresolvable` before
+any session starts. Whether the operator exists is the check of the host that
+composes the agent, made before it names the operator here.
+
+Who may name one (rule 4): the host (no calling session) may name any
+operator. A calling session may name only the operator of its OWN session;
+any other ref is refused with `delegation_denied`. A nested spawn that names
+no operator starts without one: the operator is never inherited from the
+caller. A continuation (`session_restart`, `session_continue_fresh`) carries
+the operator and its digest forward from the registry, never from the
+request.
+
+## operatorDigest
+
+The host's digest of the operator body it resolved when it composed this
+session, recorded beside `operator`. Opaque to the daemon. Giving it without
+an `operator` is refused with `operator_unresolvable`.
+
+It lets a later read flag drift: pass the current digest to
+`session_role_refresh` (`operatorDigest`) or a map of current digests to
+`session_list` (`operatorDigests`, keyed by operator ref) and a session whose
+recorded digest differs is reported with `operatorStale: true`. The daemon
+never advances the recorded digest by itself.
+
 ## full
 
 Response-shape switch, it changes NOTHING about the spawn, only about what

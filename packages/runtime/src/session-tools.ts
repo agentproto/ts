@@ -25,6 +25,7 @@ import type {
 } from "./sessions.js"
 import { applyBracketedPasteWrap } from "./sessions.js"
 import { getSlug } from "./sessions.js"
+import { canonicalOperatorRef, operatorDigestStale } from "./session-operator.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
   registerAgentTools,
@@ -861,6 +862,11 @@ export interface SessionListCompactItem {
   origin?: string
   name?: string
   label?: string
+  /** AIP-46 operator ref this session is bound to (compact form). */
+  operator?: string
+  /** Present only when the caller passed `operatorDigests` and the session
+   *  records an operator digest: true when they differ. */
+  operatorStale?: boolean
   status: SessionDescriptor["status"]
   /** Worktree-provisioning progress of a `starting` row (`queued` with a
    *  1-based `position`, or `running`, plus the `phase`) — see
@@ -983,6 +989,8 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   ...(s.origin ? { origin: s.origin } : {}),
   name: s.name,
   label: s.label,
+  ...(s.operator ? { operator: s.operator } : {}),
+  ...(s.operatorStale !== undefined ? { operatorStale: s.operatorStale } : {}),
   status: s.status,
   ...(s.provisioning ? { provisioning: { ...s.provisioning } } : {}),
   alive: s.alive,
@@ -1549,6 +1557,12 @@ export function registerSessionTools(
     stats: statsParamSchema.describe(
       "Per-live-session RSS, %CPU, process count and top commands under `stats`; `true` = summary, `\"full\"` = every process."
     ),
+    operatorDigests: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        "Current operator digests keyed by operator ref. Rows whose recorded `operatorDigest` differs get `operatorStale: true`."
+      ),
     ...sessionListFilterShape,
     ...pageParamsShape,
   })
@@ -1661,6 +1675,19 @@ export function registerSessionTools(
           statsDetail,
           opts.processStats,
         )
+      }
+      if (input.operatorDigests) {
+        const currentByOperator = new Map(
+          Object.entries(input.operatorDigests).map(([ref, digest]) => [canonicalOperatorRef(ref) ?? ref, digest]),
+        )
+        rows = rows.map(s => {
+          if (!s.operator) return s
+          const stale = operatorDigestStale(
+            s.operatorDigest,
+            currentByOperator.get(canonicalOperatorRef(s.operator) ?? s.operator),
+          )
+          return stale === undefined ? s : { ...s, operatorStale: stale }
+        })
       }
       return rows.map(publicSessionDescriptor)
     },
@@ -7282,12 +7309,21 @@ export function registerSessionTools(
       "`session_restart` to take effect. Pass `dryRun: true` to see what " +
       "would change without pushing anything. Fails with " +
       "`not_manifest_spawned` for a session that wasn't spawned with " +
-      "`agentId`/`agentPath`.",
+      "`agentId`/`agentPath`. Pass `operatorDigest` (the current digest of " +
+      "the session's AIP-46 operator, from the host that composes the agent) " +
+      "to also get `operatorStale`: true when it differs from the digest " +
+      "recorded at spawn. The daemon has no operator resolver, so it never " +
+      "computes that digest itself.",
     {
       ...sessionRefSchema(z),
       dryRun: mcpBool
         .optional()
         .describe("true to compute the diff without pushing a notice or updating the recorded fingerprint."),
+      operatorDigest: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("Current digest of this session's operator; adds `operatorStale` to the answer."),
     },
     async input => {
       const prev = resolveSessionDesc(registry, input)
@@ -7331,7 +7367,19 @@ export function registerSessionTools(
       const outcome = await registry.refreshAgentRole(prev.id, {
         ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       })
-      return { content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, ...outcome }) }] }
+      const operatorStale = operatorDigestStale(prev.operatorDigest, input.operatorDigest)
+      const operatorReport =
+        prev.operator !== undefined
+          ? {
+              operator: prev.operator,
+              ...(prev.operatorDigest !== undefined ? { recordedOperatorDigest: prev.operatorDigest } : {}),
+              ...(input.operatorDigest !== undefined ? { currentOperatorDigest: input.operatorDigest } : {}),
+              ...(operatorStale !== undefined ? { operatorStale } : {}),
+            }
+          : {}
+      return {
+        content: [{ type: "text", text: JSON.stringify({ sessionId: prev.id, ...outcome, ...operatorReport }) }],
+      }
     }
   )
 

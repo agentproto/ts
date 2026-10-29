@@ -198,6 +198,7 @@ import {
   type WorkspaceRulesResolution,
 } from "./workspace-rules.js"
 import { deriveSessionTitle } from "./session-title.js"
+import { resolveOperatorBinding } from "./session-operator.js"
 import { isAbsolute, join } from "node:path"
 import {
   APP_BOUNDARY_UNENFORCEABLE,
@@ -1628,6 +1629,18 @@ export interface SpawnAgentSessionInput {
   /** AIP-42 manifest by explicit AGENT.md path (absolute, or relative to the
    *  resolved cwd). Same default-filling semantics as `agentId`. */
   agentPath?: string
+  /** AIP-46 operator binding: `operator:<slug>[@<owner>/<workspace>]` or
+   *  `ws://operators/<slug>`. Validated for form here (the daemon has no
+   *  operator resolver) and recorded on the descriptor in its compact form.
+   *  Never inherited from a calling session. */
+  operator?: string
+  /** The composing host's digest of the operator body it resolved; recorded
+   *  beside `operator` so a later read can flag a drifted operator. */
+  operatorDigest?: string
+  /** The session making this call, derived by the daemon from the transport
+   *  (MCP caller scope, HTTP caller header), NEVER from a request body. Absent
+   *  means the host. Gates who may name an operator (AIP-46 rule 4). */
+  callerSessionId?: string
   /**
    * Filesystem boundary for this spawn (see `app-boundary.ts`): app source
    * read-only, run workspace + data dir writable, the rest denied. Set by
@@ -2057,6 +2070,8 @@ export type SpawnAgentSessionResult =
         | "agent_manifest_unreadable"
         | "model_policy_refused"
         | "session_preset_invalid"
+        | "operator_unresolvable"
+        | "delegation_denied"
       message: string
       details?: Record<string, unknown>
     }
@@ -2216,6 +2231,23 @@ export async function spawnAgentSession(
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
   const reactionStamp = reactionSpawnStamp(input.origin)
+  // AIP-46 operator binding, validated before any side effect.
+  const operatorBinding = resolveOperatorBinding({
+    ...(input.operator !== undefined ? { operator: input.operator } : {}),
+    ...(input.operatorDigest !== undefined ? { operatorDigest: input.operatorDigest } : {}),
+    ...(input.callerSessionId !== undefined ? { callerSessionId: input.callerSessionId } : {}),
+    operatorOf: id => deps.registry.get(id)?.operator,
+  })
+  if (!operatorBinding.ok) {
+    return {
+      ok: false,
+      code: operatorBinding.code,
+      message: operatorBinding.message,
+      details: operatorBinding.details,
+    }
+  }
+  const recordedOperator = operatorBinding.operator
+  const recordedOperatorDigest = operatorBinding.operatorDigest
   // CONTROLLER marker (issue #1647) — read ONCE here, then stripped from
   // the rest of the spawn. Nothing downstream (descriptor, registry rows,
   // adapter options) ever sees it: a `spawnAgentSession` input field is not
@@ -5090,6 +5122,8 @@ export async function spawnAgentSession(
       const provisionAbort = new AbortController()
       const pendingDesc = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...(recordedOperator ? { operator: recordedOperator } : {}),
+        ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
         ...resumeLineageFields,
         onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
@@ -5437,6 +5471,8 @@ export async function spawnAgentSession(
       const bootAbort = new AbortController()
       const pendingSandbox = registry.spawnAgentPending({
         id: mintedSessionId,
+        ...(recordedOperator ? { operator: recordedOperator } : {}),
+        ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -5678,6 +5714,8 @@ export async function spawnAgentSession(
     const initialSystemPrompt = composedPreamble(effectivePrompt, input.prompt)
     const desc = registry.spawnAgent({
       id: mintedSessionId,
+      ...(recordedOperator ? { operator: recordedOperator } : {}),
+      ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
       ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,
