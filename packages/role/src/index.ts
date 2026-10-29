@@ -92,6 +92,26 @@ export function departmentLabel(slug: string): string {
 export { defineRole } from "./define-role.js"
 export type { RoleDefinition, RoleHandle } from "./types.js"
 
+// Slots (AIP-47 §Slots) and the pure validation of a binding against them.
+export { classifyRef, roleSlotsSchema, validateRoleBinding } from "./slots.js"
+export type {
+  McpToolRefValue,
+  RoleBinding,
+  RoleBindingError,
+  RoleBindingErrorCode,
+  RoleBindingResult,
+  RoleBindingWarning,
+  RoleSlot,
+  RoleSlotAip,
+  RoleSlotCollection,
+  RoleSlotScalar,
+  RoleSlotTool,
+  RoleSlots,
+  SlotScalar,
+  SlotScalarType,
+  ValidateBindingOptions,
+} from "./slots.js"
+
 // Resolution / merge — the heart of role composition.
 export { resolveRole } from "./resolve.js"
 export type {

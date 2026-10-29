@@ -12,6 +12,6 @@ export default createTsupConfig({
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod", "gray-matter", "@agentproto/doctype"],
+  external: ["zod", "gray-matter", "@agentproto/doctype", "@agentproto/agent"],
   noExternal: [],
 })

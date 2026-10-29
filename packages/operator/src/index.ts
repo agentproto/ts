@@ -18,7 +18,15 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineOperator } from "./define-operator.js"
 export type {
+  AgentSkillRef,
+  AgentToolRef,
   Autonomy,
+  DefineOperatorOptions,
+  LegacyGovernance,
+  LegacyMemory,
+  LegacyScopedToolRef,
+  LegacySkillRef,
+  McpToolRef,
   MemoryKind,
   MemoryPolicy,
   OperatorDefinition,
@@ -27,7 +35,12 @@ export type {
   OperatorMemory,
   OperatorParticipation,
   OperatorProfile,
+  OperatorRole,
+  OperatorRoleBinding,
+  OperatorRuntime,
+  OperatorWarning,
   ParticipationMode,
+  RoleSlotValue,
   SkillRef,
   ToolRef,
 } from "./types.js"

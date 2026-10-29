@@ -7,31 +7,72 @@
  * (cross-field rules, ref shapes, length caps) run uniformly with the
  * TS authoring path.
  *
- * The frontmatter schema mirrors `OPERATOR.schema.json`
- * (resources/aip-9/draft/) field-for-field. AIP-9 forbids
- * `additionalProperties` at every nested level, so we use plain
- * `.object({...})` (strict) — extra keys raise a helpful error
- * instead of silently surviving.
+ * The frontmatter schema tracks the merged AIP-9 shape, which the vendored
+ * `OPERATOR.schema.json` (resources/aip-9/draft/) lags: the draft still
+ * requires `version`/`profile` and carries no `role`, `home`, `reports_to` or
+ * AGENT fields. Until it is re-vendored, this schema (and the TS
+ * `OperatorDefinition`) is the source of truth for OPERATOR.md; do not validate
+ * a merged-shape OPERATOR.md against the stale draft. AIP-9 forbids
+ * `additionalProperties` at the top level and in every operator-owned object,
+ * so those are strict. The AGENT fields are NOT redeclared: each one is taken
+ * from `agentFrontmatterSchema.shape` so a tightening of AIP-42 reaches the
+ * operator with no edit here.
  */
 
+import { agentFrontmatterSchema } from "@agentproto/agent"
 import matter from "gray-matter"
 import { z } from "zod"
-import { defineOperator } from "../define-operator.js"
-import type { OperatorHandle } from "../types.js"
+import {
+  defineOperator,
+  isLegacyGovernance,
+  isLegacyMemory,
+} from "../define-operator.js"
+import type {
+  DefineOperatorOptions,
+  OperatorDefinition,
+  OperatorHandle,
+} from "../types.js"
 
-const skillRefSchema = z.union([
-  z.string().regex(/^[a-z][a-z0-9-]*[a-z0-9]$/),
-  z.object({
-    id: z.string().regex(/^[a-z][a-z0-9-]*[a-z0-9]$/),
-    source: z.string().optional(),
-    version: z.string().optional(),
-    allow: z.array(z.string()).optional(),
-  }),
+const agentShape = agentFrontmatterSchema.shape
+
+/**
+ * An AGENT field as an operator accepts it: the same schema, but optional and
+ * without the AGENT default, so reading an operator never invents a value.
+ */
+function agentField<K extends keyof typeof agentShape>(key: K) {
+  const field: z.ZodType = agentShape[key]
+  const bare = field instanceof z.ZodDefault ? field.unwrap() : field
+  return (bare as z.ZodType).optional()
+}
+
+const SLUG = /^[a-z][a-z0-9-]*[a-z0-9]$/
+const KEBAB = /^[a-z][a-z0-9-]*$/
+
+/** AIP-42 `anyRef`: a string shorthand or `{ ref | file | inline }`. */
+const anyRefSchema = z.union([
+  z.string().min(1),
+  z
+    .object({
+      ref: z.string().min(1).optional(),
+      file: z.string().min(1).optional(),
+      inline: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
 ])
 
-const toolRefSchema = z.union([
-  z.string().regex(/^[a-z][a-z0-9-]*[a-z0-9]$/),
-  z.object({
+/** AIP-42 `mcpToolRef` (the AGENT schema does not carry it yet, see S1). */
+const mcpToolRefSchema = z
+  .object({
+    kind: z.literal("mcp"),
+    server: z.string().min(1),
+    allow: z.array(z.string()).optional(),
+    deny: z.array(z.string()).optional(),
+  })
+  .strict()
+
+/** Deprecated: an AIP-14 tool narrowed for this operator. */
+const legacyScopedToolRefSchema = z
+  .object({
     id: z.string(),
     source: z.string().optional(),
     scope: z
@@ -40,80 +81,178 @@ const toolRefSchema = z.union([
         network: z.array(z.string()).optional(),
         secrets: z.array(z.string()).optional(),
       })
+      .strict()
       .optional(),
-  }),
-  z.object({
-    kind: z.literal("mcp"),
-    server: z.string(),
+  })
+  .strict()
+
+/** Deprecated: an AIP-3 skill pinned for this operator. */
+const legacySkillRefSchema = z
+  .object({
+    id: z.string().regex(SLUG),
+    source: z.string().optional(),
+    version: z.string().optional(),
     allow: z.array(z.string()).optional(),
-  }),
+  })
+  .strict()
+
+const legacyMemorySchema = z
+  .object({
+    kind: z.enum(["none", "thread", "operator-context", "external"]),
+    policy: z.enum(["append-only", "redactable", "summarising"]).optional(),
+    share_with: z.array(z.string().regex(SLUG)).optional(),
+    external: z
+      .object({ uri: z.string(), namespace: z.string().optional() })
+      .strict()
+      .optional(),
+  })
+  .strict()
+
+const legacyGovernanceSchema = z
+  .object({
+    policies: z.array(z.string().regex(/^policy:[A-Za-z0-9_./-]+$/)).optional(),
+    audit_log: z.string().regex(/^audit:[A-Za-z0-9_./-]+$/),
+    autonomy: z.enum(["autonomous", "supervised", "gated"]),
+  })
+  .strict()
+
+/**
+ * The AGENT form is accepted as the AGENT schema accepts it. An object written
+ * in the deprecated form (recognised by its keys) is held to the deprecated
+ * shape instead, so a typo in it is reported, not passed through as AGENT data.
+ */
+function agentOrLegacy(
+  key: "memory" | "governance",
+  isLegacy: (v: unknown) => boolean,
+  legacy: z.ZodType,
+) {
+  return agentField(key).superRefine((value, ctx) => {
+    if (!isLegacy(value)) return
+    const result = legacy.safeParse(value)
+    if (result.success) return
+    for (const issue of result.error.issues) {
+      ctx.addIssue({ code: "custom", path: issue.path, message: issue.message })
+    }
+  })
+}
+
+const roleSchema = z.union([
+  z.string().min(1),
+  z
+    .object({
+      ref: z.string().min(1),
+      bind: z.record(z.string(), z.union([mcpToolRefSchema, anyRefSchema])).optional(),
+      with: z
+        .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+        .optional(),
+    })
+    .strict(),
 ])
 
-export const operatorManifestFrontmatterSchema = z.object({
-  // "operator/v1" is the AIP-70 registry name; "agentoperators/v1" and
-  // "agentoperator/v1" (singular) are the deprecated pre-AIP-9 spellings;
-  // all three are still accepted.
-  schema: z
-    .enum(["operator/v1", "agentoperators/v1", "agentoperator/v1"])
-    .optional(),
-  name: z.string().min(1).max(80),
-  id: z
-    .string()
-    .min(2)
-    .max(64)
-    .regex(/^[a-z][a-z0-9-]*[a-z0-9]$/),
-  persona_summary: z.string().min(1).max(280),
-  version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?$/),
-  entry: z.string().optional(),
-  profile: z.object({
-    role: z.string().min(1).max(1000),
-    voice: z.string().min(1).max(1000),
-    boundaries: z.array(z.string().max(500)),
-  }),
-  skills: z.array(skillRefSchema).optional(),
-  tools: z.array(toolRefSchema).optional(),
-  memory: z
-    .object({
-      kind: z.enum(["none", "thread", "operator-context", "external"]),
-      policy: z.enum(["append-only", "redactable", "summarising"]).optional(),
-      share_with: z
-        .array(z.string().regex(/^[a-z][a-z0-9-]*[a-z0-9]$/))
-        .optional(),
-      external: z
-        .object({ uri: z.string(), namespace: z.string().optional() })
-        .optional(),
-    })
-    .optional(),
-  governance: z
-    .object({
-      policies: z.array(z.string().regex(/^policy:[A-Za-z0-9_./-]+$/)).optional(),
-      audit_log: z.string().regex(/^audit:[A-Za-z0-9_./-]+$/),
-      autonomy: z.enum(["autonomous", "supervised", "gated"]),
-    })
-    .optional(),
-  capabilities: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).optional(),
-  participation: z
-    .object({
-      mode: z.enum(["mention-only", "proactive", "silent"]).optional(),
-      pass_when: z.string().optional(),
-      reactions: z.boolean().optional(),
-    })
-    .optional(),
-  runtime: z
-    .object({
-      kind: z.enum(["in-process", "agent-cli"]),
-      ref: z.string().optional(),
-      session: z
-        .object({
-          mode: z.enum(["ephemeral", "persistent", "resumable"]).optional(),
-          idle_timeout_ms: z.number().int().min(1000).optional(),
-        })
-        .optional(),
-    })
-    .optional(),
-  tags: z.array(z.string().regex(/^[a-z][a-z0-9-]*$/)).optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
-})
+export const operatorManifestFrontmatterSchema = z
+  .object({
+    // "operator/v1" is the AIP-70 registry name; "agentoperators/v1" and
+    // "agentoperator/v1" (singular) are the deprecated pre-AIP-9 spellings;
+    // all three are still accepted.
+    schema: z
+      .enum(["operator/v1", "agentoperators/v1", "agentoperator/v1"])
+      .optional(),
+    name: z.string().min(1).max(80),
+    id: z.string().min(2).max(64).regex(SLUG),
+    persona_summary: z.string().min(1).max(280),
+    entry: z.string().optional(),
+    role: roleSchema.optional(),
+    home: anyRefSchema.optional(),
+    company: anyRefSchema.optional(),
+    reports_to: z.string().min(2).max(64).regex(SLUG).optional(),
+
+    // AGENT fields, by reference to the AGENT schema.
+    version: agentField("version"),
+    description: agentField("description"),
+    extends: agentField("extends"),
+    model: agentField("model"),
+    identity: agentField("identity"),
+    persona: agentField("persona"),
+    runner: agentField("runner"),
+    actions: agentField("actions"),
+    workflows: agentField("workflows"),
+    routines: agentField("routines"),
+    delegates_to: agentField("delegates_to"),
+    policy: agentField("policy"),
+    traits: agentField("traits"),
+    autonomy: agentField("autonomy"),
+    boundaries: agentField("boundaries"),
+    on: agentField("on"),
+    publish: agentField("publish"),
+    tags: z.array(z.string().regex(KEBAB)).optional(),
+    metadata: agentField("metadata"),
+
+    // AGENT item shapes widened by what an operator also accepts. The specific
+    // deprecated/mcp shapes are tried first; the AGENT item shape is the
+    // AIP-42 `anyRef` (string or `{ref|file|inline}`), not `z.any()`, so an
+    // invalid item is rejected instead of swallowed by the last union member.
+    skills: z
+      .array(z.union([legacySkillRefSchema, anyRefSchema]))
+      .optional(),
+    tools: z
+      .array(
+        z.union([
+          mcpToolRefSchema,
+          legacyScopedToolRefSchema,
+          anyRefSchema,
+        ]),
+      )
+      .optional(),
+    memory: agentOrLegacy("memory", isLegacyMemory, legacyMemorySchema),
+    governance: agentOrLegacy(
+      "governance",
+      isLegacyGovernance,
+      legacyGovernanceSchema,
+    ),
+
+    capabilities: z.array(z.string().regex(KEBAB)).optional(),
+    participation: z
+      .object({
+        mode: z.enum(["mention-only", "proactive", "silent"]).optional(),
+        pass_when: z.string().optional(),
+        reactions: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    runtime: z
+      .object({
+        kind: z.enum(["in-process", "agent-cli"]),
+        ref: z.string().optional(),
+        session: z
+          .object({
+            mode: z.enum(["ephemeral", "persistent", "resumable"]).optional(),
+            idle_timeout_ms: z.number().int().min(1000).optional(),
+          })
+          .strict()
+          .optional(),
+        config: z
+          .object({
+            mode: z.string().optional(),
+            options: z.record(z.string(), z.unknown()).optional(),
+            continuation: z
+              .enum(["none", "pinned-session", "transcript", "native-resume"])
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    profile: z
+      .object({
+        role: z.string().min(1).max(1000).optional(),
+        voice: z.string().min(1).max(1000).optional(),
+        boundaries: z.array(z.string().max(500)).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
 
 export type OperatorManifestFrontmatter = z.infer<
   typeof operatorManifestFrontmatterSchema
@@ -140,23 +279,10 @@ export function parseOperatorManifest(source: string): OperatorManifest {
   return { frontmatter: result.data, body: parsed.content }
 }
 
-export function operatorFromManifest(manifest: OperatorManifest): OperatorHandle {
-  const fm = manifest.frontmatter
-  return defineOperator({
-    id: fm.id,
-    name: fm.name,
-    persona_summary: fm.persona_summary,
-    version: fm.version,
-    entry: fm.entry,
-    profile: fm.profile,
-    skills: fm.skills,
-    tools: fm.tools,
-    memory: fm.memory,
-    governance: fm.governance,
-    capabilities: fm.capabilities,
-    participation: fm.participation,
-    runtime: fm.runtime,
-    tags: fm.tags,
-    metadata: fm.metadata,
-  })
+export function operatorFromManifest(
+  manifest: OperatorManifest,
+  options?: DefineOperatorOptions,
+): OperatorHandle {
+  const { schema: _schema, ...definition } = manifest.frontmatter
+  return defineOperator(definition as OperatorDefinition, options)
 }

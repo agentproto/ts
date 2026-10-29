@@ -3179,6 +3179,9 @@ importers:
 
   packages/operator:
     dependencies:
+      '@agentproto/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
