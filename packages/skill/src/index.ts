@@ -16,6 +16,7 @@ export const SPEC_VERSION = "2.0.0-alpha" as const
 export { defineSkill } from "./define-skill.js"
 export { skillFrontmatterSchema, aip3ExtensionsSchema } from "./schema.js"
 export type { SkillFrontmatter, Aip3Extensions } from "./schema.js"
+export type { SkillEntry } from "./entry.js"
 export type {
   SkillDefinition,
   SkillHandle,

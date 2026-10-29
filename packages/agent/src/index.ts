@@ -15,7 +15,14 @@ export const SPEC_VERSION = "1.0.0-alpha" as const
 
 export { defineAgent, AGENT_ID_PATTERN } from "./define-agent.js"
 export { loadAgent } from "./load-agent.js"
-export { composeInstructions } from "./instructions.js"
+export {
+  composeInstructions,
+  DEFAULT_BOUNDARIES_HEADER,
+  DEFAULT_SECTION_ORDER,
+  type ComposeInstructionsOptions,
+  type InstructionSection,
+} from "./instructions.js"
+export { renderAgentMd, type AgentEntry } from "./render.js"
 export {
   validateExtendsChain,
   EXTENDS_MAX_DEPTH,

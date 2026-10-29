@@ -34,7 +34,7 @@
 import { copyFile, cp, mkdir, writeFile } from "node:fs/promises"
 import { dirname, join, relative } from "node:path"
 import matter from "gray-matter"
-import { defineAgent, type AgentDefinition } from "@agentproto/agent"
+import { defineAgent, renderAgentMd, type AgentDefinition } from "@agentproto/agent"
 import type { WorkflowHandle } from "@agentproto/workflow"
 import type { WorkspaceHandle } from "@agentproto/workspace"
 import type { AgentEntry, AppAccepts, AppArtifactDecl, AppArtifactSurface, AppBoundariesDefinition, AppDataDefinition, AppDevDefinition, AppExposes, AppPlacement, AppRequirement, AppRequirements, AppService, AppSetupStep, AppSkillSurface, AppUiDefinition, EmittedApp } from "./types.js"
@@ -97,9 +97,9 @@ export interface RenderedAgentManifest {
  * Render one AIP-42 agent manifest — validate the handle with `defineAgent`
  * (`agent/v1` frontmatter; throws on an invalid handle), serialise it with
  * the handle's body, and resolve the target path for the requested layout.
- * The single rendering path shared by `emitApp` and the `agent create` /
- * `create_agent` verbs, so a hand-created manifest is byte-identical to an
- * app-emitted one.
+ * Rendering is delegated to `renderAgentMd` (`@agentproto/agent`), the one
+ * AGENT.md renderer that `agentVerbs` also uses, so a hand-created manifest is
+ * byte-identical to an app-emitted one.
  */
 export function renderAgentManifest(
   handle: AgentDefinition,
@@ -112,7 +112,7 @@ export function renderAgentManifest(
   return {
     id,
     path: join(target.dir, root, id, "AGENT.md"),
-    contents: toManifest(validated, body),
+    contents: renderAgentMd({ agent: validated, body }),
   }
 }
 

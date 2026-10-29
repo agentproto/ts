@@ -9,6 +9,7 @@
 import { createVerbs, type DoctypeSpec } from "@agentproto/manifest"
 import { defineAgent } from "./define-agent.js"
 import { parseAgentManifest } from "./manifest/index.js"
+import { renderAgentMd } from "./render.js"
 import type { AgentDefinition, AgentHandle } from "./types.js"
 
 export const agentSpec: DoctypeSpec<AgentDefinition, AgentHandle> = {
@@ -17,6 +18,7 @@ export const agentSpec: DoctypeSpec<AgentDefinition, AgentHandle> = {
   schemaLiteral: "agent/v1",
   pathOf: (h) => `.agents/${h.id}/AGENT.md`,
   define: defineAgent,
+  render: (handle, body) => renderAgentMd({ agent: handle, body }),
   parse: (source) => {
     const m = parseAgentManifest(source)
     return {
