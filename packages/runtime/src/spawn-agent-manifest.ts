@@ -26,6 +26,7 @@ import { stripOwner } from "@agentproto/app"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
+import { agentOnEnablesClerk } from "./action-hooks/clerk-on-entry.js"
 import { parseAgentMemoryBinding, type AgentMemoryBinding } from "./memory-stores.js"
 
 export interface AgentManifestRef {
@@ -96,9 +97,10 @@ export interface AgentManifestSpawnDefaults {
   readonly skills?: string[]
   /** Gateway allowlist (`?allowTools=`). */
   readonly tools?: string[]
-  /** The manifest's AGENT level of the AIP-68 clerk hook, read from the
-   *  manifest's `metadata.hooks.clerk`. Undefined when the manifest states
-   *  none - the less specific levels (workspace, daemon) then apply. */
+  /** The manifest's AGENT level of the AIP-68 clerk hook: its `metadata.hooks.clerk`
+   *  config, enabled by an `on: {turn-end: session:clerk-pass}` entry. Undefined
+   *  when the manifest states neither - the less specific levels (workspace,
+   *  daemon) then apply. */
   readonly hooks?: { clerk?: Partial<ClerkHookConfig> }
   /** The manifest's AIP-72 binding (`memory.enabled` / `store` / `anchors`),
    *  read by the spawn digest (`memory-digest.ts`). Undefined when the
@@ -138,9 +140,7 @@ export async function loadAgentManifestDefaults(
   }
 
   const caps = await projectionCapsFor(opts.resolveAgentAdapter, opts.adapter)
-  // The AGENT level of the clerk hook, when the manifest carries one
-  // (`metadata.hooks.clerk`).
-  const manifestHooks = manifestClerkHook(loaded.handle.metadata)
+  const manifestHooks = manifestClerkHook(loaded.handle.metadata, loaded.handle.on)
   const memory = parseAgentMemoryBinding(loaded.handle.memory)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
   const denyGrants = toolDenyGrants(loaded.handle.tools ?? [])
@@ -188,16 +188,24 @@ async function projectionCapsFor(
 }
 
 /**
- * Read the AGENT level of the AIP-68 clerk hook out of a manifest's
- * `metadata` (`metadata.hooks.clerk`). Undefined when the manifest states
- * none - the manifest's `metadata` is the namespaced home for
- * daemon-specific settings (the AIP-42 frontmatter has no free-form
- * top-level key).
+ * Read the AGENT level of the AIP-68 clerk hook out of a manifest. The config
+ * (debounce, run, exclude) comes from `metadata.hooks.clerk`, the namespaced
+ * home for daemon-specific settings (the AIP-42 frontmatter has no free-form
+ * top-level key). An `on: {turn-end: session:clerk-pass}` entry enables the
+ * clerk; an explicit `metadata.hooks.clerk.enabled` (true or false) still
+ * wins over it, so existing manifests keep their behaviour. Undefined when
+ * the manifest states neither.
  */
-function manifestClerkHook(metadata: unknown): { clerk?: Partial<ClerkHookConfig> } | undefined {
-  if (!metadata || typeof metadata !== "object") return undefined
-  const hooks = (metadata as Record<string, unknown>).hooks
-  if (!hooks || typeof hooks !== "object") return undefined
-  const clerk = parseAgentClerkHook({ hooks: hooks as Record<string, unknown> })
+function manifestClerkHook(
+  metadata: unknown,
+  on: unknown,
+): { clerk?: Partial<ClerkHookConfig> } | undefined {
+  let clerk: Partial<ClerkHookConfig> = {}
+  const hooks =
+    metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>).hooks : undefined
+  if (hooks && typeof hooks === "object") {
+    clerk = parseAgentClerkHook({ hooks: hooks as Record<string, unknown> })
+  }
+  if (agentOnEnablesClerk(on)) clerk = { enabled: true, ...clerk }
   return Object.keys(clerk).length > 0 ? { clerk } : undefined
 }

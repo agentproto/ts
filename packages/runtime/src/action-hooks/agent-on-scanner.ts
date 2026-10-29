@@ -13,6 +13,7 @@ import { readdir } from "node:fs/promises"
 import { join } from "node:path"
 import { loadAgent } from "@agentproto/agent"
 import { stripOwner } from "@agentproto/app"
+import { isClerkTurnEndEntry } from "./clerk-on-entry.js"
 import {
   resolveAgentOnBindings,
   type ResolvedEventBinding,
@@ -121,7 +122,18 @@ export function createAgentOnScanner(opts: {
           if (!hasEntries(handle.on)) continue
 
           try {
-            bindings.push(...resolveAgentOnBindings(agentId, handle.on))
+            // The clerk's turn-end entry is read at spawn (it enables the clerk
+            // hook); it is not a reaction binding, so it must not reach the
+            // wiring and be refused there as an unsupported event.
+            bindings.push(
+              ...resolveAgentOnBindings(agentId, handle.on).filter(
+                binding =>
+                  !(
+                    "action" in binding.target &&
+                    isClerkTurnEndEntry(binding.event.event, binding.target.action)
+                  ),
+              ),
+            )
           } catch (err) {
             errors.push({ agentId, error: messageOf(err) })
           }
