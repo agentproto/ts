@@ -470,6 +470,40 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries toolDenyGrants forward onto the restarted session's new id, and adds none when the source had none", async () => {
+    const { client, registry, close } = await buildHarness()
+    const grants = [
+      { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/cron_create" }] },
+    ]
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      toolDenyGrants: grants,
+    } as never)
+    expect(registry.get(prev.id)).toMatchObject({ toolDenyGrants: grants })
+    registry.kill(prev.id)
+    const result = await client.callTool({ name: "session_restart", arguments: { idOrName: prev.id } })
+    expect(result.isError).toBeFalsy()
+    expect(registry.get(toolJson(result).id as string)).toMatchObject({ toolDenyGrants: grants })
+
+    const bare = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+    })
+    registry.kill(bare.id)
+    const bareResult = await client.callTool({ name: "session_restart", arguments: { idOrName: bare.id } })
+    expect(bareResult.isError).toBeFalsy()
+    expect(registry.get(toolJson(bareResult).id as string)?.toolDenyGrants).toBeUndefined()
+
+    await close()
+    registry.shutdown()
+  })
+
   it("carries origin, parent, and depth forward onto the restarted descriptor (#session-visibility)", async () => {
     const { client, registry, close } = await buildHarness()
 

@@ -4002,6 +4002,9 @@ importers:
       '@agentproto/model-intel':
         specifier: workspace:*
         version: link:../model-intel
+      '@agentproto/operator':
+        specifier: workspace:*
+        version: link:../operator
       '@agentproto/pairing-host':
         specifier: workspace:*
         version: link:../pairing-host

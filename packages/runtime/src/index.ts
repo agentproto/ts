@@ -273,6 +273,7 @@ import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
+import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
 import { createCompletionPolicySupervisor } from "./supervisor.js"
 import { createPrProvenanceReconciler, type OpenPrResolver } from "./pr-provenance-reconciler.js"
@@ -3928,7 +3929,17 @@ export async function createGateway(
     // AIP-42 manifest authoring: render a valid `agent/v1` AGENT.md into the
     // caller's workspace `.agents/<id>/AGENT.md` via the shared app
     // renderer (same path `emitApp` and `agentproto agent create` use).
-    registerCreateAgentTool(rawServer, { workspace })
+    // Call-time deny gate for the tool deny grants an AGENT manifest recorded
+    // on the caller's descriptor at spawn (tool-deny-gate.ts). Applied
+    // innermost, ahead of every `register*` pass below, so every built-in
+    // registered through `tool()`/`registerTool()` is covered, including the
+    // two passes right here. No caller, or a caller with no grants: the raw
+    // server, unchanged.
+    const callerDenyGrants = callerSessionId ? sessions.get(callerSessionId)?.toolDenyGrants : undefined
+    const gatedServer = callerSessionId && callerDenyGrants?.length
+      ? withToolDenyGate(rawServer, callerDenyGrants, callerSessionId)
+      : rawServer
+    registerCreateAgentTool(gatedServer, { workspace })
     // AIP-14/AIP-30 tool authoring (`create_tool` / `delete_tool`). A NEW
     // primitive, gated by the AUTHENTICATED CALLER'S own AIP-42
     // `actions.granted` (default DENY) and bounded by a minimum lifetime + a
@@ -3940,7 +3951,7 @@ export async function createGateway(
     const createToolCallerSession = callerSessionId ? sessions.get(callerSessionId) : undefined
     const callerAgentId = createToolCallerSession?.meta?.agentId
     const callerAgentManifestPath = createToolCallerSession?.meta?.agentManifestPath
-    registerCreateToolTools(rawServer, {
+    registerCreateToolTools(gatedServer, {
       workspace,
       ...(callerSessionId ? { sessionId: callerSessionId } : {}),
       ...(callerAgentId ? { agentId: callerAgentId } : {}),
@@ -3979,13 +3990,13 @@ export async function createGateway(
     // still loses them — the `denyTools` exclusion below wraps outermost.
     const deferredActive = deferredOverride ?? opts.deferredTools !== undefined
     let server = deferredActive
-      ? withDeferredTools(rawServer, {
+      ? withDeferredTools(gatedServer, {
           alwaysOn: new Set([
             ...(opts.deferredTools?.alwaysOn ?? DEFAULT_ALWAYS_ON_TOOLS),
             ...DELEGATION_TOOL_NAMES,
           ]),
         })
-      : rawServer
+      : gatedServer
     // Spawn-role-profiles tool gate (the hard part of the executor/
     // supervisor primitive — see role.ts). Per-request denylist parsed
     // from `?denyTools=a,b` on THIS `/mcp` call (see `handleMcp` in

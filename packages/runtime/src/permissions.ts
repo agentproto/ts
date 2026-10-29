@@ -183,7 +183,7 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
   },
   "tool.invoke": {
     routed: false,
-    enforcedAt: "none (no dispatch site calls decide() for a tool call yet; AIP-42 allow/deny is a spawn-time projection)",
+    enforcedAt: "tool-deny-gate.ts: the /mcp server factory (agentproto/<name>) and createImportedCallGuard (<server>/<name>) evaluate a session's AGENT deny grants (deny-only) when its descriptor carries toolDenyGrants",
     surfaces: [],
   },
 }
