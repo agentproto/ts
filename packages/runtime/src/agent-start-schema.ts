@@ -427,6 +427,34 @@ export const agentStartInputShape = {
     .describe(
       `Context-continuity policy: warning, compaction, fresh-continuation and hard-stop thresholds. ${help("contextContinuity")}`
     ),
+  agentId: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent by id: loads <cwd>/.agents/<id>/AGENT.md as spawn defaults. ${help("agentId")}`
+    ),
+  agentPath: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent by AGENT.md path (absolute or relative to cwd); wins over agentId. ${help("agentPath")}`
+    ),
+  operator: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-46 operator ref this session is bound to: operator:<slug>[@<owner>/<workspace>] or ws://operators/<slug>. ${help("operator")}`
+    ),
+  operatorDigest: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Host's digest of the operator body, recorded for stale detection. Needs operator. ${help("operatorDigest")}`
+    ),
   role: z
     .string()
     .optional()

@@ -801,6 +801,9 @@ export function registerAgentTools(
           // passing its own id. An explicit `parentSessionId` still outranks
           // it in `decideSpawnAttach`.
           ...(callerSessionId ? { autoParentSessionId: callerSessionId } : {}),
+          // AIP-46 rule 4: who may name an operator is decided from the
+          // daemon-derived caller, overwriting anything the request carried.
+          callerSessionId: effectiveCaller(),
           ...(rawPosture ? { posture: parsePostureInput(rawPosture) } : {}),
           ...(preset ? { preset } : {}),
           ...(sessionPresets.length > 0 ? { sessionPresets } : {}),
@@ -920,7 +923,9 @@ export function registerAgentTools(
         result.code === "orchestrator_max_depth_exceeded" ||
         result.code === "orchestrator_child_quota_exceeded" ||
         result.code === "role_spawn_denied" ||
-        result.code === "cloud_spawn_refused"
+        result.code === "cloud_spawn_refused" ||
+        result.code === "operator_unresolvable" ||
+        result.code === "delegation_denied"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,

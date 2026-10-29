@@ -439,6 +439,37 @@ describe("session_restart", () => {
     registry.shutdown()
   })
 
+  it("carries operator and operatorDigest forward onto the restarted session's new id (AIP-46 operator binding, rule 5)", async () => {
+    const { client, registry, close } = await buildHarness()
+
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("hermes"),
+      adapterSlug: "hermes",
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    })
+    expect(registry.get(prev.id)).toMatchObject({ operator: "operator:cto", operatorDigest: "sha256:aaa" })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const desc = toolJson(result)
+
+    expect(desc.id).not.toBe(prev.id)
+    expect(registry.get(desc.id as string)).toMatchObject({
+      operator: "operator:cto",
+      operatorDigest: "sha256:aaa",
+    })
+
+    await close()
+    registry.shutdown()
+  })
+
   it("carries origin, parent, and depth forward onto the restarted descriptor (#session-visibility)", async () => {
     const { client, registry, close } = await buildHarness()
 

@@ -5962,6 +5962,12 @@ export function buildSpawnSessionHttpArgs(
     // to `<cwd>/.agents/<id>/AGENT.md`; `agentPath` is an explicit path.
     ...(typeof b.agentId === "string" && b.agentId.length > 0 ? { agentId: b.agentId } : {}),
     ...(typeof b.agentPath === "string" && b.agentPath.length > 0 ? { agentPath: b.agentPath } : {}),
+    // AIP-46 operator binding. Validated and canonicalized in the spawn core;
+    // `callerSessionId` is deliberately NOT read from the body (rule 4).
+    ...(typeof b.operator === "string" && b.operator.length > 0 ? { operator: b.operator } : {}),
+    ...(typeof b.operatorDigest === "string" && b.operatorDigest.length > 0
+      ? { operatorDigest: b.operatorDigest }
+      : {}),
     // AIP-66 managed cloud vendor — the HTTP twin of the MCP `agent_start`
     // tool's `cloud` field. Forwarded verbatim; spawnAgentSession's
     // resolveCloudSpawn refuses an unknown vendor or a §4 field by name
@@ -6305,6 +6311,15 @@ export function buildSpawnSessionHttpArgs(
  */
 /** HTTP status for a `spawnAgentSession` failure code — shared by
  *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
+/** AIP-46 rule 4 on the HTTP spawn routes: the caller identity comes from the
+ *  trusted header/query, never the body, and overwrites anything the body set. */
+function withHttpCaller<T extends object>(
+  args: T,
+  callerSessionId: string | undefined,
+): T & { callerSessionId?: string } {
+  return callerSessionId ? { ...args, callerSessionId } : args
+}
+
 function spawnFailureStatus(code: string): number {
   if (code === "adapter_not_found" || code === "no_cwd") return 404
   if (code === "orchestrator_not_enabled") return 501
@@ -6316,6 +6331,7 @@ function spawnFailureStatus(code: string): number {
   ) {
     return 409
   }
+  if (code === "delegation_denied") return 403
   if (
     code === "invalid_role" ||
     code === "browser_unsupported" ||
@@ -6329,7 +6345,8 @@ function spawnFailureStatus(code: string): number {
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
     code === "model_policy_refused" ||
-    code === "session_preset_invalid"
+    code === "session_preset_invalid" ||
+    code === "operator_unresolvable"
   ) {
     return 400
   }
@@ -7231,7 +7248,7 @@ async function handleSessions(
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
       },
-      spawnArgs,
+      withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
     if (!result.ok) {
       const status = spawnFailureStatus(result.code)
@@ -7370,7 +7387,7 @@ async function handleSessions(
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
       },
-      spawnArgs,
+      withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
     if (!result.ok) {
       const status = spawnFailureStatus(result.code)

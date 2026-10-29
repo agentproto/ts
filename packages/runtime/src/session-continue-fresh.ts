@@ -413,6 +413,7 @@ async function continueAgentSessionFreshOnce(
 
   const fresh = result.descriptor
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
+  if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
   // Same reasoning as `operatorLabel` above: `allowPromptFrom` is applied
   // post-spawn by the `agent_start` MCP handler, never re-derived by
   // `spawnAgentSession` — a continue-fresh landing on a NEW session id
