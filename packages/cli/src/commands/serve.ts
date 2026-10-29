@@ -105,6 +105,8 @@ import {
   defaultBrowserAdapterResolution,
   loadBrowserObserverModule,
   resolveEffectiveLlmEndpointFlag,
+  servingCliCommand,
+  setServingCli,
   type AgentAdapterResolver,
   type AdapterAuthDescriptor,
   type GatewayHandle,
@@ -846,6 +848,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // configured a named endpoint, an upstream link, or an explicit
   // `llm-endpoint` route — see the resolver's docblock.
   const effectiveLlmEndpoint = await resolveEffectiveLlmEndpointFlag(cfgFeatures.llmEndpoint)
+  // The projected native hook must not depend on the PATH of a launchd daemon:
+  // run the CLI that serves this daemon, by absolute path.
+  setServingCli(servingCliCommand(process.execPath, resolveCliEntry(process.argv[1]) ?? undefined))
   const bootOutcome = await bootGatewayIdempotent({
     healthUrl,
     probe: probeHealthyDaemon,
