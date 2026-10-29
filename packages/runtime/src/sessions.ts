@@ -140,7 +140,10 @@ import {
   writeBucketSnapshot,
   writeBucketSnapshotSync,
 } from "./workspace-buckets.js"
-import { createTerminalTranscriptWriter } from "./terminal-transcript-writer.js"
+import {
+  createTerminalTranscriptWriter,
+  readTerminalLogTail,
+} from "./terminal-transcript-writer.js"
 import {
   deriveSessionUsage,
   pickUsageDetail,
@@ -14377,25 +14380,29 @@ export function createSessionsRegistry(opts?: {
     readTerminalOutput(id, lastBytes) {
       const rt = sessions.get(id)
       if (!rt || !rt.pty) return null
-      const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
-      if (typeof lastBytes === "number" && lastBytes > 0 && joined.byteLength > lastBytes) {
-        return joined.subarray(joined.byteLength - lastBytes)
+      const cap =
+        typeof lastBytes === "number" && lastBytes > 0 ? lastBytes : RECENT_BYTES_CAP
+      if (rt.recentBytes.length > 0) {
+        const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
+        return joined.byteLength > cap ? joined.subarray(joined.byteLength - cap) : joined
       }
-      return joined
+      // The ring is empty. For a live row that just means no output yet; for
+      // a terminal row `emitExited` cleared it after capturing the final text,
+      // so read the durable `terminal.jsonl` copy instead of returning zero
+      // bytes (post-exit `terminal_output` / `/preview` stay readable).
+      return readTerminalLogTail(rt.desc.id, cap, transcriptBaseDir)
     },
     readOutputTail(id, lastN) {
       const rt = sessions.get(id)
       if (!rt) return []
-      if (rt.recentLines.length > 0) {
+      const terminal =
+        rt.desc.status !== "running" && rt.desc.status !== "starting"
+      if (!terminal) {
         return rt.recentLines.slice(-lastN)
       }
-      // A live row with an empty ring has simply not emitted yet; only a
-      // terminal row (whose ring was cleared at exit) gets the fallback.
-      if (rt.desc.status === "running" || rt.desc.status === "starting") return []
-      // The live ring is gone (a terminal row — see `emitExited`). Keep
-      // `agent_output` answering with the final text: the same-process
-      // buffer is still here, and a row reloaded after a restart recovers
-      // it from the bounded transcript tail instead.
+      // Terminal-row reads must not be fooled by a late stream event that
+      // appended after `emitExited` cleared the ring: prefer the captured
+      // final text whenever we have one.
       let text = rt.lastAssistantText
       if (!text) {
         text = readTranscriptTail(
@@ -14403,7 +14410,9 @@ export function createSessionsRegistry(opts?: {
           INDEX_TAIL_BYTES,
         ).lastOutputText
       }
-      if (!text) return []
+      // External rows go terminal without passing through `emitExited`, so
+      // their ring may still be the only readable tail.
+      if (!text) return rt.recentLines.slice(-lastN)
       return text.split(/\r?\n/).slice(-lastN)
     },
     kill(id, signal = "SIGTERM", reason, outcome) {

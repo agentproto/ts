@@ -16,6 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerAgentTools } from "../agent-tools.js"
+import { registerSessionTools } from "../session-tools.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import {
   createSessionsRegistry,
@@ -48,6 +49,18 @@ async function buildToolHarness(
 ): Promise<{ client: Client; close: () => Promise<void> }> {
   const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
   registerAgentTools(server, { registry })
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await server.connect(serverTransport)
+  const client = new Client({ name: "test-client", version: "0" })
+  await client.connect(clientTransport)
+  return { client, close: () => client.close() }
+}
+
+async function buildTerminalToolHarness(
+  registry: SessionsRegistry,
+): Promise<{ client: Client; close: () => Promise<void> }> {
+  const { server } = await createMcpServer({ specs: [], name: "test", version: "0" })
+  registerSessionTools(server, { registry, workspace: process.cwd(), ptyEnabled: true })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
   const client = new Client({ name: "test-client", version: "0" })
@@ -179,6 +192,19 @@ describe("availableCommands is live-only", () => {
         sessions: Array<{ availableCommands?: unknown[] }>
       }
       expect(explicitBody.sessions[0]?.availableCommands).toHaveLength(30)
+
+      // The `?since=` delta view uses the same default projection.
+      const delta = await fetch(
+        `http://127.0.0.1:${port}/sessions?since=1970-01-01T00:00:00.000Z`,
+      )
+      expect(delta.status).toBe(200)
+      const deltaBody = (await delta.json()) as {
+        sessions: Array<Record<string, unknown>>
+      }
+      expect(deltaBody.sessions.length).toBe(200)
+      for (const row of deltaBody.sessions) {
+        expect(row).not.toHaveProperty("availableCommands")
+      }
     } finally {
       await http.stop()
       registry.shutdown()
@@ -243,6 +269,81 @@ describe("output rings of a finished session", () => {
         await harness.close()
       }
       registry.shutdown()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("keeps a finished PTY's scrollback readable from terminal_output and /preview", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "e91-pty-rings-"))
+    let feed: ((chunk: string) => void) | undefined
+    let exit: ((evt: { exitCode: number; signal?: number }) => void) | undefined
+    const registry = createSessionsRegistry({
+      persistPath: join(dir, "sessions.json"),
+      transcriptDir: join(dir, "sessions"),
+      persist: false,
+      spawnPty: () => ({
+        pid: process.pid,
+        write() {},
+        resize() {},
+        kill() {},
+        onData(cb) {
+          feed = cb
+        },
+        onExit(cb) {
+          exit = cb
+        },
+      }),
+    })
+    try {
+      const desc = registry.spawnPty({
+        workspaceSlug: "default",
+        cwd: dir,
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+      })
+      feed?.("hello from pty\nFINAL PTY LINE\n")
+      exit?.({ exitCode: 0 })
+      // Let the writer flush terminal.jsonl before reading it back.
+      await new Promise(r => setTimeout(r, 50))
+
+      const harness = await buildTerminalToolHarness(registry)
+      try {
+        const result = await harness.client.callTool({
+          name: "terminal_output",
+          arguments: { sessionId: desc.id, clean: true },
+        })
+        const payload = JSON.parse(textOf(result)) as { text?: string }
+        expect(payload.text).toContain("FINAL PTY LINE")
+      } finally {
+        await harness.close()
+      }
+
+      const port = await freePort()
+      const http = await startHttpServer({
+        port,
+        auth: { mode: "none" },
+        mcpServerFactory,
+        conversations: noopConversations(),
+        events: createRuntimeEvents(),
+        heartbeat: noopHeartbeat(),
+        sessions: registry,
+        resolveAgentAdapter,
+        meta: { workspace: process.cwd(), registered: [] },
+      })
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}/preview`)
+        expect(res.status).toBe(200)
+        const body = (await res.json()) as { bytes: string | null }
+        expect(body.bytes).not.toBeNull()
+        expect(Buffer.from(body.bytes ?? "", "base64").toString("utf8")).toContain(
+          "FINAL PTY LINE",
+        )
+      } finally {
+        await http.stop()
+        registry.shutdown()
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
