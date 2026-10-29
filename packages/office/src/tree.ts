@@ -46,6 +46,7 @@ export type OfficeTreeIssueCode =
   | "office_orgtree_max_depth"
   | "office_orgtree_cycle"
   | "office_reports_to_unresolvable"
+  | "office_reports_to_cardinality"
   | "office_orgtree_circular_report"
   | "office_holder_unresolvable"
 
@@ -277,7 +278,8 @@ export function analyzeOfficeTree(
     if (ok && chain[chain.length - 1] === input.root) reachesRoot.add(ref)
   }
 
-  // Items.
+  // Items. Every rule axis is read from the root office. Resolving them
+  // through the view chain (a view may narrow maxDepth) is deferred.
   const rules = rootOffice?.orgTree?.containment?.rules
   const containmentOn = rootOffice?.orgTree?.containment?.enabled !== false
   const parentField = rootOffice?.orgTree?.containment?.field ?? "parent"
@@ -286,6 +288,7 @@ export function analyzeOfficeTree(
   const maxDepth = rules?.maxDepth
   const reporting = rootOffice?.orgTree?.reporting
   const reportField = reporting?.field ?? "reportsTo"
+  const cardinality = reporting?.cardinality ?? "single"
   const mustResolveTo = reporting?.rules?.mustResolveTo ?? "role"
   const circularBan = reporting?.rules?.circularBan ?? true
 
@@ -424,7 +427,16 @@ export function analyzeOfficeTree(
   if (reporting?.enabled) {
     const reportsOf = (item: OfficeItemInput) => asList(item[reportField])
     for (const item of input.items) {
-      for (const target of reportsOf(item)) {
+      const targets = reportsOf(item)
+      if (cardinality === "single" && targets.length > 1) {
+        add({
+          code: "office_reports_to_cardinality",
+          severity: "hard",
+          item: item.id,
+          message: `${reportField} of ${item.id} names ${targets.length} managers; cardinality is single`,
+        })
+      }
+      for (const target of targets) {
         const t = itemById.get(target)
         if (!t) {
           add({

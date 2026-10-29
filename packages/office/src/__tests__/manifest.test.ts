@@ -1,7 +1,11 @@
 import { describe, it, expect } from "vitest"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   officeFromManifest,
   parseOfficeManifest,
+  readOfficeTree,
 } from "../manifest/index.js"
 
 const head = (name: string, extra: string) => `---
@@ -61,4 +65,25 @@ describe("executor compact refs", () => {
       ).toThrow(/executor/)
     },
   )
+})
+
+describe("readOfficeTree items layout", () => {
+  it("skips a stray file directly under items/", () => {
+    const root = mkdtempSync(join(tmpdir(), "office-manifest-"))
+    try {
+      mkdirSync(join(root, "items", "role"), { recursive: true })
+      writeFileSync(join(root, "items", "stray.md"), "not a collection\n")
+      writeFileSync(
+        join(root, "items", "role", "coo.md"),
+        "---\ncollection: role\nid: coo\n---\n",
+      )
+      const input = readOfficeTree({
+        root,
+        nodes: [{ ref: "@acme/acme", dir: "" }],
+      })
+      expect(input.items.map((i) => i.id)).toEqual(["coo"])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

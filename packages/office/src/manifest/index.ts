@@ -14,7 +14,7 @@
  * any constraint the converter doesn't capture cleanly).
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import matter from "gray-matter"
 import { officeFrontmatterSchema, type OfficeFrontmatter } from "../schema.js"
@@ -82,6 +82,7 @@ export function readOfficeTree(opts: ReadOfficeTreeOptions): OfficeTreeInput {
   if (existsSync(itemsDir)) {
     for (const collection of readdirSync(itemsDir).sort()) {
       const dir = join(itemsDir, collection)
+      if (!statSync(dir, { throwIfNoEntry: false })?.isDirectory()) continue
       for (const f of readdirSync(dir).sort()) {
         if (!f.endsWith(".md")) continue
         const data = matter(readFileSync(join(dir, f), "utf8")).data

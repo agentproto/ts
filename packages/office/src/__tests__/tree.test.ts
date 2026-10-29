@@ -289,11 +289,64 @@ describe("an office spans a company tree", () => {
       )
     })
 
+    it("refuses more than one manager when cardinality is single", () => {
+      baseTree()
+      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-simone]"))
+      const t = analyze()
+      expect(hard(t)).toContainEqual(
+        expect.objectContaining({
+          code: "office_reports_to_cardinality",
+          item: "matrixed",
+        }),
+      )
+    })
+
+    it("accepts multiple managers when cardinality is multiple", () => {
+      baseTree()
+      write(
+        "OFFICE.md",
+        rootOffice().replace(
+          "    enabled: true\n    rules: { mustResolveTo: role }",
+          "    enabled: true\n    cardinality: multiple\n    rules: { mustResolveTo: role }",
+        ),
+      )
+      write("items/role/matrixed.md", seat("matrixed", "reportsTo: [coo, pm-simone]"))
+      expect(hard(analyze())).toEqual([])
+    })
+
     it("bans cycles", () => {
       baseTree()
       write("items/role/x.md", seat("x", "reportsTo: y"))
       write("items/role/y.md", seat("y", "reportsTo: x"))
       expect(codes(hard(analyze()))).toContain("office_orgtree_circular_report")
+    })
+  })
+
+  describe("containment axis", () => {
+    it("skips containment checks and yields no seats when disabled", () => {
+      baseTree()
+      write(
+        "OFFICE.md",
+        rootOffice().replace(
+          "containment:\n    enabled: true",
+          "containment:\n    enabled: false",
+        ),
+      )
+      write("items/role/lost.md", seat("lost", "parent: ghost-team"))
+      const t = analyze()
+      expect(hard(t)).toEqual([])
+      expect(t.seats).toEqual([])
+    })
+
+    it("yields no seats when allowedKinds is absent", () => {
+      baseTree()
+      write(
+        "OFFICE.md",
+        rootOffice().replace("      allowedKinds: [role, team]\n", ""),
+      )
+      const t = analyze()
+      expect(hard(t)).toEqual([])
+      expect(t.seats).toEqual([])
     })
   })
 
