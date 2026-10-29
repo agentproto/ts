@@ -25,6 +25,7 @@ export interface AgentEntry {
  */
 export function renderAgentMd(entry: AgentEntry): string {
   const { schema: _schema, ...fields } = entry.agent
+  // JSON round-trip drops undefined and any non-JSON value, so the frontmatter stays plain YAML.
   const data: Record<string, unknown> = JSON.parse(
     JSON.stringify({ schema: "agent/v1", ...fields }),
   )

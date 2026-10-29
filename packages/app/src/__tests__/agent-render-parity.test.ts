@@ -37,4 +37,11 @@ describe("one AGENT.md renderer", () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it("agentVerbs.create without a body renders an empty body, not a heading stub", async () => {
+    const rendered = (await agentVerbs.create(def, { dir: "/unused", dryRun: true })).rendered
+    expect(rendered).toBe(renderAgentManifest(def, "", { dir: "/unused" }).contents)
+    expect(rendered.endsWith("---\n\n\n")).toBe(true)
+    expect(rendered).not.toMatch(/^# /m)
+  })
 })
