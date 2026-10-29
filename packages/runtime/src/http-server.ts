@@ -6309,8 +6309,6 @@ export function buildSpawnSessionHttpArgs(
  *                                      location?, baseUrl?, binPath? }
  *                                    (requires `resolveBrowserAdapter` wired)
  */
-/** HTTP status for a `spawnAgentSession` failure code — shared by
- *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
 /** AIP-46 rule 4 on the HTTP spawn routes: the caller identity comes from the
  *  trusted header/query, never the body, and overwrites anything the body set. */
 function withHttpCaller<T extends object>(
@@ -6320,6 +6318,8 @@ function withHttpCaller<T extends object>(
   return callerSessionId ? { ...args, callerSessionId } : args
 }
 
+/** HTTP status for a `spawnAgentSession` failure code — shared by
+ *  `POST /sessions/agent` and `POST /sessions/:id/handoff`. */
 function spawnFailureStatus(code: string): number {
   if (code === "adapter_not_found" || code === "no_cwd") return 404
   if (code === "orchestrator_not_enabled") return 501

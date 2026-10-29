@@ -7367,15 +7367,14 @@ export function registerSessionTools(
       const outcome = await registry.refreshAgentRole(prev.id, {
         ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
       })
+      const operatorStale = operatorDigestStale(prev.operatorDigest, input.operatorDigest)
       const operatorReport =
         prev.operator !== undefined
           ? {
               operator: prev.operator,
               ...(prev.operatorDigest !== undefined ? { recordedOperatorDigest: prev.operatorDigest } : {}),
               ...(input.operatorDigest !== undefined ? { currentOperatorDigest: input.operatorDigest } : {}),
-              ...(operatorDigestStale(prev.operatorDigest, input.operatorDigest) !== undefined
-                ? { operatorStale: operatorDigestStale(prev.operatorDigest, input.operatorDigest) }
-                : {}),
+              ...(operatorStale !== undefined ? { operatorStale } : {}),
             }
           : {}
       return {
