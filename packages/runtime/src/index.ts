@@ -3905,6 +3905,11 @@ export async function createGateway(
       : {}),
   })
 
+  /** A session the daemon spawned (an `external` row is a label, not one). */
+  const isHostSpawnedSession = (id: string): boolean => {
+    const desc = sessions.get(id)
+    return desc !== undefined && desc.kind !== "external"
+  }
   const mcpServerFactory = async (
     denyTools?: ReadonlySet<string>,
     callerSessionId?: string,
@@ -3912,6 +3917,7 @@ export async function createGateway(
     deferredOverride?: boolean,
     allowTools?: ReadonlySet<string>,
     surface?: string,
+    credentialSessionId?: string,
   ) => {
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
@@ -4254,8 +4260,14 @@ export async function createGateway(
     // `~/.agentproto/config.json`, over the `config-schema.ts` key
     // registry. Root /mcp only: deliberately NOT added to
     // `DEFAULT_ORCHESTRATOR_TOOLS` (orchestrator-gateway.ts), so a scoped
-    // child orchestrator can never reconfigure the daemon it runs on.
-    registerConfigTools(server, configToolsDeps)
+    // child orchestrator can never reconfigure the daemon it runs on. The
+    // caller lets `config_set` refuse a session an operator-only key
+    // (AIP-46 §Operator-only configuration).
+    registerConfigTools(server, configToolsDeps, {
+      ...(credentialSessionId ? { credentialSessionId } : {}),
+      ...(callerSessionId ? { claimedSessionId: callerSessionId } : {}),
+      isHostSpawned: isHostSpawnedSession,
+    })
     // `model_roles` — read-only role → model listing (model-roles.ts). Same
     // root-only exposure; workflow `tool` steps reach it through dispatchTool.
     registerModelRolesTools(server)

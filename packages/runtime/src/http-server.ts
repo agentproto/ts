@@ -342,8 +342,12 @@ import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import { writeSseHead } from "./sse-headers.js"
 import { parseStopOutcome } from "./session-outcome.js"
-import { SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
-import type { SessionTokenMode } from "./identity-defaults.js"
+import { hasSessionCredential, SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
+import {
+  SESSION_TOKEN_ADAPTERS,
+  sessionTokenDeliverySafe,
+  type SessionTokenMode,
+} from "./identity-defaults.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -1047,6 +1051,8 @@ export interface RuntimeHttpServerOptions {
     deferred?: boolean,
     allowTools?: ReadonlySet<string>,
     surface?: string,
+    /** The session a valid session token on the request was minted for. */
+    credentialSessionId?: string,
   ) => Promise<McpServer>
   /**
    * Optional — when wired, every `/mcp` request carrying a
@@ -1390,8 +1396,9 @@ export interface RuntimeHttpServerOptions {
    *  the caller identity is OBSERVED (verified / mismatch / invalid_token /
    *  claim_only / anonymous, see `observeCallerIdentity`), and `GET /identity`
    *  serves the counters. `mode` is `defaults.identity.sessionTokens`, read
-   *  per request; `"off"` observes nothing. Observation never changes how a
-   *  request is handled. Without it the route 404s. */
+   *  per request; `"off"` observes nothing. In `"shadow"` observation never
+   *  changes how a request is handled; `"enforce"` refuses the classes
+   *  `enforceCallerIdentity` lists. Without it the route 404s. */
   identity?: {
     mode(): SessionTokenMode | Promise<SessionTokenMode>
   }
@@ -2131,29 +2138,61 @@ export async function startHttpServer(
     return parseCallerSessionIdHeader(req)
   }
 
-  // ── Caller identity observation (ts#2165 step 5, shadow) ──────────
+  // ── Caller identity observation (ts#2165 step 5) ──────────────────
   // Counts, per process, how callers identify themselves: a daemon-minted
   // session token (`SESSION_TOKEN_HEADER`) that backs the claim, one that
-  // contradicts it, an unknown token, a bare claim, or nothing. Measurement
-  // for the enforcement step: NOTHING here changes how a request is handled.
+  // contradicts it, an unknown token, a bare claim, or nothing. In shadow
+  // mode NOTHING here changes how a request is handled; in enforce mode
+  // `enforceCallerIdentity` refuses from the same classification, so the
+  // counters and the refusals can never disagree.
   const identityCounters = emptyIdentityCounters()
+  const identityRefused = emptyIdentityCounters()
   const identityByRoute: Record<string, IdentityCounters> = {}
+  const claimOnlyByClass: Record<ClaimOnlyClass, number> = { external: 0, delivered: 0, undelivered: 0, unknown: 0 }
   const identitySince = new Date().toISOString()
   const identityLogged = new Set<string>()
-  const identityObserved = new WeakSet<IncomingMessage>()
+  const identityObserved = new WeakMap<IncomingMessage, Promise<IdentityObservation | undefined>>()
+  let identityClassifyFailureLogged = false
 
-  /** Observe one request's caller identity, at most once per request. Never
-   *  throws and never touches the request or the response; no token is ever
-   *  logged. */
-  async function observeCallerIdentity(req: IncomingMessage, route: string): Promise<void> {
+  /** What a claim without token names (AIP-46 rules 7 and 8): an external
+   *  label, a host-spawned session the token was delivered to, one it could
+   *  not be delivered to (adapter or placement, or spawned while `off`), or
+   *  an id the registry does not know. */
+  function claimOnlyClassOf(claim: string): ClaimOnlyClass {
+    const desc = opts.sessions?.get(claim)
+    if (!desc) return "unknown"
+    if (desc.kind === "external") return "external"
+    // Every sandbox provider (the built-in `local` included) stamps
+    // `remote: true` alongside its `sandboxId`; treating either as a
+    // sandboxed placement keeps a boxed claude-code row `undelivered`
+    // (rule 8) even if one of the two fields is missing.
+    const sandboxed = desc.remote === true || desc.sandboxId !== undefined ? true : undefined
+    return sessionTokenDeliverySafe(desc.adapterSlug, sandboxed) && hasSessionCredential(claim)
+      ? "delivered"
+      : "undelivered"
+  }
+
+  /** Observe one request's caller identity, at most once per request (a
+   *  second call returns the first classification). Never throws and never
+   *  touches the request or the response; no token is ever logged. */
+  function observeCallerIdentity(req: IncomingMessage, route: string): Promise<IdentityObservation | undefined> {
+    let observed = identityObserved.get(req)
+    if (!observed) {
+      observed = classifyCallerIdentity(req, route)
+      identityObserved.set(req, observed)
+    }
+    return observed
+  }
+
+  async function classifyCallerIdentity(req: IncomingMessage, route: string): Promise<IdentityObservation | undefined> {
     try {
-      if (!opts.identity || identityObserved.has(req)) return
-      identityObserved.add(req)
+      if (!opts.identity) return undefined
       // The raw claim, whatever its trust: the point is to count claims.
       const claim = parseCallerSessionIdQuery(req.url ?? "") ?? parseCallerSessionIdHeader(req)
       const rawHeader = req.headers[SESSION_TOKEN_HEADER]
       const token = (Array.isArray(rawHeader) ? rawHeader[0] : rawHeader)?.trim() || undefined
-      if ((await opts.identity.mode()) !== "shadow") return
+      const mode = await opts.identity.mode()
+      if (mode === "off") return undefined
       const tokenSession = token ? verifySessionToken(token) : undefined
       const kind: IdentityKind = token
         ? tokenSession === undefined
@@ -2164,9 +2203,11 @@ export async function startHttpServer(
         : claim !== undefined
           ? "claim_only"
           : "anonymous"
+      const claimClass = kind === "claim_only" && claim !== undefined ? claimOnlyClassOf(claim) : undefined
       const routeClass = identityRouteClass(route)
       identityCounters[kind]++
       ;(identityByRoute[routeClass] ??= emptyIdentityCounters())[kind]++
+      if (claimClass) claimOnlyByClass[claimClass]++
       if (kind === "claim_only" || kind === "mismatch" || kind === "invalid_token") {
         const key = `${kind}|${claim ?? ""}|${route}`
         if (!identityLogged.has(key) && identityLogged.size < IDENTITY_LOG_KEYS_MAX) {
@@ -2174,17 +2215,78 @@ export async function startHttpServer(
           console.warn(
             `[identity] ${kind.replace("_", "-")} caller=${claim ?? "-"}` +
               (kind === "mismatch" ? ` token-session=${tokenSession}` : "") +
-              ` route=${route}`,
+              ` route=${route}` +
+              (claimClass ? ` class=${claimClass}` : ""),
           )
         }
       }
-    } catch {
-      // Observation must never fail a request.
+      return { mode, kind, ...(claimClass ? { claimClass } : {}) }
+    } catch (err) {
+      // Observation must never fail a request. In enforce mode a failure
+      // here is fail-open, so say so once rather than silently not refusing.
+      if (!identityClassifyFailureLogged) {
+        identityClassifyFailureLogged = true
+        console.warn(
+          `[identity] caller classification failed; requests stay unidentified and enforce mode cannot refuse them: ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+      }
+      return undefined
     }
   }
 
+  /**
+   * The enforce-mode gate (AIP-46 §Session principals). Observes the request
+   * (once) and, when the mode is `"enforce"`, refuses with 403 before the
+   * handler acts: an invalid token (rule 4) and a claim without token naming
+   * a session the token was delivered to (rules 3 and 8) are
+   * `identity_unverified`, a token whose session differs from the claim is
+   * `identity_mismatch` (rule 3). Never refuses an anonymous or verified
+   * caller, an external label (rule 7), or a claim naming a session the
+   * daemon could not deliver a token to (rule 8). Returns true when it
+   * refused. The body names no token, hash or session id.
+   */
+  async function enforceCallerIdentity(req: IncomingMessage, res: ServerResponse, route: string): Promise<boolean> {
+    if (!opts.identity) return false
+    // Read the (cached) mode before classifying: outside enforce mode the
+    // observation stays fire-and-forget, so shadow costs no awaited work.
+    if ((await opts.identity.mode()) !== "enforce") {
+      void observeCallerIdentity(req, route)
+      return false
+    }
+    const obs = await observeCallerIdentity(req, route)
+    if (!obs || obs.mode !== "enforce") return false
+    const refusal =
+      obs.kind === "mismatch"
+        ? {
+            error: "identity_mismatch",
+            message: "the caller session claim names a session other than the one its session token was minted for",
+          }
+        : obs.kind === "invalid_token"
+          ? { error: "identity_unverified", message: "the session token presented is malformed, unknown or revoked" }
+          : obs.kind === "claim_only" && obs.claimClass === "delivered"
+            ? {
+                error: "identity_unverified",
+                message: "the request claims a daemon-spawned session without that session's token",
+              }
+            : undefined
+    if (!refusal) return false
+    identityRefused[obs.kind]++
+    res.writeHead(403, { "content-type": "application/json" })
+    res.end(JSON.stringify(refusal))
+    return true
+  }
+
+  /** The session a valid session token on the request was minted for. */
+  function credentialSessionOf(req: IncomingMessage): string | undefined {
+    const raw = req.headers[SESSION_TOKEN_HEADER]
+    const token = (Array.isArray(raw) ? raw[0] : raw)?.trim() || undefined
+    return token ? verifySessionToken(token) : undefined
+  }
+
   /** The routes that read the caller identity get it through this wrapper,
-   *  which observes the request first (once). */
+   *  which observes the request first (once). Each of them is also behind
+   *  `enforceCallerIdentity`, see `IDENTITY_GATED_SESSION_ROUTES`. */
   function resolveCallerSessionIdObserved(req: IncomingMessage): string | undefined {
     void observeCallerIdentity(req, (req.url ?? "/").split("?")[0] ?? "/")
     return resolveCallerSessionId(req)
@@ -2240,7 +2342,7 @@ export async function startHttpServer(
 
   async function handleMcp(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!authorizeMcp(req, res)) return
-    void observeCallerIdentity(req, "/mcp")
+    if (await enforceCallerIdentity(req, res, "/mcp")) return
     {
       const claimed = resolveCallerSessionId(req)
       if (claimed && opts.sessions && /^[A-Za-z0-9._:-]{1,128}$/.test(claimed) && externalClaimTrusted(req)) {
@@ -2271,7 +2373,15 @@ export async function startHttpServer(
       )
       return
     }
-    const server = await opts.mcpServerFactory(denyTools, callerSessionId, origin, deferred, allowTools, surface)
+    const server = await opts.mcpServerFactory(
+      denyTools,
+      callerSessionId,
+      origin,
+      deferred,
+      allowTools,
+      surface,
+      credentialSessionOf(req),
+    )
     await serveMcp(req, res, server, callerSessionId)
   }
 
@@ -3323,6 +3433,9 @@ export async function startHttpServer(
               return
             }
           }
+          if (isIdentityGatedSessionRoute(req.method ?? "GET", path) && (await enforceCallerIdentity(req, res, path))) {
+            return
+          }
           const handled = await handleSessions(
             req,
             res,
@@ -4158,10 +4271,18 @@ export async function startHttpServer(
               ...(typeof body.revision === "string" ? { revision: body.revision } : {}),
             },
             opts.configTools,
+            {
+              credentialSessionId: credentialSessionOf(req),
+              claimedSessionId: resolveCallerSessionId(req),
+              isHostSpawned: id => {
+                const desc = opts.sessions?.get(id)
+                return desc !== undefined && desc.kind !== "external"
+              },
+            },
           )
           if (!result.ok) {
             const status =
-              result.error === "not_writable"
+              result.error === "not_writable" || result.error === "operator_only"
                 ? 403
                 : result.error === "stale_revision"
                   ? 409
@@ -4932,17 +5053,26 @@ export async function startHttpServer(
           if (handled) return
         }
 
-        // GET /identity - caller identity observation counters (shadow mode).
-        // Read-only and open like `/reactions` and `/routines` above: it
-        // serves counts and a start time, never a token, a hash or a session
-        // id. Mutating routes keep their own gate.
+        // GET /identity - caller identity observation counters. Read-only
+        // and open like `/reactions` and `/routines` above: it serves counts,
+        // a start time and what enforce mode covers (AIP-46 rule 8), never a
+        // token, a hash or a session id. Mutating routes keep their own gate.
         if (opts.identity && path === "/identity" && req.method === "GET") {
+          const mode = await opts.identity.mode()
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
             JSON.stringify({
-              mode: await opts.identity.mode(),
+              mode,
               counters: identityCounters,
+              refused: identityRefused,
               byRoute: identityByRoute,
+              claimOnlyByClass,
+              enforces: {
+                mode,
+                surfaces: ["/mcp", ...IDENTITY_GATED_SESSION_ROUTES.map(r => r.label)],
+                adapters: [...SESSION_TOKEN_ADAPTERS],
+                sandboxed: false,
+              },
               since: identitySince,
             }),
           )
@@ -10734,6 +10864,26 @@ async function handleRoutinesListing(
 /** How a caller identified itself on one request (see `observeCallerIdentity`). */
 type IdentityKind = "verified" | "mismatch" | "invalid_token" | "claim_only" | "anonymous"
 type IdentityCounters = Record<IdentityKind, number>
+/** What a `claim_only` request names (see `claimOnlyClassOf`). */
+type ClaimOnlyClass = "external" | "delivered" | "undelivered" | "unknown"
+interface IdentityObservation {
+  mode: SessionTokenMode
+  kind: IdentityKind
+  claimClass?: ClaimOnlyClass
+}
+
+/** The `/sessions` routes that read the caller identity (through
+ *  `resolveCallerSessionIdObserved`), each behind `enforceCallerIdentity`.
+ *  A new route that reads the caller identity belongs here. */
+const IDENTITY_GATED_SESSION_ROUTES: ReadonlyArray<{ method: string; re: RegExp; label: string }> = [
+  { method: "POST", re: /^\/sessions\/agent$/, label: "POST /sessions/agent" },
+  { method: "POST", re: /^\/sessions\/chat$/, label: "POST /sessions/chat" },
+  { method: "POST", re: /^\/sessions\/[^/]+\/messages$/, label: "POST /sessions/:id/messages" },
+]
+
+function isIdentityGatedSessionRoute(method: string, path: string): boolean {
+  return IDENTITY_GATED_SESSION_ROUTES.some(r => r.method === method && r.re.test(path))
+}
 
 /** Distinct (kind, claim, route) log lines kept per process. */
 const IDENTITY_LOG_KEYS_MAX = 1000

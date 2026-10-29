@@ -190,6 +190,7 @@ export interface ConfigSetInput {
 
 export type ConfigSetErrorCode =
   | "invalid_input"
+  | "operator_only"
   | "unknown_key"
   | "not_writable"
   | "invalid_value"
@@ -215,6 +216,37 @@ export type ConfigSetResult =
        *  caller can re-fetch and retry. */
       revision?: string
     }
+
+/** Who is writing (AIP-46 §Operator-only configuration). Absent means the
+ *  operator (an in-process caller, a test). */
+export interface ConfigWriteCaller {
+  /** The session a valid session token on the request was minted for. */
+  credentialSessionId?: string
+  /** The caller's trusted claim (`?callerSessionId=` or the identity header). */
+  claimedSessionId?: string
+  /** True when `id` is a session the daemon spawned (not an `external` row). */
+  isHostSpawned(id: string): boolean
+}
+
+/** The keys only the operator may write: who may message or drive whom, and
+ *  the identity mode. An ancestor of one of them is protected too, since a
+ *  write there would rewrite it. This is a write policy on the loopback trust
+ *  model, not an authentication boundary: a session that omits both its token
+ *  and its caller claim is indistinguishable from the operator. */
+const OPERATOR_ONLY_KEYS = ["defaults.messaging", "defaults.identity", "defaults.tasks.operatorDelegates"] as const
+
+export function isOperatorOnlyConfigKey(key: string): boolean {
+  return OPERATOR_ONLY_KEYS.some(p => key === p || key.startsWith(`${p}.`) || p.startsWith(`${key}.`))
+}
+
+/** A session principal: a caller with a valid session token, or one whose
+ *  trusted claim names a session the daemon spawned. Anonymous callers, no
+ *  claim and an external identifier are the operator. */
+function isSessionPrincipal(caller: ConfigWriteCaller | undefined): boolean {
+  if (!caller) return false
+  if (caller.credentialSessionId !== undefined) return true
+  return caller.claimedSessionId !== undefined && caller.isHostSpawned(caller.claimedSessionId)
+}
 
 // ── env-override parsing, keyed by env var name ──
 //
@@ -618,6 +650,7 @@ export async function configGet(
 export async function configSet(
   input: ConfigSetInput,
   deps: ConfigToolsDeps,
+  caller?: ConfigWriteCaller,
 ): Promise<ConfigSetResult> {
   const loadCfg = deps.loadCfg ?? loadConfig
   const saveCfg = deps.saveCfg ?? saveConfig
@@ -630,6 +663,14 @@ export async function configSet(
       ok: false,
       error: "invalid_input",
       message: "config_set: give exactly one of `value` or `unset: true`.",
+    }
+  }
+
+  if (isOperatorOnlyConfigKey(input.key) && isSessionPrincipal(caller)) {
+    return {
+      ok: false,
+      error: "operator_only",
+      message: `config_set: "${input.key}" decides messaging, delegation or identity; only the operator may change it, not a session.`,
     }
   }
 
@@ -745,7 +786,7 @@ const CONFIG_SECTIONS = [
   "advanced",
 ] as const
 
-export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): void {
+export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps, caller?: ConfigWriteCaller): void {
   server.tool(
     "config_get",
     "Read `~/.agentproto/config.json` over the declared key registry " +
@@ -812,7 +853,9 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
       "names an env var that already overrides this key's file value, if " +
       "any. Emits a `config:changed` event on success. Registered on the " +
       "root /mcp server only; a scoped child orchestrator cannot call " +
-      "this.",
+      "this. A session caller cannot write `defaults.messaging.*`, " +
+      "`defaults.identity.*` or `defaults.tasks.operatorDelegates` " +
+      "(`operator_only`): only the operator may.",
     {
       key: z.string().describe("Dotted registry path, e.g. \"daemon.label\"."),
       value: z.any().optional().describe("The new value. Mutually exclusive with `unset`."),
@@ -823,7 +866,7 @@ export function registerConfigTools(server: McpServer, deps: ConfigToolsDeps): v
         .describe("Optimistic-concurrency token from a prior config_get; omit to write unconditionally."),
     },
     async ({ key, value, unset, revision }) => {
-      const result = await configSet({ key, value, unset, revision }, deps)
+      const result = await configSet({ key, value, unset, revision }, deps, caller)
       if (!result.ok) {
         return errorText(`config_set failed [${result.error}]: ${result.message}`)
       }

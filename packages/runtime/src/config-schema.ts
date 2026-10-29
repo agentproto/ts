@@ -177,7 +177,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .optional(),
     identity: z
       .object({
-        sessionTokens: z.enum(["off", "shadow"]).optional(),
+        sessionTokens: z.enum(["off", "shadow", "enforce"]).optional(),
       })
       .passthrough()
       .optional(),
@@ -1387,12 +1387,12 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
   // ── defaults: identity ──
   {
     path: "defaults.identity.sessionTokens",
-    schema: z.enum(["off", "shadow"]),
+    schema: z.enum(["off", "shadow", "enforce"]),
     apply: "hot",
     writable: true,
     section: "defaults",
     label: "Per-session identity tokens",
-    help: "\"shadow\" (default): each spawned session gets a daemon-minted token on its daemon self-mount, and the daemon counts verified, claim-only, mismatching and anonymous callers (GET /identity) without refusing anything. \"off\": no token, no observation. Applies to sessions spawned after the change.",
+    help: "\"shadow\" (default): each spawned session gets a daemon-minted token on its daemon self-mount, and the daemon counts verified, claim-only, mismatching and anonymous callers (GET /identity) without refusing anything. \"enforce\": the same token, and the daemon refuses (403) a request with an unknown, malformed or revoked token (identity_unverified), a token naming another session than its claim (identity_mismatch), and a claim without token naming a session the token was delivered to (identity_unverified); anonymous callers, external identifiers and sessions on adapters or placements that get no token are never refused. The refusal applies per request; the token is minted at spawn. \"off\": no token, no observation. Minting applies to sessions spawned after the change.",
     default: "shadow",
   },
 

@@ -169,6 +169,13 @@ export function verifySessionToken(raw: string | undefined): string | undefined 
   return found.sessionId
 }
 
+/** Whether a live credential is held for `sessionId`. Answers yes or no
+ *  only: never a token, a hash or a mint time. */
+export function hasSessionCredential(sessionId: string): boolean {
+  for (const c of credentials.values()) if (c.sessionId === sessionId) return true
+  return false
+}
+
 /** Drop every token minted for `sessionId`. Returns how many were dropped. */
 export function revokeSessionTokens(sessionId: string): number {
   let revoked = 0

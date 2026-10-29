@@ -14,7 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
-import { registerConfigTools, deriveValueType, type ConfigToolsDeps } from "../config-tools.js"
+import { registerConfigTools, deriveValueType, isOperatorOnlyConfigKey, type ConfigToolsDeps } from "../config-tools.js"
 import { loadConfig, saveConfig, type AgentprotoConfig } from "../config.js"
 import { createRuntimeEvents, type RuntimeEvents } from "../events.js"
 import { WORKTREE_ISOLATION_ENV } from "../worktree-isolation.js"
@@ -544,5 +544,23 @@ describe("config_set", () => {
     // "fixed" by this write.
     expect(onDisk.worktrees?.isolation).toBe("bogus-legacy-value")
     await client.close()
+  })
+})
+
+describe("operator-only config keys (AIP-46 §Operator-only configuration)", () => {
+  it("covers the messaging and identity subtrees, operatorDelegates and their ancestors, nothing else", () => {
+    for (const key of [
+      "defaults.messaging.allowSiblings",
+      "defaults.messaging",
+      "defaults.identity.sessionTokens",
+      "defaults.tasks.operatorDelegates",
+      "defaults.tasks",
+      "defaults",
+    ]) {
+      expect(isOperatorOnlyConfigKey(key)).toBe(true)
+    }
+    for (const key of ["defaults.messagingX", "defaults.tasks.other", "defaults.agentPromptInterrupt", "daemon.label"]) {
+      expect(isOperatorOnlyConfigKey(key)).toBe(false)
+    }
   })
 })
