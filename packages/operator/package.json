@@ -56,6 +56,11 @@
   "dependencies": {
     "@agentproto/agent": "workspace:*",
     "@agentproto/doctype": "workspace:*",
+    "@agentproto/identity": "workspace:*",
+    "@agentproto/persona": "workspace:*",
+    "@agentproto/policy": "workspace:*",
+    "@agentproto/role": "workspace:*",
+    "@agentproto/skill": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
   },
