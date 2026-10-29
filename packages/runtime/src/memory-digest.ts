@@ -4,9 +4,14 @@
  *
  * Selection: in-force items (rules 10, 11, 23) whose tags include `global`
  * or one of the session's anchors; an item with no anchor tag counts as
- * `global`. Order: type (`feedback`, `user`, `project`, `reference`), then
- * the item's most specific matching anchor (session, task, PR, agent,
- * project, global), then `updated_at`, newest first. Each entry carries
+ * `global`. With a node scope (section 10) the item must also be in the
+ * node projection (conditions 2 and 4: `isInNodeProjection`), applied here
+ * before ordering and the size bound, so an item outside it never takes a
+ * slot and is never counted as left out. Node and operator tags are not
+ * flat anchors (condition 3). Order: type (`feedback`, `user`, `project`,
+ * `reference`), then the item's most specific matching anchor (session,
+ * task, PR, operator, agent, project, node nearest to outermost, global),
+ * then `updated_at`, newest first. Each entry carries
  * `type`, `id`, `slug`, `title`, `polarity` on feedback, and the
  * description or else the body's first paragraph. The block is bounded:
  * whole items are cut from the tail and the cut is announced with the
@@ -21,7 +26,14 @@
  * (rule 25).
  */
 
-import type { MemoryDocument, MemoryStore } from "@agentproto/memory"
+import {
+  isInNodeProjection,
+  nodeAnchorIds,
+  operatorAnchorIds,
+  type MemoryDocument,
+  type MemoryScope,
+  type MemoryStore,
+} from "@agentproto/memory"
 
 /** The host-chosen digest bound, in characters (section 9: "a few thousand"). */
 export const DEFAULT_MEMORY_DIGEST_MAX_CHARS = 4000
@@ -41,15 +53,19 @@ export interface SessionMemoryAnchors {
 const TYPE_ORDER = ["feedback", "user", "project", "reference"] as const
 const ANCHOR_KINDS = ["global", "project", "task", "session", "pr", "contact", "agent"] as const
 /** Section 9 specificity, most specific first. `contact` has no rank: it is
- *  never one of a session's anchors. */
+ *  never one of a session's anchors. The operator anchor sits between `pr`
+ *  and `agent`; node anchors follow `project`, the session's own node first,
+ *  and `global` ranks after every node. */
 const SPECIFICITY: Readonly<Record<string, number>> = {
   session: 0,
   task: 1,
   pr: 2,
-  agent: 3,
-  project: 4,
-  global: 5,
+  operator: 3,
+  agent: 4,
+  project: 5,
 }
+const NODE_BASE = 6
+const GLOBAL_RANK = 1_000
 
 function anchorKind(tag: string): string | undefined {
   if (tag === "global") return "global"
@@ -74,14 +90,24 @@ export function sessionAnchorTags(anchors: SessionMemoryAnchors): string[] {
 
 /** The item's most specific anchor among the session's, or null when the
  *  item is anchored elsewhere only. */
-function scopeRank(item: MemoryDocument, sessionTags: ReadonlySet<string>): number | null {
+function scopeRank(item: MemoryDocument, sessionTags: ReadonlySet<string>, scope: MemoryScope): number | null {
   const anchored = (item.tags ?? []).filter(tag => anchorKind(tag) !== undefined)
-  if (anchored.length === 0) return SPECIFICITY.global!
-  let best: number | null = null
+  let best: number | null = anchored.length === 0 ? GLOBAL_RANK : null
   for (const tag of anchored) {
     if (!sessionTags.has(tag)) continue
-    const rank = SPECIFICITY[anchorKind(tag)!]
+    const kind = anchorKind(tag)!
+    const rank = kind === "global" ? GLOBAL_RANK : SPECIFICITY[kind]
     if (rank !== undefined && (best === null || rank < best)) best = rank
+  }
+  if (best === null) return null
+  // Node and operator anchors refine the rank of an item already matched
+  // by condition 3; they never match one by themselves.
+  for (const node of nodeAnchorIds(item)) {
+    const at = scope.nodes.indexOf(node)
+    if (at >= 0 && NODE_BASE + at < best) best = NODE_BASE + at
+  }
+  if (scope.operator !== undefined && operatorAnchorIds(item).includes(scope.operator)) {
+    best = Math.min(best, SPECIFICITY.operator!)
   }
   return best
 }
@@ -133,8 +159,16 @@ export interface MemoryDigest {
  */
 export async function selectMemoryItems(
   store: MemoryStore,
-  opts: { anchors: SessionMemoryAnchors },
+  opts: {
+    anchors: SessionMemoryAnchors
+    /** The node projection the host computed for the session (section 10), nearest node first. */
+    scope?: MemoryScope
+    /** Operator anchor ids the store's AIP-38 read grants let the session read (condition 4). */
+    operatorGrants?: readonly string[]
+  },
 ): Promise<MemoryDocument[]> {
+  // No scope is a session with no node scope (section 10): node-anchored items are out. The store reads no scope as a host call instead.
+  const scope: MemoryScope = opts.scope ?? { nodes: [] }
   const sessionTags = new Set(sessionAnchorTags(opts.anchors))
   const sessionAnchor = opts.anchors.session ? `session:${opts.anchors.session}` : undefined
   const records = await store.list({ inForce: true })
@@ -145,7 +179,8 @@ export async function selectMemoryItems(
     if (typeIndex < 0 || !item.id) continue
     // Rule 11: a `session` item is in force only inside its own session.
     if (item.lifetime?.kind === "session" && !(sessionAnchor && item.tags?.includes(sessionAnchor))) continue
-    const rank = scopeRank(item, sessionTags)
+    if (!isInNodeProjection(item, scope, { grantedOperators: opts.operatorGrants ?? [] })) continue
+    const rank = scopeRank(item, sessionTags, scope)
     if (rank === null) continue
     const parsed = Date.parse(item.updated_at ?? item.written ?? "")
     scoped.push({ item, rank, typeIndex, at: Number.isNaN(parsed) ? 0 : parsed })
@@ -196,7 +231,12 @@ export function renderMemoryDigest(
  */
 export async function buildMemoryDigest(
   store: MemoryStore,
-  opts: { anchors: SessionMemoryAnchors; maxChars?: number },
+  opts: {
+    anchors: SessionMemoryAnchors
+    maxChars?: number
+    scope?: MemoryScope
+    operatorGrants?: readonly string[]
+  },
 ): Promise<MemoryDigest | null> {
   return renderMemoryDigest(await selectMemoryItems(store, opts), opts.maxChars)
 }
@@ -254,13 +294,19 @@ export async function buildNativeMemoryProjection(
   store: MemoryStore,
   opts: {
     anchors: SessionMemoryAnchors
+    scope?: MemoryScope
+    operatorGrants?: readonly string[]
     supportsSystemPrompt?: boolean
     systemPromptMaxChars?: number
     /** Length of the system-prompt text already on the channel. */
     existingSystemPromptChars?: number
   },
 ): Promise<NativeMemoryProjection> {
-  const items = await selectMemoryItems(store, { anchors: opts.anchors })
+  const items = await selectMemoryItems(store, {
+    anchors: opts.anchors,
+    ...(opts.scope ? { scope: opts.scope } : {}),
+    ...(opts.operatorGrants ? { operatorGrants: opts.operatorGrants } : {}),
+  })
   const room =
     opts.supportsSystemPrompt === true
       ? Math.min(
