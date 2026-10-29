@@ -4670,6 +4670,33 @@ describe("spawnAgentSession — access.profileRef (named auth profile)", () => {
     expect(result.descriptor.accessProfile?.profileRef).toBe("anthropic-sub")
   })
 
+  it("access.profileRefs skips a route-eligible profile whose allow-list excludes the model", async () => {
+    authProfileState.profiles["curated-out"] = {
+      id: "curated-out",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      models: { mode: "allow", ids: ["claude-sonnet-5-5"] },
+    }
+    authProfileState.profiles["curated-in"] = {
+      id: "curated-in",
+      endpoint: "anthropic",
+      method: "oauth-bearer",
+      source: "claude-code-oauth",
+      models: { mode: "allow", ids: ["claude-sonnet-5"] },
+    }
+    const { deps } = authDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "claude-code",
+      cwd: "/tmp",
+      model: "claude-sonnet-5",
+      access: { profileRefs: ["curated-out", "curated-in"] },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.accessProfile?.profileRef).toBe("curated-in")
+  })
+
   it("access.profileRefs fails closed (naming the candidate list) when none are eligible", async () => {
     for (const id of ["a", "b"]) {
       authProfileState.profiles[id] = {
@@ -6863,5 +6890,30 @@ describe("spawnAgentSession — rejected connect-time model apply", () => {
     })
     expect(result.warnings?.join("\n")).toContain("claude-sonnet-5-5[1m]")
     expect(result.warnings?.join("\n")).toContain("claude-sonnet-5")
+  })
+
+  it("leaves the model unset when the adapter reports nothing, rather than claiming the rejected request", async () => {
+    const session: AgentSessionLike = {
+      ...fakeAgentSession(),
+      modelApplyRejection: {
+        requested: "claude-sonnet-5-5[1m]",
+        reason: "API error: 429 rate_limit_error",
+      },
+    }
+    const { deps } = baseDeps({
+      resolveAgentAdapter: async () => ({
+        startSession: async () => session,
+        commandPreview: "mock-adapter",
+      }),
+    })
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      model: "claude-sonnet-5-5[1m]",
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.model).toBeUndefined()
+    expect(result.descriptor.modelApplyRejection?.requested).toBe("claude-sonnet-5-5[1m]")
   })
 })

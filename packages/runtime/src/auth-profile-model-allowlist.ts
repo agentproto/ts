@@ -56,9 +56,13 @@ function modelIdentity(
   // spawn / live set_model derive it from the effective route.
   const direct =
     directOverride ??
-    (vendor !== undefined && effectiveRoute !== undefined
-      ? effectiveRoute === vendor
-      : !normalized.includes("@"))
+    (vendor !== undefined
+      ? effectiveRoute !== undefined
+        ? effectiveRoute === vendor
+        : true
+      : effectiveRoute !== undefined
+        ? false
+        : !normalized.includes("@"))
   const ref =
     vendorProduct === undefined
       ? undefined
@@ -84,8 +88,12 @@ export function profileAllowsModelId(
   const curation = profile.models
   if (!curation || curation.mode === "all") return true
   const identity = modelIdentity(model, opts?.route, opts?.direct)
+  // Candidates are the CANONICAL identities only. The caller's raw id is
+  // deliberately not a candidate: a bare `glm-5.2` must not match a bare
+  // allow-list entry on a gateway route, where the catalog requires the
+  // vendor/product or route-qualified form.
   const candidates = new Set(
-    [identity.id, identity.vendorProduct, identity.ref]
+    [identity.vendorProduct, identity.ref]
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .map(stripModelContextHint),
   )

@@ -1694,8 +1694,10 @@ async function restartAgentSessionOnce(
         ? { appendSystemPrompt: prev.appendSystemPrompt }
         : {}),
       ...(Object.keys(restartMeta).length > 0 ? { meta: restartMeta } : {}),
-      ...(modelMismatch?.reportedModel
-        ? { model: modelMismatch.reportedModel, activeModel: modelMismatch.reportedModel }
+      ...(modelMismatch
+        ? modelMismatch.reportedModel
+          ? { model: modelMismatch.reportedModel, activeModel: modelMismatch.reportedModel }
+          : {}
         : effModel
           ? { model: effModel }
           : {}),
