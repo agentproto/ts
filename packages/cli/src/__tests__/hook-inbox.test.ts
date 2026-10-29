@@ -1,5 +1,15 @@
-import { describe, it, expect } from "vitest"
-import { buildInboxHookOutput } from "../commands/hook.js"
+import { describe, it, expect, vi, beforeEach } from "vitest"
+import { buildInboxHookOutput, resolveInboxSessionId, runHook } from "../commands/hook.js"
+
+vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
+  const orig = await importOriginal<typeof import("../commands/_daemon-helpers.js")>()
+  return { ...orig, discoverDaemon: vi.fn(), httpGetJson: vi.fn(), httpPostJson: vi.fn() }
+})
+
+const helpers = await import("../commands/_daemon-helpers.js")
+const discoverDaemon = vi.mocked(helpers.discoverDaemon)
+const httpGetJson = vi.mocked(helpers.httpGetJson)
+const httpPostJson = vi.mocked(helpers.httpPostJson)
 
 const item = (n: number, text = `msg ${n}`) => ({
   id: `msg_${n}`,
@@ -43,5 +53,62 @@ describe("buildInboxHookOutput", () => {
     const ctx = (built.output.hookSpecificOutput as { additionalContext: string }).additionalContext
     expect(ctx).toContain("[truncated]")
     expect(ctx.length).toBeLessThan(3000)
+  })
+})
+
+describe("resolveInboxSessionId", () => {
+  it("lets --session win over the environment", () => {
+    expect(resolveInboxSessionId({ session: "ses_flag" }, { AGENTPROTO_SESSION_ID: "ses_env" })).toBe("ses_flag")
+  })
+
+  it("uses AGENTPROTO_SESSION_ID when there is no --session", () => {
+    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses_env" })).toBe("ses_env")
+  })
+
+  it("ignores CLAUDE_CODE_SESSION_ID, which is the harness's own id", () => {
+    expect(resolveInboxSessionId({}, { CLAUDE_CODE_SESSION_ID: "claude-conv-1" })).toBeUndefined()
+  })
+
+  it("rejects an id with a disallowed character", () => {
+    expect(resolveInboxSessionId({ session: "a/b" }, {})).toBeUndefined()
+    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses env" })).toBeUndefined()
+  })
+})
+
+describe("hook inbox reads the daemon session id from the daemon's own variable", () => {
+  const payload = JSON.stringify({ session_id: "claude-conv-1", hook_event_name: "UserPromptSubmit" })
+  const inbox = { inbox: [item(1)] }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    discoverDaemon.mockResolvedValue({ found: { url: "http://127.0.0.1:1", token: "t" } } as never)
+    httpGetJson.mockResolvedValue(inbox as never)
+    httpPostJson.mockResolvedValue({} as never)
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true)
+  })
+
+  const run = (env: Record<string, string | undefined>, args: string[] = ["inbox"]) =>
+    runHook(args, { readStdin: async () => payload, env })
+
+  it("reads /sessions/<AGENTPROTO_SESSION_ID>/inbox", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "sess_daemon" })
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_daemon/inbox")
+  })
+
+  it("ignores the payload's session_id and CLAUDE_CODE_SESSION_ID: it reads nothing without the daemon id", async () => {
+    expect(await run({ CLAUDE_CODE_SESSION_ID: "claude-conv-2" })).toBe(0)
+    expect(httpGetJson).not.toHaveBeenCalled()
+    expect(httpPostJson).not.toHaveBeenCalled()
+  })
+
+  it("keeps the daemon id even when the payload and CLAUDE_CODE_SESSION_ID name another session", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "sess_daemon", CLAUDE_CODE_SESSION_ID: "claude-conv-2" })
+    expect(httpGetJson).toHaveBeenCalledTimes(1)
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_daemon/inbox")
+  })
+
+  it("--session wins over the environment", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "sess_daemon" }, ["inbox", "--session", "sess_flag"])
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_flag/inbox")
   })
 })

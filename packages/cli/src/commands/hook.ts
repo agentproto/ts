@@ -36,8 +36,9 @@ It lists the session's unread daemon inbox items (oldest first, at most
 data, and acks the ones it emitted. It never fails the hook: on any error it
 prints nothing and exits 0.
 
-Session id: --session, else $CLAUDE_CODE_SESSION_ID, else the hook payload's
-\`session_id\` (stdin JSON). Event name: --event, else the payload's
+Session id: --session, else $AGENTPROTO_SESSION_ID (the daemon's id, set in the
+session's environment). The payload's \`session_id\` and $CLAUDE_CODE_SESSION_ID
+are the harness's own and are ignored. Event name: --event, else the payload's
 \`hook_event_name\`, else UserPromptSubmit.
 
 Example settings.json entry:
@@ -101,6 +102,8 @@ export function buildInboxHookOutput(
  *  `pre-compact`. */
 export interface HookDeps {
   readStdin?: () => Promise<string>
+  /** The environment the command reads; defaults to `process.env`. */
+  env?: Record<string, string | undefined>
   timeoutMs?: number
 }
 
@@ -237,13 +240,27 @@ export async function runHook(args: readonly string[], deps: HookDeps = {}): Pro
     return 2
   }
   try {
-    return await runInbox(args.slice(1))
+    return await runInbox(args.slice(1), deps)
   } catch {
     return 0
   }
 }
 
-async function runInbox(args: readonly string[]): Promise<number> {
+/**
+ * The daemon session whose inbox `hook inbox` reads: `--session`, else
+ * `AGENTPROTO_SESSION_ID`. The hook payload's `session_id` and
+ * `CLAUDE_CODE_SESSION_ID` are the harness's own conversation id, never the
+ * daemon's, so neither is read. Pure.
+ */
+export function resolveInboxSessionId(
+  values: { session?: string },
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const sessionId = values.session ?? env.AGENTPROTO_SESSION_ID
+  return sessionId && SESSION_ID_RE.test(sessionId) ? sessionId : undefined
+}
+
+async function runInbox(args: readonly string[], deps: HookDeps): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
     options: {
@@ -255,16 +272,13 @@ async function runInbox(args: readonly string[]): Promise<number> {
   })
   let payload: { session_id?: unknown; hook_event_name?: unknown } = {}
   try {
-    const raw = await readStdin()
+    const raw = await (deps.readStdin ?? readStdin)()
     if (raw.trim()) payload = JSON.parse(raw) as typeof payload
   } catch {
     /* no / malformed payload — fall back to env + defaults */
   }
-  const sessionId =
-    values.session ??
-    process.env.CLAUDE_CODE_SESSION_ID ??
-    (typeof payload.session_id === "string" ? payload.session_id : undefined)
-  if (!sessionId || !/^[A-Za-z0-9._:-]{1,128}$/.test(sessionId)) return 0
+  const sessionId = resolveInboxSessionId(values, deps.env ?? process.env)
+  if (!sessionId) return 0
 
   const rawEvent = values.event ?? (typeof payload.hook_event_name === "string" ? payload.hook_event_name : "UserPromptSubmit")
   const eventName = HOOK_EVENTS.has(rawEvent) ? rawEvent : "UserPromptSubmit"
