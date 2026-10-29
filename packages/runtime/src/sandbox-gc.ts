@@ -218,7 +218,7 @@ export interface SandboxGcProviderHandle {
  *  (`SandboxBoxGoneError`, via {@link isGoneError}); the message regex is
  *  the fallback for providers without one. */
 export const GONE_RE =
-  /\b404\b|doesn't exist|does not exist|no such|box gone|(box|sandbox|computer)\s+not found/i
+  /\b404\b|doesn't exist|does not exist|no longer exists|no such|box gone|box is gone|(box|sandbox|computer)\s+not found/i
 
 /** Structural check — true when `err` means "the box is gone" (the typed
  *  sentinel or any Error carrying its name). */
@@ -291,7 +291,10 @@ export async function reapGcEntry(
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    if (/\b404\b|doesn't exist|does not exist|not found|no such/i.test(message)) {
+    // Use the shared gone-detection (the typed `SandboxBoxGoneError` plus the
+    // message fallback): a provider whose reconnect says "no longer exists"
+    // must stamp the row stopped, not fail every pass forever.
+    if (GONE_RE.test(message) || isGoneError(err)) {
       recordSandboxState(entry.sandboxId, "stopped", opts.ledgerPath)
       return { ok: true, action: "stopped" }
     }
@@ -316,6 +319,24 @@ export async function reapGcEntry(
 
 /** States that still name a box the gc might act on. */
 export const GC_REAPABLE_STATES: readonly SandboxLedgerState[] = ["booted", "connected", "paused"]
+
+/** How long the periodic pass keeps a paused dead-session row before reaping
+ *  it anyway. Thirty minutes is long enough for an operator to notice and
+ *  reconnect, short enough that a forgotten paused box cannot hold a host's
+ *  memory budget all night (2026-10-29: a paused box held 12 GB and every new
+ *  create was refused until it vanished an hour later). */
+export const DEFAULT_PAUSED_BOX_MAX_AGE_MS = 30 * 60_000
+
+/** Parse the `AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS` env knob. Unset or
+ *  non-numeric falls back to {@link DEFAULT_PAUSED_BOX_MAX_AGE_MS}; an
+ *  explicit `0` reaps every paused row on the next pass. */
+export function parsePausedBoxMaxAge(
+  raw: string | undefined,
+  fallback: number = DEFAULT_PAUSED_BOX_MAX_AGE_MS,
+): number {
+  const parsed = raw === undefined || raw.trim() === "" ? NaN : Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) ? Math.max(0, parsed) : fallback
+}
 /** Sources a session-status READ for the periodic gc. Injected so the
  *  daemon pass reads its OWN registry and the CLI keeps its HTTP one. */
 export interface SandboxGcReadDeps {
@@ -327,6 +348,12 @@ export interface SandboxGcReadDeps {
     | ReadonlyMap<string, SandboxGcSessionLineage>
   resolveProvider: (slug: string) => Promise<SandboxGcProviderHandle | null>
   ledgerPath?: string
+  /** How long a paused row may sit before the pass reaps it regardless of a
+   *  `pause` teardown. A paused box holds provider capacity (RAM snapshot) and
+   *  is not attachable by a new spawn once its session is gone, so "kept
+   *  paused forever" is a leak. Defaults to
+   *  {@link DEFAULT_PAUSED_BOX_MAX_AGE_MS}; `0` reaps every paused row. */
+  pausedMaxAgeMs?: number
 }
 
 /** Tally of one automatic gc pass. */
@@ -355,6 +382,8 @@ export async function runSandboxGcPass(
   const statuses = await deps.fetchSessionStatuses()
   const lineage = deps.fetchSessionLineage ? await deps.fetchSessionLineage() : new Map()
   const candidates = collectGcCandidates(readSandboxLedger(deps.ledgerPath), statuses, lineage)
+  const pausedMaxAgeMs = deps.pausedMaxAgeMs ?? DEFAULT_PAUSED_BOX_MAX_AGE_MS
+  const now = Date.now()
   const summary: SandboxGcPassSummary = {
     ran: true,
     candidates: candidates.length,
@@ -368,19 +397,33 @@ export async function runSandboxGcPass(
     // box pausable, never deletes it (2026-10-23: the row asked for pause and
     // the pass deleted it). A kill/unset teardown still deletes, as before.
     const pause = sandboxGcShouldPause(candidate.entry, lineage)
+    // A paused row older than the bound is NOT kept: the session is gone and
+    // the snapshot holds provider capacity nobody will reconnect to. Reap it
+    // with the default (kill) path so a paused box cannot live forever.
+    const pausedAgeMs = now - Date.parse(candidate.entry.updatedAt)
+    const expiredPaused =
+      candidate.entry.state === "paused" &&
+      pause &&
+      (!Number.isFinite(pausedAgeMs) || pausedAgeMs >= pausedMaxAgeMs)
     // An already paused row whose teardown is pause needs no provider call:
     // pausing it again every interval is a round-trip for no state change.
     // A paused row whose teardown is kill/unset is still reaped below, so
     // paused boxes do not leak forever.
-    if (candidate.entry.state === "paused" && pause) {
+    if (candidate.entry.state === "paused" && pause && !expiredPaused) {
       summary.kept++
       log(
         `sandbox gc: ${candidate.entry.sandboxId} kept paused (session ${candidate.entry.originSessionId} ${candidate.sessionStatus})`,
       )
       continue
     }
+    if (expiredPaused) {
+      log(
+        `sandbox gc: ${candidate.entry.sandboxId} paused for ${Math.max(0, pausedAgeMs)}ms ` +
+          `(bound ${pausedMaxAgeMs}ms) — reaping instead of keeping it`,
+      )
+    }
     const res = await reapGcEntry(candidate.entry, {
-      ...(pause ? { pause: true } : {}),
+      ...(pause && !expiredPaused ? { pause: true } : {}),
       resolveProvider: deps.resolveProvider,
       ...(deps.ledgerPath !== undefined ? { ledgerPath: deps.ledgerPath } : {}),
     })

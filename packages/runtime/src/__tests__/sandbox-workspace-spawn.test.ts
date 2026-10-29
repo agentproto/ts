@@ -396,11 +396,11 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
       expect(pauseSpy).not.toHaveBeenCalled()
       expect(stopSpy).not.toHaveBeenCalled()
       expect(readFileSyncSync(ledgerFile).toString()).toContain(idB)
-      // B is the LAST session on the box: its close pauses the box (a reused
-      // box is marked pauseable), never an outright stop.
+      // B is the LAST session on the box: an explicit agent_kill tears the
+      // reusable box down (reuse alone is not a pause request).
       registry.kill(idB)
-      await vi.waitFor(() => expect(pauseSpy).toHaveBeenCalledTimes(1))
-      expect(stopSpy).not.toHaveBeenCalled()
+      await vi.waitFor(() => expect(stopSpy).toHaveBeenCalledTimes(1))
+      expect(pauseSpy).not.toHaveBeenCalled()
     })
   })
 

@@ -1031,9 +1031,27 @@ async function bootOnClient(
       { onTimeout: () => createAbort.abort() },
     )
   } catch (err) {
+    // A create with NO answer used to hang the whole spawn with no provider
+    // line once the outer request timed out. Surface the phase deadline here
+    // so the daemon log names the create (and whether a box exists). The
+    // deadline is still enforced by `withinDeadline`, which aborts the
+    // in-flight create request so the controller does not keep provisioning.
+    if (err instanceof ComputerSandboxError && err.code === "sandbox_boot_timeout") {
+      bootLog(
+        `create timed out after ${bootDeadlineMs}ms (phase "${err.phase ?? "create"}") — no computer was created; ` +
+          "the controller may be refusing capacity or stuck provisioning",
+      )
+    }
     if (err instanceof ComputerApiError) {
       const mapped = await mapControllerError(err, client)
-      if (mapped !== err) throw mapped
+      if (mapped !== err) {
+        bootLog(
+          `create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""}): ` +
+            `${mapped instanceof Error ? mapped.message : String(mapped)}`,
+        )
+        throw mapped
+      }
+      bootLog(`create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""}): ${err.message}`)
       throw new Error(
         `computer sandbox: create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""})` +
           (err.code === "unknown template" || err.code === "invalid body"
