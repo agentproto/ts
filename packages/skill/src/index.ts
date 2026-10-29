@@ -14,6 +14,8 @@ export const SPEC_NAME = "skill/v1" as const
 export const SPEC_VERSION = "2.0.0-alpha" as const
 
 export { defineSkill } from "./define-skill.js"
+export { renderSkillMd } from "./render.js"
+export { skillSpec, skillVerbs } from "./spec.js"
 export { skillFrontmatterSchema, aip3ExtensionsSchema } from "./schema.js"
 export type { SkillFrontmatter, Aip3Extensions } from "./schema.js"
 export type { SkillEntry } from "./entry.js"

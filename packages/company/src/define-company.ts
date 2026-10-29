@@ -1,46 +1,67 @@
 import { createDoctype } from "@agentproto/doctype"
+import { canonicalizeCompany } from "./aliases.js"
+import { legacyRoleFrontmatterSchema } from "./legacy-role.js"
 import { companyFrontmatterSchema } from "./schema.js"
-import type { CompanyDefinition, CompanyHandle } from "./types.js"
+import type {
+  CompanyDefinition,
+  CompanyHandle,
+  CompanyWarning,
+} from "./types.js"
 
-/**
- * AIP-6 reference implementation of `defineCompany`.
- *
- * Built on `createDoctype` so the cross-AIP invariants (id pattern,
- * description length, top-level freeze, "defineCompany (AIP-6): …"
- * error prefix) run uniformly with every other AIP defineX.
- *
- * Field-level validation runs the schema-derived zod from
- * `./schema.ts` against the input. Same source of truth as the .md
- * path uses (`parseCompanyManifest`), so a malformed TS-authored
- * definition fails with the same diagnostic as a malformed manifest.
- * Cross-field rules go in `validate(def)` after the zod check.
- *
- * Identity / description extractors detected from the JSON Schema:
- *   readIdentity: def.id
- *   readDescription: skipped (no string-y required field detected).
- */
-export const defineCompany = createDoctype<CompanyDefinition, CompanyHandle>({
+function issues(error: { issues: readonly { path: PropertyKey[]; message: string }[] }): string {
+  return error.issues.map((i) => `${i.path.map(String).join(".")}: ${i.message}`).join("; ")
+}
+
+const construct = createDoctype<CompanyDefinition, CompanyHandle>({
   aip: 6,
   name: "company",
   readDescription: false,
   validate(def) {
-    const result = companyFrontmatterSchema.safeParse(def)
-    if (!result.success) {
+    const doctype = (def as { doctype?: unknown }).doctype
+    if (doctype === "agent") {
       throw new Error(
-        `defineCompany (AIP-6): ${result.error.issues
-          .map((i) => `${i.path.join(".")}: ${i.message}`)
-          .join("; ")}`,
+        "defineCompany (AIP-6): doctype 'agent' is the legacy agent slot, an AIP-42 AGENT.md: read it with @agentproto/agent",
       )
     }
-    // TODO: spec-6-specific cross-field rules (if/then/allOf in
-    // the JSON Schema) — those don't translate to zod cleanly and
-    // belong here. See @agentproto/operator's autonomy=gated rule.
+    if (doctype !== "company" && doctype !== "objective" && doctype !== "role") {
+      throw new Error(
+        `defineCompany (AIP-6): a file MUST carry doctype (or its alias kind) 'company' or 'objective', got ${JSON.stringify(doctype)}`,
+      )
+    }
+    const result =
+      doctype === "role"
+        ? legacyRoleFrontmatterSchema.safeParse(def)
+        : companyFrontmatterSchema.safeParse(def)
+    if (!result.success) {
+      throw new Error(`defineCompany (AIP-6): ${issues(result.error)}`)
+    }
   },
   build(def) {
-    // Default build: spread the validated definition into a fresh object.
-    // Hand-tune for nested freezing (Object.freeze on arrays/objects) and
-    // for fields that need defaults applied — see @agentproto/operator
-    // for a reference shape.
-    return { ...def } as CompanyHandle
+    const warnings: CompanyWarning[] =
+      (def as { doctype: string }).doctype === "role"
+        ? [
+            {
+              code: "doctype_moved",
+              message:
+                "doctype 'role' under company/v1 moved to AIP-47: rewrite the file as role/v1 (id becomes name, name becomes title, mandate becomes mission and description)",
+            },
+          ]
+        : []
+    return { ...def, warnings } as unknown as CompanyHandle
   },
 })
+
+/**
+ * AIP-6 reference implementation of `defineCompany`.
+ *
+ * Built on `createDoctype` so the cross-AIP invariants (id pattern, top-level
+ * freeze, "defineCompany (AIP-6): …" error prefix) run uniformly with every
+ * other AIP defineX. `kind` and `slug` are read as `doctype` and `id` before
+ * anything else (permanent aliases, `alias_conflict` when they disagree with
+ * the canonical field). The handle carries the canonical names only.
+ */
+export function defineCompany(def: CompanyDefinition): CompanyHandle {
+  return construct(
+    canonicalizeCompany(def as unknown as Record<string, unknown>, "defineCompany (AIP-6)") as unknown as CompanyDefinition,
+  )
+}

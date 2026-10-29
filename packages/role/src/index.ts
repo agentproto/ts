@@ -90,6 +90,8 @@ export function departmentLabel(slug: string): string {
 }
 
 export { defineRole } from "./define-role.js"
+export { renderRoleMd, type RoleEntry } from "./render.js"
+export { roleSpec, roleVerbs } from "./spec.js"
 export type { RoleDefinition, RoleHandle } from "./types.js"
 
 // Slots (AIP-47 §Slots) and the pure validation of a binding against them.
