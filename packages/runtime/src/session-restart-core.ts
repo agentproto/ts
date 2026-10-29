@@ -48,6 +48,7 @@
  */
 
 import type { MemoryStore } from "@agentproto/memory"
+import { resolveContextContinuityPolicy, type ContextContinuityPolicy } from "./context-continuity.js"
 import { carryMemoryMeta, respawnMemoryProjection, type NativeMemoryProjection } from "./memory-digest.js"
 import { memoryStoreAt as defaultMemoryStoreAt } from "./memory-stores.js"
 import { boundaryFromMeta, boundaryMeta, boundaryRestartOptions } from "./app-boundary.js"
@@ -198,6 +199,8 @@ import { redactOrchestratorScopeRef } from "./orchestrator-scope-ref.js"
  * step. `model`/`effort` are forwarded to the driver's own spawn inputs.
  */
 export type RestartOverrides = Partial<SessionConfig> & {
+  /** Session-level policy update, merged with the previous resolved policy. */
+  contextContinuity?: ContextContinuityPolicy
   /** Legacy AIP-45 mode id, forwarded verbatim to the driver's `startSession`
    *  (back-compat — the pre-decomposition apply-path). */
   mode?: string
@@ -1240,6 +1243,12 @@ async function restartAgentSessionOnce(
   // than what the caller allowed).
   const carryAgentPosture = overrides.posture === undefined && prev.postureSource === "agent"
   const effContextProfile = overrides.contextProfile ?? prev.contextProfile
+  const effContextContinuity = prev.contextContinuity || overrides.contextContinuity
+    ? resolveContextContinuityPolicy(
+        undefined, undefined, undefined,
+        { ...prev.contextContinuity, ...overrides.contextContinuity },
+      )
+    : undefined
   // AIP-66 cloud: a cloud session's recorded harness is the VENDOR's harness
   // (`claude-code`), never the local relay adapter slug (`claude-code-cloud`)
   // — see `cloud-vendors.ts` / `session-spawn.ts`. A restart must re-record
@@ -1716,6 +1725,7 @@ async function restartAgentSessionOnce(
         : {}),
       ...(effRoute ? { route: effRoute } : {}),
       ...(effContextProfile ? { contextProfile: effContextProfile } : {}),
+      ...(effContextContinuity ? { contextContinuity: effContextContinuity } : {}),
       ...(accessProfileEcho ? { accessProfile: accessProfileEcho } : {}),
       ...(effMode ? { mode: effMode } : {}),
       ...(resolved.commandPreview ? { commandPreview: resolved.commandPreview } : {}),

@@ -297,11 +297,13 @@ Usage:
                                stopped once the new one is up.)
   agentproto sessions restart <id-or-name> [--attach] [--json] [--no-color]
                               [--prefer-native-terminal]
+                              [--model <provider/model>] [--access-profile <ref>]
                               [--auto-compact-at-tokens <n>]
-                              (respawn from history — clones the old
-                               descriptor's kind/argv/cwd/workspace and starts
-                               a fresh instance, resuming where the adapter
-                               supports it. New id, same freed name. Output
+                              (restart an agent through the daemon so its model,
+                               billing profile, policy and lineage survive.
+                               Supply model + access-profile together when
+                               changing providers, e.g. Zen to Go. PTYs use
+                               their native resume path. New id. Output
                                buffers are NOT carried over.
                                --prefer-native-terminal opts into the adapter's
                                native-terminal restart path when it has one.
@@ -5586,6 +5588,8 @@ async function runRestart(args: readonly string[]): Promise<number> {
       json: { type: "boolean" },
       "no-color": { type: "boolean" },
       "prefer-native-terminal": { type: "boolean" },
+      model: { type: "string" },
+      "access-profile": { type: "string" },
       "auto-compact-at-tokens": { type: "string" },
     },
   })
@@ -5622,17 +5626,45 @@ async function runRestart(args: readonly string[]): Promise<number> {
     return 1
   }
 
-  // Augment with provider-fs-derived resume id when our own capture
-  // missed it (e.g., the session was killed before printing the
-  // resume hint), then build the body.
-  prev = await augmentWithFsResume(prev)
+  let autoCompactAtTokens: number | undefined
+  try {
+    autoCompactAtTokens = parseAutoCompactTokens(values["auto-compact-at-tokens"])
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 2
+  }
+  const daemonRestart = prev.kind === "agent-cli" && values["prefer-native-terminal"] !== true
+  if (!daemonRestart && (values.model || values["access-profile"])) {
+    process.stderr.write("agentproto sessions restart: model and access-profile overrides require an agent-cli restart.\n")
+    return 2
+  }
+  // The old /sessions/agent respawn dropped the model, wallet, model policy,
+  // parent and other immutable spawn fields. The daemon's restart endpoint
+  // carries and validates them as one operation. Keep the native-terminal path
+  // only for explicit opt-in and original PTY sessions.
   let built: RestartBody
   try {
-    built = buildRestartBody(
-      prev,
-      values["prefer-native-terminal"] === true,
-      parseAutoCompactTokens(values["auto-compact-at-tokens"]),
-    )
+    built = daemonRestart
+      ? {
+          url: `${endpoint.url}/sessions/${encodeURIComponent(prev.id)}/restart`,
+          body: {
+            ...(values.model ? { model: values.model } : {}),
+            ...(values["access-profile"] ? { access: { profileRef: values["access-profile"] } } : {}),
+            ...(prev.contextContinuity || autoCompactAtTokens !== undefined
+              ? { contextContinuity: {
+                  ...prev.contextContinuity,
+                  ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
+                } }
+              : {}),
+          },
+        }
+      : buildRestartBody(
+          await augmentWithFsResume(prev),
+          values["prefer-native-terminal"] === true,
+          autoCompactAtTokens,
+        )
   } catch (err) {
     process.stderr.write(
       `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -5640,8 +5672,9 @@ async function runRestart(args: readonly string[]): Promise<number> {
     return 2
   }
   const body = built.body
-  const url =
-    built.url === "__pty__"
+  const url = built.url.startsWith("http")
+    ? built.url
+    : built.url === "__pty__"
       ? `${endpoint.url}/sessions/terminal`
       : `${endpoint.url}/sessions/agent`
 
@@ -5689,7 +5722,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
   } else {
     const lineage = resumeFallback
       ? "fresh — resume not available"
-      : describeResumePath(prev, {
+      : next.resumeVia || describeResumePath(prev, {
           preferNativeTerminal: values["prefer-native-terminal"] === true,
         }) || "fresh shape"
     process.stdout.write(
