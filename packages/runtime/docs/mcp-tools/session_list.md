@@ -32,9 +32,27 @@ An unpaged MCP call is bounded: at most 50 rows, plus `truncated`, `total` and
 | `parentSessionId` | only direct children of this session (id or name) |
 | `updatedSince` | last activity (else start) at/after an ISO-8601 time or relative age `30m`, `24h`, `7d`, `2w` |
 | `startedSince` | started at/after, same formats |
+| `collapseLineage` | hide a row another row in THIS result points back to via `resumedFrom`/`continuedFrom`/`succeeds` — see below |
 
 A malformed `updatedSince` / `startedSince` returns an error result (HTTP 400
 `invalid_filter`), never a silently empty list.
+
+## collapseLineage
+
+A `session_restart` (plain or with override axes), `session_continue_fresh`
+or an `agent_start.succeeds` handover each mint a FRESH id for the same
+conversation, linked back via `resumedFrom` / `continuedFrom` / `succeeds`.
+Nothing archives the superseded row automatically, so a long-lived session
+restarted repeatedly (a persistent brain, a PM) accumulates one terminal row
+per restart under the same label. `collapseLineage: true` hides those —
+transitively, so an N-hop restart chain collapses to just the live tail —
+but NEVER hides a row whose own `status` is `running`/`starting`: a plain
+restart or continue-fresh always ends the predecessor first, but an
+`agent_start.succeeds` handover only declares the pointers and can leave
+`from` genuinely still running, so that case stays visible even when
+collapsed. Default `false`. `agentproto sessions board` always sets it
+(`--no-collapse-lineage` opts out); `session_list` and `GET /sessions` leave
+it off by default.
 
 ## cold history (`includeCold`)
 

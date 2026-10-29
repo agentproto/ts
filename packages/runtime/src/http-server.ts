@@ -56,6 +56,7 @@ import type { RuntimeEvents, RuntimeEvent } from "./events.js"
 import type { SessionsRegistry, AgentSessionLike, RestartPolicy, SessionDescriptor, SandboxSessionStats } from "./sessions.js"
 import {
   SessionListFilterError,
+  collapseLineageChains,
   compileSessionListFilters,
   hasSessionListFilters,
   parseSessionListFilterParams,
@@ -7090,6 +7091,7 @@ async function handleSessions(
     const includeArchived = params.get("includeArchived") === "true"
     const kindParam = params.get("kind")
     const includeCommands = params.get("includeCommands") === "true"
+    const collapseLineage = params.get("collapseLineage") === "true"
     const sinceParam = params.get("since")
     const fields = parseSessionFields(params)
     const matchesFilter = (s: SessionDescriptor): boolean => {
@@ -7146,6 +7148,7 @@ async function handleSessions(
     // `?includeCommands=true` opts into the union.
     rows = narrow(rows.filter(matchesFilter))
     if (narrowed) rows = sortNewestActivityFirst(rows)
+    if (collapseLineage) rows = collapseLineageChains(rows)
     const total = rows.length
     if (limit !== undefined && sinceParam === null) rows = rows.slice(0, limit)
 

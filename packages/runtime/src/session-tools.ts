@@ -125,6 +125,7 @@ import { outcomeDetailShape } from "./outcome-detail-schema.js"
 import { processTreeRss } from "./process-memory.js"
 import {
   applySessionListFilters,
+  collapseLineageChains,
   isReviewOrWorkflowSession,
   pickSessionListFilters,
   toList,
@@ -1554,6 +1555,15 @@ export function registerSessionTools(
       .describe(
         "Also serve sessions the registry dropped at boot from disk, flagged `cold: true`."
       ),
+    collapseLineage: z
+      .boolean()
+      .optional()
+      .describe(
+        "Hide a row whenever another row in THIS result points back to it via " +
+          "`resumedFrom`/`continuedFrom`/`succeeds` — collapses a restart/continue-fresh/" +
+          "handover chain down to its live tail instead of showing every retired hop under " +
+          "the same label. Default false."
+      ),
     stats: statsParamSchema.describe(
       "Per-live-session RSS, %CPU, process count and top commands under `stats`; `true` = summary, `\"full\"` = every process."
     ),
@@ -1613,7 +1623,8 @@ export function registerSessionTools(
           )
         }
         narrowed = applySessionListFilters(narrowed, filters)
-        return sortNewestActivityFirst(narrowed)
+        const sorted = sortNewestActivityFirst(narrowed)
+        return input.collapseLineage ? collapseLineageChains(sorted) : sorted
       }
       // Always pull the FULL list (archived included) — subtree scoping
       // below needs every row to keep the parent→child graph connected

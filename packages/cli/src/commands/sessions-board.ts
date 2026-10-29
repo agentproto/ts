@@ -1,5 +1,5 @@
 /**
- * `agentproto sessions board [--json] [--watch] [--all]`
+ * `agentproto sessions board [--json] [--watch] [--all] [--no-collapse-lineage]`
  *
  * A glanceable session-status board: one cheap snapshot, every session
  * classified into a single Badge, sorted by attention-worthiness, with a
@@ -7,6 +7,15 @@
  * verb already fetches (`GET /sessions`) — no new daemon surface, and
  * `kind:"command"` log rows ride in via the existing `?includeCommands=true`
  * opt-in (the same rows `command_list` returns) only under `--all`.
+ *
+ * Also requests `?collapseLineage=true` by default: a restart/continue-fresh/
+ * `agent_start.succeeds` handover mints a new id for the same conversation,
+ * so without this a repeatedly-restarted long-lived session (a persistent
+ * brain, a PM) buries the board under one ENDED row per restart. The daemon
+ * never hides a row that is still `running`/`starting` under this (see
+ * `collapseLineageChains`'s doc, session-list-filters.ts) — `--no-collapse-
+ * lineage` is an explicit opt-out for an operator who wants every retired
+ * hop back anyway.
  *
  * Classification rules (frozen — one Badge per session, first match wins):
  *
@@ -364,6 +373,7 @@ export async function runBoard(args: readonly string[]): Promise<number> {
       watch: { type: "boolean" },
       all: { type: "boolean" },
       "no-color": { type: "boolean" },
+      "no-collapse-lineage": { type: "boolean" },
     },
   })
   if (values.json && values.watch) {
@@ -382,9 +392,22 @@ export async function runBoard(args: readonly string[]): Promise<number> {
   // `--all` opts into the command-execution LOG rows (kind:"command") —
   // the same rows `command_list` returns — via the daemon's existing
   // `?includeCommands=true` opt-in. Default view excludes them.
-  const url = values.all
-    ? `${endpoint.url}/sessions?includeCommands=true`
-    : `${endpoint.url}/sessions`
+  //
+  // `collapseLineage=true` is on by default, not opt-in: a restarted/
+  // continue-fresh'd/handed-over session mints a new id every time (see
+  // `collapseLineageChains`'s doc in session-list-filters.ts), so without
+  // this a long-lived label (a persistent brain, a PM) accumulates one dead
+  // row per restart under the SAME label and the board — one glanceable
+  // line per session — stops being glanceable. `collapseLineageChains`
+  // itself never hides a row that is still `running`/`starting`, but
+  // `--no-collapse-lineage` is still here as an explicit escape hatch for
+  // an operator who wants every retired hop back.
+  const collapseLineage = values["no-collapse-lineage"] !== true
+  const params = new URLSearchParams()
+  if (values.all) params.set("includeCommands", "true")
+  if (collapseLineage) params.set("collapseLineage", "true")
+  const query = params.toString()
+  const url = query ? `${endpoint.url}/sessions?${query}` : `${endpoint.url}/sessions`
 
   const colour = !values["no-color"] && process.stdout.isTTY === true
 

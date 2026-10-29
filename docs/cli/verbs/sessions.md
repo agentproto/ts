@@ -211,8 +211,9 @@ agentproto sessions board --watch
 agentproto sessions board --all
 ```
 
-At-a-glance status board: every session is assigned exactly one Badge sorted
-by attention-worthiness, with a one-line summary header.
+At-a-glance status board: every session that SURVIVES the lineage collapse
+below is assigned exactly one Badge sorted by attention-worthiness, with a
+one-line summary header.
 
 | Badge | Condition |
 |-------|-----------|
@@ -222,7 +223,7 @@ by attention-worthiness, with a one-line summary header.
 | `ACTIVE` | Running and busy (a turn is in flight) |
 | `IDLE` | Running, not busy, not stale (young or `keepAlive: true`) |
 | `COMMAND` | `kind: "command"` execution-log row (only visible with `--all`) |
-| `ENDED` | Terminal status (`exited` / `killed` / `error`) |
+| `ENDED` | Terminal status (`exited` / `killed` / `error`) — but see `--no-collapse-lineage` below: a restarted/continue-fresh'd/handed-over row's ENDED predecessor is hidden by default, not listed here |
 
 Sort order (most-attention-worthy first): `AWAITING > BLOCKED > STALE > ACTIVE > IDLE > COMMAND > ENDED`.
 
@@ -231,6 +232,15 @@ Sort order (most-attention-worthy first): `AWAITING > BLOCKED > STALE > ACTIVE >
 | `--all` | Include `kind: "command"` execution-log rows (same rows `command_list` returns). |
 | `--json` | Emit the classified rows as JSON — includes the Badge plus every evidence field the rules read (`keepAlive`, `interrupted`, `continuedFrom`, `blockedOn`, `idleMs`, `costUsd` when usage exists). Cannot be combined with `--watch`. |
 | `--watch` | Re-render every 2 s on a TTY (`q` to quit). On non-TTY stdout falls back to a single snapshot. |
+| `--no-collapse-lineage` | Opt out of the default `collapseLineage` request (see below) and show every retired restart/continue-fresh/handover hop. |
+
+By default the board requests `?collapseLineage=true` (see
+[`session_list`'s `collapseLineage` filter](../../../packages/runtime/docs/mcp-tools/session_list.md#collapselineage)):
+a session restarted repeatedly (a persistent brain, a PM) mints a fresh id
+each time, and without this the board fills up with one `ENDED` row per
+restart under the same label instead of staying glanceable. A row that is
+still `running`/`starting` is NEVER hidden by this, even if another row's
+lineage points at it.
 
 ### `--stats[=full]` (who is eating the host)
 
