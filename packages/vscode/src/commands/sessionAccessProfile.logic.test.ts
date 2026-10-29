@@ -8,6 +8,7 @@ import type {
 import {
   accessRowsForSession,
   applyAccessProfile,
+  modelsForAccessProfile,
   planAccessChange,
   withEligibleAccess,
 } from "./sessionAccessProfile.logic.js"
@@ -260,6 +261,27 @@ describe("withEligibleAccess (model switch across routes)", () => {
 })
 
 describe("applyAccessProfile: the chosen profile becomes a restart-with-override", () => {
+  it("offers only zero-cost Go models for a zero-cost Zen session changing to Go WS03", () => {
+    const goCatalog: CatalogModelsResponse = {
+      vendors: [{ vendor: "opencode", products: [{ product: "beam", routes: [
+        { route: "opencode-go", ref: "opencode-go/beam-free", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["opencode-developerws003"], adapterModes: [], adapters: ["opencode"], curated: true },
+        { route: "opencode-go", ref: "opencode-go/deepseek-v4.1-flash", baseUrl: null, pricing: null, runnable: true, eligibleProfiles: ["opencode-developerws003"], adapterModes: [], adapters: ["opencode"], curated: true },
+      ] }] }],
+    }
+    expect(modelsForAccessProfile(goCatalog, "opencode-developerws003", true)).toEqual(["opencode-go/beam-free"])
+  })
+
+  it("restarts with the selected model and account together", async () => {
+    const calls: unknown[] = []
+    await applyAccessProfile({
+      applier: { async restartSessionWithOverride(_id, overrides) { calls.push(overrides); return { id: "sess_new", resumedFrom: "sess_1" } } },
+      sessionId: "sess_1",
+      profileRef: "opencode-developerws003",
+      model: "opencode-go/beam-free",
+    })
+    expect(calls).toEqual([{ model: "opencode-go/beam-free", access: { profileRef: "opencode-developerws003" } }])
+  })
+
   it("restarts the session onto the profile (POST /sessions/:id/restart, access.profileRef)", async () => {
     const calls: Array<{ id: string; overrides: unknown }> = []
     const result = await applyAccessProfile({

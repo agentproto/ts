@@ -58,7 +58,7 @@ export function accessRowsForSession(input: {
 export interface AccessProfileApplier {
   restartSessionWithOverride(
     id: string,
-    overrides: { access: { profileRef: string } },
+    overrides: { access: { profileRef: string }; model?: string },
   ): Promise<unknown>
 }
 
@@ -74,9 +74,11 @@ export async function applyAccessProfile(input: {
   applier: AccessProfileApplier
   sessionId: string
   profileRef: string
+  model?: string
 }): Promise<{ ok: true; restart?: RestartResult } | { ok: false; error: string }> {
   try {
     const raw = await input.applier.restartSessionWithOverride(input.sessionId, {
+      ...(input.model ? { model: input.model } : {}),
       access: { profileRef: input.profileRef },
     })
     const restart = parseRestartResult(raw)
@@ -84,6 +86,21 @@ export async function applyAccessProfile(input: {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
   }
+}
+
+/** Models the selected wallet can bill, narrowed to free ids when the old
+ * session has a zero-cost guard. The daemon remains the final policy judge. */
+export function modelsForAccessProfile(
+  catalog: CatalogModelsResponse | undefined,
+  profileRef: string,
+  zeroCostOnly: boolean,
+): string[] {
+  if (!catalog) return []
+  const refs = catalog.vendors.flatMap(v => v.products.flatMap(p => p.routes))
+    .filter(r => r.runnable && r.eligibleProfiles.includes(profileRef))
+    .map(r => r.ref)
+    .filter(ref => !zeroCostOnly || ref.endsWith("-free") || ref.endsWith("/big-pickle"))
+  return [...new Set(refs)].sort()
 }
 
 /**

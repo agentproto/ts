@@ -455,6 +455,8 @@ export interface SessionDescriptor {
   /** Named auth-profile echo for the `access` axis (SPEC §3.6) — mirrors the
    *  daemon's SessionAccessProfileEcho. Non-secret. */
   accessProfile?: SessionAccessProfileEcho
+  /** Spawn-time model allow-list, carried across restarts by the daemon. */
+  modelPolicy?: { allow?: string[]; block?: string[] }
   costUsd?: number
   tokensIn?: number
   tokensOut?: number

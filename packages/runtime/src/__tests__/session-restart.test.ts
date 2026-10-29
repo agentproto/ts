@@ -24,6 +24,7 @@ import { registerSessionTools } from "../session-tools.js"
 import { claudeCodeProjectDir } from "../conversation-store.js"
 import { createSessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
+import { resolveContextContinuityPolicy } from "../context-continuity.js"
 import type {
   AgentSessionLike,
   AgentSessionResumer,
@@ -1072,6 +1073,33 @@ describe("session_restart — cross-session resume safety (regression)", () => {
     expect(desc.contextProfile).toBe("lean")
     expect(desc.routeSelection).toBe("free")
     expect(calls[0]).toMatchObject({ posture: "plan", contextProfile: "lean" })
+
+    await close()
+    registry.shutdown()
+  })
+
+  it("carries the resolved context policy across an agent restart", async () => {
+    const { client, registry, close } = await buildHarness()
+    const contextContinuity = resolveContextContinuityPolicy(
+      undefined, undefined, undefined,
+      { mode: "auto", autoCompactAtTokens: 90000 },
+    )
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: process.cwd(),
+      agentSession: fakeAgentSession("claude"),
+      adapterSlug: "claude-code",
+      contextContinuity,
+    })
+    registry.kill(prev.id)
+
+    const result = await client.callTool({
+      name: "session_restart",
+      arguments: { idOrName: prev.id },
+    })
+    expect(result.isError).toBeFalsy()
+    const restarted = toolJson(result) as { contextContinuity?: { autoCompactAtTokens?: number } }
+    expect(restarted.contextContinuity?.autoCompactAtTokens).toBe(90000)
 
     await close()
     registry.shutdown()

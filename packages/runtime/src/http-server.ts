@@ -8850,6 +8850,19 @@ code { color: #9ad; }
         return true
       }
     }
+    let contextContinuityOverride: RestartOverrides["contextContinuity"]
+    if (b.contextContinuity !== undefined) {
+      const parsed = contextContinuityInputSchema.safeParse(b.contextContinuity)
+      if (!parsed.success) {
+        const invalid = new RestartOverrideError(
+          "restart contextContinuity override: " +
+            parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "),
+        )
+        json(invalid.status, { ...sessionRestartErrorBody(invalid), sessionId: prev.id })
+        return true
+      }
+      contextContinuityOverride = parsed.data
+    }
     const overrides: RestartOverrides = {
       ...(str(b.model) !== undefined ? { model: str(b.model)! } : {}),
       ...(str(b.effort) !== undefined ? { effort: str(b.effort) as RestartOverrides["effort"] } : {}),
@@ -8870,6 +8883,7 @@ code { color: #9ad; }
         : {}),
       ...(b.posture !== undefined ? { posture: b.posture as RestartOverrides["posture"] } : {}),
       ...(str(b.contextProfile) !== undefined ? { contextProfile: str(b.contextProfile)! } : {}),
+      ...(contextContinuityOverride !== undefined ? { contextContinuity: contextContinuityOverride } : {}),
       ...(str(b.mode) !== undefined ? { mode: str(b.mode)! } : {}),
       ...(mcpServersOverride !== undefined ? { mcpServers: mcpServersOverride } : {}),
     }
