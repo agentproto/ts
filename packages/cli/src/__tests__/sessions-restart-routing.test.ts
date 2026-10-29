@@ -79,4 +79,50 @@ describe("sessions restart keeps the billing route", () => {
       "tok",
     )
   })
+
+  it("keeps a provider-native PTY on its terminal path even when it has an adapterSlug", async () => {
+    httpGetJson.mockResolvedValue({
+      id: "sess_tui",
+      kind: "terminal",
+      status: "killed",
+      pty: true,
+      adapterSlug: "claude-code",
+      workspaceSlug: "default",
+      command: "claude",
+      cwd: process.cwd(),
+      argv: ["claude"],
+      slug: "claude-tui",
+    } as Awaited<ReturnType<typeof helpers.httpGetJson>>)
+
+    expect(await runSessions(["restart", "sess_tui"])).toBe(0)
+    expect(httpPostJson).toHaveBeenCalledWith(
+      "http://127.0.0.1:18790/sessions/terminal",
+      expect.objectContaining({ argv: ["claude"], slug: "claude-tui" }),
+      "tok",
+    )
+    expect(httpPostJson).not.toHaveBeenCalledWith(
+      "http://127.0.0.1:18790/sessions/sess_tui/restart",
+      expect.anything(),
+      "tok",
+    )
+  })
+
+  it("exits 2 with a message instead of throwing for an unsupported command session", async () => {
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    httpGetJson.mockResolvedValue({
+      id: "sess_cmd",
+      kind: "command",
+      status: "exited",
+      workspaceSlug: "default",
+      command: "echo hi",
+      cwd: process.cwd(),
+    } as Awaited<ReturnType<typeof helpers.httpGetJson>>)
+
+    expect(await runSessions(["restart", "sess_cmd"])).toBe(2)
+    expect(httpPostJson).not.toHaveBeenCalled()
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("generic command session"),
+    )
+    stderrSpy.mockRestore()
+  })
 })

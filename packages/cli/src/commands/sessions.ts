@@ -5635,7 +5635,7 @@ async function runRestart(args: readonly string[]): Promise<number> {
     )
     return 2
   }
-  const daemonRestart = Boolean(prev.adapterSlug) && values["prefer-native-terminal"] !== true
+  const daemonRestart = prev.kind === "agent-cli" && values["prefer-native-terminal"] !== true
   if (!daemonRestart && (values.model || values["access-profile"])) {
     process.stderr.write("agentproto sessions restart: model and access-profile overrides require an agent-cli restart.\n")
     return 2
@@ -5644,25 +5644,33 @@ async function runRestart(args: readonly string[]): Promise<number> {
   // parent and other immutable spawn fields. The daemon's restart endpoint
   // carries and validates them as one operation. Keep the native-terminal path
   // only for explicit opt-in and original PTY sessions.
-  const built: RestartBody = daemonRestart
-    ? {
-        url: `${endpoint.url}/sessions/${encodeURIComponent(prev.id)}/restart`,
-        body: {
-          ...(values.model ? { model: values.model } : {}),
-          ...(values["access-profile"] ? { access: { profileRef: values["access-profile"] } } : {}),
-          ...(prev.contextContinuity || autoCompactAtTokens !== undefined
-            ? { contextContinuity: {
-                ...prev.contextContinuity,
-                ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
-              } }
-            : {}),
-        },
-      }
-    : buildRestartBody(
-        await augmentWithFsResume(prev),
-        values["prefer-native-terminal"] === true,
-        autoCompactAtTokens,
-      )
+  let built: RestartBody
+  try {
+    built = daemonRestart
+      ? {
+          url: `${endpoint.url}/sessions/${encodeURIComponent(prev.id)}/restart`,
+          body: {
+            ...(values.model ? { model: values.model } : {}),
+            ...(values["access-profile"] ? { access: { profileRef: values["access-profile"] } } : {}),
+            ...(prev.contextContinuity || autoCompactAtTokens !== undefined
+              ? { contextContinuity: {
+                  ...prev.contextContinuity,
+                  ...(autoCompactAtTokens !== undefined ? { autoCompactAtTokens } : {}),
+                } }
+              : {}),
+          },
+        }
+      : buildRestartBody(
+          await augmentWithFsResume(prev),
+          values["prefer-native-terminal"] === true,
+          autoCompactAtTokens,
+        )
+  } catch (err) {
+    process.stderr.write(
+      `agentproto sessions restart: ${err instanceof Error ? err.message : String(err)}\n`,
+    )
+    return 2
+  }
   const body = built.body
   const url = built.url.startsWith("http")
     ? built.url
