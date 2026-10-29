@@ -423,6 +423,7 @@ function relationGrant(
     case "sibling":
       return { allow: ctx.messaging?.allowSiblings === true, rule: "messaging.allowSiblings" }
     case "granted":
+    case "peer": // legacy value, never collected; read as `granted`
       // `collectMessageRelations` only reports `granted` when the link is
       // allowed (same workspace with the allowance on, or a peer group), so
       // the grant is already established.

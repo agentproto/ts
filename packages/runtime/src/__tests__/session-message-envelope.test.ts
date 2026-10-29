@@ -16,6 +16,7 @@ import { registerAgentTools } from "../agent-tools.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import {
   createSessionMessage,
+  isMessageAllowed,
   matchesMessageFilter,
   messageFrom,
   normalizeMessageRelation,
@@ -178,9 +179,15 @@ describe("legacy `peer` records", () => {
     expect(normalizeMessageRelation("nonsense")).toBeUndefined()
   })
 
+  it("the ACL reads a stored peer like granted", () => {
+    expect(isMessageAllowed("peer")).toBe(true)
+    expect(isMessageAllowed("peer", { allowSameWorkspace: false })).toBe(false)
+    expect(isMessageAllowed("peer", { allowSameWorkspace: false, peerGroup: true })).toBe(true)
+  })
+
   const legacy = (): SessionMessage => {
     const msg = createSessionMessage({ to: "r", from: { sessionId: "s", relation: "granted" }, text: "old" })
-    return { ...msg, from: { ...msg.from, relation: "peer" as never } }
+    return { ...msg, from: { ...msg.from, relation: "peer" } }
   }
 
   it("a stored peer message still passes the sender filter and renders", () => {

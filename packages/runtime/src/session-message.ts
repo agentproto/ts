@@ -16,8 +16,18 @@ import { randomUUID } from "node:crypto"
 
 /** Sender's position in the tree, relative to the recipient. `granted` = no
  *  tree edge, but an allowance admitted the send (same workspace via
- *  `allowSameWorkspace`, or a peer group). */
-export type MessageRelation = "child" | "parent" | "sibling" | "granted" | "human" | "system"
+ *  `allowSameWorkspace`, or a peer group). `peer` is the value `granted`
+ *  replaced: the daemon no longer produces it, but a message stored before
+ *  that change still carries it, so the type keeps modelling what is read. */
+export type MessageRelation =
+  | "child"
+  | "parent"
+  | "sibling"
+  | "granted"
+  | "human"
+  | "system"
+  /** @deprecated legacy value written before `granted` replaced it; never produced, read as `granted`. */
+  | "peer"
 
 /** Map a stored relation to the current vocabulary: the legacy value `peer`
  *  (written before `granted` replaced it) reads as `granted`; anything that is
@@ -248,6 +258,7 @@ export function isMessageAllowed(
     case "sibling":
       return opts?.allowSiblings === true
     case "granted":
+    case "peer": // legacy value, read as `granted`
       return opts?.peerGroup === true || opts?.allowSameWorkspace !== false
     default:
       return false

@@ -9,13 +9,23 @@
 
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
-export type MessageRelation = "child" | "parent" | "sibling" | "granted" | "human" | "system"
+export type MessageRelation =
+  | "child"
+  | "parent"
+  | "sibling"
+  | "granted"
+  | "human"
+  | "system"
+  /** @deprecated legacy value written before `granted` replaced it. */
+  | "peer"
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 
 export interface SessionMessageFrom {
   sessionId?: string
   label?: string
   role?: string
+  /** The sender's AIP-42 agent, when one was bound. */
+  agentSlug?: string
   adapter?: string
   relation: MessageRelation
 }
