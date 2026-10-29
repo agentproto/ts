@@ -33,6 +33,13 @@ import { formatToolCall } from "./tool-presenter.js"
 import { sessionEventsPath } from "./transcript-writer.js"
 import { claudeCodeProjectDir } from "./conversation-store.js"
 import type { ConversationCandidate } from "./conversation-store.js"
+import {
+  TranscriptTextBudget,
+  TranscriptTooLargeError,
+  type TranscriptTooLargeReason,
+} from "./transcript-text-budget.js"
+
+export { TranscriptTooLargeError, type TranscriptTooLargeReason } from "./transcript-text-budget.js"
 
 // ── Common model ──────────────────────────────────────────────────────
 
@@ -925,37 +932,6 @@ export interface DaemonEventsExportOptions {
   maxTextBytes?: number
 }
 
-/** Why {@link exportDaemonEventsSession} refused an oversized transcript. */
-export type TranscriptTooLargeReason = "file-size" | "text-size"
-
-/**
- * Thrown when a caller passes a ceiling in {@link DaemonEventsExportOptions}
- * and the transcript exceeds it. The brain reader catches this and turns it
- * into a durable "too-large" skip instead of materializing the transcript.
- * Explicit operator exports never pass ceilings, so this never reaches them.
- */
-export class TranscriptTooLargeError extends Error {
-  readonly reason: TranscriptTooLargeReason
-  readonly sizeBytes: number
-  readonly ceilingBytes: number
-
-  constructor(
-    reason: TranscriptTooLargeReason,
-    sizeBytes: number,
-    ceilingBytes: number,
-    sessionId: string,
-  ) {
-    super(
-      `daemon-events: transcript for session "${sessionId}" is too large ` +
-        `(${reason}: ${sizeBytes} bytes > ${ceilingBytes} byte ceiling)`,
-    )
-    this.name = "TranscriptTooLargeError"
-    this.reason = reason
-    this.sizeBytes = sizeBytes
-    this.ceilingBytes = ceilingBytes
-  }
-}
-
 export async function exportDaemonEventsSession(
   sessionId: string,
   desc?: SessionDescriptor,
@@ -1001,22 +977,8 @@ export async function exportDaemonEventsSession(
   // (text, reasoning, tool-call args, tool results). Checked as records are
   // parsed so an expansive small file aborts before it becomes a large
   // array — the file-size ceiling alone cannot see this.
-  let accumulatedTextBytes = 0
-  const accountText = (text: string | undefined): void => {
-    if (!text) return
-    accumulatedTextBytes += Buffer.byteLength(text, "utf8")
-    if (
-      opts?.maxTextBytes !== undefined &&
-      accumulatedTextBytes > opts.maxTextBytes
-    ) {
-      throw new TranscriptTooLargeError(
-        "text-size",
-        accumulatedTextBytes,
-        opts.maxTextBytes,
-        sessionId,
-      )
-    }
-  }
+  const textBudget = new TranscriptTextBudget(opts?.maxTextBytes, sessionId)
+  const accountText = (text: string | undefined): void => textBudget.add(text)
   const toolNameById = new Map<string, string>()
   let toolCallCount = 0
   let lastUsage: { size?: number; used?: number; cost?: { amount: number; currency: string } } | undefined

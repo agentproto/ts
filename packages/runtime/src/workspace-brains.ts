@@ -41,6 +41,7 @@ import {
 import { CONVERSATION_STORES } from "./conversation-store.js"
 import { resolveBrainIngestLimits, type BrainIngestLimits } from "./brain-ingest-limits.js"
 import { exportDaemonEventsSession, TranscriptTooLargeError } from "./transcript-export.js"
+import { measureMessageTextBytes } from "./transcript-text-budget.js"
 import {
   BUCKETS_ROOT,
   listBuckets,
@@ -98,7 +99,7 @@ export async function readSessionForBrainWithLimits(
           // only the text ceiling applies: the read already happened, but a
           // transcript this large must not reach the chunking/ingest stage.
           if (limits) {
-            const textBytes = exportedTextBytes(exported)
+            const textBytes = measureMessageTextBytes(exported.messages)
             if (textBytes > limits.maxTranscriptTextBytes) {
               return {
                 skippedReason: "too-large",
@@ -137,20 +138,6 @@ export async function readSessionForBrainWithLimits(
     }
     return null
   }
-}
-
-/** Sum the text bytes an already-exported session would retain. Mirrors the
- *  daemon-events exporter's accounting: text, reasoning, and tool-call args. */
-function exportedTextBytes(session: ExportedSessionLike): number {
-  let total = 0
-  for (const message of session.messages) {
-    if (message.text) total += Buffer.byteLength(message.text, "utf8")
-    if (message.reasoning) total += Buffer.byteLength(message.reasoning, "utf8")
-    for (const call of message.toolCalls ?? []) {
-      total += Buffer.byteLength(call.args, "utf8")
-    }
-  }
-  return total
 }
 
 export interface CreateWorkspaceBrainsOptions {
