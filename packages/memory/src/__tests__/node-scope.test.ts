@@ -302,4 +302,22 @@ describe("promotion (rule 34)", () => {
     )
     expect(next.next.item.tags).toEqual(["project:acme", `node:${SIMONE}`])
   })
+
+  it("holds a supersede that moves the node anchor to the same re-tag-only rule", async () => {
+    const written = await store.write(doc(), { mode: "commit", scope: SIMONE_SESSION })
+    const rejected = await rejection(
+      store.supersede(
+        written.item.id as string,
+        doc({ id: "replacement", slug: "cite-sources-2", tags: ["project:other", `node:${ROOT}`] }),
+        { scope: SIMONE_SESSION, ifRevision: written.revision },
+      ),
+    )
+    expect(rejected).toBeInstanceOf(MemoryValidationError)
+    const moved = await store.supersede(
+      written.item.id as string,
+      doc({ id: "replacement", slug: "cite-sources-2", tags: ["project:acme", `node:${ROOT}`] }),
+      { scope: SIMONE_SESSION, ifRevision: written.revision },
+    )
+    expect(moved.next.item.tags).toContain(`node:${ROOT}`)
+  })
 })

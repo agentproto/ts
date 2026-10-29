@@ -319,7 +319,8 @@ export class FilesMemoryStore implements MemoryStore {
         declaresTrees: this.#declaresTrees && !existing,
       }),
     )
-    if (existing && opts.scope) assertRetagOnly(existing.record.item, doc)
+    const replaced = existing?.record.item ?? superseded
+    if (replaced && opts.scope) assertRetagOnly(replaced, doc)
     const now = this.#now().toISOString()
     let next: MemoryDocument
 

@@ -167,6 +167,7 @@ export async function selectMemoryItems(
     operatorGrants?: readonly string[]
   },
 ): Promise<MemoryDocument[]> {
+  // No scope is a session with no node scope (section 10): node-anchored items are out. The store reads no scope as a host call instead.
   const scope: MemoryScope = opts.scope ?? { nodes: [] }
   const sessionTags = new Set(sessionAnchorTags(opts.anchors))
   const sessionAnchor = opts.anchors.session ? `session:${opts.anchors.session}` : undefined
