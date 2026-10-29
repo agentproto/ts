@@ -26,7 +26,7 @@ runtime that loads, runs, and projects them into any host (CLI, HTTP, MCP,
 Mastra, Vercel AI SDK). Files with contracts is what lets any runtime load
 them — and lets agents read, write, and improve their own components.
 
-> **Status: 1.10.0.** APIs are stabilising; expect minor breaking changes
+> **Status: 1.31.0.** APIs are stabilising; expect minor breaking changes
 > between releases.
 
 ## Quick start
@@ -67,7 +67,7 @@ This repo ships two very different things under one name:
   in-process, Mastra Agent, OpenClaw, browser-as-agent, Antigravity, pi), durable policy gates,
   nested orchestration with role gating, fan-in monitoring, workflows/cron,
   and an MCP surface (~175 tools) on the daemon itself.
-- **Tier 2 — the wider AIP spec family:** ~52 numbered specs live in
+- **Tier 2 — the wider AIP spec family:** 72 numbered specs live in
   [agentproto/agentproto](https://github.com/agentproto/agentproto). Most
   reference-implementation packages beyond Tier 1 are `0.1.0-alpha`
   scaffolding — real schemas, real intent, not yet operational software.
