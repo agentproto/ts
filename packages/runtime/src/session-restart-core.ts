@@ -1039,12 +1039,54 @@ export async function restartAgentSession(
   prev: SessionDescriptor,
   opts: RestartAgentSessionOptions = {},
 ): Promise<RestartAgentSessionResult> {
-  const rollbackScopes = registry.reinstateOrchestratorScopes?.(prev.id)
+  return withReinstatedOrchestratorScopes(registry, prev.id, () =>
+    restartAgentSessionOnce(registry, resolveAgentAdapter, prev, opts),
+  )
+}
+
+/**
+ * Run a revival of `prevId` (a restart, a sandbox migration) with the
+ * orchestrator scopes `prevId` lost on a real exit reinstated first, so the
+ * successor's adapter can dial its `/mcp/orchestrator?scope=<token>` mount.
+ * When `run` throws, the reinstated scopes are revoked again unless a
+ * successor already took them over: a failed revival leaves the scope as it
+ * found it, owned by `prevId`. A no-op for a live `prevId` (nothing revoked)
+ * or a registry without the scope hooks.
+ */
+export async function withReinstatedOrchestratorScopes<T>(
+  registry: Pick<SessionsRegistry, "reinstateOrchestratorScopes">,
+  prevId: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  const rollbackScopes = registry.reinstateOrchestratorScopes?.(prevId)
   try {
-    return await restartAgentSessionOnce(registry, resolveAgentAdapter, prev, opts)
+    return await run()
   } catch (err) {
     rollbackScopes?.()
     throw err
+  }
+}
+
+/**
+ * Hand every orchestrator scope `prevId` owns to its successor `nextId`:
+ * same token and parameters, owner moved, so `prevId`'s own exit no longer
+ * revokes the scope the successor carries (nor reaps its children) and the
+ * successor's real exit does. Run BEFORE `prevId` is closed. Best-effort,
+ * like the lineage handover it pairs with.
+ */
+export function handOverOrchestratorScopes(
+  registry: Pick<SessionsRegistry, "transferOrchestratorScopes">,
+  prevId: string,
+  nextId: string,
+): void {
+  if (prevId === nextId) return
+  try {
+    registry.transferOrchestratorScopes?.(prevId, nextId)
+  } catch (err) {
+    console.warn(
+      `orchestrator scope hand-over from ${prevId} to ${nextId} failed: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
   }
 }
 
@@ -1061,8 +1103,8 @@ export async function restartAgentSession(
  */
 function handOverToRestartedRow(registry: SessionsRegistry, prevId: string, nextId: string): void {
   if (prevId === nextId) return
+  handOverOrchestratorScopes(registry, prevId, nextId)
   try {
-    registry.transferOrchestratorScopes?.(prevId, nextId)
     handoverLineage({ registry, from: prevId, to: nextId, reason: "restart", actor: "daemon" })
   } catch (err) {
     console.warn(
