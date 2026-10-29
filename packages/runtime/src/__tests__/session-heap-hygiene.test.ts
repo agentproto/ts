@@ -6,7 +6,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createServer } from "node:http"
 import type { AddressInfo } from "node:net"
 import { tmpdir } from "node:os"
@@ -17,6 +17,7 @@ import { createMcpServer } from "@agentproto/mcp-server"
 
 import { registerAgentTools } from "../agent-tools.js"
 import { registerSessionTools } from "../session-tools.js"
+import { terminalLogPath } from "../terminal-transcript-writer.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
 import {
   createSessionsRegistry,
@@ -305,9 +306,8 @@ describe("output rings of a finished session", () => {
       })
       feed?.("hello from pty\nFINAL PTY LINE\n")
       exit?.({ exitCode: 0 })
-      // Let the writer flush terminal.jsonl before reading it back.
-      await new Promise(r => setTimeout(r, 50))
-
+      // Read IMMEDIATELY: the async terminal.jsonl flush must not be on the
+      // critical path. The retained capped ring is what answers here.
       const harness = await buildTerminalToolHarness(registry)
       try {
         const result = await harness.client.callTool({
@@ -402,6 +402,45 @@ describe("output rings of a finished session", () => {
       const tail = registry.readOutputTail(desc.id, 10).join("\n")
       expect(tail).toContain("FINAL RESULT")
       expect(tail).not.toContain("LATE AFTER KILL")
+    } finally {
+      registry.shutdown()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("never reads terminal.jsonl for a LIVE PTY with an empty ring", () => {
+    const dir = mkdtempSync(join(tmpdir(), "e91-pty-live-"))
+    const transcriptDir = join(dir, "sessions")
+    const registry = createSessionsRegistry({
+      persist: false,
+      transcriptDir,
+      spawnPty: () => ({
+        pid: process.pid,
+        write() {},
+        resize() {},
+        kill() {},
+        onData() {},
+        onExit() {},
+      }),
+    })
+    try {
+      const desc = registry.spawnPty({
+        workspaceSlug: "default",
+        cwd: dir,
+        argv: ["bash"],
+        cols: 80,
+        rows: 24,
+      })
+      // A stale durable log must never leak into a live row's empty ring.
+      mkdirSync(join(transcriptDir, desc.id), { recursive: true })
+      writeFileSync(
+        terminalLogPath(desc.id, transcriptDir),
+        `${JSON.stringify({
+          ts: new Date().toISOString(),
+          bytes: Buffer.from("STALE DISK SCROLLBACK").toString("base64"),
+        })}\n`,
+      )
+      expect(registry.readTerminalOutput(desc.id)?.toString("utf8")).toBe("")
     } finally {
       registry.shutdown()
       rmSync(dir, { recursive: true, force: true })

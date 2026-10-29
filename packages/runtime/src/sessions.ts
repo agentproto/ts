@@ -7142,8 +7142,15 @@ export function createSessionsRegistry(opts?: {
     if (rt.lastAssistantText !== undefined) rt.finalOutputText = rt.lastAssistantText
     rt.recentLines.length = 0
     rt.recentLinesChars = 0
-    rt.recentBytes.length = 0
-    rt.recentBytesSize = 0
+    // Keep a PTY's byte ring: it is already capped at 64 KiB, and it is the
+    // scrollback `terminal_output` / `/preview` must serve the instant the
+    // process exits. The durable `terminal.jsonl` write is asynchronous, so
+    // clearing the ring here would race that flush and briefly answer with
+    // zero bytes. Agent-cli rows drop their byte buffer as before.
+    if (!rt.pty) {
+      rt.recentBytes.length = 0
+      rt.recentBytesSize = 0
+    }
     rt.textBuf = ""
     rt.thoughtBuf = ""
     // A dead PTY has no transcript left to discover — stop its link probe.
@@ -14394,10 +14401,12 @@ export function createSessionsRegistry(opts?: {
         const joined = Buffer.concat(rt.recentBytes, rt.recentBytesSize)
         return joined.byteLength > cap ? joined.subarray(joined.byteLength - cap) : joined
       }
-      // The ring is empty. For a live row that just means no output yet; for
-      // a terminal row `emitExited` cleared it after capturing the final text,
-      // so read the durable `terminal.jsonl` copy instead of returning zero
-      // bytes (post-exit `terminal_output` / `/preview` stay readable).
+      // The ring is empty. A LIVE row simply has no output yet: never read
+      // disk for it, or stale scrollback from an earlier run would surface.
+      // A terminal row falls back to the durable `terminal.jsonl` copy.
+      if (rt.desc.status === "running" || rt.desc.status === "starting") {
+        return Buffer.alloc(0)
+      }
       return readTerminalLogTail(rt.desc.id, cap, transcriptBaseDir)
     },
     readOutputTail(id, lastN) {
