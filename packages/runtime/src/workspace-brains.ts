@@ -26,6 +26,7 @@ import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   createBrainManager,
+  isSkippedTranscript,
   parseKnowledgeConfig,
   type BrainManager,
   type ExportedSessionLike,
@@ -60,15 +61,24 @@ export interface WorkspaceBrains {
 
 /** Resolve a session id to its exported transcript, native first then daemon
  *  events — `null` (never throws) when neither store has anything readable.
- *
- *  `limits` bound what this reader will materialize for the brain. An
- *  oversized transcript resolves to a `SkippedTranscript` result instead of
- *  throwing or loading; the ingest pipeline records it as a durable skip.
- *  Explicit operator exports never go through this function, so they keep
- *  their uncapped behavior. */
+ *  This is the uncapped, public operator-facing reader; the brain uses
+ *  {@link readSessionForBrainWithLimits} so it never materializes an
+ *  oversized transcript. */
 export async function readSessionForBrain(
   sessionId: string,
-  limits: BrainIngestLimits = resolveBrainIngestLimits(),
+): Promise<ExportedSessionLike | null> {
+  const result = await readSessionForBrainWithLimits(sessionId)
+  return result && !isSkippedTranscript(result) ? result : null
+}
+
+/** Internal brain reader: same ladder as {@link readSessionForBrain}, with
+ *  optional ingest ceilings. An oversized transcript resolves to a
+ *  `SkippedTranscript` result instead of throwing or loading; the ingest
+ *  pipeline records it as a durable skip. Explicit operator exports never go
+ *  through this function, so they keep their uncapped behavior. */
+export async function readSessionForBrainWithLimits(
+  sessionId: string,
+  limits?: BrainIngestLimits,
 ): Promise<SessionReadResult> {
   const located = await locateConversationBySessionId(
     BUCKETS_ROOT(),
@@ -87,12 +97,14 @@ export async function readSessionForBrain(
           // The native store has no file path with a predictable size, so
           // only the text ceiling applies: the read already happened, but a
           // transcript this large must not reach the chunking/ingest stage.
-          const textBytes = exportedTextBytes(exported)
-          if (textBytes > limits.maxTranscriptTextBytes) {
-            return {
-              skippedReason: "too-large",
-              skippedSizeBytes: textBytes,
-              skippedCeilingBytes: limits.maxTranscriptTextBytes,
+          if (limits) {
+            const textBytes = exportedTextBytes(exported)
+            if (textBytes > limits.maxTranscriptTextBytes) {
+              return {
+                skippedReason: "too-large",
+                skippedSizeBytes: textBytes,
+                skippedCeilingBytes: limits.maxTranscriptTextBytes,
+              }
             }
           }
           return exported
@@ -104,10 +116,17 @@ export async function readSessionForBrain(
   }
 
   try {
-    return await exportDaemonEventsSession(record.sessionId, undefined, undefined, {
-      maxFileBytes: limits.maxTranscriptBytes,
-      maxTextBytes: limits.maxTranscriptTextBytes,
-    })
+    return await exportDaemonEventsSession(
+      record.sessionId,
+      undefined,
+      undefined,
+      limits
+        ? {
+            maxFileBytes: limits.maxTranscriptBytes,
+            maxTextBytes: limits.maxTranscriptTextBytes,
+          }
+        : undefined,
+    )
   } catch (err) {
     if (err instanceof TranscriptTooLargeError) {
       return {
@@ -120,11 +139,16 @@ export async function readSessionForBrain(
   }
 }
 
-/** Sum the text bytes an already-exported session would retain. */
+/** Sum the text bytes an already-exported session would retain. Mirrors the
+ *  daemon-events exporter's accounting: text, reasoning, and tool-call args. */
 function exportedTextBytes(session: ExportedSessionLike): number {
   let total = 0
   for (const message of session.messages) {
     if (message.text) total += Buffer.byteLength(message.text, "utf8")
+    if (message.reasoning) total += Buffer.byteLength(message.reasoning, "utf8")
+    for (const call of message.toolCalls ?? []) {
+      total += Buffer.byteLength(call.args, "utf8")
+    }
   }
   return total
 }
@@ -154,7 +178,7 @@ export function createWorkspaceBrains(
         brain = createBrainManager({
           workspace: slug,
           brainDir,
-          readSession: ref => readSessionForBrain(ref, limits),
+          readSession: ref => readSessionForBrainWithLimits(ref, limits),
           listSessionRefs: async () =>
             (await readConversationIndex(BUCKETS_ROOT(), slug)).map(r => r.sessionId),
           // Optional per-workspace knowledge.json — the brain defaults to a

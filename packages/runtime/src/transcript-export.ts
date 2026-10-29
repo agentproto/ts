@@ -1261,7 +1261,6 @@ export async function exportDaemonEventsSession(
         messages.push({ role: "system", text: errorText, ...seqStamp })
         break
       }
-        break
       case "turn-end":
         flushAssistant()
         break

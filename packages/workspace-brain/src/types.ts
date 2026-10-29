@@ -20,8 +20,13 @@ export interface ExportedSessionLike {
   readonly messages: ReadonlyArray<{
     readonly role: string
     readonly text?: string
+    readonly reasoning?: string
     readonly ts?: number
     readonly toolName?: string
+    readonly toolCalls?: ReadonlyArray<{
+      readonly name: string
+      readonly args: string
+    }>
   }>
 }
 

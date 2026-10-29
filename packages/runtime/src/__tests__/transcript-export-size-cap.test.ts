@@ -2,16 +2,22 @@
  * Size ceilings on the brain's transcript reader.
  *
  * In-process, temp dirs only: `exportDaemonEventsSession` is driven against a
- * hand-written `events.jsonl`, and `readSessionForBrain` against an isolated
- * `$HOME` bucket. No daemon, no real session.
+ * hand-written `events.jsonl`, and `readSessionForBrainWithLimits` against an
+ * isolated `$HOME` bucket. No daemon, no real session.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import {
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  resolveBrainIngestLimits,
+} from "../brain-ingest-limits.js"
+import { CONVERSATION_STORES, type ConversationStore } from "../conversation-store.js"
 import { exportDaemonEventsSession } from "../transcript-export.js"
-import { readSessionForBrain } from "../workspace-brains.js"
+import { readSessionForBrainWithLimits } from "../workspace-brains.js"
 
 const SESSION_ID = "sess_size_cap"
 
@@ -120,7 +126,36 @@ describe("exportDaemonEventsSession size ceilings", () => {
   })
 })
 
-describe("readSessionForBrain size ceiling", () => {
+describe("resolveBrainIngestLimits", () => {
+  it("falls back per field on non-positive or non-finite values", () => {
+    expect(
+      resolveBrainIngestLimits({
+        maxTranscriptBytes: 0,
+        maxTranscriptTextBytes: Number.POSITIVE_INFINITY,
+      }),
+    ).toEqual({
+      maxTranscriptBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+      maxTranscriptTextBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+    })
+    expect(
+      resolveBrainIngestLimits({
+        maxTranscriptBytes: -1,
+        maxTranscriptTextBytes: Number.NaN,
+      }),
+    ).toEqual({
+      maxTranscriptBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+      maxTranscriptTextBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+    })
+    expect(
+      resolveBrainIngestLimits({
+        maxTranscriptBytes: 123,
+        maxTranscriptTextBytes: 456,
+      }),
+    ).toEqual({ maxTranscriptBytes: 123, maxTranscriptTextBytes: 456 })
+  })
+})
+
+describe("readSessionForBrainWithLimits size ceiling", () => {
   let home: string
   let previousHome: string | undefined
 
@@ -160,7 +195,7 @@ describe("readSessionForBrain size ceiling", () => {
       { kind: "turn-end", ts: "2026-01-01T00:00:02Z" },
     ])
 
-    const result = await readSessionForBrain(SESSION_ID, {
+    const result = await readSessionForBrainWithLimits(SESSION_ID, {
       maxTranscriptBytes: 100,
       maxTranscriptTextBytes: 1024 * 1024,
     })
@@ -172,5 +207,59 @@ describe("readSessionForBrain size ceiling", () => {
     })
     expect((result as { skippedSizeBytes: number }).skippedSizeBytes).toBeGreaterThan(100)
     expect("messages" in (result as object)).toBe(false)
+  })
+
+  it("counts native-store reasoning and tool-call args toward the text ceiling", async () => {
+    const bucket = join(home, ".agentproto", "workspaces", "default")
+    writeFileSync(
+      join(bucket, "conversations.jsonl"),
+      JSON.stringify({
+        sessionId: SESSION_ID,
+        workspace: "default",
+        cwd: "/tmp",
+        adapterSlug: "native-size-test",
+        adapterSessionId: "adapter-1",
+        agentprotoTranscript: "",
+        startedAt: "2026-01-01T00:00:00Z",
+      }) + "\n",
+      "utf8",
+    )
+    const store = {
+      storeAs: "claudeResumeId",
+      discover: async () => [],
+      read: async () => ({
+        meta: {},
+        messages: [
+          {
+            role: "assistant",
+            text: "small",
+            reasoning: "r".repeat(2_000),
+          },
+          {
+            role: "assistant",
+            toolCalls: [{ name: "bash", args: "a".repeat(2_000) }],
+          },
+        ],
+      }),
+    } as unknown as ConversationStore
+    CONVERSATION_STORES["native-size-test"] = store
+
+    try {
+      const result = await readSessionForBrainWithLimits(SESSION_ID, {
+        maxTranscriptBytes: 1024 * 1024,
+        maxTranscriptTextBytes: 3_000,
+      })
+
+      expect(result).toEqual({
+        skippedReason: "too-large",
+        skippedSizeBytes: expect.any(Number),
+        skippedCeilingBytes: 3_000,
+      })
+      expect((result as { skippedSizeBytes: number }).skippedSizeBytes).toBeGreaterThan(
+        3_000,
+      )
+    } finally {
+      delete CONVERSATION_STORES["native-size-test"]
+    }
   })
 })
