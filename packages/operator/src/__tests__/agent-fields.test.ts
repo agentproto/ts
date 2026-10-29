@@ -74,4 +74,18 @@ describe("an operator carries the AGENT fields by reference (C2)", () => {
     })
     expect(parsed.success).toBe(true)
   })
+
+  it("holds the widened list items to a real shape, not z.any()", () => {
+    const parse = (extra: Record<string, unknown>) =>
+      operatorManifestFrontmatterSchema.safeParse({
+        id: "lex",
+        name: "Lex",
+        persona_summary: "Researcher.",
+        ...extra,
+      })
+    expect(parse({ tools: [{ kind: "mcp" }] }).success).toBe(false)
+    expect(parse({ tools: [{ id: 3 }] }).success).toBe(false)
+    expect(parse({ skills: [{ id: "NOT A SLUG" }] }).success).toBe(false)
+    expect(parse({ tools: [{ id: "search", source: "x" }] }).success).toBe(true)
+  })
 })

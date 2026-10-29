@@ -29,19 +29,22 @@ const LEGACY_AUTONOMY = { gated: 0, supervised: 5, autonomous: 10 } as const
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v)
 
-/** A memory object in the deprecated `{kind, policy, share_with, external}` form. */
+/**
+ * A memory object in the deprecated `{kind, policy, share_with, external}` form.
+ * Only the legacy-only keys discriminate, so an AGENT-form object that happens
+ * to carry a `policy` key is not misclassified.
+ */
 export function isLegacyMemory(v: unknown): v is LegacyMemory {
-  return (
-    isRecord(v) &&
-    ("kind" in v || "policy" in v || "share_with" in v || "external" in v)
-  )
+  return isRecord(v) && ("kind" in v || "share_with" in v || "external" in v)
 }
 
-/** A governance object in the deprecated inline `{policies, audit_log, autonomy}` form. */
+/**
+ * A governance object in the deprecated inline `{policies, audit_log, autonomy}`
+ * form. Only the legacy-only keys discriminate, so an AGENT-form object that
+ * happens to carry a `policies` key is not misclassified.
+ */
 export function isLegacyGovernance(v: unknown): v is LegacyGovernance {
-  return (
-    isRecord(v) && ("audit_log" in v || "autonomy" in v || "policies" in v)
-  )
+  return isRecord(v) && ("audit_log" in v || "autonomy" in v)
 }
 
 function deepFreeze<T>(value: T): T {
@@ -195,19 +198,21 @@ function validateDefinition(def: OperatorDefinition): void {
   }
 
   // A gated operator (autonomy 0, or the deprecated governance.autonomy 'gated')
-  // is never proactive. The default participation mode is mention-only.
+  // is never proactive. The default participation mode is mention-only. Resolve
+  // autonomy first so an explicit value overrides the deprecated one, matching
+  // what buildHandle puts on the handle.
   const mode = def.participation?.mode ?? "mention-only"
   if (mode !== "mention-only" && mode !== "silent") {
-    if (isLegacyGovernance(def.governance) && def.governance.autonomy === "gated") {
+    const legacyAutonomy = isLegacyGovernance(def.governance)
+      ? LEGACY_AUTONOMY[def.governance.autonomy]
+      : undefined
+    const effectiveAutonomy = def.autonomy ?? legacyAutonomy
+    if (effectiveAutonomy === 0) {
       fail(
         def,
-        `governance.autonomy='gated' forbids participation.mode='${mode}' (must be 'mention-only' or 'silent')`,
-      )
-    }
-    if (def.autonomy === 0) {
-      fail(
-        def,
-        `autonomy=0 forbids participation.mode='${mode}' (must be 'mention-only' or 'silent')`,
+        def.autonomy === 0
+          ? `autonomy=0 forbids participation.mode='${mode}' (must be 'mention-only' or 'silent')`
+          : `governance.autonomy='gated' forbids participation.mode='${mode}' (must be 'mention-only' or 'silent')`,
       )
     }
   }
@@ -262,7 +267,7 @@ function buildHandle(
   if (legacyGovernance) {
     deprecated(
       "governance",
-      "the inline governance object is deprecated: policies go to policy, autonomy to autonomy",
+      "the inline governance object is deprecated: autonomy is read as autonomy; policies and audit_log remain only in legacy",
     )
     autonomy ??= LEGACY_AUTONOMY[legacyGovernance.autonomy]
   }

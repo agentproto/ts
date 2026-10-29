@@ -1,7 +1,11 @@
 /**
  * AIP-9 OperatorDefinition + OperatorHandle.
  *
- * Mirrors `OPERATOR.schema.json` (resources/aip-9/draft/). The AGENT fields
+ * This is the merged AIP-9 shape. The vendored `OPERATOR.schema.json`
+ * (resources/aip-9/draft/) lags it: the draft still requires `version`/`profile`
+ * and carries no `role`, `home`, `reports_to` or AGENT fields, so JSON-Schema
+ * consumers of OPERATOR.md should not validate against the stale draft until it
+ * is re-vendored. The AGENT fields
  * (model, identity, persona, runner, tools, skills, memory, policy, autonomy,
  * boundaries, ...) are taken from `@agentproto/agent` by reference and never
  * copied: the operator only adds what an organization contributes (role, home,

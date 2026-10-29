@@ -7,11 +7,15 @@
  * (cross-field rules, ref shapes, length caps) run uniformly with the
  * TS authoring path.
  *
- * The frontmatter schema mirrors `OPERATOR.schema.json`
- * (resources/aip-9/draft/). AIP-9 forbids `additionalProperties` at the
- * top level and in every operator-owned object, so those are strict. The
- * AGENT fields are NOT redeclared: each one is taken from
- * `agentFrontmatterSchema.shape` so a tightening of AIP-42 reaches the
+ * The frontmatter schema tracks the merged AIP-9 shape, which the vendored
+ * `OPERATOR.schema.json` (resources/aip-9/draft/) lags: the draft still
+ * requires `version`/`profile` and carries no `role`, `home`, `reports_to` or
+ * AGENT fields. Until it is re-vendored, this schema (and the TS
+ * `OperatorDefinition`) is the source of truth for OPERATOR.md; do not validate
+ * a merged-shape OPERATOR.md against the stale draft. AIP-9 forbids
+ * `additionalProperties` at the top level and in every operator-owned object,
+ * so those are strict. The AGENT fields are NOT redeclared: each one is taken
+ * from `agentFrontmatterSchema.shape` so a tightening of AIP-42 reaches the
  * operator with no edit here.
  */
 
@@ -137,7 +141,7 @@ const roleSchema = z.union([
   z
     .object({
       ref: z.string().min(1),
-      bind: z.record(z.string(), z.union([mcpToolRefSchema, anyRefSchema, agentShape.tools.unwrap().element])).optional(),
+      bind: z.record(z.string(), z.union([mcpToolRefSchema, anyRefSchema])).optional(),
       with: z
         .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
         .optional(),
@@ -183,16 +187,19 @@ export const operatorManifestFrontmatterSchema = z
     tags: z.array(z.string().regex(KEBAB)).optional(),
     metadata: agentField("metadata"),
 
-    // AGENT item shapes widened by what an operator also accepts.
+    // AGENT item shapes widened by what an operator also accepts. The specific
+    // deprecated/mcp shapes are tried first; the AGENT item shape is the
+    // AIP-42 `anyRef` (string or `{ref|file|inline}`), not `z.any()`, so an
+    // invalid item is rejected instead of swallowed by the last union member.
     skills: z
-      .array(z.union([legacySkillRefSchema, agentShape.skills.unwrap().element]))
+      .array(z.union([legacySkillRefSchema, anyRefSchema]))
       .optional(),
     tools: z
       .array(
         z.union([
           mcpToolRefSchema,
           legacyScopedToolRefSchema,
-          agentShape.tools.unwrap().element,
+          anyRefSchema,
         ]),
       )
       .optional(),

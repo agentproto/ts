@@ -1,5 +1,5 @@
 ---
-"@agentproto/operator": minor
+"@agentproto/operator": major
 "@agentproto/role": minor
 ---
 

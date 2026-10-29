@@ -163,6 +163,48 @@ describe("defineOperator: deprecated forms are accepted and warned about", () =>
     })
     expect(fields(op)).toEqual(["runtime.session"])
   })
+
+  it("keeps legacy governance policies and audit_log in legacy and says so", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      governance: {
+        policies: ["policy:guard"],
+        audit_log: "audit:lex",
+        autonomy: "supervised",
+      },
+    })
+    expect(op.policy).toBeUndefined()
+    expect(op.governance).toBeUndefined()
+    expect(op.legacy?.governance).toEqual({
+      policies: ["policy:guard"],
+      audit_log: "audit:lex",
+      autonomy: "supervised",
+    })
+    const warning = op.warnings.find(
+      (w) => w.code === "operator_field_deprecated" && w.field === "governance",
+    )
+    expect(warning?.message).toMatch(/remain only in legacy/)
+  })
+
+  it("does not mistake an AGENT-form memory with a policy key for the legacy form", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      memory: { policy: "custom" } as never,
+    })
+    expect(op.memory).toEqual({ policy: "custom" })
+    expect(op.legacy).toBeUndefined()
+    expect(fields(op)).toEqual([])
+  })
+
+  it("does not mistake an AGENT-form governance with a policies key for the legacy form", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      governance: { policies: ["policy:guard"] } as never,
+    })
+    expect(op.governance).toEqual({ policies: ["policy:guard"] })
+    expect(op.legacy).toBeUndefined()
+    expect(fields(op)).toEqual([])
+  })
 })
 
 describe("defineOperator — id pattern (slug-style, no dots/underscores)", () => {
@@ -276,6 +318,17 @@ describe("defineOperator — spec-9 cross-field invariants", () => {
       participation: { mode: "silent" },
     })
     expect(op2.participation?.mode).toBe("silent")
+  })
+
+  it("validates the resolved autonomy, so an explicit value overrides a legacy 'gated'", () => {
+    const op = defineOperator({
+      ...MINIMAL,
+      autonomy: 7,
+      governance: { audit_log: "audit:lex", autonomy: "gated" },
+      participation: { mode: "proactive" },
+    })
+    expect(op.autonomy).toBe(7)
+    expect(op.participation?.mode).toBe("proactive")
   })
 })
 
