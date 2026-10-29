@@ -50,7 +50,7 @@ export type IdentityDefinition = {
    */
   governance?: string
   /**
-   * OPTIONAL — AIP-20 work tracker the identity participates in (an operator's task queue, a company's program plan).
+   * OPTIONAL — AIP-20 work tracker the identity participates in (an operator's task queue, a company's program plan). The ref names the node's WORK.md through the workspace node's work binding (same form as the AIP-22 OFFICE.schema.json work field).
    */
   work?: string
   /**
