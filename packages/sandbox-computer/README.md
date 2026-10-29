@@ -61,7 +61,7 @@ The template must provide these basics for an agentproto session:
 | --- | --- |
 | `gh` | GitHub CLI must be on `PATH`. Without it a boxed agent cannot open or inspect PRs. |
 | writable scratch dirs | `/tmp/opencode` and the other adapter temp dirs must be writable by the session user (uid 1000), not root-owned. |
-| Node heap | The provider now sets `NODE_OPTIONS=--max-old-space-size=8192` by default (an explicit `NODE_OPTIONS` in the spawn env wins). A 12 GB box otherwise OOMs a monorepo `pnpm install`/`build` at Node's default heap. |
+| Node heap | The provider sets `NODE_OPTIONS` from `config.memoryMiB`: 60% of the box's RAM clamped to 768–8192 MB (8192 MB when memory is unknown). A caller `NODE_OPTIONS` that already sets `--max-old-space-size` wins; otherwise the heap flag is appended. Without this a monorepo `pnpm install`/`build` can die at Node's default heap. |
 | base tools | `git`, `bash`, `curl` and a TLS trust store are assumed by the boot flow. |
 
 ### Recommended default egress

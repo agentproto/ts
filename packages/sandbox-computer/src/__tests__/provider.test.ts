@@ -90,7 +90,7 @@ describe("computerSandboxProvider.boot", () => {
       tenantId: "tenant-a",
       cpus: 4,
       memoryMiB: 8192,
-      env: { OPENROUTER_API_KEY: "sk-test", NODE_OPTIONS: "--max-old-space-size=8192" },
+      env: { OPENROUTER_API_KEY: "sk-test", NODE_OPTIONS: "--max-old-space-size=4915" },
     })
 
     // exec flow: health probe → CLI install → detached serve → wait-healthy
@@ -168,14 +168,14 @@ describe("computerSandboxProvider.boot", () => {
     expect(controller.createBodies[0]).not.toHaveProperty("egress")
   })
 
-  it("drops env vars the controller would reject and defaults the Node heap", async () => {
+  it("drops env vars the controller would reject and adds the box-sized Node heap", async () => {
     await computerSandboxProvider.boot(
       spec(controller.url),
       { env: { GOOD_VAR: "kept", "bad-key-!dropped": "x", lower_case: "dropped", multiline: "a\nb" } },
     )
     expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
       GOOD_VAR: "kept",
-      NODE_OPTIONS: "--max-old-space-size=8192",
+      NODE_OPTIONS: "--max-old-space-size=4915",
     })
   })
 
@@ -185,6 +185,29 @@ describe("computerSandboxProvider.boot", () => {
     })
     expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=2048",
+    })
+  })
+
+  it("sizes the Node heap to the box's memory", async () => {
+    await computerSandboxProvider.boot(spec(controller.url, { memoryMiB: 2048 }), { env: {} })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=1228",
+    })
+  })
+
+  it("appends the box heap to a caller NODE_OPTIONS without a heap flag", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), {
+      env: { NODE_OPTIONS: "--enable-source-maps" },
+    })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--enable-source-maps --max-old-space-size=4915",
+    })
+  })
+
+  it("treats an empty caller NODE_OPTIONS as absent", async () => {
+    await computerSandboxProvider.boot(spec(controller.url), { env: { NODE_OPTIONS: "" } })
+    expect((controller.createBodies[0] as { env: Record<string, string> }).env).toEqual({
+      NODE_OPTIONS: "--max-old-space-size=4915",
     })
   })
 

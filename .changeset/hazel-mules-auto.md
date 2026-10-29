@@ -1,5 +1,5 @@
 ---
-"@agentproto/sandbox-computer": minor
+"@agentproto/sandbox-computer": patch
 ---
 
-Default box NODE_OPTIONS heap to 8 GB and document template contract
+Size the box Node heap from its memory and document the template contract
