@@ -2021,6 +2021,7 @@ async function restartAgentSessionOnce(
         ? { parentSessionId: prev.parentSessionId, boxSessionId: restartedSessionId }
         : undefined,
     )
+    const agentStartStartedAt = Date.now()
     try {
       const remoteDesc = await host.start({
         adapter: adapterSlug,
@@ -2065,6 +2066,11 @@ async function restartAgentSessionOnce(
       if (boxResumeId && !boxResumed) resumeFallback = true
     } catch (err) {
       if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      console.warn(
+        `[sandbox] restart: agent_start failed (${host.sandboxId}, adapter ${adapterSlug}, ` +
+          `${Date.now() - agentStartStartedAt}ms): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
       await host.stop().catch(() => undefined)
       throw new SessionRestartError(
         "sandbox_box_start_failed",

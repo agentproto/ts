@@ -7249,6 +7249,7 @@ export async function bootSandboxAgentSession(opts: {
     if (remoteParent) revokeParentRelayGrant(remoteParent.token)
     return cancelBoot()
   }
+  const agentStartStartedAt = Date.now()
   try {
     const startArgs = {
       adapter: opts.adapter,
@@ -7318,6 +7319,13 @@ export async function bootSandboxAgentSession(opts: {
     // box (kill: it holds nothing of value) and mark the ledger so the
     // failure is never a silent orphan. AIP-36 shared-box: survivors keep
     // the box — detach only.
+    // Log the failure here: this path used to be invisible in daemon.log, so
+    // a cold-box timeout looked like a spawn that simply vanished (2026-10-29).
+    console.warn(
+      `[sandbox] boot: agent_start failed (${actualProvider} ${host.sandboxId}, ` +
+        `adapter ${opts.adapter}, ${Date.now() - agentStartStartedAt}ms): ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+    )
     // PARENT RELAY: the boot never completed, so the relay grant minted
     // above is dead on arrival - revoke it instead of leaving a live token
     // behind for a box session that will never exist.

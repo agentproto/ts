@@ -25,6 +25,17 @@ import type {
 export const DEFAULT_MCP_URL = "http://127.0.0.1:18790/mcp"
 
 /**
+ * Request timeout for `agent_start`. The MCP SDK default is 60s and the old
+ * 180s ceiling still cut off a COLD sandbox box whose own `agent_start`
+ * installs an adapter package and initialises its first session (2026-10-29:
+ * `MCP error -32001: Request timed out` while booting an opencode box with a
+ * long initial prompt). The host's box-boot deadline is 300s and the outer
+ * spawn budget is 15 min, so this ceiling is aligned with those instead of
+ * failing a live spawn early.
+ */
+export const AGENT_START_TIMEOUT_MS = 15 * 60_000
+
+/**
  * Resolve the daemon URL: explicit option → `AGENTPROTO_MCP_URL` → default.
  */
 export function resolveMcpUrl(opts?: ConnectHarnessOptions): string {
@@ -67,15 +78,15 @@ export class HarnessClient {
 
   /** Spawn a session via `agent_start`.
    *
-   *  Uses a 180s request timeout instead of the MCP SDK's 60s default: a
-   *  spawn on a COLD daemon (freshly booted sandbox box, first import of a
-   *  just-installed adapter package) legitimately exceeds 60s — observed
-   *  live against an e2b box, where the default timeout aborted an
-   *  otherwise-successful spawn (`MCP error -32001`). Failures still
-   *  surface immediately; the ceiling only bounds the wait. */
+   *  Uses {@link AGENT_START_TIMEOUT_MS} instead of the MCP SDK's 60s
+   *  default: a spawn on a COLD daemon (freshly booted sandbox box, first
+   *  import of a just-installed adapter package) legitimately exceeds 60s,
+   *  and a box that installs an adapter on start can exceed 180s too. The
+   *  ceiling only bounds the wait; a real rejection still surfaces
+   *  immediately. */
   async start(args: StartAgentArgs): Promise<SessionDescriptor> {
     return this.#call("agent_start", args as unknown as Record<string, unknown>, {
-      timeoutMs: 180_000,
+      timeoutMs: AGENT_START_TIMEOUT_MS,
     })
   }
 

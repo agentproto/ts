@@ -187,4 +187,28 @@ describe("spawnAgentSession — device spawn transport retry", () => {
     expect(result.code).toBe("sandbox_proxy_failed")
     expect(startMock).toHaveBeenCalledTimes(1)
   })
+
+  it("logs a daemon line naming the box, adapter and elapsed time when the box agent_start fails", async () => {
+    startMock.mockRejectedValue(new Error("MCP error -32001: Request timed out"))
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      const result = await spawnAgentSession(makeDeps(), {
+        adapter: "opencode-cli",
+        cwd: workspace,
+        sandbox: "fake",
+      })
+
+      expect(result.ok).toBe(false)
+      const line = warn.mock.calls.map(args => String(args[0])).find(text =>
+        text.includes("agent_start failed"),
+      )
+      expect(line).toBeDefined()
+      expect(line).toContain("sbx_fake_device_target")
+      expect(line).toContain("opencode-cli")
+      expect(line).toMatch(/\d+ms/)
+      expect(line).toContain("Request timed out")
+    } finally {
+      warn.mockRestore()
+    }
+  })
 })
