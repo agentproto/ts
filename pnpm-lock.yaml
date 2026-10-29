@@ -3185,6 +3185,21 @@ importers:
       '@agentproto/doctype':
         specifier: workspace:*
         version: link:../doctype
+      '@agentproto/identity':
+        specifier: workspace:*
+        version: link:../identity
+      '@agentproto/persona':
+        specifier: workspace:*
+        version: link:../persona
+      '@agentproto/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@agentproto/role':
+        specifier: workspace:*
+        version: link:../role
+      '@agentproto/skill':
+        specifier: workspace:*
+        version: link:../skill
       gray-matter:
         specifier: ^4.0.3
         version: 4.0.3

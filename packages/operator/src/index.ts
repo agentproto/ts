@@ -44,3 +44,18 @@ export type {
   SkillRef,
   ToolRef,
 } from "./types.js"
+
+export { resolveOperator } from "./resolve.js"
+export { toolDenyGrants } from "./resolve-tools.js"
+export { OperatorResolutionError, ROLE_CHAIN_MAX } from "./resolve-types.js"
+export type {
+  IdentityEntry,
+  OperatorEntry,
+  OperatorSources,
+  PersonaEntry,
+  ResolutionErrorCode,
+  ResolutionIssue,
+  ResolutionWarning,
+  ResolutionWarningCode,
+  ResolvedOperator,
+} from "./resolve-types.js"
