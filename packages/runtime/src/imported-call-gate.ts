@@ -27,12 +27,18 @@
  * that opted in. A call that names a session the daemon does not know is
  * refused before anything is dispatched, hooks or not; a call that names no
  * session is a host call and is dispatched with no headers.
+ *
+ * Deny grants (T3b): a caller whose descriptor carries `toolDenyGrants` (from
+ * its AGENT manifest's `tools` deny items) is refused a `<alias>/<tool>` they
+ * name, with a reason naming the tool and the grant, before hooks or the
+ * human hold. Deny-only: no grants, no evaluation.
  */
 
 import { callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import type { ProxyCallGuard } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
+import { toolDenyRefusal } from "./tool-deny-gate.js"
 
 export interface ImportedCallGuardOptions {
   registry: Pick<SessionsRegistry, "requestToolPermission" | "get">
@@ -52,6 +58,8 @@ export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCa
     const headers = callerHeaders(callerScope)
     const proceed = { allow: true as const, ...(headers ? { headers } : {}) }
     const caller = callerSessionId ? opts.registry.get(callerSessionId) : undefined
+    const refusal = toolDenyRefusal(caller?.toolDenyGrants, `${alias}/${toolName}`, callerSessionId)
+    if (refusal) return { allow: false, reason: `${refusal.reason}; nothing was sent.` }
     const rules = loadHooksConfig(caller?.cwd ?? opts.workspace)
     if (rules.length === 0) return proceed
 

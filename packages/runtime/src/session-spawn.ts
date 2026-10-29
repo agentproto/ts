@@ -360,6 +360,7 @@ import {
 } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import type { MemoryScope, MemoryStore } from "@agentproto/memory"
+import type { Grant } from "@agentproto/policy"
 import {
   memoryProjectionEnabled,
   memoryStoreAt as defaultMemoryStoreAt,
@@ -2974,6 +2975,7 @@ export async function spawnAgentSession(
   // spawn that didn't go through the agentId/agentPath branch.
   let callerAgentRoleHash: string | undefined
   let callerAgentToolsHash: string | undefined
+  let callerToolDenyGrants: Grant[] | undefined
   // The manifest's AIP-72 binding (`memory.enabled`/`store`/`anchors`), read
   // by the spawn digest below once the adapter is resolved.
   let callerAgentMemory: AgentMemoryBinding | undefined
@@ -3011,6 +3013,7 @@ export async function spawnAgentSession(
     const roleFingerprint = fingerprintAgentRole(d)
     callerAgentRoleHash = roleFingerprint.roleHash
     callerAgentToolsHash = roleFingerprint.toolsHash
+    callerToolDenyGrants = d.toolDenyGrants
     callerAgentMemory = d.memory
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
@@ -5152,6 +5155,7 @@ export async function spawnAgentSession(
         id: mintedSessionId,
         ...(recordedOperator ? { operator: recordedOperator } : {}),
         ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
         ...resumeLineageFields,
         onCancel: () => provisionAbort.abort(),
         workspaceSlug: resolvedSlug,
@@ -5501,6 +5505,7 @@ export async function spawnAgentSession(
         id: mintedSessionId,
         ...(recordedOperator ? { operator: recordedOperator } : {}),
         ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+        ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
         workspaceSlug: resolvedSlug,
         cwd,
         adapterSlug: input.adapter,
@@ -5744,6 +5749,7 @@ export async function spawnAgentSession(
       id: mintedSessionId,
       ...(recordedOperator ? { operator: recordedOperator } : {}),
       ...(recordedOperator && recordedOperatorDigest ? { operatorDigest: recordedOperatorDigest } : {}),
+      ...(callerToolDenyGrants ? { toolDenyGrants: callerToolDenyGrants } : {}),
       ...resumeLineageFields,
       workspaceSlug: resolvedSlug,
       cwd,

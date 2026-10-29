@@ -63,6 +63,7 @@ const fakeRegistry = {
   markRetired: vi.fn(),
   setPromptPolicy: vi.fn(),
   setOperator: vi.fn(),
+  setToolDenyGrants: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
 const wireMarkRetired = (): void => {
@@ -83,6 +84,7 @@ describe("continueAgentSessionFresh", () => {
     fakeRegistry.get = vi.fn()
     fakeRegistry.setPromptPolicy = vi.fn()
     fakeRegistry.setOperator = vi.fn()
+    fakeRegistry.setToolDenyGrants = vi.fn()
     wireMarkRetired()
   })
 
@@ -319,6 +321,42 @@ describe("continueAgentSessionFresh", () => {
     const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
     expect(input.operator).toBeUndefined()
     expect(input.operatorDigest).toBeUndefined()
+  })
+
+  it("copies toolDenyGrants from the source row onto the fresh session, never from the request", async () => {
+    const grants = [
+      { principal: "*", effect: "deny", actions: [{ action: "tool:invoke", scope: "agentproto/cron_create" }] },
+    ]
+    const prev = { ...makePrev(), toolDenyGrants: grants } as unknown as SessionDescriptor
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setToolDenyGrants).toHaveBeenCalledWith("sess_new", grants)
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect((input as unknown as Record<string, unknown>).toolDenyGrants).toBeUndefined()
+  })
+
+  it("stamps no toolDenyGrants on the fresh session when the source row has none", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setToolDenyGrants).not.toHaveBeenCalled()
   })
 
   it("stamps no operator on the fresh session when the source row has none", async () => {

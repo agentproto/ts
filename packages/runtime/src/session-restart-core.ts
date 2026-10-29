@@ -1745,6 +1745,7 @@ async function restartAgentSessionOnce(
     })
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
+    if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session
@@ -2490,6 +2491,7 @@ async function restartAgentSessionOnce(
     })
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
+    if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session

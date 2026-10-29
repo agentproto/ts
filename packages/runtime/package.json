@@ -256,6 +256,7 @@
     "@agentproto/memory": "workspace:*",
     "@agentproto/model-catalog": "workspace:*",
     "@agentproto/model-intel": "workspace:*",
+    "@agentproto/operator": "workspace:*",
     "@agentproto/pairing-host": "workspace:*",
     "@agentproto/plugin-local-browser": "workspace:*",
     "@agentproto/policy": "workspace:*",

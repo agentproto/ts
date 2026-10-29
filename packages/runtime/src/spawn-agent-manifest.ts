@@ -20,6 +20,8 @@
 
 import { isAbsolute, join, resolve as resolvePath } from "node:path"
 import { loadAgent } from "@agentproto/agent"
+import { toolDenyGrants } from "@agentproto/operator"
+import type { Grant } from "@agentproto/policy"
 import { stripOwner } from "@agentproto/app"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
@@ -102,6 +104,9 @@ export interface AgentManifestSpawnDefaults {
    *  read by the spawn digest (`memory-digest.ts`). Undefined when the
    *  `memory` block states none of them. */
   readonly memory?: AgentMemoryBinding
+  /** `tool:invoke` deny grants of the manifest's `tools` deny items, for the
+   *  call-time gate. Absent when the manifest has no deny item. */
+  readonly toolDenyGrants?: Grant[]
   readonly warnings: string[]
 }
 
@@ -138,6 +143,7 @@ export async function loadAgentManifestDefaults(
   const manifestHooks = manifestClerkHook(loaded.handle.metadata)
   const memory = parseAgentMemoryBinding(loaded.handle.memory)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
+  const denyGrants = toolDenyGrants(loaded.handle.tools ?? [])
   const projected = projectAgentToSpawn(
     { path, handle: loaded.handle, body: loaded.body, ...(model !== undefined ? { model } : {}) },
     caps,
@@ -156,6 +162,7 @@ export async function loadAgentManifestDefaults(
       ...(projected.tools !== undefined ? { tools: projected.tools } : {}),
       ...(manifestHooks !== undefined ? { hooks: manifestHooks } : {}),
       ...(memory !== undefined ? { memory } : {}),
+      ...(denyGrants.length > 0 ? { toolDenyGrants: denyGrants } : {}),
       warnings: projected.warnings,
     },
   }
