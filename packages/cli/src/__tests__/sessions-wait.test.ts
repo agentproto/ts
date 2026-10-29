@@ -125,10 +125,21 @@ describe("agentproto sessions wait — argument validation", () => {
   })
 
   it("--any returns as soon as the first of several sessions resolves", async () => {
-    httpGetJson.mockImplementation((url: string) => {
+    httpGetJson.mockImplementation((url: string, opts?: { signal?: AbortSignal }) => {
       const sid = url.includes("/sessions/sess_slow") ? "sess_slow" : "sess_fast"
       if (url.includes("/wait")) {
-        if (sid === "sess_slow") return new Promise(() => {})
+        if (sid === "sess_slow") {
+          return new Promise((_resolve, reject) => {
+            const signal = opts?.signal
+            if (signal?.aborted) {
+              reject(new Error("aborted"))
+              return
+            }
+            signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+              once: true,
+            })
+          })
+        }
         return Promise.resolve({ event: "turn-end", sessionId: sid, status: "running" })
       }
       return Promise.resolve({ id: sid, status: "running", busy: true })
@@ -144,6 +155,78 @@ describe("agentproto sessions wait — argument validation", () => {
     ])
 
     expect(code).toBe(0)
+  })
+
+  it("--any keeps waiting when a sibling is idle and returns 0 when another matches", async () => {
+    httpGetJson.mockImplementation((url: string) => {
+      const sid = url.includes("sess_idle") ? "sess_idle" : "sess_live"
+      if (url.includes("/wait")) {
+        return Promise.resolve({ event: "turn-end", sessionId: sid, status: "running" })
+      }
+      if (sid === "sess_idle") {
+        return Promise.resolve({
+          id: sid,
+          status: "running",
+          busy: false,
+          turnsCompleted: 1,
+          queuedPrompts: 0,
+        })
+      }
+      return Promise.resolve({ id: sid, status: "running", busy: true })
+    })
+
+    const code = await runSessions([
+      "wait",
+      "sess_idle",
+      "sess_live",
+      "--until",
+      "turn-end",
+      "--any",
+    ])
+
+    expect(code).toBe(0)
+    expect(
+      httpGetJson.mock.calls.some(call =>
+        (call[0] as string).includes("/sessions/sess_live/wait"),
+      ),
+    ).toBe(true)
+  })
+
+  it("--any surfaces a failure only after every sibling fails", async () => {
+    httpGetJson.mockImplementation((url: string) => {
+      const sid = url.includes("sess_b") ? "sess_b" : "sess_a"
+      if (url.includes("/wait")) {
+        return Promise.resolve({ event: "turn-end", sessionId: sid })
+      }
+      return Promise.resolve({
+        id: sid,
+        status: "running",
+        busy: false,
+        turnsCompleted: 1,
+        queuedPrompts: 0,
+      })
+    })
+
+    const code = await runSessions([
+      "wait",
+      "sess_a",
+      "sess_b",
+      "--until",
+      "turn-end",
+      "--any",
+    ])
+
+    expect(code).toBe(5)
+  })
+
+  it("rejects --json with multiple session ids instead of concatenating documents", async () => {
+    const code = await runSessions(["wait", "sess_a", "sess_b", "--json"])
+
+    expect(code).toBe(2)
+    expect(stderrChunks.join("")).toContain(
+      "--json is not supported with multiple session ids",
+    )
+    expect(httpGetJson).not.toHaveBeenCalled()
   })
 
   it("rejects extra positionals in --policy mode instead of silently ignoring them", async () => {

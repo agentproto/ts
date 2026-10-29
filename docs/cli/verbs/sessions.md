@@ -821,8 +821,13 @@ Blocking long-poll: blocks the caller until the session fires a lifecycle
 event or the timeout expires. Chains calls across the daemon's ~55s
 per-call ceiling so the CLI-side timeout can be arbitrarily long. With
 several ids it waits concurrently for all of them, or for the first one
-with `--any`; the `--timeout` budget is shared across the fan-out. In
-`--policy` mode no session ids are accepted.
+with `--any`; the `--timeout` budget is shared across the fan-out. Under
+`--any`, a sibling that ends without a match (idle, not found, errored, or
+timed out) does not settle the wait — only a real match does — and its
+failure is reported only if every sibling fails or the budget runs out.
+Multi-id output is prose-only; `--json` is rejected when more than one id
+is given. In `--policy` mode the positional is ignored (at most one is
+accepted; extra positionals are rejected).
 
 This is the scriptable equivalent of the `session_monitor` MCP tool, but
 without the 49s MCP constraint — prefer it when you have shell access.
@@ -833,8 +838,8 @@ without the 49s MCP constraint — prefer it when you have shell access.
 | `--any` | `false` | With several session ids, return as soon as the first one matches instead of waiting for all. |
 | `--since <seq>` | none | Event-ring cursor. Replays matching events after `seq` before blocking. Use `--since 0` from a spawn-then-wait caller when the first turn may end before this process starts; without a cursor the daemon cannot distinguish that turn-end from stale history and the CLI's idle pre-flight exits 5. |
 | `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
-| `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
-| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. |
+| `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored; extra positionals are rejected. |
+| `--json` | `false` | Machine-readable output. Suppresses the up-front "waiting up to…" banner; the matched result includes `timeoutMs` and `timeout` fields. Rejected when more than one session id is given. |
 
 Before blocking, the CLI prints its interpreted budget to stderr
 (`waiting up to 5m (300000ms) for turn-end on ses_abc12…`) so a units

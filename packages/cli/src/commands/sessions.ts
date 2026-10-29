@@ -2939,6 +2939,15 @@ async function runWait(args: readonly string[]): Promise<number> {
     )
     return 2
   }
+  // Each session's JSON is a standalone document; concatenating several of
+  // them is not parseable as one. Reject rather than emit malformed output.
+  if (!values.policy && positionals.length > 1 && values.json === true) {
+    process.stderr.write(
+      "agentproto sessions wait: --json is not supported with multiple session ids; " +
+        "wait on one id per invocation.\n",
+    )
+    return 2
+  }
 
   // Validate --until early so a typo fails fast instead of after daemon work.
   const rawUntil = values.until
@@ -3038,6 +3047,8 @@ async function runWaitSession(opts: {
   json: boolean
   since?: number
   signal?: AbortSignal
+  /** Shared wall-clock deadline (ms since epoch); defaults to now + totalTimeout. */
+  deadline?: number
 }): Promise<number> {
   const { endpoint, idOrName, untilEvent, totalTimeout, json, since, signal } = opts
 
@@ -3121,7 +3132,7 @@ async function runWaitSession(opts: {
     }
   }
 
-  const deadline = Date.now() + totalTimeout
+  const deadline = opts.deadline ?? Date.now() + totalTimeout
   // Per-call server cap is 55s; pick a slice that leaves headroom.
   const sliceMs = 50_000
   let cursor: number | undefined = since
@@ -3232,7 +3243,10 @@ async function runWaitSession(opts: {
 /**
  * Wait on several sessions at once. Default: resolve when ALL of them
  * reached the target event; `--any`: resolve as soon as the first one does,
- * aborting the rest so the process can exit immediately. The shared
+ * aborting the rest so the process can exit immediately. Under `--any`, a
+ * sibling that ends without a match (idle/not-found/error/timeout) is
+ * remembered but does not settle the group — its failure is surfaced only
+ * if every sibling fails or the shared budget runs out. The shared
  * `totalTimeout` is a single budget across the fan-out, not per session.
  */
 async function runWaitMany(opts: {
@@ -3246,10 +3260,13 @@ async function runWaitMany(opts: {
 }): Promise<number> {
   const { endpoint, idOrNames, untilEvent, totalTimeout, json, since, any } = opts
   const shared = { endpoint, untilEvent, totalTimeout, json, ...(since !== undefined ? { since } : {}) }
+  // One wall-clock deadline for the whole fan-out so the documented single
+  // budget is literal, including each session's pre-flight read.
+  const deadline = Date.now() + totalTimeout
 
   if (!any) {
     const codes = await Promise.all(
-      idOrNames.map(idOrName => runWaitSession({ ...shared, idOrName })),
+      idOrNames.map(idOrName => runWaitSession({ ...shared, idOrName, deadline })),
     )
     const failure = codes.find(code => code !== 0)
     if (failure === undefined) return 0
@@ -3258,17 +3275,31 @@ async function runWaitMany(opts: {
 
   const controller = new AbortController()
   return new Promise<number>(resolve => {
+    let remaining = idOrNames.length
+    let firstFailure: number | undefined
     let settled = false
-    const settle = (code: number) => {
+    const finish = (code: number) => {
       if (settled) return
       settled = true
       controller.abort()
       resolve(code === -1 ? 2 : code)
     }
+    const onResult = (code: number) => {
+      if (settled) return
+      // Only a real match settles `--any`; a sibling that is idle, missing,
+      // errored, or timed out must not rob the others of their chance.
+      if (code === 0) {
+        finish(0)
+        return
+      }
+      if (code !== -1 && firstFailure === undefined) firstFailure = code
+      remaining -= 1
+      if (remaining === 0) finish(firstFailure ?? 2)
+    }
     for (const idOrName of idOrNames) {
-      runWaitSession({ ...shared, idOrName, signal: controller.signal }).then(
-        settle,
-        () => settle(3),
+      runWaitSession({ ...shared, idOrName, deadline, signal: controller.signal }).then(
+        onResult,
+        () => onResult(3),
       )
     }
   })
