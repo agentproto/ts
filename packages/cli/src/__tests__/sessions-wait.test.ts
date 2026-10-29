@@ -104,6 +104,63 @@ describe("agentproto sessions wait — argument validation", () => {
     const calledUrl = (httpGetJson.mock.calls[1] as [string])[0]
     expect(calledUrl).toContain("/sessions/sess_1/wait")
   })
+
+  it("waits on several session ids and returns once all of them resolve", async () => {
+    httpGetJson.mockImplementation(async (url: string) => {
+      const sid = url.includes("/sessions/sess_b") ? "sess_b" : "sess_a"
+      if (url.includes("/wait")) {
+        return { event: "turn-end", sessionId: sid, status: "running" }
+      }
+      return { id: sid, status: "running", busy: true }
+    })
+
+    const code = await runSessions(["wait", "sess_a", "sess_b", "--until", "turn-end"])
+
+    expect(code).toBe(0)
+    const waitUrls = httpGetJson.mock.calls
+      .map(call => call[0] as string)
+      .filter(url => url.includes("/wait"))
+    expect(waitUrls.some(url => url.includes("/sessions/sess_a/wait"))).toBe(true)
+    expect(waitUrls.some(url => url.includes("/sessions/sess_b/wait"))).toBe(true)
+  })
+
+  it("--any returns as soon as the first of several sessions resolves", async () => {
+    httpGetJson.mockImplementation((url: string) => {
+      const sid = url.includes("/sessions/sess_slow") ? "sess_slow" : "sess_fast"
+      if (url.includes("/wait")) {
+        if (sid === "sess_slow") return new Promise(() => {})
+        return Promise.resolve({ event: "turn-end", sessionId: sid, status: "running" })
+      }
+      return Promise.resolve({ id: sid, status: "running", busy: true })
+    })
+
+    const code = await runSessions([
+      "wait",
+      "sess_fast",
+      "sess_slow",
+      "--until",
+      "turn-end",
+      "--any",
+    ])
+
+    expect(code).toBe(0)
+  })
+
+  it("rejects extra positionals in --policy mode instead of silently ignoring them", async () => {
+    const code = await runSessions(["wait", "--policy", "p1", "sess_a", "sess_b"])
+
+    expect(code).toBe(2)
+    expect(stderrChunks.join("")).toContain("unexpected extra positionals")
+    expect(httpGetJson).not.toHaveBeenCalled()
+  })
+
+  it("returns exit 2 with a clear message for a rejected argument", async () => {
+    const code = await runSessions(["wait", "sess_a", "sess_b", "--bogus"])
+
+    expect(code).toBe(2)
+    expect(stderrChunks.join("")).toContain("Unknown option '--bogus'")
+    expect(httpGetJson).not.toHaveBeenCalled()
+  })
 })
 
 /**

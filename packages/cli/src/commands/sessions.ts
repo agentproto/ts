@@ -240,8 +240,11 @@ Usage:
                               (list sessions the LAST daemon restart cut off
                                mid-turn; --send prompts each to continue —
                                without it, a dry run that sends nothing)
-  agentproto sessions wait <id-or-name> [--until <event>] [--policy <policyId>]
-                              [--since <seq>] [--timeout <duration>] [--json]
+  agentproto sessions wait <id-or-name>... [--until <event>] [--any]
+                              [--policy <policyId>] [--since <seq>]
+                              [--timeout <duration>] [--json]
+                              (several ids: waits for all by default, or the
+                               first with --any; --policy takes no ids)
                               (duration: bare integer = ms, unchanged — or an
                                explicit unit: 500ms, 30s, 5m, 2h. default
                                timeout: 900000ms/15m with --until, 60000ms/60s
@@ -2817,7 +2820,11 @@ function printQueueTable(id: string, queue: QueueViewItem[]): void {
 }
 
 /**
- * `agentproto sessions wait <id-or-name>` — scriptable blocking wait.
+ * `agentproto sessions wait <id-or-name>...` - scriptable blocking wait.
+ *
+ * With several session ids it fans out concurrently and returns when all of
+ * them match (default) or the first one does (`--any`); a single id keeps
+ * the original path byte-identical.
  *
  * Blocks until the session fires a lifecycle event (default: any) or, when
  * `--policy <policyId>` is set, until the named policy resolves
@@ -2886,18 +2893,29 @@ export function resolveWaitDefaultTimeout(hasExplicitUntil: boolean): number {
 }
 
 async function runWait(args: readonly string[]): Promise<number> {
-  const { values, positionals } = parseArgs({
-    args: [...args],
-    allowPositionals: true,
-    strict: true,
-    options: {
-      until: { type: "string" },
-      policy: { type: "string" },
-      since: { type: "string" },
-      timeout: { type: "string" },
-      json: { type: "boolean" },
-    },
-  })
+  const parsed = (() => {
+    try {
+      return parseArgs({
+        args: [...args],
+        allowPositionals: true,
+        strict: true,
+        options: {
+          until: { type: "string" },
+          policy: { type: "string" },
+          since: { type: "string" },
+          timeout: { type: "string" },
+          any: { type: "boolean" },
+          json: { type: "boolean" },
+        },
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      process.stderr.write(`agentproto sessions wait: ${msg}\n`)
+      return null
+    }
+  })()
+  if (parsed === null) return 2
+  const { values, positionals } = parsed
 
   const target = positionals[0]
   if (!target && !values.policy) {
@@ -2905,11 +2923,15 @@ async function runWait(args: readonly string[]): Promise<number> {
       "agentproto sessions wait: missing session id or policy id.\n" +
         "  Try: agentproto sessions wait <id-or-name>\n" +
         "       agentproto sessions wait <id-or-name> --until turn-end --timeout 30000\n" +
+        "       agentproto sessions wait <id1> <id2> [--any]\n" +
         "       agentproto sessions wait --policy <policyId> --timeout 60000\n",
     )
     return 2
   }
-  if (positionals.length > 1) {
+  // --policy mode takes no session positionals; a single one is documented
+  // as ignored, but more than that is a usage error rather than a silent
+  // no-op.
+  if (values.policy && positionals.length > 1) {
     process.stderr.write(
       `agentproto sessions wait: unexpected extra positionals: ${positionals
         .slice(1)
@@ -2986,13 +3008,20 @@ async function runWait(args: readonly string[]): Promise<number> {
     return 2
   }
 
-  return runWaitSession({
+  const shared = {
     endpoint,
-    idOrName: target,
     untilEvent,
     totalTimeout,
     json: values.json === true,
     ...(since !== undefined ? { since } : {}),
+  }
+  if (positionals.length === 1) {
+    return runWaitSession({ ...shared, idOrName: target })
+  }
+  return runWaitMany({
+    ...shared,
+    idOrNames: positionals,
+    any: values.any === true,
   })
 }
 
@@ -3008,8 +3037,9 @@ async function runWaitSession(opts: {
   totalTimeout: number
   json: boolean
   since?: number
+  signal?: AbortSignal
 }): Promise<number> {
-  const { endpoint, idOrName, untilEvent, totalTimeout, json, since } = opts
+  const { endpoint, idOrName, untilEvent, totalTimeout, json, since, signal } = opts
 
   // Pre-flight: read the session's current descriptor before blocking at
   // all. `monitorSessionWait`'s already-finished-turn check deliberately
@@ -3020,13 +3050,17 @@ async function runWaitSession(opts: {
   // reporting a timeout that lies about why. `--until exited` is exempt:
   // the daemon's terminal-status check already fires without `since`, so
   // there's nothing to pre-empt here.
+  if (signal?.aborted) return -1
+  const getJson = <T,>(url: string): Promise<T> =>
+    signal ? httpGetJson<T>(url, { signal }) : httpGetJson<T>(url)
   if (untilEvent !== "exited") {
     let desc: SessionDescriptor
     try {
-      desc = await httpGetJson<SessionDescriptor>(
+      desc = await getJson<SessionDescriptor>(
         `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}`,
       )
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(`agentproto sessions wait: no session "${idOrName}".\n`)
@@ -3107,6 +3141,7 @@ async function runWaitSession(opts: {
   }
 
   for (;;) {
+    if (signal?.aborted) return -1
     const remaining = deadline - Date.now()
     if (remaining <= 0) {
       return emitWaitTimeout(json, { idOrName, timeoutMs: totalTimeout })
@@ -3120,8 +3155,9 @@ async function runWaitSession(opts: {
     const url = `${endpoint.url}/sessions/${encodeURIComponent(idOrName)}/wait?${qs.toString()}`
     let result: Record<string, unknown>
     try {
-      result = await httpGetJson<Record<string, unknown>>(url)
+      result = await getJson<Record<string, unknown>>(url)
     } catch (err) {
+      if (signal?.aborted) return -1
       const msg = err instanceof Error ? err.message : String(err)
       if (/HTTP 404/.test(msg)) {
         process.stderr.write(
@@ -3138,6 +3174,7 @@ async function runWaitSession(opts: {
       process.stderr.write(`agentproto sessions wait: ${msg}\n`)
       return 3
     }
+    if (signal?.aborted) return -1
     if (result.timedOut === true) {
       // Advance the cursor from the server's response when available so the
       // next call doesn't replay the same window.
@@ -3190,6 +3227,51 @@ async function runWaitSession(opts: {
     }
     return 0
   }
+}
+
+/**
+ * Wait on several sessions at once. Default: resolve when ALL of them
+ * reached the target event; `--any`: resolve as soon as the first one does,
+ * aborting the rest so the process can exit immediately. The shared
+ * `totalTimeout` is a single budget across the fan-out, not per session.
+ */
+async function runWaitMany(opts: {
+  endpoint: DaemonEndpoint
+  idOrNames: string[]
+  untilEvent: "turn-end" | "awaiting-input" | "exited" | "any"
+  totalTimeout: number
+  json: boolean
+  since?: number
+  any: boolean
+}): Promise<number> {
+  const { endpoint, idOrNames, untilEvent, totalTimeout, json, since, any } = opts
+  const shared = { endpoint, untilEvent, totalTimeout, json, ...(since !== undefined ? { since } : {}) }
+
+  if (!any) {
+    const codes = await Promise.all(
+      idOrNames.map(idOrName => runWaitSession({ ...shared, idOrName })),
+    )
+    const failure = codes.find(code => code !== 0)
+    if (failure === undefined) return 0
+    return failure === -1 ? 2 : failure
+  }
+
+  const controller = new AbortController()
+  return new Promise<number>(resolve => {
+    let settled = false
+    const settle = (code: number) => {
+      if (settled) return
+      settled = true
+      controller.abort()
+      resolve(code === -1 ? 2 : code)
+    }
+    for (const idOrName of idOrNames) {
+      runWaitSession({ ...shared, idOrName, signal: controller.signal }).then(
+        settle,
+        () => settle(3),
+      )
+    }
+  })
 }
 
 /**

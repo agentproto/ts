@@ -56,9 +56,9 @@ agentproto sessions export   <id-or-name> [--json] [-o <file>]
 agentproto sessions stop     <id-or-name> [--completed] [--outcome <verdict>] [--reason <text>]
                                            [--error-kind <kind>] [--next-step <text>]
                                            [--question <text>] [--note <text>] [--json]
-agentproto sessions wait     <id-or-name> [--until <event>] [--since <seq>]
-                                           [--timeout <duration>] [--policy <policyId>]
-                                           [--json]
+agentproto sessions wait     <id-or-name>... [--until <event>] [--any]
+                                           [--since <seq>] [--timeout <duration>]
+                                           [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions gc       --retention [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
@@ -806,18 +806,23 @@ fields are stored on the session (`outcome.reason`, `outcome.errorKind`, …,
 "completed" (it conflicts with an `--outcome` other than `done`). On an already-ended session the same flags relabel its
 outcome instead of erroring.
 
-### `wait <id-or-name>`
+### `wait <id-or-name>...`
 
 ```bash
 agentproto sessions wait ses_abc12
 agentproto sessions wait ses_abc12 --until turn-end --timeout 5m
 agentproto sessions wait ses_abc12 --until turn-end --since 0 --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --timeout 5m
+agentproto sessions wait ses_abc12 ses_def34 --until turn-end --any
 agentproto sessions wait --policy pol_abc12 --timeout 2m
 ```
 
 Blocking long-poll: blocks the caller until the session fires a lifecycle
 event or the timeout expires. Chains calls across the daemon's ~55s
-per-call ceiling so the CLI-side timeout can be arbitrarily long.
+per-call ceiling so the CLI-side timeout can be arbitrarily long. With
+several ids it waits concurrently for all of them, or for the first one
+with `--any`; the `--timeout` budget is shared across the fan-out. In
+`--policy` mode no session ids are accepted.
 
 This is the scriptable equivalent of the `session_monitor` MCP tool, but
 without the 49s MCP constraint — prefer it when you have shell access.
@@ -825,6 +830,7 @@ without the 49s MCP constraint — prefer it when you have shell access.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--until <event>` | `any` | Which lifecycle event to wait on: `turn-end`, `awaiting-input`, `exited`, `any`. |
+| `--any` | `false` | With several session ids, return as soon as the first one matches instead of waiting for all. |
 | `--since <seq>` | none | Event-ring cursor. Replays matching events after `seq` before blocking. Use `--since 0` from a spawn-then-wait caller when the first turn may end before this process starts; without a cursor the daemon cannot distinguish that turn-end from stale history and the CLI's idle pre-flight exits 5. |
 | `--timeout <duration>` | `60s` / `15m` | Total wait budget. Duration string: `500ms`, `30s`, `5m`, `2h`. Bare integers under 1000 are rejected as ambiguous (`3000` → "did you mean 3000ms or 3s?"). Default is `60s` without `--until`, `15m` with `--until` (agent turns commonly run 5-20 minutes). |
 | `--policy <policyId>` | — | Wait on a completion policy instead of a session event. Long-polls `GET /policies/:id/wait` until the policy leaves `watching`/`gating`/`queued`/`nudging`/`acting`. When set, the positional `<id-or-name>` is ignored. |
@@ -855,7 +861,7 @@ and humans.
 
 | Surface | Max timeout | Multi-session | Use when |
 |---------|-------------|---------------|----------|
-| `sessions wait` (CLI) | Unlimited (chains calls) | No (one session) | You have a shell and want to script a gate or supervisor loop. |
+| `sessions wait` (CLI) | Unlimited (chains calls) | Yes (`--any` for first) | You have a shell and want to script a gate or supervisor loop. |
 | `session_monitor` (MCP) | 49s (MCP constraint) | Yes (up to 20) | You're an agent with MCP tools and need to fan-in across children. |
 
 Both hit the same daemon endpoint (`GET /sessions/:id/wait`); the CLI
