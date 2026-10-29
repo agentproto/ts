@@ -27,7 +27,11 @@ export type {
   KnowledgeConfig,
   KnowledgeProviderConfig,
   KnowledgeProviderAdapterId,
+  SessionReadResult,
+  SkippedTranscript,
 } from "./types.js"
+
+export { isSkippedTranscript } from "./types.js"
 
 // Persistence
 export {

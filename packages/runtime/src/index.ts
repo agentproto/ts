@@ -44,6 +44,7 @@ import { registerCreateToolTools } from "./create-tool-tool.js"
 import { collectSubtree } from "./agent-tools.js"
 import { registerBrainTools } from "./brain-tools.js"
 import { createWorkspaceBrains } from "./workspace-brains.js"
+import { resolveBrainIngestLimits } from "./brain-ingest-limits.js"
 import { createWorkspaceBrainSubscriber } from "./workspace-brain-subscriber.js"
 import {
   registerBrowserTools,
@@ -453,6 +454,12 @@ export { HOST_CALLER, CallerScopes, callerScopes, CallerRefusedError } from "./c
 export type { CallerScope } from "./caller-scope.js"
 export { createWorkspaceBrains, readSessionForBrain } from "./workspace-brains.js"
 export type { WorkspaceBrains } from "./workspace-brains.js"
+export {
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
+  DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  resolveBrainIngestLimits,
+  type BrainIngestLimits,
+} from "./brain-ingest-limits.js"
 export {
   createWorkspaceBrainSubscriber,
   type WorkspaceBrainSubscriber,
@@ -2490,7 +2497,11 @@ export async function createGateway(
   // sessions exit (debounced, fire-and-forget), and expose them queryably
   // via the workspace_brain_* MCP tools. Same wiring discipline as the
   // webhook notifier — a brain failure never throws into the exit path.
-  const workspaceBrains = createWorkspaceBrains()
+  // Limits come from `defaults.reactions.brainIngest`, read once at boot.
+  const daemonConfig = await loadConfig()
+  const workspaceBrains = createWorkspaceBrains({
+    limits: resolveBrainIngestLimits(daemonConfig.defaults?.reactions?.brainIngest),
+  })
   // Receipts are scoped to the bucket this daemon serves (same rule as the
   // resume passes in serve.ts), so two daemons on one AGENTPROTO_HOME never
   // rewrite or replay each other's receipts.
@@ -2530,7 +2541,6 @@ export async function createGateway(
   // writes to. Absent creds ⇒ undefined, and the registry never gates
   // anything on a tracer that doesn't exist — tracing-off behaviour is
   // unchanged from before this existed.
-  const daemonConfig = await loadConfig()
   const configDefaults = daemonConfig.defaults
   // `config_get`/`config_set` (PR-2) need the config the daemon actually
   // BOOTED with, captured exactly once here — never re-read at call time —

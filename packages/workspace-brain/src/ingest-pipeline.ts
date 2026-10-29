@@ -50,18 +50,19 @@ import {
 import type { BrainState } from "./brain-state.js"
 import { isStaleRecord, PIPELINE_VERSION } from "./pipeline-version.js"
 import { BrainSessionSourcePort } from "./session-source-port.js"
-import type {
-  BrainStateRecord,
-  ExportedSessionLike,
-  IngestReport,
-  IngestResult,
+import {
+  isSkippedTranscript,
+  type BrainStateRecord,
+  type IngestReport,
+  type IngestResult,
+  type SessionReadResult,
 } from "./types.js"
 
 export interface IngestPipelineOptions {
   /** Workspace bucket slug — surfaced in reports. */
   readonly workspace: string
   /** The injected transcript reader. */
-  readonly readSession: (ref: string) => Promise<ExportedSessionLike | null>
+  readonly readSession: (ref: string) => Promise<SessionReadResult>
   /** The persistent ingestion ledger. */
   readonly state: BrainState
   /** Lazy accessor for the backing knowledge provider (rooted at
@@ -91,7 +92,7 @@ export class IngestPipeline {
       await state.forget(sessionId)
     }
 
-    let session: ExportedSessionLike | null
+    let session: SessionReadResult
     try {
       session = await readSession(sessionId)
     } catch {
@@ -103,6 +104,25 @@ export class IngestPipeline {
     if (!session) {
       await this.recordSkip(sessionId, "no-transcript")
       return { sessionId, ok: false, skippedReason: "no-transcript" }
+    }
+    if (isSkippedTranscript(session)) {
+      // The reader refused to materialize an oversized transcript. Record a
+      // durable skip (so the backlog converges instead of retrying forever)
+      // and log ONE line with the measured size and the ceiling.
+      const sizeBytes = session.skippedSizeBytes
+      const ceilingBytes = session.skippedCeilingBytes
+      await this.recordSkip(sessionId, "too-large", { sizeBytes, ceilingBytes })
+      console.log(
+        `[workspace-brain:${this.opts.workspace}] skipping ingest of ${sessionId}: ` +
+          `transcript too large (${sizeBytes} bytes, ceiling ${ceilingBytes} bytes)`,
+      )
+      return {
+        sessionId,
+        ok: false,
+        skippedReason: "too-large",
+        skippedSizeBytes: sizeBytes,
+        skippedCeilingBytes: ceilingBytes,
+      }
     }
 
     try {
@@ -259,10 +279,11 @@ export class IngestPipeline {
    *  that already has a perfectly good `skippedReason` to report. */
   private async recordSkip(
     sessionId: string,
-    reason: "no-transcript" | "empty-transcript",
+    reason: "no-transcript" | "empty-transcript" | "too-large",
+    details?: { readonly sizeBytes?: number; readonly ceilingBytes?: number },
   ): Promise<void> {
     try {
-      await this.opts.state.recordSkip(sessionId, reason)
+      await this.opts.state.recordSkip(sessionId, reason, details)
     } catch {
       // ignore — see above
     }

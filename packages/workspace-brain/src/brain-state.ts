@@ -59,7 +59,11 @@ export interface BrainState {
   readSkips(): Promise<Readonly<Record<string, BrainStateSkip>>>
   /** Record `sessionId` as skipped for `reason`. Atomic write. NOT a
    *  tombstone — a later `record()` for the same session clears it. */
-  recordSkip(sessionId: string, reason: BrainStateSkip["reason"]): Promise<void>
+  recordSkip(
+    sessionId: string,
+    reason: BrainStateSkip["reason"],
+    details?: { readonly sizeBytes?: number; readonly ceilingBytes?: number },
+  ): Promise<void>
 }
 
 export const brainStatePath = (brainDir: string): string =>
@@ -174,10 +178,16 @@ export function createBrainState(brainDir: string): BrainState {
     async readSkips() {
       return (await readFile()).skips
     },
-    recordSkip(sessionId, reason) {
+    recordSkip(sessionId, reason, details) {
       return enqueue(async () => {
         const file = await readFile()
-        const skip: BrainStateSkip = { sessionId, reason, skippedAt: new Date().toISOString() }
+        const skip: BrainStateSkip = {
+          sessionId,
+          reason,
+          skippedAt: new Date().toISOString(),
+          ...(details?.sizeBytes !== undefined ? { sizeBytes: details.sizeBytes } : {}),
+          ...(details?.ceilingBytes !== undefined ? { ceilingBytes: details.ceilingBytes } : {}),
+        }
         const skips = { ...file.skips, [sessionId]: skip }
         await writeFile({
           version: 1,
