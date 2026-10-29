@@ -291,6 +291,7 @@ import {
 import { parsePostureInput } from "./canonical-posture.js"
 import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { mcpServerMountsOverrideSchema } from "./agent-start-schema.js"
+import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
 import {
   deleteUserPreset,
   deriveRecentSpawnConfigs,
@@ -6102,9 +6103,10 @@ export function buildSpawnSessionHttpArgs(
     adapter,
     ...(typeof b.origin === "string" && b.origin.length > 0 ? { origin: b.origin } : {}),
     ...(typeof b.harness === "string" ? { harness: b.harness } : {}),
-    // AIP-42 manifest defaults — HTTP/CLI-only today (the MCP `agent_start`
-    // schema declares neither field; see session-spawn.ts). `agentId` resolves
-    // to `<cwd>/.agents/<id>/AGENT.md`; `agentPath` is an explicit path.
+    // ONE `agent` reference (AGENT.md path, agent id, or role name) resolved
+    // into `agentId`/`agentPath`/`role` by the spawn core (agent-ref.ts).
+    ...(typeof b.agent === "string" && b.agent.length > 0 ? { agent: b.agent } : {}),
+    // Legacy aliases of `agent`; the MCP schema declares all three too.
     ...(typeof b.agentId === "string" && b.agentId.length > 0 ? { agentId: b.agentId } : {}),
     ...(typeof b.agentPath === "string" && b.agentPath.length > 0 ? { agentPath: b.agentPath } : {}),
     // AIP-46 operator binding. Validated and canonicalized in the spawn core;
@@ -6204,6 +6206,9 @@ export function buildSpawnSessionHttpArgs(
       ? { boardId: b.boardId }
       : {}),
     ...(typeof b.role === "string" && b.role.length > 0 ? { role: b.role } : {}),
+    ...(typeof b.role === "string" && b.role.length > 0 && b.agent === undefined
+      ? { harnessWarnings: [ROLE_ALIAS_DEPRECATION] }
+      : {}),
     ...(typeof b.promptAppend === "string" ? { promptAppend: b.promptAppend } : {}),
     ...browserField,
     ...(b.orchestrator !== undefined

@@ -1650,6 +1650,109 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     }
   })
 
+  it("`agent: \"executor\"` behaves exactly like `role: \"executor\"`", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      agent: "executor",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    expect(buildOrchestratorMcp).not.toHaveBeenCalled()
+    if (result.ok) {
+      expect(result.descriptor.meta?.role).toBe("executor")
+    }
+  })
+
+  it("`agent: \"supervisor\"` mints the orchestrator scope once", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      agent: "supervisor",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+    if (result.ok) {
+      expect(result.descriptor.meta?.role).toBe("supervisor")
+    }
+  })
+
+  it("`agent: \"nope\"` fails with invalid_agent", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      agent: "nope",
+    })
+    expect(result).toMatchObject({ ok: false, code: "invalid_agent" })
+  })
+
+  it("`agent: \"executor\"` with a different `role` fails with invalid_agent", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      agent: "executor",
+      role: "supervisor",
+    })
+    expect(result).toMatchObject({ ok: false, code: "invalid_agent" })
+  })
+
+  it("`agent: \"executor\"` with `agentId` fails with invalid_agent", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      agent: "executor",
+      agentId: "x",
+    })
+    expect(result).toMatchObject({ ok: false, code: "invalid_agent" })
+  })
+
+  it("`agent: \"helper\"` finds `.agents/helper/AGENT.md` and records the same agentId as `agentId: \"helper\"`", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agp-agent-ref-"))
+    try {
+      const agentDir = join(dir, ".agents", "helper")
+      mkdirSync(agentDir, { recursive: true })
+      writeFileSync(
+        join(agentDir, "AGENT.md"),
+        [
+          "---",
+          "schema: agent/v1",
+          "id: helper",
+          "description: probe",
+          "model: test-model",
+          "---",
+          "",
+          "You are a probe.",
+        ].join("\n"),
+        "utf8",
+      )
+      const { deps } = baseDeps()
+
+      const viaAgent = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agent: "helper" })
+      const viaAgentId = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "helper" })
+      expect(viaAgent.ok).toBe(true)
+      expect(viaAgentId.ok).toBe(true)
+      if (viaAgent.ok && viaAgentId.ok) {
+        expect(viaAgent.descriptor.meta?.agentId).toBe(viaAgentId.descriptor.meta?.agentId)
+        expect(viaAgent.descriptor.meta?.agentId).toBe("helper")
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("`promptAppend` cannot reopen the gate — an executor 'asked to delegate anyway' still gets zero delegation tools", async () => {
     const buildOrchestratorMcp = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({ buildOrchestratorMcp })

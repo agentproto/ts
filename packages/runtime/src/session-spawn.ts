@@ -184,7 +184,7 @@ import {
   type ResolveHeadlessBrowser,
   type SpawnBrowserMode,
 } from "./browser-mount.js"
-import { resolveRole, composeRoleContext, canSpawn, DELEGATION_TOOL_NAMES } from "./role.js"
+import { resolveRole, composeRoleContext, canSpawn, mergeRoleRegistry, DELEGATION_TOOL_NAMES } from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -351,6 +351,7 @@ import {
 import { prefixPrompt } from "./agent-projection.js"
 import { stripOwner } from "@agentproto/app"
 import { loadAgentManifestDefaults, resolveAgentManifestPath } from "./spawn-agent-manifest.js"
+import { resolveAgentRef } from "./agent-ref.js"
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { fingerprintAgentRole } from "./agent-role-refresh.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "./session-credentials.js"
@@ -1665,6 +1666,10 @@ export interface SpawnAgentSessionInput {
   /** AIP-42 manifest by explicit AGENT.md path (absolute, or relative to the
    *  resolved cwd). Same default-filling semantics as `agentId`. */
   agentPath?: string
+  /** ONE agent reference: an AGENT.md path, an agent id, or a role name.
+   *  Resolved by `resolveAgentRef` (agent-ref.ts) into `agentId`/`agentPath`/
+   *  `role`, which keep working as aliases. */
+  agent?: string
   /** AIP-46 operator binding: `operator:<slug>[@<owner>/<workspace>]` or
    *  `ws://operators/<slug>`. Validated for form here (the daemon has no
    *  operator resolver) and recorded on the descriptor in its compact form.
@@ -2065,6 +2070,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_max_depth_exceeded"
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
+        | "invalid_agent"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
         | "unsupported_auth_source"
@@ -3010,6 +3016,29 @@ export async function spawnAgentSession(
   // The store root the session's memory tools and digest use, recorded on
   // the descriptor `meta` (`memoryStoreRoot`) when the agent binds memory.
   let memoryStoreRoot: string | undefined
+  // Role REGISTRY (spawn-role-profiles extensibility): custom
+  // (pack-carried) roles merged with the two built-ins at every
+  // resolution below; see `role.ts`'s `mergeRoleRegistry`. Loaded once
+  // per spawn so the child-role resolution and the parent-role gate
+  // check (right below) agree on the exact same set.
+  const roleRegistry = deps.loadRoleRegistry
+    ? await deps.loadRoleRegistry()
+    : await loadDefaultRoleRegistry()
+  // ONE `agent` reference (an AGENT.md path, an agent id or a role name)
+  // resolved into the three legacy spellings below. The resolution must run
+  // before the manifest block (it may set `agentId`/`agentPath`) and before
+  // `resolveRole(input.role, ...)`.
+  const agentRef = resolveAgentRef(input, {
+    cwd,
+    roleNames: Object.keys(mergeRoleRegistry(roleRegistry)),
+  })
+  if (!agentRef.ok) {
+    return { ok: false, code: agentRef.code, message: agentRef.message }
+  }
+  delete input.agent
+  if (agentRef.agentId !== undefined) input.agentId = agentRef.agentId
+  if (agentRef.agentPath !== undefined) input.agentPath = agentRef.agentPath
+  if (agentRef.role !== undefined) input.role = agentRef.role
   // AIP-42 manifest defaults (agentId / agentPath): load the AGENT.md and fold
   // its model/instructions/skills/tools into the spawn, WITHOUT overriding
   // anything the caller pinned. Resolved here — after `cwd` is final (agentId
@@ -3239,14 +3268,6 @@ export async function spawnAgentSession(
     { bundles: input.bundles, daemonMount: input.daemonMount },
   )
   const bundleSkillsUnion = new Set<string>()
-  // Role REGISTRY (spawn-role-profiles extensibility): custom
-  // (pack-carried) roles merged with the two built-ins at every
-  // resolution below — see `role.ts`'s `mergeRoleRegistry`. Loaded once
-  // per spawn so the child-role resolution and the parent-role gate
-  // check (right below) agree on the exact same set.
-  const roleRegistry = deps.loadRoleRegistry
-    ? await deps.loadRoleRegistry()
-    : await loadDefaultRoleRegistry()
   // Spawn-time role (see role.ts). Resolved BEFORE the orchestrator/
   // hermes-default mcpServers decisions below so `toolPolicy.delegation`
   // can gate both — the hard tool gate this whole primitive exists for.

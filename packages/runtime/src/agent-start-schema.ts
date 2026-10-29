@@ -427,19 +427,26 @@ export const agentStartInputShape = {
     .describe(
       `Context-continuity policy: warning, compaction, fresh-continuation and hard-stop thresholds. ${help("contextContinuity")}`
     ),
+  agent: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `AIP-42 agent to run: an AGENT.md path, an agent id (<cwd>/.agents/<id>/AGENT.md), or a role name (executor, supervisor, pack roles). Replaces agentId, agentPath and role, which stay as aliases. ${help("agent")}`
+    ),
   agentId: z
     .string()
     .min(1)
     .optional()
     .describe(
-      `AIP-42 agent by id: loads <cwd>/.agents/<id>/AGENT.md as spawn defaults. ${help("agentId")}`
+      `AIP-42 agent by id: loads <cwd>/.agents/<id>/AGENT.md as spawn defaults. Alias of agent. ${help("agentId")}`
     ),
   agentPath: z
     .string()
     .min(1)
     .optional()
     .describe(
-      `AIP-42 agent by AGENT.md path (absolute or relative to cwd); wins over agentId. ${help("agentPath")}`
+      `AIP-42 agent by AGENT.md path (absolute or relative to cwd); wins over agentId. Alias of agent. ${help("agentPath")}`
     ),
   operator: z
     .string()
@@ -459,7 +466,7 @@ export const agentStartInputShape = {
     .string()
     .optional()
     .describe(
-      `Delegation gate: 'executor' = leaf (cannot delegate), 'supervisor' = may delegate. ${help("role")}`
+      `Deprecated alias of agent. Delegation gate: 'executor' = leaf (cannot delegate), 'supervisor' = may delegate. ${help("role")}`
     ),
   allowPromptFrom: z
     .array(z.string().min(1))

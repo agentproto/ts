@@ -39,6 +39,7 @@ import type {
   AdapterModelRow,
 } from "./http-server.js"
 import { agentStartInputShape, mcpBool } from "./agent-start-schema.js"
+import { ROLE_ALIAS_DEPRECATION } from "./agent-ref.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
@@ -789,6 +790,9 @@ export function registerAgentTools(
         },
         {
           ...spawnInput,
+          ...(input.role !== undefined && input.agent === undefined
+            ? { harnessWarnings: [ROLE_ALIAS_DEPRECATION] }
+            : {}),
           adapter: adapter ?? CLOUD_ADAPTER_PLACEHOLDER,
           // Auto-stamp the source channel (#session-visibility): when the
           // caller didn't pass an explicit `origin`, fall back to the connecting

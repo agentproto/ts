@@ -15,6 +15,7 @@ import type { AcpMcpServer } from "@agentproto/acp"
 
 import { startHttpServer, buildSpawnSessionHttpArgs, type AgentAdapterResolver } from "../http-server.js"
 import type { SpawnAgentSessionInput } from "../session-spawn.js"
+import { ROLE_ALIAS_DEPRECATION } from "../agent-ref.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
@@ -272,6 +273,18 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     expect(buildSpawnSessionHttpArgs({ browser: false }, "mock").browser).toBe(false)
     expect(buildSpawnSessionHttpArgs({ browser: "firefox" }, "mock")).not.toHaveProperty("browser")
     expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("browser")
+  })
+
+  it("buildSpawnSessionHttpArgs forwards `agent`", () => {
+    expect(buildSpawnSessionHttpArgs({ agent: "executor" }, "mock").agent).toBe("executor")
+    expect(buildSpawnSessionHttpArgs({ agent: "" }, "mock")).not.toHaveProperty("agent")
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("agent")
+  })
+
+  it("buildSpawnSessionHttpArgs warns for a client-supplied `role` without `agent`", () => {
+    const roleOnly = buildSpawnSessionHttpArgs({ role: "executor" }, "mock")
+    expect(roleOnly.harnessWarnings).toContain(ROLE_ALIAS_DEPRECATION)
+    expect(buildSpawnSessionHttpArgs({ agent: "executor" }, "mock")).not.toHaveProperty("harnessWarnings")
   })
 
   it("trace:true (and stringified \"true\") forwards to registry.spawnAgent; omitted stays absent", async () => {

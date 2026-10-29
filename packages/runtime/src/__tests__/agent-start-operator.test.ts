@@ -16,6 +16,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { registerAgentTools } from "../agent-tools.js"
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import { ROLE_ALIAS_DEPRECATION } from "../agent-ref.js"
 
 function parseToolJson(result: unknown): any {
   const content = (result as { content?: Array<{ type: string; text?: string }> }).content
@@ -189,5 +190,15 @@ describe("agent_start agentId / agentPath (MCP twin of POST /sessions/agent)", (
     const { registry, start } = await setup()
     const body = parseToolJson(await start({ cwd: home, agentId: "coach" }))
     expect(registry.get(body.id)?.meta?.agentId).toBe("coach")
+  })
+})
+
+describe("agent_start `agent` / deprecated `role` warning", () => {
+  it("returns the role-alias deprecation warning for `role` and not for `agent`", async () => {
+    const { start } = await setup()
+    const viaRole = parseToolJson(await start({ role: "executor" }))
+    expect(viaRole.warnings).toContain(ROLE_ALIAS_DEPRECATION)
+    const viaAgent = parseToolJson(await start({ agent: "executor" }))
+    expect(viaAgent.warnings ?? []).not.toContain(ROLE_ALIAS_DEPRECATION)
   })
 })
