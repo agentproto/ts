@@ -279,14 +279,6 @@ export interface SandboxAgentSessionProxyOpts {
    *  Off for every other provider (local/e2b/Box keep byte-identical
    *  behaviour). */
   surfaceHostTurnErrors?: boolean
-  /** Device-spawn only (F2 single-dial spawn): the session's FIRST prompt
-   *  was already carried INSIDE `host.start()`'s `agent_start` (the
-   *  controller's `bootSandboxAgentSession` forwards it), so the proxy must
-   *  NOT send it again over a second `agent_prompt` dial. The first `send()`
-   *  then only OPENS the box's event stream to consume the already-running
-   *  turn; every later `send()` prompts normally. Off for every other
-   *  provider (local/e2b/Box keep byte-identical behaviour). */
-  promptCarriedInStart?: boolean
   /** BOX-LOGIN BRIDGE — re-upload the box's login copy when the HOST's own
    *  login file changes under a long-lived box (a re-login while this session
    *  runs). Called beside every active-only `renewBoxLifetime()` site, behind
@@ -1367,15 +1359,9 @@ export function createSandboxAgentSessionProxy(
     let since: number
     try {
       since = await host.currentEventsCursor()
-      // F2 single-dial spawn: the first prompt rode inside `host.start()`'s
-      // `agent_start`, so re-sending it here would be the second concurrent
-      // `forwardHttpStream` dial this fix removes (and would double-deliver
-      // the turn). Just consume the stream below.
-      if (!(opts.promptCarriedInStart && isFirstTurn)) {
-        renewBoxLifetime()
-        refreshLoginFile()
-        await host.prompt(remoteSessionId, prompt)
-      }
+      renewBoxLifetime()
+      refreshLoginFile()
+      await host.prompt(remoteSessionId, prompt)
     } catch (err) {
       await parkIfDetached()
       throw err
