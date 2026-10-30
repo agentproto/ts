@@ -125,6 +125,85 @@ describe("resolveSpawnDefaults", () => {
   })
 })
 
+describe("resolveSpawnDefaults: context settings layer per key (AIP-46)", () => {
+  it("a request setting one key inherits the daemon block's other keys", () => {
+    const defaults: SpawnDefaultsConfig = {
+      contextContinuity: { hardStopAtPct: 95 },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {
+      contextContinuity: { autoCompactAtTokens: 300_000 },
+    })
+    expect(result.contextContinuity).toEqual({
+      hardStopAtPct: 95,
+      autoCompactAtTokens: 300_000,
+    })
+  })
+
+  it("layers contextSettings per key across request, adapter and daemon", () => {
+    const defaults: SpawnDefaultsConfig = {
+      contextContinuity: { warnAtPct: 50 },
+      contextSettings: { compactAtPct: 60 },
+      adapters: {
+        hermes: {
+          contextContinuity: { continueFreshAtPct: 70 },
+          contextSettings: { hardStopAtPct: 85 },
+        },
+      },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {
+      contextSettings: { autoCompactAtTokens: 300_000 },
+    })
+    expect(result.contextContinuity).toEqual({
+      warnAtPct: 50,
+      compactAtPct: 60,
+      continueFreshAtPct: 70,
+      hardStopAtPct: 85,
+      autoCompactAtTokens: 300_000,
+    })
+  })
+
+  it("the highest layer wins a key set by more than one layer", () => {
+    const defaults: SpawnDefaultsConfig = {
+      contextContinuity: { warnAtPct: 40 },
+      adapters: { hermes: { contextContinuity: { warnAtPct: 50 } } },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {
+      contextContinuity: { warnAtPct: 60 },
+    })
+    expect(result.contextContinuity).toEqual({ warnAtPct: 60 })
+  })
+
+  it("within one layer contextSettings.mode beats contextContinuity.mode and an alias-only key survives", () => {
+    const defaults: SpawnDefaultsConfig = {
+      contextContinuity: { mode: "manual", warnAtPct: 50 },
+      contextSettings: { mode: "auto" },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {})
+    expect(result.contextContinuity).toEqual({ mode: "auto", warnAtPct: 50 })
+
+    const request = resolveSpawnDefaults(undefined, "hermes", {
+      contextContinuity: { mode: "manual", warnAtPct: 50 },
+      contextSettings: { mode: "auto" },
+    })
+    expect(request.contextContinuity).toEqual({ mode: "auto", warnAtPct: 50 })
+  })
+
+  it("a key explicitly undefined in a higher layer does not erase the lower value", () => {
+    const defaults: SpawnDefaultsConfig = {
+      contextContinuity: { hardStopAtPct: 95 },
+    }
+    const result = resolveSpawnDefaults(defaults, "hermes", {
+      contextSettings: { hardStopAtPct: undefined, autoCompactAtTokens: 300_000 },
+    })
+    expect(result.contextContinuity).toEqual({ hardStopAtPct: 95, autoCompactAtTokens: 300_000 })
+  })
+
+  it("no block anywhere gives undefined, not an empty object", () => {
+    const result = resolveSpawnDefaults({}, "hermes", {})
+    expect(result.contextContinuity).toBeUndefined()
+  })
+})
+
 describe("resolveBundleDefaults (PLAN D phase 1)", () => {
   it("passes through with no defaults and no explicit call", () => {
     expect(resolveBundleDefaults(undefined, "opencode", {})).toEqual({ bundleIds: [] })

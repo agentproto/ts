@@ -6037,6 +6037,10 @@ export function buildSpawnSessionHttpArgs(
     b.contextContinuity !== undefined
       ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextContinuity)
       : undefined
+  const contextSettings =
+    b.contextSettings !== undefined
+      ? parseWithJsonTolerance(contextContinuityInputSchema, b.contextSettings)
+      : undefined
   const deferredTools = parseBooleanField(b.deferredTools)
   // Agent-level clerk hook — the HTTP twin of `agent_start.hooks`. Without
   // this mapping a Pygmalion spawn through `POST /sessions/agent` silently
@@ -6056,6 +6060,7 @@ export function buildSpawnSessionHttpArgs(
     | "bundles"
     | "daemonMount"
     | "contextContinuity"
+    | "contextSettings"
     | "deferredTools"
     | "hooks"
     | "attach"
@@ -6067,6 +6072,7 @@ export function buildSpawnSessionHttpArgs(
     ...(bundles !== undefined ? { bundles } : {}),
     ...(daemonMount !== undefined ? { daemonMount } : {}),
     ...(contextContinuity !== undefined ? { contextContinuity } : {}),
+    ...(contextSettings !== undefined ? { contextSettings } : {}),
     ...(deferredTools !== undefined ? { deferredTools } : {}),
     ...(hooks !== undefined ? { hooks } : {}),
     ...(attach !== undefined ? { attach } : {}),

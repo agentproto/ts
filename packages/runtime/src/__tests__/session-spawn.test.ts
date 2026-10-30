@@ -408,6 +408,47 @@ describe("spawnAgentSession", () => {
     })
   })
 
+  describe("context settings layer per key (AIP-46)", () => {
+    async function spawnContext(
+      defaults: object | undefined,
+      input: Record<string, unknown>,
+    ) {
+      const { deps } = baseDeps({
+        ...(defaults ? { loadDefaultsConfig: async () => defaults as never } : {}),
+      })
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: "/tmp",
+        ...input,
+      })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected spawn")
+      return result
+    }
+
+    it("layers a per-spawn contextSettings key over the daemon block", async () => {
+      const result = await spawnContext(
+        { contextContinuity: { hardStopAtPct: 95 } },
+        { contextSettings: { autoCompactAtTokens: 300_000 } },
+      )
+      expect(result.descriptor.contextContinuity).toMatchObject({
+        hardStopAtPct: 95,
+        autoCompactAtTokens: 300_000,
+      })
+    })
+
+    it("the legacy contextContinuity input name also layers per key over the daemon block", async () => {
+      const result = await spawnContext(
+        { contextContinuity: { hardStopAtPct: 95 } },
+        { contextContinuity: { autoCompactAtTokens: 300_000 } },
+      )
+      expect(result.descriptor.contextContinuity).toMatchObject({
+        hardStopAtPct: 95,
+        autoCompactAtTokens: 300_000,
+      })
+    })
+  })
+
   it("forwards commandSandbox verbatim to the resolved adapter's startSession — distinct from (and independent of) the AIP-36 `sandbox` field", async () => {
     const startSession = vi.fn(async () => fakeAgentSession())
     const { deps } = baseDeps({ resolveAgentAdapter: makeResolver(startSession) })

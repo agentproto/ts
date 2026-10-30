@@ -1005,6 +1005,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       {
         skills: JSON.stringify(["agentproto"]),
         contextContinuity: JSON.stringify({ mode: "ask" }),
+        contextSettings: JSON.stringify({ mode: "auto", hardStopAtPct: 92 }),
         deferredTools: "true",
         attach: "false",
       },
@@ -1012,6 +1013,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     )
     expect(args.skills).toEqual(["agentproto"])
     expect(args.contextContinuity).toEqual({ mode: "ask" })
+    expect(args.contextSettings).toEqual({ mode: "auto", hardStopAtPct: 92 })
     expect(args.deferredTools).toBe(true)
     expect(args.attach).toBe(false)
   })
@@ -1021,6 +1023,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       {
         skills: ["ok", 3],
         contextContinuity: { warnAtPct: 150 },
+        contextSettings: { warnAtPct: 150 },
         deferredTools: "yes",
         attach: { parent: "" },
         notifyUrl: "file:///etc/passwd",
@@ -1034,6 +1037,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     for (const key of [
       "skills",
       "contextContinuity",
+      "contextSettings",
       "deferredTools",
       "attach",
       "notifyUrl",

@@ -106,6 +106,31 @@ export interface ContextContinuityPolicy
 }
 
 /**
+ * The AIP-46 name of the context-settings block. `contextContinuity` is the
+ * legacy spelling of the same block (AIP-70 section 4 alias).
+ */
+export type ContextSettings = ContextContinuityPolicy
+
+/**
+ * Layer context settings, lowest layer first. Each setting is its own axis
+ * (AIP-46 §Session context rule 4): the highest layer that sets a key wins
+ * for that key, and the other keys of a lower layer stay in force. An
+ * undefined layer and a key whose value is undefined are skipped. Returns
+ * undefined when no layer is given, so callers keep their "no policy" case.
+ */
+export function layerContextSettings(
+  ...layers: ReadonlyArray<ContextSettings | undefined>
+): ContextSettings | undefined {
+  let out: ContextSettings | undefined
+  for (const layer of layers) {
+    if (!layer) continue
+    const defined = Object.fromEntries(Object.entries(layer).filter(([, value]) => value !== undefined))
+    out = { ...out, ...defined }
+  }
+  return out
+}
+
+/**
  * Fully-resolved, validated policy. This is the shape stored on a session
  * descriptor and returned by status queries.
  */

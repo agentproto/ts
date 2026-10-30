@@ -624,9 +624,10 @@ allows.
 
 ## contextContinuity
 
-Context-continuity policy for this session — controls warning,
-opportunistic compaction, fresh-continuation, and hard-stop thresholds.
-Resolved from global → per-adapter → explicit override.
+Legacy alias of `contextSettings` (AIP-70 section 4). Context policy for this
+session: controls warning, opportunistic compaction, fresh-continuation, and
+hard-stop thresholds. Resolved from global → per-adapter → explicit override,
+key by key.
 
 Every step that discards conversation context writes a checkpoint (goal,
 plan, decisions, changed files, tests, errors, risks, next step) first: a
@@ -677,6 +678,21 @@ session. Default off: the checkpoint is extracted from the transcript alone,
 with no billed model turn before compaction. The context-rescue path never
 asks, and explicit handoffs (`session_checkpoint`, `session_continue_fresh`)
 are unaffected.
+
+## contextSettings
+
+The AIP-46 name of the context-settings block. Its keys are exactly those
+described under [contextContinuity](#contextcontinuity): `mode`, the percent
+bands (`warnAtPct`, `compactAtPct`, `continueFreshAtPct`, `hardStopAtPct`),
+`autoCompactAtTokens`, `compactRequiresOperator`, `compactHandoffTurn`,
+`handoffAtQuotaRemaining`, and the checkpoint sections.
+
+Each setting is its own axis: the block layers over the daemon, adapter and
+request, and the highest layer that sets a key wins for that key. A request
+that sets only `autoCompactAtTokens` keeps the daemon block's
+`hardStopAtPct`. When both names appear in the same layer, `contextSettings`
+wins over `contextContinuity` key by key. `contextContinuity` remains a
+working alias of the whole block.
 
 ## role
 

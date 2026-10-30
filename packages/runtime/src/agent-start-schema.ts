@@ -427,6 +427,13 @@ export const agentStartInputShape = {
     .describe(
       `Context-continuity policy: warning, compaction, fresh-continuation and hard-stop thresholds. ${help("contextContinuity")}`
     ),
+  contextSettings: jsonTolerant(
+    opaque(contextContinuityInputSchema)
+  )
+    .optional()
+    .describe(
+      `Context settings (AIP-46): the absolute compaction threshold, the floor and the reservation of compaction to the operator, plus the host's percent bands. Each setting layers on its own over the adapter and daemon blocks. Same keys as contextContinuity, which stays an alias. ${help("contextSettings")}`
+    ),
   agent: z
     .string()
     .min(1)

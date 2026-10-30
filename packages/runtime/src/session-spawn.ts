@@ -164,6 +164,7 @@ import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-
 import {
   resolveContextContinuityPolicy,
   type ContextContinuityPolicy,
+  type ContextSettings,
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
@@ -1849,8 +1850,12 @@ export interface SpawnAgentSessionInput {
   hooks?: { clerk?: Partial<ClerkHookConfig> }
   /** Context-continuity policy for this session — controls warning,
    *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
-   *  Resolved from global → per-adapter → per-model → explicit override. */
+   *  Resolved from global → per-adapter → per-model → explicit override,
+   *  key by key. */
   contextContinuity?: ContextContinuityPolicy
+  /** The AIP-46 name of the same block; layered per setting over the adapter
+   *  and daemon blocks and wins over `contextContinuity` key by key. */
+  contextSettings?: ContextSettings
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -3886,6 +3891,7 @@ export async function spawnAgentSession(
     options: input.options,
     auth: input.auth,
     contextContinuity: input.contextContinuity,
+    contextSettings: input.contextSettings,
   })
   // Fold bundle skills (collected while expanding `bundleIds` above) into the
   // resolved skill list — bundles UNION in regardless of whether `skills`

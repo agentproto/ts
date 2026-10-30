@@ -6,6 +6,7 @@ import {
   contextContinuityNextAction,
   contextContinuityStateForPct,
   isContextContinuityHardStopped,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   validateContextContinuityPolicy,
   type ContextContinuityPolicy,
@@ -234,5 +235,33 @@ describe("computeContextContinuityStatus", () => {
     const status = computeContextContinuityStatus("sess_1", policy, undefined, 500)
     expect(status.nextAction).toBe("none")
     expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
+  })
+})
+
+describe("layerContextSettings", () => {
+  it("returns undefined when no layer is given", () => {
+    expect(layerContextSettings()).toBeUndefined()
+    expect(layerContextSettings(undefined, undefined)).toBeUndefined()
+  })
+
+  it("returns a copy of a single layer", () => {
+    const layer: ContextContinuityPolicy = { mode: "auto", warnAtPct: 50 }
+    const out = layerContextSettings(layer)
+    expect(out).toEqual(layer)
+    expect(out).not.toBe(layer)
+  })
+
+  it("later layers win per key, and an undefined key or layer is skipped", () => {
+    const out = layerContextSettings(
+      { mode: "manual", warnAtPct: 40, hardStopAtPct: 95 },
+      undefined,
+      { mode: "auto", hardStopAtPct: undefined, compactAtPct: 60 },
+    )
+    expect(out).toEqual({
+      mode: "auto",
+      warnAtPct: 40,
+      hardStopAtPct: 95,
+      compactAtPct: 60,
+    })
   })
 })

@@ -669,7 +669,7 @@ a PTY/command restart with overrides is rejected `400`.
 **Auto-compact threshold.** `--auto-compact-at-tokens <n>` sets the ABSOLUTE
 context threshold (tokens) at which an idle session is compacted automatically
 (clamped to 600000 max; `0` disables). Same semantic as
-`contextContinuity.autoCompactAtTokens` in [`../reference/config-schema.md`](../reference/config-schema.md) / the
+`contextSettings.autoCompactAtTokens` (alias `contextContinuity.autoCompactAtTokens`) in [`../reference/config-schema.md`](../reference/config-schema.md) / the
 `agent_start` spawn field, but stamped onto this session's config for the
 restart's lifetime.
 
@@ -1162,7 +1162,7 @@ agentproto sessions handoff: ses_abc12 (claude-code) → ses_def34 (codex)
 ```
 
 Handoff is something you trigger — it is **not** automatic by default (see
-[contextContinuity mode](../guides/handoff.md#when-does-a-handoff-happen)).
+[contextSettings mode](../guides/handoff.md#when-does-a-handoff-happen)).
 Step-by-step walkthrough: [Hand off from Claude Code to Codex](../guides/handoff.md).
 
 HTTP twin: `POST /sessions/:id/handoff` with body

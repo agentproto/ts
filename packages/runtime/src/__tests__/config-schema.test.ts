@@ -62,9 +62,11 @@ describe("agentprotoConfigSchema", () => {
             options: { model: "sonnet" },
             auth: { mode: "subscription", source: "claude-code-oauth" },
             contextContinuity: { mode: "ask", warnAtPct: 55 },
+            contextSettings: { compactAtPct: 65 },
           },
         },
         contextContinuity: { mode: "auto", warnAtPct: 50, compactAtPct: 60, continueFreshAtPct: 70, hardStopAtPct: 90 },
+        contextSettings: { hardStopAtPct: 95 },
         defaultRoleDepthCutoff: 1,
         maxGrantableDelegation: 2,
         langfuseTracing: false,
@@ -303,6 +305,34 @@ describe("redactConfigValue", () => {
       A: { set: true },
       B: { set: false },
     })
+  })
+})
+
+describe("contextSettings config keys (AIP-46 name of contextContinuity)", () => {
+  it("registers defaults.contextSettings and the adapter key hot and writable", () => {
+    for (const path of [
+      "defaults.contextSettings",
+      "defaults.adapters.claude-code.contextSettings",
+    ]) {
+      expect(findConfigKey(path), path).toMatchObject({ apply: "hot", writable: true })
+    }
+  })
+
+  it("accepts the new block at both levels in the whole-config schema", () => {
+    const result = agentprotoConfigSchema.safeParse({
+      defaults: {
+        contextSettings: { mode: "auto", hardStopAtPct: 95 },
+        adapters: { hermes: { contextSettings: { compactAtPct: 65 } } },
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("accepts a valid block through validateConfigKeyValue", () => {
+    expect(validateConfigKeyValue("defaults.contextSettings", { mode: "ask" })).toEqual({ ok: true })
+    expect(
+      validateConfigKeyValue("defaults.adapters.hermes.contextSettings", { warnAtPct: 50 }),
+    ).toEqual({ ok: true })
   })
 })
 

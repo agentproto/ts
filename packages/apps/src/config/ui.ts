@@ -1513,6 +1513,7 @@ function adapterDefaultsPaths(slug) {
     "defaults.adapters." + slug + ".skills",
     "defaults.adapters." + slug + ".options",
     "defaults.adapters." + slug + ".contextContinuity",
+    "defaults.adapters." + slug + ".contextSettings",
     "defaults.adapters." + slug + ".auth.mode",
     "defaults.adapters." + slug + ".auth.source",
     "defaults.adapters." + slug + ".auth.provider",
@@ -2270,7 +2271,7 @@ var DEFAULTS_GROUPS = [
         || p === "defaults.maxGrantableDelegation" || p === "provenance.wrapGh" || p === "agentsMd.inlineMaxKb";
     },
   },
-  { id: "context-continuity", title: "Context continuity", match: function (p) { return p === "defaults.contextContinuity"; } },
+  { id: "context-continuity", title: "Context continuity", match: function (p) { return p === "defaults.contextContinuity" || p === "defaults.contextSettings"; } },
   {
     id: "observability", title: "Observability",
     match: function (p) {
