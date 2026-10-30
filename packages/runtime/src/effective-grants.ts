@@ -97,7 +97,7 @@ export function deriveEffectiveGrants(input: EffectiveGrantsInput): EffectiveGra
     }
   })
 
-  for (const session of input.sessions) {
+    for (const session of input.sessions) {
     const entries = session.allowPromptFrom ?? []
     if (entries.length === 0) continue
     const label = session.operatorLabel !== undefined && session.operatorLabel !== "" ? session.operatorLabel : undefined
@@ -114,6 +114,15 @@ export function deriveEffectiveGrants(input: EffectiveGrantsInput): EffectiveGra
             entry,
             sessionId: session.id,
             reason: "an empty label prefix matches nothing",
+          })
+          continue
+        }
+        if (value.endsWith("*")) {
+          unmapped.push({
+            source: "session.allowPromptFrom",
+            entry,
+            sessionId: session.id,
+            reason: "AIP-38 principals are exact; a label prefix has no grant form",
           })
           continue
         }
@@ -138,10 +147,10 @@ export function deriveEffectiveGrants(input: EffectiveGrantsInput): EffectiveGra
             { action: "session:control", scope },
           ],
         },
-        exact: true,
+        exact: false,
         portable: label !== undefined,
         sessionId: session.id,
-        ...(principal.endsWith("*") && principal !== ANY ? { note: "A label prefix: AIP-23 reads a label as a set." } : {}),
+        note: "A label grant is honored only when the caller has no parent; the host also applies that condition.",
       })
     }
   }

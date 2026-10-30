@@ -100,7 +100,7 @@ describe("deriveEffectiveGrants", () => {
           { action: "session:control", scope: "label:brain" },
         ],
       },
-      exact: true,
+      exact: false,
       portable: true,
       sessionId: "s1",
     })
@@ -120,7 +120,7 @@ describe("deriveEffectiveGrants", () => {
     expect(grant?.portable).toBe(false)
   })
 
-  it("maps any, keeps label prefixes as-is, and reports unusable entries as unmapped", () => {
+  it("maps any, reports label prefixes as unmapped, and reports unusable entries as unmapped", () => {
     const any = deriveEffectiveGrants(
       input({ sessions: [{ id: "s1", allowPromptFrom: ["any"] }] }),
     )
@@ -129,9 +129,13 @@ describe("deriveEffectiveGrants", () => {
     const prefix = deriveEffectiveGrants(
       input({ sessions: [{ id: "s1", allowPromptFrom: ["label:ops*"] }] }),
     )
-    const prefixGrant = prefix.grants.find(g => g.source === "session.allowPromptFrom")
-    expect(prefixGrant?.grant.principal).toBe("session-label://ops*")
-    expect(prefixGrant?.note).toContain("label prefix")
+    expect(prefix.grants.filter(g => g.source === "session.allowPromptFrom")).toEqual([])
+    expect(prefix.unmapped).toHaveLength(1)
+    expect(prefix.unmapped[0]).toMatchObject({
+      source: "session.allowPromptFrom",
+      entry: "label:ops*",
+      sessionId: "s1",
+    })
 
     const bad = deriveEffectiveGrants(
       input({ sessions: [{ id: "s1", allowPromptFrom: ["label:", "label:*", "sess_abc"] }] }),

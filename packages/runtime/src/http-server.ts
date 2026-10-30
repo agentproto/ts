@@ -11553,8 +11553,10 @@ async function handlePermissions(
   }
 
   if (path === "/permissions/grants" && req.method === "GET") {
-    const messaging = await messagingDefaultsFor()
-    const operatorDelegates = await operatorDelegatesFor()
+    const [messaging, operatorDelegates] = await Promise.all([
+      messagingDefaultsFor(),
+      operatorDelegatesFor(),
+    ])
     const report = deriveEffectiveGrants({
       messaging: {
         allowSiblings: messaging.allowSiblings,
