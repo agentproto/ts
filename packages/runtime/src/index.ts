@@ -1364,6 +1364,7 @@ export {
 } from "./canonical-posture.js"
 export type { PostureEnforcement, PostureResolution, SessionMode } from "./canonical-posture.js"
 export { parseDuration } from "./heartbeat.js"
+export { servingCliCommand, setServingCli } from "./native-hooks-defaults.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {
   BUCKETS_ROOT,
