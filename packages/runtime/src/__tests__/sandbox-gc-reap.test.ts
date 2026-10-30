@@ -115,6 +115,24 @@ describe("reapGcEntry — capacity-free reaping", () => {
     expect(res2).toEqual({ ok: true, action: "stopped" })
   })
 
+  it("a reconnect whose provider says the box 'no longer exists' stamps the row stopped, not a repeat failure", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [entryOf({ sandboxId: "bx_vanished", state: "paused" })])
+    const goneErr = new Error(
+      'sandbox "bx_vanished" no longer exists on its provider — the box is gone',
+    )
+    goneErr.name = "SandboxBoxGoneError"
+    const res = await reapGcEntry(entryOf({ sandboxId: "bx_vanished" }), {
+      // Explicit pause reaches the connect path (remove is skipped).
+      pause: true,
+      resolveProvider: async () =>
+        handleFor({ connect: async () => { throw goneErr } }),
+      ledgerPath: ledger,
+    })
+    expect(res).toEqual({ ok: true, action: "stopped" })
+    expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
+  })
+
   it("a REAL remove failure leaves the ledger row alone", async () => {
     const ledger = await tmpLedgerPath()
     await seedLedger(ledger, [entryOf()])
@@ -305,6 +323,8 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
         fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "pause" }]]),
         resolveProvider: async () => ({ provider: { remove, connect } }) as SandboxGcProviderHandle,
         ledgerPath: ledger,
+        // Keep the age bound out of this test: the row is old on purpose.
+        pausedMaxAgeMs: Number.POSITIVE_INFINITY,
       },
       line => lines.push(line),
     )
@@ -313,6 +333,32 @@ describe("runSandboxGcPass — the automatic dead-session pass", () => {
     expect(pause).not.toHaveBeenCalled()
     expect(remove).not.toHaveBeenCalled()
     expect(readFileSync(ledger, "utf8")).toContain('"paused"')
+  })
+
+  it("a paused row PAST the age bound is reaped (kill, not kept) even with a pause teardown", async () => {
+    const ledger = await tmpLedgerPath()
+    await seedLedger(ledger, [
+      entryOf({ sandboxId: "bx_paused_expired", state: "paused", originSessionId: "sess_dead" }),
+    ])
+    const pause = vi.fn(async () => {})
+    const remove = vi.fn(async (_id: string, _opts?: { force?: boolean }) => {})
+    const connect = vi.fn(async (id: string) => ({ sandboxId: id, stop: vi.fn(async () => {}), pause }))
+    const summary = await runSandboxGcPass(
+      {
+        fetchSessionStatuses: () => new Map([["sess_dead", "killed"]]),
+        fetchSessionLineage: () => new Map([["sess_dead", { sandboxTeardown: "pause" }]]),
+        resolveProvider: async () => ({ provider: { remove, connect } }) as SandboxGcProviderHandle,
+        ledgerPath: ledger,
+        pausedMaxAgeMs: 30 * 60_000,
+      },
+      line => lines.push(line),
+    )
+    expect(summary).toEqual({ ran: true, candidates: 1, stopped: 1, paused: 0, kept: 0, failures: 0 })
+    expect(remove).toHaveBeenCalledWith("bx_paused_expired", { force: true })
+    expect(connect).not.toHaveBeenCalled()
+    expect(pause).not.toHaveBeenCalled()
+    expect(readFileSync(ledger, "utf8")).toContain('"stopped"')
+    expect(lines.some(line => line.includes("paused for") && line.includes("reaping"))).toBe(true)
   })
 
   it("a paused row whose origin teardown is kill/unset is still deleted", async () => {

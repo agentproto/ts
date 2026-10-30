@@ -153,6 +153,7 @@ import {
 } from "./idle-reaper.js"
 import {
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   parseSandboxGcInterval,
   startSandboxGcTimer,
   type SandboxGcSessionLineage,
@@ -951,7 +952,9 @@ export {
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
 export {
+  DEFAULT_PAUSED_BOX_MAX_AGE_MS,
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   startSandboxGcTimer,
   runSandboxGcPass,
   type SandboxGcTimer,
@@ -5082,6 +5085,9 @@ export async function createGateway(
       },
       resolveProvider: (slug: string) =>
         (opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore()))(slug),
+      pausedMaxAgeMs: parsePausedBoxMaxAge(
+        process.env.AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS,
+      ),
     })
     console.log(`[sandbox-gc] automatic dead-session box gc every ${sandboxGcIntervalMs}ms`)
   }
