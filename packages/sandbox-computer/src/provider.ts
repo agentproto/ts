@@ -69,6 +69,36 @@ const DEFAULT_WORKSPACE = "/home/user"
 /** Tenant every computer is created under when config doesn't name one. */
 export const DEFAULT_TENANT_ID = "agentproto"
 export const DEFAULT_TEMPLATE = "agentproto-workstation"
+
+/** Fallback Node heap for work in the box when its memory is unknown. A
+ *  monorepo `pnpm install`/build on a 12 GB workstation dies at Node's ~4 GB
+ *  default heap. When `config.memoryMiB` is known the heap is sized from it
+ *  instead (see {@link boxNodeOptions}). */
+const DEFAULT_BOX_NODE_OPTIONS = "--max-old-space-size=8192"
+const BOX_HEAP_FLOOR_MB = 768
+const BOX_HEAP_CAP_MB = 8192
+
+/** Node heap flag sized to the box: 60% of its RAM, clamped to
+ *  [768, 8192] MB so the heap stays below the box's memory reservation and
+ *  leaves room for the daemon and build workers. Unknown memory falls back to
+ *  {@link DEFAULT_BOX_NODE_OPTIONS}. */
+function boxNodeOptions(memoryMiB: number | undefined): string {
+  if (memoryMiB === undefined || memoryMiB <= 0) return DEFAULT_BOX_NODE_OPTIONS
+  const heapMb = Math.min(BOX_HEAP_CAP_MB, Math.max(BOX_HEAP_FLOOR_MB, Math.floor(memoryMiB * 0.6)))
+  return `--max-old-space-size=${heapMb}`
+}
+
+/** Layer the box's Node heap under a caller's env, matching
+ *  `@agentproto/sandbox-e2b`'s merge semantics: a caller heap flag wins, a
+ *  caller `NODE_OPTIONS` without one gets ours appended, and an empty value
+ *  counts as absent. */
+function withBoxNodeOptions(env: Record<string, string>, memoryMiB: number | undefined): void {
+  const heap = boxNodeOptions(memoryMiB)
+  const caller = env.NODE_OPTIONS
+  if (caller === undefined || caller.trim() === "") env.NODE_OPTIONS = heap
+  else if (!caller.includes("--max-old-space-size")) env.NODE_OPTIONS = `${caller} ${heap}`
+}
+
 /** Cap on one exec call: the controller accepts `timeoutSec ≤ 600`. */
 const EXEC_TIMEOUT_MAX_SEC = 600
 const DEFAULT_WAIT_READY_TIMEOUT_MS = 120_000
@@ -996,6 +1026,7 @@ async function bootOnClient(
     const v = typeof raw === "string" ? raw : undefined
     if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
   }
+  withBoxNodeOptions(createEnv, config.memoryMiB)
 
   throwIfBootCancelled(opts.signal)
   let created

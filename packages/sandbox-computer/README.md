@@ -47,6 +47,51 @@ provider's `setup` (stored creds), plus env fallbacks:
 
 The provider validates the controller's `egressIp` field with the typed `@agentproto/computer-api` contract, so a malformed `egressIp` in a controller response fails the call instead of being ignored.
 
+## Template and box environment contract
+
+The computer template image (`agentproto-workstation` by default) is NOT built
+from this repository. This repo only defines the e2b workstation under
+`templates/workstation/`; the microVM template is registered on the computer
+controller (a separate deployment/repository). Change the template there, then
+point `config.template` at the new id here.
+
+The template must provide these basics for an agentproto session:
+
+| item | requirement |
+| --- | --- |
+| `gh` | GitHub CLI must be on `PATH`. Without it a boxed agent cannot open or inspect PRs. |
+| writable scratch dirs | `/tmp/opencode` and the other adapter temp dirs must be writable by the session user (uid 1000), not root-owned. |
+| Node heap | The provider sets `NODE_OPTIONS` from `config.memoryMiB`: 60% of the box's RAM clamped to 768–8192 MB (8192 MB when memory is unknown). A caller `NODE_OPTIONS` that already sets `--max-old-space-size` wins; otherwise the heap flag is appended. Without this a monorepo `pnpm install`/`build` can die at Node's default heap. |
+| base tools | `git`, `bash`, `curl` and a TLS trust store are assumed by the boot flow. |
+
+### Recommended default egress
+
+The controller denies all egress (DNS included) when `config.egress` is absent.
+For a normal coding session the allowlist should at least include:
+
+```ts
+egress: [
+  "registry.npmjs.org",
+  "github.com",
+  "api.github.com",
+  "objects.githubusercontent.com",
+  "release-assets.githubusercontent.com",
+]
+```
+
+`objects.githubusercontent.com` / `release-assets.githubusercontent.com` are
+needed by native package prebuilds (sharp, esbuild, etc.) that redirect there
+after the registry fetch. Add the model/provider endpoints your adapters use.
+
+### Git token scope
+
+The workspace Git token is injected as `AGENTPROTO_GIT_TOKEN` (and mirrored as
+`GH_TOKEN`) by the runtime, not by this provider. It is minted outside this
+repository. If boxed `gh` calls to the check-runs API answer `403`, the token
+needs `checks:read` (and `pull_requests:read`) in addition to the contents
+scope used for clone/push. That scope is configured where the workspace
+credential is created, not here.
+
 ## Capabilities
 
 Registered under the slug `computer`:
