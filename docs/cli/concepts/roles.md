@@ -213,9 +213,12 @@ Each spawn gets one of five verdicts:
 - `observe` (default) counts every verdict and logs one warning for each
   `would_deny` pair, changing no decision.
 - `enforce` refuses a `would_deny` child with `delegation_denied`
-  (`details.gate: "agent"`, `details.legacyCode: "role_spawn_denied"`), and
-  an `allowed` child skips the `canSpawn` lattice because the declared list
-  is the authority.
+  (`details.gate: "agent"`, `details.legacyCode: "role_spawn_denied"`). An
+  `allowed` child skips only `canSpawn`'s open-mode level comparison: the
+  declared list decides which child, but the parent's own hard gates still
+  apply. A parent whose `toolPolicy.delegation` is `"deny"` can spawn
+  nothing, and a parent with `spawnableRoles` set must still name the child
+  there — `delegatesTo` cannot widen a closed allowlist.
 - `off` skips evaluation entirely.
 
 `undeclared`, `unbound` and `no_caller` always fall through to the unchanged
@@ -226,6 +229,12 @@ exactly as before. The counters are in memory (a daemon restart resets them);
 Manifest `delegates_to` is not read in this release: the runtime has no
 reader for it, so a manifest-bound caller is `undeclared` and stays on the
 lattice.
+
+A manifest-bound *child* is matched by its manifest id, the same value the
+session records as `meta.agentSlug`, not by the role its manifest resolves
+to. A caller whose `delegatesTo` names only roles (`"executor"`) will
+therefore see `would_deny` for a child spawned via `agent`/`agentId`; the
+caller must name the manifest id to declare that child.
 
 ## Depth-derived default
 

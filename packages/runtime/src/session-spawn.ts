@@ -185,6 +185,7 @@ import {
   type SpawnBrowserMode,
 } from "./browser-mount.js"
 import {
+  DEFAULT_ROLE_DEPTH_CUTOFF,
   resolveRole,
   composeRoleContext,
   canSpawn,
@@ -3302,7 +3303,12 @@ export async function spawnAgentSession(
     }
   }
   if (input.role === undefined) {
-    const side = childDepth === 0 ? "root" : "nested"
+    // Same boundary `resolveRole` uses to pick root/nested: `depth < cutoff`,
+    // not `depth === 0`. A configured cutoff > 1 binds `defaultAgent.root` at
+    // depths 1..cutoff-1, so the warning must follow it or it names the side
+    // that was never consulted.
+    const cutoff = configDefaults?.defaultRoleDepthCutoff ?? DEFAULT_ROLE_DEPTH_CUTOFF
+    const side = childDepth < cutoff ? "root" : "nested"
     for (const name of unknownDefaultAgents(
       configDefaults?.spawn?.defaultAgent,
       roleRegistry,
@@ -3387,10 +3393,14 @@ export async function spawnAgentSession(
   // custom role that keeps delegation but must not spawn UP. A root
   // spawn (no callerScope) has no parent to gate against, same as the
   // existing depth/quota checks above. With the delegation gate in
-  // `enforce`, an `allowed` verdict skips this check: the declared list is
-  // the authority. `undeclared`, `unbound` and `no_caller` use the lattice.
+  // `enforce`, an `allowed` verdict skips only the open-mode LEVEL
+  // comparison: `canSpawn`'s hard parts still apply, so `delegatesTo`
+  // cannot widen a parent's own closed `spawnableRoles` allowlist or
+  // revive a parent whose `toolPolicy.delegation` is `"deny"`. The two
+  // authorities intersect; `undeclared`, `unbound` and `no_caller` use the
+  // full lattice unchanged.
   const delegationAllowed = delegationGateMode === "enforce" && delegationVerdict === "allowed"
-  if (callerScope && !delegationAllowed) {
+  if (callerScope) {
     let parentRole: RoleProfile
     try {
       parentRole = resolveRole(
@@ -3408,7 +3418,11 @@ export async function spawnAgentSession(
         message: `agent_start: caller role — ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-    if (!canSpawn(parentRole, role)) {
+    const latticeOk = delegationAllowed
+      ? parentRole.toolPolicy.delegation !== "deny" &&
+        (parentRole.spawnableRoles === undefined || parentRole.spawnableRoles.includes(role.name))
+      : canSpawn(parentRole, role)
+    if (!latticeOk) {
       return {
         ok: false,
         code: "role_spawn_denied",

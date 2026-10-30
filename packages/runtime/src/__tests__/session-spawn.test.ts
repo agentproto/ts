@@ -2814,6 +2814,35 @@ describe("spawnAgentSession - delegation gate (agent delegatesTo)", () => {
     expect(delegationReport("enforce").counts.allowed).toBe(1)
   })
 
+  it("enforce: an allowed verdict cannot widen a closed spawnableRoles allowlist", async () => {
+    const { registry, deps } = baseDeps({
+      ...enforceConfig(),
+      loadRoleRegistry: async () => ({
+        planner: { ...PLANNER_ROLE, spawnableRoles: ["executor"], delegatesTo: ["reviewer"] },
+        reviewer: {
+          name: "reviewer",
+          disposition: "You review code changes.",
+          toolPolicy: { delegation: "deny" as const },
+          level: 10,
+        },
+      }),
+    })
+
+    // reviewer is below planner on the level lattice AND is declared in
+    // planner's delegatesTo, so only the closed spawnableRoles allowlist can
+    // stop this spawn — and it must.
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "reviewer" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("role_spawn_denied")
+    expect(result.message).toMatch(/Allowed: executor/)
+    expect(registry.list()).toHaveLength(0)
+    expect(delegationReport("enforce").counts.allowed).toBe(1)
+  })
+
   it("enforce, scoped: an executor caller is refused delegation_denied before the lattice", async () => {
     const { registry, deps } = baseDeps(enforceConfig())
     const result = await spawnAgentSession(
@@ -2931,6 +2960,26 @@ describe("spawnAgentSession - delegation gate (agent delegatesTo)", () => {
     const nestedWarnings = nested.warnings?.join("\n") ?? ""
     expect(nestedWarnings).toContain('defaults.spawn.defaultAgent names "nopeNested"')
     expect(nestedWarnings).not.toContain('"nopeRoot"')
+  })
+
+  it("unknown-default warning follows a non-default depth cutoff", async () => {
+    const { deps } = baseDeps({
+      loadDefaultsConfig: async () => ({
+        defaultRoleDepthCutoff: 2,
+        spawn: { defaultAgent: { root: "nopeRoot", nested: "nopeNested" } },
+      }),
+    })
+    // childDepth 1 with cutoff 2 is still the ROOT side (`depth < cutoff`),
+    // so only the root default was consulted and only it may be warned about.
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("supervisor") },
+      { adapter: "mock", cwd: "/tmp" },
+    )
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    const warnings = result.warnings?.join("\n") ?? ""
+    expect(warnings).toContain('defaults.spawn.defaultAgent names "nopeRoot"')
+    expect(warnings).not.toContain('"nopeNested"')
   })
 
   it("unknown-default warning fires once when both sides name the same unknown agent", async () => {
