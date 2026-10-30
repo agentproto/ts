@@ -1,6 +1,6 @@
 ---
 "@agentproto/runtime": patch
-"@agentproto/session-presets": minor
+"@agentproto/session-presets": patch
 ---
 
-Raise agent_start timeout to 15 min and log sandbox boot failures
+Spawn sandbox sessions without the initial prompt, then deliver it over the box's `agent_prompt`, so a cold box's adapter install and first session cannot hold the spawn request open. Keep a bounded `agent_start` request ceiling (5 min, below the outer spawn budget) and log box id, adapter and elapsed ms on boot and restart failures.

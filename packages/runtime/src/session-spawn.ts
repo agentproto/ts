@@ -5641,14 +5641,6 @@ export async function spawnAgentSession(
               },
             }
           : {}),
-        // F2 single-dial spawn — DEVICE ONLY: carry the composed initial
-        // prompt INSIDE the inner `agent_start` (see `bootSandboxAgentSession`'s
-        // `initialPrompt`) so the device bridge makes ONE dial, not two. The
-        // controller still drives/records the first turn through the proxy
-        // below (`registry.spawnAgent`'s `initialPrompt` / the `wait`
-        // `sendPrompt`); `promptCarriedInStart` stops the proxy from
-        // re-sending it. Non-device sandboxes are untouched (two-dial shape).
-        ...(isDeviceSpawn && effectivePrompt !== undefined ? { initialPrompt: effectivePrompt } : {}),
         // NESTED ORCHESTRATION — the caller's `orchestrator` request,
         // forwarded onto the BOX's own `agent_start` (see the
         // `sandboxOrchestratorForward` comment above): the box daemon mints
@@ -6652,18 +6644,6 @@ export async function bootSandboxAgentSession(opts: {
    *  box, or a raw adapter conversation id) instead of starting blank. The
    *  box reports the outcome on the returned descriptor's `resumeVia`. */
   resumeSessionId?: string
-  /** DEVICE-ONLY (F2 single-dial spawn): the controller-composed initial
-   *  prompt, carried INSIDE the inner `agent_start` so ONE device-bridge
-   *  `forwardHttpStream` dial delivers both the spawn and the first turn.
-   *  Previously the prompt went as a SECOND concurrent `agent_prompt` dial
-   *  that failed at ~15s on a flapping channel (session created, prompt never
-   *  delivered — field-observed repeatedly). Forwarded as a content block so
-   *  the target daemon sends it VERBATIM (its `agent_start` block form skips
-   *  role/AGENTS.md recomposition), which keeps the host's recorded
-   *  user-prompt text identical to the controller's so the read-time device
-   *  mirror's seed walk still matches rather than re-merging the turn.
-   *  Ignored for every non-device provider. */
-  initialPrompt?: string | Record<string, unknown> | unknown[]
   /** Aborted when the session row is killed while it is still `starting`.
    *  Checked between boot phases; a boot that completes after this fires is
    *  torn down through the failed-boot path and reported as
@@ -7223,15 +7203,6 @@ export async function bootSandboxAgentSession(opts: {
   // retry (see `startDeviceSessionWithRetry`). Every other provider (local,
   // e2b, Box, …) keeps the exact single-attempt behaviour.
   const deviceTarget = deviceTargetOf(opts.sandbox)
-  // F2 single-dial spawn — only the DEVICE bridge carries the prompt inside
-  // the spawn. Wrapped as a content block (see `initialPrompt`'s doc) so the
-  // target's `agent_start` sends it verbatim instead of recomposing it.
-  const carriedPrompt =
-    deviceTarget !== undefined && opts.initialPrompt !== undefined
-      ? typeof opts.initialPrompt === "string"
-        ? [{ type: "text", text: opts.initialPrompt }]
-        : opts.initialPrompt
-      : undefined
   let remoteSessionId: string
   let resolvedCwd = boxCwd
   // PARENT RELAY: mint the short-lived, single-session-scoped relay token
@@ -7279,8 +7250,6 @@ export async function bootSandboxAgentSession(opts: {
       ...(opts.auth
         ? { auth: boxLoginUpload ? { ...opts.auth, loginFile: true } : opts.auth }
         : {}),
-      // F2 — the initial prompt rides the SAME dial as the spawn (device only).
-      ...(carriedPrompt !== undefined ? { prompt: carriedPrompt } : {}),
       // Nested orchestration — the forwarded `orchestrator` request (see the
       // opts comment above): the box daemon mints the scope and mounts
       // /mcp/orchestrator on its own loopback, reachable inside the box.
@@ -7458,9 +7427,6 @@ export async function bootSandboxAgentSession(opts: {
       // Device spawns only: surface a first-turn failure's raw host line
       // (see `surfaceHostTurnErrors`).
       ...(deviceTarget !== undefined ? { surfaceHostTurnErrors: true } : {}),
-      // F2 — when the first prompt rode the spawn dial, don't re-send it as a
-      // second `agent_prompt` dial (see `promptCarriedInStart`).
-      ...(carriedPrompt !== undefined ? { promptCarriedInStart: true } : {}),
       ...(onBeforeTeardown ? { onBeforeTeardown } : {}),
       // AIP-36 — on a shared box, a detaching session removes its own git
       // worktree of the shared clone (only when the final delivery pushed

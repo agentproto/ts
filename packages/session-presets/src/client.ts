@@ -25,15 +25,14 @@ import type {
 export const DEFAULT_MCP_URL = "http://127.0.0.1:18790/mcp"
 
 /**
- * Request timeout for `agent_start`. The MCP SDK default is 60s and the old
- * 180s ceiling still cut off a COLD sandbox box whose own `agent_start`
- * installs an adapter package and initialises its first session (2026-10-29:
- * `MCP error -32001: Request timed out` while booting an opencode box with a
- * long initial prompt). The host's box-boot deadline is 300s and the outer
- * spawn budget is 15 min, so this ceiling is aligned with those instead of
- * failing a live spawn early.
+ * Request timeout for `agent_start`. Five minutes is below the host spawn's
+ * 15 min outer budget (an inner timeout equal to the outer one can never win)
+ * but comfortably above a cold box's create + daemon-ready window. The cause
+ * of the 2026-10-29 timeout was the initial prompt riding the spawn dial, not
+ * this ceiling; the prompt now goes over `agent_prompt` after the session
+ * exists.
  */
-export const AGENT_START_TIMEOUT_MS = 15 * 60_000
+const AGENT_START_TIMEOUT_MS = 5 * 60_000
 
 /**
  * Resolve the daemon URL: explicit option → `AGENTPROTO_MCP_URL` → default.
@@ -78,12 +77,10 @@ export class HarnessClient {
 
   /** Spawn a session via `agent_start`.
    *
-   *  Uses {@link AGENT_START_TIMEOUT_MS} instead of the MCP SDK's 60s
-   *  default: a spawn on a COLD daemon (freshly booted sandbox box, first
-   *  import of a just-installed adapter package) legitimately exceeds 60s,
-   *  and a box that installs an adapter on start can exceed 180s too. The
-   *  ceiling only bounds the wait; a real rejection still surfaces
-   *  immediately. */
+   *  Uses a few-minute ceiling instead of the MCP SDK's 60s default: a
+   *  spawn on a COLD daemon (freshly booted sandbox box, first import of a
+   *  just-installed adapter package) legitimately exceeds 60s. It stays
+   *  below the outer spawn budget so this timeout can still surface. */
   async start(args: StartAgentArgs): Promise<SessionDescriptor> {
     return this.#call("agent_start", args as unknown as Record<string, unknown>, {
       timeoutMs: AGENT_START_TIMEOUT_MS,

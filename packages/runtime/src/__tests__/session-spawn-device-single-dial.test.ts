@@ -1,17 +1,11 @@
 /**
- * F2 — single-dial device spawn.
+ * Box spawn returns before the first turn.
  *
- * Field defect: `agent_start` over the device bridge was TWO concurrent
- * `forwardHttpStream` dials — the MCP `agent_start` call, then the initial
- * prompt POST (`agent_prompt`). On a flapping E2E channel the SECOND dial
- * failed at ~15s (`device_unreachable` / `transport closed during
- * handshake`), so the session was created on the host but its prompt was
- * never delivered ("sessions appear on Windows but never get talked to").
- *
- * Fix: for a `device:<fp>` spawn the controller-composed initial prompt is
- * carried INSIDE the inner `agent_start` (as a content block, so the target
- * sends it verbatim), and the sandbox proxy does NOT re-send it as a second
- * `agent_prompt` dial. Local / e2b / Box sandboxes keep the two-dial shape.
+ * Field defect (2026-10-29): the initial prompt rode the box's `agent_start`,
+ * so a cold box that installs an adapter before answering held the spawn dial
+ * open past the request timeout (`MCP error -32001: Request timed out`) and
+ * the box was torn down. The fix is to spawn WITHOUT the prompt, then deliver
+ * it over the box's `agent_prompt`, which is exactly what worked by hand.
  *
  * `@agentproto/sandbox`'s `createSandboxAgentSessionHost` is mocked (same
  * seam the other device tests use) so both remote-facing dials are counted.
@@ -65,18 +59,7 @@ vi.mock("@agentproto/sandbox", async importOriginal => {
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 
-/** Text carried in `host.start`'s `prompt` block (F2). */
-function carriedPromptText(call = 0): string {
-  const args = startMock.mock.calls[call]?.[0] as Record<string, unknown> | undefined
-  const prompt = args?.prompt
-  const blocks = Array.isArray(prompt) ? prompt : [prompt]
-  return blocks
-    .filter((b): b is { text?: unknown } => typeof b === "object" && b !== null)
-    .map(b => (typeof b.text === "string" ? b.text : ""))
-    .join("\n")
-}
-
-describe("F2 — single-dial device spawn (prompt carried in agent_start)", () => {
+describe("box spawn returns as soon as the session exists", () => {
   let registry: SessionsRegistry
   let workspace: string
 
@@ -120,28 +103,25 @@ describe("F2 — single-dial device spawn (prompt carried in agent_start)", () =
     }
   }
 
-  it("carries the prompt in the SPAWN dial and never makes a second prompt dial", async () => {
+  it("spawns the device session WITHOUT the prompt, then delivers it over the box's agent_prompt", async () => {
     const result = await spawnAgentSession(makeDeps(), {
       adapter: "opencode-cli",
       cwd: workspace,
       sandbox: "device:win-host",
-      prompt: "do the single-dial thing",
+      prompt: "do the two-dial thing",
       wait: true,
     })
     expect(result.ok).toBe(true)
     if (!result.ok) return
 
-    // The prompt rode the spawn dial, wrapped as a content block (verbatim
-    // delivery on the target — no recomposition).
-    const carried = carriedPromptText()
-    expect(carried).toContain("do the single-dial thing")
+    // The spawn dial carries no prompt, so a cold box's install/first-session
+    // work cannot hold it past the request timeout.
     const args = startMock.mock.calls[0]?.[0] as Record<string, unknown>
-    expect(Array.isArray(args.prompt)).toBe(true)
-    expect(args.prompt).toMatchObject([{ type: "text" }])
+    expect(args.prompt).toBeUndefined()
 
-    // …and the second `agent_prompt` dial was NOT made.
-    expect(hostPromptMock).not.toHaveBeenCalled()
-    // Only ONE device-bridge dial carried the spawn+prompt.
+    // The prompt is delivered separately, exactly like the hand-worked case.
+    expect(hostPromptMock).toHaveBeenCalledTimes(1)
+    expect(String(hostPromptMock.mock.calls[0]?.[1] ?? "")).toContain("do the two-dial thing")
     expect(startMock).toHaveBeenCalledTimes(1)
   })
 
