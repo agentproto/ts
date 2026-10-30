@@ -23,6 +23,7 @@
  */
 
 import type { SpawnBrowserMode } from "./browser-mount.js"
+import type { DelegationGateMode } from "./delegation-gate.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
@@ -271,6 +272,11 @@ export interface SpawnDefaultsConfig {
      *  cutoff (default `supervisor`), `nested` at or above it (default
      *  `executor`). A role name, built-in or pack-carried. */
     defaultAgent?: { root?: string; nested?: string }
+    /** AIP-46 delegation gate for nested spawns: `off` skips evaluation,
+     *  `observe` (default) counts what it would refuse without changing a
+     *  decision, `enforce` refuses a child the caller's agent does not
+     *  declare in `delegatesTo`. */
+    delegationGate?: DelegationGateMode
   }
   /** Daemon-wide sandbox safety-net policy. */
   sandbox?: {

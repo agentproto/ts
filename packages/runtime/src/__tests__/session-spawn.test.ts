@@ -125,6 +125,7 @@ import { registerSubaccountProvider, unregisterSubaccountProvider, type AuthProf
 import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
+import { delegationReport, resetDelegationObservations } from "../delegation-gate.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -2702,6 +2703,248 @@ describe("spawnAgentSession — privilege-lattice spawn gate (role-registry-exte
     })
     expect(result.ok).toBe(true)
     expect(registry.list()).toHaveLength(1)
+  })
+})
+
+describe("spawnAgentSession - delegation gate (agent delegatesTo)", () => {
+  const PLANNER_ROLE = {
+    name: "planner",
+    disposition: "You plan work and delegate execution.",
+    toolPolicy: { delegation: "allow" as const },
+    level: 50,
+  }
+
+  function scopeWithRole(role: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId: "parent",
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role,
+    }
+  }
+
+  function enforceConfig() {
+    return {
+      loadDefaultsConfig: async () => ({ spawn: { delegationGate: "enforce" as const } }),
+    }
+  }
+
+  beforeEach(() => {
+    resetDelegationObservations()
+  })
+
+  afterEach(() => {
+    resetDelegationObservations()
+  })
+
+  it("observe (default): an executor-bound caller spawning supervisor succeeds and is counted as would_deny", async () => {
+    const { deps } = baseDeps()
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor" })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected parent spawn")
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      autoParentSessionId: parent.descriptor.id,
+    })
+    expect(result.ok).toBe(true)
+
+    const report = delegationReport("observe")
+    expect(report.counts.would_deny).toBe(1)
+    expect(report.wouldDeny).toEqual([
+      expect.objectContaining({ callerAgent: "executor", childAgent: "supervisor", count: 1 }),
+    ])
+  })
+
+  it("enforce: the same spawn is refused with delegation_denied and creates no session", async () => {
+    const { registry, deps } = baseDeps(enforceConfig())
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor" })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected parent spawn")
+    const before = registry.list().length
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      autoParentSessionId: parent.descriptor.id,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("delegation_denied")
+    expect(result.details).toMatchObject({
+      gate: "agent",
+      callerAgent: "executor",
+      childAgent: "supervisor",
+      delegatesTo: [],
+      legacyCode: "role_spawn_denied",
+    })
+    expect(registry.list()).toHaveLength(before)
+    expect(delegationReport("enforce").counts.would_deny).toBe(1)
+  })
+
+  it("enforce: a supervisor-bound caller spawning executor succeeds as allowed", async () => {
+    const { deps } = baseDeps(enforceConfig())
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "supervisor" })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected parent spawn")
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+      autoParentSessionId: parent.descriptor.id,
+    })
+    expect(result.ok).toBe(true)
+    expect(delegationReport("enforce").counts.allowed).toBe(1)
+  })
+
+  it("enforce, scoped: supervisor spawning supervisor succeeds because its list declares it", async () => {
+    const { deps } = baseDeps(enforceConfig())
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("supervisor") },
+      { adapter: "mock", cwd: "/tmp", role: "supervisor" },
+    )
+    expect(result.ok).toBe(true)
+    expect(delegationReport("enforce").counts.allowed).toBe(1)
+  })
+
+  it("enforce, scoped: an executor caller is refused delegation_denied before the lattice", async () => {
+    const { registry, deps } = baseDeps(enforceConfig())
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("executor") },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("delegation_denied")
+    expect(result.details).toMatchObject({ gate: "agent", callerAgent: "executor", childAgent: "executor" })
+    expect(registry.list()).toHaveLength(0)
+  })
+
+  it("enforce: a pack role without delegatesTo is undeclared and the lattice still decides", async () => {
+    const { deps } = baseDeps({
+      ...enforceConfig(),
+      loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }),
+    })
+
+    const allowed = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(allowed.ok).toBe(true)
+
+    const rejected = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("planner") },
+      { adapter: "mock", cwd: "/tmp", role: "supervisor" },
+    )
+    expect(rejected.ok).toBe(false)
+    if (rejected.ok) throw new Error("expected failure")
+    expect(rejected.code).toBe("role_spawn_denied")
+
+    const report = delegationReport("enforce")
+    expect(report.counts.undeclared).toBe(2)
+    expect(report.wouldDeny).toEqual([])
+  })
+
+  it("off: no registry lookup, no count, and the would-be denial still succeeds", async () => {
+    const { deps } = baseDeps({
+      loadDefaultsConfig: async () => ({ spawn: { delegationGate: "off" as const } }),
+    })
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor" })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected parent spawn")
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      autoParentSessionId: parent.descriptor.id,
+    })
+    expect(result.ok).toBe(true)
+    const report = delegationReport("off")
+    expect(report.counts).toEqual({
+      allowed: 0,
+      would_deny: 0,
+      undeclared: 0,
+      unbound: 0,
+      no_caller: 0,
+    })
+  })
+
+  it("unbound: a trusted auto-parent that is not in the registry names no agent and is counted unbound", async () => {
+    const { deps } = baseDeps(enforceConfig())
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      autoParentSessionId: "sess_ghost",
+    })
+    expect(result.ok).toBe(true)
+    const report = delegationReport("enforce")
+    expect(report.counts.unbound).toBe(1)
+    expect(report.undeclaredAgents).toEqual([{ agent: "(none)", count: 1 }])
+  })
+
+  it("spoof: a caller-supplied parentSessionId never selects the caller agent", async () => {
+    const { deps } = baseDeps()
+    const parent = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "executor" })
+    expect(parent.ok).toBe(true)
+    if (!parent.ok) throw new Error("expected parent spawn")
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "supervisor",
+      parentSessionId: parent.descriptor.id,
+    })
+    expect(result.ok).toBe(true)
+    const report = delegationReport("observe")
+    expect(report.counts.would_deny).toBe(0)
+    expect(report.counts.no_caller).toBe(2)
+  })
+
+  it("unknown-default warning names only the side in use and once per name", async () => {
+    const { deps } = baseDeps({
+      loadDefaultsConfig: async () => ({
+        spawn: { defaultAgent: { root: "nopeRoot", nested: "nopeNested" } },
+      }),
+    })
+    const root = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(root.ok).toBe(true)
+    if (!root.ok) throw new Error("expected spawn")
+    const rootWarnings = root.warnings?.join("\n") ?? ""
+    expect(rootWarnings).toContain('defaults.spawn.defaultAgent names "nopeRoot"')
+    expect(rootWarnings).not.toContain('"nopeNested"')
+
+    const nested = await spawnAgentSession(
+      { ...deps, callerScope: scopeWithRole("supervisor") },
+      { adapter: "mock", cwd: "/tmp" },
+    )
+    expect(nested.ok).toBe(true)
+    if (!nested.ok) throw new Error("expected spawn")
+    const nestedWarnings = nested.warnings?.join("\n") ?? ""
+    expect(nestedWarnings).toContain('defaults.spawn.defaultAgent names "nopeNested"')
+    expect(nestedWarnings).not.toContain('"nopeRoot"')
+  })
+
+  it("unknown-default warning fires once when both sides name the same unknown agent", async () => {
+    const { deps } = baseDeps({
+      loadDefaultsConfig: async () => ({
+        spawn: { defaultAgent: { root: "nope", nested: "nope" } },
+      }),
+    })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    const warnings = result.warnings ?? []
+    const matching = warnings.filter(w => w.includes('defaults.spawn.defaultAgent names "nope"'))
+    expect(matching).toHaveLength(1)
   })
 })
 

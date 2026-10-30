@@ -68,6 +68,7 @@ import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
 import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_NESTED_AGENT, DEFAULT_ROLE_DEPTH_CUTOFF, DEFAULT_ROOT_AGENT } from "./role.js"
+import { DEFAULT_DELEGATION_GATE_MODE, type DelegationGateMode } from "./delegation-gate.js"
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
@@ -108,6 +109,12 @@ const deferredToolsConfigSchema: z.ZodType<DeferredToolsConfig> = z.union([
 const spawnBrowserModeSchema: z.ZodType<SpawnBrowserMode> = z.union([
   z.literal("headless"),
   z.literal(false),
+])
+
+const delegationGateModeSchema: z.ZodType<DelegationGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
 ])
 
 const sandboxCheckpointConfigSchema: z.ZodType<SandboxCheckpointConfig> = z
@@ -225,6 +232,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
           .object({ root: z.string().min(1).optional(), nested: z.string().min(1).optional() })
           .passthrough()
           .optional(),
+        delegationGate: delegationGateModeSchema.optional(),
       })
       .passthrough()
       .optional(),
@@ -1105,6 +1113,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Default nested agent",
     help: "Agent a nested agent_start (at or above the depth cutoff) with no agent or role binds. A role name. Unknown ⇒ the built-in default, with a warning.",
     default: DEFAULT_NESTED_AGENT,
+  },
+  {
+    path: "defaults.spawn.delegationGate",
+    schema: delegationGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Delegation gate mode",
+    help: "AIP-46 delegation gate for nested spawns: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a child the caller's agent does not declare in delegatesTo).",
+    default: DEFAULT_DELEGATION_GATE_MODE,
   },
   {
     path: "worktrees.root",

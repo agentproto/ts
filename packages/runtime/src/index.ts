@@ -1000,6 +1000,7 @@ export {
   unknownDefaultAgents,
   type DefaultAgentConfig,
 } from "./role.js"
+export type { DelegationGateMode, DelegationVerdict, DelegationReport } from "./delegation-gate.js"
 export {
   decide as decidePermission,
   collectMessageRelations,

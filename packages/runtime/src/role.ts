@@ -188,12 +188,21 @@ export interface DefaultAgentConfig {
 export function unknownDefaultAgents(
   defaultAgent: DefaultAgentConfig | undefined,
   registry?: Readonly<Record<string, RoleProfile>>,
+  side?: "root" | "nested",
 ): string[] {
   if (!defaultAgent) return []
   const roles = registry ? mergeRoleRegistry(registry) : BUILTIN_ROLES
-  return [defaultAgent.root, defaultAgent.nested].filter(
-    (name): name is string => name !== undefined && roles[name] === undefined,
-  )
+  const names =
+    side === "root"
+      ? [defaultAgent.root]
+      : side === "nested"
+        ? [defaultAgent.nested]
+        : [defaultAgent.root, defaultAgent.nested]
+  return [
+    ...new Set(
+      names.filter((name): name is string => name !== undefined && roles[name] === undefined),
+    ),
+  ]
 }
 
 /**

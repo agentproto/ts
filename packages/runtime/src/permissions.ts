@@ -97,7 +97,8 @@ export interface ActionInfo {
 export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInfo>> = {
   "session.spawn": {
     routed: false,
-    enforcedAt: "role.ts canSpawn (scoped gateway only), ?denyTools= on the self-mount",
+    enforcedAt:
+      "delegation-gate.ts (observe by default, enforce behind defaults.spawn.delegationGate), role.ts canSpawn for agents without delegatesTo, ?denyTools= on the self-mount",
     surfaces: ["agent_start", "cron_create (agent action)", "workflow_start", "app_run", "POST /sessions"],
   },
   "session.drive": {
