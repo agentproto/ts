@@ -3440,7 +3440,7 @@ export async function startHttpServer(
         // built with a SessionsRegistry. /sessions, /sessions/:id,
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
-        if (opts.sessions && path.startsWith("/sessions")) {
+        if (opts.sessions && (path.startsWith("/sessions") || path === "/usage/rollup")) {
           if (isMutatingSessionsRoute(req.method ?? "GET", path)) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
