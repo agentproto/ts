@@ -5494,6 +5494,10 @@ export async function spawnAgentSession(
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
     let sandboxPauseAfterIdleMs: number | undefined
     let sandboxDeliveryTarget: SandboxDeliveryTarget | undefined
+    // HOST repo root behind the in-box checkout. `cwd` is replaced by the
+    // box's own path after boot, so capture it now for the exit-time
+    // checkpoint gc (`SessionDescriptor.sandboxRepoRoot`).
+    let sandboxRepoRoot: string | undefined
     let sandboxPorts: Record<number, string> | undefined
     let appServe: SessionAppServeInfo | undefined
     let commandSandbox: SandboxMode | undefined
@@ -5528,6 +5532,7 @@ export async function spawnAgentSession(
       // Killing the placeholder mid-boot aborts the boot: the phases below
       // check this signal and a cancelled boot tears its box down instead of
       // registering a session.
+      sandboxRepoRoot = cwd
       const bootAbort = new AbortController()
       const pendingSandbox = registry.spawnAgentPending({
         id: mintedSessionId,
@@ -5923,6 +5928,7 @@ export async function spawnAgentSession(
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
       ...(sandboxPauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs } : {}),
       ...(sandboxDeliveryTarget ? { sandboxDeliveryTarget } : {}),
+      ...(sandboxRepoRoot ? { sandboxRepoRoot } : {}),
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
         ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
         : {}),

@@ -3107,6 +3107,12 @@ export interface SessionDescriptor {
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root the sandbox workspace was cloned from. The session's own
+   *  `cwd` names a path INSIDE the box (`/home/user/...`), which the host's
+   *  checkpoint gc cannot resolve; this is the host-side repo the
+   *  `agentproto-checkpoint/*` refs live on. Only set for a sandbox workspace
+   *  spawn. */
+  sandboxRepoRoot?: string
   /** The spawn's own `agent_start.sandboxCheckpoint` override, persisted so a
    *  restart or a boot-time re-attach re-resolves the same checkpoint policy
    *  (`false` stays off across a daemon restart). Absent ⇒ the global
@@ -6197,6 +6203,9 @@ export interface SpawnAgentInput {
   sandboxPauseAfterIdleMs?: number
   /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root behind the box checkout — see
+   *  `SessionDescriptor.sandboxRepoRoot`. */
+  sandboxRepoRoot?: string
   /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
   /** Effective adapter confinement, resolved by the caller — see
@@ -7267,7 +7276,11 @@ export function createSessionsRegistry(opts?: {
     // reclaimer's own classify; absent port or absent work branch = no-op.
     if (runSandboxCheckpointGc && rt.desc.kind === "agent-cli" && rt.desc.sandboxDeliveryTarget?.branch) {
       const branch = rt.desc.sandboxDeliveryTarget.branch
-      const input = { cwd: rt.desc.cwd, branch }
+      // A sandbox session's `cwd` is a path INSIDE the box. The checkpoint
+      // refs live on the HOST workspace repo, which is why this used to
+      // no-op silently (repoRootOf(boxPath) == null) and left every
+      // `agentproto-checkpoint/wt/*` branch on the studio remote forever.
+      const input = { cwd: rt.desc.sandboxRepoRoot ?? rt.desc.cwd, branch }
       try {
         void runSandboxCheckpointGc(input).catch(err => {
           console.error(
@@ -12510,6 +12523,7 @@ export function createSessionsRegistry(opts?: {
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
@@ -12757,6 +12771,7 @@ export function createSessionsRegistry(opts?: {
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
