@@ -352,6 +352,19 @@ import {
   type SessionTokenMode,
 } from "./identity-defaults.js"
 import {
+  addIdentityTotals,
+  emptyIdentityCounters,
+  emptyIdentityTotals,
+  loadIdentityObservations,
+  saveIdentityObservations,
+  IDENTITY_BOOTS_MAX,
+  type ClaimOnlyClass,
+  type IdentityBoot,
+  type IdentityCounters,
+  type IdentityKind,
+  type IdentityTotals,
+} from "./identity-observations.js"
+import {
   createAuthProfile,
   deleteAuthProfile,
   listAuthProfiles,
@@ -1417,9 +1430,16 @@ export interface RuntimeHttpServerOptions {
    *  serves the counters. `mode` is `defaults.identity.sessionTokens`, read
    *  per request; `"off"` observes nothing. In `"shadow"` observation never
    *  changes how a request is handled; `"enforce"` refuses the classes
-   *  `enforceCallerIdentity` lists. Without it the route 404s. */
+   *  `enforceCallerIdentity` lists. Without it the route 404s. `observations`
+   *  persists the totals across restarts, so a restart adds to them and
+   *  `since` stays the first boot recorded. */
   identity?: {
     mode(): SessionTokenMode | Promise<SessionTokenMode>
+    /** Persist the counters across restarts to `path` (see identity-observations.ts).
+     *  Omitted ⇒ in-memory only, as before. `flushMs` is the debounce of the
+     *  periodic write (default 30000); the totals are also written once at start
+     *  and on `stop()`. */
+    observations?: { path: string; flushMs?: number }
   }
   /** Optional — when wired, exposes /workflows/* routes for starting and
    *  managing background workflow runs (stage-barrier parallel steps).
@@ -2168,7 +2188,42 @@ export async function startHttpServer(
   const identityRefused = emptyIdentityCounters()
   const identityByRoute: Record<string, IdentityCounters> = {}
   const claimOnlyByClass: Record<ClaimOnlyClass, number> = { external: 0, delivered: 0, undelivered: 0, unknown: 0 }
-  const identitySince = new Date().toISOString()
+  const identityObservations = opts.identity?.observations
+  const identityBase = identityObservations ? loadIdentityObservations(identityObservations.path) : undefined
+  const identityBootedAt = new Date().toISOString()
+  /** The first boot ever recorded (from the file), else this boot. */
+  const identitySince = identityBase?.since ?? identityBootedAt
+  const identityBoots: IdentityBoot[] = [
+    ...(identityBase?.boots ?? []),
+    { at: identityBootedAt, ...(opts.meta.build?.sha ? { build: opts.meta.build.sha } : {}) },
+  ].slice(-IDENTITY_BOOTS_MAX)
+  let identityDirty = false
+  /** Persisted base plus this process's live counters. */
+  function identityTotals(): IdentityTotals {
+    return addIdentityTotals(identityBase?.totals ?? emptyIdentityTotals(), {
+      counters: identityCounters,
+      refused: identityRefused,
+      byRoute: identityByRoute,
+      claimOnlyByClass,
+    })
+  }
+  function flushIdentityObservations(): void {
+    if (!identityObservations) return
+    saveIdentityObservations(identityObservations.path, {
+      version: 1,
+      since: identitySince,
+      totals: identityTotals(),
+      boots: identityBoots,
+    })
+    identityDirty = false
+  }
+  flushIdentityObservations()
+  const identityFlushTimer = identityObservations
+    ? setInterval(() => {
+        if (identityDirty) flushIdentityObservations()
+      }, identityObservations.flushMs ?? 30_000)
+    : undefined
+  identityFlushTimer?.unref()
   const identityLogged = new Set<string>()
   const identityObserved = new WeakMap<IncomingMessage, Promise<IdentityObservation | undefined>>()
   let identityClassifyFailureLogged = false
@@ -2225,6 +2280,7 @@ export async function startHttpServer(
       const claimClass = kind === "claim_only" && claim !== undefined ? claimOnlyClassOf(claim) : undefined
       const routeClass = identityRouteClass(route)
       identityCounters[kind]++
+      identityDirty = true
       ;(identityByRoute[routeClass] ??= emptyIdentityCounters())[kind]++
       if (claimClass) claimOnlyByClass[claimClass]++
       if (kind === "claim_only" || kind === "mismatch" || kind === "invalid_token") {
@@ -2291,6 +2347,7 @@ export async function startHttpServer(
             : undefined
     if (!refusal) return false
     identityRefused[obs.kind]++
+    identityDirty = true
     res.writeHead(403, { "content-type": "application/json" })
     res.end(JSON.stringify(refusal))
     return true
@@ -5076,16 +5133,20 @@ export async function startHttpServer(
         // and open like `/reactions` and `/routines` above: it serves counts,
         // a start time and what enforce mode covers (AIP-46 rule 8), never a
         // token, a hash or a session id. Mutating routes keep their own gate.
+        // `since` is the first boot recorded when the counters persist; the
+        // totals then add up across restarts. `bootedAt` and `boots` say when,
+        // and with what build, the daemon restarted.
         if (opts.identity && path === "/identity" && req.method === "GET") {
           const mode = await opts.identity.mode()
+          const totals = identityTotals()
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
             JSON.stringify({
               mode,
-              counters: identityCounters,
-              refused: identityRefused,
-              byRoute: identityByRoute,
-              claimOnlyByClass,
+              counters: totals.counters,
+              refused: totals.refused,
+              byRoute: totals.byRoute,
+              claimOnlyByClass: totals.claimOnlyByClass,
               enforces: {
                 mode,
                 surfaces: ["/mcp", ...IDENTITY_GATED_SESSION_ROUTES.map(r => r.label)],
@@ -5093,6 +5154,8 @@ export async function startHttpServer(
                 sandboxed: false,
               },
               since: identitySince,
+              bootedAt: identityBootedAt,
+              ...(identityObservations ? { boots: identityBoots } : {}),
             }),
           )
           return
@@ -5559,6 +5622,8 @@ export async function startHttpServer(
   return {
     url: `http://${bind}:${opts.port}`,
     async stop() {
+      if (identityFlushTimer) clearInterval(identityFlushTimer)
+      flushIdentityObservations()
       // Per-request transports/servers are torn down on `res.close`,
       // so we only need to stop the HTTP listener here. The WSS is
       // bound `noServer:true` so closing the HTTP server also tears
@@ -10912,11 +10977,8 @@ async function handleRoutinesListing(
   return true
 }
 
-/** How a caller identified itself on one request (see `observeCallerIdentity`). */
-type IdentityKind = "verified" | "mismatch" | "invalid_token" | "claim_only" | "anonymous"
-type IdentityCounters = Record<IdentityKind, number>
-/** What a `claim_only` request names (see `claimOnlyClassOf`). */
-type ClaimOnlyClass = "external" | "delivered" | "undelivered" | "unknown"
+/** One request's caller-identity classification (see `observeCallerIdentity`;
+ *  the kinds and classes live in identity-observations.ts). */
 interface IdentityObservation {
   mode: SessionTokenMode
   kind: IdentityKind
@@ -10938,10 +11000,6 @@ function isIdentityGatedSessionRoute(method: string, path: string): boolean {
 
 /** Distinct (kind, claim, route) log lines kept per process. */
 const IDENTITY_LOG_KEYS_MAX = 1000
-
-function emptyIdentityCounters(): IdentityCounters {
-  return { verified: 0, mismatch: 0, invalid_token: 0, claim_only: 0, anonymous: 0 }
-}
 
 /** The `byRoute` bucket of a path: `mcp`, `sessions`, else the path itself. */
 function identityRouteClass(path: string): string {
