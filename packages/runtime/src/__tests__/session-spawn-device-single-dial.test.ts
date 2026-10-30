@@ -142,6 +142,24 @@ describe("box spawn returns as soon as the session exists", () => {
     expect(String(hostPromptMock.mock.calls[0]?.[1] ?? "")).toContain("keep two dials")
   })
 
+  it("tears the adopted session down when the follow-up prompt dial throws", async () => {
+    vi.spyOn(registry, "sendPrompt").mockRejectedValueOnce(new Error("device_unreachable"))
+
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode-cli",
+      cwd: workspace,
+      sandbox: "device:win-host",
+      prompt: "deliver this",
+      wait: true,
+    })
+
+    expect(result.ok).toBe(false)
+    // The failed second dial must not leave a live-looking row behind.
+    expect(
+      registry.list().filter(s => s.status === "running" || s.status === "starting"),
+    ).toHaveLength(0)
+  })
+
   it("a device spawn with NO prompt makes neither a carried prompt nor a prompt dial", async () => {
     const result = await spawnAgentSession(makeDeps(), {
       adapter: "opencode-cli",

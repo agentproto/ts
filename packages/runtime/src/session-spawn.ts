@@ -6056,9 +6056,18 @@ export async function spawnAgentSession(
     // wait mode: block until the first turn completes, then return
     // the descriptor with cleaned output appended.
     if (input.wait && effectivePrompt) {
-      await registry.sendPrompt(desc.id, effectivePrompt, {
-        ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
-      })
+      try {
+        await registry.sendPrompt(desc.id, effectivePrompt, {
+          ...(initialSystemPrompt ? { system: initialSystemPrompt } : {}),
+        })
+      } catch (err) {
+        // The row was adopted by `registry.spawnAgent` above. A failed first
+        // prompt dial (the box's `agent_prompt`) must not leave a live-looking
+        // session whose turn never arrived; kill it so the box is released
+        // and the caller gets the failure, not a stranded row.
+        registry.kill(desc.id)
+        throw err
+      }
       const waitLines: string[] = []
       const waitUnsub = registry.attach(desc.id, (line: string) => {
         waitLines.push(line)
