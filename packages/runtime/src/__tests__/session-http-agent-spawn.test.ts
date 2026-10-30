@@ -15,6 +15,7 @@ import type { AcpMcpServer } from "@agentproto/acp"
 
 import { startHttpServer, buildSpawnSessionHttpArgs, type AgentAdapterResolver } from "../http-server.js"
 import type { SpawnAgentSessionInput } from "../session-spawn.js"
+import { ROLE_ALIAS_DEPRECATION } from "../agent-ref.js"
 import { createSessionsRegistry } from "../sessions.js"
 import type { AgentSessionLike, AgentStreamEvent, SessionDescriptor } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
@@ -272,6 +273,20 @@ describe("POST /sessions/agent — orchestrator/mcpServers parity with agent_sta
     expect(buildSpawnSessionHttpArgs({ browser: false }, "mock").browser).toBe(false)
     expect(buildSpawnSessionHttpArgs({ browser: "firefox" }, "mock")).not.toHaveProperty("browser")
     expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("browser")
+  })
+
+  it("buildSpawnSessionHttpArgs forwards `agent`", () => {
+    expect(buildSpawnSessionHttpArgs({ agent: "executor" }, "mock").agent).toBe("executor")
+    expect(buildSpawnSessionHttpArgs({ agent: "" }, "mock")).not.toHaveProperty("agent")
+    expect(buildSpawnSessionHttpArgs({}, "mock")).not.toHaveProperty("agent")
+  })
+
+  it("buildSpawnSessionHttpArgs warns for a client-supplied `role` without `agent`", () => {
+    const roleOnly = buildSpawnSessionHttpArgs({ role: "executor" }, "mock")
+    expect(roleOnly.harnessWarnings).toContain(ROLE_ALIAS_DEPRECATION)
+    expect(buildSpawnSessionHttpArgs({ agent: "executor" }, "mock")).not.toHaveProperty("harnessWarnings")
+    // An empty `agent` is not forwarded, so it does not silence the notice.
+    expect(buildSpawnSessionHttpArgs({ role: "executor", agent: "" }, "mock").harnessWarnings).toContain(ROLE_ALIAS_DEPRECATION)
   })
 
   it("trace:true (and stringified \"true\") forwards to registry.spawnAgent; omitted stays absent", async () => {
@@ -857,6 +872,46 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
         const res = await spawn(path, { commandSandbox: "workspce", prompt: "hi" })
         expect(res.status).toBe(400)
         expect(await res.json()).toMatchObject({ error: "invalid_command_sandbox" })
+      }
+      expect(startSession.mock.calls.length).toBe(calls)
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("an unresolvable or conflicting `agent` is a 400 invalid_agent, never a spawn", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (extra: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...extra }),
+        })
+
+      expect((await spawn({ agent: "executor" })).status).toBe(201)
+      const calls = startSession.mock.calls.length
+      for (const extra of [{ agent: "nope" }, { agent: "executor", agentId: "x" }, { agent: "executor", role: "supervisor" }]) {
+        const res = await spawn(extra)
+        expect(res.status).toBe(400)
+        expect(await res.json()).toMatchObject({ error: "invalid_agent" })
       }
       expect(startSession.mock.calls.length).toBe(calls)
     } finally {

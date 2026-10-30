@@ -680,8 +680,9 @@ are unaffected.
 
 ## role
 
-Spawn-time role gating whether this child may itself delegate (spawn/drive
-further children) and, if it can, which roles IT may in turn spawn.
+Deprecated alias of `agent`. Spawn-time role gating whether this child may
+itself delegate (spawn/drive further children) and, if it can, which roles IT
+may in turn spawn.
 Built-ins: 'executor' = leaf, cannot delegate — `orchestrator` is ignored
 and `agent_start`/`agent_prompt` are stripped from its default toolset,
 regardless of `promptAppend`. 'supervisor' = may delegate (today's default
@@ -924,21 +925,35 @@ wins when both are set; `0` disables the timer AND the turn-end hook even
 when `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs`
 (per-checkpoint wall-clock budget).
 
+## agent
+
+The ONE agent reference for this spawn: an AIP-42 agent id
+(`<cwd>/.agents/<id>/AGENT.md`), an explicit `AGENT.md` path (a value
+containing `/` or `\`, or ending in `.md`), or a role name (`executor`,
+`supervisor`, or a pack role from `role_list`). A path becomes `agentPath`; an
+AGENT.md on disk wins over a role of the same name and becomes `agentId`;
+otherwise a known role becomes `role`. `agentId`, `agentPath` and `role` keep
+working as aliases; pass only one of `agent`, `agentId` or `agentPath`.
+`role` is deprecated in favour of `agent` and will be removed in
+`@agentproto/runtime` 6.0.0; a caller that passes it still gets the same
+behaviour plus a deprecation warning.
+
 ## agentId
 
-AIP-42 agent by logical id. The daemon loads `<cwd>/.agents/<agentId>/AGENT.md`
-and applies its prompt, persona, model, skills and tools as spawn DEFAULTS; a
-field you pass on the call always wins. The by-id twin of `agentPath`; when
-both are set, `agentPath` wins. This is the same field `POST /sessions/agent`
-already takes. A manifest that cannot be found or read fails the spawn with
-`agent_manifest_unresolved` / `agent_manifest_unreadable`.
+Alias of `agent`. AIP-42 agent by logical id. The daemon loads
+`<cwd>/.agents/<agentId>/AGENT.md` and applies its prompt, persona, model,
+skills and tools as spawn DEFAULTS; a field you pass on the call always wins.
+The by-id twin of `agentPath`; when both are set, `agentPath` wins. This is
+the same field `POST /sessions/agent` already takes. A manifest that cannot be
+found or read fails the spawn with `agent_manifest_unresolved` /
+`agent_manifest_unreadable`.
 
 ## agentPath
 
-AIP-42 agent by explicit AGENT.md path, absolute or relative to the resolved
-`cwd`. Same default-filling semantics as `agentId`, and it wins when both are
-set. The session records the manifest identity in `meta.agentManifestPath`,
-`meta.agentId` and `meta.agentRoleHash`.
+Alias of `agent`. AIP-42 agent by explicit AGENT.md path, absolute or relative
+to the resolved `cwd`. Same default-filling semantics as `agentId`, and it wins
+when both are set. The session records the manifest identity in
+`meta.agentManifestPath`, `meta.agentId` and `meta.agentRoleHash`.
 
 ## operator
 
