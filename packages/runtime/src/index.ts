@@ -134,6 +134,7 @@ import {
   sessionCredentialsFile,
 } from "./session-credentials.js"
 import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-defaults.js"
+import { identityObservationsFile } from "./identity-observations.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { withSessionToken } from "./session-spawn.js"
 import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
@@ -5031,6 +5032,7 @@ export async function createGateway(
     // `defaults.identity.sessionTokens` is hot within that window.
     identity: {
       mode: createIdentityModeReader(),
+      ...(persist ? { observations: { path: identityObservationsFile() } } : {}),
     },
   })
 

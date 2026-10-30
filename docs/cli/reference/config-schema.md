@@ -265,7 +265,16 @@ never refused: enforcement never outruns delivery (rule 8). The default stays
 `"shadow"`. Before turning it on, read `GET /identity`: `claimOnlyByClass.delivered`
 counts the requests enforce would refuse as claim-only, `counters.mismatch` and
 `counters.invalid_token` the others, and `enforces` lists the surfaces and
-adapters it covers; `refused` counts what it refused since the daemon started.
+adapters it covers; `refused` counts what it refused since the observations
+began.
+
+The totals behind `GET /identity` persist in
+`<AGENTPROTO_HOME|~/.agentproto>/identity-observations.json` and add up across
+daemon restarts, so a deploy does not erase the window you are reading. `since`
+is the first boot recorded in that file; `bootedAt` is the current boot, and
+`boots` lists the last 50 boots with their time and build sha, so you can see
+when and with what the daemon restarted. Deleting the file starts a new window
+at zero.
 
 Whatever the mode, a session caller (a valid session token, or a trusted claim
 naming a session the daemon spawned) cannot write `defaults.messaging.*`,
