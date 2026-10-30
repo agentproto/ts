@@ -437,6 +437,33 @@ describe("spawnAgentSession", () => {
       })
     })
 
+    it("a layered block whose bands conflict fails as invalid_context_settings and names the layers", async () => {
+      const { deps } = baseDeps({
+        loadDefaultsConfig: async () =>
+          ({
+            contextContinuity: { warnAtPct: 70, compactAtPct: 80, continueFreshAtPct: 88, hardStopAtPct: 95 },
+          }) as never,
+      })
+      // Valid against the built-in bands (65 < 78 < 90), in conflict with the
+      // daemon's compactAtPct 80 once layered.
+      const result = await spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: "/tmp",
+        contextSettings: { continueFreshAtPct: 78 },
+      })
+      expect(result).toMatchObject({ ok: false, code: "invalid_context_settings" })
+      if (!result.ok) {
+        expect(result.message).toContain("compactAtPct (80) must be < continueFreshAtPct (78)")
+        expect(result.message).toContain("daemon defaults sets warnAtPct=70, compactAtPct=80, continueFreshAtPct=88, hardStopAtPct=95")
+        expect(result.message).toContain("request sets continueFreshAtPct=78")
+      }
+    })
+
+    it("the same request without a daemon block is valid against the built-in bands", async () => {
+      const result = await spawnContext(undefined, { contextSettings: { continueFreshAtPct: 78 } })
+      expect(result.descriptor.contextContinuity).toMatchObject({ continueFreshAtPct: 78 })
+    })
+
     it("the legacy contextContinuity input name also layers per key over the daemon block", async () => {
       const result = await spawnContext(
         { contextContinuity: { hardStopAtPct: 95 } },

@@ -1,6 +1,8 @@
 ---
-"@agentproto/runtime": major
+"@agentproto/runtime": minor
 "@agentproto/apps": patch
 ---
 
-Adds `contextSettings` as the AIP-46 name of the context-continuity block on `agent_start`, `POST /sessions/agent` and in `defaults.contextSettings` / `defaults.adapters.<slug>.contextSettings`, keeping `contextContinuity` as an alias. Spawn defaults now layer context settings setting by setting across the daemon, adapter and request blocks, with each layer winning only the keys it sets; this changes the effective policy for callers that previously passed a partial `contextContinuity` block and relied on whole-object replacement (e.g. a partial request block now inherits the daemon's percent bands and auto-compact threshold instead of the built-in defaults), hence the major bump. The config UI registers the new keys alongside the legacy ones.
+Context settings now layer setting by setting over the request, adapter and daemon blocks (AIP-46 §Session context rule 4), and `contextSettings` is the name of the block on `agent_start`, `POST /sessions/agent`, `POST /sessions/:id/restart` and in `defaults.contextSettings` and `defaults.adapters.<slug>.contextSettings`; `contextContinuity` stays an alias. A layered block whose percent bands conflict fails the spawn as `invalid_context_settings` (HTTP 400) and names the layers.
+
+Minor, not major (`.changeset/README.md` reserves major for a removed export, a changed signature or a renamed type): nothing is removed or renamed, `ContextSettings` and `layerContextSettings` are new exports. A partial block now inherits its unset keys from the adapter and daemon blocks instead of the built-in defaults, which is the AIP-46 conformance fix.

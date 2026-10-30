@@ -162,6 +162,8 @@ import {
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
 import {
+  describeBandLayers,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   type ContextContinuityPolicy,
   type ContextSettings,
@@ -2076,6 +2078,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
         | "invalid_agent"
+        | "invalid_context_settings"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
         | "unsupported_auth_source"
@@ -3910,13 +3913,39 @@ export async function spawnAgentSession(
   // resolver from the manifest). Adapters that DON'T (hermes, whose `skills`
   // is an opaque comma-joined option) keep their ids untouched and raise no
   // "unknown skill id" warning.
-  const resolvedContextContinuity: ResolvedContextContinuityPolicy =
-    resolveContextContinuityPolicy(
+  let resolvedContextContinuity: ResolvedContextContinuityPolicy
+  try {
+    resolvedContextContinuity = resolveContextContinuityPolicy(
       undefined,
       undefined,
       undefined,
       spawnDefaults.contextContinuity,
     )
+  } catch (err) {
+    // The layers are each valid alone but can conflict once layered key by
+    // key (a request's continueFreshAtPct under the daemon's compactAtPct):
+    // a 400 that says which layer sets what, never a 500.
+    const adapterDefaults = configDefaults?.adapters?.[input.adapter]
+    return {
+      ok: false,
+      code: "invalid_context_settings",
+      message:
+        `agent_start: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Context settings layer setting by setting, lowest layer first: ` +
+        describeBandLayers([
+          {
+            name: "daemon defaults",
+            block: layerContextSettings(configDefaults?.contextContinuity, configDefaults?.contextSettings),
+          },
+          {
+            name: `adapter ${input.adapter}`,
+            block: layerContextSettings(adapterDefaults?.contextContinuity, adapterDefaults?.contextSettings),
+          },
+          { name: "request", block: layerContextSettings(input.contextContinuity, input.contextSettings) },
+        ]) +
+        `.`,
+    }
+  }
   // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
   // the host. Two host wallets are the exceptions: a named `access.profileRef`
   // AND a wallet configured in `defaults.adapters.<slug>.auth` (an explicit

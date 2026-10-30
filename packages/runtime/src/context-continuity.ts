@@ -130,6 +130,25 @@ export function layerContextSettings(
   return out
 }
 
+const POLICY_BAND_KEYS = ["warnAtPct", "compactAtPct", "continueFreshAtPct", "hardStopAtPct"] as const
+
+/**
+ * Say which layer sets which percent band, lowest layer first. Used by the
+ * error a conflicting layered block raises: each band is its own axis, so
+ * the conflict is usually two layers that are each valid alone.
+ */
+export function describeBandLayers(
+  layers: ReadonlyArray<{ name: string; block: ContextSettings | undefined }>,
+): string {
+  const parts: string[] = []
+  for (const { name, block } of layers) {
+    if (!block) continue
+    const set = POLICY_BAND_KEYS.filter(key => block[key] !== undefined).map(key => `${key}=${block[key]}`)
+    if (set.length > 0) parts.push(`${name} sets ${set.join(", ")}`)
+  }
+  return parts.length > 0 ? parts.join("; ") : "no layer sets a percent band"
+}
+
 /**
  * Fully-resolved, validated policy. This is the shape stored on a session
  * descriptor and returned by status queries.

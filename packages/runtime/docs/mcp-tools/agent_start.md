@@ -694,6 +694,13 @@ that sets only `autoCompactAtTokens` keeps the daemon block's
 wins over `contextContinuity` key by key. `contextContinuity` remains a
 working alias of the whole block.
 
+Layering can combine two blocks that are each valid alone into a conflicting
+one (a request's `continueFreshAtPct: 78` under a daemon `compactAtPct: 80`).
+The spawn then fails with `invalid_context_settings` (HTTP 400), and the
+message names the layer that sets each percent band. `POST
+/sessions/:id/restart` takes the block under either name and overlays it, key
+by key, on the session's prior policy.
+
 ## role
 
 Deprecated alias of `agent`. Spawn-time role gating whether this child may

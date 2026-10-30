@@ -671,7 +671,8 @@ context threshold (tokens) at which an idle session is compacted automatically
 (clamped to 600000 max; `0` disables). Same semantic as
 `contextSettings.autoCompactAtTokens` (alias `contextContinuity.autoCompactAtTokens`) in [`../reference/config-schema.md`](../reference/config-schema.md) / the
 `agent_start` spawn field, but stamped onto this session's config for the
-restart's lifetime.
+restart's lifetime. The HTTP restart route accepts the whole block as `contextSettings` (or the alias
+`contextContinuity`) and overlays it, key by key, on the session's prior policy.
 
 **Sandbox sessions whose box is gone.** Restarting a [sandbox](#sandbox)
 session whose box died boots a fresh box instead of failing. The clone source

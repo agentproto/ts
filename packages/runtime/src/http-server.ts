@@ -275,7 +275,7 @@ import {
   renderCheckpointPrompt,
 } from "./context-checkpoint.js"
 import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
-import { computeContextPct, withContextPolicy } from "./context-continuity.js"
+import { computeContextPct, layerContextSettings, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
 import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
@@ -6501,6 +6501,7 @@ function spawnFailureStatus(code: string): number {
   if (
     code === "invalid_role" ||
     code === "invalid_agent" ||
+    code === "invalid_context_settings" ||
     code === "browser_unsupported" ||
     code === "worktree_requires_explicit_repo" ||
     code === "device_spawn_requires_repo_identity" ||
@@ -8872,18 +8873,22 @@ code { color: #9ad; }
         return true
       }
     }
+    // `contextSettings` is the AIP-46 name of the block, `contextContinuity`
+    // its legacy alias: both land in the one per-key override the restart core
+    // overlays on the prior policy (the new name wins key by key).
     let contextContinuityOverride: RestartOverrides["contextContinuity"]
-    if (b.contextContinuity !== undefined) {
-      const parsed = contextContinuityInputSchema.safeParse(b.contextContinuity)
+    for (const field of ["contextContinuity", "contextSettings"] as const) {
+      if (b[field] === undefined) continue
+      const parsed = contextContinuityInputSchema.safeParse(b[field])
       if (!parsed.success) {
         const invalid = new RestartOverrideError(
-          "restart contextContinuity override: " +
+          `restart ${field} override: ` +
             parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "),
         )
         json(invalid.status, { ...sessionRestartErrorBody(invalid), sessionId: prev.id })
         return true
       }
-      contextContinuityOverride = parsed.data
+      contextContinuityOverride = layerContextSettings(contextContinuityOverride, parsed.data)
     }
     const overrides: RestartOverrides = {
       ...(str(b.model) !== undefined ? { model: str(b.model)! } : {}),
