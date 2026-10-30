@@ -204,6 +204,32 @@ describe("restartAgentSession keeps the spawn role", () => {
     })
   }
 
+  it("a restarted session keeps the agent it is bound to (`meta.agentSlug`), through two restarts", async () => {
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    try {
+      const prev = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: process.cwd(),
+        agentSession: fakeAgentSession(),
+        adapterSlug: "mock",
+        meta: { role: "supervisor", agentSlug: "supervisor", agentId: "helper", memoryStoreRoot: join(root, "store") },
+      })
+      const restarted = await restartAgentSession(registry, resolver, prev, {
+        forceAgentResume: true,
+        memoryStoreAt: () => store,
+      })
+      expect(restarted.desc.meta?.agentSlug).toBe("supervisor")
+      const again = await restartAgentSession(registry, resolver, restarted.desc, {
+        forceAgentResume: true,
+        memoryStoreAt: () => store,
+      })
+      expect(again.desc.meta?.agentSlug).toBe("supervisor")
+    } finally {
+      registry.shutdown()
+    }
+  })
+
   it("a lineage spawned with no recorded role gets none on restart", async () => {
     const { resolver } = makeResolver()
     const registry = createSessionsRegistry({ persist: false })

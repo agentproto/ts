@@ -690,10 +690,11 @@ behaviour). Custom roles installed as role packs (see `role_list`) resolve
 the same way. A spawn made THROUGH an orchestrator is additionally gated by
 the privilege lattice: the calling role may only spawn a role allowlisted
 in its `spawnableRoles`, or — open mode, the default — at or below its own
-`level` (never something MORE privileged than itself). Omit `role` to
-derive from spawn depth (root spawns default to supervisor; spawns made
-through an orchestrator default to executor — see
-`defaultRoleDepthCutoff` in config.json's `defaults` block).
+`level` (never something MORE privileged than itself). Omit `role` (and
+`agent`) to bind `defaults.spawn.defaultAgent.root` below the depth cutoff
+(default `supervisor`) or `.nested` at or above it (default `executor`); the
+cutoff is `defaultRoleDepthCutoff` in config.json's `defaults` block
+(deprecated, removed with `role` in `@agentproto/runtime` 6.0.0).
 
 ## allowPromptFrom
 

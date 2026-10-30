@@ -144,7 +144,10 @@ export interface SpawnDefaultsConfig {
    *  Default 1 (root spawns keep today's unrestricted behaviour; any
    *  spawn made THROUGH an orchestrator defaults to executor). Tune
    *  this up (e.g. to a large number) to restore the old permissive
-   *  behaviour for existing deep spawns wholesale. */
+   *  behaviour for existing deep spawns wholesale.
+   *  @deprecated removed in `@agentproto/runtime` 6.0.0 (with `role`);
+   *  still honoured as the depth boundary between `defaults.spawn.
+   *  defaultAgent.root` and `.nested`. */
   defaultRoleDepthCutoff?: number
   /** Trust-boundary cap on pack-carried roles (see `role-registry.ts`'s
    *  `loadRoleRegistry`): a role pack whose `toolPolicy.delegation` is
@@ -264,6 +267,10 @@ export interface SpawnDefaultsConfig {
   spawn?: {
     /** Default `agent_start.browser` (`"headless"` | `false`). Default off. */
     browser?: SpawnBrowserMode
+    /** Which agent a spawn that names none binds: `root` below the depth
+     *  cutoff (default `supervisor`), `nested` at or above it (default
+     *  `executor`). A role name, built-in or pack-carried. */
+    defaultAgent?: { root?: string; nested?: string }
   }
   /** Daemon-wide sandbox safety-net policy. */
   sandbox?: {

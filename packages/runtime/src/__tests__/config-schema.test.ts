@@ -74,7 +74,7 @@ describe("agentprotoConfigSchema", () => {
         messaging: { allowSiblings: false, agentInterrupt: "deny" },
         tasks: { operatorDelegates: ["label:pygmalion-brain-persistent"] },
         mcp: { deferredTools: true },
-        spawn: { browser: "headless" },
+        spawn: { browser: "headless", defaultAgent: { root: "supervisor", nested: "executor" } },
       },
       acpAgents: {
         "my-agent": {
@@ -368,5 +368,20 @@ describe("worktrees.provision* keys", () => {
   it("a config carrying the new fields validates with no issues", () => {
     const r = validateConfig({ worktrees: { provisionConcurrency: 3, provisionConcurrencyByRepo: { a: 1 } } })
     expect(r.issues).toEqual([])
+  })
+})
+
+describe("defaults.spawn.defaultAgent keys", () => {
+  it("registers root and nested with today's built-in defaults", () => {
+    expect(findConfigKey("defaults.spawn.defaultAgent.root")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "supervisor",
+    })
+    expect(findConfigKey("defaults.spawn.defaultAgent.nested")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "executor",
+    })
   })
 })

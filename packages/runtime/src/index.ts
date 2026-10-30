@@ -994,6 +994,12 @@ export {
 } from "./session-observer.js"
 export * from "./session-message.js"
 export {
+  DEFAULT_ROOT_AGENT,
+  DEFAULT_NESTED_AGENT,
+  unknownDefaultAgents,
+  type DefaultAgentConfig,
+} from "./role.js"
+export {
   decide as decidePermission,
   collectMessageRelations,
   assertDecisionAllows,

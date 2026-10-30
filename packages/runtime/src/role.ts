@@ -75,6 +75,13 @@ export interface RoleProfile {
    * user preset, then `defaults.spawn.browser`, decide).
    */
   browser?: SpawnBrowserMode
+  /**
+   * AIP-46 §Delegation: the agents a session bound to this role may spawn,
+   * by name. Data only for now: the delegation gate still reads `level`,
+   * `spawnableRoles` and `toolPolicy` until it is moved onto this list.
+   * Undefined ⇒ the role declares nothing (a pack-carried role).
+   */
+  delegatesTo?: readonly string[]
 }
 
 /**
@@ -115,6 +122,7 @@ export const EXECUTOR_ROLE: RoleProfile = {
   // `defaults.mcp.deferredTools` setting — an operator who hasn't opted the
   // whole daemon in still gets a lean executor by default.
   deferredTools: true,
+  delegatesTo: [],
 }
 
 export const SUPERVISOR_ROLE: RoleProfile = {
@@ -130,6 +138,7 @@ export const SUPERVISOR_ROLE: RoleProfile = {
     "small work inline.",
   toolPolicy: { delegation: "allow" },
   level: 100,
+  delegatesTo: ["supervisor", "executor"],
 }
 
 const BUILTIN_ROLES: Readonly<Record<string, RoleProfile>> = {
@@ -152,12 +161,40 @@ export function mergeRoleRegistry(
 }
 
 /**
- * Depth cutoff separating the depth-derived defaults when a spawn
- * passes no explicit `role`: `depth < cutoff` → supervisor, `depth >=
- * cutoff` → executor. Overridable via config.json's
- * `defaults.defaultRoleDepthCutoff` (see `SpawnDefaultsConfig`).
+ * Depth cutoff separating the configured default agents when a spawn
+ * passes no explicit `role` or `agent`: `depth < cutoff` uses
+ * `defaults.spawn.defaultAgent.root` (default `supervisor`),
+ * `depth >= cutoff` uses `.nested` (default `executor`). Overridable via
+ * config.json's `defaults.defaultRoleDepthCutoff` (see
+ * `SpawnDefaultsConfig`), which stays the depth boundary between the two.
  */
 export const DEFAULT_ROLE_DEPTH_CUTOFF = 1
+
+/** The built-in agent a spawn naming none binds below the depth cutoff. */
+export const DEFAULT_ROOT_AGENT = "supervisor"
+/** The built-in agent a spawn naming none binds at or above the depth cutoff. */
+export const DEFAULT_NESTED_AGENT = "executor"
+
+/** `defaults.spawn.defaultAgent`: which agent a spawn that names none binds. */
+export interface DefaultAgentConfig {
+  root?: string
+  nested?: string
+}
+
+/**
+ * The names `defaultAgent` configures that the registry does not know (so the
+ * built-in default applies instead). Pure; used to warn, never to reject.
+ */
+export function unknownDefaultAgents(
+  defaultAgent: DefaultAgentConfig | undefined,
+  registry?: Readonly<Record<string, RoleProfile>>,
+): string[] {
+  if (!defaultAgent) return []
+  const roles = registry ? mergeRoleRegistry(registry) : BUILTIN_ROLES
+  return [defaultAgent.root, defaultAgent.nested].filter(
+    (name): name is string => name !== undefined && roles[name] === undefined,
+  )
+}
 
 /**
  * What a spawned session can ACTUALLY reach of the delegation surface
@@ -188,6 +225,11 @@ export interface DelegationReach {
  * explicit `name` is always honoured — `composeRoleContext` is what keeps
  * its text honest then.
  *
+ * `defaultAgent`, when given, names the role bound below the cutoff
+ * (`root`) and at or above it (`nested`); `defaults.spawn.defaultAgent`
+ * feeds it. An unknown configured name falls back to the built-in
+ * default (`DEFAULT_ROOT_AGENT`/`DEFAULT_NESTED_AGENT`).
+ *
  * `registry`, when given, is a custom (pack-carried) registry merged
  * with the two built-ins (built-ins win — see `mergeRoleRegistry`).
  * Omitted ⇒ built-ins only, byte-identical to #214.
@@ -201,6 +243,7 @@ export function resolveRole(
   cutoff: number = DEFAULT_ROLE_DEPTH_CUTOFF,
   registry?: Readonly<Record<string, RoleProfile>>,
   reach?: DelegationReach,
+  defaultAgent?: DefaultAgentConfig,
 ): RoleProfile {
   if (name !== undefined) {
     const roles = registry ? mergeRoleRegistry(registry) : BUILTIN_ROLES
@@ -216,7 +259,12 @@ export function resolveRole(
   // instead, so the role (and the disposition composed from it) matches
   // the tools the session really has.
   if (reach && !reach.reachable) return EXECUTOR_ROLE
-  return depth < cutoff ? SUPERVISOR_ROLE : EXECUTOR_ROLE
+  const roles = registry ? mergeRoleRegistry(registry) : BUILTIN_ROLES
+  const below = depth < cutoff
+  const configured = (below ? defaultAgent?.root : defaultAgent?.nested)
+  const picked = configured !== undefined ? roles[configured] : undefined
+  if (picked) return picked
+  return roles[below ? DEFAULT_ROOT_AGENT : DEFAULT_NESTED_AGENT] ?? (below ? SUPERVISOR_ROLE : EXECUTOR_ROLE)
 }
 
 /**

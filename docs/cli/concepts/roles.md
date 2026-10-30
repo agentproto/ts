@@ -188,13 +188,17 @@ names and levels, plus (in allowlist mode) the allowed set.
 
 ## Depth-derived default
 
-Omitting `role` on `agent_start` doesn't leave the child roleless —
-it derives one from spawn depth against a cutoff:
+Omitting `role` (and `agent`) on `agent_start` doesn't leave the child
+roleless; it binds the agent named by `defaults.spawn.defaultAgent.root`
+below the depth cutoff and by `defaults.spawn.defaultAgent.nested` at or
+above it. Today's values are `supervisor` (root) and `executor` (nested):
 `depth < cutoff` → `supervisor`, `depth >= cutoff` → `executor`. The
-cutoff defaults to `1` (root spawns default to `supervisor`; spawns
-made through an orchestrator sub-gateway default to `executor`) and
-is overridable via `defaults.defaultRoleDepthCutoff` in
-`~/.agentproto/config.json`.
+cutoff still defaults to `1` and is overridable via
+`defaults.defaultRoleDepthCutoff` in `~/.agentproto/config.json`; that key
+is deprecated and removed with `role` in `@agentproto/runtime` 6.0.0, while
+it stays the depth boundary between the two defaults. The session records
+the bound agent as `meta.agentSlug`, which a message envelope exposes as
+`from.agentSlug`.
 
 ## Introspection
 

@@ -111,6 +111,6 @@ describe("agent_start — boardId field", () => {
     )
     expect(result.id).toMatch(/^sess_/)
     // The stamp the task ledger's board resolution reads (task-ledger.ts).
-    expect(result.meta).toEqual({ boardId: "cowork:main", role: "executor" })
+    expect(result.meta).toEqual({ boardId: "cowork:main", role: "executor", agentSlug: "executor" })
   })
 })
