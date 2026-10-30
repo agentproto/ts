@@ -555,7 +555,8 @@ The remaining unknowns are listed under NOT VERIFIED.
 claude-code driver write, into the isolated `<CLAUDE_CONFIG_DIR>/settings.json`
 it rewrites at every spawn, one synchronous `PreCompact` entry with matcher
 `auto` and timeout 30 running `<defaults.nativeHooks.command> hook pre-compact`
-(`packages/harness/src/define-agent-cli.ts`). The command posts a
+(`packages/harness/src/define-agent-cli.ts`). When the key is unset the command
+is the CLI that serves the daemon, by absolute path. The command posts a
 `native-pre-compact` checkpoint for `$AGENTPROTO_SESSION_ID` (never with a
 handoff turn, deduped per `occurrenceId`), always exits 0 and is bounded to
 20 s. Local claude-code spawns, restarts and lazy resumes only; sandbox

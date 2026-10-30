@@ -153,6 +153,7 @@ import {
 } from "./idle-reaper.js"
 import {
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   parseSandboxGcInterval,
   startSandboxGcTimer,
   type SandboxGcSessionLineage,
@@ -951,7 +952,9 @@ export {
   type IdleReaperRegistry,
 } from "./idle-reaper.js"
 export {
+  DEFAULT_PAUSED_BOX_MAX_AGE_MS,
   DEFAULT_SANDBOX_GC_INTERVAL_MS,
+  parsePausedBoxMaxAge,
   startSandboxGcTimer,
   runSandboxGcPass,
   type SandboxGcTimer,
@@ -1080,6 +1083,7 @@ import { registerQuotaStatusTool } from "./quota-status-tool.js"
 import { registerMemoryTools, resolveMemoryCaller } from "./memory-tools.js"
 import { defaultMemoryRoot, memoryStoreAt, setDefaultMemoryRoot } from "./memory-stores.js"
 import { respawnMemoryProjection } from "./memory-digest.js"
+import { buildRouteAwareLaunchConfig } from "./launch-config.js"
 import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
@@ -1360,6 +1364,7 @@ export {
 } from "./canonical-posture.js"
 export type { PostureEnforcement, PostureResolution, SessionMode } from "./canonical-posture.js"
 export { parseDuration } from "./heartbeat.js"
+export { servingCliCommand, setServingCli } from "./native-hooks-defaults.js"
 export { createWorkspaceFs } from "./workspace-fs.js"
 export {
   BUCKETS_ROOT,
@@ -2828,7 +2833,30 @@ export async function createGateway(
                   : {}),
                 prefix: "resume",
               })
-              const resolvedBaseUrl = authSpec?.baseUrl ?? descriptor.route?.baseUrl
+              // Build the resume's launch config through the SAME builder a
+              // fresh spawn and a restart use. The old inline
+              // `options: { base_url: resolvedBaseUrl }` ignored the manifest's
+              // declared option vocabulary, so an opencode-Go row (route
+              // `opencode-go`, `routeSelection: "derived-from-model"`, no
+              // `base_url` option) was handed an undeclared option and every
+              // eager/lazy resume failed with `unknown_option`. The builder
+              // drops a gateway base_url for a derived-from-model adapter and
+              // only injects it when the manifest declares the option.
+              const launchConfig = buildRouteAwareLaunchConfig({
+                adapter: adapterSlug,
+                ...(descriptor.model ? { model: descriptor.model } : {}),
+                ...(descriptor.route ? { route: descriptor.route } : {}),
+                ...(authSpec ? { authSpec } : {}),
+                ...(adapter.declaredOptions ? { declaredOptions: adapter.declaredOptions } : {}),
+                ...(adapter.routeSelection ? { routeSelection: adapter.routeSelection } : {}),
+                ...(adapter.authDescriptor?.provider
+                  ? { adapterProvider: adapter.authDescriptor.provider }
+                  : {}),
+                ...(adapter.authDescriptor?.modelDerivedApiKey !== undefined
+                  ? { modelDerivedApiKey: adapter.authDescriptor.modelDerivedApiKey }
+                  : {}),
+                prefix: "resume",
+              })
               // A cloud relay re-attaches with the same meta file and (for a
               // declared workspace remote) clone source as `session_restart`;
               // without them it validates the host cwd, which holds no clone.
@@ -2912,9 +2940,7 @@ export async function createGateway(
                 // settings.json whole, so the current config decides here too.
                 ...(resumePreCompactCommand ? { preCompactCommand: resumePreCompactCommand } : {}),
                 ...(authSpec ? { auth: authSpec } : {}),
-                ...(typeof resolvedBaseUrl === "string" && resolvedBaseUrl.length > 0
-                  ? { options: { base_url: resolvedBaseUrl } }
-                  : {}),
+                ...(launchConfig.options ? { options: launchConfig.options } : {}),
                 ...(onActivity ? { onActivity } : {}),
                 // Lazy in-place resume (daemon restart / crash): unlike
                 // `session_restart` this revives the SAME descriptor row, not
@@ -5082,6 +5108,9 @@ export async function createGateway(
       },
       resolveProvider: (slug: string) =>
         (opts.resolveSandboxProvider ?? makeSandboxResolver(makeSandboxCredsStore()))(slug),
+      pausedMaxAgeMs: parsePausedBoxMaxAge(
+        process.env.AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS,
+      ),
     })
     console.log(`[sandbox-gc] automatic dead-session box gc every ${sandboxGcIntervalMs}ms`)
   }

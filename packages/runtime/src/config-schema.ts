@@ -1420,8 +1420,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "agentproto CLI for native hooks",
-    help: "The agentproto CLI a projected native hook runs (default \"agentproto\", resolved on the daemon's PATH). Set an absolute path when the daemon's PATH has no agentproto. Applies to sessions spawned or restarted after the change.",
-    default: "agentproto",
+    help: "The agentproto CLI a projected native hook runs. Unset (the default): the CLI that serves this daemon, by absolute path, so a daemon with a minimal PATH still finds it; set a value to override it. Applies to sessions spawned or restarted after the change.",
   },
 
   // ── defaults: reactions ──

@@ -2021,6 +2021,7 @@ async function restartAgentSessionOnce(
         ? { parentSessionId: prev.parentSessionId, boxSessionId: restartedSessionId }
         : undefined,
     )
+    const agentStartStartedAt = Date.now()
     try {
       const remoteDesc = await host.start({
         adapter: adapterSlug,
@@ -2065,6 +2066,11 @@ async function restartAgentSessionOnce(
       if (boxResumeId && !boxResumed) resumeFallback = true
     } catch (err) {
       if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      console.warn(
+        `[sandbox] restart: agent_start failed (${host.sandboxId}, adapter ${adapterSlug}, ` +
+          `${Date.now() - agentStartStartedAt}ms): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      )
       await host.stop().catch(() => undefined)
       throw new SessionRestartError(
         "sandbox_box_start_failed",
@@ -2413,6 +2419,7 @@ async function restartAgentSessionOnce(
       ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
     })
     for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
@@ -2509,6 +2516,7 @@ async function restartAgentSessionOnce(
       sandboxTeardown: box.sandboxTeardown,
       ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),
       ...(deliveryTarget ? { sandboxDeliveryTarget: deliveryTarget } : {}),
+      ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(deliveryTarget && prev.sandboxCheckpointOverride !== undefined
         ? { sandboxCheckpointOverride: prev.sandboxCheckpointOverride }
         : {}),

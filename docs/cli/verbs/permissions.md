@@ -159,6 +159,11 @@ The inbox is one shared registry behind three transports:
 | MCP | `permissions_list` | `permissions_respond` |
 | HTTP | `GET /permissions` | `POST /permissions/:id` |
 
+`GET /permissions/grants` is not part of the inbox: it reports the effective
+AIP-38 grants derived from the messaging switches (`defaults.messaging`) and
+each session's `allowPromptFrom`, plus the configured entries no grant
+expresses. It is read-only.
+
 The bus also emits `session:permission-request` / `session:permission-resolved`
 events, visible through `session_events_poll` / `session_monitor` and
 per-session webhooks.

@@ -30,6 +30,12 @@ type NativeHooksModule = {
     defaults: Record<string, unknown> | undefined,
     target: { adapter: string | undefined; sandbox?: unknown },
   ): string | undefined
+  servingCliCommand(
+    execPath: string | undefined,
+    entry: string | undefined,
+    platform?: NodeJS.Platform,
+  ): string | undefined
+  setServingCli(command: string | undefined): void
 }
 
 /** A variable specifier keeps the type checker out of the module's absence
@@ -157,6 +163,58 @@ describe("W1 spawn wiring", () => {
   })
 })
 
+describe("W1 serving CLI", () => {
+  afterEach(async () => {
+    const mod = await nativeHooks()
+    mod?.setServingCli?.(undefined)
+  })
+
+  it("quotes an absolute node and entry into a shell command line", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    expect(mod!.servingCliCommand("/opt/homebrew/bin/node", "/x/cli.mjs", "darwin")).toBe(
+      "'/opt/homebrew/bin/node' '/x/cli.mjs'",
+    )
+  })
+
+  it("single-quotes a path with a space and a quote", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    expect(mod!.servingCliCommand("/n d/node", "/it's/cli.mjs", "linux")).toBe(
+      "'/n d/node' '/it'\\''s/cli.mjs'",
+    )
+  })
+
+  it("returns undefined on win32, and for a relative or missing path", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    expect(mod!.servingCliCommand("/n/node", "/c.mjs", "win32")).toBeUndefined()
+    expect(mod!.servingCliCommand("/n/node", "c.mjs", "darwin")).toBeUndefined()
+    expect(mod!.servingCliCommand("/n/node", undefined, "darwin")).toBeUndefined()
+    expect(mod!.servingCliCommand(undefined, "/c.mjs", "darwin")).toBeUndefined()
+  })
+
+  it("returns undefined for an entry that is not built JavaScript (a loader run from sources)", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    expect(mod!.servingCliCommand("/n/node", "/repo/src/cli.ts", "darwin")).toBeUndefined()
+    expect(mod!.servingCliCommand("/n/node", "/repo/dist/cli.js", "darwin")).toBe("'/n/node' '/repo/dist/cli.js'")
+  })
+
+  it("the serving CLI wins over the bare word, and an explicit command still wins", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    mod!.setServingCli("'/n' '/c.mjs'")
+    expect((await spawnWith(ON)).preCompactCommand).toBe("'/n' '/c.mjs' hook pre-compact")
+    const explicit = await spawnWith({
+      nativeHooks: { preCompactCheckpoint: "on", command: "/usr/local/bin/agentproto" },
+    })
+    expect(explicit.preCompactCommand).toBe("/usr/local/bin/agentproto hook pre-compact")
+    mod!.setServingCli(undefined)
+    expect((await spawnWith(ON)).preCompactCommand).toBe("agentproto hook pre-compact")
+  })
+})
+
 describe("W1 restart wiring", () => {
   async function restartWith(defaults: Record<string, unknown>): Promise<Record<string, unknown>> {
     const registry = createSessionsRegistry({ persist: false })
@@ -186,6 +244,17 @@ describe("W1 restart wiring", () => {
   it('"off": absent', async () => {
     expect(await restartWith({ nativeHooks: { preCompactCheckpoint: "off" } })).not.toHaveProperty("preCompactCommand")
   })
+
+  it("the restarted session gets the serving CLI when the command is unset", async () => {
+    const mod = await nativeHooks()
+    expect(mod).toBeDefined()
+    mod!.setServingCli("'/n' '/c.mjs'")
+    try {
+      expect((await restartWith(ON)).preCompactCommand).toBe("'/n' '/c.mjs' hook pre-compact")
+    } finally {
+      mod!.setServingCli(undefined)
+    }
+  })
 })
 
 describe("C1 config keys", () => {
@@ -198,8 +267,8 @@ describe("C1 config keys", () => {
     expect(findConfigKey("defaults.nativeHooks.command")).toMatchObject({
       apply: "hot",
       writable: true,
-      default: "agentproto",
     })
+    expect(findConfigKey("defaults.nativeHooks.command")).not.toHaveProperty("default")
   })
 
   it("validate in a whole config, and refuse bad values", () => {

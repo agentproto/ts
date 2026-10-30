@@ -25,6 +25,16 @@ import type {
 export const DEFAULT_MCP_URL = "http://127.0.0.1:18790/mcp"
 
 /**
+ * Request timeout for `agent_start`. Five minutes is below the host spawn's
+ * 15 min outer budget (an inner timeout equal to the outer one can never win)
+ * but comfortably above a cold box's create + daemon-ready window. The cause
+ * of the 2026-10-29 timeout was the initial prompt riding the spawn dial, not
+ * this ceiling; the prompt now goes over `agent_prompt` after the session
+ * exists.
+ */
+const AGENT_START_TIMEOUT_MS = 5 * 60_000
+
+/**
  * Resolve the daemon URL: explicit option → `AGENTPROTO_MCP_URL` → default.
  */
 export function resolveMcpUrl(opts?: ConnectHarnessOptions): string {
@@ -67,15 +77,13 @@ export class HarnessClient {
 
   /** Spawn a session via `agent_start`.
    *
-   *  Uses a 180s request timeout instead of the MCP SDK's 60s default: a
+   *  Uses a few-minute ceiling instead of the MCP SDK's 60s default: a
    *  spawn on a COLD daemon (freshly booted sandbox box, first import of a
-   *  just-installed adapter package) legitimately exceeds 60s — observed
-   *  live against an e2b box, where the default timeout aborted an
-   *  otherwise-successful spawn (`MCP error -32001`). Failures still
-   *  surface immediately; the ceiling only bounds the wait. */
+   *  just-installed adapter package) legitimately exceeds 60s. It stays
+   *  below the outer spawn budget so this timeout can still surface. */
   async start(args: StartAgentArgs): Promise<SessionDescriptor> {
     return this.#call("agent_start", args as unknown as Record<string, unknown>, {
-      timeoutMs: 180_000,
+      timeoutMs: AGENT_START_TIMEOUT_MS,
     })
   }
 

@@ -419,6 +419,13 @@ export interface AgentSessionLike {
      *  a final checkpoint before teardown and stamps the ledger row with the
      *  reap provenance. Other sessions ignore it. */
     idleReap?: { idleMs: number; sessionId?: string }
+    /** Explicit session death (operator kill / crash): force a KILL teardown
+     *  even when the box's lifecycle would otherwise pause. A `reuse`-only
+     *  policy must not pause a box the operator just killed; a spawn that
+     *  explicitly asked for pause (`lifecycle.pause_after_idle`, reflected on
+     *  the descriptor's `sandboxPauseAfterIdleMs`) still pauses. Other
+     *  sessions ignore it. */
+    deathRelease?: boolean
   }): Promise<void>
   /**
    * Sandbox proxies only: peek at the data needed to re-attach to this
@@ -3100,6 +3107,12 @@ export interface SessionDescriptor {
    *  base commit). Persisted so a restart that re-attaches the box can still
    *  deliver the branch at teardown. Same condition as {@link sandboxDelivery}. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root the sandbox workspace was cloned from. The session's own
+   *  `cwd` names a path INSIDE the box (`/home/user/...`), which the host's
+   *  checkpoint gc cannot resolve; this is the host-side repo the
+   *  `agentproto-checkpoint/*` refs live on. Only set for a sandbox workspace
+   *  spawn. */
+  sandboxRepoRoot?: string
   /** The spawn's own `agent_start.sandboxCheckpoint` override, persisted so a
    *  restart or a boot-time re-attach re-resolves the same checkpoint policy
    *  (`false` stays off across a daemon restart). Absent ⇒ the global
@@ -6190,6 +6203,9 @@ export interface SpawnAgentInput {
   sandboxPauseAfterIdleMs?: number
   /** The work branch inside the box — see `SessionDescriptor.sandboxDeliveryTarget`. */
   sandboxDeliveryTarget?: SandboxDeliveryTarget
+  /** HOST repo root behind the box checkout — see
+   *  `SessionDescriptor.sandboxRepoRoot`. */
+  sandboxRepoRoot?: string
   /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
   /** Effective adapter confinement, resolved by the caller — see
@@ -7260,7 +7276,11 @@ export function createSessionsRegistry(opts?: {
     // reclaimer's own classify; absent port or absent work branch = no-op.
     if (runSandboxCheckpointGc && rt.desc.kind === "agent-cli" && rt.desc.sandboxDeliveryTarget?.branch) {
       const branch = rt.desc.sandboxDeliveryTarget.branch
-      const input = { cwd: rt.desc.cwd, branch }
+      // A sandbox session's `cwd` is a path INSIDE the box. The checkpoint
+      // refs live on the HOST workspace repo, which is why this used to
+      // no-op silently (repoRootOf(boxPath) == null) and left every
+      // `agentproto-checkpoint/wt/*` branch on the studio remote forever.
+      const input = { cwd: rt.desc.sandboxRepoRoot ?? rt.desc.cwd, branch }
       try {
         void runSandboxCheckpointGc(input).catch(err => {
           console.error(
@@ -12503,6 +12523,7 @@ export function createSessionsRegistry(opts?: {
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
@@ -12750,6 +12771,7 @@ export function createSessionsRegistry(opts?: {
           ? { sandboxPauseAfterIdleMs: input.sandboxPauseAfterIdleMs }
           : {}),
         ...(input.sandboxDeliveryTarget ? { sandboxDeliveryTarget: input.sandboxDeliveryTarget } : {}),
+        ...(input.sandboxRepoRoot ? { sandboxRepoRoot: input.sandboxRepoRoot } : {}),
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
@@ -14545,6 +14567,16 @@ export function createSessionsRegistry(opts?: {
     kill(id, signal = "SIGTERM", reason, outcome) {
       const rt = sessions.get(id)
       if (!rt) return false
+      // An operator kill of the LAST session on a box is an explicit teardown,
+      // not a pause request: `reuse` alone used to resolve the lifecycle to
+      // "pause", so every killed reusable box was left parked and billing
+      // (2026-10-29: a 12 GB paused box held the whole host capacity). A
+      // spawn that explicitly asked to pause (`lifecycle.pause_after_idle` is
+      // stamped on the descriptor) still pauses on kill.
+      const killCloseOpts =
+        isProviderBoxSession(rt.desc) && rt.desc.sandboxPauseAfterIdleMs === undefined
+          ? { deathRelease: true as const }
+          : undefined
       if (
         rt.desc.status === "exited" ||
         rt.desc.status === "killed" ||
@@ -14561,7 +14593,7 @@ export function createSessionsRegistry(opts?: {
           const session = rt.agentSession
           delete rt.agentSession
           toreDownSandbox = true
-          void session.close().catch(err => {
+          void session.close(killCloseOpts).catch(err => {
             const detail = err instanceof Error ? err.message : String(err)
             console.warn(
               `[sessions] ${id}: sandbox teardown on kill of an ended row failed: ${detail} — ` +
@@ -14624,7 +14656,7 @@ export function createSessionsRegistry(opts?: {
         delete rt.desc.backgroundTasks
         // Durable usage recap on exit — before close() flushes the stream.
         recordExitUsageSnapshot(rt)
-        void rt.agentSession.close().catch(() => undefined)
+        void rt.agentSession.close(killCloseOpts).catch(() => undefined)
         void transcriptWriter.close(rt.desc.id)
         tracedSessions.delete(rt.desc.id)
       }

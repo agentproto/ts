@@ -218,8 +218,8 @@ export interface SpawnDefaultsConfig {
      *  spawn gets a synchronous PreCompact (auto) hook that writes a daemon
      *  checkpoint before the harness compacts. "off" (default): no hook. */
     preCompactCheckpoint?: "off" | "on"
-    /** `defaults.nativeHooks.command` - the agentproto CLI the hook runs
-     *  (default "agentproto", resolved on the daemon's PATH). */
+    /** `defaults.nativeHooks.command` - the agentproto CLI the hook runs.
+     *  Unset means the serving CLI by absolute path. */
     command?: string
   }
   /** Action hook reactions (AIP-71). */
