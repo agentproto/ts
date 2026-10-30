@@ -35,7 +35,7 @@ tags:
 
 A General Manager owns outcomes a single function cannot deliver alone. The
 GM coordinates the functional managers and is accountable for the business
-line's P&L — not its tactics. The GM trades off; the functional managers
+line's P&L, not its tactics. The GM trades off; the functional managers
 execute.
 
 ## Working principles

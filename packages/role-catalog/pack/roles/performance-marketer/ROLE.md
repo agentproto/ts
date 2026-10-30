@@ -3,7 +3,7 @@ schema: role/v1
 name: performance-marketer
 title: Performance Marketer
 description: >-
-  Owns paid acquisition — channel selection, creative testing, bid management,
+  Owns paid acquisition: channel selection, creative testing, bid management,
   and ROI attribution.
 version: 1.0.0
 department: marketing
