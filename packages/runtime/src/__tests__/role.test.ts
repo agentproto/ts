@@ -17,6 +17,9 @@ import {
   SUPERVISOR_ROLE,
   DELEGATION_TOOL_NAMES,
   DEFAULT_ROLE_DEPTH_CUTOFF,
+  DEFAULT_ROOT_AGENT,
+  DEFAULT_NESTED_AGENT,
+  unknownDefaultAgents,
   type RoleProfile,
 } from "../role.js"
 
@@ -171,6 +174,64 @@ describe("resolveRole — default follows reach", () => {
   })
 })
 
+describe("resolveRole: defaultAgent", () => {
+  it("picks a configured root agent below the cutoff", () => {
+    expect(resolveRole(undefined, 0, 1, undefined, undefined, { root: "executor" })).toBe(EXECUTOR_ROLE)
+  })
+
+  it("picks a configured nested agent at or above the cutoff", () => {
+    expect(resolveRole(undefined, 1, 1, undefined, undefined, { nested: "supervisor" })).toBe(SUPERVISOR_ROLE)
+  })
+
+  it("the cutoff still decides which side of the config applies", () => {
+    expect(resolveRole(undefined, 1, 2, undefined, undefined, { root: "executor" })).toBe(EXECUTOR_ROLE)
+  })
+
+  it("no defaultAgent keeps today's depth-derived behaviour", () => {
+    expect(resolveRole(undefined, 0)).toBe(SUPERVISOR_ROLE)
+    expect(resolveRole(undefined, 1)).toBe(EXECUTOR_ROLE)
+  })
+
+  it("an unknown configured root agent falls back to the built-in supervisor", () => {
+    expect(resolveRole(undefined, 0, 1, undefined, undefined, { root: "nope" })).toBe(SUPERVISOR_ROLE)
+  })
+
+  it("a pack-carried role can be the configured nested agent", () => {
+    expect(
+      resolveRole(undefined, 1, 1, { reviewer: REVIEWER_ROLE }, undefined, { nested: "reviewer" }),
+    ).toBe(REVIEWER_ROLE)
+  })
+
+  it("unreachable delegation still gives the executor even with a configured root supervisor", () => {
+    expect(
+      resolveRole(undefined, 0, 1, undefined, { reachable: false }, { root: "supervisor" }),
+    ).toBe(EXECUTOR_ROLE)
+  })
+
+  it("the documented built-in defaults match the depth-derived constants", () => {
+    expect(DEFAULT_ROOT_AGENT).toBe("supervisor")
+    expect(DEFAULT_NESTED_AGENT).toBe("executor")
+  })
+})
+
+describe("unknownDefaultAgents", () => {
+  it("returns nothing when no defaultAgent is configured", () => {
+    expect(unknownDefaultAgents(undefined)).toEqual([])
+  })
+
+  it("returns nothing for the built-in names", () => {
+    expect(unknownDefaultAgents({ root: "supervisor", nested: "executor" })).toEqual([])
+  })
+
+  it("names an unknown configured agent", () => {
+    expect(unknownDefaultAgents({ root: "nope" })).toEqual(["nope"])
+  })
+
+  it("knows a role carried by the registry", () => {
+    expect(unknownDefaultAgents({ nested: "reviewer" }, { reviewer: REVIEWER_ROLE })).toEqual([])
+  })
+})
+
 describe("DELEGATION_TOOL_NAMES", () => {
   it("includes at minimum the spawn + drive surface", () => {
     expect(DELEGATION_TOOL_NAMES).toContain("agent_start")
@@ -198,6 +259,14 @@ describe("built-in role shapes", () => {
 
   it("supervisor has no deferredTools opinion — falls through to the gateway's own default", () => {
     expect(SUPERVISOR_ROLE.deferredTools).toBeUndefined()
+  })
+
+  it("executor delegates to nothing", () => {
+    expect(EXECUTOR_ROLE.delegatesTo).toEqual([])
+  })
+
+  it("supervisor delegates to itself and executor", () => {
+    expect(SUPERVISOR_ROLE.delegatesTo).toEqual(["supervisor", "executor"])
   })
 })
 

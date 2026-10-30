@@ -124,7 +124,8 @@ export interface MessageTreeNode {
   role?: string
   /** The sender's AIP-42 agent id, when one was bound at spawn. */
   agentSlug?: string
-  /** Spawn-time hints; `meta.agentId` is the bound AIP-42 agent. */
+  /** Spawn-time hints; `meta.agentSlug` is the bound agent (built-in,
+   *  pack or manifest) and `meta.agentId` the AIP-42 manifest identity. */
   meta?: Readonly<Record<string, string>>
   adapterSlug?: string
   /** The workspace the session belongs to. Two sessions of the SAME
@@ -314,7 +315,7 @@ export function messageFrom(
   relation: MessageRelation,
 ): SessionMessageFrom {
   if (!sender || relation === "human" || relation === "system") return { relation }
-  const agentSlug = sender.agentSlug || sender.meta?.agentId
+  const agentSlug = sender.agentSlug || sender.meta?.agentSlug || sender.meta?.agentId
   return {
     sessionId: sender.id,
     ...(sender.label ? { label: sender.label } : {}),

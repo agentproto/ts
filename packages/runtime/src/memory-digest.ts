@@ -327,9 +327,12 @@ export async function buildNativeMemoryProjection(
  *  descriptor so its memory tools, projection and capture keep working.
  *  `role` is the spawn role the commit gate reads (`memory-tools.ts`):
  *  carried as spawned, so a restarted supervisor still commits and a
- *  restarted executor still only proposes. */
+ *  restarted executor still only proposes. `agentSlug` is the agent the
+ *  spawn bound (AIP-46 §The agent binding): carried the same way, so a
+ *  restarted session still names its agent in a message envelope. */
 export const MEMORY_META_KEYS = [
   "role",
+  "agentSlug",
   "memoryStoreRoot",
   "memory",
   "memoryInject",

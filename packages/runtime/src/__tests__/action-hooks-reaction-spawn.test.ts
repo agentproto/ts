@@ -78,7 +78,7 @@ describe("reaction spawn stamping", () => {
 
     expect(result.descriptor.origin).toBeUndefined()
     // No reaction stamp: only the resolved role every spawn records.
-    expect(result.descriptor.meta).toEqual({ role: "executor" })
+    expect(result.descriptor.meta).toEqual({ role: "executor", agentSlug: "executor" })
   })
 
   it("keeps an explicit origin, keeps existing meta keys and still stamps the depth", async () => {

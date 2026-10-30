@@ -631,13 +631,13 @@ describe("spawnAgentSession", () => {
     })
     expect(pinned.ok).toBe(true)
     if (!pinned.ok) throw new Error("expected spawn")
-    expect(pinned.descriptor.meta).toEqual({ boardId: "cowork:main", role: "executor" })
+    expect(pinned.descriptor.meta).toEqual({ boardId: "cowork:main", role: "executor", agentSlug: "executor" })
 
     const plain = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
     expect(plain.ok).toBe(true)
     if (!plain.ok) throw new Error("expected spawn")
     // Every spawn records its resolved role (the memory commit gate reads it).
-    expect(plain.descriptor.meta).toEqual({ role: "executor" })
+    expect(plain.descriptor.meta).toEqual({ role: "executor", agentSlug: "executor" })
   })
 
   it("(a) rejects a spawn that would exceed the caller scope's maxDepth", async () => {
@@ -2094,6 +2094,162 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     )
     expect(result.ok).toBe(true)
     expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+  })
+
+  it("records the bound default agent on a root spawn that names none", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({ buildOrchestratorMcp })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("supervisor")
+  })
+
+  it("records the bound default agent on a nested spawn that names none", async () => {
+    const { deps } = baseDeps()
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope },
+      { adapter: "mock", cwd: "/tmp" },
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("executor")
+  })
+
+  it("records an explicitly named `agent: \"executor\"`", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", agent: "executor" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("executor")
+  })
+
+  it("records an explicitly named `role: \"supervisor\"`", async () => {
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", role: "supervisor" })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("supervisor")
+  })
+
+  it("`defaults.spawn.defaultAgent.root` picks the default root agent", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({
+      buildOrchestratorMcp,
+      loadDefaultsConfig: async () => ({ spawn: { defaultAgent: { root: "executor" } } }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    expect(buildOrchestratorMcp).not.toHaveBeenCalled()
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("executor")
+  })
+
+  it("`defaults.spawn.defaultAgent.nested` picks the default nested agent", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({
+      buildOrchestratorMcp,
+      loadDefaultsConfig: async () => ({ spawn: { defaultAgent: { nested: "supervisor" } } }),
+    })
+    const callerScope: OrchestratorScope = {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope },
+      { adapter: "mock", cwd: "/tmp", orchestrator: true },
+    )
+    expect(result.ok).toBe(true)
+    expect(buildOrchestratorMcp).toHaveBeenCalledTimes(1)
+    if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("supervisor")
+  })
+
+  it("an unknown configured default agent warns once and falls back to the built-in default", async () => {
+    const buildOrchestratorMcp = makeBuildOrchestratorMcp()
+    const { deps } = baseDeps({
+      buildOrchestratorMcp,
+      loadDefaultsConfig: async () => ({ spawn: { defaultAgent: { root: "nope" } } }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      orchestrator: true,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.descriptor.meta?.agentSlug).toBe("supervisor")
+      expect(result.warnings?.join("\n")).toContain('defaults.spawn.defaultAgent names "nope"')
+    }
+  })
+
+  it("an explicit role means an unknown configured default agent is never reported", async () => {
+    const { deps } = baseDeps({
+      loadDefaultsConfig: async () => ({ spawn: { defaultAgent: { root: "nope" } } }),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      role: "executor",
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.warnings?.join("\n") ?? "").not.toContain("defaults.spawn.defaultAgent")
+    }
+  })
+
+  it("a manifest agent records meta.agentSlug equal to its meta.agentId", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agp-default-agent-"))
+    try {
+      const agentDir = join(dir, ".agents", "helper")
+      mkdirSync(agentDir, { recursive: true })
+      writeFileSync(
+        join(agentDir, "AGENT.md"),
+        [
+          "---",
+          "schema: agent/v1",
+          "id: helper",
+          "description: probe",
+          "model: test-model",
+          "---",
+          "",
+          "You are a probe.",
+        ].join("\n"),
+        "utf8",
+      )
+      const { deps } = baseDeps()
+
+      const result = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "helper" })
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.descriptor.meta?.agentId).toBe("helper")
+        expect(result.descriptor.meta?.agentSlug).toBe(result.descriptor.meta?.agentId)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

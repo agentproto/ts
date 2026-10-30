@@ -184,7 +184,14 @@ import {
   type ResolveHeadlessBrowser,
   type SpawnBrowserMode,
 } from "./browser-mount.js"
-import { resolveRole, composeRoleContext, canSpawn, mergeRoleRegistry, DELEGATION_TOOL_NAMES } from "./role.js"
+import {
+  resolveRole,
+  composeRoleContext,
+  canSpawn,
+  mergeRoleRegistry,
+  unknownDefaultAgents,
+  DELEGATION_TOOL_NAMES,
+} from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -3273,12 +3280,26 @@ export async function spawnAgentSession(
   // can gate both — the hard tool gate this whole primitive exists for.
   let role
   try {
-    role = resolveRole(input.role, childDepth, configDefaults?.defaultRoleDepthCutoff, roleRegistry)
+    role = resolveRole(
+      input.role,
+      childDepth,
+      configDefaults?.defaultRoleDepthCutoff,
+      roleRegistry,
+      undefined,
+      configDefaults?.spawn?.defaultAgent,
+    )
   } catch (err) {
     return {
       ok: false,
       code: "invalid_role",
       message: `agent_start: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (input.role === undefined) {
+    for (const name of unknownDefaultAgents(configDefaults?.spawn?.defaultAgent, roleRegistry)) {
+      spawnWarnings.push(
+        `agent_start: defaults.spawn.defaultAgent names "${name}", which is not a known agent or role; the built-in default applies.`,
+      )
     }
   }
   // Privilege-lattice spawn gate: when this spawn arrives through the
@@ -3297,6 +3318,8 @@ export async function spawnAgentSession(
         callerScope.depth,
         configDefaults?.defaultRoleDepthCutoff,
         roleRegistry,
+        undefined,
+        configDefaults?.spawn?.defaultAgent,
       )
     } catch (err) {
       return {
@@ -3816,6 +3839,7 @@ export async function spawnAgentSession(
       configDefaults?.defaultRoleDepthCutoff,
       roleRegistry,
       delegationReach,
+      configDefaults?.spawn?.defaultAgent,
     )
   }
   // Context-intake default (config `defaults.adapters.<slug>.contextProfile`,
@@ -4145,6 +4169,11 @@ export async function spawnAgentSession(
   // `memory.enabled: false` (the tools then refuse this session's writes).
   const memoryMeta: Record<string, string> = {
     role: role.name,
+    // The bound agent (AIP-46 §The agent binding): the manifest agent when
+    // one was resolved, else the built-in or pack role the spawn bound.
+    // Distinct from meta.agentId, which stays the manifest identity. A
+    // restart carries it (`MEMORY_META_KEYS` in memory-digest.ts).
+    agentSlug: callerAgentId ?? role.name,
     ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
     ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
     // AIP-72 native-dir path: the inject path and anchors a respawn

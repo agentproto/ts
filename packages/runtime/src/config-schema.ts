@@ -67,7 +67,7 @@ import { DEFAULT_AGENTS_MD_INLINE_MAX_KB } from "./agents-md.js"
 import { DEFAULT_TITLER_MODEL } from "./session-titler.js"
 import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from "./model-roles.js"
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
-import { DEFAULT_ROLE_DEPTH_CUTOFF } from "./role.js"
+import { DEFAULT_NESTED_AGENT, DEFAULT_ROLE_DEPTH_CUTOFF, DEFAULT_ROOT_AGENT } from "./role.js"
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
@@ -218,7 +218,16 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .passthrough()
       .optional(),
     mcp: mcpDefaultsConfigSchema.optional(),
-    spawn: z.object({ browser: spawnBrowserModeSchema.optional() }).passthrough().optional(),
+    spawn: z
+      .object({
+        browser: spawnBrowserModeSchema.optional(),
+        defaultAgent: z
+          .object({ root: z.string().min(1).optional(), nested: z.string().min(1).optional() })
+          .passthrough()
+          .optional(),
+      })
+      .passthrough()
+      .optional(),
     sandbox: z.object({ checkpoint: sandboxCheckpointConfigSchema.optional() }).passthrough().optional(),
   })
   .passthrough()
@@ -1055,7 +1064,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Default role depth cutoff",
-    help: "Spawn depth at/after which an agent_start with no explicit role defaults to executor rather than supervisor.",
+    help: "Deprecated (removed in @agentproto/runtime 6.0.0). Spawn depth at/after which an agent_start with no explicit role defaults to executor rather than supervisor; still the boundary between defaults.spawn.defaultAgent.root and .nested.",
     default: DEFAULT_ROLE_DEPTH_CUTOFF,
   },
   {
@@ -1076,6 +1085,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Default spawn browser mode",
     help: "Default agent_start.browser when neither the call, its role, nor its preset says otherwise.",
     default: false,
+  },
+  {
+    path: "defaults.spawn.defaultAgent.root",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default root agent",
+    help: "Agent a root agent_start (below the depth cutoff) with no agent or role binds. A role name. Unknown ⇒ the built-in default, with a warning.",
+    default: DEFAULT_ROOT_AGENT,
+  },
+  {
+    path: "defaults.spawn.defaultAgent.nested",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Default nested agent",
+    help: "Agent a nested agent_start (at or above the depth cutoff) with no agent or role binds. A role name. Unknown ⇒ the built-in default, with a warning.",
+    default: DEFAULT_NESTED_AGENT,
   },
   {
     path: "worktrees.root",

@@ -191,4 +191,30 @@ describe("createSessionMessage / messageFrom", () => {
     })
     expect(messageFrom({ id: "s" }, "system")).toEqual({ relation: "system" })
   })
+
+  it("reads the bound agent from meta.agentSlug", () => {
+    expect(messageFrom({ id: "s", meta: { agentSlug: "executor" } }, "child")).toEqual({
+      sessionId: "s",
+      agentSlug: "executor",
+      relation: "child",
+    })
+  })
+
+  it("falls back to meta.agentId for a descriptor persisted before agentSlug", () => {
+    expect(messageFrom({ id: "s", meta: { agentId: "helper" } }, "child")).toEqual({
+      sessionId: "s",
+      agentSlug: "helper",
+      relation: "child",
+    })
+  })
+
+  it("a node-level agentSlug wins over both meta fields", () => {
+    expect(
+      messageFrom({ id: "s", agentSlug: "supervisor", meta: { agentSlug: "executor", agentId: "helper" } }, "child"),
+    ).toEqual({
+      sessionId: "s",
+      agentSlug: "supervisor",
+      relation: "child",
+    })
+  })
 })
