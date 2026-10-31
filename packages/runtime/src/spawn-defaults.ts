@@ -28,7 +28,11 @@ import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
 import { findAnthropicGatewayPreset } from "@agentproto/provider-presets"
 import { providerEnvVar } from "./providers-store.js"
-import type { ContextContinuityPolicy } from "./context-continuity.js"
+import {
+  layerContextSettings,
+  type ContextContinuityPolicy,
+  type ContextSettings,
+} from "./context-continuity.js"
 import type { DeferredToolsConfig } from "./deferred-tools.js"
 import type { SandboxCheckpointConfig } from "./sandbox-delivery.js"
 import type { BoxLoginDecl } from "./box-login-bridge.js"
@@ -113,6 +117,10 @@ export interface DefaultsAdapterConfig {
   options?: Record<string, boolean | number | string>
   auth?: DefaultsAdapterAuthConfig
   contextContinuity?: ContextContinuityPolicy
+  /** AIP-46 name of the block; same keys as contextContinuity, which stays an
+   *  alias. Within one layer, a key set here wins over the same key in
+   *  contextContinuity. */
+  contextSettings?: ContextSettings
   /** Capability bundle ids (`bundle_list`) auto-attached to spawns of this
    *  adapter — unioned with the global `defaults.bundles`. See
    *  {@link resolveBundleDefaults}. */
@@ -138,6 +146,10 @@ export interface SpawnDefaultsConfig {
    *  {@link DefaultsAdapterConfig.bundles} for the per-adapter union partner. */
   bundles?: string[]
   contextContinuity?: ContextContinuityPolicy
+  /** AIP-46 name of the block; same keys as contextContinuity, which stays an
+   *  alias. Within one layer, a key set here wins over the same key in
+   *  contextContinuity. */
+  contextSettings?: ContextSettings
   /** Depth cutoff for the role-derived default (see `resolveRole` in
    *  `role.ts`) applied when an `agent_start` call omits `role`:
    *  `depth < cutoff` → supervisor, `depth >= cutoff` → executor.
@@ -296,8 +308,12 @@ export interface ResolveSpawnDefaultsInput {
    *  through entirely to the per-adapter config default. */
   auth?: DefaultsAdapterAuthConfig
   /** Explicit-call context-continuity policy — wins over global and
-   *  per-adapter config defaults. */
+   *  per-adapter config defaults, key by key. */
   contextContinuity?: ContextContinuityPolicy
+  /** Explicit-call AIP-46 name of the same block: layers per setting over
+   *  the adapter and daemon blocks, and wins over contextContinuity key by
+   *  key. */
+  contextSettings?: ContextSettings
 }
 
 export interface ResolvedSpawnDefaults {
@@ -419,8 +435,14 @@ export function resolveSpawnDefaults(
       : undefined
   const forwardedExtraEnv = sanitizeAuthExtraEnv(input.auth?.extraEnv)
 
-  const contextContinuity =
-    input.contextContinuity ?? adapterDefaults?.contextContinuity ?? defaults?.contextContinuity
+  const contextContinuity = layerContextSettings(
+    defaults?.contextContinuity,
+    defaults?.contextSettings,
+    adapterDefaults?.contextContinuity,
+    adapterDefaults?.contextSettings,
+    input.contextContinuity,
+    input.contextSettings,
+  )
 
   return {
     skills,

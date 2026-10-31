@@ -61,3 +61,27 @@ describe("agent_start browser opaque field", () => {
     expect(agentStartInputSchema.safeParse({ browser: "chromium" }).success).toBe(false)
   })
 })
+
+describe("agent_start context settings opaque field", () => {
+  const parseSpawn = (contextSettings: unknown) =>
+    agentStartInputSchema.safeParse({ adapter: "claude-code", prompt: "hi", contextSettings })
+
+  it("accepts the block, alongside contextContinuity as its alias", () => {
+    expect(parseSpawn({ autoCompactAtTokens: 300_000 })).toMatchObject({
+      success: true,
+      data: { contextSettings: { autoCompactAtTokens: 300_000 } },
+    })
+    expect(parseSpawn({ mode: "auto", hardStopAtPct: 95 }).success).toBe(true)
+    expect(
+      agentStartInputSchema.safeParse({
+        adapter: "claude-code",
+        prompt: "hi",
+        contextContinuity: { mode: "ask" },
+      }).success,
+    ).toBe(true)
+  })
+
+  it("rejects an unsafe percent band", () => {
+    expect(parseSpawn({ warnAtPct: 101 }).success).toBe(false)
+  })
+})

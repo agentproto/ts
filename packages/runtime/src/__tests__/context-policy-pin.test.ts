@@ -151,7 +151,7 @@ describe("context behaviour pinned before the rework (Pygmalion profile)", () =>
     expect(explicit.hardStopAtPct).toBe(95)
   })
 
-  it("T4b: spawn defaults resolve contextContinuity by whole-object precedence", () => {
+  it("T4b: spawn defaults layer context settings per key", () => {
     const daemonDefault = {
       mode: "auto" as const,
       warnAtPct: 70,
@@ -162,18 +162,19 @@ describe("context behaviour pinned before the rework (Pygmalion profile)", () =>
     }
     const defaults = { contextContinuity: daemonDefault }
 
-    // Whole-object precedence: the Pygmalion brain gets 150k/55/65/75/90 while sessions without a policy inherit the daemon default entirely (auto-compact off here).
+    // Per-key layering: the explicit block wins only its own keys
+    // (mode, compactRequiresOperator) and inherits the daemon block's
+    // percent bands and auto-compact threshold.
     const explicitInput = { mode: "auto" as const, compactRequiresOperator: true }
     const a = resolveSpawnDefaults(defaults, "fake", { contextContinuity: explicitInput })
-    expect(a.contextContinuity).toBe(explicitInput)
-    expect(a.contextContinuity).not.toBe(daemonDefault)
+    expect(a.contextContinuity).toEqual({ ...daemonDefault, ...explicitInput })
     const resolvedA = resolveContextContinuityPolicy(undefined, undefined, undefined, a.contextContinuity)
-    expect(resolvedA.autoCompactAtTokens).toBe(150_000)
-    expect(resolvedA.warnAtPct).toBe(55)
-    expect(resolvedA.hardStopAtPct).toBe(90)
+    expect(resolvedA.autoCompactAtTokens).toBe(0)
+    expect(resolvedA.warnAtPct).toBe(70)
+    expect(resolvedA.hardStopAtPct).toBe(95)
 
     const b = resolveSpawnDefaults(defaults, "fake", {})
-    expect(b.contextContinuity).toBe(daemonDefault)
+    expect(b.contextContinuity).toEqual(daemonDefault)
     const resolvedB = resolveContextContinuityPolicy(undefined, undefined, undefined, b.contextContinuity)
     expect(resolvedB.autoCompactAtTokens).toBe(0)
     expect(resolvedB.warnAtPct).toBe(70)

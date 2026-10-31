@@ -5,7 +5,9 @@ import {
   computeContextPct,
   contextContinuityNextAction,
   contextContinuityStateForPct,
+  describeBandLayers,
   isContextContinuityHardStopped,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   validateContextContinuityPolicy,
   type ContextContinuityPolicy,
@@ -234,5 +236,51 @@ describe("computeContextContinuityStatus", () => {
     const status = computeContextContinuityStatus("sess_1", policy, undefined, 500)
     expect(status.nextAction).toBe("none")
     expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
+  })
+})
+
+describe("layerContextSettings", () => {
+  it("returns undefined when no layer is given", () => {
+    expect(layerContextSettings()).toBeUndefined()
+    expect(layerContextSettings(undefined, undefined)).toBeUndefined()
+  })
+
+  it("returns a copy of a single layer", () => {
+    const layer: ContextContinuityPolicy = { mode: "auto", warnAtPct: 50 }
+    const out = layerContextSettings(layer)
+    expect(out).toEqual(layer)
+    expect(out).not.toBe(layer)
+  })
+
+  it("later layers win per key, and an undefined key or layer is skipped", () => {
+    const out = layerContextSettings(
+      { mode: "manual", warnAtPct: 40, hardStopAtPct: 95 },
+      undefined,
+      { mode: "auto", hardStopAtPct: undefined, compactAtPct: 60 },
+    )
+    expect(out).toEqual({
+      mode: "auto",
+      warnAtPct: 40,
+      hardStopAtPct: 95,
+      compactAtPct: 60,
+    })
+  })
+})
+
+describe("describeBandLayers", () => {
+  it("names each layer that sets a percent band, with its values, lowest layer first", () => {
+    expect(
+      describeBandLayers([
+        { name: "daemon defaults", block: { warnAtPct: 70, hardStopAtPct: 95, autoCompactAtTokens: 0 } },
+        { name: "adapter mock", block: undefined },
+        { name: "request", block: { warnAtPct: 80 } },
+      ]),
+    ).toBe("daemon defaults sets warnAtPct=70, hardStopAtPct=95; request sets warnAtPct=80")
+  })
+
+  it("says so when no layer sets a percent band", () => {
+    expect(describeBandLayers([{ name: "request", block: { autoCompactAtTokens: 1000 } }])).toBe(
+      "no layer sets a percent band",
+    )
   })
 })

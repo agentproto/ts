@@ -59,6 +59,7 @@ import { registerDecisionTools } from "./decision-tools.js"
 import { createDaemonEscalationHost } from "./decision-escalation.js"
 import { registerDecisionWorkflowTools } from "./decision-workflow-tools.js"
 import { withContextPolicy } from "./context-continuity.js"
+export { layerContextSettings, type ContextSettings } from "./context-continuity.js"
 export { makeJevDecisionClassifier } from "./decision-tools.js"
 export {
   DEFAULT_MODEL_ROLES,

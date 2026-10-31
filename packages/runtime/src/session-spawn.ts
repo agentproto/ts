@@ -162,8 +162,11 @@ import {
 } from "@agentproto/auth"
 import type { Posture, RouteSpec, ContextProfile, EffortLevel } from "./session-config.js"
 import {
+  describeBandLayers,
+  layerContextSettings,
   resolveContextContinuityPolicy,
   type ContextContinuityPolicy,
+  type ContextSettings,
   type ResolvedContextContinuityPolicy,
 } from "./context-continuity.js"
 import { resolvePosture } from "./canonical-posture.js"
@@ -1856,8 +1859,12 @@ export interface SpawnAgentSessionInput {
   hooks?: { clerk?: Partial<ClerkHookConfig> }
   /** Context-continuity policy for this session — controls warning,
    *  opportunistic compaction, fresh-continuation, and hard-stop thresholds.
-   *  Resolved from global → per-adapter → per-model → explicit override. */
+   *  Resolved from global → per-adapter → per-model → explicit override,
+   *  key by key. */
   contextContinuity?: ContextContinuityPolicy
+  /** The AIP-46 name of the same block; layered per setting over the adapter
+   *  and daemon blocks and wins over `contextContinuity` key by key. */
+  contextSettings?: ContextSettings
   /** Spawn-time role — `"executor"` | `"supervisor"` | omitted. See
    *  `resolveRole` in `role.ts`. Omitted ⇒ derived from spawn depth
    *  against `defaults.defaultRoleDepthCutoff` (default 1). A resolved
@@ -2078,6 +2085,7 @@ export type SpawnAgentSessionResult =
         | "orchestrator_child_quota_exceeded"
         | "invalid_role"
         | "invalid_agent"
+        | "invalid_context_settings"
         | "role_spawn_denied"
         | "unsupported_auth_mode"
         | "unsupported_auth_source"
@@ -3910,6 +3918,7 @@ export async function spawnAgentSession(
     options: input.options,
     auth: input.auth,
     contextContinuity: input.contextContinuity,
+    contextSettings: input.contextSettings,
   })
   // Fold bundle skills (collected while expanding `bundleIds` above) into the
   // resolved skill list — bundles UNION in regardless of whether `skills`
@@ -3928,13 +3937,39 @@ export async function spawnAgentSession(
   // resolver from the manifest). Adapters that DON'T (hermes, whose `skills`
   // is an opaque comma-joined option) keep their ids untouched and raise no
   // "unknown skill id" warning.
-  const resolvedContextContinuity: ResolvedContextContinuityPolicy =
-    resolveContextContinuityPolicy(
+  let resolvedContextContinuity: ResolvedContextContinuityPolicy
+  try {
+    resolvedContextContinuity = resolveContextContinuityPolicy(
       undefined,
       undefined,
       undefined,
       spawnDefaults.contextContinuity,
     )
+  } catch (err) {
+    // The layers are each valid alone but can conflict once layered key by
+    // key (a request's continueFreshAtPct under the daemon's compactAtPct):
+    // a 400 that says which layer sets what, never a 500.
+    const adapterDefaults = configDefaults?.adapters?.[input.adapter]
+    return {
+      ok: false,
+      code: "invalid_context_settings",
+      message:
+        `agent_start: ${err instanceof Error ? err.message : String(err)}. ` +
+        `Context settings layer setting by setting, lowest layer first: ` +
+        describeBandLayers([
+          {
+            name: "daemon defaults",
+            block: layerContextSettings(configDefaults?.contextContinuity, configDefaults?.contextSettings),
+          },
+          {
+            name: `adapter ${input.adapter}`,
+            block: layerContextSettings(adapterDefaults?.contextContinuity, adapterDefaults?.contextSettings),
+          },
+          { name: "request", block: layerContextSettings(input.contextContinuity, input.contextSettings) },
+        ]) +
+        `.`,
+    }
+  }
   // Sandboxed spawns normally resolve the adapter inside the sandbox, not on
   // the host. Two host wallets are the exceptions: a named `access.profileRef`
   // AND a wallet configured in `defaults.adapters.<slug>.auth` (an explicit
