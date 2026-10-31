@@ -415,3 +415,29 @@ describe("defaults.spawn.defaultAgent keys", () => {
     })
   })
 })
+
+describe("defaults.spawn.delegationGate key", () => {
+  it("is hot, writable and defaults to observe", () => {
+    expect(findConfigKey("defaults.spawn.delegationGate")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "observe",
+    })
+  })
+
+  it("accepts off, observe and enforce but rejects an unknown mode", () => {
+    for (const mode of ["off", "observe", "enforce"] as const) {
+      expect(validateConfigKeyValue("defaults.spawn.delegationGate", mode)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.spawn.delegationGate", "block").ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects an unknown value", () => {
+    expect(
+      validateConfig({ defaults: { spawn: { delegationGate: "enforce" } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { spawn: { delegationGate: "block" } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})

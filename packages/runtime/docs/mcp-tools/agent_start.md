@@ -1002,6 +1002,17 @@ caller. A continuation (`session_restart`, `session_continue_fresh`) carries
 the operator and its digest forward from the registry, never from the
 request.
 
+The same `delegation_denied` code also reports the AIP-46 agent gate: with
+`defaults.spawn.delegationGate: "enforce"`, a child the caller's bound agent
+does not declare in `delegatesTo` is refused with `details.gate: "agent"`,
+`details.callerAgent`, `details.childAgent`, `details.delegatesTo` and
+`details.legacyCode: "role_spawn_denied"`. `details.childAgent` is the child's
+manifest id when one is bound (`agent`/`agentId`), else its resolved role name;
+a caller must name the manifest id to declare such a child. An `allowed` child
+skips only the open-mode level comparison — a parent with `spawnableRoles` or
+`toolPolicy.delegation: "deny"` is still constrained. The default `observe`
+mode refuses nothing and only counts the pair for `GET /permissions/grants`.
+
 ## operatorDigest
 
 The host's digest of the operator body it resolved when it composed this

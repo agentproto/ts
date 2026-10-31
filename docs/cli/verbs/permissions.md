@@ -162,7 +162,12 @@ The inbox is one shared registry behind three transports:
 `GET /permissions/grants` is not part of the inbox: it reports the effective
 AIP-38 grants derived from the messaging switches (`defaults.messaging`) and
 each session's `allowPromptFrom`, plus the configured entries no grant
-expresses. It is read-only.
+expresses. Its `delegation` field reports the AIP-46 delegation gate's
+current mode (`off`, `observe` or `enforce`, from
+`defaults.spawn.delegationGate`) and its in-memory counters: every verdict,
+the `would_deny` caller/child pairs most frequent first, and the
+`unbound`/`undeclared` callers. It is read-only; the counters reset when the
+daemon restarts.
 
 The bus also emits `session:permission-request` / `session:permission-resolved`
 events, visible through `session_events_poll` / `session_monitor` and

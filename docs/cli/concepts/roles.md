@@ -186,6 +186,56 @@ Worked example with the built-ins:
 A denied spawn returns `role_spawn_denied` with the parent/child role
 names and levels, plus (in allowlist mode) the allowed set.
 
+## Delegation gate
+
+AIP-46 makes the spawn authority the *calling session's* bound agent
+`delegatesTo`, a closed allowlist: a caller may spawn only the agents its
+list names. The daemon evaluates it on every nested spawn it can attribute
+to a trusted caller, on both the scoped orchestrator sub-gateway and the
+unscoped `/mcp` path. AIP-46 also says an agent with no list may spawn
+nothing; this release does not apply that part, an agent without a list
+stays on the level lattice (`undeclared`, below).
+
+Each spawn gets one of five verdicts:
+
+- `allowed` - the caller's agent declares `delegatesTo` and the child is in it.
+- `would_deny` - the caller's agent declares `delegatesTo` and the child is not in it.
+- `undeclared` - the caller's agent declares no `delegatesTo` (a pack role,
+  or a manifest agent, whose `delegates_to` is not read yet); the legacy
+  lattice decides.
+- `unbound` - a trusted caller session exists but names no agent the daemon
+  can resolve.
+- `no_caller` - no trusted caller, so this is a root spawn authorized by the
+  host's own auth, not gated here.
+
+`defaults.spawn.delegationGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning for each
+  `would_deny` pair, changing no decision.
+- `enforce` refuses a `would_deny` child with `delegation_denied`
+  (`details.gate: "agent"`, `details.legacyCode: "role_spawn_denied"`). An
+  `allowed` child skips only `canSpawn`'s open-mode level comparison: the
+  declared list decides which child, but the parent's own hard gates still
+  apply. A parent whose `toolPolicy.delegation` is `"deny"` can spawn
+  nothing, and a parent with `spawnableRoles` set must still name the child
+  there — `delegatesTo` cannot widen a closed allowlist.
+- `off` skips evaluation entirely.
+
+`undeclared`, `unbound` and `no_caller` always fall through to the unchanged
+level lattice, so a pack role without a list and every root spawn behave
+exactly as before. The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `delegation`.
+
+Manifest `delegates_to` is not read in this release: the runtime has no
+reader for it, so a manifest-bound caller is `undeclared` and stays on the
+lattice.
+
+A manifest-bound *child* is matched by its manifest id, the same value the
+session records as `meta.agentSlug`, not by the role its manifest resolves
+to. A caller whose `delegatesTo` names only roles (`"executor"`) will
+therefore see `would_deny` for a child spawned via `agent`/`agentId`; the
+caller must name the manifest id to declare that child.
+
 ## Depth-derived default
 
 Omitting `role` (and `agent`) on `agent_start` doesn't leave the child

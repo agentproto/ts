@@ -10,6 +10,7 @@ import { createRuntimeEvents } from "../events.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import { DEFAULT_MESSAGING_DEFAULTS } from "../messaging-defaults.js"
+import { recordDelegation, resetDelegationObservations } from "../delegation-gate.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -83,9 +84,11 @@ describe("GET /permissions/grants", () => {
       resolveAgentAdapter,
       resolveMessagingDefaults,
       resolveOperatorDelegates,
+      resolveDelegationGateMode: async () => "observe",
       meta: { workspace: process.cwd(), registered: [] },
     })
     const base = `http://127.0.0.1:${port}`
+    resetDelegationObservations()
     try {
       const res = await fetch(`${base}/permissions/grants`)
       expect(res.status).toBe(200)
@@ -97,6 +100,13 @@ describe("GET /permissions/grants", () => {
         }>
         unmapped: Array<{ source: string; entry: string }>
         inputs: { allowSameWorkspace: boolean; peerBinding: string }
+        delegation: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ callerAgent: string; childAgent: string; count: number }>
+          undeclaredAgents: Array<{ agent: string; count: number }>
+        }
       }
       expect(body.inputs).toMatchObject({ allowSameWorkspace: true, peerBinding: "slug" })
       expect(body.grants.map(g => g.source)).toEqual([
@@ -121,8 +131,29 @@ describe("GET /permissions/grants", () => {
       ])
       expect(resolveMessagingDefaults).toHaveBeenCalled()
       expect(resolveOperatorDelegates).toHaveBeenCalled()
+      expect(body.delegation.mode).toBe("observe")
+      expect(body.delegation.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        undeclared: 0,
+        unbound: 0,
+        no_caller: 0,
+      })
+
+      recordDelegation("would_deny", {
+        mode: "observe",
+        callerAgent: "executor",
+        childAgent: "supervisor",
+        surface: "mcp",
+      })
+      const after = (await (await fetch(`${base}/permissions/grants`)).json()) as typeof body
+      expect(after.delegation.counts.would_deny).toBe(1)
+      expect(after.delegation.wouldDeny).toEqual([
+        expect.objectContaining({ callerAgent: "executor", childAgent: "supervisor", count: 1 }),
+      ])
     } finally {
       await http.stop()
+      resetDelegationObservations()
     }
   })
 

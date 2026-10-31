@@ -230,6 +230,16 @@ describe("unknownDefaultAgents", () => {
   it("knows a role carried by the registry", () => {
     expect(unknownDefaultAgents({ nested: "reviewer" }, { reviewer: REVIEWER_ROLE })).toEqual([])
   })
+
+  it("names a shared unknown agent once when both sides are asked", () => {
+    expect(unknownDefaultAgents({ root: "nope", nested: "nope" })).toEqual(["nope"])
+  })
+
+  it("looks only at the side it is given", () => {
+    const config = { root: "nopeRoot", nested: "nopeNested" }
+    expect(unknownDefaultAgents(config, undefined, "root")).toEqual(["nopeRoot"])
+    expect(unknownDefaultAgents(config, undefined, "nested")).toEqual(["nopeNested"])
+  })
 })
 
 describe("DELEGATION_TOOL_NAMES", () => {

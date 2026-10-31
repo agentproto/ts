@@ -510,7 +510,9 @@ Same capability over MCP (`agent_start { permissionHold: true }` +
 (`POST /sessions/agent { permissionHold: true }`, `GET /permissions`,
 `POST /permissions/:id`). A held session renders with a `!` badge in `--watch`.
 `GET /permissions/grants` (read-only) reports the effective grants the
-messaging switches and `allowPromptFrom` derive. See
+messaging switches and `allowPromptFrom` derive, plus a `delegation` field
+with the AIP-46 delegation gate's mode and counters (see
+[`roles.md`](../concepts/roles.md#delegation-gate)). See
 [`permissions.md`](./permissions.md) for the full inbox verb. ACP adapters
 only (e.g. claude-code); adapters with no permission surface ignore the flag.
 

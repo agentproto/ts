@@ -23,6 +23,7 @@
 import "./sentinel-platform.js"
 
 import { buildLabeledStatsReport } from "./process-stats.js"
+import { loadConfig } from "./config.js"
 import { getHostLoadService } from "./host-load.js"
 import { parseBrowserMode } from "./browser-mount.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
@@ -76,6 +77,7 @@ import {
 } from "./session-message.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
+import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
@@ -265,6 +267,7 @@ import type {
   DefaultsAdapterAuthConfig,
   AdapterAuthDescriptor,
   ResolvedAuthSpec,
+  SpawnDefaultsConfig,
 } from "./spawn-defaults.js"
 import type { ContextProfile, Posture } from "./session-config.js"
 import type { ResolvedSessionSkill } from "./skill-imports.js"
@@ -1101,6 +1104,8 @@ export interface RuntimeHttpServerOptions {
   resolveMessagingDefaults?: () => Promise<ResolvedMessagingDefaults>
   /** Resolver for `defaults.tasks.operatorDelegates` used by `GET /permissions/grants`. A seam for tests. */
   resolveOperatorDelegates?: () => Promise<string[]>
+  /** Resolver for `defaults.spawn.delegationGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveDelegationGateMode?: () => Promise<DelegationGateMode>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -5281,6 +5286,7 @@ export async function startHttpServer(
             opts.sessions,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
             opts.resolveOperatorDelegates ?? resolveOperatorDelegates,
+            opts.resolveDelegationGateMode ?? resolveDelegationGateMode,
           )
           if (handled) return
         }
@@ -11586,14 +11592,27 @@ async function handleTasks(
   return true
 }
 
+/** `defaults.spawn.delegationGate`, read per call; a missing or malformed config gives observe. */
+async function resolveDelegationGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<DelegationGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.delegationGate ?? DEFAULT_DELEGATION_GATE_MODE
+  } catch {
+    return DEFAULT_DELEGATION_GATE_MODE
+  }
+}
+
 /**
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
- *   GET  /permissions/grants     → { grants, unmapped, inputs }: the effective
- *                                  grants derived from the messaging switches
- *                                  and allowPromptFrom, plus the entries no
- *                                  grant expresses. Read-only.
+ *   GET  /permissions/grants     → { grants, unmapped, inputs, delegation }:
+ *                                  the effective grants derived from the
+ *                                  messaging switches and allowPromptFrom,
+ *                                  plus the entries no grant expresses, plus
+ *                                  the delegation gate's mode and counters.
+ *                                  Read-only.
  *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
@@ -11608,6 +11627,7 @@ async function handlePermissions(
   registry: SessionsRegistry,
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
   operatorDelegatesFor: () => Promise<string[]> = resolveOperatorDelegates,
+  delegationGateModeFor: () => Promise<DelegationGateMode> = resolveDelegationGateMode,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -11628,9 +11648,10 @@ async function handlePermissions(
   }
 
   if (path === "/permissions/grants" && req.method === "GET") {
-    const [messaging, operatorDelegates] = await Promise.all([
+    const [messaging, operatorDelegates, delegationGateMode] = await Promise.all([
       messagingDefaultsFor(),
       operatorDelegatesFor(),
+      delegationGateModeFor(),
     ])
     const report = deriveEffectiveGrants({
       messaging: {
@@ -11646,7 +11667,10 @@ async function handlePermissions(
         ...(d.allowPromptFrom ? { allowPromptFrom: d.allowPromptFrom } : {}),
       })),
     })
-    json(200, report)
+    json(200, {
+      ...report,
+      delegation: delegationReport(delegationGateMode ?? DEFAULT_DELEGATION_GATE_MODE),
+    })
     return true
   }
 

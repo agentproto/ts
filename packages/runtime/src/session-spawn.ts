@@ -188,6 +188,7 @@ import {
   type SpawnBrowserMode,
 } from "./browser-mount.js"
 import {
+  DEFAULT_ROLE_DEPTH_CUTOFF,
   resolveRole,
   composeRoleContext,
   canSpawn,
@@ -196,6 +197,12 @@ import {
   DELEGATION_TOOL_NAMES,
 } from "./role.js"
 import type { DelegationReach, RoleProfile } from "./role.js"
+import {
+  DEFAULT_DELEGATION_GATE_MODE,
+  decideDelegation,
+  recordDelegation,
+  type DelegationVerdict,
+} from "./delegation-gate.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
@@ -3304,10 +3311,86 @@ export async function spawnAgentSession(
     }
   }
   if (input.role === undefined) {
-    for (const name of unknownDefaultAgents(configDefaults?.spawn?.defaultAgent, roleRegistry)) {
+    // Same boundary `resolveRole` uses to pick root/nested: `depth < cutoff`,
+    // not `depth === 0`. A configured cutoff > 1 binds `defaultAgent.root` at
+    // depths 1..cutoff-1, so the warning must follow it or it names the side
+    // that was never consulted.
+    const cutoff = configDefaults?.defaultRoleDepthCutoff ?? DEFAULT_ROLE_DEPTH_CUTOFF
+    const side = childDepth < cutoff ? "root" : "nested"
+    for (const name of unknownDefaultAgents(
+      configDefaults?.spawn?.defaultAgent,
+      roleRegistry,
+      side,
+    )) {
       spawnWarnings.push(
         `agent_start: defaults.spawn.defaultAgent names "${name}", which is not a known agent or role; the built-in default applies.`,
       )
+    }
+  }
+  // AIP-46 delegation gate, observe first. On every nested spawn (scoped
+  // or unscoped), compare the child's bound agent against the CALLING
+  // session's agent `delegatesTo`. `observe` (the default) only counts and
+  // warns, changing no decision; `enforce` refuses a child the caller does
+  // not declare, before the lattice below. `off` skips the work entirely.
+  const delegationGateMode = configDefaults?.spawn?.delegationGate ?? DEFAULT_DELEGATION_GATE_MODE
+  let delegationVerdict: DelegationVerdict | undefined
+  if (delegationGateMode !== "off") {
+    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerMeta = callerDescriptor?.meta
+    const callerAgent =
+      callerScope?.role ??
+      (typeof callerMeta?.agentSlug === "string"
+        ? callerMeta.agentSlug
+        : typeof callerMeta?.role === "string"
+          ? callerMeta.role
+          : undefined)
+    let callerDelegatesTo: readonly string[] | undefined
+    if (callerAgent !== undefined) {
+      try {
+        callerDelegatesTo = resolveRole(
+          callerAgent,
+          callerScope?.depth ?? 0,
+          configDefaults?.defaultRoleDepthCutoff,
+          roleRegistry,
+          undefined,
+          configDefaults?.spawn?.defaultAgent,
+        ).delegatesTo
+      } catch {
+        // A manifest agent id is not a built-in or pack role: it declares
+        // nothing the runtime can read yet, so the legacy rule applies.
+        callerDelegatesTo = undefined
+      }
+    }
+    const childAgent = callerAgentId ?? role.name
+    delegationVerdict = decideDelegation({
+      callerSessionId: gateCallerId,
+      callerAgent,
+      callerDelegatesTo,
+      childAgent,
+    })
+    recordDelegation(delegationVerdict, {
+      mode: delegationGateMode,
+      ...(callerAgent !== undefined ? { callerAgent } : {}),
+      childAgent,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (delegationGateMode === "enforce" && delegationVerdict === "would_deny") {
+      const list = callerDelegatesTo ?? []
+      return {
+        ok: false,
+        code: "delegation_denied",
+        message:
+          `agent_start: agent "${callerAgent}" does not declare "${childAgent}" in delegatesTo ` +
+          `(allowed: ${list.length > 0 ? list.join(", ") : "(none)"}).`,
+        details: {
+          gate: "agent",
+          callerAgent,
+          childAgent,
+          delegatesTo: [...list],
+          legacyCode: "role_spawn_denied",
+        },
+      }
     }
   }
   // Privilege-lattice spawn gate: when this spawn arrives through the
@@ -3317,7 +3400,14 @@ export async function spawnAgentSession(
   // the second line of defense (after `toolPolicy.delegation`) for a
   // custom role that keeps delegation but must not spawn UP. A root
   // spawn (no callerScope) has no parent to gate against, same as the
-  // existing depth/quota checks above.
+  // existing depth/quota checks above. With the delegation gate in
+  // `enforce`, an `allowed` verdict skips only the open-mode LEVEL
+  // comparison: `canSpawn`'s hard parts still apply, so `delegatesTo`
+  // cannot widen a parent's own closed `spawnableRoles` allowlist or
+  // revive a parent whose `toolPolicy.delegation` is `"deny"`. The two
+  // authorities intersect; `undeclared`, `unbound` and `no_caller` use the
+  // full lattice unchanged.
+  const delegationAllowed = delegationGateMode === "enforce" && delegationVerdict === "allowed"
   if (callerScope) {
     let parentRole: RoleProfile
     try {
@@ -3336,7 +3426,11 @@ export async function spawnAgentSession(
         message: `agent_start: caller role — ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-    if (!canSpawn(parentRole, role)) {
+    const latticeOk = delegationAllowed
+      ? parentRole.toolPolicy.delegation !== "deny" &&
+        (parentRole.spawnableRoles === undefined || parentRole.spawnableRoles.includes(role.name))
+      : canSpawn(parentRole, role)
+    if (!latticeOk) {
       return {
         ok: false,
         code: "role_spawn_denied",
