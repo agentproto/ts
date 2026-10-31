@@ -5,6 +5,7 @@ import {
   delegationReport,
   recordDelegation,
   resetDelegationObservations,
+  resolveManifestDelegatesTo,
   DEFAULT_DELEGATION_GATE_MODE,
   type DelegationGateMode,
 } from "../delegation-gate.js"
@@ -74,6 +75,64 @@ describe("decideDelegation", () => {
         childAgent: "supervisor",
       }),
     ).toBe("would_deny")
+  })
+})
+
+describe("resolveManifestDelegatesTo", () => {
+  it("treats an absent, non-array, object or empty field as declaring nothing", () => {
+    expect(resolveManifestDelegatesTo(undefined)).toEqual({ kind: "none" })
+    expect(resolveManifestDelegatesTo("x")).toEqual({ kind: "none" })
+    expect(resolveManifestDelegatesTo({})).toEqual({ kind: "none" })
+    expect(resolveManifestDelegatesTo([])).toEqual({ kind: "none" })
+  })
+
+  it("resolves bare agent ids and role names, in order", () => {
+    expect(resolveManifestDelegatesTo(["planner", "executor"])).toEqual({
+      kind: "agents",
+      agents: ["planner", "executor"],
+    })
+  })
+
+  it("strips an @owner/ prefix and dedupes, keeping the first occurrence's order", () => {
+    expect(resolveManifestDelegatesTo(["@acme/planner", "planner"])).toEqual({
+      kind: "agents",
+      agents: ["planner"],
+    })
+  })
+
+  it("resolves a { ref } entry", () => {
+    expect(resolveManifestDelegatesTo([{ ref: "planner" }])).toEqual({
+      kind: "agents",
+      agents: ["planner"],
+    })
+  })
+
+  it("trims an identity candidate", () => {
+    expect(resolveManifestDelegatesTo([" planner "])).toEqual({ kind: "agents", agents: ["planner"] })
+  })
+
+  it.each([
+    ["./agents/p/AGENT.md"],
+    ["p.md"],
+    ["a/b"],
+    ["C:\\x"],
+    [{ file: "x" }],
+    [{ inline: {} }],
+    [{ ref: "a", file: "b" }],
+    [""],
+    [3],
+  ])("returns unresolved for %j", entry => {
+    expect(resolveManifestDelegatesTo([entry])).toEqual({
+      kind: "unresolved",
+      entry: JSON.stringify(entry),
+    })
+  })
+
+  it("makes the whole list unresolved when one entry is unresolvable", () => {
+    expect(resolveManifestDelegatesTo(["planner", { file: "x.md" }, "executor"])).toEqual({
+      kind: "unresolved",
+      entry: JSON.stringify({ file: "x.md" }),
+    })
   })
 })
 

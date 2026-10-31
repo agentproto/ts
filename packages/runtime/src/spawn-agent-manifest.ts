@@ -28,6 +28,7 @@ import { projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projectio
 import { parseAgentClerkHook, type ClerkHookConfig } from "@agentproto/clerk"
 import { agentOnEnablesClerk } from "./action-hooks/clerk-on-entry.js"
 import { parseAgentMemoryBinding, type AgentMemoryBinding } from "./memory-stores.js"
+import { resolveManifestDelegatesTo, type ManifestDelegates } from "./delegation-gate.js"
 
 export interface AgentManifestRef {
   /** Logical agent id, resolved under `<root>/.agents/<id>/AGENT.md`. */
@@ -109,6 +110,9 @@ export interface AgentManifestSpawnDefaults {
   /** `tool:invoke` deny grants of the manifest's `tools` deny items, for the
    *  call-time gate. Absent when the manifest has no deny item. */
   readonly toolDenyGrants?: Grant[]
+  /** The manifest's `delegates_to`, resolved once here so the delegation gate
+   *  evaluates a list frozen at spawn. Absent when it declares nothing. */
+  readonly delegatesTo?: ManifestDelegates
   readonly warnings: string[]
 }
 
@@ -144,6 +148,7 @@ export async function loadAgentManifestDefaults(
   const memory = parseAgentMemoryBinding(loaded.handle.memory)
   const model = typeof loaded.handle.model === "string" ? loaded.handle.model : undefined
   const denyGrants = toolDenyGrants(loaded.handle.tools ?? [])
+  const delegatesTo = resolveManifestDelegatesTo(loaded.handle.delegates_to)
   const projected = projectAgentToSpawn(
     { path, handle: loaded.handle, body: loaded.body, ...(model !== undefined ? { model } : {}) },
     caps,
@@ -163,6 +168,7 @@ export async function loadAgentManifestDefaults(
       ...(manifestHooks !== undefined ? { hooks: manifestHooks } : {}),
       ...(memory !== undefined ? { memory } : {}),
       ...(denyGrants.length > 0 ? { toolDenyGrants: denyGrants } : {}),
+      ...(delegatesTo.kind !== "none" ? { delegatesTo } : {}),
       warnings: projected.warnings,
     },
   }

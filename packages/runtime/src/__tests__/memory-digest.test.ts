@@ -22,6 +22,7 @@ vi.mock("../workspaces-config.js", async (importOriginal) => {
 
 import {
   buildMemoryDigest,
+  carryMemoryMeta,
   decideMemoryInject,
   sessionAnchorTags,
 } from "../memory-digest.js"
@@ -389,5 +390,23 @@ describe("spawnAgentSession memory digest", () => {
     const { deps } = setup({ supportsSystemPrompt: true })
     const exec = await spawnAgentSession(deps, { adapter: "mock", cwd: join(root, "ws"), prompt: "go", role: "executor" })
     expect(exec.ok && exec.descriptor.meta?.role).toBe("executor")
+  })
+})
+
+describe("carryMemoryMeta", () => {
+  it("carries the frozen manifest delegation grant like agentSlug", () => {
+    const carried = carryMemoryMeta({
+      role: "supervisor",
+      agentSlug: "manifest-caller",
+      agentDelegatesTo: "executor,planner",
+      memoryStoreRoot: "/tmp/store",
+      unrelated: "drop-me",
+    })
+    expect(carried).toEqual({
+      role: "supervisor",
+      agentSlug: "manifest-caller",
+      agentDelegatesTo: "executor,planner",
+      memoryStoreRoot: "/tmp/store",
+    })
   })
 })

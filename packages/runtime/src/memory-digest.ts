@@ -329,10 +329,13 @@ export async function buildNativeMemoryProjection(
  *  carried as spawned, so a restarted supervisor still commits and a
  *  restarted executor still only proposes. `agentSlug` is the agent the
  *  spawn bound (AIP-46 §The agent binding): carried the same way, so a
- *  restarted session still names its agent in a message envelope. */
+ *  restarted session still names its agent in a message envelope.
+ *  `agentDelegatesTo` is the frozen delegation grant a manifest spawn
+ *  recorded; carried like `agentSlug` so a restart keeps the same allowlist. */
 export const MEMORY_META_KEYS = [
   "role",
   "agentSlug",
+  "agentDelegatesTo",
   "memoryStoreRoot",
   "memory",
   "memoryInject",
