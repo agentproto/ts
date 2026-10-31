@@ -358,6 +358,7 @@ import {
   type SpawnAdmissionCheck,
   type SpawnDedupeSource,
 } from "./action-hooks/spawn-admission.js"
+import { recordSpawnAdmission } from "./action-hooks/spawn-admission-counters.js"
 import { reactionSpawnStamp } from "./action-hooks/reaction-context.js"
 import type { AdmissionDecision } from "./action-hooks/types.js"
 import {
@@ -2326,6 +2327,15 @@ export async function spawnAgentSession(
     admission: SpawnAdmission,
   ): void => {
     try {
+      recordSpawnAdmission({
+        stage: check.stage,
+        decision: admission.decision,
+        ...(admission.dedupeSource ? { dedupeSource: admission.dedupeSource } : {}),
+      })
+    } catch {
+      // Telemetry must never change a spawn.
+    }
+    try {
       deps.onSpawnAdmission?.({
         stage: check.stage,
         decision: admission.decision,
@@ -3426,10 +3436,7 @@ export async function spawnAgentSession(
         message: `agent_start: caller role — ${err instanceof Error ? err.message : String(err)}`,
       }
     }
-    const latticeOk = delegationAllowed
-      ? parentRole.toolPolicy.delegation !== "deny" &&
-        (parentRole.spawnableRoles === undefined || parentRole.spawnableRoles.includes(role.name))
-      : canSpawn(parentRole, role)
+    const latticeOk = canSpawn(parentRole, role, { ignoreLevel: delegationAllowed })
     if (!latticeOk) {
       return {
         ok: false,

@@ -167,6 +167,12 @@ lands in a worktree another LIVE session already occupies under the same
 `label` is always refused (`dedupeSource: "worktree-cwd"`) — a shared
 worktree, unlike a shared plain cwd, is never a legitimate fan-out.
 
+The daemon counts every spawn admission decision in memory, per stage and
+outcome (reuse, deny, allow, defer). `GET /spawn-admission` reads them back as
+counts only (`total`, `stages`, `dedupeSources`, `codes`, `since`) and resets
+on a daemon restart. Each non-allow decision also writes one
+`[spawn-admission] stage=... outcome=... code=...` line to the daemon log.
+
 ## permissionHold
 
 Start the session in permission-hold mode: every ACP permission request the

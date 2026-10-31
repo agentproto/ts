@@ -386,3 +386,28 @@ describe("listRoles / spawnableRolesFor", () => {
     }
   })
 })
+
+describe("canSpawn ignoreLevel (a delegation verdict skips only the open-mode level check)", () => {
+  const HIGH_ROLE: RoleProfile = {
+    name: "high",
+    disposition: "A more privileged role.",
+    toolPolicy: { delegation: "allow" },
+    level: 100,
+  }
+
+  it("allows a child above the parent's level in open mode when ignoreLevel is true", () => {
+    expect(canSpawn(PLANNER_ROLE, HIGH_ROLE)).toBe(false)
+    expect(canSpawn(PLANNER_ROLE, HIGH_ROLE, { ignoreLevel: true })).toBe(true)
+  })
+
+  it("still refuses when the parent's toolPolicy.delegation is deny", () => {
+    const denied: RoleProfile = { ...PLANNER_ROLE, toolPolicy: { delegation: "deny" } }
+    expect(canSpawn(denied, HIGH_ROLE, { ignoreLevel: true })).toBe(false)
+  })
+
+  it("still refuses a child outside a closed spawnableRoles allowlist", () => {
+    const closed: RoleProfile = { ...PLANNER_ROLE, spawnableRoles: ["executor"] }
+    expect(canSpawn(closed, HIGH_ROLE, { ignoreLevel: true })).toBe(false)
+    expect(canSpawn(closed, EXECUTOR_ROLE, { ignoreLevel: true })).toBe(true)
+  })
+})
