@@ -29,6 +29,7 @@
 
 import {
   canResume,
+  isProviderBoxSession,
   type EagerResumeOutcome,
   type SessionDescriptor,
   type SessionsRegistry,
@@ -97,6 +98,9 @@ export async function runEagerResumePass(opts: {
       d =>
         (opts.policy !== "keepalive" || d.keepAlive === true) &&
         canResume(d) &&
+        // A provider-box row's cwd lives inside the box; it can never be
+        // resumed in place on the host. The sandbox reattach pass owns it.
+        !isProviderBoxSession(d) &&
         d.endedReason === "daemon-restart" &&
         (isServed?.(d) ?? true),
     )

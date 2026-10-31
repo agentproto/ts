@@ -58,6 +58,7 @@ import {
   SESSION_ID_ENV,
   WORKSPACE_SLUG_ENV,
   isResumable,
+  isProviderBoxSession,
   canResume,
   SessionRetiredError,
   type AgentSessionLike,
@@ -947,6 +948,11 @@ export function restartInPlaceEligible(
     ended &&
     !hasOverrides &&
     (opts.allowDeliberateEnd === true || !isRetired(desc)) &&
+    // A provider-box row cannot resume in place: its `cwd` is an in-box path
+    // (`/home/user/...`), so the local resume would spawn the adapter on the
+    // host and fail with `spawn <npx> ENOENT`. The caller falls through to the
+    // new-id path, whose sandbox gate re-attaches or boots the box.
+    !isProviderBoxSession(desc) &&
     isResumable(desc) &&
     canResume(desc)
   )
