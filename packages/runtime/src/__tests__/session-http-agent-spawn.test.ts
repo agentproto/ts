@@ -919,6 +919,49 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     }
   })
 
+  it("a context block whose bands conflict is a 400 invalid_context_settings, never a spawn", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession,
+      commandPreview: "mock-adapter",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      resolveAgentAdapter,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const spawn = (extra: Record<string, unknown>) =>
+        fetch(`http://127.0.0.1:${port}/sessions/agent`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ adapter: "mock", cwd: "/tmp", ...extra }),
+        })
+
+      expect((await spawn({ contextSettings: { warnAtPct: 50, compactAtPct: 60 } })).status).toBe(201)
+      const calls = startSession.mock.calls.length
+      for (const extra of [
+        { contextSettings: { warnAtPct: 80, compactAtPct: 60 } },
+        { contextContinuity: { warnAtPct: 80, compactAtPct: 60 } },
+      ]) {
+        const res = await spawn(extra)
+        expect(res.status).toBe(400)
+        expect(await res.json()).toMatchObject({ error: "invalid_context_settings" })
+      }
+      expect(startSession.mock.calls.length).toBe(calls)
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("a malformed modelPolicy (unknown key, wrong shape) is a 400 invalid_model_policy, never an unrestricted spawn", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const startSession = vi.fn(async (_opts: Record<string, unknown>) => fakeAgentSession())
@@ -1005,6 +1048,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       {
         skills: JSON.stringify(["agentproto"]),
         contextContinuity: JSON.stringify({ mode: "ask" }),
+        contextSettings: JSON.stringify({ mode: "auto", hardStopAtPct: 92 }),
         deferredTools: "true",
         attach: "false",
       },
@@ -1012,6 +1056,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     )
     expect(args.skills).toEqual(["agentproto"])
     expect(args.contextContinuity).toEqual({ mode: "ask" })
+    expect(args.contextSettings).toEqual({ mode: "auto", hardStopAtPct: 92 })
     expect(args.deferredTools).toBe(true)
     expect(args.attach).toBe(false)
   })
@@ -1021,6 +1066,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
       {
         skills: ["ok", 3],
         contextContinuity: { warnAtPct: 150 },
+        contextSettings: { warnAtPct: 150 },
         deferredTools: "yes",
         attach: { parent: "" },
         notifyUrl: "file:///etc/passwd",
@@ -1034,6 +1080,7 @@ describe("POST /sessions/agent — agent_start fields the mapper used to drop", 
     for (const key of [
       "skills",
       "contextContinuity",
+      "contextSettings",
       "deferredTools",
       "attach",
       "notifyUrl",

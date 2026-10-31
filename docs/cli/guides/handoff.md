@@ -105,10 +105,10 @@ described in step 2.
 
 ## When does a handoff happen?
 
-Only when you ask for one. The `contextContinuity` policy that watches a
+Only when you ask for one. The `contextSettings` policy that watches a
 session's context window has three modes (set under
-`defaults.contextContinuity.mode` in `~/.agentproto/config.json`, or per
-adapter/session):
+`defaults.contextSettings.mode` in `~/.agentproto/config.json`, or per
+adapter/session; `contextContinuity` is the legacy alias):
 
 | Mode | At `continueFreshAtPct` (default 75%) |
 |------|----------------------------------------|
@@ -184,7 +184,7 @@ or below the threshold it emits the same event with `"reason":
 "quota-threshold"`, once per quota window:
 
 ```bash
-agentproto config set defaults.contextContinuity '{"handoffAtQuotaRemaining": 10}'
+agentproto config set defaults.contextSettings '{"handoffAtQuotaRemaining": 10}'
 ```
 
 The unit is the `remaining` figure Anthropic's rate-limit headers report, the
