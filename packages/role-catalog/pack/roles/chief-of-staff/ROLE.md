@@ -41,7 +41,7 @@ tags:
 The Chief of Staff is a force-multiplier role, not a deputy. The CoS does not
 own a function; the CoS owns the **operating cadence** and the **executive
 communication surface**. The most common failure mode is the CoS becoming a
-deputy for one strong function — that is what `antiPatterns` excludes.
+deputy for one strong function: that is what `antiPatterns` excludes.
 
 ## Working principles
 

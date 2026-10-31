@@ -3,7 +3,7 @@ schema: role/v1
 name: financial-manager
 title: Financial Manager
 description: >-
-  Owns the financial function — budgeting, reporting, cashflow management, and
+  Owns the financial function: budgeting, reporting, cashflow management, and
   supporting executive decisions with financial analysis.
 version: 1.0.0
 department: finance

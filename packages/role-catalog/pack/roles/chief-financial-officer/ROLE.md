@@ -29,7 +29,7 @@ tags:
 ## Background
 
 The CFO is the human executive responsible for finance at the company
-level. The CFO does NOT close the books — the Financial Manager
+level. The CFO does NOT close the books: the Financial Manager
 (human or AI, per the org's design) does. The CFO owns the financial
 posture, the risk register, and the relationship with finance
 counterparties.

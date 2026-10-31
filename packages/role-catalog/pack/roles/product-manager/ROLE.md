@@ -3,8 +3,8 @@ schema: role/v1
 name: product-manager
 title: Product Manager
 description: >-
-  Owns the product roadmap — prioritisation, scoping, and the bridge between
-  user signal and engineering execution.
+  Owns the product roadmap: prioritisation, scoping, and the bridge between user
+  signal and engineering execution.
 version: 1.0.0
 department: product
 seniority: lead
@@ -31,7 +31,7 @@ tags:
 ## Background
 
 A Product Manager's leverage is what they say no to. The role lives between
-user signal, business goals, and engineering capacity — keeping the
+user signal, business goals, and engineering capacity, keeping the
 roadmap honest about all three.
 
 ## Working principles

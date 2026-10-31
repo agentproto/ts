@@ -3,7 +3,7 @@ schema: role/v1
 name: marketing-manager
 title: Marketing Manager
 description: >-
-  Owns the marketing function — brand, demand generation, content strategy, and
+  Owns the marketing function: brand, demand generation, content strategy, and
   channel allocation across owned, earned, and paid surfaces.
 version: 1.0.0
 department: marketing

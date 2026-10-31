@@ -3,8 +3,8 @@ schema: role/v1
 name: copywriter
 title: Senior Copywriter
 description: >-
-  Writes long-form and short-form copy across channels — landing pages, ad
-  creative, email, social — aligned to the brand voice.
+  Writes long-form and short-form copy across channels, aligned to the brand
+  voice: landing pages, ad creative, email, social.
 version: 1.0.0
 department: marketing
 seniority: senior

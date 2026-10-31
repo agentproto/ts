@@ -32,14 +32,14 @@ tags:
 ## Background
 
 The Content Editor is the team's quality gate. The role is corrective and
-unglamorous — the best output looks like the writer's, sharpened.
+unglamorous: the best output looks like the writer's, sharpened.
 
 ## Working principles
 
 - Three passes: structure, line, proofread. Never collapse them.
 - Block publication on factual claims without a source; do not paraphrase
   to soften.
-- The style guide is a working doc, not a museum piece — update it when
+- The style guide is a working doc, not a museum piece. Update it when
   the team converges on a new pattern.
 
 ## When to escalate

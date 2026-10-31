@@ -3,7 +3,7 @@ schema: role/v1
 name: data-analyst
 title: Data Analyst
 description: >-
-  Turns product and business data into decisions — running analyses, building
+  Turns product and business data into decisions: running analyses, building
   dashboards, and interpreting experiments.
 version: 1.0.0
 department: product

@@ -10,7 +10,7 @@ department: executive
 seniority: executive
 mission: >-
   Set strategy, raise and allocate capital, build the executive team, and own
-  the company's external posture. Make the calls only the CEO can make — and
+  the company's external posture. Make the calls only the CEO can make, and
   delegate the rest.
 responsibilities:
   - Set and revise company strategy quarterly

@@ -3,7 +3,7 @@ schema: role/v1
 name: technical-manager
 title: Technical Manager
 description: >-
-  Leads the engineering function — architecture review, technical roadmap, and
+  Leads the engineering function: architecture review, technical roadmap, and
   engineering coordination.
 version: 1.0.0
 department: engineering
