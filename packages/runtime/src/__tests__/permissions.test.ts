@@ -188,11 +188,12 @@ describe("decide(session.drive) mirrors the owner gate", () => {
 })
 
 describe("action vocabulary", () => {
-  it("declares every action, and only the messaging pair is routed", () => {
+  it("declares every action, and only the routed actions are routed", () => {
     for (const a of PERMISSION_ACTIONS) expect(PERMISSION_ACTION_INFO[a]).toBeDefined()
     expect(PERMISSION_ACTIONS.filter(a => PERMISSION_ACTION_INFO[a].routed)).toEqual([
       "session.message",
       "session.message.interrupt",
+      "auth.profile.use",
     ])
   })
   it("an unrouted action is never reported as authoritative", () => {
@@ -201,6 +202,54 @@ describe("action vocabulary", () => {
       const d = decide(operator, a, { kind: "none" })
       expect(d).toMatchObject({ action: a, allow: false, authoritative: false, rule: "not-routed" })
     }
+  })
+})
+
+describe("decide(session, auth.profile.use)", () => {
+  const ctx = { profiles: { callerAllowed: ["p-own", "p-shared"] } }
+
+  it("allows a profile in the caller's set", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "profile", ref: "p-shared" }, ctx)
+    expect(d).toMatchObject({
+      allow: true,
+      rule: "profile.parent-set",
+      authoritative: true,
+    })
+  })
+
+  it("denies a profile outside the caller's set", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({
+      allow: false,
+      rule: "profile.outside-parent-set",
+      authoritative: true,
+    })
+    expect(d.reason).toContain("p-other")
+  })
+
+  it("the operator may name any profile", () => {
+    const d = decide(operator, "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({ allow: true, rule: "operator", authoritative: true })
+  })
+
+  it("a system principal may name any profile", () => {
+    const d = decide({ kind: "system" }, "auth.profile.use", { kind: "profile", ref: "p-other" }, ctx)
+    expect(d).toMatchObject({ allow: true, rule: "system", authoritative: true })
+  })
+
+  it("a relay grant carries no profile", () => {
+    const d = decide(
+      { kind: "relay", boxSessionId: "box", parentSessionId: "P" },
+      "auth.profile.use",
+      { kind: "profile", ref: "p-own" },
+      ctx,
+    )
+    expect(d).toMatchObject({ allow: false, rule: "relay", authoritative: true })
+  })
+
+  it("a non-profile resource is refused", () => {
+    const d = decide(as(A), "auth.profile.use", { kind: "session", session: B }, ctx)
+    expect(d).toMatchObject({ allow: false, rule: "resource", authoritative: true })
   })
 })
 

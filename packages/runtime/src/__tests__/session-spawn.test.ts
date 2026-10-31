@@ -126,6 +126,7 @@ import type { AdapterAuthDescriptor } from "../spawn-defaults.js"
 import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
 import { delegationReport, resetDelegationObservations } from "../delegation-gate.js"
+import { profileReport, resetProfileObservations } from "../profile-gate.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -7805,5 +7806,240 @@ describe("spawnAgentSession — rejected connect-time model apply", () => {
     if (!result.ok) throw new Error("expected spawn")
     expect(result.descriptor.model).toBeUndefined()
     expect(result.descriptor.modelApplyRejection?.requested).toBe("claude-sonnet-5-5[1m]")
+  })
+})
+
+describe("spawnAgentSession - auth-profile gate", () => {
+  function scopeFor(ownerSessionId: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+  }
+
+  function profileGateConfig(
+    mode: "off" | "observe" | "enforce",
+    sharedProfiles?: string[],
+  ) {
+    return {
+      loadDefaultsConfig: async () => ({
+        spawn: {
+          profileGate: mode,
+          ...(sharedProfiles !== undefined ? { sharedProfiles } : {}),
+        },
+      }),
+    }
+  }
+
+  function registerCaller(registry: SessionsRegistry, profileRef = "p-own") {
+    const caller = registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+    // `SpawnSessionInput` cannot name a profile; the descriptor the registry
+    // returns is the live object, so record the echo the gate reads.
+    caller.accessProfile = { profileRef, endpoint: "anthropic", method: "api-key" }
+    return caller
+  }
+
+  const childRequest = (access?: { profileRef?: string; profileRefs?: string[] }) => ({
+    adapter: "mock",
+    cwd: "/tmp",
+    role: "executor",
+    ...(access !== undefined ? { access } : {}),
+  })
+
+  beforeEach(() => {
+    resetProfileObservations()
+  })
+
+  afterEach(() => {
+    resetProfileObservations()
+  })
+
+  it("observe (default): a child naming another profile is counted, not refused", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("observe"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRef: "p-other" }),
+    )
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("observe").counts.would_deny).toBe(1)
+    expect(profileReport("observe").wouldDeny).toEqual([
+      expect.objectContaining({ callerProfile: "p-own", requestedProfile: "p-other", count: 1 }),
+    ])
+  })
+
+  it("enforce: the same spawn is refused with auth_profile_denied and creates no session", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+    const before = registry.list().length
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRef: "p-other" }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_profile_denied")
+    expect(result.details).toMatchObject({
+      gate: "profile",
+      denied: ["p-other"],
+      callerProfiles: ["p-own"],
+    })
+    expect(registry.list()).toHaveLength(before)
+    expect(profileReport("enforce").counts.would_deny).toBe(1)
+  })
+
+  it("enforce, naming the caller's own profile is allowed", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRef: "p-own" }),
+    )
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.allowed).toBe(1)
+  })
+
+  it("enforce admits a shared profile", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce", ["p-shared"]))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRef: "p-shared" }),
+    )
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.allowed).toBe(1)
+  })
+
+  it("enforce: profileRefs is evaluated too, and denied names only the outside ref", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRefs: ["p-own", "p-other"] }),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_profile_denied")
+    expect(result.details).toMatchObject({ denied: ["p-other"] })
+  })
+
+  it("enforce: a root spawn naming any profile is no_caller and never refused", async () => {
+    const { deps } = baseDeps(profileGateConfig("enforce"))
+
+    const result = await spawnAgentSession(deps, childRequest({ profileRef: "p-other" }))
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.no_caller).toBe(1)
+    expect(profileReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce: a request that names no profile is unnamed", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest(),
+    )
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.unnamed).toBe(1)
+  })
+
+  it("off: nothing is recorded", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("off"))
+    const caller = registerCaller(registry)
+
+    await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest({ profileRef: "p-other" }),
+    )
+    expect(profileReport("off")).toMatchObject({
+      counts: { allowed: 0, would_deny: 0, unnamed: 0, no_caller: 0, caller_unknown: 0, external: 0 },
+      wouldDeny: [],
+    })
+  })
+
+  it("enforce via autoParentSessionId: refused like a scoped caller", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps },
+      { ...childRequest({ profileRef: "p-other" }), autoParentSessionId: caller.id },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("auth_profile_denied")
+    expect(result.details).toMatchObject({ denied: ["p-other"], callerProfiles: ["p-own"] })
+  })
+
+  it("the caller-supplied parentSessionId hint is ignored: a root spawn stays no_caller", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest({ profileRef: "p-other" }),
+      parentSessionId: caller.id,
+    })
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.no_caller).toBe(1)
+    expect(profileReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce: an external caller (a label, evaluated as anonymous) is never refused", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const desk = registry.touchExternal({ id: "desk", host: "claude-desktop" })
+    expect(desk?.kind).toBe("external")
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest({ profileRef: "p-other" }),
+      autoParentSessionId: "desk",
+    })
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.external).toBe(1)
+    expect(profileReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce: a trusted caller id the registry does not hold is caller_unknown, not refused", async () => {
+    const { deps } = baseDeps(profileGateConfig("enforce"))
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest({ profileRef: "p-other" }),
+      autoParentSessionId: "ghost",
+    })
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.caller_unknown).toBe(1)
+    expect(profileReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("a profile supplied by a preset is not evaluated (only the request is)", async () => {
+    const { registry, deps } = baseDeps(profileGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      {
+        ...childRequest(),
+        preset: { id: "preset-prof", label: "Preset profile", access: { profileRef: "p-preset" } },
+      },
+    )
+    if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
+    expect(profileReport("enforce").counts.unnamed).toBe(1)
+    expect(profileReport("enforce").counts.would_deny).toBe(0)
   })
 })

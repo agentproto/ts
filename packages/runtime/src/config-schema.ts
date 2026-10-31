@@ -69,6 +69,7 @@ import { DEFAULT_MODEL_ROLES, MODEL_ROLE_PRESETS, MODEL_ROLE_PRESET_NAMES } from
 import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_NESTED_AGENT, DEFAULT_ROLE_DEPTH_CUTOFF, DEFAULT_ROOT_AGENT } from "./role.js"
 import { DEFAULT_DELEGATION_GATE_MODE, type DelegationGateMode } from "./delegation-gate.js"
+import { DEFAULT_PROFILE_GATE_MODE, type ProfileGateMode } from "./profile-gate.js"
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
@@ -112,6 +113,12 @@ const spawnBrowserModeSchema: z.ZodType<SpawnBrowserMode> = z.union([
 ])
 
 const delegationGateModeSchema: z.ZodType<DelegationGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
+])
+
+const profileGateModeSchema: z.ZodType<ProfileGateMode> = z.union([
   z.literal("off"),
   z.literal("observe"),
   z.literal("enforce"),
@@ -235,6 +242,8 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
           .passthrough()
           .optional(),
         delegationGate: delegationGateModeSchema.optional(),
+        profileGate: profileGateModeSchema.optional(),
+        sharedProfiles: z.array(z.string()).optional(),
       })
       .passthrough()
       .optional(),
@@ -1125,6 +1134,26 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Delegation gate mode",
     help: "AIP-46 delegation gate for nested spawns: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a child the caller's agent does not declare in delegatesTo).",
     default: DEFAULT_DELEGATION_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.profileGate",
+    schema: profileGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Auth-profile gate mode",
+    help: "AIP-46 auth-profile gate for spawns that name an access profile: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a profile outside the caller's set with auth_profile_denied).",
+    default: DEFAULT_PROFILE_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.sharedProfiles",
+    schema: z.array(z.string()),
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Shared auth profiles",
+    help: "Auth profile ids any session may name at spawn, in addition to its own recorded profile (the operator's grant). The auth-profile gate admits these for every caller. Default [].",
+    default: [],
   },
   {
     path: "worktrees.root",

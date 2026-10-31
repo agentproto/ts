@@ -416,6 +416,54 @@ describe("defaults.spawn.defaultAgent keys", () => {
   })
 })
 
+describe("defaults.spawn.profileGate and sharedProfiles keys", () => {
+  it("profileGate is hot, writable and defaults to observe", () => {
+    expect(findConfigKey("defaults.spawn.profileGate")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: "observe",
+    })
+  })
+
+  it("profileGate accepts off, observe and enforce but rejects an unknown mode", () => {
+    for (const mode of ["off", "observe", "enforce"] as const) {
+      expect(validateConfigKeyValue("defaults.spawn.profileGate", mode)).toEqual({ ok: true })
+    }
+    expect(validateConfigKeyValue("defaults.spawn.profileGate", "block").ok).toBe(false)
+  })
+
+  it("sharedProfiles is hot, writable and defaults to []", () => {
+    expect(findConfigKey("defaults.spawn.sharedProfiles")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("sharedProfiles accepts an array of strings and rejects a non-array", () => {
+    expect(validateConfigKeyValue("defaults.spawn.sharedProfiles", ["p-one", "p-two"])).toEqual({
+      ok: true,
+    })
+    expect(validateConfigKeyValue("defaults.spawn.sharedProfiles", "p-one").ok).toBe(false)
+  })
+
+  it("accepts both keys inside a full config and rejects an unknown value", () => {
+    expect(
+      validateConfig({
+        defaults: {
+          spawn: { profileGate: "enforce", sharedProfiles: ["p-shared"] },
+        },
+      }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { spawn: { profileGate: "block" } } }).issues.length,
+    ).toBeGreaterThan(0)
+    expect(
+      validateConfig({ defaults: { spawn: { sharedProfiles: "p-shared" } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
+
 describe("defaults.spawn.delegationGate key", () => {
   it("is hot, writable and defaults to observe", () => {
     expect(findConfigKey("defaults.spawn.delegationGate")).toMatchObject({

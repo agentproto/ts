@@ -251,6 +251,43 @@ to. A caller whose `delegatesTo` names only roles (`"executor"`) will
 therefore see `would_deny` for a child spawned via `agent`/`agentId`; the
 caller must name the manifest id to declare that child.
 
+## Profile gate
+
+AIP-46's "no self-widening" rule also covers billing: a spawn may name an
+auth profile it is allowed to use, not any profile on the machine. The
+daemon evaluates `access.profileRef` and every `access.profileRefs` entry
+on a nested spawn against the CALLING session's set. That set is the
+caller's own recorded `accessProfile.profileRef` plus
+`defaults.spawn.sharedProfiles`, the operator's grant to every session.
+
+Only the profiles the REQUEST names are evaluated. A profile supplied by a
+harness default preset, a session preset, an AGENT.md manifest or a config
+layer is operator or author configuration, not a request, and is not gated.
+The caller is the same trusted identity the delegation gate uses (the
+scope's owner session, else the daemon-derived auto-parent); the
+caller-supplied `parentSessionId` hint is never used. A root spawn and
+every continuation path with no trusted caller (continue-fresh, restart,
+migrate, cron, retries) is `no_caller` and is never gated: the host's own
+auth authorises it. A trusted caller id the registry does not hold is
+`caller_unknown` and is counted but not gated. A caller that is an
+`external` row (a client the daemon did not spawn, such as Claude Desktop or
+a bare CLI) is a label evaluated as anonymous under AIP-46 rule 7: it is
+`external`, counted and never gated.
+
+`defaults.spawn.profileGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning per
+  would-deny caller/requested-profile pair, changing no decision.
+- `enforce` refuses a `would_deny` spawn with `auth_profile_denied`
+  (`details.gate: "profile"`, `details.denied`, `details.callerProfiles`)
+  before any credential is resolved. A session with no recorded profile
+  has an empty set of its own, so under `enforce` it may name only the
+  shared profiles.
+- `off` skips evaluation entirely.
+
+The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `profileUse`.
+
 ## Depth-derived default
 
 Omitting `role` (and `agent`) on `agent_start` doesn't leave the child

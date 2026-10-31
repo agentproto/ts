@@ -1002,6 +1002,7 @@ export {
   type DefaultAgentConfig,
 } from "./role.js"
 export type { DelegationGateMode, DelegationVerdict, DelegationReport } from "./delegation-gate.js"
+export type { ProfileGateMode, ProfileVerdict, ProfileReport } from "./profile-gate.js"
 export {
   decide as decidePermission,
   collectMessageRelations,

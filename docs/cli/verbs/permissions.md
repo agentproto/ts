@@ -166,8 +166,15 @@ expresses. Its `delegation` field reports the AIP-46 delegation gate's
 current mode (`off`, `observe` or `enforce`, from
 `defaults.spawn.delegationGate`) and its in-memory counters: every verdict,
 the `would_deny` caller/child pairs most frequent first, and the
-`unbound`/`undeclared` callers. It is read-only; the counters reset when the
-daemon restarts.
+`unbound`/`undeclared` callers. Its `profileUse` field reports the AIP-46
+auth-profile gate the same way (`defaults.spawn.profileGate`, the verdict
+counts, and the `would_deny` caller-profile/requested-profile pairs). It is
+read-only; the counters reset when the daemon restarts.
+
+The read-only `permissions_explain` tool takes an optional `profile` (a
+profile ref). It then builds an `auth.profile.use` decision for that ref,
+with the caller's set computed exactly as the spawn gate does: its own
+recorded profile plus `defaults.spawn.sharedProfiles`.
 
 The bus also emits `session:permission-request` / `session:permission-resolved`
 events, visible through `session_events_poll` / `session_monitor` and

@@ -11,6 +11,7 @@ import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 import { DEFAULT_MESSAGING_DEFAULTS } from "../messaging-defaults.js"
 import { recordDelegation, resetDelegationObservations } from "../delegation-gate.js"
+import { recordProfileUse, resetProfileObservations } from "../profile-gate.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -85,10 +86,12 @@ describe("GET /permissions/grants", () => {
       resolveMessagingDefaults,
       resolveOperatorDelegates,
       resolveDelegationGateMode: async () => "observe",
+      resolveProfileGateMode: async () => "observe",
       meta: { workspace: process.cwd(), registered: [] },
     })
     const base = `http://127.0.0.1:${port}`
     resetDelegationObservations()
+    resetProfileObservations()
     try {
       const res = await fetch(`${base}/permissions/grants`)
       expect(res.status).toBe(200)
@@ -106,6 +109,12 @@ describe("GET /permissions/grants", () => {
           counts: Record<string, number>
           wouldDeny: Array<{ callerAgent: string; childAgent: string; count: number }>
           undeclaredAgents: Array<{ agent: string; count: number }>
+        }
+        profileUse: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ callerProfile: string; requestedProfile: string; count: number }>
         }
       }
       expect(body.inputs).toMatchObject({ allowSameWorkspace: true, peerBinding: "slug" })
@@ -139,6 +148,15 @@ describe("GET /permissions/grants", () => {
         unbound: 0,
         no_caller: 0,
       })
+      expect(body.profileUse.mode).toBe("observe")
+      expect(body.profileUse.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        unnamed: 0,
+        no_caller: 0,
+        caller_unknown: 0,
+        external: 0,
+      })
 
       recordDelegation("would_deny", {
         mode: "observe",
@@ -146,14 +164,25 @@ describe("GET /permissions/grants", () => {
         childAgent: "supervisor",
         surface: "mcp",
       })
+      recordProfileUse("would_deny", {
+        mode: "observe",
+        callerProfiles: ["p-own"],
+        denied: ["p-other"],
+        surface: "mcp",
+      })
       const after = (await (await fetch(`${base}/permissions/grants`)).json()) as typeof body
       expect(after.delegation.counts.would_deny).toBe(1)
       expect(after.delegation.wouldDeny).toEqual([
         expect.objectContaining({ callerAgent: "executor", childAgent: "supervisor", count: 1 }),
       ])
+      expect(after.profileUse.counts.would_deny).toBe(1)
+      expect(after.profileUse.wouldDeny).toEqual([
+        expect.objectContaining({ callerProfile: "p-own", requestedProfile: "p-other", count: 1 }),
+      ])
     } finally {
       await http.stop()
       resetDelegationObservations()
+      resetProfileObservations()
     }
   })
 
