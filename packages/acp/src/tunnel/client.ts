@@ -204,6 +204,11 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
   const helloTimeoutMs = opts.helloTimeoutMs ?? 10_000
   let hello: HelloFrame | null = null
   let helloPromise: Promise<HelloFrame> | null = null
+  let rejectHello: ((err: Error) => void) | null = null
+  /** Latched so an error or close that lands between the handshake and the
+   *  caller's first ready() is not lost to the race. */
+  let preHelloError: Error | null = null
+  let closedBeforeHello = false
 
   // Per-execId routing tables. We dispatch incoming frames to the
   // right child duck by execId; spawn awaits its own `spawned` /
@@ -300,7 +305,11 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
   }
 
   const offFrame = opts.sink.onFrame((frame) => routeIncoming(frame))
-  const offClose = opts.sink.onClose(() => {
+  const offClose = opts.sink.onClose((reason) => {
+    if (!hello) {
+      closedBeforeHello = true
+      rejectHello?.(new Error(`Tunnel closed before hello${reason ? `: ${reason}` : ""}.`))
+    }
     for (const [, duck] of childByExec) duck.__handleSinkClosed()
     childByExec.clear()
     for (const [, p] of spawnPending) {
@@ -389,9 +398,14 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
           duck?.__pushError(new Error(`${frame.code}: ${frame.message}`))
           return
         }
-        // Tunnel-level error: nowhere to surface it cleanly here.
-        // Callers that care should wrap the FrameSink and observe
-        // tunnel-error frames themselves.
+        // Tunnel-level error. Before the hello it is the reason the channel
+        // will not become usable (e.g. a revoked pairing's `pairing_revoked`),
+        // so latch it and reject a pending ready() instead of letting it sit
+        // out the hello timeout. After the hello, callers observe it.
+        if (!hello) {
+          preHelloError = new Error(`${frame.code}: ${frame.message}`)
+          rejectHello?.(preHelloError)
+        }
         return
       }
       case "http_response": {
@@ -625,28 +639,49 @@ export function createTunnelClient(opts: TunnelClientOptions): TunnelClient {
   return {
     ready() {
       if (hello) return Promise.resolve(hello)
+      if (preHelloError) return Promise.reject(preHelloError)
+      if (closedBeforeHello || !opts.sink.isOpen) {
+        return Promise.reject(new Error("Tunnel closed before hello."))
+      }
       if (helloPromise) return helloPromise
       helloPromise = new Promise<HelloFrame>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          reject(
-            new Error(
-              `Tunnel daemon did not send hello within ${helloTimeoutMs}ms.`
-            )
-          )
-        }, helloTimeoutMs)
-        // Rebind sink listener so we resolve on the next hello.
-        const off = opts.sink.onFrame((frame) => {
-          if (frame.t !== "hello") return
+        let settled = false
+        let off = (): void => {}
+        let offClose = (): void => {}
+        const fail = (err: Error): void => {
+          if (settled) return
+          settled = true
           clearTimeout(timer)
           off()
+          offClose()
+          rejectHello = null
+          reject(err)
+        }
+        const timer = setTimeout(() => {
+          fail(new Error(`Tunnel daemon did not send hello within ${helloTimeoutMs}ms.`))
+        }, helloTimeoutMs)
+        rejectHello = fail
+        offClose = opts.sink.onClose((reason) => {
+          fail(new Error(`Tunnel closed before hello${reason ? `: ${reason}` : ""}.`))
+        })
+        // Rebind sink listener so we resolve on the next hello, and fail fast
+        // when the transport closes first instead of waiting out the timeout.
+        off = opts.sink.onFrame((frame) => {
+          if (frame.t !== "hello") return
           if (frame.version !== TUNNEL_VERSION) {
-            reject(
+            fail(
               new Error(
                 `Tunnel daemon speaks ${frame.version}; client speaks ${TUNNEL_VERSION}.`
               )
             )
             return
           }
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          off()
+          offClose()
+          rejectHello = null
           hello = frame
           resolve(frame)
         })
