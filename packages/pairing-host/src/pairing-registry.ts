@@ -753,6 +753,15 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           )
         } catch (err) {
           if (signal.aborted) break
+          // Close the transport this attempt was handed. A handshake timeout
+          // (or an identity-load failure before it) rejects without closing,
+          // so leaving it here would strand an open socket per failed attempt:
+          // a standing reconnect loop re-dials forever, so that is unbounded.
+          try {
+            sink.close("handshake failed")
+          } catch {
+            /* already closing */
+          }
           // A park timeout, a rejected offer, or a tampered hello. Fail closed
           // and re-dial after a short backoff (park timeouts are common + benign).
           // Gate the log like a dial failure (bursts during a flap must not
@@ -1227,20 +1236,15 @@ const REVOKED = Symbol("pairing revoked")
 /** Resolve when the sink closes (or `signal` aborts, closing it first) — with
  *  the close reason the remote gave, when any, so the caller's log can say WHY
  *  the channel came down. */
-function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<string | undefined> {
+export function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<string | undefined> {
   return new Promise(resolve => {
     if (!sink.isOpen) {
       resolve(undefined)
       return
     }
     let settled = false
-    const finish = (reason: string | undefined): void => {
-      if (settled) return
-      settled = true
-      resolve(reason)
-    }
-    sink.onClose(reason => finish(reason))
-    signal.addEventListener("abort", () => {
+    let offClose = (): void => {}
+    const onAbort = (): void => {
       if (signal.reason === REVOKED) {
         sink.send(revokedFrame())
         sink.close(PAIRING_REVOKED_CODE)
@@ -1248,19 +1252,33 @@ function waitClosed(sink: E2eFrameSink, signal: AbortSignal): Promise<string | u
         sink.close("registry shutdown")
       }
       finish("registry shutdown")
-    })
+    }
+    const finish = (reason: string | undefined): void => {
+      if (settled) return
+      settled = true
+      offClose()
+      signal.removeEventListener("abort", onAbort)
+      resolve(reason)
+    }
+    offClose = sink.onClose(reason => finish(reason))
+    if (signal.aborted) onAbort()
+    else signal.addEventListener("abort", onAbort)
   })
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise(resolve => {
     if (signal.aborted) return resolve()
-    const timer = setTimeout(resolve, ms)
-    if (typeof timer.unref === "function") timer.unref()
-    signal.addEventListener("abort", () => {
+    const onAbort = (): void => {
       clearTimeout(timer)
       resolve()
-    })
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    if (typeof timer.unref === "function") timer.unref()
+    signal.addEventListener("abort", onAbort, { once: true })
   })
 }
 

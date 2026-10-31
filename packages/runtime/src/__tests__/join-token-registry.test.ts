@@ -7,6 +7,7 @@
  * tests stay scoped to the join-token protocol itself.
  */
 
+import { getEventListeners } from "node:events"
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest"
 import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -21,8 +22,28 @@ import {
   type PairingSession,
 } from "@agentproto/secrets/pairing"
 import { generateIdentity, type DaemonIdentity } from "@agentproto/secrets/identity"
-import { createJoinTokenRegistry } from "../join-token-registry.js"
+import { createJoinTokenRegistry, sleep } from "../join-token-registry.js"
 import { connect } from "./frame-harness.js"
+
+class TrackingSink implements FrameSink {
+  isOpen = true
+  closeCalls = 0
+  private closeHandlers = new Set<(reason?: string) => void>()
+
+  send(): void {}
+  close(reason?: string): void {
+    this.closeCalls += 1
+    this.isOpen = false
+    for (const handler of [...this.closeHandlers]) handler(reason)
+  }
+  onFrame(): () => void {
+    return () => {}
+  }
+  onClose(handler: (reason?: string) => void): () => void {
+    this.closeHandlers.add(handler)
+    return () => this.closeHandlers.delete(handler)
+  }
+}
 
 const HANDSHAKE_TIMEOUT_MS = 2_000
 
@@ -313,6 +334,36 @@ describe("createJoinTokenRegistry", () => {
 
     expect(await registry.revoke("ci-reviewer")).toBe(false)
     expect(await registry.revoke("no-such-token")).toBe(false)
+  })
+
+  it("removes the abort listener from a completed backoff sleep", async () => {
+    const controller = new AbortController()
+    await Promise.all(Array.from({ length: 25 }, () => sleep(0, controller.signal)))
+    expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
+  })
+
+  it("closes the sink of a timed-out handshake instead of stranding a socket per attempt", async () => {
+    const sinks: TrackingSink[] = []
+    const registry = createJoinTokenRegistry({
+      loadIdentity: async () => identity,
+      joinTokensPath,
+      dial: async () => {
+        const sink = new TrackingSink()
+        sinks.push(sink)
+        return sink
+      },
+      addHost: vi.fn() as unknown as () => Promise<unknown>,
+      handshakeTimeoutMs: 10,
+      reconnectMinMs: 5,
+      reconnectMaxMs: 10,
+    })
+    try {
+      await registry.create({ name: "leaky", ttlMs: 60_000 })
+      await vi.waitFor(() => expect(sinks.length).toBeGreaterThanOrEqual(2), { timeout: 2_000 })
+      expect(sinks[0]?.closeCalls).toBeGreaterThan(0)
+    } finally {
+      await registry.shutdown()
+    }
   })
 
   it("maxUses: a token exhausted after N uses is not re-parked", async () => {
