@@ -1,5 +1,15 @@
 # @agentproto/sandbox-e2b
 
+## 0.11.0
+
+### Minor Changes
+
+- a5475aa: Add fail-closed overflow safety rails to the auto sandbox provider: residency, daily box and EUR caps, a secret allowlist, template CLI parity, and a maxEurPerBox timeout ceiling.
+
+### Patch Changes
+
+- @agentproto/sandbox@0.14.1
+
 ## 0.10.0
 
 ### Minor Changes

@@ -1,5 +1,15 @@
 # @agentproto/knowledge-engine
 
+## 0.3.5
+
+### Patch Changes
+
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+- @agentproto/driver-cli@0.3.1
+- @agentproto/driver-http@0.2.1
+- @agentproto/driver-mcp@0.2.1
+
 ## 0.3.4
 
 ### Patch Changes

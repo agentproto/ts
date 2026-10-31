@@ -1,5 +1,40 @@
 # @agentproto/apps
 
+## 0.25.0
+
+### Minor Changes
+
+- 8c86ff8: Add a read-only Sandboxes tab to the ops panel: one table across computer
+  and e2b boxes with state, size, age, cost, per-provider and fleet totals,
+  and the overflow reason when a box was placed by the auto provider's
+  overflow. `OPS_PANEL_TOOLS` now includes `sandbox_list`.
+
+### Patch Changes
+
+- 467af3b: Reviewer-proposed changeset for PR #2323. The PR's own changeset covers the worktree/cli/runtime/apps changes; this file additionally bumps `agentproto-vscode` for the mirrored `skipped-stale` outcome and `reason` field in its worktree GC client types. All five packages are listed here in one frontmatter block so no changed package is missed.
+- 1a3b9f9: Context settings now layer setting by setting over the request, adapter and daemon blocks (AIP-46 §Session context rule 4), and `contextSettings` is the name of the block on `agent_start`, `POST /sessions/agent`, `POST /sessions/:id/restart` and in `defaults.contextSettings` and `defaults.adapters.<slug>.contextSettings`; `contextContinuity` stays an alias. A layered block whose percent bands conflict fails the spawn as `invalid_context_settings` (HTTP 400) and names the layers.
+
+  Minor, not major (`.changeset/README.md` reserves major for a removed export, a changed signature or a renamed type): nothing is removed or renamed, `ContextSettings` and `layerContextSettings` are new exports. A partial block now inherits its unset keys from the adapter and daemon blocks instead of the built-in defaults, which is the AIP-46 conformance fix.
+
+- 467af3b: Follow-ups on `worktree gc`/`status` and the `maintain` workflow:
+
+  - `worktree gc --apply` (and the daemon's `worktree_gc` apply from a precomputed plan) re-checks each entry's branch, HEAD sha and index mtime right before touching it, and skips with `skipped-stale` if anything moved since the plan was made.
+  - Liveness now consults the daemon's session registry (an alive session whose cwd is the worktree, or under it, blocks reclaim) and the newest mtime among modified/untracked files, not only the index; it degrades to mtime-only and says so when the daemon is unreachable.
+  - `pnpm-lock.yaml` is noise only when the worktree's `package.json` files are unchanged versus HEAD; a changed manifest keeps the lockfile as real dirt. An explicit `--noise` override still wins outright.
+  - `worktree ls --status` and the gc/maintain integration state gain `closed-unmerged(#N)` for a branch whose PR was closed without merge.
+  - The `maintain` reviewer input carries each candidate's PR state (open/merged/closed-unmerged/none) and a `git cherry` summary against the compare base; the maintain report prints one reason line per verdict.
+  - Forge resolution normalizes `github.com-<alias>` SSH host aliases to `github.com` for the owner/repo slug, resolves the `gh` token from a neutral cwd, and both `ls --status` and `gc` print once to stderr when PR status can't be fetched instead of staying silent.
+  - `worktree gc` lists and classifies worktrees with bounded concurrency instead of serially, cutting a ~40-worktree sweep from the 50s+ range down substantially (see PR body for before/after numbers).
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [59256dd]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e47f3cd]
+- Updated dependencies [59256dd]
+- Updated dependencies [152ec6e]
+  - @agentproto/agent@0.6.0
+  - @agentproto/app@2.4.1
+
 ## 0.24.2
 
 ### Patch Changes

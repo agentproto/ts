@@ -1,5 +1,17 @@
 # @agentproto/policy
 
+## 0.3.0
+
+### Minor Changes
+
+- c73874f: `@agentproto/policy` gains `evaluateGrants(inputs, request)`, a pure AIP-38 evaluator: the union of allow grants, a matching deny wins over any allow in any composed policy, `default: deny` prevails over `default: allow`, and revoked, expired (`ttl_seconds`, a missing `granted_at` counts as expired) and unsatisfied-condition grants contribute nothing. Scopes follow rules 1, 2 and 5, plus the typed forms (`label:`, `workspace:`) and `selector:<id>` that the caller declares; a scope that cannot be resolved fails closed (an allow does not match, a deny matches). A malformed grant throws `PolicyGrantError` instead of being guessed at. `evaluateToolInvoke` and `qualifyToolName` implement the `tool:invoke` scope of AIP-38 §Tool names: an exact `<server>/<name>`, `<server>/*` and `<server>/<prefix>*` through rule 2, a bare name matches nothing, a legacy bare built-in becomes `agentproto/<name>` before the requested scope is formed, and a tool that declares `implements` is decided under both `tool:invoke` and the implemented action (a deny on either refuses, an allow on either admits). The `Grant` type gains `effect?: "allow" | "deny"`.
+
+  `decide()` in `@agentproto/runtime` accepts `PermissionContext.policy` (`{ inputs, principals?, now?, resolveSelector?, evaluateCondition? }`) and reads it per call, so a revoked grant applies on the next call. An explicit deny of `session:message` removes the grant-derived reasons of `session.message` (sibling and peer) and never a tree edge, the operator or the system (AIP-46 rule 3); malformed grants refuse those same reasons. The new `tool.invoke` action takes a `{ kind: "tool", name, implements? }` resource and is decided by `evaluateToolInvoke`; it is declared `routed: false` because no dispatch site calls it yet. No existing caller passes `policy`, so no current decision changes.
+
+- c73874f: `@agentproto/policy` adds `evaluateGrants`/`combineDecisions` (a pure AIP-38 grant evaluator where a matching deny wins over any allow across composed policies, `default: deny` prevails, revoked/expired/condition-failing grants contribute nothing, and unresolvable scopes fail closed), `evaluateToolInvoke`/`qualifyToolName` for the `tool:invoke` action (exact `<server>/<name>`, `<server>/*`, `<server>/<prefix>*`, legacy bare built-in names qualified to `agentproto/<name>`, and `implements` actions decided together), plus the new `Grant.effect?: "allow" | "deny"` field.
+
+  `@agentproto/runtime` accepts an optional `PermissionContext.policy` (`{ inputs, principals?, now?, resolveSelector?, evaluateCondition? }`) read per call: an explicit deny removes the grant-derived `session.message` reasons (sibling/peer, never tree edges, operator or system), malformed grants refuse those same reasons, and the new `tool.invoke` action takes a `{ kind: "tool", name, implements? }` resource. No existing caller passes `policy`, so current decisions are unchanged.
+
 ## 0.2.0
 
 ### Minor Changes

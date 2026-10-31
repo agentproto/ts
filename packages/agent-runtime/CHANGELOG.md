@@ -1,5 +1,11 @@
 # @agentproto/agent-runtime
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Emit the canonical AIP-70 `runtime/v1` schema tag for MultiAgentRuntime manifests instead of `agentruntimes/v1`. Breaking for readers: files written by this version need @agentproto/agent-runtime >= 0.2.0 to read. Readers of this version still accept `agentruntimes/v1`.
+
 ## 0.2.0
 
 ### Minor Changes

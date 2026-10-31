@@ -1,5 +1,12 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.10.1
+
+### Patch Changes
+
+- d9a8be3: Let a cron job declare `notify: "onFailure"` so a successful `kind: "command"` run reaches followers as an `fyi` inbox entry instead of waking them. A failing command still crashes and wakes. Exposed by `cron_create`, `cron_update`, `cron_list`, `POST /cron`, `PATCH /cron/:id`, and `agentproto cron add --notify`.
+- 201b612: End a clerk reaction dead when its `run.command` exits non-zero or is terminated by a signal/timeout, instead of recording a dishonest done (runtime). Document the behavior in the shipped `ap-reactions` skill guide (skill pack).
+
 ## 0.10.0
 
 ### Minor Changes

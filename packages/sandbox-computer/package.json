@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/sandbox-computer",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "@agentproto/sandbox-computer — `SandboxProvider` for @agentproto/sandbox backed by a self-hosted microVM computer controller. Boots the agentproto daemon inside the computer, exposes its MCP endpoint, pauses (suspend) / resumes / detaches (rm) across the controller's HTTP API, and supports several agentproto sessions sharing one computer (`sharedSessions`).",
   "keywords": [
     "agentproto",

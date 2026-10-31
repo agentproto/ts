@@ -1,5 +1,11 @@
 # @agentproto/sandbox-box
 
+## 0.2.38
+
+### Patch Changes
+
+- @agentproto/sandbox@0.14.1
+
 ## 0.2.37
 
 ### Patch Changes

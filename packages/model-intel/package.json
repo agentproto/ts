@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/model-intel",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "@agentproto/model-intel - model intelligence primitives. Catalog watch domain: a pure diff of two priced catalog snapshots, plus a deprecated re-export of the AIP-67 quota API now in @agentproto/quota.",
   "keywords": [
     "agentproto",

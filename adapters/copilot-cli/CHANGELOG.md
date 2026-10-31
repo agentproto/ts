@@ -1,5 +1,23 @@
 # @agentproto/adapter-copilot-cli
 
+## 0.4.1
+
+### Patch Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+
 ## 0.4.0
 
 ### Minor Changes

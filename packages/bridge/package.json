@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "@agentproto/bridge — the AIP-52 BRIDGE package, currently the Mastra bridge: turn an AIP-42 AGENT.md handle into a runnable Mastra Agent. You supply resolvers (model, tool, workflow, memory) and it composes the manifest's identity, persona, body, boundaries, and tool refs into a constructed `new Agent({...})` from `@mastra/core/agent`. Reference implementation for the agent/v1 → Mastra runtime path.",
   "keywords": [
     "agentproto",

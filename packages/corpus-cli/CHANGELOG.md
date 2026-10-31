@@ -1,5 +1,23 @@
 # @agentproto/corpus-cli
 
+## 0.11.4
+
+### Patch Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- cda5782: New `@agentproto/memory` package for AIP-72 `memory/v1` items: `defineMemory` (writer path, canonical fields required, throws a `MemoryValidationError` naming the field), `validateMemory` (schema plus the single-document AIP-72 rules, returning `{ ok, errors, warnings }` with field paths), `parseMemory` / `renderMemory` (round-trip stable MEMORY.md with every string double-quoted), and the lifecycle helpers `memoryStatus`, `isAllowedStatusTransition` and `isInForce`.
+
+  The bundled AIP schemas are re-synced with agentproto/agentproto main: `aip-72/draft/MEMORY.schema.json` is added, and `pending/memory` and `pending/harness` are removed.
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/corpus@1.0.0
+  - @agentproto/corpus-presets@0.2.18
+
 ## 0.11.3
 
 ### Patch Changes

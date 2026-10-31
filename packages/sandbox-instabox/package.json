@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/sandbox-instabox",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "@agentproto/sandbox-instabox — InstaBox `SandboxProvider` for @agentproto/sandbox. Boots an InstaBox VM, installs an always-on systemd unit for the agentproto daemon, publishes the daemon port as the account's public edge URL, and exposes its MCP endpoint so any AgentSessionHost consumer (worktreeAgentWorkflow, worktree-agent CLI) can run a coding-agent step inside the sandbox.",
   "keywords": [
     "agentproto",
