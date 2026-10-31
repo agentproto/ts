@@ -13,7 +13,7 @@
 # single AGENTPROTO_ADAPTERS="a b" arg silently installed hermes only and the
 # per-package smoke loop passed by accident (verified live). Pre-FROM defaults
 # reach the post-FROM stage ONLY if not re-declared bare after FROM.
-ARG AGENTPROTO_CLI_VERSION=1.20.0
+ARG AGENTPROTO_CLI_VERSION=1.31.0
 ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.38
 ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.33
 ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.8.2
@@ -77,7 +77,7 @@ RUN curl -fsSL -o /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v
 #     inspecting /usr/lib/node_modules/@agentproto. ---
 
 # 1. The pinned CLI is on PATH. `agentproto --version` prints e.g.
-#    "agentproto 1.20.0 (sha, built ...)" — match the pin as a substring.
+#    "agentproto 1.31.0 (sha, built ...)" — match the pin as a substring.
 RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
   || (echo "smoke: agentproto --version does not contain ${AGENTPROTO_CLI_VERSION}" && agentproto --version && exit 1)
 

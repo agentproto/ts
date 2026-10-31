@@ -166,7 +166,7 @@ jobs:
               `adapter=${String(cfg.reviewerAdapter || "claude-code")}`,
               `auth_mode=${String(cfg.reviewerAuthMode || "subscription")}`,
               `cli_source=${String(cfg.cliSource || "npm")}`,
-              `cli_version=${String(cfg.cliVersion || "0.8.0")}`,
+              `cli_version=${String(cfg.cliVersion || "latest")}`,
               `model=${String(cfg.reviewerModel || "")}`,
               "",
             ].join("\n")

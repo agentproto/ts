@@ -6,7 +6,7 @@
   "maxFixIterations": 3,
   "maxReviewTurns": 50,
   "cliSource": "workspace",
-  "cliVersion": "0.8.0",
+  "cliVersion": "1.31.0",
   "agentPresets": {
     "opencode-mimo-free": {
       "reviewerAdapter": "opencode",
