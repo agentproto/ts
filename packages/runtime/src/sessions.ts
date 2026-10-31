@@ -9176,6 +9176,19 @@ export function createSessionsRegistry(opts?: {
     // prompt path here deliberately lets an operator's prompt to any killed
     // row through, treating it as explicit intent.
     if (!isResumable(rt.desc)) return
+    // A provider-box row's `cwd` is a path INSIDE the box (`/home/user/...`),
+    // not a host path. Resuming it in place would spawn the adapter on the
+    // HOST against a directory that does not exist here — Node reports that
+    // as `spawn <resolved npx> ENOENT`, indistinguishable from a missing
+    // binary, and the session dies for the wrong reason. Only a sandbox
+    // re-attach or a new-box restart (`session_restart`) can revive it. Fail
+    // loud instead of spawning against a box path.
+    if (isProviderBoxSession(rt.desc)) {
+      throw new Error(
+        `session "${rt.desc.id}" ran in provider sandbox "${rt.desc.sandboxId}" and cannot be resumed in place on the host ` +
+          `(its cwd "${rt.desc.cwd}" only exists inside the box) — use session_restart, which re-attaches or boots a replacement box.`,
+      )
+    }
     // Cap/backoff (§5): a session whose adapter fails to resume must not be
     // retried on every prompt forever. `isResumable` is already true here, so
     // a false `canResume` means the attempt counter has hit
