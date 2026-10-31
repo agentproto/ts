@@ -62,6 +62,12 @@ What happens:
    `ses_def34`. The new session records `continuedFrom`, the checkpoint id and
    `handoff: { fromHarness: "claude-code", toHarness: "codex", at }`.
 
+`session_continue_fresh` also keeps the source's agent binding. The successor
+records the source's role and, when the source was bound to a manifest agent,
+its agent name, its frozen delegation list and its memory opt-out; nothing is
+re-read from `AGENT.md` at continuation time. An explicit `agent` or `role` in
+the continuation request wins instead, and nothing is carried.
+
 Attach to the new session as usual:
 
 ```bash

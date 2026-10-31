@@ -163,6 +163,35 @@ export function stripOwnCallerStamp(
   })
 }
 
+/**
+ * Pick the source session's recorded agent binding so a fresh continuation
+ * can hand it to its successor unchanged.
+ *
+ * The binding is frozen at the source's spawn: its role, the manifest agent
+ * it bound, the delegation list that spawn resolved from the manifest, and a
+ * memory opt-out. Carrying it is what stops a continuation from widening its
+ * own grant (AIP-46 "No self-widening"): the successor must not come back on
+ * a wider default agent, nor re-read a manifest its predecessor already had
+ * frozen. The memory PROJECTION keys (`memoryInject`, `memoryAnchors`,
+ * `memoryCapture`, `memoryStoreRoot`) are deliberately not picked: they
+ * describe the projection the source's spawn built, and the successor's own
+ * spawn recomputes its own, so carrying them would claim a projection this
+ * session never had.
+ */
+export function pickAgentBindingMeta(
+  meta: Readonly<Record<string, string>> | undefined,
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const key of ["role", "agentSlug", "agentDelegatesTo"] as const) {
+    const value = meta?.[key]
+    if (typeof value === "string" && value !== "") picked[key] = value
+  }
+  // Only an opt-out is meaningful to carry: `memory.enabled: true` is the
+  // default and its absence already says nothing.
+  if (meta?.memory === "disabled") picked.memory = "disabled"
+  return picked
+}
+
 function formatPostureForSpawn(
   desc: SessionDescriptor,
 ): import("./session-config.js").Posture | undefined {
@@ -361,6 +390,16 @@ async function continueAgentSessionFreshOnce(
   const adapterChanged = opts.adapter !== undefined || opts.harness !== undefined
   const route = adapterChanged ? undefined : prev.route
 
+  // An explicit agent/role in the continuation request wins outright, and
+  // then nothing from the source's binding is carried (see
+  // {@link pickAgentBindingMeta} for why the rest is carried as frozen).
+  const bindingOverridden =
+    opts.spawn?.role !== undefined ||
+    opts.spawn?.agent !== undefined ||
+    opts.spawn?.agentId !== undefined ||
+    opts.spawn?.agentPath !== undefined
+  const carriedBinding = bindingOverridden ? undefined : pickAgentBindingMeta(prev.meta)
+
   const spawnInput: SpawnAgentSessionInput = {
     adapter,
     harness,
@@ -399,6 +438,10 @@ async function continueAgentSessionFreshOnce(
     ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
     // The fresh session stays inside the same app boundary as `prev`.
     ...(boundaryFromMeta(prev.meta) ? { appBoundary: boundaryFromMeta(prev.meta)! } : {}),
+    // The internal role spelling `spawnAgentSession` takes; the `role` alias
+    // warning is emitted only by the MCP/HTTP handlers, so none is produced
+    // here. Placed before `opts.spawn` so an explicit request still wins.
+    ...(carriedBinding?.role !== undefined ? { role: carriedBinding.role } : {}),
     ...opts.spawn,
   }
 
@@ -415,6 +458,16 @@ async function continueAgentSessionFreshOnce(
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
   if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
   if (prev.toolDenyGrants) registry.setToolDenyGrants(fresh.id, prev.toolDenyGrants)
+  // The spawn just wrote ITS OWN binding (the default agent for its depth, or
+  // whatever the request named). Put the source's frozen binding back on top
+  // so a continuation cannot widen its grant by re-spawning itself (AIP-46
+  // "No self-widening"): the manifest identity, its delegation list and a
+  // memory opt-out are exactly what the source's spawn recorded, never what
+  // AGENT.md says now. `role` is already in the spawn input above; the merge
+  // is gated by the same "request named none" condition.
+  if (carriedBinding && Object.keys(carriedBinding).length > 0 && registry.get(fresh.id)) {
+    registry.mergeMeta(fresh.id, carriedBinding)
+  }
   // Same reasoning as `operatorLabel` above: `allowPromptFrom` is applied
   // post-spawn by the `agent_start` MCP handler, never re-derived by
   // `spawnAgentSession` — a continue-fresh landing on a NEW session id
