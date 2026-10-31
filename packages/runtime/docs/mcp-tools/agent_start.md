@@ -1019,6 +1019,20 @@ skips only the open-mode level comparison — a parent with `spawnableRoles` or
 `toolPolicy.delegation: "deny"` is still constrained. The default `observe`
 mode refuses nothing and only counts the pair for `GET /permissions/grants`.
 
+For a manifest-bound caller (`agent`/`agentId`/`agentPath`), the runtime
+reads the manifest's `delegates_to` once at spawn, resolves each entry to an
+agent identity (an agent id, an `@owner/` prefix ignored, or a role name),
+and records the resolved list on the session as `meta.agentDelegatesTo`. The
+gate compares the child's bound agent (its manifest id, or its role name)
+against that frozen list and never re-reads the file. An absent or empty list
+is `undeclared` (the schema defaults the field to `[]`, so "declares none"
+cannot be told apart, and AIP-46's deny-by-default is not applied yet). An
+entry given as a path, `file` or `inline` is not resolved yet: the spawn
+carries a warning and the agent is `undeclared`. Edit the manifest and
+respawn to apply a change; a restart carries the recorded list, while
+`session_continue_fresh` re-spawns on the default agent for its depth and
+carries neither the manifest id nor the list.
+
 ## operatorDigest
 
 The host's digest of the operator body it resolved when it composed this

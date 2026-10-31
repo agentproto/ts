@@ -204,8 +204,8 @@ Each spawn gets one of five verdicts:
 - `allowed` - the caller's agent declares `delegatesTo` and the child is in it.
 - `would_deny` - the caller's agent declares `delegatesTo` and the child is not in it.
 - `undeclared` - the caller's agent declares no `delegatesTo` (a pack role,
-  or a manifest agent, whose `delegates_to` is not read yet); the legacy
-  lattice decides.
+  or a manifest agent whose list is absent, empty or unresolvable); the
+  legacy lattice decides.
 - `unbound` - a trusted caller session exists but names no agent the daemon
   can resolve.
 - `no_caller` - no trusted caller, so this is a root spawn authorized by the
@@ -229,9 +229,19 @@ level lattice, so a pack role without a list and every root spawn behave
 exactly as before. The counters are in memory (a daemon restart resets them);
 `GET /permissions/grants` exposes them under `delegation`.
 
-Manifest `delegates_to` is not read in this release: the runtime has no
-reader for it, so a manifest-bound caller is `undeclared` and stays on the
-lattice.
+A manifest agent's `delegates_to` is read once, at spawn: the runtime
+resolves each entry to an agent identity (an agent id, optionally
+`@owner/`-prefixed, or a role name) and records the list on the session
+(`meta.agentDelegatesTo`). The gate evaluates that frozen list for a
+manifest-bound caller and never re-reads the file, so editing the manifest
+and respawning is what applies a change (a restart carries the recorded
+list). An absent or empty list is `undeclared` (the manifest schema
+defaults the field to `[]`, so the runtime cannot tell "declares none"
+apart; AIP-46's deny-by-default for such agents is not applied yet). An
+entry given as a path, `file` or `inline` cannot be resolved yet: the spawn
+carries a warning and the agent is `undeclared`. `session_continue_fresh`
+does not carry the agent binding: it re-spawns on the default agent for its
+depth, so the successor has neither the manifest id nor this list.
 
 A manifest-bound *child* is matched by its manifest id, the same value the
 session records as `meta.agentSlug`, not by the role its manifest resolves
@@ -277,7 +287,8 @@ attempting `agent_start` with `orchestrator`. Each row also carries
 `delegatesTo`, the agents the role declares it may spawn, which the
 delegation gate evaluates; the key is omitted when the role declares
 none, while an explicit empty array is kept. Manifest agents are not
-listed: their `delegates_to` is not read by the runtime yet.
+listed: `role_list` shows roles, a manifest agent's list lives on its
+session.
 
 ### The "Roles you may spawn" context line
 

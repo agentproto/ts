@@ -3129,6 +3129,213 @@ describe("spawnAgentSession - delegation gate (agent delegatesTo)", () => {
   })
 })
 
+describe("spawnAgentSession - manifest delegates_to (AIP-42/AIP-46)", () => {
+  const PLANNER_ROLE = {
+    name: "planner",
+    disposition: "You plan work and delegate execution.",
+    toolPolicy: { delegation: "allow" as const },
+    level: 50,
+  }
+
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "agp-manifest-delegates-"))
+    resetDelegationObservations()
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+    resetDelegationObservations()
+  })
+
+  function writeManifest(id: string, extra: string[] = []) {
+    const agentDir = join(dir, ".agents", id)
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(
+      join(agentDir, "AGENT.md"),
+      [
+        "---",
+        "schema: agent/v1",
+        `id: ${id}`,
+        "description: probe",
+        "model: test-model",
+        ...extra,
+        "---",
+        "",
+        `You are ${id}.`,
+      ].join("\n"),
+      "utf8",
+    )
+  }
+
+  function enforceConfig() {
+    return {
+      loadDefaultsConfig: async () => ({ spawn: { delegationGate: "enforce" as const } }),
+      loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }),
+    }
+  }
+
+  function scopeFor(ownerSessionId: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+  }
+
+  it("(a) records a manifest caller's resolved delegates_to on the descriptor and warns nothing", async () => {
+    writeManifest("manifest-caller", ["delegates_to:", "  - executor"])
+    const { deps } = baseDeps()
+
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "manifest-caller" })
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("expected spawn")
+    expect(result.descriptor.meta?.agentDelegatesTo).toBe("executor")
+    expect(result.warnings?.join("\n") ?? "").not.toContain("delegates_to")
+  })
+
+  it("(b) enforce: the manifest caller's list allows the executor it names and refuses another role", async () => {
+    writeManifest("manifest-caller", ["delegates_to:", "  - executor"])
+    const { deps } = baseDeps(enforceConfig())
+
+    const owner = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "manifest-caller" })
+    expect(owner.ok).toBe(true)
+    if (!owner.ok) throw new Error("expected owner spawn")
+
+    const allowed = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "executor" },
+    )
+    expect(allowed.ok).toBe(true)
+
+    const refused = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "planner" },
+    )
+    expect(refused.ok).toBe(false)
+    if (refused.ok) throw new Error("expected failure")
+    expect(refused.code).toBe("delegation_denied")
+    expect(refused.details).toMatchObject({
+      gate: "agent",
+      callerAgent: "manifest-caller",
+      childAgent: "planner",
+      delegatesTo: ["executor"],
+    })
+  })
+
+  it("(c) a manifest-bound child is matched by its manifest id, not the role it resolves to", async () => {
+    writeManifest("helper")
+    writeManifest("caller-by-id", ["delegates_to:", "  - helper"])
+    writeManifest("caller-by-role", ["delegates_to:", "  - executor"])
+    const { deps } = baseDeps(enforceConfig())
+
+    const byId = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "caller-by-id" })
+    expect(byId.ok).toBe(true)
+    if (!byId.ok) throw new Error("expected owner spawn")
+    const allowed = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(byId.descriptor.id) },
+      { adapter: "mock", cwd: dir, agentId: "helper" },
+    )
+    expect(allowed.ok).toBe(true)
+
+    const byRole = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "caller-by-role" })
+    expect(byRole.ok).toBe(true)
+    if (!byRole.ok) throw new Error("expected owner spawn")
+    const refused = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(byRole.descriptor.id) },
+      { adapter: "mock", cwd: dir, agentId: "helper" },
+    )
+    expect(refused.ok).toBe(false)
+    if (refused.ok) throw new Error("expected failure")
+    expect(refused.code).toBe("delegation_denied")
+    expect(refused.details).toMatchObject({ callerAgent: "caller-by-role", childAgent: "helper" })
+  })
+
+  it("(d) a manifest with no delegates_to records nothing and stays undeclared", async () => {
+    writeManifest("no-list")
+    const { deps } = baseDeps(enforceConfig())
+
+    const owner = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "no-list" })
+    expect(owner.ok).toBe(true)
+    if (!owner.ok) throw new Error("expected owner spawn")
+    expect(owner.descriptor.meta?.agentDelegatesTo).toBeUndefined()
+
+    const child = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "executor" },
+    )
+    expect(child.ok).toBe(true)
+    const report = delegationReport("enforce")
+    expect(report.counts.undeclared).toBe(1)
+    expect(report.counts.would_deny).toBe(0)
+  })
+
+  it("(e) an unresolvable entry warns once, records nothing and stays undeclared", async () => {
+    writeManifest("path-list", ["delegates_to:", "  - file: x.md"])
+    const { deps } = baseDeps(enforceConfig())
+
+    const owner = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "path-list" })
+    expect(owner.ok).toBe(true)
+    if (!owner.ok) throw new Error("expected owner spawn")
+    expect(owner.descriptor.meta?.agentDelegatesTo).toBeUndefined()
+    const warnings = (owner.warnings ?? []).filter(w => w.includes("manifest delegates_to entry"))
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(JSON.stringify({ file: "x.md" }))
+
+    const child = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "executor" },
+    )
+    expect(child.ok).toBe(true)
+    const report = delegationReport("enforce")
+    expect(report.counts.undeclared).toBe(1)
+    expect(report.counts.would_deny).toBe(0)
+  })
+
+  it("(f) the list is frozen at spawn: rewriting the manifest does not widen it", async () => {
+    writeManifest("frozen", ["delegates_to:", "  - executor"])
+    const { deps } = baseDeps(enforceConfig())
+
+    const owner = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "frozen" })
+    expect(owner.ok).toBe(true)
+    if (!owner.ok) throw new Error("expected owner spawn")
+
+    writeManifest("frozen", ["delegates_to:", "  - planner"])
+
+    const refused = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "planner" },
+    )
+    expect(refused.ok).toBe(false)
+    if (refused.ok) throw new Error("expected failure")
+    expect(refused.code).toBe("delegation_denied")
+    expect(refused.details).toMatchObject({ delegatesTo: ["executor"] })
+  })
+
+  it("(g) observe (default): the same pair is counted would_deny and nothing is refused", async () => {
+    writeManifest("observe-caller", ["delegates_to:", "  - executor"])
+    const { deps } = baseDeps({ loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }) })
+
+    const owner = await spawnAgentSession(deps, { adapter: "mock", cwd: dir, agentId: "observe-caller" })
+    expect(owner.ok).toBe(true)
+    if (!owner.ok) throw new Error("expected owner spawn")
+
+    const child = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(owner.descriptor.id) },
+      { adapter: "mock", cwd: dir, role: "planner" },
+    )
+    expect(child.ok).toBe(true)
+    const report = delegationReport("observe")
+    expect(report.counts.would_deny).toBe(1)
+    expect(report.counts.undeclared).toBe(0)
+  })
+})
+
 describe("resolveMcpCredentialHeaders overlay", () => {
   let originalDeps = getMcpCredentialDeps()
 

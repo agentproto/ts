@@ -13,7 +13,59 @@
  * `console.warn` line for a would-deny pair is the durable record.
  */
 
+import { stripOwner } from "@agentproto/app"
+
 export type DelegationGateMode = "off" | "observe" | "enforce"
+
+/** A manifest agent's `delegates_to`, resolved once at spawn. */
+export type ManifestDelegates =
+  | { kind: "none" } // absent or empty: declares nothing
+  | { kind: "agents"; agents: string[] } // every entry resolved to an agent identity
+  | { kind: "unresolved"; entry: string } // at least one entry cannot be resolved yet
+
+/**
+ * Resolve an AIP-42 manifest's `delegates_to` list to the identities the
+ * delegation gate compares against. Pure: no file read. Each entry is a
+ * string or `{ ref }` naming an agent id (an `@owner/` prefix is stripped)
+ * or a role name. A path-like entry, `file`/`inline`, or any other shape is
+ * not resolvable here; because a closed list that is only partly understood
+ * must never silently refuse an allowed child, one such entry makes the
+ * whole list `unresolved`.
+ */
+export function resolveManifestDelegatesTo(refs: unknown): ManifestDelegates {
+  if (!Array.isArray(refs) || refs.length === 0) return { kind: "none" }
+  const agents: string[] = []
+  for (const entry of refs) {
+    const candidate = identityCandidate(entry)
+    if (candidate === undefined || candidate === "") {
+      return { kind: "unresolved", entry: renderEntry(entry) }
+    }
+    const ownerPrefixedId = /^@[^/]+\/[^/]+$/.test(candidate)
+    if (candidate.endsWith(".md") || candidate.includes("\\") || (candidate.includes("/") && !ownerPrefixedId)) {
+      return { kind: "unresolved", entry: renderEntry(entry) }
+    }
+    const identity = stripOwner(candidate)
+    if (!agents.includes(identity)) agents.push(identity)
+  }
+  return { kind: "agents", agents }
+}
+
+/** The trimmed identity text of a string or `{ ref }` entry, else undefined. */
+function identityCandidate(entry: unknown): string | undefined {
+  if (typeof entry === "string") return entry.trim()
+  if (entry !== null && typeof entry === "object" && !Array.isArray(entry)) {
+    const keys = Object.keys(entry)
+    if (keys.length === 1 && keys[0] === "ref" && typeof (entry as { ref?: unknown }).ref === "string") {
+      return (entry as { ref: string }).ref.trim()
+    }
+  }
+  return undefined
+}
+
+function renderEntry(entry: unknown): string {
+  const json = JSON.stringify(entry)
+  return (json ?? String(entry)).slice(0, 80)
+}
 
 export const DEFAULT_DELEGATION_GATE_MODE: DelegationGateMode = "observe"
 
@@ -21,7 +73,7 @@ export const DEFAULT_DELEGATION_GATE_MODE: DelegationGateMode = "observe"
 export type DelegationVerdict =
   | "allowed" // the caller's agent declares delegatesTo and the child is in it
   | "would_deny" // the caller's agent declares delegatesTo and the child is NOT in it
-  | "undeclared" // the caller's agent declares no delegatesTo (pack role, manifest agent, unknown): the legacy rule applies
+  | "undeclared" // the caller's agent declares no delegatesTo (pack role, a manifest agent with no readable list, unknown): the legacy rule applies
   | "unbound" // a trusted caller session exists but names no agent we can resolve
   | "no_caller" // no trusted caller: a root spawn, authorised by the host's own auth, not gated here
 

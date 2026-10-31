@@ -202,6 +202,7 @@ import {
   decideDelegation,
   recordDelegation,
   type DelegationVerdict,
+  type ManifestDelegates,
 } from "./delegation-gate.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -3042,6 +3043,11 @@ export async function spawnAgentSession(
   let callerAgentRoleHash: string | undefined
   let callerAgentToolsHash: string | undefined
   let callerToolDenyGrants: Grant[] | undefined
+  // The manifest's `delegates_to`, resolved ONCE here and frozen on the
+  // session (`meta.agentDelegatesTo`). The delegation gate reads the recorded
+  // list, never the file, so a session that rewrote its own AGENT.md cannot
+  // widen its own grant (AIP-46 rule 3).
+  let callerAgentDelegates: ManifestDelegates | undefined
   // The manifest's AIP-72 binding (`memory.enabled`/`store`/`anchors`), read
   // by the spawn digest below once the adapter is resolved.
   let callerAgentMemory: AgentMemoryBinding | undefined
@@ -3103,6 +3109,7 @@ export async function spawnAgentSession(
     callerAgentRoleHash = roleFingerprint.roleHash
     callerAgentToolsHash = roleFingerprint.toolsHash
     callerToolDenyGrants = d.toolDenyGrants
+    callerAgentDelegates = d.delegatesTo
     callerAgentMemory = d.memory
     const callerPrompt = typeof input.prompt === "string" ? input.prompt : undefined
     const manifestPrompt =
@@ -3132,6 +3139,11 @@ export async function spawnAgentSession(
       ...(input.hooks === undefined && d.hooks !== undefined ? { hooks: d.hooks } : {}),
     }
     if (d.warnings.length > 0) spawnWarnings.push(...d.warnings)
+    if (callerAgentDelegates?.kind === "unresolved") {
+      spawnWarnings.push(
+        `agent_start: manifest delegates_to entry ${callerAgentDelegates.entry} cannot be resolved to an agent identity yet (only agent ids and role names are); the delegation gate treats this agent as declaring no delegatesTo.`,
+      )
+    }
   }
   // The AGENT level of the clerk hook, resolved once and recorded on the
   // descriptor (`clerkHook`) - the daemon's clerk-turn-end controller
@@ -3352,8 +3364,13 @@ export async function spawnAgentSession(
       (typeof callerMeta?.agentSlug === "string" ? callerMeta.agentSlug : undefined) ??
       callerScope?.role ??
       (typeof callerMeta?.role === "string" ? callerMeta.role : undefined)
+    // A manifest-bound caller's list was frozen at ITS spawn; read that,
+    // never the manifest file (a session that rewrote its own AGENT.md must
+    // not widen its own grant). Every other caller keeps the role path.
     let callerDelegatesTo: readonly string[] | undefined
-    if (callerAgent !== undefined) {
+    if (typeof callerMeta?.agentDelegatesTo === "string" && callerMeta.agentDelegatesTo !== "") {
+      callerDelegatesTo = callerMeta.agentDelegatesTo.split(",")
+    } else if (callerAgent !== undefined) {
       try {
         callerDelegatesTo = resolveRole(
           callerAgent,
@@ -3364,8 +3381,9 @@ export async function spawnAgentSession(
           configDefaults?.spawn?.defaultAgent,
         ).delegatesTo
       } catch {
-        // A manifest agent id is not a built-in or pack role: it declares
-        // nothing the runtime can read yet, so the legacy rule applies.
+        // A manifest agent id is not a built-in or pack role: when its spawn
+        // recorded no manifest delegates_to, it declares nothing the gate can
+        // evaluate, so the legacy rule applies.
         callerDelegatesTo = undefined
       }
     }
@@ -4307,6 +4325,12 @@ export async function spawnAgentSession(
     // Distinct from meta.agentId, which stays the manifest identity. A
     // restart carries it (`MEMORY_META_KEYS` in memory-digest.ts).
     agentSlug: callerAgentId ?? role.name,
+    // The manifest's frozen delegation grant (comma-joined identities; ids
+    // never contain a comma). Read by the gate, NOT re-read from the file.
+    // A restart carries it like `agentSlug`.
+    ...(callerAgentDelegates?.kind === "agents"
+      ? { agentDelegatesTo: callerAgentDelegates.agents.join(",") }
+      : {}),
     ...(memoryStoreRoot !== undefined ? { memoryStoreRoot } : {}),
     ...(callerAgentMemory?.enabled === false ? { memory: "disabled" } : {}),
     // AIP-72 native-dir path: the inject path and anchors a respawn
