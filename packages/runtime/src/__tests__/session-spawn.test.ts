@@ -2924,6 +2924,70 @@ describe("spawnAgentSession - delegation gate (agent delegatesTo)", () => {
     expect(registry.list()).toHaveLength(0)
   })
 
+  it("enforce, scoped: a manifest-bound owner is named by meta.agentSlug, so the verdict is undeclared and the lattice decides", async () => {
+    const { registry, deps } = baseDeps({
+      ...enforceConfig(),
+      loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }),
+    })
+    const owner = registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+    registry.mergeMeta(owner.id, { role: "supervisor", agentSlug: "manifest-planner-agent" })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: { ...scopeWithRole("supervisor"), ownerSessionId: owner.id } },
+      { adapter: "mock", cwd: "/tmp", role: "planner" },
+    )
+    expect(result.ok).toBe(true)
+    const report = delegationReport("enforce")
+    expect(report.counts.undeclared).toBe(1)
+    expect(report.counts.would_deny).toBe(0)
+  })
+
+  it("enforce, scoped: an older owner with no meta.agentSlug falls back to the scope's role and is refused", async () => {
+    const { registry, deps } = baseDeps({
+      ...enforceConfig(),
+      loadRoleRegistry: async () => ({ planner: PLANNER_ROLE }),
+    })
+    const owner = registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: { ...scopeWithRole("supervisor"), ownerSessionId: owner.id } },
+      { adapter: "mock", cwd: "/tmp", role: "planner" },
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("delegation_denied")
+    expect(result.details).toMatchObject({ gate: "agent", callerAgent: "supervisor", childAgent: "planner" })
+    expect(registry.list()).toHaveLength(1)
+    expect(delegationReport("enforce").counts.would_deny).toBe(1)
+  })
+
+  it("enforce, scoped: an owner whose agentSlug equals the scope's role behaves as before", async () => {
+    const { registry, deps } = baseDeps(enforceConfig())
+    const owner = registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+    registry.mergeMeta(owner.id, { role: "supervisor", agentSlug: "supervisor" })
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: { ...scopeWithRole("supervisor"), ownerSessionId: owner.id } },
+      { adapter: "mock", cwd: "/tmp", role: "executor" },
+    )
+    expect(result.ok).toBe(true)
+    expect(delegationReport("enforce").counts.allowed).toBe(1)
+  })
+
   it("enforce: a pack role without delegatesTo is undeclared and the lattice still decides", async () => {
     const { deps } = baseDeps({
       ...enforceConfig(),

@@ -192,9 +192,12 @@ AIP-46 makes the spawn authority the *calling session's* bound agent
 `delegatesTo`, a closed allowlist: a caller may spawn only the agents its
 list names. The daemon evaluates it on every nested spawn it can attribute
 to a trusted caller, on both the scoped orchestrator sub-gateway and the
-unscoped `/mcp` path. AIP-46 also says an agent with no list may spawn
-nothing; this release does not apply that part, an agent without a list
-stays on the level lattice (`undeclared`, below).
+unscoped `/mcp` path. The calling agent is the owner session's recorded
+`agentSlug`. When there is none (the owner is not bound to the scope yet, or
+the session predates `agentSlug`) the scope's role names it, and on the
+unscoped path the owner's recorded `role` does. AIP-46 also says an agent
+with no list may spawn nothing; this release does not apply that part, an
+agent without a list stays on the level lattice (`undeclared`, below).
 
 Each spawn gets one of five verdicts:
 
@@ -262,15 +265,19 @@ and the spawn gate use:
 ```json
 {
   "roles": [
-    { "name": "executor", "level": 0, "delegation": "deny", "spawnable": [] },
-    { "name": "supervisor", "level": 100, "delegation": "allow", "spawnable": ["executor", "supervisor"] }
+    { "name": "executor", "level": 0, "delegation": "deny", "spawnable": [], "delegatesTo": [] },
+    { "name": "supervisor", "level": 100, "delegation": "allow", "spawnable": ["executor", "supervisor"], "delegatesTo": ["supervisor", "executor"] }
   ]
 }
 ```
 
 `spawnable` is precomputed with the same `canSpawn` check the daemon
 uses at spawn time, so a caller can discover what it may spawn before
-attempting `agent_start` with `orchestrator`.
+attempting `agent_start` with `orchestrator`. Each row also carries
+`delegatesTo`, the agents the role declares it may spawn, which the
+delegation gate evaluates; the key is omitted when the role declares
+none, while an explicit empty array is kept. Manifest agents are not
+listed: their `delegates_to` is not read by the runtime yet.
 
 ### The "Roles you may spawn" context line
 
