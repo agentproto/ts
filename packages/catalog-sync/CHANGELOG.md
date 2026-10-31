@@ -1,5 +1,15 @@
 # @agentproto/catalog-sync
 
+## 0.8.12
+
+### Patch Changes
+
+- 18584b5: Sync generated catalog data from the pinned provider sources.
+- 18584b5: Sync generated catalog data from the pinned provider sources (gpt-6.1-terra additions across OpenAI/Requesty/Azure, new HuggingFace routes, refreshed pricing/route snapshots).
+- Updated dependencies [18584b5]
+- Updated dependencies [18584b5]
+  - @agentproto/model-catalog@0.14.1
+
 ## 0.8.11
 
 ### Patch Changes

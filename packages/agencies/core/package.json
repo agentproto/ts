@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/agencies",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "description": "@agentproto/agencies: file-format schemas and validators for entities that exercise agency. Operating layer over agentcompanies/v1 and agentgovernance/v1: services, counterparties, engagements, agreements, deliverables, invoices, vendor-neutral procedures, full-fidelity routines, capacity.",
   "keywords": [
     "agentagencies",

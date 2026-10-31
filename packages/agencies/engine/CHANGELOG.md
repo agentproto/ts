@@ -1,5 +1,17 @@
 # @agentproto/agencies-engine
 
+## 0.1.15
+
+### Patch Changes
+
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/agencies@1.0.0
+  - @agentproto/governance-engine@1.0.0
+  - @agentproto/governance@1.0.0
+
 ## 0.1.14
 
 ### Patch Changes

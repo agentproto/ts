@@ -1,5 +1,15 @@
 # @agentproto/agencies-mastra
 
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/agencies@1.0.0
+  - @agentproto/governance@1.0.0
+
 ## 0.1.7
 
 ### Patch Changes

@@ -1,5 +1,28 @@
 # @agentproto/adapter-opencode
 
+## 1.9.5
+
+### Patch Changes
+
+- 68c476e: Stop per-session adapter config dirs (`~/.agentproto/adapter-config/<id>`) from growing without bound. When a spawn redirects a base dir (opencode's credential `XDG_DATA_HOME`), the tool caches known to derive from it (pnpm store, uv managed Pythons) are now symlinked to the operator's own location instead of being rebuilt per session; confined spawns keep per-session caches. The driver records each dir's disposable paths in `.agentproto-cache.json` (`credentialDataHome.disposable`; opencode lists `snapshot`, `tool-output`, `log`), and a new adapter-cache sweep deletes them once every session of the lineage is dead and quiet for `daemon.adapterCacheRetentionDays` (default 1), keeping the resume store. Runs with the periodic retention sweep, and on demand via `session_gc adapterCaches:true` and `agentproto sessions gc --adapter-caches`.
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- 11b18bf: AIP-72 memory follow-ups. The spawn digest now follows section 9 resolution step 3: an adapter whose `capabilities.memory.inject` is `none`, or that declares no memory capability, gets no digest; only `system-prompt` (with a usable channel) and the `native-dir` fallback carry it. codex, hermes, opencode and pi, which have a system-prompt channel, now declare `memory: { inject: "system-prompt", capture: "none" }` so they keep the digest. `session_restart` now carries the spawn role (`meta.role`), so the memory commit gate gives the same answer before and after a restart. `@agentproto/memory` documents the unfilled `tags` default in `validateMemory` and scopes the `renderMemory` status-rewrite note to files it wrote.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [18584b5]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+  - @agentproto/model-catalog@0.14.1
+
 ## 1.9.4
 
 ### Patch Changes

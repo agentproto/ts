@@ -1,5 +1,12 @@
 # @agentproto/tool-cli
 
+## 0.2.12
+
+### Patch Changes
+
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+
 ## 0.2.11
 
 ### Patch Changes

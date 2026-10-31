@@ -1,5 +1,38 @@
 # @agentproto/app-kit
 
+## 2.4.1
+
+### Patch Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- 59256dd: Reject an absolute or `..`-containing `cwd` on an app `services[]` entry, matching AIP-53 (the service must start inside its app directory). Both were previously accepted: `/abs/dir`, `../x` and `a/../b` now fail validation with an error naming the service and the `cwd` field. `.` and plain relative paths such as `sub/dir` are unchanged. Also syncs the vendored AIP-53 `APP.schema.json` services schema to canonical.
+- e47f3cd: AIP-42 `AgentEntry`, one AGENT.md renderer, and a configurable instructions composer.
+
+  - `@agentproto/agent` exports `AgentEntry { agent, body? }` and `renderAgentMd(entry)`, the single AGENT.md renderer. `agentVerbs` (create and update) and the app emitter both go through it, so the same agent renders to the same bytes on either path. The body is trimmed on render, so an update no longer grows blank lines.
+  - `defineAgent` refuses a missing or blank `model` with `model is required` (the generated schema types `model` as `any`, so a blank string used to pass).
+  - `composeInstructions(handle, body, opts?)` takes `boundariesHeader` and `sectionOrder`. The default boundaries header is now `Hard rules (these MUST be followed):`, without the em dash.
+  - `@agentproto/manifest`: `DoctypeSpec` gains an optional `render(handle, body)` hook that `create` and `update` use in place of the generic frontmatter renderer.
+  - `@agentproto/skill` exports `SkillEntry { skill, body }`.
+  - `@agentproto/app`: `renderAgentManifest` and `emitApp` delegate to `renderAgentMd`; ref comments cite AIP-54.
+
+- 59256dd: Reject absolute and `..`-containing `cwd` values on an AIP-53 app `services[]` entry, so a service can only start inside its app directory. The vendored `specs/resources/aip-53/draft/APP.schema.json` services schema is resynced to canonical, and the now-obsolete `pending/services` draft schema is removed. This mirrors the changeset already present at `.changeset/app-services-cwd-relative.md`.
+- Updated dependencies [b67f58e]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e47f3cd]
+- Updated dependencies [152ec6e]
+- Updated dependencies [e301b84]
+- Updated dependencies [9fb4e90]
+  - @agentproto/agent@0.6.0
+  - @agentproto/bridge@0.3.1
+  - @agentproto/workspace@2.0.0
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+  - @agentproto/driver-cli@0.3.1
+  - @agentproto/driver-http@0.2.1
+
 ## 2.4.0
 
 ### Minor Changes
