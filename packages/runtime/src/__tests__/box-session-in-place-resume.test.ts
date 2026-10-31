@@ -88,5 +88,23 @@ describe("provider-box sessions are never resumed in place on the host", () => {
         reg.shutdown()
       }
     })
+
+    it("resumeOnBoot skips a box row without spawning or burning an attempt", async () => {
+      const id = seedBoxRow()
+      const resumer = vi.fn(async () => {
+        throw new Error("adapter must not be spawned for a box cwd")
+      }) as unknown as AgentSessionResumer
+      const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+      try {
+        await expect(reg.resumeOnBoot(id)).resolves.toEqual({
+          status: "skipped",
+          reason: "provider-box",
+        })
+        expect(resumer).not.toHaveBeenCalled()
+        expect(reg.get(id)?.resumeAttempts ?? 0).toBe(0)
+      } finally {
+        reg.shutdown()
+      }
+    })
   })
 })

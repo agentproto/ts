@@ -4346,6 +4346,10 @@ export type EagerResumeSkipReason =
   /** Retired (`isRetired`): archived, deliberately ended, superseded or
    *  `retiredAt`-stamped — never revived by an automatic pass. */
   | "retired"
+  /** Ran in a provider box (`isProviderBoxSession`): its `cwd` only exists
+   *  inside the box, so it can never be resumed in place on the host. The
+   *  sandbox reattach pass or `session_restart` owns it. */
+  | "provider-box"
 
 /** Why an eager in-place resume of one row failed after being attempted. */
 export type EagerResumeFailReason =
@@ -13974,6 +13978,12 @@ export function createSessionsRegistry(opts?: {
       // never spawns again — the persisted counter is what bounds a launchd
       // crash-loop across boots (skip, don't count a further attempt).
       if (!canResume(rt.desc)) return { status: "skipped", reason: "cap-exhausted" }
+      // A provider-box row's `cwd` only exists inside the box. Resuming it in
+      // place would spawn the adapter on the host (and fail with a misleading
+      // `spawn <npx> ENOENT`); skip before the cwd preflight so a box row
+      // never burns a `resumeAttempts` slot for a spawn that cannot work. The
+      // sandbox reattach pass / `session_restart` owns these rows.
+      if (isProviderBoxSession(rt.desc)) return { status: "skipped", reason: "provider-box" }
       // Worktree re-association (§5). `cwd` was already required by
       // `isResumable`, so the non-null assertions below are narrowing only.
       const cwd = rt.desc.cwd!
