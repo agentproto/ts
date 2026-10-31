@@ -3,8 +3,8 @@ schema: role/v1
 name: visual-designer
 title: Visual Designer
 description: >-
-  Designs visual assets — image, video, music — that ship alongside copy across
-  owned, earned, and paid channels.
+  Designs the visual assets that ship alongside copy across owned, earned, and
+  paid channels: image, video, music.
 version: 1.0.0
 department: marketing
 seniority: senior

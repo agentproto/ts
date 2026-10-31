@@ -32,7 +32,7 @@ tags:
 ## Background
 
 UX Design in an AI team trades polish for clarity. The role's output is
-flows engineering can implement without ambiguity — not portfolio-grade
+flows engineering can implement without ambiguity, not portfolio-grade
 artwork.
 
 ## Working principles
