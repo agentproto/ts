@@ -83,6 +83,31 @@ describe("e2bSandboxProvider.list", () => {
     ])
   })
 
+  it("surfaces the tenantId / owner / label metadata stamped at boot", async () => {
+    const page = () =>
+      paginator([
+        [
+          info({
+            sandboxId: "sbx_tagged",
+            metadata: { tenantId: "agentproto", owner: "sess_abc123", label: "pr-review" },
+          }),
+          info({ sandboxId: "sbx_untagged", metadata: { other: "x" } }),
+        ],
+      ])
+    sandboxListMock.mockImplementation(page)
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const boxes = await e2bSandboxProvider.list!()
+    expect(boxes[0]).toMatchObject({ id: "sbx_tagged", tenantId: "agentproto", owner: "sess_abc123", label: "pr-review" })
+    expect(boxes[1]).not.toHaveProperty("tenantId")
+    expect(boxes[1]).not.toHaveProperty("owner")
+    expect(boxes[1]).not.toHaveProperty("label")
+
+    const thin = await e2bSandboxProvider.listBoxes!()
+    expect(thin[0]).toMatchObject({ id: "sbx_tagged", owner: "sess_abc123" })
+    expect(thin[1]).not.toHaveProperty("owner")
+  })
+
   it("follows every page of the paginator", async () => {
     sandboxListMock.mockReturnValue(
       paginator([
@@ -157,6 +182,23 @@ describe("e2bSandboxProvider.usage", () => {
       vcpuSec: 6 * 3600 * 2,
       gibSec: (6 * 3600 * 1024) / 1024,
     })
+  })
+
+  it("attributes a window to the box's tenantId metadata when present", async () => {
+    sandboxListMock.mockReturnValue(
+      paginator([[info({ sandboxId: "sbx_tagged", metadata: { tenantId: "agentproto" } }), info({ sandboxId: "sbx_plain" })]]),
+    )
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    const windows = await e2bSandboxProvider.usage!({
+      from: "2026-10-20T00:00:00.000Z",
+      to: "2026-10-20T01:00:00.000Z",
+    })
+
+    expect(windows.map(window => [window.computer, window.tenantId])).toEqual([
+      ["sbx_tagged", "agentproto"],
+      ["sbx_plain", "unknown"],
+    ])
   })
 
   it("clamps the end at endAt and at now, and skips boxes with no overlap", async () => {

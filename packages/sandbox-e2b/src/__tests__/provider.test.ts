@@ -429,6 +429,43 @@ describe("e2bSandboxProvider.boot", () => {
     )
   })
 
+  it("stamps tenantId / owner / label metadata on the box from the spawn context", async () => {
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    await e2bSandboxProvider.boot(
+      {
+        provider: "e2b",
+        config: { sessionHolder: "sess_abc123", sessionLabel: "pr-review", workspaceSlug: "agentproto" },
+      },
+      { env: { OPENROUTER_API_KEY: "k" } },
+    )
+
+    const createOpts = sandboxCreateMock.mock.calls[0]?.[1] as { metadata?: Record<string, string> }
+    expect(createOpts.metadata).toEqual({
+      tenantId: "agentproto",
+      owner: "sess_abc123",
+      label: "pr-review",
+    })
+    // Only identifiers: the env handed to the box never lands in metadata.
+    expect(JSON.stringify(createOpts.metadata)).not.toContain("OPENROUTER_API_KEY")
+  })
+
+  it("omits metadata when the spawn context names nobody", async () => {
+    vi.stubEnv("AGENTPROTO_SESSION_ID", "")
+    const sandbox = fakeSandbox()
+    sandboxCreateMock.mockResolvedValue(sandbox)
+    fetchMock.mockResolvedValue({ ok: true })
+
+    const { e2bSandboxProvider } = await import("../provider.js")
+    await e2bSandboxProvider.boot(spec, { env: {} })
+
+    expect(sandboxCreateMock.mock.calls[0]?.[1]).not.toHaveProperty("metadata")
+    vi.unstubAllEnvs()
+  })
+
   it("skips the CLI update when updateCliOnBoot is false", async () => {
     const sandbox = fakeSandbox()
     sandboxCreateMock.mockResolvedValue(sandbox)
@@ -833,5 +870,24 @@ describe("booted.writeFile", () => {
     const [path, data] = write.mock.calls[0] as unknown as [string, ArrayBuffer]
     expect(path).toBe("/home/user/run.sh")
     expect(Array.from(new Uint8Array(data))).toEqual([104, 105])
+  })
+})
+
+describe("buildSandboxMetadata", () => {
+  it("falls back to AGENTPROTO_SESSION_ID for the owner", async () => {
+    const { buildSandboxMetadata } = await import("../provider.js")
+    expect(buildSandboxMetadata({}, { AGENTPROTO_SESSION_ID: "sess_env" })).toEqual({ owner: "sess_env" })
+    expect(buildSandboxMetadata({ sessionHolder: "sess_cfg" }, { AGENTPROTO_SESSION_ID: "sess_env" })).toEqual({
+      owner: "sess_cfg",
+    })
+  })
+
+  it("keeps values to one trimmed line of at most 128 characters", async () => {
+    const { buildSandboxMetadata } = await import("../provider.js")
+    const metadata = buildSandboxMetadata(
+      { sessionLabel: `  fix\nthe\tbuild  `, workspaceSlug: "w".repeat(300), sessionHolder: "   " },
+      {},
+    )
+    expect(metadata).toEqual({ label: "fix the build", tenantId: "w".repeat(128) })
   })
 })

@@ -90,6 +90,34 @@ export function sandboxConfigForReattach(
   return { ...base, [SANDBOX_SESSION_HOLDER_KEY]: persisted ?? fallbackHolder }
 }
 
+/** Config fields naming the session label and workspace slug on the provider
+ *  spec. Like `sessionHolder`, they reach the provider process only through
+ *  the spec; e2b stamps them on the box as `label` / `tenantId` metadata so a
+ *  sandbox list can tell who started it. Providers that do not know them
+ *  ignore them, and they are not persisted on the descriptor (only a fresh
+ *  boot writes them). */
+export const SANDBOX_SESSION_LABEL_KEY = "sessionLabel"
+export const SANDBOX_WORKSPACE_SLUG_KEY = "workspaceSlug"
+
+/** Return a spec carrying the session `label` and `workspaceSlug` in its
+ *  config, each only when set. */
+export function withSandboxSpawnContext(
+  spec: SandboxSpec,
+  context: { label?: string; workspaceSlug?: string },
+): SandboxSpec {
+  const label = context.label?.trim()
+  const workspaceSlug = context.workspaceSlug?.trim()
+  if (!label && !workspaceSlug) return spec
+  return {
+    ...spec,
+    config: {
+      ...spec.config,
+      ...(label ? { [SANDBOX_SESSION_LABEL_KEY]: label } : {}),
+      ...(workspaceSlug ? { [SANDBOX_WORKSPACE_SLUG_KEY]: workspaceSlug } : {}),
+    },
+  }
+}
+
 /** Return a spec whose `config.sessionHolder` is `holder` (no-op when unset). */
 export function withSandboxSessionHolder(spec: SandboxSpec, holder: string | undefined): SandboxSpec {
   if (holder === undefined || holder.length === 0) return spec

@@ -371,6 +371,9 @@ export interface SandboxProviderBox {
   id: string
   /** Provider-reported state ("running", "stopped", …), when available. */
   state?: string
+  /** The agentproto session that booted the box, when the provider recorded
+   *  it (e2b: the `owner` metadata stamped at boot). */
+  owner?: string
   /** Session slots the provider still counts for this box. */
   sessions?: number
   /** Memory the box holds, in MiB - when the provider reports it. */
@@ -400,6 +403,11 @@ export interface SandboxBox {
   tenantId?: string
   /** End user inside the tenant, when the provider reports it. */
   endUser?: string
+  /** The agentproto session that booted the box, when the provider recorded
+   *  it (e2b: the `owner` metadata stamped at boot). */
+  owner?: string
+  /** That session's label, when the provider recorded it. */
+  label?: string
   /** Provider host identifier (the computer controller's `hostId`), when
    *  reported. */
   host?: string

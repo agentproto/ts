@@ -195,6 +195,15 @@ interface E2bSandboxConfig {
    *  non-positive number is dropped, leaving the computed value for that
    *  field. A caller-provided env var of the same name always wins. */
   buildEnv?: false | { concurrency?: number; heapMb?: number }
+  /** The agentproto session the box is booted for, set by the runtime (the
+   *  same `config.sessionHolder` the computer provider attaches with).
+   *  Written to the sandbox's e2b metadata as `owner`. */
+  sessionHolder?: string
+  /** The session's label, when the spawn has one. Written as `label`. */
+  sessionLabel?: string
+  /** Slug of the registered workspace the session works in, when known.
+   *  Written as `tenantId`. */
+  workspaceSlug?: string
 }
 
 function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
@@ -226,7 +235,52 @@ function readE2bConfig(spec: SandboxSpec): E2bSandboxConfig {
         ? Math.floor(config.swapMb)
         : undefined,
     buildEnv: readBuildEnv(config.buildEnv),
+    sessionHolder: typeof config.sessionHolder === "string" ? config.sessionHolder : undefined,
+    sessionLabel: typeof config.sessionLabel === "string" ? config.sessionLabel : undefined,
+    workspaceSlug: typeof config.workspaceSlug === "string" ? config.workspaceSlug : undefined,
   }
+}
+
+/** Longest metadata value written. The e2b SDK types declare no limit for
+ *  sandbox metadata; its secret metadata caps keys at 128 bytes and values at
+ *  1024, so 128 characters stays well inside either. */
+const METADATA_VALUE_MAX = 128
+
+/** One metadata value: single line, trimmed, capped. `undefined` when
+ *  nothing is left. */
+function metadataValue(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  // eslint-disable-next-line no-control-regex
+  const clean = value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim()
+  if (clean === "") return undefined
+  return clean.length > METADATA_VALUE_MAX ? clean.slice(0, METADATA_VALUE_MAX) : clean
+}
+
+/**
+ * The e2b `metadata` stamped on a fresh box, so a sandbox list (the computer
+ * console, the orphan gc, `list()` below) can tell who started it:
+ *
+ * - `tenantId`: the registered workspace slug of the spawn;
+ * - `owner`: the agentproto session id (`config.sessionHolder`, falling back
+ *   to the `AGENTPROTO_SESSION_ID` this process was spawned with, the same
+ *   resolution the computer provider uses for its holder);
+ * - `label`: the session label.
+ *
+ * Each key is omitted when unknown. Only these short identifiers are sent:
+ * no env, no paths, no prompt text. `undefined` when none is known.
+ */
+export function buildSandboxMetadata(
+  config: Pick<E2bSandboxConfig, "sessionHolder" | "sessionLabel" | "workspaceSlug">,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> | undefined {
+  const metadata: Record<string, string> = {}
+  const tenantId = metadataValue(config.workspaceSlug)
+  const owner = metadataValue(config.sessionHolder ?? env.AGENTPROTO_SESSION_ID)
+  const label = metadataValue(config.sessionLabel)
+  if (tenantId !== undefined) metadata.tenantId = tenantId
+  if (owner !== undefined) metadata.owner = owner
+  if (label !== undefined) metadata.label = label
+  return Object.keys(metadata).length > 0 ? metadata : undefined
 }
 
 /** Validate `config.buildEnv`: `false` disables, an object keeps its valid
@@ -807,19 +861,33 @@ function isoOrUndefined(value: Date | undefined): string | undefined {
   return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : undefined
 }
 
+/** A non-empty string metadata value written by {@link buildSandboxMetadata},
+ *  or `undefined` (a box booted before that, or by another client). */
+function readMetadata(info: SandboxInfo, key: "tenantId" | "owner" | "label"): string | undefined {
+  const value = (info.metadata as Record<string, unknown> | undefined)?.[key]
+  return typeof value === "string" && value !== "" ? value : undefined
+}
+
 /**
  * Map one e2b control-plane `SandboxInfo` onto the unified `SandboxBox`.
  * A paused box is listed too: the account still holds it (and its RAM
  * snapshot), so it is exactly what the orphan gc must see, even though e2b
- * does not bill paused time. Ownership is unknown: this provider writes no
- * metadata at boot, so `tenantId`/`endUser` stay absent.
+ * does not bill paused time. Ownership comes from the metadata stamped at
+ * boot ({@link buildSandboxMetadata}); a box without it leaves
+ * `tenantId`/`owner`/`label` absent. `endUser` is never known.
  */
 function toSandboxBox(info: SandboxInfo): SandboxBox {
   const createdAt = isoOrUndefined(info.startedAt)
+  const tenantId = readMetadata(info, "tenantId")
+  const owner = readMetadata(info, "owner")
+  const label = readMetadata(info, "label")
   return {
     id: info.sandboxId,
     provider: "e2b",
     ...(info.state !== undefined ? { state: String(info.state) } : {}),
+    ...(tenantId !== undefined ? { tenantId } : {}),
+    ...(owner !== undefined ? { owner } : {}),
+    ...(label !== undefined ? { label } : {}),
     ...(Number.isFinite(info.cpuCount) ? { cpus: info.cpuCount } : {}),
     ...(Number.isFinite(info.memoryMB) ? { memoryMiB: info.memoryMB } : {}),
     ...(createdAt !== undefined ? { createdAt } : {}),
@@ -832,6 +900,7 @@ function toProviderBox(box: SandboxBox): SandboxProviderBox {
   return {
     id: box.id,
     ...(box.state !== undefined ? { state: box.state } : {}),
+    ...(box.owner !== undefined ? { owner: box.owner } : {}),
     ...(box.sessions !== undefined ? { sessions: box.sessions } : {}),
     ...(box.memoryMiB !== undefined ? { memoryMiB: box.memoryMiB } : {}),
     ...(box.createdAt !== undefined ? { createdAt: box.createdAt } : {}),
@@ -871,11 +940,13 @@ export const e2bSandboxProvider: SandboxProvider = {
     const workspace = config.workspace ?? DEFAULT_WORKSPACE
 
     const onTimeout = resolveOnTimeout(spec, config)
+    const metadata = buildSandboxMetadata(config)
     const sandbox = await Sandbox.create(template, {
       apiKey: process.env.E2B_API_KEY,
       envs: opts.env,
       timeoutMs: config.timeoutMs ?? DEFAULT_SANDBOX_TIMEOUT_MS,
       ...(onTimeout ? { lifecycle: { onTimeout } } : {}),
+      ...(metadata ? { metadata } : {}),
     })
 
     // Once the VM exists, EVERY failure after this point must reclaim it —
@@ -1026,10 +1097,10 @@ export const e2bSandboxProvider: SandboxProvider = {
    * from which a billable interval could be derived. Listing them remains
    * correct for inventory/gc, just not for cost.
    *
-   * `tenantId` is the literal `"unknown"`: this provider writes no ownership
-   * metadata at boot, and inventing a tenant would misattribute the cost.
-   * For the same reason an `endUser` filter matches nothing (e2b does not
-   * record an end user). Cost is estimated from the W0 table unless
+   * `tenantId` is the box's `tenantId` metadata (stamped at boot, see
+   * {@link buildSandboxMetadata}), else the literal `"unknown"`: inventing a
+   * tenant would misattribute the cost. An `endUser` filter matches nothing
+   * (e2b does not record an end user). Cost is estimated from the W0 table unless
    * `AGENTPROTO_E2B_PRICING` overrides it; unknown pricing yields
    * `costEur: null`, never `0`.
    */
@@ -1058,7 +1129,7 @@ export const e2bSandboxProvider: SandboxProvider = {
       const gibSec = (activeSec * memoryMiB) / 1024
       windows.push({
         computer: info.sandboxId,
-        tenantId: "unknown",
+        tenantId: readMetadata(info, "tenantId") ?? "unknown",
         provider: "e2b",
         from: new Date(interval.fromMs).toISOString(),
         to: new Date(interval.toMs).toISOString(),
