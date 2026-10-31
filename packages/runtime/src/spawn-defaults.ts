@@ -24,6 +24,7 @@
 
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { DelegationGateMode } from "./delegation-gate.js"
+import type { ProfileGateMode } from "./profile-gate.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
@@ -289,6 +290,14 @@ export interface SpawnDefaultsConfig {
      *  decision, `enforce` refuses a child the caller's agent does not
      *  declare in `delegatesTo`. */
     delegationGate?: DelegationGateMode
+    /** AIP-46 auth-profile gate for spawns that name an access profile:
+     *  `off` skips evaluation, `observe` (default) counts what it would
+     *  refuse without changing a decision, `enforce` refuses a profile
+     *  outside the caller's set. */
+    profileGate?: ProfileGateMode
+    /** Profile ids any session may name at spawn, in addition to its own
+     *  recorded profile. Default []. */
+    sharedProfiles?: string[]
   }
   /** Daemon-wide sandbox safety-net policy. */
   sandbox?: {

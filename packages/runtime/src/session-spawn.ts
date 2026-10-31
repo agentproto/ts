@@ -204,6 +204,14 @@ import {
   type DelegationVerdict,
   type ManifestDelegates,
 } from "./delegation-gate.js"
+import {
+  DEFAULT_PROFILE_GATE_MODE,
+  callerProfileSet,
+  decideProfileUse,
+  recordProfileUse,
+  type ProfileVerdict,
+} from "./profile-gate.js"
+import { decide as decidePermission } from "./permissions.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
 import {
@@ -2138,6 +2146,7 @@ export type SpawnAgentSessionResult =
         | "session_preset_invalid"
         | "operator_unresolvable"
         | "delegation_denied"
+        | "auth_profile_denied"
       message: string
       details?: Record<string, unknown>
     }
@@ -2297,6 +2306,11 @@ export async function spawnAgentSession(
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
   const reactionStamp = reactionSpawnStamp(input.origin)
+  // The auth profiles the REQUEST names, captured before preset expansion
+  // replaces `input.access` with a layered value (harness preset, session
+  // preset, AGENT.md manifest, config). The profile gate evaluates only what
+  // the caller asked for, never operator or author configuration.
+  const requestedAccess = input.access
   // AIP-46 operator binding, validated before any side effect.
   const operatorBinding = resolveOperatorBinding({
     ...(input.operator !== undefined ? { operator: input.operator } : {}),
@@ -3414,6 +3428,83 @@ export async function spawnAgentSession(
           childAgent,
           delegatesTo: [...list],
           legacyCode: "role_spawn_denied",
+        },
+      }
+    }
+  }
+  // AIP-46 auth-profile gate, observe first. A nested spawn may name an
+  // auth profile only when it is in the CALLING session's set: its own
+  // recorded `accessProfile.profileRef` plus `defaults.spawn.sharedProfiles`.
+  // Only the profiles the REQUEST names are evaluated (captured before preset
+  // expansion above); a profile from a preset, manifest or config layer is
+  // operator or author configuration, not a request. Spawns with no trusted
+  // caller (continue-fresh, restart, migrate, cron, retries, a root spawn)
+  // are `no_caller` and never gated: the host's own auth authorises them.
+  const profileGateMode = configDefaults?.spawn?.profileGate ?? DEFAULT_PROFILE_GATE_MODE
+  let profileVerdict: ProfileVerdict | undefined
+  if (profileGateMode !== "off") {
+    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerKnown = callerDescriptor !== undefined
+    // An external identifier is a label, evaluated as anonymous (AIP-46 rule
+    // 7): the operator's own Claude Desktop or CLI session registers as one.
+    const callerExternal = callerDescriptor?.kind === "external"
+    const callerProfiles = callerProfileSet({
+      caller: callerDescriptor,
+      shared: configDefaults?.spawn?.sharedProfiles ?? [],
+    })
+    const requestedProfiles: string[] = []
+    for (const ref of [
+      requestedAccess?.profileRef,
+      ...(requestedAccess?.profileRefs ?? []),
+    ]) {
+      if (ref !== undefined && ref !== "" && !requestedProfiles.includes(ref)) {
+        requestedProfiles.push(ref)
+      }
+    }
+    const decision = decideProfileUse({
+      callerSessionId: gateCallerId,
+      callerKnown,
+      callerExternal,
+      requested: requestedProfiles,
+      callerProfiles,
+    })
+    profileVerdict = decision.verdict
+    let denied = decision.denied
+    if ((profileVerdict === "allowed" || profileVerdict === "would_deny") && callerDescriptor) {
+      // decide() answers "may this principal use this profile" for each ref;
+      // the gate derives its verdict from those answers so introspection and
+      // enforcement cannot drift.
+      const principal = { kind: "session" as const, session: callerDescriptor }
+      denied = requestedProfiles.filter(
+        ref =>
+          !decidePermission(
+            principal,
+            "auth.profile.use",
+            { kind: "profile", ref },
+            { profiles: { callerAllowed: callerProfiles } },
+          ).allow,
+      )
+      profileVerdict = denied.length > 0 ? "would_deny" : "allowed"
+    }
+    recordProfileUse(profileVerdict, {
+      mode: profileGateMode,
+      callerProfiles,
+      denied,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (profileGateMode === "enforce" && profileVerdict === "would_deny") {
+      return {
+        ok: false,
+        code: "auth_profile_denied",
+        message:
+          `agent_start: the caller may not name auth profile${denied.length > 1 ? "s" : ""} ` +
+          `${denied.map(ref => `"${ref}"`).join(", ")}; a session may pass on only its own profile ` +
+          `and the configured shared ones. Add a profile to defaults.spawn.sharedProfiles to allow it.`,
+        details: {
+          gate: "profile",
+          denied: [...denied],
+          callerProfiles: [...callerProfiles],
         },
       }
     }

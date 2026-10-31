@@ -78,6 +78,7 @@ import {
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
 import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
+import { profileReport, type ProfileGateMode, DEFAULT_PROFILE_GATE_MODE } from "./profile-gate.js"
 import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
@@ -1107,6 +1108,8 @@ export interface RuntimeHttpServerOptions {
   resolveOperatorDelegates?: () => Promise<string[]>
   /** Resolver for `defaults.spawn.delegationGate` used by `GET /permissions/grants`. A seam for tests. */
   resolveDelegationGateMode?: () => Promise<DelegationGateMode>
+  /** Resolver for `defaults.spawn.profileGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveProfileGateMode?: () => Promise<ProfileGateMode>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -5298,6 +5301,7 @@ export async function startHttpServer(
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
             opts.resolveOperatorDelegates ?? resolveOperatorDelegates,
             opts.resolveDelegationGateMode ?? resolveDelegationGateMode,
+            opts.resolveProfileGateMode ?? resolveProfileGateMode,
           )
           if (handled) return
         }
@@ -6580,6 +6584,7 @@ function spawnFailureStatus(code: string): number {
     return 409
   }
   if (code === "delegation_denied") return 403
+  if (code === "auth_profile_denied") return 403
   if (
     code === "invalid_role" ||
     code === "invalid_agent" ||
@@ -11614,15 +11619,27 @@ async function resolveDelegationGateMode(
   }
 }
 
+/** `defaults.spawn.profileGate`, read per call; a missing or malformed config gives observe. */
+async function resolveProfileGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<ProfileGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.profileGate ?? DEFAULT_PROFILE_GATE_MODE
+  } catch {
+    return DEFAULT_PROFILE_GATE_MODE
+  }
+}
+
 /**
  * /permissions routes — the cross-session permission inbox:
  *   GET  /permissions            → { permissions: [...] } across all sessions
  *                                  (optional ?sessionId=<id> filter)
- *   GET  /permissions/grants     → { grants, unmapped, inputs, delegation }:
+ *   GET  /permissions/grants     → { grants, unmapped, inputs, delegation, profileUse }:
  *                                  the effective grants derived from the
  *                                  messaging switches and allowPromptFrom,
  *                                  plus the entries no grant expresses, plus
- *                                  the delegation gate's mode and counters.
+ *                                  the delegation and auth-profile gates'
+ *                                  modes and counters.
  *                                  Read-only.
  *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
  *
@@ -11639,6 +11656,7 @@ async function handlePermissions(
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
   operatorDelegatesFor: () => Promise<string[]> = resolveOperatorDelegates,
   delegationGateModeFor: () => Promise<DelegationGateMode> = resolveDelegationGateMode,
+  profileGateModeFor: () => Promise<ProfileGateMode> = resolveProfileGateMode,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -11659,10 +11677,11 @@ async function handlePermissions(
   }
 
   if (path === "/permissions/grants" && req.method === "GET") {
-    const [messaging, operatorDelegates, delegationGateMode] = await Promise.all([
+    const [messaging, operatorDelegates, delegationGateMode, profileGateMode] = await Promise.all([
       messagingDefaultsFor(),
       operatorDelegatesFor(),
       delegationGateModeFor(),
+      profileGateModeFor(),
     ])
     const report = deriveEffectiveGrants({
       messaging: {
@@ -11681,6 +11700,7 @@ async function handlePermissions(
     json(200, {
       ...report,
       delegation: delegationReport(delegationGateMode ?? DEFAULT_DELEGATION_GATE_MODE),
+      profileUse: profileReport(profileGateMode ?? DEFAULT_PROFILE_GATE_MODE),
     })
     return true
   }

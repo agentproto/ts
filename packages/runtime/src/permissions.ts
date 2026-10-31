@@ -148,8 +148,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     surfaces: ["pr_open"],
   },
   "auth.profile.use": {
-    routed: false,
-    enforcedAt: "none (any spawn may name any profile)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide(), applied by session-spawn.ts behind defaults.spawn.profileGate (observe by default: counts, refuses nothing)",
     surfaces: ["agent_start.access", "agent_start.auth"],
   },
   "auth.profile.manage": {
@@ -226,7 +227,13 @@ export interface ToolResource {
   implements?: string | readonly string[]
 }
 
-export type PermissionResource = SessionResource | ToolResource | { kind: "none" }
+/** An auth profile a spawn asks to bill. */
+export interface ProfileResource {
+  kind: "profile"
+  ref: string
+}
+
+export type PermissionResource = SessionResource | ToolResource | ProfileResource | { kind: "none" }
 
 /** AIP-38 grants consulted at call time. Read per call: build a fresh object when the grants change. */
 export interface PermissionPolicy {
@@ -262,6 +269,8 @@ export interface PermissionContext {
   operatorLabelOf?: (id: string) => string | undefined
   /** AIP-38 grants for `session.message` denies and `tool.invoke`. Absent: no grant is consulted. */
   policy?: PermissionPolicy
+  /** `auth.profile.use`: the profiles the caller may pass on (its own plus `defaults.spawn.sharedProfiles`). */
+  profiles?: { callerAllowed: readonly string[] }
 }
 
 // ── Decision ───────────────────────────────────────────────────────────
@@ -694,13 +703,61 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
     : mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
 }
 
+function decideProfile(
+  principal: Principal,
+  resource: PermissionResource,
+  ctx: PermissionContext,
+): Decision {
+  const base = { action: "auth.profile.use" as const, authoritative: true }
+  if (resource.kind !== "profile") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "resource",
+      reason: "auth.profile.use needs a profile resource",
+    })
+  }
+  const ref = resource.ref
+  if (principal.kind === "operator") {
+    return mint({ ...base, allow: true, rule: "operator", reason: "the operator may name any auth profile" })
+  }
+  if (principal.kind === "system") {
+    return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal sender" })
+  }
+  if (principal.kind === "relay") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "relay",
+      reason: "a relay grant carries only session.message, not an auth profile",
+    })
+  }
+  const allowed = ctx.profiles?.callerAllowed ?? []
+  if (allowed.includes(ref)) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "profile.parent-set",
+      reason: `profile "${ref}" is in the caller's profile set`,
+    })
+  }
+  return mint({
+    ...base,
+    allow: false,
+    rule: "profile.outside-parent-set",
+    reason:
+      `profile "${ref}" is outside the caller's profile set; a session may pass on only its own ` +
+      `profile and the configured shared ones (defaults.spawn.sharedProfiles)`,
+  })
+}
+
 /**
  * The one decision point. Pure.
  *
  * `session.message` / `session.message.interrupt` need a `session`
  * resource (the recipient). `session.drive` needs a `session` resource
- * (the target). Every other action is not routed yet and answers
- * `allow: false, authoritative: false`.
+ * (the target). `auth.profile.use` needs a `profile` resource. Every other
+ * action is not routed yet and answers `allow: false, authoritative: false`.
  */
 export function decide(
   principal: Principal,
@@ -722,6 +779,8 @@ export function decide(
         return mint({ action, allow: false, authoritative: false, rule: "resource", reason: "session.drive needs a target session" })
       }
       return decideDrive(principal, recipient, context)
+    case "auth.profile.use":
+      return decideProfile(principal, resource, context)
     case "tool.invoke":
       if (context.policy) return decideTool(principal, resource, context, context.policy)
       return notRouted(action, recipient)

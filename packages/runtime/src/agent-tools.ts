@@ -929,7 +929,8 @@ export function registerAgentTools(
         result.code === "role_spawn_denied" ||
         result.code === "cloud_spawn_refused" ||
         result.code === "operator_unresolvable" ||
-        result.code === "delegation_denied"
+        result.code === "delegation_denied" ||
+        result.code === "auth_profile_denied"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,

@@ -11,6 +11,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionsRegistry } from "./sessions.js"
+import { loadConfig } from "./config.js"
+import { callerProfileSet } from "./profile-gate.js"
 import {
   decide,
   PERMISSION_ACTIONS,
@@ -36,6 +38,8 @@ export interface RegisterPermissionsToolsOptions {
   peerBinding?: "slug" | "verified"
   /** cwd to registered-workspace resolver for verified peer binding. Omitted: no cwd resolves, so "verified" links no peers. */
   workspaceOfCwd?: (cwd: string) => string | undefined
+  /** `defaults.spawn.sharedProfiles`, resolved for this request. Omitted: read from config per call. */
+  sharedProfiles?: readonly string[]
 }
 
 type ToolResult = { content: Array<{ type: "text"; text: string }>; isError?: boolean }
@@ -56,6 +60,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
     allowInterrupt,
     peerBinding,
     workspaceOfCwd,
+    sharedProfiles,
   } = opts
 
   server.tool(
@@ -75,6 +80,11 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         .min(1)
         .optional()
         .describe("Explain for this session as the principal instead of yourself."),
+      profile: z
+        .string()
+        .min(1)
+        .optional()
+        .describe("The auth profile ref, for action auth.profile.use."),
     },
     async input => {
       const callerId = callerScope?.ownerSessionId ?? callerSessionId
@@ -114,10 +124,17 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         if (!self) {
           return text({ ok: false, error: "no_such_session", message: `session "${selfId}" is not in the registry` }, true)
         }
-        principal = { kind: "session", session: self }
+        // An external identifier is a label, evaluated as anonymous (AIP-46
+        // rule 7); for an auth profile it explains as the spawn gate treats it.
+        principal =
+          input.profile && self.kind === "external"
+            ? { kind: "operator", via: "anonymous-local" }
+            : { kind: "session", session: self }
       }
       let resource: PermissionResource = { kind: "none" }
-      if (input.sessionId) {
+      if (input.profile) {
+        resource = { kind: "profile", ref: input.profile }
+      } else if (input.sessionId) {
         const target = registry.get(input.sessionId)
         if (!target) {
           return text(
@@ -138,6 +155,16 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
         parentOf: id => registry.get(id)?.parentSessionId,
         operatorLabelOf: id => registry.get(id)?.operatorLabel,
+        ...(input.profile
+          ? {
+              profiles: {
+                callerAllowed: callerProfileSet({
+                  caller: selfId ? registry.get(selfId) : undefined,
+                  shared: sharedProfiles ?? (await defaultSharedProfiles()),
+                }),
+              },
+            }
+          : {}),
       })
       return text({
         ok: true,
@@ -150,4 +177,13 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
       })
     },
   )
+}
+
+/** `defaults.spawn.sharedProfiles`, read per call; a missing or malformed config gives none. */
+async function defaultSharedProfiles(): Promise<readonly string[]> {
+  try {
+    return (await loadConfig()).defaults?.spawn?.sharedProfiles ?? []
+  } catch {
+    return []
+  }
 }

@@ -281,6 +281,18 @@ profile.
 Named auth profile to bill at initial spawn; resolved from the local
 keychain.
 
+AIP-46 gates these profiles per spawn. Only the profiles the request names
+(`access.profileRef` and every `access.profileRefs` entry) are evaluated; a
+profile supplied by a preset, an AGENT.md manifest or config is not a
+request. The caller may pass on only its own recorded profile plus
+`defaults.spawn.sharedProfiles`. `defaults.spawn.profileGate` is `observe`
+by default (counts only, visible on `GET /permissions/grants` under
+`profileUse`); `enforce` refuses a profile outside that set with
+`auth_profile_denied` before any credential is resolved. A root spawn and
+any spawn with no trusted caller are never gated. A session with no
+recorded profile has an empty set of its own, so under `enforce` it may
+name only the shared profiles.
+
 ## inference
 
 Bind this spawn to a local/LAN inference endpoint instead of a cloud model.
