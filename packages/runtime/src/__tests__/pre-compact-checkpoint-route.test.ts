@@ -149,6 +149,9 @@ describe("R1 POST /sessions/:id/checkpoint for the native pre-compact hook", () 
       stop: async () => {
         await http.stop()
         registry.shutdown()
+        // shutdown() starts transcript-stream closes it cannot await; drain them
+        // before afterEach removes the dir (else ENOTEMPTY on the sess_* rmdir).
+        await registry.settlePendingWrites()
       },
     }
   }
