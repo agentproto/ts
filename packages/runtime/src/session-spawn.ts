@@ -116,6 +116,7 @@ import { authProfileAsAdapterHint, gatewayAsAdapterHint } from "./adapter-slug-h
 import {
   sandboxConfigForDescriptor,
   withSandboxSessionHolder,
+  withSandboxSpawnContext,
 } from "./sandbox-session-holder.js"
 import {
   autoCredentialRefOf,
@@ -5766,6 +5767,7 @@ export async function spawnAgentSession(
         resolveSandboxProvider,
         adapter: input.adapter,
         sessionHolder: mintedSessionId,
+        spawnWorkspaceSlug: resolvedSlug,
         signal: bootAbort.signal,
         checkpointConfig,
         // CRASH RESUME - the checkpoint of the DEAD session this spawn
@@ -6734,6 +6736,10 @@ export async function bootSandboxAgentSession(opts: {
    *  against ITS OWN registry and fail loudly when it can't, without the
    *  controller being able to say so itself. */
   workspaceSlug?: string
+  /** The workspace slug the spawn resolved to, explicit or not. Only tags
+   *  the box (`config.workspaceSlug`, e2b `tenantId` metadata); falls back
+   *  to `workspace` / `tarWorkspace` / `workspaceSlug` when absent. */
+  spawnWorkspaceSlug?: string
   /** The HOST's resolved cwd for this spawn — see `explicitCwd` for whether
    *  the caller actually asked for this path, or it's just where cwd
    *  resolution fell through to (active workspace / worktree). */
@@ -7047,7 +7053,13 @@ export async function bootSandboxAgentSession(opts: {
   // `AGENTPROTO_SESSION_ID`, so the runtime names it explicitly instead of
   // relying on the env variable only the spawned agent child carries.
   const sessionHolder = opts.sessionHolder ?? opts.sessionId
-  const spec: SandboxSpec = withSandboxSessionHolder(rawSpec, sessionHolder)
+  // Label and workspace ride the same way, so a provider can tag the box with
+  // who started it (e2b: `label` / `tenantId` metadata).
+  const spec: SandboxSpec = withSandboxSpawnContext(withSandboxSessionHolder(rawSpec, sessionHolder), {
+    ...(opts.label !== undefined ? { label: opts.label } : {}),
+    workspaceSlug:
+      opts.spawnWorkspaceSlug ?? opts.workspace?.slug ?? opts.tarWorkspace?.slug ?? opts.workspaceSlug,
+  })
   // WP3 — the serve port must be publicly reachable: append it to the spec's
   // `extraPorts` so a provider that pre-resolves extraPorts at boot (e2b)
   // hands back its URL in `BootedSandbox.ports` (which also stamps the

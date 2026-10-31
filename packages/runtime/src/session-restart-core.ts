@@ -2317,6 +2317,7 @@ async function restartAgentSessionOnce(
         : {}),
       adapter: adapterSlug,
       sessionHolder: restartedSessionId,
+      ...(prev.workspaceSlug ? { spawnWorkspaceSlug: prev.workspaceSlug } : {}),
       // Replaced by the fresh checkout's path (`explicitCwd: false`).
       cwd: prev.cwd ?? "",
       explicitCwd: false,

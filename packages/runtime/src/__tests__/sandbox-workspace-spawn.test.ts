@@ -269,6 +269,26 @@ describe("agent_start sandbox — workspace remote checkout + delivery", () => {
     expect(JSON.stringify(result.descriptor)).not.toContain("provider-secret")
   })
 
+  it("sends the session label and workspace slug to the provider, without persisting them", async () => {
+    const result = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      sandbox: "fake",
+      workspaceSlug: "agentproto",
+      label: "pr-review",
+      worktree: { slug: "x" },
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+
+    expect(bootSpecs[0]?.config).toMatchObject({
+      sessionHolder: result.descriptor.id,
+      sessionLabel: "pr-review",
+      workspaceSlug: "agentproto",
+    })
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("sessionLabel")
+    expect(result.descriptor.sandboxConfig).not.toHaveProperty("workspaceSlug")
+  })
+
   it("killing the session pushes the work branch and records the delivery before the box stops", async () => {
     const result = await spawnAgentSession(makeDeps(), {
       adapter: "fake-cli",
