@@ -2442,13 +2442,14 @@ export function registerAgentTools(
   // toMcpTool) with the shared `paginated()` transformer. The handler
   // already projects each role to the compact row this tool exists to
   // surface (name/level/delegation/spawnable — spawnable is the point
-  // of the tool), so the compact projection is that row verbatim and
-  // `full: true` is a no-op.
+  // of the tool, plus the declared `delegatesTo`), so the compact
+  // projection is that row verbatim and `full: true` is a no-op.
   interface RoleListRow {
     name: string
     level: number
     delegation: string
     spawnable: string[]
+    delegatesTo?: string[]
   }
   const compactRoleItem = (r: RoleListRow): RoleListRow => r
   const roleListSchema = z.object({
@@ -2465,7 +2466,9 @@ export function registerAgentTools(
       "this tool never itself grants or denies a spawn. Use before " +
       "`agent_start` with `orchestrator` to discover which roles this " +
       "session may in turn spawn. Each row is already the compact view " +
-      "(name/level/delegation/spawnable).",
+      "(name/level/delegation/spawnable); it also carries `delegatesTo`, " +
+      "the agents the role declares it may spawn, which the delegation " +
+      "gate (`defaults.spawn.delegationGate`) evaluates.",
     inputSchema: roleListSchema,
     handler: async () => {
       const registry = loadRoleRegistry ? await loadRoleRegistry() : await loadDefaultRoleRegistry()
@@ -2474,6 +2477,7 @@ export function registerAgentTools(
         level: role.level,
         delegation: role.toolPolicy.delegation,
         spawnable: spawnableRolesFor(role, registry).map(child => child.name),
+        ...(role.delegatesTo !== undefined ? { delegatesTo: [...role.delegatesTo] } : {}),
       }))
     },
     transformers: [

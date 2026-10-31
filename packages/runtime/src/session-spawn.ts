@@ -3349,12 +3349,9 @@ export async function spawnAgentSession(
     const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
     const callerMeta = callerDescriptor?.meta
     const callerAgent =
+      (typeof callerMeta?.agentSlug === "string" ? callerMeta.agentSlug : undefined) ??
       callerScope?.role ??
-      (typeof callerMeta?.agentSlug === "string"
-        ? callerMeta.agentSlug
-        : typeof callerMeta?.role === "string"
-          ? callerMeta.role
-          : undefined)
+      (typeof callerMeta?.role === "string" ? callerMeta.role : undefined)
     let callerDelegatesTo: readonly string[] | undefined
     if (callerAgent !== undefined) {
       try {
