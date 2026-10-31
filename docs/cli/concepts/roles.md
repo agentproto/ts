@@ -240,8 +240,10 @@ defaults the field to `[]`, so the runtime cannot tell "declares none"
 apart; AIP-46's deny-by-default for such agents is not applied yet). An
 entry given as a path, `file` or `inline` cannot be resolved yet: the spawn
 carries a warning and the agent is `undeclared`. `session_continue_fresh`
-does not carry the agent binding: it re-spawns on the default agent for its
-depth, so the successor has neither the manifest id nor this list.
+carries the agent binding to its successor, like a restart: the recorded
+role, manifest id and delegation list, never a fresh read of the file. An
+explicit `agent` or `role` in the continuation request wins instead and
+nothing is carried.
 
 A manifest-bound *child* is matched by its manifest id, the same value the
 session records as `meta.agentSlug`, not by the role its manifest resolves

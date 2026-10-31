@@ -1029,9 +1029,10 @@ is `undeclared` (the schema defaults the field to `[]`, so "declares none"
 cannot be told apart, and AIP-46's deny-by-default is not applied yet). An
 entry given as a path, `file` or `inline` is not resolved yet: the spawn
 carries a warning and the agent is `undeclared`. Edit the manifest and
-respawn to apply a change; a restart carries the recorded list, while
-`session_continue_fresh` re-spawns on the default agent for its depth and
-carries neither the manifest id nor the list.
+respawn to apply a change; a restart carries the recorded list, and
+`session_continue_fresh` carries the recorded list and the manifest id too (an
+explicit `agent` or `role` in the continuation request wins instead and
+nothing is carried).
 
 ## operatorDigest
 
