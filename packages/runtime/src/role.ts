@@ -306,11 +306,18 @@ export function listRoles(
  * itself. (Unbounded same-level recursion is a pre-existing, deliberate
  * pattern bounded separately by `maxDepth`/`maxChildren`, not this
  * lattice.)
+ *
+ * `ignoreLevel` skips only the open-mode level comparison: the
+ * delegation-deny and closed-allowlist clauses always apply.
  */
-export function canSpawn(parent: RoleProfile, child: RoleProfile): boolean {
+export function canSpawn(
+  parent: RoleProfile,
+  child: RoleProfile,
+  opts?: { ignoreLevel?: boolean },
+): boolean {
   if (parent.toolPolicy.delegation === "deny") return false
   if (parent.spawnableRoles) return parent.spawnableRoles.includes(child.name)
-  return child.level <= parent.level
+  return opts?.ignoreLevel === true || child.level <= parent.level
 }
 
 /** Every role in the merged registry that `parent` may spawn, per

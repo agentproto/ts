@@ -78,6 +78,7 @@ import {
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
 import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
+import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
@@ -5163,6 +5164,16 @@ export async function startHttpServer(
               ...(identityObservations ? { boots: identityBoots } : {}),
             }),
           )
+          return
+        }
+
+        // GET /spawn-admission - spawn admission observation counters.
+        // Read-only and open like `/identity` above: it serves counts, a
+        // start time and per-stage outcomes, never a label, a session id or
+        // a token. Counters are in memory and reset on a restart.
+        if (path === "/spawn-admission" && req.method === "GET") {
+          res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(spawnAdmissionReport()))
           return
         }
 
