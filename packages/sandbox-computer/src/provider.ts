@@ -88,6 +88,42 @@ function boxNodeOptions(memoryMiB: number | undefined): string {
   return `--max-old-space-size=${heapMb}`
 }
 
+/** Descriptive daemon env (join self-report metadata): not secrets. The
+ *  controller registers every create-time env value and refuses any exec whose
+ *  argv contains one, so a short value such as `computer` would block the
+ *  daemon start command (its `--allow-origin` host). These are handed to the
+ *  daemon as exports in its start command instead of through create env. */
+const DAEMON_ONLY_ENV_KEYS: ReadonlySet<string> = new Set([
+  "AGENTPROTO_JOIN_NAME",
+  "AGENTPROTO_JOIN_PROVIDER",
+  "AGENTPROTO_JOIN_SANDBOX_ID",
+  "AGENTPROTO_JOIN_LABELS",
+])
+
+const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]{0,63}$/
+
+/** Controller-shapable env entry: valid key, value within the size cap and
+ *  free of newlines / NUL. */
+function isShapableEnv(key: string, value: unknown): value is string {
+  return typeof value === "string" && ENV_KEY_RE.test(key) && value.length <= 4096 && !/[\r\n\0]/.test(value)
+}
+
+/** Split a boot env into the values sent in the create payload and the
+ *  descriptive ones exported by the daemon start command. */
+function splitBoxEnv(env: Record<string, string> | undefined): {
+  createEnv: Record<string, string>
+  daemonEnv: Record<string, string>
+} {
+  const createEnv: Record<string, string> = {}
+  const daemonEnv: Record<string, string> = {}
+  for (const [k, v] of Object.entries(env ?? {})) {
+    if (!isShapableEnv(k, v)) continue
+    if (DAEMON_ONLY_ENV_KEYS.has(k)) daemonEnv[k] = v
+    else createEnv[k] = v
+  }
+  return { createEnv, daemonEnv }
+}
+
 /** Layer the box's Node heap under a caller's env, matching
  *  `@agentproto/sandbox-e2b`'s merge semantics: a caller heap flag wins, a
  *  caller `NODE_OPTIONS` without one gets ours appended, and an empty value
@@ -603,12 +639,16 @@ export function buildServeCommand(opts: {
   port: number
   workspace: string
   allowOrigin?: string
+  /** Extra env exported for the daemon (and the agents it spawns). */
+  env?: Record<string, string>
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
   const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
   const tokenFile = `umask 077; printf %s ${shQuote(opts.token)} > "${DAEMON_TOKEN_PATH}"; `
+  const envPrefix = inlineEnv(opts.env)
   return (
     USER_BIN_PATH_EXPORT +
+    (envPrefix ? `${envPrefix} ` : "") +
     marker +
     tokenFile +
     `nohup agentproto serve --port ${opts.port} --bind 0.0.0.0` +
@@ -1060,12 +1100,7 @@ async function bootOnClient(
   // Only controller-shapable env vars are forwarded into the create payload
   // (the controller 400s on anything else). Neither the controller token nor
   // the per-box daemon token ever appears in here.
-  const envKeyRe = /^[A-Z_][A-Z0-9_]{0,63}$/
-  const createEnv: Record<string, string> = {}
-  for (const [k, raw] of Object.entries(opts.env ?? {})) {
-    const v = typeof raw === "string" ? raw : undefined
-    if (v !== undefined && envKeyRe.test(k) && v.length <= 4096 && !/[\r\n\0]/.test(v)) createEnv[k] = v
-  }
+  const { createEnv, daemonEnv } = splitBoxEnv(opts.env)
   withBoxNodeOptions(createEnv, config.memoryMiB)
 
   throwIfBootCancelled(opts.signal)
@@ -1199,7 +1234,7 @@ async function bootOnClient(
     const mcpOrigin = new URL(boxUrl(sandboxId, port, config.gatewayUrl, published)).origin
     throwIfBootCancelled(opts.signal, sandboxId)
     daemonToken = await withinDeadline("daemon healthy", () =>
-      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin),
+      daemonHealthyOrThrow(client, sandboxId as string, config, randomUUID(), port, workspace, mcpOrigin, daemonEnv),
     )
     bootLog(`computer ${sandboxId} daemon healthy`)
     throwIfBootCancelled(opts.signal, sandboxId)
@@ -1265,7 +1300,16 @@ async function connectOnClient(
   // A restored computer keeps its disk but its daemon may be gone: same
   // ensure-healthy dance as a fresh boot (skips the install when up).
   const mcpOrigin = new URL(boxUrl(currentId, port, config.gatewayUrl, published)).origin
-  const daemonToken = await daemonHealthyOrThrow(client, currentId, config, randomUUID(), port, workspace, mcpOrigin)
+  const daemonToken = await daemonHealthyOrThrow(
+    client,
+    currentId,
+    config,
+    randomUUID(),
+    port,
+    workspace,
+    mcpOrigin,
+    splitBoxEnv(opts.env).daemonEnv,
+  )
 
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
@@ -1370,6 +1414,7 @@ async function daemonHealthyOrThrow(
   port: number,
   workspace: string,
   mcpOrigin: string,
+  daemonEnv: Record<string, string>,
 ): Promise<string | undefined> {
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
@@ -1382,7 +1427,7 @@ async function daemonHealthyOrThrow(
     const current = recorded.exitCode === 0 ? recorded.stdout.trim() : ""
     if (current !== "" && current !== mcpOrigin) {
       await hardExec(client, id, bashArgv(`pkill -f '[a]gentproto serve' || true`), 10)
-      await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+      await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin, daemonEnv)
       return daemonToken
     }
     // The running daemon keeps the token it was started with: read it back.
@@ -1407,7 +1452,7 @@ async function daemonHealthyOrThrow(
     if (setup.exitCode !== 0) throw bootStepError("setup command", id, setup)
   }
 
-  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin)
+  await startDaemonAndWait(client, id, config, daemonToken, port, workspace, mcpOrigin, daemonEnv)
   return daemonToken
 }
 
@@ -1419,11 +1464,12 @@ async function startDaemonAndWait(
   port: number,
   workspace: string,
   mcpOrigin: string,
+  daemonEnv: Record<string, string>,
 ): Promise<void> {
   await hardExec(
     client,
     id,
-    bashArgv(buildServeCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin })),
+    bashArgv(buildServeCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin, env: daemonEnv })),
     15,
   )
 
