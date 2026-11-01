@@ -272,7 +272,13 @@ never refused: enforcement never outruns delivery (rule 8). The default stays
 counts the requests enforce would refuse as claim-only, `counters.mismatch` and
 `counters.invalid_token` the others, and `enforces` lists the surfaces and
 adapters it covers; `refused` counts what it refused since the observations
-began.
+began. `thisBoot` repeats `counters`, `claimOnlyByClass`,
+`claimOnlyBySource` and `deliveredBySource` for the current process only,
+unaffected by the persisted totals. `thisBoot.deliveredBySource` says which
+client, verb and claim carrier the `delivered` claim-only requests came from,
+keyed `<client> <verb> <carrier>`, at most 32 keys and then `other`; the
+`[identity]` log line carries the same three words. None of it changes how a
+request is handled.
 
 `defaults.identity.requireProof` (default `[]`) lists the actions that
 require a PROVEN caller (AIP-46 §Session principals rule 9). Only

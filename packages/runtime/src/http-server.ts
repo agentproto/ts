@@ -376,6 +376,12 @@ import {
   type IdentityTotals,
 } from "./identity-observations.js"
 import {
+  bumpClaimSource,
+  claimSourceKey,
+  claimSourceOf,
+  type ClaimSource,
+} from "./identity-claim-source.js"
+import {
   claimClassOf,
   spawnProofReport,
   type RequireProofAction,
@@ -2218,6 +2224,11 @@ export async function startHttpServer(
   const identityRefused = emptyIdentityCounters()
   const identityByRoute: Record<string, IdentityCounters> = {}
   const claimOnlyByClass: Record<ClaimOnlyClass, number> = { external: 0, delivered: 0, undelivered: 0, unknown: 0 }
+  // Which client, verb and claim carrier a claim-only request came from.
+  // This boot only by construction: never persisted, never in
+  // `identityTotals()` or the on-disk format.
+  const claimOnlyBySource: Record<string, number> = {}
+  const deliveredBySource: Record<string, number> = {}
   const identityObservations = opts.identity?.observations
   const identityBase = identityObservations ? loadIdentityObservations(identityObservations.path) : undefined
   const identityBootedAt = new Date().toISOString()
@@ -2298,20 +2309,34 @@ export async function startHttpServer(
           ? "claim_only"
           : "anonymous"
       const claimClass = kind === "claim_only" && claim !== undefined ? claimOnlyClassOf(claim) : undefined
+      const claimSource: ClaimSource | undefined =
+        kind === "claim_only"
+          ? claimSourceOf({
+              method: req.method,
+              userAgent: req.headers["user-agent"],
+              hasQueryClaim: parseCallerSessionIdQuery(req.url ?? "") !== undefined,
+              hasHeaderClaim: parseCallerSessionIdHeader(req) !== undefined,
+            })
+          : undefined
       const routeClass = identityRouteClass(route)
       identityCounters[kind]++
       identityDirty = true
       ;(identityByRoute[routeClass] ??= emptyIdentityCounters())[kind]++
       if (claimClass) claimOnlyByClass[claimClass]++
+      if (claimSource) {
+        bumpClaimSource(claimOnlyBySource, claimSource)
+        if (claimClass === "delivered") bumpClaimSource(deliveredBySource, claimSource)
+      }
       if (kind === "claim_only" || kind === "mismatch" || kind === "invalid_token") {
-        const key = `${kind}|${claim ?? ""}|${route}`
+        const key = `${kind}|${claim ?? ""}|${route}` + (claimSource ? `|${claimSourceKey(claimSource)}` : "")
         if (!identityLogged.has(key) && identityLogged.size < IDENTITY_LOG_KEYS_MAX) {
           identityLogged.add(key)
           console.warn(
             `[identity] ${kind.replace("_", "-")} caller=${claim ?? "-"}` +
               (kind === "mismatch" ? ` token-session=${tokenSession}` : "") +
               ` route=${route}` +
-              (claimClass ? ` class=${claimClass}` : ""),
+              (claimClass ? ` class=${claimClass}` : "") +
+              (claimSource ? ` client=${claimSource.client} verb=${claimSource.verb} via=${claimSource.carrier}` : ""),
           )
         }
       }
@@ -5190,6 +5215,13 @@ export async function startHttpServer(
               refused: totals.refused,
               byRoute: totals.byRoute,
               claimOnlyByClass: totals.claimOnlyByClass,
+              thisBoot: {
+                since: identityBootedAt,
+                counters: { ...identityCounters },
+                claimOnlyByClass: { ...claimOnlyByClass },
+                claimOnlyBySource: { ...claimOnlyBySource },
+                deliveredBySource: { ...deliveredBySource },
+              },
               spawnProof: spawnProofReport(requireProof),
               enforces: {
                 mode,
