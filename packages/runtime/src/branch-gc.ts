@@ -334,7 +334,8 @@ export interface BranchGcReplyInput {
 
 /**
  * A `branch_gc` cursor names the run it pages AND the slice it was created
- * for (`section`, `classes`, `limit`), so the next page is read from that
+ * for (`section`, `classes`, `limit`, and `full` so every page has the same
+ * row shape), so the next page is read from that
  * run's stored result with the exact same filtered list instead of
  * re-running the gc. Not interchangeable with `branch_gc_status`'s
  * `o:<n>` cursor ({@link sliceBranchGcResult}): each tool rejects the other.
@@ -345,8 +346,11 @@ export function encodeBranchGcCursor(
   section: BranchGcResultSection,
   classes: BranchGcClass[],
   limit: number,
+  full = false,
 ): string {
-  return Buffer.from(JSON.stringify({ j: jobId, o: offset, s: section, c: classes, l: limit })).toString("base64url")
+  return Buffer.from(JSON.stringify({ j: jobId, o: offset, s: section, c: classes, l: limit, ...(full ? { f: true } : {}) })).toString(
+    "base64url",
+  )
 }
 
 export function decodeBranchGcCursor(cursor: string): {
@@ -355,6 +359,7 @@ export function decodeBranchGcCursor(cursor: string): {
   section?: BranchGcResultSection
   classes?: BranchGcClass[]
   limit?: number
+  full?: boolean
 } {
   try {
     const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
@@ -363,6 +368,7 @@ export function decodeBranchGcCursor(cursor: string): {
       s?: unknown
       c?: unknown
       l?: unknown
+      f?: unknown
     }
     if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) {
       const section = v.s === "entries" || v.s === "outcomes" ? v.s : undefined
@@ -374,6 +380,7 @@ export function decodeBranchGcCursor(cursor: string): {
         ...(section !== undefined ? { section } : {}),
         ...(classes !== undefined ? { classes } : {}),
         ...(limit !== undefined ? { limit } : {}),
+        ...(v.f === true ? { full: true } : {}),
       }
     }
   } catch {
@@ -429,7 +436,7 @@ export function branchGcReply(result: BranchGcResult, opts: BranchGcReplyInput, 
     section,
     total,
     returned: pageRows.length,
-    ...(next < total ? { nextCursor: encodeBranchGcCursor(jobId, next, section, cursorClasses, limit) } : {}),
+    ...(next < total ? { nextCursor: encodeBranchGcCursor(jobId, next, section, cursorClasses, limit, opts.full === true) } : {}),
   }
   const { outcomes: _outcomes, ...rest } = result as BranchGcResult & { outcomes?: unknown }
   if (section === "outcomes") {

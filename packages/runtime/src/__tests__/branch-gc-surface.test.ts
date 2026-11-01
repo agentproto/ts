@@ -446,6 +446,17 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(picked.page).toMatchObject({ total: 200, returned: 40 })
       expect(picked.plan.entries).toHaveLength(40)
       expect(picked.plan.entries.every((e: Record<string, unknown>) => Object.keys(e).join() === "name")).toBe(true)
+
+      // A cursor made with `full: true` keeps whole rows on every page.
+      const wholeFirst = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", full: true, limit: 50 } })),
+      )
+      expect(wholeFirst.plan.entries[0]).toHaveProperty("ref")
+      const wholeNext = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { cursor: wholeFirst.page.nextCursor } })),
+      )
+      expect(wholeNext.page).toMatchObject({ total: 300, returned: 50 })
+      expect(wholeNext.plan.entries[0]).toEqual(entries[50])
     } finally {
       await client.close()
     }

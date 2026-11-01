@@ -28,7 +28,7 @@ named keys of each full entry, and `full: true` returns whole entries (alone,
 the whole unpaged result). An apply pages its outcomes by default (pass
 `section: "entries"` to page the plan entries instead) and keeps the restore
 log and `applySummary`; `full: true` returns every outcome. A `branch_gc`
-cursor keeps the `section`, `classes` and `limit` it was created with and is
+cursor keeps the `section`, `classes`, `limit` and `full` it was created with and is
 not interchangeable with `branch_gc_status`'s cursor. `POST /branches/gc` and
 `--json` still return the full result.
 

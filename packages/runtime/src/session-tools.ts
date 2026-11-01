@@ -4890,7 +4890,7 @@ export function registerSessionTools(
       "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard " +
       "when set), default 100 rows with `page.nextCursor`; pass it back as " +
       "`cursor` to read the next page of the SAME run (no re-run; the cursor " +
-      "keeps the `section`, `classes` and `limit` it was created with). An " +
+      "keeps the `section`, `classes`, `limit` and `full` it was created with). An " +
       "apply pages its outcomes by default (the large plan entries stay on " +
       "disk; pass `section: \"entries\"` to page those instead) and keeps the " +
       "restore log and `applySummary`. `fields` keeps only the named keys of " +
@@ -4942,7 +4942,7 @@ export function registerSessionTools(
       cursor: z
         .string()
         .optional()
-        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run and slice without re-running the gc. The cursor's `section`/`classes`/`limit` win over any passed here; `fields` still shapes entries."),
+        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run and slice without re-running the gc. The cursor's `section`/`classes`/`limit` win over any passed here, and a cursor made with `full: true` keeps whole rows; `fields` still shapes entries."),
     },
     async input => {
       const reply: BranchGcReplyInput = {
@@ -4955,7 +4955,7 @@ export function registerSessionTools(
       if (input.cursor !== undefined) {
         // Page an earlier run from its stored result, in memory or on disk.
         try {
-          const { jobId, offset, section, classes, limit } = decodeBranchGcCursor(input.cursor)
+          const { jobId, offset, section, classes, limit, full } = decodeBranchGcCursor(input.cursor)
           const job = branchGcJobs.get(jobId)
           const stored = job?.result ?? (await branchGcJobs.readResultFile(jobId))
           if (!stored) {
@@ -4970,6 +4970,7 @@ export function registerSessionTools(
             ...(section !== undefined ? { section } : {}),
             ...(classes !== undefined ? { classes } : {}),
             ...(limit !== undefined ? { limit } : {}),
+            ...(full ? { full } : {}),
           }
           return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, page, jobId)) }] }
         } catch (err) {
@@ -5068,7 +5069,7 @@ export function registerSessionTools(
       cursor: z
         .string()
         .optional()
-        .describe("`page.nextCursor` from the previous `branch_gc_status` page (not a `branch_gc` cursor — the two formats are not interchangeable)."),
+        .describe("`page.nextCursor` from the previous `branch_gc_status` page (not a `branch_gc` cursor: the two formats are not interchangeable)."),
     },
     async input => {
       const wantsSlice =
