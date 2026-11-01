@@ -401,5 +401,6 @@ describe("on-disk vs in-memory ranking on a generated corpus", () => {
     )
     expect(shared / total).toBeGreaterThanOrEqual(0.99)
     await disk.dispose()
-  })
+    // 400 queries over 400 files: about 1 s locally, over 5 s on CI runners.
+  }, 60_000)
 })
