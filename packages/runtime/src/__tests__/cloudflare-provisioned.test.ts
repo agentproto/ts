@@ -315,17 +315,19 @@ async function loggedInProvider(world: FakeWorld, extra: Record<string, unknown>
 }
 
 describe("cloudflareProvisionedTunnelProvider", () => {
-  it("validates its setup: https URLs, all three fields", () => {
+  it("validates its setup: https URLs, OIDC or apiKey required", () => {
     const p = cloudflareProvisionedTunnelProvider(null)
     expect(p.setupFields?.map(f => f.name)).toEqual([
       "provisionerUrl",
+      "apiKey",
       "oidcIssuer",
       "oidcClientId",
       "oidcScopes",
     ])
     expect(() => p.validateSetup!({ ...CREDS, provisionerUrl: "http://api.example.com" })).toThrow(/https/)
     expect(() => p.validateSetup!({ ...CREDS, provisionerUrl: "http://127.0.0.1:8787" })).not.toThrow()
-    expect(() => p.validateSetup!({ provisionerUrl: PROVISIONER, oidcIssuer: ISSUER })).toThrow(/oidcClientId/)
+    expect(() => p.validateSetup!({ provisionerUrl: PROVISIONER, oidcIssuer: ISSUER })).toThrow(/apiKey or both oidcIssuer/)
+    expect(() => p.validateSetup!({ provisionerUrl: PROVISIONER, apiKey: "sk-test" })).not.toThrow()
   })
 
   it("start without login asks for tunnel_login and spawns nothing", async () => {
@@ -409,6 +411,37 @@ describe("cloudflareProvisionedTunnelProvider", () => {
       }),
     ).rejects.toThrow(/402.*no active tunnel plan.*subscribe at https:\/\/pay\.example\.com\/c\/1/)
     expect(requests).toHaveLength(0)
+  })
+
+  it("apiKey mode: skips OIDC, sends key as bearer token", async () => {
+    const world = new FakeWorld()
+    const requests: SpawnRequest[] = []
+    const spawner: ProcessSpawner = req => {
+      requests.push(req)
+      return new FakeProc()
+    }
+    const apiKeyCreds = { provisionerUrl: PROVISIONER, apiKey: "sk-test-key-123" }
+    const provider = cloudflareProvisionedTunnelProvider(apiKeyCreds, {
+      fetch: world.fetch,
+      spawner,
+      healthIntervalMs: 0,
+    })
+
+    expect((await provider.auth!.state()).status).toBe("logged_in")
+
+    const res = await provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/x",
+      tunnel: { key: "my-tunnel", hostnames: [] },
+    })
+    expect(res).toMatchObject({ tunnelId: "tun-my-tunnel" })
+    expect(world.authSeen.at(-1)).toBe("Bearer sk-test-key-123")
+    expect(requests).toHaveLength(1)
+
+    await provider.destroy!({ key: "my-tunnel", hostnames: [] })
+    expect(world.tunnels.has("my-tunnel")).toBe(false)
+
+    await provider.stop()
   })
 
   it("requested hostname, swap add/remove, destroy (404 tolerated)", async () => {

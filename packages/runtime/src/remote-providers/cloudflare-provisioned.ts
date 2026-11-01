@@ -78,17 +78,24 @@ export const PROVISIONED_SETUP_FIELDS = [
     sensitive: false,
   },
   {
+    name: "apiKey",
+    description:
+      "cloudflare-provisioned: API key for the provisioning service. When set, OIDC fields are not required.",
+    required: false,
+    sensitive: true,
+  },
+  {
     name: "oidcIssuer",
     description:
-      "cloudflare-provisioned: OIDC issuer the provisioning service trusts (e.g. https://auth.example.com). Must support the Device Code grant.",
-    required: true,
+      "cloudflare-provisioned: OIDC issuer the provisioning service trusts (e.g. https://auth.example.com). Must support the Device Code grant. Not required when apiKey is set.",
+    required: false,
     sensitive: false,
   },
   {
     name: "oidcClientId",
     description:
-      "cloudflare-provisioned: public (native) OIDC client id used for device login — not a secret.",
-    required: true,
+      "cloudflare-provisioned: public (native) OIDC client id used for device login — not a secret. Not required when apiKey is set.",
+    required: false,
     sensitive: false,
   },
   {
@@ -102,32 +109,44 @@ export const PROVISIONED_SETUP_FIELDS = [
 
 interface ProvisionedConfig {
   provisionerUrl: string
-  oidcIssuer: string
-  oidcClientId: string
+  apiKey?: string
+  oidcIssuer?: string
+  oidcClientId?: string
   oidcScopes?: string
 }
 
 function parseConfig(creds: Record<string, string> | null | undefined): ProvisionedConfig {
-  const need = (k: keyof ProvisionedConfig): string => {
-    const v = creds?.[k]
-    if (!v) {
-      throw new Error(
-        `cloudflare-provisioned is not configured: run setup_tunnel_provider with ${k} ` +
-          "(provisionerUrl, oidcIssuer, oidcClientId)",
-      )
-    }
-    return v
+  const provisionerUrl = creds?.provisionerUrl
+  if (!provisionerUrl) {
+    throw new Error(
+      "cloudflare-provisioned is not configured: run setup_tunnel_provider with provisionerUrl",
+    )
   }
+  const apiKey = creds?.apiKey
+  const oidcIssuer = creds?.oidcIssuer
+  const oidcClientId = creds?.oidcClientId
+
+  if (!apiKey && (!oidcIssuer || !oidcClientId)) {
+    throw new Error(
+      "cloudflare-provisioned: either apiKey or both oidcIssuer + oidcClientId must be set",
+    )
+  }
+
   const cfg: ProvisionedConfig = {
-    provisionerUrl: need("provisionerUrl").replace(/\/$/, ""),
-    oidcIssuer: need("oidcIssuer").replace(/\/$/, ""),
-    oidcClientId: need("oidcClientId"),
+    provisionerUrl: provisionerUrl.replace(/\/$/, ""),
+    ...(apiKey ? { apiKey } : {}),
+    ...(oidcIssuer ? { oidcIssuer: oidcIssuer.replace(/\/$/, "") } : {}),
+    ...(oidcClientId ? { oidcClientId } : {}),
     ...(creds?.oidcScopes ? { oidcScopes: creds.oidcScopes } : {}),
   }
-  for (const k of ["provisionerUrl", "oidcIssuer"] as const) {
+  const urlsToCheck: Array<keyof ProvisionedConfig> = ["provisionerUrl"]
+  if (cfg.oidcIssuer) urlsToCheck.push("oidcIssuer")
+  for (const k of urlsToCheck) {
+    const val = cfg[k]
+    if (typeof val !== "string") continue
     let u: URL
     try {
-      u = new URL(cfg[k])
+      u = new URL(val)
     } catch {
       throw new Error(`cloudflare-provisioned: ${k} must be a URL`)
     }
@@ -219,11 +238,11 @@ export function cloudflareProvisionedTunnelProvider(
   let stopped = false
   let service: string | null = null
 
-  const oidc = (): OidcDeviceClient => {
+  const oidc = (): OidcDeviceClient | null => {
     const cfg = parseConfig(creds)
+    if (!cfg.oidcIssuer || !cfg.oidcClientId) return null
     const sessionPath = defaultSessionPath(deps.home)
     const cacheKey = `${cfg.oidcIssuer}|${cfg.oidcClientId}|${deps.sessionStore ? "injected" : sessionPath}`
-    // Injected stores (tests) are never cached across providers.
     const cached = deps.sessionStore ? undefined : deviceClients.get(cacheKey)
     if (cached) return cached
     const client = new OidcDeviceClient({
@@ -243,7 +262,6 @@ export function cloudflareProvisionedTunnelProvider(
   /** One provisioner call with a single refresh-and-retry on 401. */
   const call = async (method: "PUT" | "DELETE", key: string, body?: unknown) => {
     const cfg = parseConfig(creds)
-    const client = oidc()
     const url = `${cfg.provisionerUrl}/v1/tunnels/${encodeURIComponent(key)}`
     const send = async (token: string) =>
       fetchImpl(url, {
@@ -255,6 +273,10 @@ export function cloudflareProvisionedTunnelProvider(
         },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       })
+    if (cfg.apiKey) {
+      return send(cfg.apiKey)
+    }
+    const client = oidc()!
     let res = await send(await client.accessToken())
     if (res.status === 401) res = await send(await client.accessToken({ forceRefresh: true }))
     return res
@@ -310,9 +332,20 @@ export function cloudflareProvisionedTunnelProvider(
     },
 
     auth: {
-      begin: async () => oidc().beginLogin(),
-      state: async () => oidc().state(),
-      logout: async () => oidc().logout(),
+      begin: async () => {
+        const client = oidc()
+        if (!client) throw new Error("cloudflare-provisioned: login not needed when using apiKey auth")
+        return client.beginLogin()
+      },
+      state: async () => {
+        const client = oidc()
+        if (!client) return { status: "logged_in" as const, expiresAt: "9999-12-31T23:59:59Z" }
+        return client.state()
+      },
+      logout: async () => {
+        const client = oidc()
+        if (client) await client.logout()
+      },
     },
 
     async start(opts: ProviderStartOptions): Promise<ProviderStartResult> {
