@@ -553,6 +553,7 @@ describe("operator-only config keys (AIP-46 §Operator-only configuration)", () 
       "defaults.messaging.allowSiblings",
       "defaults.messaging",
       "defaults.identity.sessionTokens",
+      "defaults.identity.requireProof",
       "defaults.tasks.operatorDelegates",
       "defaults.tasks",
       "defaults",
@@ -562,5 +563,30 @@ describe("operator-only config keys (AIP-46 §Operator-only configuration)", () 
     for (const key of ["defaults.messagingX", "defaults.tasks.other", "defaults.agentPromptInterrupt", "daemon.label"]) {
       expect(isOperatorOnlyConfigKey(key)).toBe(false)
     }
+  })
+
+  it("refuses a session principal's config_set of defaults.identity.requireProof like sessionTokens", async () => {
+    await writeCfg({})
+    const server = new McpServer({ name: "operator-only-proof", version: "0" })
+    registerConfigTools(server, makeDeps({}), {
+      claimedSessionId: "sess_x",
+      isHostSpawned: () => true,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "operator-only-proof-client", version: "0" })
+    await client.connect(clientTransport)
+
+    for (const [key, value] of [
+      ["defaults.identity.requireProof", ["session:spawn"]],
+      ["defaults.identity.sessionTokens", "off"],
+    ] as const) {
+      const res = await client.callTool({ name: "config_set", arguments: { key, value } })
+      expect(res.isError).toBe(true)
+      expect(JSON.stringify(res.content)).toContain("operator_only")
+      expect(JSON.stringify(res.content)).toContain(key)
+    }
+    expect(await loadConfig(configPath)).toEqual({ version: 1 })
+    await client.close()
   })
 })

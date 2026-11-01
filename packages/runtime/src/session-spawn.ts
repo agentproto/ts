@@ -220,6 +220,12 @@ import {
   type StdioMountVerdict,
 } from "./stdio-mount-gate.js"
 import type { AllowlistEntry } from "./command-allowlist.js"
+import {
+  claimClassOf,
+  decideSpawnProof,
+  recordSpawnProof,
+  spawnGateCallerId,
+} from "./proof-gate.js"
 import { decide as decidePermission } from "./permissions.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -1486,6 +1492,12 @@ export interface SpawnAgentSessionDeps {
   /** Calling orchestrator's scope (orchestrator WP4). See
    *  `RegisterAgentToolsOptions.callerScope`. */
   callerScope?: OrchestratorScope
+  /** The session a valid session token on this request was minted for
+   *  (AIP-46 §Session principals). Trusted transport data, never a caller
+   *  body: the MCP path forwards the verified token's session, the HTTP
+   *  spawn routes resolve it from the request header. A `callerScope` is
+   *  already proof, so this is only read on the unscoped path. */
+  callerCredentialSessionId?: string
   /** Optional webhook notifier — see `RegisterAgentToolsOptions.webhookNotifier`. */
   webhookNotifier?: WebhookNotifier
   /** Loads config.json's `defaults` block (global + per-adapter skills/
@@ -2163,6 +2175,8 @@ export type SpawnAgentSessionResult =
         | "delegation_denied"
         | "auth_profile_denied"
         | "stdio_mount_denied"
+        | "identity_unverified"
+        | "identity_mismatch"
       message: string
       details?: Record<string, unknown>
     }
@@ -2640,6 +2654,7 @@ export async function spawnAgentSession(
     buildOrchestratorMcp,
     daemonMcpUrl,
     callerScope,
+    callerCredentialSessionId,
     webhookNotifier,
     loadDefaultsConfig,
     resolveSandboxProvider,
@@ -3384,6 +3399,72 @@ export async function spawnAgentSession(
       )
     }
   }
+  // AIP-46 spawn proof gate, counters always on, before every other gate
+  // (identity precedes authorisation). A `callerScope` is proven by its own
+  // token; an unscoped caller is proven only when the request carried a
+  // session token minted for the session it names. `defaults.identity.
+  // requireProof` is opt-in and defaults empty; when it lists `session:spawn`
+  // a `claimed` caller is refused `identity_unverified` and a credential
+  // naming another session `identity_mismatch`. Enforcement is skipped while
+  // `defaults.identity.sessionTokens` is `off`: no token is minted, so nobody
+  // could ever be proven (rule 8), and the reading counts as ignored.
+  const proofCallerId = spawnGateCallerId(callerScope, input)
+  const proofCallerDescriptor =
+    proofCallerId !== undefined ? registry.get(proofCallerId) : undefined
+  const proofVerdict = decideSpawnProof({
+    callerSessionId: proofCallerId,
+    callerKnown: proofCallerDescriptor !== undefined,
+    callerExternal: proofCallerDescriptor?.kind === "external",
+    scoped: callerScope !== undefined,
+    credentialSessionId: callerCredentialSessionId,
+  })
+  const proofClaimClass =
+    proofVerdict === "claimed" && proofCallerId !== undefined
+      ? claimClassOf(proofCallerId, proofCallerDescriptor)
+      : undefined
+  const proofListed = (configDefaults?.identity?.requireProof ?? []).includes("session:spawn")
+  const proofTokensOn = sessionTokenModeOf(configDefaults) !== "off"
+  const refuseClaimed = proofListed && proofTokensOn && proofVerdict === "claimed"
+  const refuseMismatch = proofListed && proofTokensOn && proofVerdict === "mismatch"
+  recordSpawnProof(proofVerdict, {
+    listed: proofListed,
+    refused: refuseClaimed || refuseMismatch,
+    ...(proofClaimClass !== undefined ? { claimClass: proofClaimClass } : {}),
+    surface: callerScope ? "scoped" : "mcp",
+    ...(proofCallerId !== undefined ? { callerId: proofCallerId } : {}),
+    tokensOn: proofTokensOn,
+  })
+  if (refuseClaimed) {
+    const reason =
+      proofClaimClass === "undelivered"
+        ? `this session's adapter or placement could not be given a session token, so it cannot spawn while "session:spawn" is listed (AIP-46 rule 8).`
+        : `the request omitted the session token it was given; present it on this request.`
+    return {
+      ok: false,
+      code: "identity_unverified",
+      message:
+        `agent_start: the caller session did not present its session token on this request, so it ` +
+        `cannot spawn while "session:spawn" requires proof: ${reason}`,
+      details: {
+        gate: "proof",
+        action: "session:spawn",
+        claimClass: proofClaimClass,
+      },
+    }
+  }
+  if (refuseMismatch) {
+    return {
+      ok: false,
+      code: "identity_mismatch",
+      message:
+        `agent_start: the session token on this request was minted for a different session than the ` +
+        `caller it names, so it cannot spawn while "session:spawn" requires proof.`,
+      details: {
+        gate: "proof",
+        action: "session:spawn",
+      },
+    }
+  }
   // AIP-46 delegation gate, observe first. On every nested spawn (scoped
   // or unscoped), compare the child's bound agent against the CALLING
   // session's agent `delegatesTo`. `observe` (the default) only counts and
@@ -3392,7 +3473,7 @@ export async function spawnAgentSession(
   const delegationGateMode = configDefaults?.spawn?.delegationGate ?? DEFAULT_DELEGATION_GATE_MODE
   let delegationVerdict: DelegationVerdict | undefined
   if (delegationGateMode !== "off") {
-    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const gateCallerId = spawnGateCallerId(callerScope, input)
     const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
     const callerMeta = callerDescriptor?.meta
     const callerAgent =
@@ -3464,7 +3545,7 @@ export async function spawnAgentSession(
   const profileGateMode = configDefaults?.spawn?.profileGate ?? DEFAULT_PROFILE_GATE_MODE
   let profileVerdict: ProfileVerdict | undefined
   if (profileGateMode !== "off") {
-    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const gateCallerId = spawnGateCallerId(callerScope, input)
     const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
     const callerKnown = callerDescriptor !== undefined
     // An external identifier is a label, evaluated as anonymous (AIP-46 rule
@@ -3543,7 +3624,7 @@ export async function spawnAgentSession(
   let stdioMountVerdict: StdioMountVerdict | undefined
   if (stdioMountGateMode !== "off") {
     const requestedMounts = stdioMountRequests(requestedMcpServers)
-    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const gateCallerId = spawnGateCallerId(callerScope, input)
     const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
     const callerKnown = callerDescriptor !== undefined
     const callerExternal = callerDescriptor?.kind === "external"

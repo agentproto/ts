@@ -356,10 +356,9 @@ import { defaultProfileProvisionDeps } from "./auth-profile-tools.js"
 import { readRegisteredSlugs, DEFAULT_BUCKET } from "./workspace-buckets.js"
 import { writeSseHead } from "./sse-headers.js"
 import { parseStopOutcome } from "./session-outcome.js"
-import { hasSessionCredential, SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
+import { SESSION_TOKEN_HEADER, verifySessionToken } from "./session-credentials.js"
 import {
   SESSION_TOKEN_ADAPTERS,
-  sessionTokenDeliverySafe,
   type SessionTokenMode,
 } from "./identity-defaults.js"
 import {
@@ -375,6 +374,11 @@ import {
   type IdentityKind,
   type IdentityTotals,
 } from "./identity-observations.js"
+import {
+  claimClassOf,
+  spawnProofReport,
+  type RequireProofAction,
+} from "./proof-gate.js"
 import {
   createAuthProfile,
   deleteAuthProfile,
@@ -1455,6 +1459,11 @@ export interface RuntimeHttpServerOptions {
    *  `since` stays the first boot recorded. */
   identity?: {
     mode(): SessionTokenMode | Promise<SessionTokenMode>
+    /** The actions currently listed in `defaults.identity.requireProof`.
+     *  Defaults to reading config; a test pins it through this seam. */
+    resolveRequireProof?():
+      | readonly RequireProofAction[]
+      | Promise<readonly RequireProofAction[]>
     /** Persist the counters across restarts to `path` (see identity-observations.ts).
      *  Omitted ⇒ in-memory only, as before. `flushMs` is the debounce of the
      *  periodic write (default 30000); the totals are also written once at start
@@ -2253,17 +2262,7 @@ export async function startHttpServer(
    *  not be delivered to (adapter or placement, or spawned while `off`), or
    *  an id the registry does not know. */
   function claimOnlyClassOf(claim: string): ClaimOnlyClass {
-    const desc = opts.sessions?.get(claim)
-    if (!desc) return "unknown"
-    if (desc.kind === "external") return "external"
-    // Every sandbox provider (the built-in `local` included) stamps
-    // `remote: true` alongside its `sandboxId`; treating either as a
-    // sandboxed placement keeps a boxed claude-code row `undelivered`
-    // (rule 8) even if one of the two fields is missing.
-    const sandboxed = desc.remote === true || desc.sandboxId !== undefined ? true : undefined
-    return sessionTokenDeliverySafe(desc.adapterSlug, sandboxed) && hasSessionCredential(claim)
-      ? "delivered"
-      : "undelivered"
+    return claimClassOf(claim, opts.sessions?.get(claim))
   }
 
   /** Observe one request's caller identity, at most once per request (a
@@ -3556,6 +3555,7 @@ export async function startHttpServer(
             opts.mcpObservations,
             opts.cronScheduler,
             resolveCallerSessionIdObserved,
+            credentialSessionOf,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
           )
           if (handled) return
@@ -5160,6 +5160,9 @@ export async function startHttpServer(
         if (opts.identity && path === "/identity" && req.method === "GET") {
           const mode = await opts.identity.mode()
           const totals = identityTotals()
+          const requireProof = opts.identity.resolveRequireProof
+            ? await opts.identity.resolveRequireProof()
+            : ((await loadConfig()).defaults?.identity?.requireProof ?? [])
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
             JSON.stringify({
@@ -5168,6 +5171,7 @@ export async function startHttpServer(
               refused: totals.refused,
               byRoute: totals.byRoute,
               claimOnlyByClass: totals.claimOnlyByClass,
+              spawnProof: spawnProofReport(requireProof),
               enforces: {
                 mode,
                 surfaces: ["/mcp", ...IDENTITY_GATED_SESSION_ROUTES.map(r => r.label)],
@@ -6599,6 +6603,7 @@ function spawnFailureStatus(code: string): number {
   if (code === "delegation_denied") return 403
   if (code === "auth_profile_denied") return 403
   if (code === "stdio_mount_denied") return 403
+  if (code === "identity_unverified" || code === "identity_mismatch") return 403
   if (
     code === "invalid_role" ||
     code === "invalid_agent" ||
@@ -7202,6 +7207,10 @@ async function handleSessions(
   // else the trusted `x-agentproto-caller-session-id` header). Absent ⇒
   // the query only.
   resolveCallerSessionIdFor?: (req: IncomingMessage) => string | undefined,
+  // The session a valid session token on the request was minted for: the
+  // spawn proof gate's credential leg (AIP-46 §Session principals). Never
+  // read from the request body.
+  resolveCredentialSessionIdFor?: (req: IncomingMessage) => string | undefined,
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
@@ -7509,6 +7518,8 @@ async function handleSessions(
       return true
     }
     const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
+    // The session a valid session token on THIS request was minted for (header only, never the body).
+    const callerCredentialSessionId = resolveCredentialSessionIdFor?.(req)
     const result = await spawnAgentSession(
       {
         registry,
@@ -7522,6 +7533,7 @@ async function handleSessions(
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
         ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
+        ...(callerCredentialSessionId ? { callerCredentialSessionId } : {}),
       },
       withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
@@ -7649,6 +7661,8 @@ async function handleSessions(
       return true
     }
     const spawnArgs = buildSpawnSessionHttpArgs(b, adapter, preset, sessionPresets)
+    // The session a valid session token on THIS request was minted for (header only, never the body).
+    const callerCredentialSessionId = resolveCredentialSessionIdFor?.(req)
     const result = await spawnAgentSession(
       {
         registry,
@@ -7662,6 +7676,7 @@ async function handleSessions(
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
         ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
+        ...(callerCredentialSessionId ? { callerCredentialSessionId } : {}),
       },
       withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )

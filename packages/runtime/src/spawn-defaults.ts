@@ -229,6 +229,10 @@ export interface SpawnDefaultsConfig {
      *  invalid token, a mismatching claim or a claim without token naming a
      *  token-delivered session is refused. "off": no token, no observation. */
     sessionTokens?: "off" | "shadow" | "enforce"
+    /** `defaults.identity.requireProof` - actions a caller must be proven to
+     *  invoke. Empty (default): nothing is refused. Only `"session:spawn"` is
+     *  evaluated. Ignored while `sessionTokens` is `"off"` (rule 8). */
+    requireProof?: Array<"session:spawn">
   }
   /** Hooks projected into a harness's own settings (`native-hooks-defaults.ts`). */
   nativeHooks?: {

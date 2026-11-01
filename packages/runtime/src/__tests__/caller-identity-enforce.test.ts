@@ -26,6 +26,11 @@ import { createMcpServer } from "@agentproto/mcp-server"
 import { createSessionsRegistry, type AgentSessionLike, type AgentStreamEvent, type SessionsRegistry } from "../sessions.js"
 import { spawnAgentSession, type SpawnAgentSessionDeps } from "../session-spawn.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
+import {
+  recordSpawnProof,
+  resetSpawnProofObservations,
+  spawnProofReport,
+} from "../proof-gate.js"
 import { createRuntimeEvents } from "../events.js"
 import { cdContractLine } from "../agents-md.js"
 import { configSet, registerConfigTools, type ConfigToolsDeps, type ConfigWriteCaller } from "../config-tools.js"
@@ -166,6 +171,10 @@ async function startServer(
   mode: Mode,
   registry: SessionsRegistry,
   configTools?: ConfigToolsDeps,
+  opts: {
+    resolver?: AgentAdapterResolver
+    requireProof?: () => readonly ("session:spawn")[]
+  } = {},
 ): Promise<{ base: string; stop: () => Promise<void> }> {
   const port = await freePort()
   const http = await startHttpServer({
@@ -181,7 +190,11 @@ async function startServer(
     heartbeat: noopHeartbeat(),
     meta: { workspace: process.cwd(), registered: [] },
     sessions: registry,
-    identity: { mode: () => mode },
+    ...(opts.resolver ? { resolveAgentAdapter: opts.resolver } : {}),
+    identity: {
+      mode: () => mode,
+      ...(opts.requireProof ? { resolveRequireProof: opts.requireProof } : {}),
+    },
     ...(configTools ? { configTools } : {}),
   } as never)
   return { base: `http://127.0.0.1:${port}`, stop: () => http.stop() }
@@ -511,6 +524,84 @@ describe("operator-only configuration", () => {
       })
       expect(res.status).toBe(200)
       expect(JSON.parse(cfg.read()).defaults.messaging.allowSiblings).toBe(true)
+    } finally {
+      await srv.stop()
+    }
+  })
+})
+
+describe("GET /identity spawnProof and the HTTP spawn credential", () => {
+  beforeEach(() => resetSpawnProofObservations())
+  afterEach(() => resetSpawnProofObservations())
+
+  it("serves spawnProof counts with the requireProof seam", async () => {
+    const f = await fixture()
+    const srv = await startServer("shadow", f.registry, undefined, {
+      requireProof: () => ["session:spawn"],
+    })
+    try {
+      recordSpawnProof("claimed", {
+        listed: true,
+        refused: false,
+        claimClass: "delivered",
+        surface: "mcp",
+      })
+      recordSpawnProof("mismatch", { listed: true, refused: true, surface: "mcp" })
+      const id = await identity(srv.base)
+      expect(id.spawnProof).toMatchObject({
+        requireProof: ["session:spawn"],
+        claimedByClass: { delivered: 1, undelivered: 0 },
+        wouldRefuse: 2,
+        refused: 1,
+        requireProofIgnored: 0,
+      })
+      expect(id.spawnProof.counts.claimed).toBe(1)
+      expect(id.spawnProof.counts.mismatch).toBe(1)
+      expect(typeof id.spawnProof.since).toBe("string")
+    } finally {
+      await srv.stop()
+    }
+  })
+
+  it("a POST /sessions/agent with a valid token for its claim reaches the gate as proven", async () => {
+    const f = await fixture()
+    const resolver: AgentAdapterResolver = async () => ({
+      async startSession() {
+        return fakeAgentSession()
+      },
+      commandPreview: "mock-adapter",
+    })
+    const srv = await startServer("shadow", f.registry, undefined, { resolver })
+    try {
+      await fetch(`${srv.base}/sessions/agent?callerSessionId=${f.claude}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", [TOKEN_HEADER]: f.claudeToken },
+        body: JSON.stringify({ adapter: "claude-code", cwd: tmp }),
+      })
+      expect(spawnProofReport([]).counts.proven).toBe(1)
+      expect(spawnProofReport([]).counts.claimed).toBe(0)
+    } finally {
+      await srv.stop()
+    }
+  })
+
+  it("a POST /sessions/agent carrying only the claim reaches the gate as claimed", async () => {
+    const f = await fixture()
+    const resolver: AgentAdapterResolver = async () => ({
+      async startSession() {
+        return fakeAgentSession()
+      },
+      commandPreview: "mock-adapter",
+    })
+    const srv = await startServer("shadow", f.registry, undefined, { resolver })
+    try {
+      await fetch(`${srv.base}/sessions/agent?callerSessionId=${f.claude}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ adapter: "claude-code", cwd: tmp }),
+      })
+      expect(spawnProofReport([]).counts.claimed).toBe(1)
+      expect(spawnProofReport([]).counts.proven).toBe(0)
     } finally {
       await srv.stop()
     }

@@ -493,6 +493,12 @@ export interface RegisterAgentToolsOptions {
    *  instead of orphaning. Absent → no auto-parent (attribution falls back to
    *  an explicit `parentSessionId` hint, if any). */
   callerSessionId?: string
+  /** The session a valid session token on this `/mcp` request was minted for
+   *  (AIP-46 §Session principals). Trusted transport data, never a tool
+   *  argument: `index.ts` forwards the token's verified session. Threaded to
+   *  `spawnAgentSession` as `callerCredentialSessionId` so the spawn proof
+   *  gate can tell a claimed caller from a proven one. */
+  credentialSessionId?: string
   /** The connecting client's source label from this `/mcp` request's `?origin=`
    *  query (#session-visibility) — cowork/vscode/codex/cron. Used as the
    *  DEFAULT `origin` for an `agent_start` that doesn't pass its own, so a
@@ -585,6 +591,7 @@ export function registerAgentTools(
     buildOrchestratorMcp,
     callerScope,
     callerSessionId,
+    credentialSessionId,
     mcpBridgeOrigin,
     webhookNotifier,
     daemonMcpUrl,
@@ -784,6 +791,7 @@ export function registerAgentTools(
           buildOrchestratorMcp,
           daemonMcpUrl,
           callerScope,
+          ...(credentialSessionId ? { callerCredentialSessionId: credentialSessionId } : {}),
           webhookNotifier,
           loadRoleRegistry,
           resolveSandboxProvider,
@@ -939,7 +947,9 @@ export function registerAgentTools(
         result.code === "operator_unresolvable" ||
         result.code === "delegation_denied" ||
         result.code === "auth_profile_denied" ||
-        result.code === "stdio_mount_denied"
+        result.code === "stdio_mount_denied" ||
+        result.code === "identity_unverified" ||
+        result.code === "identity_mismatch"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,

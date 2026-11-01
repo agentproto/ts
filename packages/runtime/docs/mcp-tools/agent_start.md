@@ -363,6 +363,18 @@ bundle, config or daemon-injected mounts), and root spawns, external or
 unknown callers and sandboxed spawns are never gated. `env` is not
 evaluated. Counters are on `GET /permissions/grants` under `stdioMounts`.
 
+A spawn from a session is judged by a proof gate before any other gate. A
+scoped orchestrator is `proven` by its scope token; a session on the plain
+`/mcp` path is `proven` when the request carried the session token minted
+for the session it names, `claimed` when it only named itself, and
+`mismatch` when the token names another session. `defaults.identity.
+requireProof` (default empty) lists actions that require proof; today only
+`"session:spawn"` is evaluated, and a `claimed` caller is refused
+`identity_unverified` while a mismatch is refused `identity_mismatch`.
+Anonymous loopback callers (the operator), external labels and unknown ids
+are never refused, and the list is ignored while `sessionTokens` is `"off"`
+(rule 8). Read `GET /identity` `spawnProof` before listing it.
+
 A `mcpServers` entry in the descriptor (or the daemon self-mount) only
 means the mount was *requested*: it does not guarantee the child actually
 loaded any tools. A client can connect yet end up with 0 tools if the
