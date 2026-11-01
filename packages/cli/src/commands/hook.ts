@@ -18,6 +18,7 @@
  */
 import { statSync } from "node:fs"
 import { parseArgs } from "node:util"
+import { runHookInstall } from "./hook-install.js"
 import {
   discoverDaemon,
   httpGetJson,
@@ -29,6 +30,7 @@ const USAGE = `agentproto hook — Claude Code hook commands
 Usage:
   agentproto hook inbox [--session <id>] [--event <name>] [--max <n>]
   agentproto hook pre-compact
+  agentproto hook install --host claude-desktop [--session <id>] [--settings <path>] [--port <n>] [--dry-run]
 
 \`inbox\` is meant to run as a Claude Code UserPromptSubmit / PostToolUse hook.
 It lists the session's unread daemon inbox items (oldest first, at most
@@ -51,6 +53,12 @@ It asks the daemon to checkpoint the session named by $AGENTPROTO_SESSION_ID
 (never the payload's \`session_id\`, which is Claude's own id) before the
 harness compacts. It prints nothing on stdout, gives up after 20 s and always
 exits 0, so a missed checkpoint never blocks the compaction.
+
+\`install --host claude-desktop\` merges AGENTPROTO_SESSION_ID and the two
+\`hook inbox\` hooks (UserPromptSubmit, PostToolUse) into a Claude Desktop
+settings file (default ~/.claude/settings.json, or $CLAUDE_CONFIG_DIR). It is
+idempotent, leaves other keys alone, and prints the MCP URL to register. With
+--dry-run it prints the merged settings JSON and writes nothing.
 `
 
 const DEFAULT_MAX = 20
@@ -235,8 +243,9 @@ export async function runHook(args: readonly string[], deps: HookDeps = {}): Pro
       return 0
     }
   }
+  if (args[0] === "install") return runHookInstall(args.slice(1), { env: deps.env })
   if (args[0] !== "inbox") {
-    process.stderr.write(`agentproto hook: unknown subcommand "${args[0]}"\n  Known: inbox, pre-compact\n`)
+    process.stderr.write(`agentproto hook: unknown subcommand "${args[0]}"\n  Known: inbox, pre-compact, install\n`)
     return 2
   }
   try {
