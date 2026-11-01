@@ -377,6 +377,11 @@ import {
   type SpawnDedupeMode,
 } from "./spawn-dedupe.js"
 import {
+  findOwnerConflict,
+  normalizeOwnerKey,
+  OWNER_KEY_META,
+} from "./spawn-owner-lock.js"
+import {
   evaluateSpawnAdmission,
   type SpawnAdmission,
   type SpawnAdmissionCheck,
@@ -1783,6 +1788,16 @@ export interface SpawnAgentSessionInput {
    *  depth/quota/role gates, and an explicit `boardId` on a task verb still
    *  wins over it. */
   boardId?: string
+  /** One-owner lock key for a PR or branch (`pr:<owner>/<repo>#<n>` or
+   *  `branch:<name>`), canonicalised by `normalizeOwnerKey`. While a live
+   *  session — or one that ended less than 24h ago — carries the same key in
+   *  its descriptor `meta.ownerKey`, this spawn is refused `owner_busy` with
+   *  that session's id in `details.ownerSessionId`. Descriptor-only: no gate
+   *  reads it. Pass `takeOver: true` to override explicitly. */
+  ownerKey?: string
+  /** Explicit override for the {@link ownerKey} lock. Default false: a
+   *  conflicting owner is a hard refusal, never a silent redirect. */
+  takeOver?: boolean
   /** Workflow ownership of this spawn, stamped onto the descriptor as
    *  `meta.workflowRunId` / `workflowId` / `workflowStepId` — the same keys a
    *  `wf:*` agent-step session carries, so reports and session outcomes link
@@ -2262,6 +2277,8 @@ export type SpawnAgentSessionResult =
         | "stdio_mount_denied"
         | "identity_unverified"
         | "identity_mismatch"
+        | "owner_busy"
+        | "owner_key_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -5370,6 +5387,37 @@ export async function spawnAgentSession(
   const initialTitle =
     explicitTitle ?? spawnLabel ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
+  // ── one owner per PR/branch (see spawn-owner-lock.ts) ─────────────
+  // Checked BEFORE the retry-safety claim so a second owner always gets an
+  // explicit `owner_busy` naming the first — never a silent second process.
+  // A live session, or one that ended less than 24h ago, keeps its key;
+  // `takeOver: true` is the only intentional way past it.
+  let normalizedOwnerKey: string | undefined
+  if (input.ownerKey !== undefined) {
+    const normalized = normalizeOwnerKey(input.ownerKey)
+    if (!normalized.ok) {
+      return {
+        ok: false,
+        code: "owner_key_invalid",
+        message: `agent_start: ${normalized.reason}`,
+      }
+    }
+    normalizedOwnerKey = normalized.key
+    if (input.takeOver !== true) {
+      const owner = findOwnerConflict(registry.list(), normalizedOwnerKey, Date.now())
+      if (owner) {
+        return {
+          ok: false,
+          code: "owner_busy",
+          message:
+            `agent_start: ownerKey "${normalizedOwnerKey}" is held by session ${owner.id}; ` +
+            "pass takeOver:true to take it over explicitly.",
+          details: { ownerKey: normalizedOwnerKey, ownerSessionId: owner.id },
+        }
+      }
+    }
+  }
+
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
   // Two independent doors into the SAME claim map. An EXPLICIT
   // `idempotencyKey` is a caller PROMISE ("these are the same logical
@@ -5690,6 +5738,7 @@ export async function spawnAgentSession(
     // Always present: every spawn records at least its resolved `role`.
     const spawnDescriptorMeta = (): Record<string, string> => ({
       ...(input.boardId ? { boardId: input.boardId } : {}),
+      ...(normalizedOwnerKey ? { [OWNER_KEY_META]: normalizedOwnerKey } : {}),
       ...workflowOwnerMeta(input.workflowOwner),
       ...(appBoundary ? boundaryMeta(appBoundary) : {}),
       ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),

@@ -198,6 +198,19 @@ export const agentStartInputShape = {
     .describe(
       `Override implicit dedup-by-\`label\`: \`false\` opts out, \`true\` forces it.`
     ),
+  ownerKey: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `One-owner lock key: \`pr:<owner>/<repo>#<n>\` or \`branch:<name>\`. ` +
+        `A second spawn while a live (or <24h-ended) session holds it is refused \`owner_busy\` with that session's id.`
+    ),
+  takeOver: mcpBool
+    .optional()
+    .describe(
+      `Explicitly take over an \`ownerKey\` already held by another session. Default false.`
+    ),
   permissionHold: mcpBool
     .optional()
     .describe(

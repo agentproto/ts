@@ -1543,6 +1543,107 @@ describe("spawnAgentSession — implicit dedupe default (spawn.dedupe policy, WP
   })
 })
 
+describe("spawnAgentSession — one owner per PR/branch (ownerKey lock)", () => {
+  const ownerKey = "pr:agentik-studio/agentik-studio#1440"
+
+  it("refuses a second spawn on the same PR and names the first owner", async () => {
+    const { registry, deps } = baseDeps()
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-a",
+      ownerKey,
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected first spawn to succeed")
+
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-b",
+      ownerKey,
+    })
+    expect(second.ok).toBe(false)
+    if (second.ok) throw new Error("expected second spawn to be refused")
+    expect(second.code).toBe("owner_busy")
+    expect(second.details?.ownerSessionId).toBe(first.descriptor.id)
+    expect(second.details?.ownerKey).toBe(ownerKey)
+    // The refusal created no second row.
+    expect(registry.list()).toHaveLength(1)
+  })
+
+  it("canonicalises the key, so a looser spelling still collides", async () => {
+    const { deps } = baseDeps()
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-a",
+      ownerKey: " PR:Agentik-Studio/Agentik-Studio#01440 ",
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected first spawn to succeed")
+
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-b",
+      ownerKey: "pr:agentik-studio/agentik-studio#1440",
+    })
+    expect(second.ok).toBe(false)
+    if (second.ok) throw new Error("expected second spawn to be refused")
+    expect(second.code).toBe("owner_busy")
+    expect(second.details?.ownerSessionId).toBe(first.descriptor.id)
+  })
+
+  it("keeps a reaped owner's key reserved, but takeOver:true passes explicitly", async () => {
+    const { registry, deps } = baseDeps()
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-a",
+      ownerKey,
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected first spawn to succeed")
+    expect(registry.reapIdle(first.descriptor.id, 5)).toBe(true)
+
+    const refused = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-b",
+      ownerKey,
+    })
+    expect(refused.ok).toBe(false)
+    if (refused.ok) throw new Error("expected reaped owner to still hold the key")
+    expect(refused.code).toBe("owner_busy")
+    expect(refused.details?.ownerSessionId).toBe(first.descriptor.id)
+
+    const taken = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-c",
+      ownerKey,
+      takeOver: true,
+    })
+    expect(taken.ok).toBe(true)
+    if (!taken.ok) throw new Error("expected takeOver spawn to succeed")
+    expect(taken.descriptor.meta?.ownerKey).toBe(ownerKey)
+    expect(taken.descriptor.id).not.toBe(first.descriptor.id)
+  })
+
+  it("rejects a malformed key with owner_key_invalid", async () => {
+    const { deps } = baseDeps()
+    const result = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      ownerKey: "pr:not-a-repo",
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected malformed ownerKey to be refused")
+    expect(result.code).toBe("owner_key_invalid")
+  })
+})
+
 describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)", () => {
   // Pure-function coverage of the size/LRU backstop, without driving 1000+
   // real spawns through spawnAgentSession(). See the sizing docblock above
