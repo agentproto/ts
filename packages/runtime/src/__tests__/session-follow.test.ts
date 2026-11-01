@@ -947,4 +947,88 @@ describe("session-follow against a real registry", () => {
     handle.dispose()
     reg.shutdown()
   })
+
+  it("an expired external follower's digest lands in its inbox instead of being parked", async () => {
+    const WINDOW = 10 * 60_000
+    let clock = Date.parse("2026-01-01T00:00:00.000Z")
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      sessionEvents: bus,
+      externalSessionLivenessMs: WINDOW,
+      externalNow: () => clock,
+    })
+    const store = createSessionFollowStore({ persist: false })
+    const parkedPath = join(tmp, "parked.jsonl")
+    const restartSession = vi.fn(async (id: string) => {
+      throw new Error(`session "${id}" is an external session (no process the daemon can restart)`)
+    })
+    const handle = wireSessionFollow({
+      registry: reg,
+      sessionEvents: bus,
+      store,
+      parkedPath,
+      restartSession,
+      log: () => {},
+    })
+
+    reg.touchExternal({ id: "desktop-1", host: "claude-desktop" })
+    reg.touchExternal({ id: "desktop-2", host: "claude-desktop" })
+    store.upsert({ follower: "desktop-1", selector: { sessionIds: ["desktop-2"] }, batchMs: 0 })
+
+    clock += WINDOW + 60_000
+    expect(reg.get("desktop-1")?.status).toBe("exited")
+
+    bus.emit({ type: "session:turn-end", sessionId: "desktop-2", awaitingInput: false, ts: NOW })
+    await handle.flush()
+
+    expect(restartSession).not.toHaveBeenCalled()
+    const inbox = reg.listInbox("desktop-1")!
+    expect(inbox).toHaveLength(1)
+    expect(inbox[0]).toMatchObject({ delivered: { via: "inbox" } })
+    expect(existsSync(parkedPath) ? readFileSync(parkedPath, "utf8").trim() : "").toBe("")
+    handle.dispose()
+    reg.shutdown()
+  })
+
+  it("still parks a deliberately ended external follower's digest", async () => {
+    const WINDOW = 10 * 60_000
+    let clock = Date.parse("2026-01-01T00:00:00.000Z")
+    const bus = createSessionEventBus()
+    const reg = createSessionsRegistry({
+      persist: false,
+      transcriptDir: tmp,
+      sessionEvents: bus,
+      externalSessionLivenessMs: WINDOW,
+      externalNow: () => clock,
+    })
+    const store = createSessionFollowStore({ persist: false })
+    const parkedPath = join(tmp, "parked-killed.jsonl")
+    const restartSession = vi.fn(async (id: string) => {
+      throw new Error(`session "${id}" is an external session (no process the daemon can restart)`)
+    })
+    const handle = wireSessionFollow({
+      registry: reg,
+      sessionEvents: bus,
+      store,
+      parkedPath,
+      restartSession,
+      log: () => {},
+    })
+
+    reg.touchExternal({ id: "desktop-1", host: "claude-desktop" })
+    reg.touchExternal({ id: "desktop-2", host: "claude-desktop" })
+    reg.kill("desktop-1")
+    store.upsert({ follower: "desktop-1", selector: { sessionIds: ["desktop-2"] }, batchMs: 0 })
+
+    clock += WINDOW + 60_000
+    bus.emit({ type: "session:turn-end", sessionId: "desktop-2", awaitingInput: false, ts: NOW })
+    await handle.flush()
+
+    expect(reg.listInbox("desktop-1")).toEqual([])
+    expect(readFileSync(parkedPath, "utf8")).toContain("desktop-1")
+    handle.dispose()
+    reg.shutdown()
+  })
 })

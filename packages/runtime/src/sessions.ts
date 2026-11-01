@@ -226,14 +226,14 @@ import {
   tagLimitErrorWithWallet,
   type SessionEndReason,
 } from "./session-end-reason.js"
-import { isAutomatedPromptSource, isRetired } from "./session-retirement.js"
+import { isAutomatedPromptSource, isExternalInboxOpen, isRetired } from "./session-retirement.js"
 import type { TurnRetryPolicy } from "./turn-retry-policy.js"
 import { emptyTurnWarningLine } from "./turn-retry.js"
 import type { ModelPolicy } from "./model-policy.js"
 import { checkModelPolicy } from "./model-policy.js"
 import { getModelListSource } from "./model-list-store.js"
 import type { ClerkHookConfig } from "@agentproto/clerk"
-export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
+export { isRetired, isExternalInboxOpen, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
 import {
   INDEX_TAIL_BYTES,
   indexEntryFromDescriptor,
@@ -13740,7 +13740,13 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       expireExternalIfStale(rt)
-      if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+      // An external row has no process to die: `exited` from a lapsed
+      // liveness window only means "not seen lately", so its inbox stays
+      // deliverable until the row is killed or retired. Otherwise a quiet
+      // Desktop session would bounce sentinel / follow events that nothing
+      // can restart (`restartSession` rejects external rows).
+      const externalInboxOpen = isExternalInboxOpen(rt.desc)
+      if (!externalInboxOpen && rt.desc.status !== "running" && rt.desc.status !== "starting") {
         if (isRetired(rt.desc)) {
           throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
         }
