@@ -160,7 +160,7 @@ export const SIZES = {
   },
 } as const
 export type WorkstationSize = keyof typeof SIZES
-export const BAKED_CLI_VERSION = "1.20.0"
+export const BAKED_CLI_VERSION = "1.31.0"
 export const BAKED_ADAPTERS = {
   "@agentproto/adapter-hermes": "0.4.38",
   "@agentproto/adapter-mastra-agent": "0.7.33",

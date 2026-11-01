@@ -1142,7 +1142,7 @@ jobs:
         run: |
           CONFIG="$REVIEW_CONFIG"
           CLI_SOURCE=$(printf '%s' "$CONFIG" | jq -r '.cliSource // "npm"')
-          CLI_VERSION=$(printf '%s' "$CONFIG" | jq -r '.cliVersion // "0.8.0"')
+          CLI_VERSION=$(printf '%s' "$CONFIG" | jq -r '.cliVersion // "latest"')
           # OpenCode's hosted free routes authenticate headlessly with an API
           # key, while the selected model remains zero-priced.
           AUTH_MODE=$(printf '%s' "$CONFIG" | jq -r '.reviewerAuthMode // "subscription"')
@@ -2490,7 +2490,6 @@ jobs:
           model: ${{ steps.fixcfg.outputs.model }}
           workflow-path: .github/agentproto-workflows/review-fix/WORKFLOW.md
           cli-source: workspace
-          cli-version: 0.8.0
           workflow-input: |
             {
               "prNumber": ${{ github.event.pull_request.number }},
