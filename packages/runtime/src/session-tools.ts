@@ -660,6 +660,9 @@ export interface RegisterSessionToolsOptions {
   /** Forwarded to `registerAgentTools` — see
    *  `RegisterAgentToolsOptions.ensureLlmEndpointRunning`. */
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
+  /** Forwarded to `registerAgentTools`, see
+   *  `RegisterAgentToolsOptions.loadCommandAllowlist`. */
+  loadCommandAllowlist?: RegisterAgentToolsOptions["loadCommandAllowlist"]
   /** config.json `defaults` loader — same seam as
    *  `RestartAgentSessionOptions.loadDefaultsConfig` in session-restart-core.ts.
    *  Threaded into `session_restart`'s pty-native billing-auth re-resolution

@@ -193,6 +193,7 @@ describe("action vocabulary", () => {
     expect(PERMISSION_ACTIONS.filter(a => PERMISSION_ACTION_INFO[a].routed)).toEqual([
       "session.message",
       "session.message.interrupt",
+      "mcp.mount.stdio",
       "auth.profile.use",
     ])
   })
@@ -249,6 +250,57 @@ describe("decide(session, auth.profile.use)", () => {
 
   it("a non-profile resource is refused", () => {
     const d = decide(as(A), "auth.profile.use", { kind: "session", session: B }, ctx)
+    expect(d).toMatchObject({ allow: false, rule: "resource", authoritative: true })
+  })
+})
+
+describe("decide(session, mcp.mount.stdio)", () => {
+  const allowlist = [{ command: "node" }, { command: "git", args: ["status"] }]
+
+  it("allows a command the allowlist admits", () => {
+    const d = decide(
+      as(A),
+      "mcp.mount.stdio",
+      { kind: "command", command: "node", args: ["server.js"] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: true, rule: "mount.allowlisted", authoritative: true })
+  })
+
+  it("denies a command outside the allowlist, without leaking args", () => {
+    const d = decide(
+      as(A),
+      "mcp.mount.stdio",
+      { kind: "command", command: "evil", args: ["--token", "S3CRET-ARG"] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: false, rule: "mount.outside-allowlist", authoritative: true })
+    expect(d.reason).toContain("evil")
+    expect(d.reason).not.toContain("S3CRET-ARG")
+  })
+
+  it("the operator may mount any command", () => {
+    const d = decide(operator, "mcp.mount.stdio", { kind: "command", command: "evil", args: [] }, { mounts: { allowlist } })
+    expect(d).toMatchObject({ allow: true, rule: "operator", authoritative: true })
+  })
+
+  it("a system principal may mount any command", () => {
+    const d = decide({ kind: "system" }, "mcp.mount.stdio", { kind: "command", command: "evil", args: [] }, { mounts: { allowlist } })
+    expect(d).toMatchObject({ allow: true, rule: "system", authoritative: true })
+  })
+
+  it("a relay grant carries no stdio mount", () => {
+    const d = decide(
+      { kind: "relay", boxSessionId: "box", parentSessionId: "P" },
+      "mcp.mount.stdio",
+      { kind: "command", command: "node", args: [] },
+      { mounts: { allowlist } },
+    )
+    expect(d).toMatchObject({ allow: false, rule: "relay", authoritative: true })
+  })
+
+  it("a non-command resource is refused", () => {
+    const d = decide(as(A), "mcp.mount.stdio", { kind: "session", session: B }, { mounts: { allowlist } })
     expect(d).toMatchObject({ allow: false, rule: "resource", authoritative: true })
   })
 })

@@ -288,6 +288,47 @@ a bare CLI) is a label evaluated as anonymous under AIP-46 rule 7: it is
 The counters are in memory (a daemon restart resets them);
 `GET /permissions/grants` exposes them under `profileUse`.
 
+## Stdio mount gate
+
+A `stdio` MCP entry in `agent_start.mcpServers` names an arbitrary command
+the agent CLI launches, which is command execution outside
+`.agentproto/allowed-commands.json` unless it is evaluated. The daemon
+evaluates only the `stdio` entries the REQUEST names: a session may mount
+only a command the workspace command allowlist admits, through the same
+evaluator `command_execute` uses (a basename match, plus an argv-prefix
+match when the entry constrains `args`). An `http` or `sse` entry is never a
+stdio mount. Mounts supplied by a preset, an AGENT.md manifest, a bundle, a
+config layer or the daemon's own injected servers are not a request and are
+not evaluated.
+
+The caller is the same trusted identity the other gates use (the scope's
+owner session, else the daemon-derived auto-parent); the caller-supplied
+`parentSessionId` hint is never used. A root spawn and every continuation
+path with no trusted caller (continue-fresh, restart, migrate, cron,
+retries) is `no_caller` and is never gated: the host's own auth authorises
+it. A trusted caller id the registry does not hold is `caller_unknown`, an
+`external` row (Claude Desktop, a bare CLI) is a label evaluated as
+anonymous under AIP-46 rule 7, and a sandboxed spawn launches the server
+inside the box rather than on the host: all three are counted and never
+gated.
+
+`defaults.spawn.stdioMountGate` selects the mode:
+
+- `observe` (default) counts every verdict and logs one warning per
+  would-deny command basename, changing no decision.
+- `enforce` refuses a `would_deny` spawn with `stdio_mount_denied`
+  (`details.gate: "mount"`, `details.denied` as `{ name, command }`)
+  before any tool injection or credential resolution.
+- `off` skips evaluation entirely.
+
+The counters are in memory (a daemon restart resets them);
+`GET /permissions/grants` exposes them under `stdioMounts`. The limits are
+the same as `command_execute`'s: the allowlist is the daemon boot
+workspace's, not a per-session one, and `env` is not evaluated, so a mount
+can still set `PATH` or `NODE_OPTIONS` for an allowlisted command. An
+interpreter allowlisted without an argv constraint (`node`, `python3`)
+admits `node -e ...` exactly as it does for `command_execute`.
+
 ## Depth-derived default
 
 Omitting `role` (and `agent`) on `agent_start` doesn't leave the child

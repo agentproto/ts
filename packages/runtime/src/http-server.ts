@@ -79,6 +79,12 @@ import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./mess
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
 import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
 import { profileReport, type ProfileGateMode, DEFAULT_PROFILE_GATE_MODE } from "./profile-gate.js"
+import {
+  stdioMountReport,
+  type StdioMountGateMode,
+  DEFAULT_STDIO_MOUNT_GATE_MODE,
+} from "./stdio-mount-gate.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
 import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
 import { decide, type PermissionContext, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
@@ -1110,6 +1116,11 @@ export interface RuntimeHttpServerOptions {
   resolveDelegationGateMode?: () => Promise<DelegationGateMode>
   /** Resolver for `defaults.spawn.profileGate` used by `GET /permissions/grants`. A seam for tests. */
   resolveProfileGateMode?: () => Promise<ProfileGateMode>
+  /** Resolver for `defaults.spawn.stdioMountGate` used by `GET /permissions/grants`. A seam for tests. */
+  resolveStdioMountGateMode?: () => Promise<StdioMountGateMode>
+  /** Workspace command allowlist loader for the stdio mount gate, wired by
+   *  the host with the SAME workspace `command_execute` gates against. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /**
    * Optional scoped orchestrator sub-gateway (WP2). When BOTH this and
    * `verifyOrchestratorScope` are wired, the server mounts a second MCP
@@ -3540,6 +3551,7 @@ export async function startHttpServer(
             opts.webhookNotifier,
             opts.ensureLlmEndpointRunning,
             opts.listAgentAdapters,
+            opts.loadCommandAllowlist,
             opts.deviceMirrorSync,
             opts.mcpObservations,
             opts.cronScheduler,
@@ -5302,6 +5314,7 @@ export async function startHttpServer(
             opts.resolveOperatorDelegates ?? resolveOperatorDelegates,
             opts.resolveDelegationGateMode ?? resolveDelegationGateMode,
             opts.resolveProfileGateMode ?? resolveProfileGateMode,
+            opts.resolveStdioMountGateMode ?? resolveStdioMountGateMode,
           )
           if (handled) return
         }
@@ -6585,6 +6598,7 @@ function spawnFailureStatus(code: string): number {
   }
   if (code === "delegation_denied") return 403
   if (code === "auth_profile_denied") return 403
+  if (code === "stdio_mount_denied") return 403
   if (
     code === "invalid_role" ||
     code === "invalid_agent" ||
@@ -7173,6 +7187,9 @@ async function handleSessions(
   // Lets the generic `adapter_not_found` error name the installed adapters
   // (session-spawn.ts) instead of only saying "install it".
   listAgentAdapters?: AgentAdapterLister,
+  // Workspace command allowlist loader for the stdio mount gate: the SAME
+  // list `command_execute` gates against. Absent ⇒ an empty list.
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>,
   // BOOTSTRAP P7b — the device-mirror read-sync hook. Absent ⇒ no sync
   // (older wiring keeps today's behaviour unchanged).
   deviceMirrorSync?: (idOrName: string) => Promise<unknown>,
@@ -7504,6 +7521,7 @@ async function handleSessions(
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
       },
       withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
@@ -7643,6 +7661,7 @@ async function handleSessions(
         ...(webhookNotifier ? { webhookNotifier } : {}),
         ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
         ...(listAgentAdapters ? { listAgentAdapters } : {}),
+        ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
       },
       withHttpCaller(spawnArgs, resolveCallerSessionIdFor?.(req)),
     )
@@ -11619,6 +11638,17 @@ async function resolveDelegationGateMode(
   }
 }
 
+/** `defaults.spawn.stdioMountGate`, read per call; a missing or malformed config gives observe. */
+async function resolveStdioMountGateMode(
+  loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
+): Promise<StdioMountGateMode> {
+  try {
+    return (await loadCfg()).defaults?.spawn?.stdioMountGate ?? DEFAULT_STDIO_MOUNT_GATE_MODE
+  } catch {
+    return DEFAULT_STDIO_MOUNT_GATE_MODE
+  }
+}
+
 /** `defaults.spawn.profileGate`, read per call; a missing or malformed config gives observe. */
 async function resolveProfileGateMode(
   loadCfg: () => Promise<{ defaults?: SpawnDefaultsConfig }> = loadConfig,
@@ -11657,6 +11687,7 @@ async function handlePermissions(
   operatorDelegatesFor: () => Promise<string[]> = resolveOperatorDelegates,
   delegationGateModeFor: () => Promise<DelegationGateMode> = resolveDelegationGateMode,
   profileGateModeFor: () => Promise<ProfileGateMode> = resolveProfileGateMode,
+  stdioMountGateModeFor: () => Promise<StdioMountGateMode> = resolveStdioMountGateMode,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -11677,12 +11708,14 @@ async function handlePermissions(
   }
 
   if (path === "/permissions/grants" && req.method === "GET") {
-    const [messaging, operatorDelegates, delegationGateMode, profileGateMode] = await Promise.all([
-      messagingDefaultsFor(),
-      operatorDelegatesFor(),
-      delegationGateModeFor(),
-      profileGateModeFor(),
-    ])
+    const [messaging, operatorDelegates, delegationGateMode, profileGateMode, stdioMountGateMode] =
+      await Promise.all([
+        messagingDefaultsFor(),
+        operatorDelegatesFor(),
+        delegationGateModeFor(),
+        profileGateModeFor(),
+        stdioMountGateModeFor(),
+      ])
     const report = deriveEffectiveGrants({
       messaging: {
         allowSiblings: messaging.allowSiblings,
@@ -11701,6 +11734,7 @@ async function handlePermissions(
       ...report,
       delegation: delegationReport(delegationGateMode ?? DEFAULT_DELEGATION_GATE_MODE),
       profileUse: profileReport(profileGateMode ?? DEFAULT_PROFILE_GATE_MODE),
+      stdioMounts: stdioMountReport(stdioMountGateMode ?? DEFAULT_STDIO_MOUNT_GATE_MODE),
     })
     return true
   }

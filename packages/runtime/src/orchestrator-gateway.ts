@@ -52,6 +52,7 @@ import type {
 } from "./http-server.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
 import { SUPERVISOR_ROLE } from "./role.js"
 import { extractOrchestratorScopeToken } from "./orchestrator-scope-ref.js"
 
@@ -771,6 +772,12 @@ export interface OrchestratorGatewayDeps {
    *  spawn is rejected with `sandbox_provider_not_found`, exactly as the
    *  root gateway would be without it. */
   resolveSandboxProvider?: SandboxProviderResolver
+  /** Workspace command allowlist loader for the stdio mount gate, forwarded
+   *  to `registerSessionTools` so a spawn issued THROUGH this scoped
+   *  sub-gateway (the surface a nested supervisor uses) is judged against
+   *  the same list `command_execute` gates against. Omitted → every stdio
+   *  mount of a scoped caller reads as outside the allowlist. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /** EXPLICIT override for config.json `defaults.agentPromptInterrupt` —
    *  wins over the fresh per-call resolve (`resolveMessagingDefaults`,
    *  see the factory body below). Tests inject this to pin a value without
@@ -856,6 +863,9 @@ export function createOrchestratorMcpServerFactory(
         : {}),
       ...(deps.resolveSandboxProvider
         ? { resolveSandboxProvider: deps.resolveSandboxProvider }
+        : {}),
+      ...(deps.loadCommandAllowlist
+        ? { loadCommandAllowlist: deps.loadCommandAllowlist }
         : {}),
       defaultAgentPromptInterrupt:
         deps.defaultAgentPromptInterrupt ?? messagingDefaults.agentPromptInterrupt,

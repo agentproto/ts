@@ -47,6 +47,10 @@ import {
 } from "@agentproto/policy"
 
 import {
+  isCommandAllowed,
+  type AllowlistEntry,
+} from "./command-allowlist.js"
+import {
   samePeerGroup,
   sameWorkspace,
   type MessageRelation,
@@ -138,8 +142,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     surfaces: ["terminal_start"],
   },
   "mcp.mount.stdio": {
-    routed: false,
-    enforcedAt: "none (agent_start.mcpServers mounted verbatim)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide() against the command allowlist, applied by session-spawn.ts behind defaults.spawn.stdioMountGate (observe by default: counts, refuses nothing)",
     surfaces: ["agent_start.mcpServers"],
   },
   "pr.open": {
@@ -233,7 +238,20 @@ export interface ProfileResource {
   ref: string
 }
 
-export type PermissionResource = SessionResource | ToolResource | ProfileResource | { kind: "none" }
+/** A command a spawn asks to mount as a `stdio` MCP server. `command` is
+ *  the BASENAME of the entry's `ref`. */
+export interface CommandResource {
+  kind: "command"
+  command: string
+  args: readonly string[]
+}
+
+export type PermissionResource =
+  | SessionResource
+  | ToolResource
+  | ProfileResource
+  | CommandResource
+  | { kind: "none" }
 
 /** AIP-38 grants consulted at call time. Read per call: build a fresh object when the grants change. */
 export interface PermissionPolicy {
@@ -271,6 +289,8 @@ export interface PermissionContext {
   policy?: PermissionPolicy
   /** `auth.profile.use`: the profiles the caller may pass on (its own plus `defaults.spawn.sharedProfiles`). */
   profiles?: { callerAllowed: readonly string[] }
+  /** `mcp.mount.stdio`: the workspace command allowlist. */
+  mounts?: { allowlist: readonly AllowlistEntry[] }
 }
 
 // ── Decision ───────────────────────────────────────────────────────────
@@ -751,6 +771,53 @@ function decideProfile(
   })
 }
 
+function decideMount(
+  principal: Principal,
+  resource: PermissionResource,
+  ctx: PermissionContext,
+): Decision {
+  const base = { action: "mcp.mount.stdio" as const, authoritative: true }
+  if (resource.kind !== "command") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "resource",
+      reason: "mcp.mount.stdio needs a command resource",
+    })
+  }
+  const command = resource.command
+  if (principal.kind === "operator") {
+    return mint({ ...base, allow: true, rule: "operator", reason: "the operator may mount any command" })
+  }
+  if (principal.kind === "system") {
+    return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal sender" })
+  }
+  if (principal.kind === "relay") {
+    return mint({
+      ...base,
+      allow: false,
+      rule: "relay",
+      reason: "a relay grant carries only session.message, not a stdio mount",
+    })
+  }
+  if (isCommandAllowed(ctx.mounts?.allowlist ?? [], command, resource.args)) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "mount.allowlisted",
+      reason: `the command allowlist admits "${command}"`,
+    })
+  }
+  return mint({
+    ...base,
+    allow: false,
+    rule: "mount.outside-allowlist",
+    reason:
+      `"${command}" is outside the command allowlist; a session may mount only what ` +
+      `.agentproto/allowed-commands.json admits`,
+  })
+}
+
 /**
  * The one decision point. Pure.
  *
@@ -781,6 +848,8 @@ export function decide(
       return decideDrive(principal, recipient, context)
     case "auth.profile.use":
       return decideProfile(principal, resource, context)
+    case "mcp.mount.stdio":
+      return decideMount(principal, resource, context)
     case "tool.invoke":
       if (context.policy) return decideTool(principal, resource, context, context.policy)
       return notRouted(action, recipient)

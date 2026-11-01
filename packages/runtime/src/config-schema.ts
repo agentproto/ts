@@ -70,6 +70,7 @@ import { DEFAULT_BG_TASK_WAKE_GRACE_MS } from "./background-task-wake.js"
 import { DEFAULT_NESTED_AGENT, DEFAULT_ROLE_DEPTH_CUTOFF, DEFAULT_ROOT_AGENT } from "./role.js"
 import { DEFAULT_DELEGATION_GATE_MODE, type DelegationGateMode } from "./delegation-gate.js"
 import { DEFAULT_PROFILE_GATE_MODE, type ProfileGateMode } from "./profile-gate.js"
+import { DEFAULT_STDIO_MOUNT_GATE_MODE, type StdioMountGateMode } from "./stdio-mount-gate.js"
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
@@ -119,6 +120,12 @@ const delegationGateModeSchema: z.ZodType<DelegationGateMode> = z.union([
 ])
 
 const profileGateModeSchema: z.ZodType<ProfileGateMode> = z.union([
+  z.literal("off"),
+  z.literal("observe"),
+  z.literal("enforce"),
+])
+
+const stdioMountGateModeSchema: z.ZodType<StdioMountGateMode> = z.union([
   z.literal("off"),
   z.literal("observe"),
   z.literal("enforce"),
@@ -243,6 +250,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
           .optional(),
         delegationGate: delegationGateModeSchema.optional(),
         profileGate: profileGateModeSchema.optional(),
+        stdioMountGate: stdioMountGateModeSchema.optional(),
         sharedProfiles: z.array(z.string()).optional(),
       })
       .passthrough()
@@ -1144,6 +1152,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Auth-profile gate mode",
     help: "AIP-46 auth-profile gate for spawns that name an access profile: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a profile outside the caller's set with auth_profile_denied).",
     default: DEFAULT_PROFILE_GATE_MODE,
+  },
+  {
+    path: "defaults.spawn.stdioMountGate",
+    schema: stdioMountGateModeSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Stdio mount gate mode",
+    help: "Command-allowlist gate for stdio MCP servers a spawn mounts: off (no evaluation), observe (count what would be refused, refuse nothing; default) or enforce (refuse a mount whose command the workspace allowlist does not admit, with stdio_mount_denied).",
+    default: DEFAULT_STDIO_MOUNT_GATE_MODE,
   },
   {
     path: "defaults.spawn.sharedProfiles",
