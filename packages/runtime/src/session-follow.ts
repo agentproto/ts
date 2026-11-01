@@ -48,7 +48,7 @@ import {
   type QueuedPrompt,
   type SessionDescriptor,
 } from "./sessions.js"
-import { isRetired, resolveSuccessor } from "./session-retirement.js"
+import { isExternalInboxOpen, isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import {
   classifyFollowEvent,
@@ -884,7 +884,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       log(`[session-follow] follower ${followerId} no longer exists — digest dropped (follow kept)`)
       return
     }
-    if (!isAlive(desc)) {
+    // An external row that lapsed its liveness window has no process to
+    // restart, so its inbox stays deliverable: send first instead of taking
+    // the revive path (which would park the digest for an external row).
+    if (!isAlive(desc) && !isExternalInboxOpen(desc)) {
       await reviveAndSend(followerId, text, followIds, urgency, digest)
       return
     }
