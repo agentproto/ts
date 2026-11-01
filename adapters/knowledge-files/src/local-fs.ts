@@ -18,6 +18,7 @@
  */
 
 import { randomBytes } from "node:crypto"
+import type { Dirent, Stats } from "node:fs"
 import {
   appendFile,
   mkdir,
@@ -37,6 +38,19 @@ export interface LocalFsOptions {
    */
   readonly root: string
 }
+
+/** A file found by {@link LocalFs.walkStat}: workspace-relative path, size in
+ *  bytes, and mtime in whole milliseconds (as `stat().modifiedAt`). */
+export interface WalkStatEntry {
+  readonly path: string
+  readonly size: number
+  readonly mtimeMs: number
+}
+
+/** Max `stat` calls in flight per directory during {@link LocalFs.walkStat}. */
+const WALK_STAT_CONCURRENCY = 32
+/** {@link LocalFs.walkStat} yields to the event loop every this many entries. */
+const WALK_STAT_YIELD_EVERY = 2_000
 
 export class LocalFs implements FsPort {
   private readonly root: string
@@ -103,6 +117,70 @@ export class LocalFs implements FsPort {
       }
     }
     await visit(start)
+    return out
+  }
+
+  /**
+   * {@link walk} plus each file's size and mtime, in one pass: the stat-only
+   * scan the files engine reconciles its on-disk index with. Same paths and
+   * hidden-segment rule as `walk`, but directory entries are typed by
+   * `readdir`, so only files (and symlinks) cost a `stat`, and the stats of a
+   * directory run concurrently. Not part of `FsPort`: the adapter uses it when
+   * the backing has it and falls back to `walk` + `stat` otherwise.
+   */
+  async walkStat(p: string): Promise<WalkStatEntry[]> {
+    const out: WalkStatEntry[] = []
+    const visit = async (dir: string): Promise<void> => {
+      let entries: Dirent[] = []
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      // Stat the non-directories of this level concurrently, then emit in
+      // readdir order, recursing in place, so paths come out in `walk` order.
+      const visible = entries.filter(ent => !ent.name.startsWith("."))
+      const toStat = visible.filter(ent => !ent.isDirectory())
+      const stats = new Map<string, Stats | null>()
+      for (let i = 0; i < toStat.length; i += WALK_STAT_CONCURRENCY) {
+        const step = toStat.slice(i, i + WALK_STAT_CONCURRENCY)
+        // A file whose stat fails (vanished mid-scan, or a transient error)
+        // is left out; for the reconcile that reads as gone, so its row is
+        // dropped and the next scan that sees it re-indexes it.
+        const got = await Promise.all(
+          step.map(ent => stat(path.join(dir, ent.name)).catch(() => null))
+        )
+        step.forEach((ent, j) => stats.set(ent.name, got[j]!))
+      }
+      // One relative prefix per directory: `path.relative` per entry costs
+      // seconds of main-thread time on a 200k-file directory.
+      const relDir = path.relative(this.root, dir).split(path.sep).join("/")
+      const prefix = relDir === "" ? "" : `${relDir}/`
+      let emitted = 0
+      for (const ent of visible) {
+        if (++emitted % WALK_STAT_YIELD_EVERY === 0) {
+          await new Promise<void>(resolve => setImmediate(resolve))
+        }
+        if (ent.isDirectory()) {
+          await visit(path.join(dir, ent.name))
+          continue
+        }
+        const s = stats.get(ent.name)
+        if (s?.isDirectory()) await visit(path.join(dir, ent.name))
+        else if (s?.isFile()) {
+          out.push({
+            path: prefix + ent.name,
+            size: s.size,
+            // `Stats.mtime` (Node rounds `mtimeMs` to whole ms), exactly what
+            // `stat()` reports: the reconcile compares rows written from one
+            // against scans from the other, and truncating `mtimeMs` would
+            // differ by 1 ms on sub-ms filesystems and re-index every time.
+            mtimeMs: s.mtime.getTime(),
+          })
+        }
+      }
+    }
+    await visit(this.resolve(p))
     return out
   }
 

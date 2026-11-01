@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/adapter-knowledge-files",
   "version": "0.4.0",
-  "description": "Pure, zero-runtime knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over local files with an in-process BM25 index (no embeddings, no network, no API key). Registers as a provider-kit family and ships a node:fs FsPort so it runs standalone. All BM25 index/query logic is confined to this package.",
+  "description": "Pure, zero-runtime knowledge adapter: implements @agentproto/knowledge-engine's IKnowledgeProvider over local files with a BM25 index, on disk in SQLite FTS5 through node:sqlite when available and in process otherwise (no embeddings, no network, no API key, no new dependency). Registers as a provider-kit family and ships a node:fs FsPort so it runs standalone. All BM25 index/query logic is confined to this package.",
   "keywords": [
     "agentproto",
     "knowledge-engine",

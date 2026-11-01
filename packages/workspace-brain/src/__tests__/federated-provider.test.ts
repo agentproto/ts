@@ -223,6 +223,19 @@ describe("FederatedKnowledgeProvider.query", () => {
     expect(r.hits.map(h => h.chunkId)).toEqual(["b-chunk-0"])
   })
 
+  it("flags the merged result partial when a contributing provider is partial", async () => {
+    const a = makeStub("a", { scores: [0.5] })
+    const b = makeStub("b", { scores: [0.7] })
+    const realQuery = a.resolved.provider.query.bind(a.resolved.provider)
+    a.resolved.provider.query = async q => ({ ...(await realQuery(q)), partial: true })
+    const alone = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    expect((await alone.query({ query: "x" })).partial).toBe(true)
+    const both = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    expect((await both.query({ query: "x", topK: 10 })).partial).toBe(true)
+    const complete = new FederatedKnowledgeProvider({ providers: [b.resolved] })
+    expect((await complete.query({ query: "x" })).partial).toBeUndefined()
+  })
+
   it("returns empty (never throws) when EVERY provider fails", async () => {
     const a = makeStub("a", { scores: [0.5], failQuery: true })
     const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })

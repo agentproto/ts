@@ -19,12 +19,14 @@ import { LocalFs } from "./local-fs.js"
  * Build a {@link FilesKnowledgeAdapter} backed by the local filesystem,
  * rooted and scoped from the ambient `KNOWLEDGE_FILES_*` env. Each call
  * returns a fresh adapter (and thus a fresh, empty BM25 cache) — callers
- * that want a shared warm index should hold onto the instance.
+ * that want a shared warm index should hold onto the instance, or set
+ * `KNOWLEDGE_FILES_INDEX_PATH` for an on-disk index that outlives it.
  */
 export function createStandaloneFilesAdapter(): FilesKnowledgeAdapter {
   const env = loadFilesKnowledgeEnv()
   return new FilesKnowledgeAdapter({
     fs: new LocalFs({ root: env.root }),
     workspacePath: env.workspacePath,
+    ...(env.indexPath ? { indexPath: env.indexPath } : {}),
   })
 }

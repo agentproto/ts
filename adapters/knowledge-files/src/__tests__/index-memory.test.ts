@@ -1,7 +1,7 @@
 /**
  * The resident BM25 index must stay lean (E97): no doc text kept in memory,
  * snippets cut from disk for the top-K hits only, one build at a time across
- * the whole process, a doc-count ceiling that refuses to build, and one log
+ * the whole process, a doc-count ceiling that caps (not refuses) the build, and one log
  * line per build. The parity block pins hits captured from the pre-E97
  * engine (text kept in the index) on a fixed corpus, so the lean shape is
  * checked to return the very same ids, order, scores, spans, and snippets.
@@ -11,9 +11,10 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { FilesKnowledgeAdapter, FilesIndexTooLargeError } from "../adapter.js"
+import { FilesKnowledgeAdapter } from "../adapter.js"
 import { buildIndex } from "../bm25.js"
 import { LocalFs } from "../local-fs.js"
+import { CORPUS, PARITY_CASES } from "./parity-fixture.js"
 
 const WS = "knowledge"
 
@@ -36,22 +37,6 @@ function reachableStrings(value: unknown, seen = new Set<unknown>()): string[] {
   return out
 }
 
-/** Corpus with frontmatter, repeated terms, a score tie, a doc whose only
- *  match sits in the frontmatter, a non-ASCII body, and a long body so the
- *  snippet window has to move. */
-const CORPUS: Record<string, string> = {
-  "alpha.md":
-    "---\ntitle: Alpha notes\nslug: alpha\n---\nThe brain index keeps postings for every session. Index index index.",
-  "beta.md":
-    "---\ntitle: Beta\nsessionId: sess-beta\n---\nA session about the daemon heap and the brain query route.",
-  "gamma.md": "No frontmatter here: daemon daemon heap growth after a federated query.",
-  "tie-1.md": "tie breaker words",
-  "tie-2.md": "tie breaker words",
-  "front-only.md": "---\ntitle: zebra\nslug: front\n---\nnothing that matches the body",
-  "unicode.md": "Résumé \u2014 café heap naïve query déjà vu daemon",
-  "long.md": `${"filler words go here ".repeat(40)}the needle sits deep inside ${"more filler text ".repeat(40)}`,
-  "nested/deep.txt": "nested session heap index text",
-}
 
 async function writeCorpus(fs: LocalFs): Promise<void> {
   for (const [name, content] of Object.entries(CORPUS)) {
@@ -173,6 +158,7 @@ describe("lean BM25 index", () => {
     const adapter = adapterFor({ queryTimeoutMs: 20 })
     const res = await adapter.query({ query: "heap" })
     expect(res.hits).toEqual([])
+    expect(res.partial).toBe(true)
     expect(logs.some(l => /^\[knowledge-files:test-brain\] query timed out after 20 ms .*the build keeps going$/.test(l))).toBe(true)
     release()
     // The build finishes in the background; the next query is served by it.
@@ -209,507 +195,38 @@ describe("lean BM25 index", () => {
     expect(logs.filter(l => l.includes("index built"))).toHaveLength(3)
   })
 
-  it("refuses to build above the doc ceiling, with the reason, without reading files", async () => {
-    let reads = 0
-    const realRead = fs.readFile.bind(fs)
-    fs.readFile = async p => {
-      reads++
-      return realRead(p)
+  it("above the doc ceiling, indexes the most recent files and flags results partial", async () => {
+    const { utimes } = await import("node:fs/promises")
+    // Make the three "tie"/"gamma" docs the most recent ones.
+    const old = new Date("2020-01-01T00:00:00Z")
+    for (const name of Object.keys(CORPUS)) {
+      await utimes(path.join(root, WS, name), old, old)
+    }
+    const recent = new Date("2026-01-01T00:00:00Z")
+    for (const name of ["gamma.md", "tie-1.md", "tie-2.md"]) {
+      await utimes(path.join(root, WS, name), recent, recent)
     }
     const adapter = adapterFor({ maxIndexDocs: 3 })
-    const err = await adapter.query({ query: "heap" }).catch(e => e)
-    expect(err).toBeInstanceOf(FilesIndexTooLargeError)
-    expect(err.name).toBe("FilesIndexTooLargeError")
-    expect(err.message).toMatch(
-      /files engine \(test-brain\): refusing to build the in-process index: 9 indexable files exceed the ceiling of 3/
-    )
-    expect(reads).toBe(0)
-    const refused = logs.filter(l => l.includes("index build refused"))
-    expect(refused).toEqual([
-      "[knowledge-files:test-brain] index build refused: 9 indexable files exceed the ceiling of 3",
+    const res = await adapter.query({ query: "daemon heap tie" })
+    expect(res.partial).toBe(true)
+    expect(res.hits.map(h => h.sourceId).sort()).toEqual([
+      "knowledge/gamma.md",
+      "knowledge/tie-1.md",
+      "knowledge/tie-2.md",
     ])
-    // The refusal is remembered: a second query neither re-walks nor re-logs.
-    await expect(adapter.listSources()).rejects.toThrow(/exceed the ceiling of 3/)
-    expect(logs.filter(l => l.includes("index build refused"))).toHaveLength(1)
+    expect(logs.filter(l => l.includes("index capped"))).toEqual([
+      "[knowledge-files:test-brain] index capped: 9 indexable files exceed the in-memory ceiling of 3; " +
+        "indexing the 3 most recent, results flagged partial",
+    ])
+    expect((await adapter.listSources()).map(s => s.id).sort()).toEqual([
+      "knowledge/gamma.md",
+      "knowledge/tie-1.md",
+      "knowledge/tie-2.md",
+    ])
+  })
+
+  it("a complete in-memory index does not flag results partial", async () => {
+    const res = await adapterFor().query({ query: "heap" })
+    expect(res.partial).toBeUndefined()
   })
 })
-
-interface ParityCase {
-  readonly query: string
-  readonly topK?: number
-  readonly minScore?: number
-  readonly hits: ReadonlyArray<Record<string, unknown>>
-}
-
-const PARITY_CASES: readonly ParityCase[] = [
-  {
-    "query": "heap",
-    "hits": [
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.3065054248545844,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.2562074498483007,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 1.2324833175475982,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 1.209638661089622,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "daemon heap",
-    "hits": [
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 3.1902093262880395,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 2.9077812293590535,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 2.8528662655963855,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.3065054248545844,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "index index",
-    "hits": [
-      {
-        "sourceId": "knowledge/alpha.md",
-        "score": 5.962169024273949,
-        "text": "\nThe brain index keeps postings for every session. Index index index.",
-        "span": {
-          "start": 38,
-          "end": 107
-        },
-        "metadata": {
-          "title": "Alpha notes",
-          "slug": "alpha",
-          "entrySlug": "alpha"
-        }
-      },
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 4.5364649879454655,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "tie breaker",
-    "hits": [
-      {
-        "sourceId": "knowledge/tie-1.md",
-        "score": 4.725679027092521,
-        "text": "tie breaker words",
-        "span": {
-          "start": 0,
-          "end": 17
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/tie-2.md",
-        "score": 4.725679027092521,
-        "text": "tie breaker words",
-        "span": {
-          "start": 0,
-          "end": 17
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "zebra",
-    "hits": []
-  },
-  {
-    "query": "needle",
-    "hits": [
-      {
-        "sourceId": "knowledge/long.md",
-        "score": 0.4713430024374004,
-        "text": "iller words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here the needle sits deep inside more filler text more filler text more filler text more filler text more filler text more filler text more filler text more fi",
-        "span": {
-          "start": 694,
-          "end": 994
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "session",
-    "hits": [
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.7177020425559189,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.651573779510753,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/alpha.md",
-        "score": 1.5903483899728255,
-        "text": "\nThe brain index keeps postings for every session. Index index index.",
-        "span": {
-          "start": 38,
-          "end": 107
-        },
-        "metadata": {
-          "title": "Alpha notes",
-          "slug": "alpha",
-          "entrySlug": "alpha"
-        }
-      }
-    ]
-  },
-  {
-    "query": "café heap",
-    "hits": [
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 4.160656388180504,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.3065054248545844,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.2562074498483007,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 1.209638661089622,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "query",
-    "topK": 3,
-    "hits": [
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.651573779510753,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 1.620382948048787,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 1.5903483899728255,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "heap",
-    "minScore": 1,
-    "hits": [
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.3065054248545844,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.2562074498483007,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 1.2324833175475982,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 1.209638661089622,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "heap",
-    "minScore": -1,
-    "hits": [
-      {
-        "sourceId": "knowledge/nested/deep.txt",
-        "score": 1.3065054248545844,
-        "text": "nested session heap index text",
-        "span": {
-          "start": 0,
-          "end": 30
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/beta.md",
-        "score": 1.2562074498483007,
-        "text": "\nA session about the daemon heap and the brain query route.",
-        "span": {
-          "start": 40,
-          "end": 99
-        },
-        "metadata": {
-          "title": "Beta",
-          "sessionId": "sess-beta"
-        }
-      },
-      {
-        "sourceId": "knowledge/unicode.md",
-        "score": 1.2324833175475982,
-        "text": "Résumé \u2014 café heap naïve query déjà vu daemon",
-        "span": {
-          "start": 0,
-          "end": 45
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/gamma.md",
-        "score": 1.209638661089622,
-        "text": "No frontmatter here: daemon daemon heap growth after a federated query.",
-        "span": {
-          "start": 0,
-          "end": 71
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/alpha.md",
-        "score": 0,
-        "text": "\nThe brain index keeps postings for every session. Index index index.",
-        "span": {
-          "start": 38,
-          "end": 107
-        },
-        "metadata": {
-          "title": "Alpha notes",
-          "slug": "alpha",
-          "entrySlug": "alpha"
-        }
-      },
-      {
-        "sourceId": "knowledge/front-only.md",
-        "score": 0,
-        "text": "\nnothing that matches the body",
-        "span": {
-          "start": 32,
-          "end": 62
-        },
-        "metadata": {
-          "title": "zebra",
-          "slug": "front",
-          "entrySlug": "front"
-        }
-      },
-      {
-        "sourceId": "knowledge/long.md",
-        "score": 0,
-        "text": "filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler",
-        "span": {
-          "start": 0,
-          "end": 300
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/tie-1.md",
-        "score": 0,
-        "text": "tie breaker words",
-        "span": {
-          "start": 0,
-          "end": 17
-        },
-        "metadata": {}
-      },
-      {
-        "sourceId": "knowledge/tie-2.md",
-        "score": 0,
-        "text": "tie breaker words",
-        "span": {
-          "start": 0,
-          "end": 17
-        },
-        "metadata": {}
-      }
-    ]
-  },
-  {
-    "query": "words",
-    "topK": 1,
-    "hits": [
-      {
-        "sourceId": "knowledge/long.md",
-        "score": 2.1397730748651056,
-        "text": "filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler words go here filler",
-        "span": {
-          "start": 0,
-          "end": 300
-        },
-        "metadata": {}
-      }
-    ]
-  }
-]
