@@ -118,6 +118,7 @@ steps:
       workspaceSlug: $input.workspaceSlug
       apply: false
       includeReviewed: false
+      full: true
 
   - id: checkpointGcPlan
     kind: tool
@@ -211,6 +212,7 @@ steps:
       workspaceSlug: $input.workspaceSlug
       apply: false
       includeReviewed: false
+      full: true
 
   - id: gaps
     kind: transform
@@ -265,6 +267,7 @@ steps:
       apply: $input.applyMerged
       includeReviewed: $input.applyReviewed
       scopes: [local, remote, orphan]
+      full: true
 
   - id: checkpointGcApply
     kind: tool
@@ -349,6 +352,8 @@ steps:
 result:
   report: $steps.reportFinal
   gaps: $steps.gaps
+  review: $steps.review
+  verdictRecords: $steps.verdictRecords
   applyMerged: $input.applyMerged
   applyReviewed: $input.applyReviewed
   branchGcApply: $steps.branchGcApply

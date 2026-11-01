@@ -314,10 +314,191 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     try {
       const r = await client.callTool({
         name: "branch_gc",
-        arguments: { repoRoot: "/repo", minAgeDays: "7", includeReviewed: "false", scopes: ["remote"] },
+        arguments: { repoRoot: "/repo", minAgeDays: "7", includeReviewed: "false", scopes: ["remote"], full: true },
       })
       expect(JSON.parse(text(r))).toEqual(PLAN_RESULT)
       expect(seen()).toEqual({ repoRoot: "/repo", apply: false, includeReviewed: false, scopes: ["remote"], minAgeDays: 7 })
+    } finally {
+      await client.close()
+    }
+  })
+
+  it("replies compact by default (small, paged entries); full: true returns the whole result", async () => {
+    // A dogfood-sized plan: every entry carries the heavy reviewer fields.
+    const heavy = (i: number): BranchGcPlanView["entries"][number] => ({
+      kind: i % 2 === 0 ? "local" : "remote",
+      name: `feat/branch-${Math.floor(i / 2)}`,
+      ref: i % 2 === 0 ? `refs/heads/feat/branch-${Math.floor(i / 2)}` : `refs/remotes/origin/feat/branch-${Math.floor(i / 2)}`,
+      sha: i.toString(16).padStart(40, "0"),
+      date: "2026-09-01T00:00:00Z",
+      author: "T",
+      subject: "work in progress ".repeat(4),
+      status: "unmerged",
+      history: "current",
+      ahead: 3,
+      behind: 40,
+      compareBase: "a".repeat(40),
+      mergeBase: "e".repeat(40),
+      mergedTree: "f".repeat(40),
+      coverage: { residual: 12, covered: 30, ignored: 1, evolved: 2, unique: 9, deletes: 0 },
+      residualFiles: Array.from({ length: 12 }, (_, f) => `packages/some/deep/path/file-${f}.ts`),
+      residualFileCount: 12,
+      lineCoverage: {
+        added: 400,
+        inBase: 300,
+        pct: 75,
+        missing: Array.from({ length: 12 }, (_, l) => ({ file: `packages/some/deep/path/file-${l}.ts`, line: "const x = computeSomething(a, b, c)" })),
+      },
+      cherry: { total: 3, unmatched: 2 },
+      ageDays: 60,
+      class: "review",
+      ...(i === 0 ? { verdictGuard: "line coverage 75% of 400 added lines (< 95%)" } : {}),
+    })
+    const entries = Array.from({ length: 600 }, (_, i) => heavy(i))
+    const big: BranchGcResult = { mode: "plan", plan: { ...PLAN, entries }, summary: SUMMARY }
+    const jobsDir = await mkdtemp(join(tmpdir(), "bgc-compact-"))
+    const client = await harness({ runBranchGc: async () => big, branchGcJobsDir: jobsDir })
+    try {
+      const compact = text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo" } }))
+      expect(compact.length).toBeLessThan(40_000)
+      const parsed = JSON.parse(compact)
+      expect(parsed.summary).toEqual(SUMMARY)
+      expect(parsed.plan.repoRoot).toBe("/repo")
+      expect(parsed.page).toMatchObject({ section: "entries", total: 600, returned: 100 })
+      expect(typeof parsed.page.nextCursor).toBe("string")
+      expect(parsed.plan.entries[0]).toEqual({
+        name: "feat/branch-0",
+        kind: "local",
+        sha: "0".repeat(40),
+        class: "review",
+        status: "unmerged",
+        lineCoverage: { pct: 75 },
+        verdictGuard: "line coverage 75% of 400 added lines (< 95%)",
+      })
+
+      // The cursor pages the SAME run instead of re-running the gc.
+      const page2 = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", cursor: parsed.page.nextCursor } })),
+      )
+      expect(page2.plan.entries[0].name).toBe("feat/branch-50")
+      expect(page2.page).toMatchObject({ total: 600, returned: 100 })
+
+      // `fields` keeps only the named keys, taken from the full entry.
+      const picked = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", fields: ["name", "residualFileCount"], limit: 2 } })),
+      )
+      expect(picked.plan.entries).toEqual([
+        { name: "feat/branch-0", residualFileCount: 12 },
+        { name: "feat/branch-0", residualFileCount: 12 },
+      ])
+
+      const full = JSON.parse(text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", full: true } })))
+      expect(full).toEqual(big)
+    } finally {
+      await client.close()
+      await rm(jobsDir, { recursive: true, force: true })
+    }
+  })
+
+  it("a cursor keeps the classes filter and limit it was created with", async () => {
+    const entries: BranchGcPlanView["entries"] = Array.from({ length: 300 }, (_, i) => ({
+      ...PLAN.entries[0]!,
+      name: `feat/branch-${i}`,
+      kind: i % 2 === 0 ? "local" : "remote",
+      class: i % 3 === 0 ? "reclaim" : "review",
+      status: i % 3 === 0 ? "merged" : "unmerged",
+    }))
+    const result: BranchGcResult = { mode: "plan", plan: { ...PLAN, entries }, summary: SUMMARY }
+    const client = await harness({ runBranchGc: async () => result })
+    try {
+      const first = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", classes: ["review"], limit: 40 } })),
+      )
+      expect(first.page).toMatchObject({ section: "entries", total: 200, returned: 40 })
+      expect(first.plan.entries.every((e: { class: string }) => e.class === "review")).toBe(true)
+
+      // The cursor wins over the follow-up's classes/limit: page 2 is the next
+      // 40 REVIEW rows, not the first 5 reclaim rows (and no rows are skipped
+      // or repeated relative to the filtered view).
+      const second = JSON.parse(
+        text(
+          await client.callTool({
+            name: "branch_gc",
+            arguments: { repoRoot: "/repo", classes: ["reclaim"], limit: 5, cursor: first.page.nextCursor },
+          }),
+        ),
+      )
+      expect(second.page).toMatchObject({ section: "entries", total: 200, returned: 40 })
+      expect(second.plan.entries.every((e: { class: string }) => e.class === "review")).toBe(true)
+      const names = [...first.plan.entries, ...second.plan.entries].map((e: { name: string }) => e.name)
+      expect(names).toHaveLength(80)
+      expect(new Set(names).size).toBe(80)
+
+      // `fields` is a projection, not part of the page identity: still honored.
+      const picked = JSON.parse(
+        text(
+          await client.callTool({
+            name: "branch_gc",
+            arguments: { repoRoot: "/repo", fields: ["name"], cursor: second.page.nextCursor },
+          }),
+        ),
+      )
+      expect(picked.page).toMatchObject({ total: 200, returned: 40 })
+      expect(picked.plan.entries).toHaveLength(40)
+      expect(picked.plan.entries.every((e: Record<string, unknown>) => Object.keys(e).join() === "name")).toBe(true)
+
+      // A cursor made with `full: true` keeps whole rows on every page.
+      const wholeFirst = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", full: true, limit: 50 } })),
+      )
+      expect(wholeFirst.plan.entries[0]).toHaveProperty("ref")
+      const wholeNext = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { cursor: wholeFirst.page.nextCursor } })),
+      )
+      expect(wholeNext.page).toMatchObject({ total: 300, returned: 50 })
+      expect(wholeNext.plan.entries[0]).toEqual(entries[50])
+    } finally {
+      await client.close()
+    }
+  })
+
+  it("an apply pages its outcomes by default; section: entries pages the plan instead", async () => {
+    const outcomes = Array.from({ length: 250 }, (_, i) => ({
+      kind: "local" as const,
+      name: `feat/branch-${i}`,
+      sha: i.toString(16).padStart(40, "0"),
+      result: "deleted" as const,
+    }))
+    const apply: BranchGcResult = { mode: "apply", plan: PLAN, summary: SUMMARY, outcomes, restoreLog: "/state/restore.json" }
+    const client = await harness({ runBranchGc: async () => apply })
+    try {
+      const first = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local"] } })),
+      )
+      expect(first.page).toMatchObject({ section: "outcomes", total: 250, returned: 100 })
+      expect(first.outcomes).toHaveLength(100)
+      expect(first.restoreLog).toBe("/state/restore.json")
+      expect(first.plan.entries).toBeUndefined()
+
+      const second = JSON.parse(
+        text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", cursor: first.page.nextCursor } })),
+      )
+      expect(second.page).toMatchObject({ section: "outcomes", total: 250, returned: 100 })
+      expect(second.outcomes[0].name).toBe("feat/branch-100")
+
+      const entries = JSON.parse(
+        text(
+          await client.callTool({
+            name: "branch_gc",
+            arguments: { repoRoot: "/repo", apply: "true", scopes: ["local"], section: "entries" },
+          }),
+        ),
+      )
+      expect(entries.page).toMatchObject({ section: "entries", total: 1, returned: 1 })
+      expect(entries.outcomes).toBeUndefined()
+      expect(entries.plan.entries).toEqual([
+        { name: "feat/done", kind: "local", sha: "c".repeat(40), class: "reclaim", status: "squash-merged", reclaimReason: "squash-merged" },
+      ])
     } finally {
       await client.close()
     }
@@ -330,8 +511,20 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       const bad = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: true } })
       expect(isError(bad)).toBe(true)
       expect(seen()).toBeUndefined()
-      const ok = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local", "orphan"] } })
+      const ok = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local", "orphan"], full: true } })
       expect(JSON.parse(text(ok))).toEqual(withBranchGcApplySummary(APPLY_RESULT))
+      // The compact default pages the outcomes (not the plan entries) and
+      // still carries the restore log + applySummary.
+      const compact = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", apply: "true", scopes: ["local", "orphan"] } })
+      const applied = withBranchGcApplySummary(APPLY_RESULT) as Extract<BranchGcResult, { mode: "apply" }>
+      const compactView = JSON.parse(text(compact))
+      expect(compactView).toMatchObject({
+        outcomes: applied.outcomes,
+        restoreLog: applied.restoreLog,
+        applySummary: applied.applySummary,
+        page: { section: "outcomes", total: 1, returned: 1 },
+      })
+      expect(compactView.plan.entries).toBeUndefined()
       expect(JSON.parse(text(ok))).toMatchObject({
         status: "ok",
         applySummary: { status: "ok", totals: { deleted: 1, skipped: 0, failed: 0 }, restoreLog: APPLY_RESULT.mode === "apply" ? APPLY_RESULT.restoreLog : null },
@@ -654,7 +847,7 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
     const { runner } = recordingRunner()
     const client = await harness({ runBranchGc: runner })
     try {
-      const r = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", waitMs: 5000 } })
+      const r = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", waitMs: 5000, full: true } })
       expect(JSON.parse(text(r))).toEqual(PLAN_RESULT)
     } finally {
       await client.close()
@@ -780,6 +973,26 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
         const view = (await status(client, { jobId })) as unknown as Record<string, unknown>
         expect(view.result).toBeUndefined()
         expect(view.page).toBeUndefined()
+      })
+    })
+
+    it("branch_gc and branch_gc_status cursors are not interchangeable", async () => {
+      await withJob(bigResult(250), async (client, jobId) => {
+        const statusPage = await status(client, { jobId, limit: 100 })
+        const statusCursor = statusPage.page.nextCursor!
+        const crossToGc = await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", cursor: statusCursor } })
+        expect(isError(crossToGc)).toBe(true)
+        expect(text(crossToGc)).toContain("invalid `cursor`")
+
+        const gcPage = JSON.parse(
+          text(await client.callTool({ name: "branch_gc", arguments: { repoRoot: "/repo", limit: 100 } })),
+        ) as { page: { nextCursor?: string } }
+        const crossToStatus = await client.callTool({
+          name: "branch_gc_status",
+          arguments: { jobId, cursor: gcPage.page.nextCursor },
+        })
+        expect(isError(crossToStatus)).toBe(true)
+        expect(text(crossToStatus)).toContain("invalid `cursor`")
       })
     })
 

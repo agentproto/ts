@@ -683,6 +683,29 @@ describe("branch gc — ref kinds and holds", () => {
     expect(s.byStatus.local).toEqual({ protected: 1, merged: 1, unmerged: 1 })
     expect(s.byClass.local).toEqual({ reclaim: 1, review: 1, hold: 1 })
   })
+
+  it("summary counts distinct branch names next to the per-kind ref counts", () => {
+    const e = (kind: BranchGcPlanEntry["kind"], name: string, cls: BranchGcPlanEntry["class"], status: BranchGcPlanEntry["status"]) =>
+      ({ kind, name, class: cls, status }) as BranchGcPlanEntry
+    // `feat/a` and `feat/b` each have a local and a remote ref: 5 refs, 3 branches.
+    const p = {
+      entries: [
+        e("local", "feat/a", "review", "unmerged"),
+        e("remote", "feat/a", "review", "unmerged"),
+        e("local", "feat/b", "review", "unmerged"),
+        e("remote", "feat/b", "reclaim", "merged"),
+        e("local", "feat/c", "review", "unmerged"),
+      ],
+    } as BranchGcPlan
+    const s = summarizeBranchGcPlan(p)
+    expect(s.byStatus.local.unmerged! + s.byStatus.remote.unmerged!).toBe(4)
+    expect(s.distinct).toEqual({
+      branches: 3,
+      refs: 5,
+      byClass: { reclaim: 1, review: 3, hold: 0 },
+      byStatus: { unmerged: 3, merged: 1 },
+    })
+  })
 })
 
 // ── verdicts ─────────────────────────────────────────────────────────────

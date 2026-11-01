@@ -104,6 +104,14 @@ export interface BranchGcPlanView {
 export interface BranchGcSummaryView {
   byClass: Record<BranchGcKind, Record<BranchGcClass, number>>
   byStatus: Record<BranchGcKind, Record<string, number>>
+  /** The same counts keyed by branch name across kinds (a local branch and
+   *  its remote twin count once). Absent on a result from before it existed. */
+  distinct?: {
+    branches: number
+    refs: number
+    byClass: Record<BranchGcClass, number>
+    byStatus: Record<string, number>
+  }
 }
 
 export interface BranchGcOutcomeView {
@@ -273,6 +281,169 @@ export function sliceBranchGcResult(
       ...(section === "outcomes" ? { outcomes: pageRows } : {}),
     },
   }
+}
+
+/** One plan entry as the `branch_gc` tool returns it by default: what a human
+ *  needs to decide, without the reviewer payload (coverage, residual files,
+ *  missing lines, cherry) that makes a full entry several KB. */
+export interface BranchGcCompactEntry {
+  name: string
+  kind: BranchGcKind
+  sha: string
+  class: BranchGcClass
+  status: BranchGcStatus
+  reclaimReason?: BranchGcReclaimReason
+  mergedPr?: number
+  mergedPrMatch?: BranchGcPlanEntryView["mergedPrMatch"]
+  holdReason?: BranchGcHoldReason
+  lineCoverage?: { pct: number }
+  verdictGuard?: string
+}
+
+export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
+  return {
+    name: e.name,
+    kind: e.kind,
+    sha: e.sha,
+    class: e.class,
+    status: e.status,
+    ...(e.reclaimReason !== undefined ? { reclaimReason: e.reclaimReason } : {}),
+    ...(e.mergedPr !== undefined ? { mergedPr: e.mergedPr } : {}),
+    ...(e.mergedPrMatch !== undefined ? { mergedPrMatch: e.mergedPrMatch } : {}),
+    ...(e.holdReason !== undefined ? { holdReason: e.holdReason } : {}),
+    ...(e.lineCoverage !== undefined ? { lineCoverage: { pct: e.lineCoverage.pct } } : {}),
+    ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
+  }
+}
+
+export interface BranchGcReplyInput {
+  /** Whole rows instead of the compact projection; alone (no other option),
+   *  the unchanged full result. */
+  full?: boolean
+  /** Entries only: keep only these keys of each FULL entry. */
+  fields?: string[]
+  /** Entries only: keep only entries of these classes. */
+  classes?: BranchGcClass[]
+  limit?: number
+  /** Which list to page. Default: `entries` for a plan, `outcomes` for an
+   *  apply (mirroring `branch_gc_status`). */
+  section?: BranchGcResultSection
+  /** Offset into the selected list (decoded from a `branch_gc` cursor). */
+  offset?: number
+}
+
+/**
+ * A `branch_gc` cursor names the run it pages AND the slice it was created
+ * for (`section`, `classes`, `limit`, and `full` so every page has the same
+ * row shape), so the next page is read from that
+ * run's stored result with the exact same filtered list instead of
+ * re-running the gc. Not interchangeable with `branch_gc_status`'s
+ * `o:<n>` cursor ({@link sliceBranchGcResult}): each tool rejects the other.
+ */
+export function encodeBranchGcCursor(
+  jobId: string,
+  offset: number,
+  section: BranchGcResultSection,
+  classes: BranchGcClass[],
+  limit: number,
+  full = false,
+): string {
+  return Buffer.from(JSON.stringify({ j: jobId, o: offset, s: section, c: classes, l: limit, ...(full ? { f: true } : {}) })).toString(
+    "base64url",
+  )
+}
+
+export function decodeBranchGcCursor(cursor: string): {
+  jobId: string
+  offset: number
+  section?: BranchGcResultSection
+  classes?: BranchGcClass[]
+  limit?: number
+  full?: boolean
+} {
+  try {
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      j?: unknown
+      o?: unknown
+      s?: unknown
+      c?: unknown
+      l?: unknown
+      f?: unknown
+    }
+    if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) {
+      const section = v.s === "entries" || v.s === "outcomes" ? v.s : undefined
+      const classes = Array.isArray(v.c) ? (v.c.filter(c => c === "reclaim" || c === "review" || c === "hold") as BranchGcClass[]) : undefined
+      const limit = typeof v.l === "number" && Number.isInteger(v.l) && v.l >= 1 ? v.l : undefined
+      return {
+        jobId: v.j,
+        offset: v.o,
+        ...(section !== undefined ? { section } : {}),
+        ...(classes !== undefined ? { classes } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(v.f === true ? { full: true } : {}),
+      }
+    }
+  } catch {
+    // Fall through to the error below.
+  }
+  throw new Error("branch_gc: invalid `cursor`")
+}
+
+/**
+ * Pure: the `branch_gc` tool reply. A real repo's full result is ~800k chars
+ * on one line, which no MCP client can read, so by default ONE list is
+ * projected down and paged (`page`, with a `nextCursor` naming `jobId` and
+ * the slice it belongs to): plan entries are compact
+ * ({@link compactBranchGcEntry}); apply outcomes are paged as-is. The
+ * summary, the plan metadata, the restore log and `applySummary` stay whole;
+ * the list that was not selected stays on disk. `full: true` alone returns
+ * the result unchanged.
+ */
+export function branchGcReply(result: BranchGcResult, opts: BranchGcReplyInput, jobId: string): object {
+  const section: BranchGcResultSection = opts.section ?? (result.mode === "apply" ? "outcomes" : "entries")
+  const shaped =
+    opts.fields !== undefined ||
+    opts.classes !== undefined ||
+    opts.limit !== undefined ||
+    opts.section !== undefined ||
+    opts.offset !== undefined
+  if (opts.full === true && !shaped) return result
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? BRANCH_GC_PAGE_DEFAULT), 1), BRANCH_GC_PAGE_MAX)
+  const start = opts.offset ?? 0
+  let total: number
+  let pageRows: object[]
+  let cursorClasses: BranchGcClass[] = []
+  if (section === "outcomes") {
+    if (result.mode !== "apply") throw new Error("branch_gc: `section: outcomes` is only available on an apply result")
+    total = result.outcomes.length
+    pageRows = result.outcomes.slice(start, start + limit)
+  } else {
+    cursorClasses = opts.classes ?? []
+    const rows = result.plan.entries.filter(e => !opts.classes?.length || opts.classes.includes(e.class))
+    total = rows.length
+    pageRows = rows
+      .slice(start, start + limit)
+      .map(e =>
+        opts.fields !== undefined
+          ? Object.fromEntries(Object.entries(e).filter(([key]) => opts.fields!.includes(key)))
+          : opts.full === true
+            ? e
+            : compactBranchGcEntry(e),
+      )
+  }
+  const next = start + limit
+  const page: BranchGcResultPage = {
+    section,
+    total,
+    returned: pageRows.length,
+    ...(next < total ? { nextCursor: encodeBranchGcCursor(jobId, next, section, cursorClasses, limit, opts.full === true) } : {}),
+  }
+  const { outcomes: _outcomes, ...rest } = result as BranchGcResult & { outcomes?: unknown }
+  if (section === "outcomes") {
+    const { entries: _entries, ...planMeta } = result.plan
+    return { ...rest, plan: planMeta, outcomes: pageRows, jobId, page }
+  }
+  return { ...rest, plan: { ...result.plan, entries: pageRows }, jobId, page }
 }
 
 /** Input to the injected runner. `apply` defaults to false at the tool/route

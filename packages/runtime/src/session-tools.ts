@@ -215,9 +215,12 @@ import {
 } from "./background-jobs.js"
 import {
   BRANCH_GC_PAGE_MAX,
+  branchGcReply,
+  decodeBranchGcCursor,
   sliceBranchGcResult,
   summarizeBranchGcApply,
   withBranchGcApplySummary,
+  type BranchGcReplyInput,
   type BranchGcResultSliceInput,
   type BranchGcResult,
   type BranchGcRunInput,
@@ -4897,7 +4900,19 @@ export function registerSessionTools(
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
       "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
       "timed-out) response returns a jobId plus a `followUp` block naming the " +
-      "poll tool and cadence — poll `branch_gc_status` with that jobId.",
+      "poll tool and cadence — poll `branch_gc_status` with that jobId. " +
+      "The finished reply is COMPACT by default: the summary (ref counts per " +
+      "kind plus `distinct` branch-name counts), the plan metadata and one " +
+      "page of entries (name, kind, sha, class, status, reclaimReason / " +
+      "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard " +
+      "when set), default 100 rows with `page.nextCursor`; pass it back as " +
+      "`cursor` to read the next page of the SAME run (no re-run; the cursor " +
+      "keeps the `section`, `classes`, `limit` and `full` it was created with). An " +
+      "apply pages its outcomes by default (the large plan entries stay on " +
+      "disk; pass `section: \"entries\"` to page those instead) and keeps the " +
+      "restore log and `applySummary`. `fields` keeps only the named keys of " +
+      "each full entry, `classes` filters entries, `full: true` returns whole " +
+      "rows (alone: the whole unpaged result).",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -4928,8 +4943,57 @@ export function registerSessionTools(
       waitMs: mcpNumber
         .optional()
         .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `branch_gc_status`. Only meaningful with the default `wait: true`."),
+      full: mcpBool
+        .optional()
+        .describe("Whole rows instead of the compact projection. Alone (no `fields`/`classes`/`section`/`limit`/`cursor`): the whole unpaged result. Default false."),
+      fields: z.array(z.string()).optional().describe("Entries only: keep only these keys of each full entry (e.g. [\"name\", \"sha\", \"residualFiles\"])."),
+      classes: z
+        .array(z.enum(["reclaim", "review", "hold"]))
+        .optional()
+        .describe("Entries only: keep only entries of these classes (e.g. [\"review\"]). Counts in `summary` are unaffected."),
+      section: z
+        .enum(["entries", "outcomes"])
+        .optional()
+        .describe("Which list to page: plan `entries` or apply `outcomes`. Default `entries` for a plan, `outcomes` for an apply."),
+      limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run and slice without re-running the gc. The cursor's `section`/`classes`/`limit` win over any passed here, and a cursor made with `full: true` keeps whole rows; `fields` still shapes entries."),
     },
     async input => {
+      const reply: BranchGcReplyInput = {
+        ...(input.full !== undefined ? { full: input.full } : {}),
+        ...(input.fields ? { fields: input.fields } : {}),
+        ...(input.classes ? { classes: input.classes } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.section ? { section: input.section } : {}),
+      }
+      if (input.cursor !== undefined) {
+        // Page an earlier run from its stored result, in memory or on disk.
+        try {
+          const { jobId, offset, section, classes, limit, full } = decodeBranchGcCursor(input.cursor)
+          const job = branchGcJobs.get(jobId)
+          const stored = job?.result ?? (await branchGcJobs.readResultFile(jobId))
+          if (!stored) {
+            return {
+              content: [{ type: "text", text: `branch_gc: the run behind this cursor ('${jobId}') is gone; call branch_gc again without \`cursor\`.` }],
+              isError: true,
+            }
+          }
+          const page: BranchGcReplyInput = {
+            ...reply,
+            offset,
+            ...(section !== undefined ? { section } : {}),
+            ...(classes !== undefined ? { classes } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(full ? { full } : {}),
+          }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, page, jobId)) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true }
+        }
+      }
       if (!runBranchGc) {
         return {
           content: [
@@ -4975,7 +5039,7 @@ export function registerSessionTools(
           return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
         const result = await promise
-        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+        return { content: [{ type: "text", text: JSON.stringify(branchGcReply(result, reply, job.id)) }] }
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc failed: ${err instanceof Error ? err.message : String(err)}` }],
@@ -5019,7 +5083,10 @@ export function registerSessionTools(
         .optional()
         .describe("Outcomes only: keep these outcome results."),
       limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
-      cursor: z.string().optional().describe("`page.nextCursor` from the previous page."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from the previous `branch_gc_status` page (not a `branch_gc` cursor: the two formats are not interchangeable)."),
     },
     async input => {
       const wantsSlice =
