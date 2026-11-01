@@ -45,12 +45,12 @@ import { stopOutcomeSchema } from "./outcome-detail-schema.js"
 import { parseStopOutcome } from "./session-outcome.js"
 import { statsDetailOf, statsParamSchema, withSessionStats } from "./process-stats.js"
 import {
-  checkSessionOwnerGate,
   checkPromptPolicyEditor,
   effectiveCallerSessionId,
   ownerGateError,
   promptCallerLabel,
 } from "./session-owner.js"
+import { checkDrive } from "./drive-gate.js"
 import {
   checkSuccessorDeclaration,
   handoverLineage,
@@ -635,24 +635,23 @@ export function registerAgentTools(
   // `?callerSessionId=` query. `undefined` = the human operator.
   const effectiveCaller = (): string | undefined =>
     effectiveCallerSessionId(callerScope, callerSessionId)
-  // Session-owner gate for the drive tools (session-owner.ts): a call from
-  // another agent session is refused unless the caller is the target's owner
-  // (the session that spawned it), the session itself, or granted via the
-  // target's `allowPromptFrom` list. The human operator always passes.
+  // Drive gate for the drive tools (drive-gate.ts): a call from another
+  // agent session is refused unless the caller is the target's owner (the
+  // session that spawned it), the session itself, an ancestor, or granted via
+  // the target's `allowPromptFrom` list. The human operator always passes. An
+  // explicit `defaults.messaging.grants` entry for the tool's action may admit
+  // a caller the legacy gate refuses.
   const ownerGateText = (
     target: SessionDescriptor | undefined,
     tool: string,
   ): string | undefined => {
     if (!target) return undefined
-    const gate = checkSessionOwnerGate({
+    const gate = checkDrive({
+      registry,
+      ...(messagingGrants !== undefined ? { grants: messagingGrants } : {}),
       callerSessionId: effectiveCaller(),
       target,
       tool,
-      // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
-      // (grandparent / orchestrator root) keeps its existing subtree
-      // authority over the target — the owner gate must not revoke it.
-      parentOf: id => registry.get(id)?.parentSessionId,
-      operatorLabelOf: id => registry.get(id)?.operatorLabel,
     })
     return gate.ok ? undefined : gate.message
   }

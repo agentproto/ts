@@ -566,6 +566,12 @@ describe("defaults.messaging.grants key", () => {
     expect(validateConfigKeyValue("defaults.messaging.grants", [valid])).toEqual({ ok: true })
     expect(validateConfigKeyValue("defaults.messaging.grants", [])).toEqual({ ok: true })
     expect(
+      validateConfigKeyValue("defaults.messaging.grants", [
+        { principal: "*", actions: [{ action: "session:prompt", scope: "target" }] },
+        { principal: "*", actions: [{ action: "session:control", scope: "workspace:agentik" }] },
+      ]),
+    ).toEqual({ ok: true })
+    expect(
       validateConfig({ defaults: { messaging: { grants: [valid] } } }).issues,
     ).toEqual([])
   })
@@ -576,10 +582,12 @@ describe("defaults.messaging.grants key", () => {
       validateConfigKeyValue("defaults.messaging.grants", [{ principal: "*", actions: [] }]).ok,
     ).toBe(false)
     const got = validateConfigKeyValue("defaults.messaging.grants", [
-      { principal: "*", actions: [{ action: "session:prompt" }] },
+      { principal: "*", actions: [{ action: "session:spawn" }] },
     ])
     expect(got.ok).toBe(false)
-    expect(got.error).toContain("only session:message grants with a string principal are honored here")
+    expect(got.error).toContain(
+      "only session:message, session:prompt and session:control grants with a string principal are honored here",
+    )
     expect(
       validateConfigKeyValue("defaults.messaging.grants", [
         { principal: { ref: "operator://ops" }, actions: [{ action: "session:message" }] },
@@ -589,6 +597,8 @@ describe("defaults.messaging.grants key", () => {
       { principal: "*", actions: [{ action: "session:message" }], conditions: [{ kind: "mfa-recent" }] },
     ])
     expect(conditions.ok).toBe(false)
-    expect(conditions.error).toContain("session:prompt and session:control follow with TS-12b")
+    expect(conditions.error).toContain(
+      "only session:message, session:prompt and session:control grants with a string principal are honored here",
+    )
   })
 })

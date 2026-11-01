@@ -176,15 +176,17 @@ const mcpDefaultsConfigSchema: z.ZodType<McpDefaultsConfig> = z
   .passthrough()
 
 /**
- * `defaults.messaging.grants` - explicit AIP-38 grants the messaging ACL
- * honors. The accepted shape is a strict subset of an AIP-38 `Grant`:
- * a string principal, a `session:message` action (with an optional scope),
+ * `defaults.messaging.grants` - explicit AIP-38 grants the messaging ACL and
+ * the drive gate honor. The accepted shape is a strict subset of an AIP-38
+ * `Grant`: a string principal, at least one `session:message`,
+ * `session:prompt` or `session:control` action (with an optional scope),
  * `ttl_seconds`, `granted_at` and `revoked`. Other actions, an object-form
- * principal and conditions belong to later drivers (`session:prompt` and
- * `session:control` follow with TS-12b), so they are rejected here.
+ * principal and conditions are rejected here. This is the one list of
+ * session-to-session grants: it keeps its `defaults.messaging` name.
  */
-const unsupportedMessageGrantMessage =
-  "only session:message grants with a string principal are honored here (session:prompt and session:control follow with TS-12b)"
+const unsupportedSessionGrantMessage =
+  "only session:message, session:prompt and session:control grants with a string principal are honored here"
+const sessionGrantActions = ["session:message", "session:prompt", "session:control"] as const
 const configMessageGrantSchema: z.ZodType<Grant> = z
   .object({
     principal: z.unknown(),
@@ -200,24 +202,29 @@ const configMessageGrantSchema: z.ZodType<Grant> = z
     const issue = (path: (string | number)[], message: string) =>
       ctx.addIssue({ code: "custom", path, message })
     if (typeof g.principal !== "string" || g.principal.length === 0) {
-      issue(["principal"], unsupportedMessageGrantMessage)
+      issue(["principal"], unsupportedSessionGrantMessage)
     }
     if (g.effect !== undefined && g.effect !== "allow" && g.effect !== "deny") {
       issue(["effect"], 'effect must be "allow" or "deny"')
     }
     if (!Array.isArray(g.actions) || g.actions.length === 0) {
-      issue(["actions"], unsupportedMessageGrantMessage)
+      issue(["actions"], unsupportedSessionGrantMessage)
     } else {
       g.actions.forEach((a: unknown, i) => {
-        if (typeof a !== "object" || a === null || (a as { action?: unknown }).action !== "session:message") {
-          issue(["actions", i, "action"], unsupportedMessageGrantMessage)
+        const action =
+          typeof a === "object" && a !== null ? (a as { action?: unknown }).action : undefined
+        if (
+          typeof action !== "string" ||
+          !(sessionGrantActions as readonly string[]).includes(action)
+        ) {
+          issue(["actions", i, "action"], unsupportedSessionGrantMessage)
           return
         }
         const scope = (a as { scope?: unknown }).scope
         if (scope !== undefined && typeof scope !== "string") issue(["actions", i, "scope"], "scope must be a string")
       })
     }
-    if (g.conditions !== undefined) issue(["conditions"], unsupportedMessageGrantMessage)
+    if (g.conditions !== undefined) issue(["conditions"], unsupportedSessionGrantMessage)
     if (
       g.ttl_seconds !== undefined &&
       !(typeof g.ttl_seconds === "number" && Number.isFinite(g.ttl_seconds) && g.ttl_seconds > 0)
@@ -1555,7 +1562,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Explicit message grants",
-    help: "AIP-38 grants that may admit a session:message pair the tree and the messaging switches refuse (relation \"granted\"). Each accepted grant has a string principal, at least one { action: \"session:message\", scope? } and optional effect/ttl_seconds/granted_at/revoked. Scope forms that work match the RECIPIENT: <sessionId>, label:<recipient operator label>, workspace:<recipient verified workspace slug>. A matching deny wins. Empty (the default) changes nothing. Takes effect on the next call.",
+    help: "The one list of session-to-session AIP-38 grants. A matching session:message grant may admit a message pair the tree and the messaging switches refuse (relation \"granted\"); a matching session:prompt grant may admit agent_prompt, and a matching session:control grant may admit agent_interrupt / agent_kill / session_restart / session_continue_fresh, when the legacy owner gate refuses. Each accepted grant has a string principal, at least one { action: \"session:message\" | \"session:prompt\" | \"session:control\", scope? } and optional effect/ttl_seconds/granted_at/revoked. Scope forms that work match the TARGET: <sessionId>, label:<target operator label>, workspace:<target verified workspace slug>. A matching deny wins. Empty (the default) changes nothing. Takes effect on the next call.",
     default: [],
   },
   {
