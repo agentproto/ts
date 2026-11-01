@@ -1,7 +1,7 @@
 # `agentproto maintain`
 
 ```text
-agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
+agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
@@ -17,7 +17,8 @@ One run:
    `agentproto-checkpoint/*` refs a dead sandbox left on the remote as
    safe / keep / unknown).
 2. Fans a reviewer agent out over the unmerged branch candidates with no
-   stored verdict yet — at most `maxReviews` (default 40) per run, newest
+   stored verdict yet — at most `maxReviews` (`--max-reviews`, default 40)
+   per run, newest
    tip first, so daily runs walk a large backlog — one turn per unique tip
    sha: a small model when the candidate's residual is 3 files or fewer, a
    large model otherwise. Each turn records a verdict via
@@ -65,6 +66,7 @@ branch.
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
 | `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) and reports them; ignored without `--apply-merged`. |
 | `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
+| `--max-reviews <n>` | workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
 | `--json` | `false` | Print the raw `workflow_run_file` reply (with `--wait`: the finished run records, one per repo). |
 

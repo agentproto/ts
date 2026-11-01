@@ -327,8 +327,9 @@ no declared `skills` option treat the resolved skills list as a no-op.
 Generic ACP agents — any CLI that already speaks the Agent Client Protocol,
 connectable with zero adapter code. Keyed by adapter slug; each value is a
 spawn recipe. A config entry **shadows** a curated `ACP_CATALOG` entry of the
-same slug, and both lose to a real `@agentproto/adapter-<slug>` npm package
-(resolution order: npm → config → catalog). Managed via
+same slug, and both lose to a real adapter npm package
+(`@agentproto/harness-<slug>` or `@agentproto/adapter-<slug>`;
+resolution order: npm → config → catalog). Managed via
 [`agentproto acp`](../verbs/acp.md); direct edit is fine.
 
 | Field          | Type                                  | Meaning                                                        |
