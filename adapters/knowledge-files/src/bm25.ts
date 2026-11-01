@@ -22,13 +22,14 @@
 
 const K1 = 1.5
 const B = 0.75
-const MIN_TOKEN_LEN = 2
-const MAX_TOKEN_LEN = 32
+/** Shortest and longest token kept by {@link tokenize}. */
+export const MIN_TOKEN_LEN = 2
+export const MAX_TOKEN_LEN = 32
 
 // Short en stopword list — keeps the index lean without doing real NLP.
 // Domain stopwords ("the company", "agentik") could be added per-corpus
 // in a follow-up if the noise becomes meaningful.
-const STOPWORDS = new Set([
+export const STOPWORD_LIST: readonly string[] = Object.freeze([
   "a",
   "an",
   "and",
@@ -81,6 +82,7 @@ const STOPWORDS = new Set([
   "you",
   "your",
 ])
+const STOPWORDS = new Set(STOPWORD_LIST)
 
 /** Strip YAML frontmatter (--- ... ---) from a doc body if present. */
 export function stripFrontmatter(content: string): string {
@@ -291,6 +293,27 @@ function termFrequency(
   return 0
 }
 
+/**
+ * IDF of a term found in `n` of `N` docs. BM25 IDF with +1 smoothing, see
+ * "Improvements to BM25 and language models examined" (Lv & Zhai, 2011) for
+ * the rationale.
+ */
+export function bm25Idf(N: number, n: number): number {
+  return Math.log((N - n + 0.5) / (n + 0.5) + 1)
+}
+
+/** One term's BM25 contribution: frequency `f` in a doc of `docLength`
+ *  tokens, against an index whose mean length is `avgDocLength`. */
+export function bm25TermScore(
+  idf: number,
+  f: number,
+  docLength: number,
+  avgDocLength: number
+): number {
+  const denom = f + K1 * (1 - B + (B * docLength) / avgDocLength)
+  return idf * ((f * (K1 + 1)) / denom)
+}
+
 export interface ScoredHit {
   readonly doc: Bm25Doc
   readonly score: number
@@ -318,10 +341,7 @@ export function score(
   for (const tok of queryTokens) {
     const termId = index.vocab.get(tok)
     if (termId === undefined) continue
-    const n = index.df[termId]!
-    // BM25 IDF with +1 smoothing — see "Improvements to BM25 and
-    // language models examined" (Lv & Zhai, 2011) for the rationale.
-    terms.push({ termId, idf: Math.log((N - n + 0.5) / (n + 0.5) + 1) })
+    terms.push({ termId, idf: bm25Idf(N, index.df[termId]!) })
   }
   const out: ScoredHit[] = []
 
@@ -331,8 +351,7 @@ export function score(
     for (const { termId, idf } of terms) {
       const f = termFrequency(index, i, termId)
       if (!f) continue
-      const denom = f + K1 * (1 - B + (B * doc.length) / avgDocLength)
-      s += idf * ((f * (K1 + 1)) / denom)
+      s += bm25TermScore(idf, f, doc.length, avgDocLength)
     }
     if (s <= minScore) continue
     out.push({ doc, score: s })

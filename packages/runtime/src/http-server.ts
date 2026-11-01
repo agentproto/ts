@@ -3697,7 +3697,9 @@ export async function startHttpServer(
               const result = await brain.getProvider().query({ query: q, topK })
               const hits = result.hits.map(hit => mapHit(hit, workspace))
               res.writeHead(200, { "content-type": "application/json" })
-              res.end(JSON.stringify({ workspace, hits }))
+              // `partial`: the brain's index is still being built (or capped),
+              // so documents not indexed yet cannot appear.
+              res.end(JSON.stringify({ workspace, hits, ...(result.partial ? { partial: true } : {}) }))
             } catch (err) {
               res.writeHead(500, { "content-type": "application/json" })
               res.end(
@@ -3721,16 +3723,20 @@ export async function startHttpServer(
             slugs = [DEFAULT_BUCKET]
           }
 
-          // One brain at a time, never `Promise.all`: a cold query rebuilds
-          // that brain's whole in-process index, and building every brain at
-          // once stacks their peaks (E96: a federated cold query needed the sum
-          // of all brains' heaps).
+          // One brain at a time, never `Promise.all`: on the in-memory
+          // fallback a cold query builds that brain's whole in-process index,
+          // and building every brain at once stacks their peaks (E96: a
+          // federated cold query needed the sum of all brains' heaps). A brain
+          // answering from an incomplete index is listed in
+          // `workspacesPartial`.
           const workspacesErrored: string[] = []
+          const workspacesPartial: string[] = []
           const perBrain: Array<Array<ReturnType<typeof mapHit>>> = []
           for (const slug of slugs) {
             try {
               const brain = opts.brains!.getBrain(slug)
               const result = await brain.getProvider().query({ query: q, topK })
+              if (result.partial) workspacesPartial.push(slug)
               perBrain.push(result.hits.map(hit => mapHit(hit, slug)))
             } catch {
               workspacesErrored.push(slug)
@@ -3747,6 +3753,7 @@ export async function startHttpServer(
               workspace: "all",
               hits,
               ...(workspacesErrored.length > 0 ? { workspacesErrored } : {}),
+              ...(workspacesPartial.length > 0 ? { partial: true, workspacesPartial } : {}),
             }),
           )
           return

@@ -68,7 +68,8 @@ function isNotSupported(err: unknown): boolean {
 }
 
 /** A `files` provider refusing to build an index over its ceiling. Same
- *  name-check rationale as {@link isNotSupported}. */
+ *  name-check rationale as {@link isNotSupported}. Current `files` adapters
+ *  no longer refuse (they answer `partial`); an older copy still might. */
 function isIndexTooLarge(err: unknown): err is Error {
   return err instanceof Error && err.name === "FilesIndexTooLargeError"
 }
@@ -151,7 +152,10 @@ export class FederatedKnowledgeProvider implements IKnowledgeProvider {
     const modeUsed =
       hits.length > 0 && scored[0] ? (scored[0]!.modeUsed as KnowledgeQueryMode) : "none"
 
-    return { hits, tookMs, engine: this.id, modeUsed }
+    // Partial as soon as one contributing provider answered from an
+    // incomplete index.
+    const partial = fulfilled.some(f => f.result.partial === true)
+    return { hits, tookMs, engine: this.id, modeUsed, ...(partial ? { partial: true } : {}) }
   }
 
   async ingest(input: KnowledgeIngestInput): Promise<KnowledgeSource> {

@@ -79,6 +79,26 @@ describe("LocalFs", () => {
     )
   })
 
+  it("walkStat lists what walk lists, in the same order, with size and mtime", async () => {
+    await fs.writeFile("knowledge/b.md", "bb")
+    await fs.writeFile("knowledge/a/deep/c.md", "ccc")
+    await fs.writeFile("knowledge/a/z.txt", "z")
+    await fs.writeFile("knowledge/.hidden/x.md", "hidden")
+    await fs.writeFile("knowledge/.dot.md", "hidden")
+    const { utimes } = await import("node:fs/promises")
+    const when = new Date("2024-05-06T07:08:09.123Z")
+    await utimes(path.join(root, "knowledge/b.md"), when, when)
+    const listed = await fs.walkStat("knowledge")
+    expect(listed.map(e => e.path)).toEqual(await fs.walk("knowledge"))
+    expect(listed.find(e => e.path === "knowledge/b.md")).toEqual({
+      path: "knowledge/b.md",
+      size: 2,
+      mtimeMs: when.getTime(),
+    })
+    expect(listed.find(e => e.path === "knowledge/a/deep/c.md")?.size).toBe(3)
+    expect(await fs.walkStat("missing")).toEqual([])
+  })
+
   it("normalizes a leading slash to workspace-relative", async () => {
     await fs.writeFile("/rooted.md", "r")
     expect(await fs.readFile("rooted.md")).toBe("r")
