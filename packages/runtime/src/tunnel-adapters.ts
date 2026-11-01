@@ -267,8 +267,9 @@ export async function registerTunnelAdapterTools(
       "{zone, accountId, tokenRef, zoneId?, maxLabels?}; tokenRef = env:<VAR> | " +
       "file:<path> | keychain:<path> | stored:<key>) and optionally " +
       "`zoneTokens` (JSON {key: token}, for stored:<key> refs). " +
-      "cloudflare-provisioned takes `provisionerUrl`, `oidcIssuer`, " +
-      "`oidcClientId` (+ optional `oidcScopes`), then `tunnel_login`.",
+      "cloudflare-provisioned takes `provisionerUrl` and either " +
+      "`apiKey` (service-to-service) or `oidcIssuer` + `oidcClientId` " +
+      "(+ optional `oidcScopes`, then `tunnel_login`).",
     validSlugs,
     fields,
     onSetup: (slug: string, fields: Record<string, string>) =>
