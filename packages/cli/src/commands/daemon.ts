@@ -1158,9 +1158,11 @@ export function winDaemonShimCommand(
   command: string,
   policy: string | null | undefined,
 ): string {
-  return winExecutionPolicyBlocksScripts(policy)
-    ? command.replace(/^agentproto\b/, "agentproto.cmd")
-    : command
+  if (!winExecutionPolicyBlocksScripts(policy)) return command
+  // Already the shim (an onboarding fix can be rendered twice): don't turn
+  // it into `agentproto.cmd.cmd`.
+  if (/^agentproto\.cmd(?:\s|$)/.test(command)) return command
+  return command.replace(/^agentproto(?=\s|$)/, "agentproto.cmd")
 }
 
 /** The `daemon install` command a Windows user should be told to run. Pure. */
@@ -1296,20 +1298,57 @@ export async function runWinInstall(
   return 0
 }
 
+/** Fold case, strip accents/diacritics and collapse punctuation so the same
+ *  signature matches an English, a French and an OEM-mojibake message. */
+function normalizeSchtasksText(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+}
+
+/** The `schtasks /Query` messages that mean the task is simply gone. Kept
+ *  deliberately narrow: any other non-zero exit (access denied, service
+ *  down, another user's task) must surface as an error, not as success. */
+const SCHTASKS_TASK_ABSENT_TEXT = [
+  /cannot find the file specified/,
+  /specified task .* does not exist/,
+  /ne peut pas trouver le fichier/,
+  /nom de tache .* n existe pas/,
+  /tache specifiee .* n existe pas/,
+]
+
+/** True only when a failed `/Query` reports the task itself as missing. The
+ *  exit code alone cannot tell "not found" from "access denied" (schtasks
+ *  uses 1 for both), so the normalized stderr is the discriminator. */
+export function winSchtasksTaskAbsent(result: LaunchctlResult): boolean {
+  if (result.code === 0) return false
+  const text = normalizeSchtasksText(result.stderr)
+  return SCHTASKS_TASK_ABSENT_TEXT.some(re => re.test(text))
+}
+
 export async function runWinUninstall(
   schtasksFn: SchtasksFn = schtasks,
 ): Promise<number> {
-  // Idempotent: ask the scheduler first. Don't parse schtasks' error TEXT:
-  // it is localized and emitted in the OEM console code page (850 on a French
-  // Windows) while we read pipes as UTF-8, so the old English regex both
-  // missed French installs and saw mojibake. `/Query` exits 0 iff the task
-  // exists, whatever the display language.
+  // Idempotent: ask the scheduler first. `/Query` exits 0 iff the task
+  // exists, whatever the display language. A non-zero exit is NOT proof of
+  // absence (access denied and a dead service share it), so only the known
+  // "task does not exist" messages are treated as already uninstalled;
+  // anything else fails and shows the original stderr.
   const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
   if (query.code !== 0) {
-    process.stdout.write(
-      `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
+    if (winSchtasksTaskAbsent(query)) {
+      process.stdout.write(
+        `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
+      )
+      return 0
+    }
+    process.stderr.write(
+      `agentproto daemon uninstall: cannot query scheduled task ${SCHTASKS_TASK_NAME} (exit ${query.code})\n${query.stderr}\n`,
     )
-    return 0
+    return 1
   }
   // Best-effort stop first — a task mid-run can't be deleted cleanly.
   await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])

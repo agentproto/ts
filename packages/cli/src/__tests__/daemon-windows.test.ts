@@ -72,6 +72,18 @@ describe("winDaemonInstallCommand", () => {
     expect(winDaemonShimCommand("agentproto daemon restart", "AllSigned")).toBe("agentproto.cmd daemon restart")
     expect(winDaemonShimCommand("agentproto daemon start", "RemoteSigned")).toBe("agentproto daemon start")
   })
+
+  it("never double-rewrites a hint that already names the .cmd shim", () => {
+    expect(winDaemonShimCommand("agentproto.cmd daemon install", "Restricted")).toBe(
+      "agentproto.cmd daemon install",
+    )
+    expect(winDaemonShimCommand("agentproto.cmd daemon start", "AllSigned")).toBe(
+      "agentproto.cmd daemon start",
+    )
+    expect(winDaemonShimCommand("agentproto.cmd daemon restart", "Restricted")).toBe(
+      "agentproto.cmd daemon restart",
+    )
+  })
 })
 
 describe("renderSchtasksTr", () => {
@@ -232,7 +244,9 @@ describe("runWinUninstall / start / restart / stop", () => {
     let present = true
     const fake: SchtasksFn = async args => {
       calls.push(args)
-      if (args[0] === "/Query" && !present) return { code: 1, stdout: "", stderr: "not found" }
+      if (args[0] === "/Query" && !present) {
+        return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified.\n" }
+      }
       return { code: 0, stdout: "deleted", stderr: "" }
     }
     let out = captureStdout()
@@ -253,20 +267,41 @@ describe("runWinUninstall / start / restart / stop", () => {
     expect(out.chunks.join("")).toContain("already absent")
   })
 
-  it("already-absent is decided by /Query's exit code, not by parsing localized OEM error text", async () => {
+  it("recognizes an absent task in English, French and OEM-mojibake, whatever the display language", async () => {
+    const messages = [
+      "ERROR: The system cannot find the file specified.\n",
+      "ERREUR : Le système ne peut pas trouver le fichier spécifié.\n",
+      // The same French message in the OEM code page, decoded as UTF-8.
+      "ERREUR: Le syst?me ne peut pas trouver le fichier sp?cifi?.\n",
+    ]
+    for (const stderr of messages) {
+      const calls: string[][] = []
+      const fake: SchtasksFn = async args => {
+        calls.push(args)
+        return { code: 1, stdout: "", stderr }
+      }
+      const out = captureStdout()
+      expect(await runWinUninstall(fake)).toBe(0)
+      out.restore()
+      expect(calls.map(c => c[0])).toEqual(["/Query"])
+      expect(out.chunks.join("")).toContain("already absent")
+    }
+  })
+
+  it("an access-denied /Query is a surfaced error, never a silent success and never deletes blindly", async () => {
     const calls: string[][] = []
     const fake: SchtasksFn = async args => {
       calls.push(args)
-      // French Windows message in the OEM code page, decoded as UTF-8: it is
-      // mojibake and carries none of the old English phrases. Text-matching
-      // used to report this harmless state as a hard failure.
-      return { code: 1, stdout: "", stderr: "ERREUR: Le syst?me ne peut pas trouver le fichier sp?cifi?.\n" }
+      return { code: 1, stdout: "", stderr: "ERROR: Access is denied.\n" }
     }
     const out = captureStdout()
-    expect(await runWinUninstall(fake)).toBe(0)
+    const err = captureStderr()
+    expect(await runWinUninstall(fake)).toBe(1)
     out.restore()
-    expect(calls.map(c => c[0])).toEqual(["/Query"])
-    expect(out.chunks.join("")).toContain("already absent")
+    err.restore()
+    expect(calls).toEqual([["/Query", "/TN", SCHTASKS_TASK_NAME]])
+    expect(err.chunks.join("")).toContain("cannot query scheduled task")
+    expect(err.chunks.join("")).toContain("Access is denied")
   })
 
   it("uninstall still fails when /Delete fails but /Query confirms the task exists", async () => {
