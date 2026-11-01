@@ -444,6 +444,60 @@ describe("cloudflareProvisionedTunnelProvider", () => {
     await provider.stop()
   })
 
+  it("apiKey mode: 401 does not attempt OIDC refresh and gives a clear message", async () => {
+    const world = new FakeWorld()
+    const requests: SpawnRequest[] = []
+    const spawner: ProcessSpawner = req => {
+      requests.push(req)
+      return new FakeProc()
+    }
+    const apiKeyCreds = { provisionerUrl: PROVISIONER, apiKey: "sk-bad-key" }
+    const provider = cloudflareProvisionedTunnelProvider(apiKeyCreds, {
+      fetch: world.fetch,
+      spawner,
+      healthIntervalMs: 0,
+    })
+
+    world.rejectNextWith401 = true
+    await expect(
+      provider.start({
+        target: { host: "127.0.0.1", port: 8081 },
+        workspace: "/x",
+        tunnel: { key: "k", hostnames: [] },
+      }),
+    ).rejects.toThrow(/check your apiKey/)
+    expect(world.authSeen).toHaveLength(1)
+    expect(world.refreshes).toBe(0)
+  })
+
+  it("apiKey takes precedence when both apiKey and OIDC fields are set", async () => {
+    const world = new FakeWorld()
+    const requests: SpawnRequest[] = []
+    const spawner: ProcessSpawner = req => {
+      requests.push(req)
+      return new FakeProc()
+    }
+    const bothCreds = { provisionerUrl: PROVISIONER, apiKey: "sk-takes-precedence", oidcIssuer: ISSUER, oidcClientId: "client-1" }
+    const provider = cloudflareProvisionedTunnelProvider(bothCreds, {
+      fetch: world.fetch,
+      spawner,
+      healthIntervalMs: 0,
+    })
+
+    expect((await provider.auth!.state()).status).toBe("logged_in")
+    await expect(provider.auth!.begin()).rejects.toThrow(/not needed when using apiKey/)
+
+    const res = await provider.start({
+      target: { host: "127.0.0.1", port: 8081 },
+      workspace: "/x",
+      tunnel: { key: "both-test", hostnames: [] },
+    })
+    expect(res).toMatchObject({ tunnelId: "tun-both-test" })
+    expect(world.authSeen.at(-1)).toBe("Bearer sk-takes-precedence")
+    expect(world.issued).toBe(0)
+    await provider.stop()
+  })
+
   it("requested hostname, swap add/remove, destroy (404 tolerated)", async () => {
     const world = new FakeWorld()
     const { provider } = await loggedInProvider(world)
