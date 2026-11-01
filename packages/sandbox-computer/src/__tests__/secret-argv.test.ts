@@ -104,4 +104,21 @@ describe("computer boot keeps env values out of exec argv", () => {
       booted.exec!({ command: "git --version", cwd: "/home/user", env: { GIT_TERMINAL_PROMPT: "0" } }),
     ).resolves.toMatchObject({ exitCode: 0 })
   })
+
+  it("exports the join metadata when connect() has to restart the daemon", async () => {
+    const booted = await computerSandboxProvider.boot(spec(controller.url), { env: REVIEWER_ENV })
+    controller.serveSeen = false
+    const serveBefore = controller.serveCount
+
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 2 }), {
+      env: REVIEWER_ENV,
+    })
+
+    expect(controller.serveCount).toBe(serveBefore + 1)
+    const serve = controller.execs
+      .map((e) => e.argv[2] ?? "")
+      .filter((s) => s.includes("agentproto serve"))
+      .at(-1)
+    expect(serve).toContain("export AGENTPROTO_JOIN_PROVIDER='computer';")
+  })
 })

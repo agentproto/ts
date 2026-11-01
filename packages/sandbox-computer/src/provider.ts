@@ -639,7 +639,9 @@ export function buildServeCommand(opts: {
   port: number
   workspace: string
   allowOrigin?: string
-  /** Extra env exported for the daemon (and the agents it spawns). */
+  /** Non-secret descriptive env exported for the daemon (and the agents it
+   *  spawns). The values are inlined in the exec argv, so never pass a
+   *  credential here. */
   env?: Record<string, string>
 }): string {
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
@@ -1416,6 +1418,8 @@ async function daemonHealthyOrThrow(
   mcpOrigin: string,
   daemonEnv: Record<string, string>,
 ): Promise<string | undefined> {
+  // A daemon that is already up (template-autostarted, or started by an older
+  // provider) is left as is, so `daemonEnv` only reaches daemons started here.
   const probe = await hardExec(client, id, bashArgv(buildHealthCommand(port)), 10)
   const alreadyUp = probe.exitCode === 0 && !probe.stdout.includes("__down__")
   if (alreadyUp) {

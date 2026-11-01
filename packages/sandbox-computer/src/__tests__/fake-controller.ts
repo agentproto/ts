@@ -106,8 +106,9 @@ export interface FakeControllerOptions {
 /** Shorter values are only rejected on an exact match, like the controller. */
 const MIN_SECRET_LEN = 6
 
-/** Mirror of the controller's per-computer secret registry check
- *  (`SecretRegistry.rejectsArgv`): an argv element is refused when it IS a
+/** Hand-kept mirror of the controller's per-computer secret registry check
+ *  (`SecretRegistry.rejectsArgv`, projects/computer/apps/controller/src/policy/secrets.ts;
+ *  re-check it when that rule changes): an argv element is refused when it IS a
  *  registered value, contains it (or its base64 / hex / sha256 form) once the
  *  value is at least MIN_SECRET_LEN long, or is a `key=value` whose value part
  *  matches. Returns the offending argv indexes. */
