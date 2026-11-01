@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/memory",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/memory: AIP-72 memory/v1 reference implementation. Define, validate, parse and render MEMORY.md items: one small typed assertion (user, feedback, project, reference) about a principal or its work, with a lifecycle.",
   "keywords": [
     "agentproto",

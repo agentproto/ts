@@ -1,5 +1,20 @@
 # @agentproto/sandbox-computer
 
+## 0.6.0
+
+### Minor Changes
+
+- 3b505bf: A computer `create` answered `503 fleet-capacity` is now retried for up to `fleetCapacityWaitMs` (default 12 minutes) instead of failing the spawn at once, honouring `Retry-After`/`fleetCapacityRetryMs`, stopping on cancellation, not counting the wait against `bootDeadlineMs`, and reusing one `Idempotency-Key` per boot. The `auto` provider disables this wait for its computer leg when e2b overflow is enabled so a capacity refusal still overflows immediately.
+- 3b505bf: A computer create answered `503 fleet-capacity` is now retried instead of failing the spawn at once: the provider waits while the fleet frees or wakes a shelved host, for up to `fleetCapacityWaitMs` (default 12 minutes, `0` restores the old behaviour). Each wait honours `Retry-After`, else `fleetCapacityRetryMs` (default 30 s), is logged on the boot log, stops on cancellation, and does not count against `bootDeadlineMs`. Every attempt of one boot carries the same `Idempotency-Key`, so a replayed create never makes a second box. The `auto` provider turns the wait off for its computer leg when overflow to e2b is enabled, so a capacity refusal still overflows at once.
+
+### Patch Changes
+
+- 01796b2: Size the box Node heap from its memory and document the template contract
+- 8a28a15: Reap stale paused boxes, kill reused boxes on kill, bound create
+- 8a28a15: Sandbox lifecycle leak fixes: an explicit `agent_kill` now tears down a reuse-only box instead of leaving it paused, the periodic sandbox GC reaps paused dead-session rows past a configurable age bound (`AGENTPROTO_SANDBOX_GC_PAUSED_MAX_AGE_MS`), and gone-box reconnect failures are recognised via the shared sentinel. `@agentproto/runtime` also exports `DEFAULT_PAUSED_BOX_MAX_AGE_MS` and `parsePausedBoxMaxAge`. `@agentproto/sandbox-computer` logs the create deadline phase and controller rejection reason so a stuck spawn no longer fails silently.
+- Updated dependencies [e395b66]
+  - @agentproto/sandbox@0.15.0
+
 ## 0.5.0
 
 ### Minor Changes

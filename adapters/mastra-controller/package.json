@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-mastra-controller",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "@agentproto/adapter-mastra-controller: AIP-45 AGENT-CLI adapter for a Mastra AgentController declared by a `mastra.agent-controller/v1` manifest. Implements the `protocol: \"proprietary\"` arm contract in-process. Runs a live controller session with its modes.",
   "keywords": [
     "agentproto",

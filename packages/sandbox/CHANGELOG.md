@@ -1,5 +1,21 @@
 # @agentproto/sandbox
 
+## 0.15.0
+
+### Minor Changes
+
+- e395b66: Tag e2b sandboxes with tenantId, owner and label metadata
+
+### Patch Changes
+
+- Updated dependencies [ac14e7d]
+- Updated dependencies [467af3b]
+- Updated dependencies [ac14e7d]
+- Updated dependencies [a255a13]
+- Updated dependencies [467af3b]
+  - @agentproto/worktree@0.20.0
+  - @agentproto/workflow-runtime@0.20.3
+
 ## 0.14.0
 
 ### Minor Changes

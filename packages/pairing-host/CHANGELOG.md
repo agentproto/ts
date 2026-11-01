@@ -1,5 +1,18 @@
 # @agentproto/pairing-host
 
+## 0.2.12
+
+### Patch Changes
+
+- 03d7c58: Close sockets after failed handshakes, drop stale abort listeners, and fail ready() promptly on a pre-hello tunnel error or close
+- 03d7c58: Close sandboxed transports after failed handshakes, remove stale abort listeners on settle, and make `tunnelClient.ready()` fail promptly on a pre-hello tunnel error or transport close instead of waiting out the hello timeout.
+- Updated dependencies [0e0fd10]
+- Updated dependencies [03d7c58]
+- Updated dependencies [dd134f4]
+- Updated dependencies [dd134f4]
+- Updated dependencies [03d7c58]
+  - @agentproto/acp@0.13.0
+
 ## 0.2.11
 
 ### Patch Changes

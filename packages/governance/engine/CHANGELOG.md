@@ -1,5 +1,18 @@
 # @agentproto/governance-engine
 
+## 1.0.0
+
+### Major Changes
+
+- e301b84: Write the canonical AIP-70 `governance/v1` tag into new signature.json files and audit-log rows instead of `agentgovernance/v1`. Breaking for readers: files written by this version need @agentproto/governance-engine >= 0.2.0 and @agentproto/governance >= 0.2.0 to read. Existing legacy-tagged chains keep verifying because verification uses the tag stored in each row.
+
+### Patch Changes
+
+- Updated dependencies [e301b84]
+  - @agentproto/governance@1.0.0
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+
 ## 0.2.0
 
 ### Minor Changes

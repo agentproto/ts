@@ -1,5 +1,13 @@
 # @agentproto/workflow-mastra
 
+## 0.2.14
+
+### Patch Changes
+
+- @agentproto/workflow-runtime@0.20.3
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+
 ## 0.2.13
 
 ### Patch Changes

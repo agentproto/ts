@@ -1,5 +1,12 @@
 # @agentproto/driver-sdk
 
+## 0.2.1
+
+### Patch Changes
+
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+
 ## 0.2.0
 
 ### Minor Changes

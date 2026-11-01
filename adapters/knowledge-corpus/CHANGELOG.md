@@ -1,5 +1,17 @@
 # @agentproto/adapter-knowledge-corpus
 
+## 0.4.6
+
+### Patch Changes
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [3f90a9d]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/corpus@1.0.0
+  - @agentproto/provider-kit@0.6.0
+  - @agentproto/knowledge-engine@0.3.5
+
 ## 0.4.5
 
 ### Patch Changes

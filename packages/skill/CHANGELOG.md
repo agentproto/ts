@@ -1,5 +1,29 @@
 # @agentproto/skill
 
+## 0.4.0
+
+### Minor Changes
+
+- 6991cfa: Company, skill, role and operator each get a `createVerbs` doctype spec (`companySpec`/`companyVerbs`, `skillSpec`/`skillVerbs`, `roleSpec`/`roleVerbs`, `operatorSpec`/`operatorVerbs`) and one renderer (`renderCompanyMd`, `renderSkillMd`, `renderRoleMd`, `renderOperatorMd`) that `create` and `update` both use. The specs live in the doctype's own package rather than in `@agentproto/manifest`, which would otherwise depend on all four and close a workspace cycle through `@agentproto/agent`. Files go to `companies/<id>/COMPANY.md`, `objectives/<id>/OBJECTIVE.md`, `skills/<name>/SKILL.md`, `roles/<name>/ROLE.md` and `operators/<id>/OPERATOR.md`. Writers emit canonical fields only: the operator renderer drops the handle's `warnings` and `legacy`, `runtime.session` and empty defaults, and writes a ref-only role as a bare string; the skill renderer writes `skill/v1`, never `skills/v1`; `load` and `update` read back the file's own fields, so an unchanged update is byte-identical.
+
+  `defineCompany` follows AIP-6 after the office and role moves. `doctype` and `id` are canonical; `kind` and `slug` are read as aliases with no removal date, and a file that carries an alias and its canonical field with different values is refused with `alias_conflict` (`CompanyAliasError`, code `alias_conflict`). The generated schema is re-synced with the vendored `COMPANY.schema.json`. A legacy `doctype: role` file under `company/v1` is still read, now with a `doctype_moved` entry in `handle.warnings`, and is not written back as a company document. `structure.positions`, `structure.roles` and `structure.reports_to` are accepted but never emitted; `structure.objectives` is kept. `CompanyDefinition` and `CompanyHandle` are rewritten around these rules (the handle gains `warnings`, the `Role` interface becomes `LegacyRoleFields`, and `parseCompanyManifest` accepts the aliases and the legacy role form).
+
+  Fail closed: a writer never drops a legacy field it cannot express. `renderCompanyMd` refuses a handle carrying non-empty `structure.positions`, `structure.roles` or `structure.reports_to` with `CompanyLegacyFieldError` (code `legacy_field_unwritable`, naming the fields and pointing at the AIP-22 office), and `renderOperatorMd` refuses a handle carrying a legacy `governance` object (`policies`, `audit_log`) or legacy memory fields with no canonical form (`share_with`, `policy`, `external.namespace`, `operator-context`) with `OperatorLegacyFieldError`, naming the fields and the AIP-9 migration (`governance.policies` and `audit_log` to `policy` and the AIP-7 `governance` ref, `governance.autonomy` to `autonomy`). Because `create` and `update` both render, an `update` of such a file is refused before anything is written and the file is left unchanged; migrate the field, then update. `create` from canonical input is unaffected.
+
+- e47f3cd: AIP-42 `AgentEntry`, one AGENT.md renderer, and a configurable instructions composer.
+
+  - `@agentproto/agent` exports `AgentEntry { agent, body? }` and `renderAgentMd(entry)`, the single AGENT.md renderer. `agentVerbs` (create and update) and the app emitter both go through it, so the same agent renders to the same bytes on either path. The body is trimmed on render, so an update no longer grows blank lines.
+  - `defineAgent` refuses a missing or blank `model` with `model is required` (the generated schema types `model` as `any`, so a blank string used to pass).
+  - `composeInstructions(handle, body, opts?)` takes `boundariesHeader` and `sectionOrder`. The default boundaries header is now `Hard rules (these MUST be followed):`, without the em dash.
+  - `@agentproto/manifest`: `DoctypeSpec` gains an optional `render(handle, body)` hook that `create` and `update` use in place of the generic frontmatter renderer.
+  - `@agentproto/skill` exports `SkillEntry { skill, body }`.
+  - `@agentproto/app`: `renderAgentManifest` and `emitApp` delegate to `renderAgentMd`; ref comments cite AIP-54.
+
+### Patch Changes
+
+- Updated dependencies [e47f3cd]
+  - @agentproto/manifest@0.3.0
+
 ## 0.3.0
 
 ### Minor Changes

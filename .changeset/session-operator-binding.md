@@ -1,5 +1,0 @@
----
-"@agentproto/runtime": minor
----
-
-Record the AIP-46 operator binding on `agent_start`. The MCP tool and `POST /sessions/agent` accept an optional `operator` (`operator:<slug>[@<owner>/<workspace>]` or `ws://operators/<slug>`, stored in its compact form) and an optional `operatorDigest`, both recorded on the session descriptor and copied from the registry (never the request) onto a `session_restart` / `session_continue_fresh` successor. A malformed ref, or a digest with no operator, is refused with `operator_unresolvable` (HTTP 400) before any session starts; the daemon has no operator resolver, so semantic resolution stays with the host that composes the agent. A session caller may name only the operator of its own session (`delegation_denied`, HTTP 403) and a nested spawn that names none starts without one. `session_list` (`operatorDigests`) and `session_role_refresh` (`operatorDigest`) take the current operator digest from the caller and report `operatorStale` when it differs from the recorded one. The MCP `agent_start` schema now also accepts `agentId` and `agentPath`, as the HTTP route already did.
