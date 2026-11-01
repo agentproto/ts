@@ -376,6 +376,29 @@ describe("opencode console sub-account provider", () => {
     expect(out.credential).toBe("st_OTHER_2")
   })
 
+  it("(g) /api/orgs fails on every account: the error lists them and holds no token", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500))
+    const err = (await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    }).catch((e: unknown) => e as Error)) as Error
+    expect(err).toBeInstanceOf(SubaccountError)
+    expect(err.message).toMatch(/org list failed/)
+    expect(err.message).toMatch(/user1@example\.test/)
+    expect(err.message).toMatch(/user2@example\.test/)
+    expect(err.message).not.toContain(TOKEN)
+    expect(err.message).not.toContain("st_OTHER_2")
+  })
+
+  it("(h) a single expired account keeps the explicit expired-session message", async () => {
+    const f = track(await makeDb({ expiry: NOW - 1000 }))
+    await expect(
+      resolveOpencodeConsoleOrg("org_a", "opencode-ws01", { dbPath: f.dbPath, now: () => NOW, fetch: vi.fn() }),
+    ).rejects.toThrow(/session for user1@example\.test expired at/)
+  })
+
   it("(e) single-account behaviour unchanged", async () => {
     const f = track(await makeDb({ accounts: 1 }))
     const provider = { "opencode-go": {} }

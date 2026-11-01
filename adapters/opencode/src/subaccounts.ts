@@ -61,10 +61,6 @@ export interface OpencodeConsoleAccount {
   expiresAt?: number
 }
 
-export interface OpencodeConsoleAccountRecord extends OpencodeConsoleAccount {
-  expired: boolean
-}
-
 export interface OpencodeConsoleDeps {
   dbPath?: string
   fetch?: typeof fetch
@@ -114,7 +110,7 @@ function isExpired(row: AccountRow, now: number): boolean {
   return false
 }
 
-export async function readAllOpencodeConsoleAccounts(
+async function readAllOpencodeConsoleAccounts(
   deps: OpencodeConsoleDeps = {},
 ): Promise<{ accounts: AccountRow[]; activeId?: string | null }> {
   const dbPath = deps.dbPath ?? opencodeDbPath()
@@ -262,12 +258,20 @@ export async function resolveOpencodeConsoleOrg(
   const failedList: string[] = []
   // With a single usable login there is nothing to choose between: go straight
   // to the config fetch, as before, so its error names the org and the account.
-  const usable = ordered.filter(e => e.row.access_token && !isExpired(e.row, now())).length
+  const current = now()
+  const usable = ordered.filter(e => e.row.access_token && !isExpired(e.row, current)).length
+  if (usable === 0) {
+    const expired = ordered.filter(e => e.row.access_token && isExpired(e.row, current))
+    if (expired.length === 1) {
+      const r = expired[0]!.row
+      throw new SubaccountError(`the opencode console session for ${r.email ?? r.id} expired at ${new Date(r.token_expiry as number).toISOString()}. ${loginHint()}`)
+    }
+  }
 
   for (const entry of ordered) {
     const row = entry.row
     if (!row.access_token) continue
-    if (isExpired(row, now())) {
+    if (isExpired(row, current)) {
       expiredList.push(`${row.email ?? row.id} (${row.id})`)
       continue
     }
@@ -281,7 +285,9 @@ export async function resolveOpencodeConsoleOrg(
           .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
           .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
       } catch (err) {
-        // One broken account must not hide the org held by another one.
+        // One broken account must not hide the org held by another one. The
+        // account is skipped, not tried blind: without the org list there is no
+        // proof it holds the org, and /api/config could answer for another one.
         failedList.push(`${row.email ?? row.id} (${err instanceof Error ? err.message : String(err)})`)
         continue
       }
