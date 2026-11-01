@@ -107,6 +107,18 @@ describe("daemon_health", () => {
     await bad.close()
   })
 
+  it("reports app-registry self-heals apart from issues, so a healed registry has no issues", async () => {
+    const repairs = [{ kind: "dir-repointed", appId: "@t/fx", from: "/wt/fx", to: "/main/fx", at: "2026-11-01T00:00:00.000Z" }]
+    const h = await buildHarness(workspace, [], startedAt, false, false, 0, {
+      appRegistryIssues: () => [],
+      appRegistryRepairs: () => repairs,
+    })
+    const body = JSON.parse(textOf(await h.client.callTool({ name: "daemon_health", arguments: {} })))
+    expect(body.appRegistryIssues).toEqual([])
+    expect(body.appRegistryRepairs).toEqual(repairs)
+    await h.close()
+  })
+
   it("returns empty registered when no specs are registered", async () => {
     const { client, close } = await buildHarness(workspace, [], startedAt)
     const result = await client.callTool({ name: "daemon_health", arguments: {} })

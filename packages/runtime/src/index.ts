@@ -376,6 +376,7 @@ export type {
   WorktreeStatusView,
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
+export { APP_INSTALL_WORKTREE_REPOINT_REFUSED } from "./app-tools.js"
 export type {
   WorktreeGcRunner,
   WorktreeGcRunInput,
@@ -4137,6 +4138,7 @@ export async function createGateway(
       restartSweepIntervalMs,
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
+      appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
       sandboxSessions: () => sessions.sandboxSessionStats(),
       ...(opts.version ? { version: opts.version } : {}),
@@ -5061,6 +5063,7 @@ export async function createGateway(
       restartSweepIntervalMs,
       turnStallAfterMs,
       appRegistryIssues: () => appRegistry.listIssues(),
+      appRegistryRepairs: () => appRegistry.listRepairs(),
       modelCooldowns: () => modelCooldowns.list(),
       sandboxSessions: () => sessions.sandboxSessionStats(),
     },

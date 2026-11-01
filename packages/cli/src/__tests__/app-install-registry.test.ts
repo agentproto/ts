@@ -13,6 +13,7 @@ import { mkdtemp, rm, readFile, mkdir, writeFile } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir, homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { execFileSync } from "node:child_process"
 
 let home: string
 const originalHome = process.env.HOME
@@ -44,8 +45,7 @@ afterEach(async () => {
   await rm(home, { recursive: true, force: true })
 })
 
-async function writeApp(name: string, dataHint?: string): Promise<string> {
-  const dir = join(home, name)
+async function writeApp(name: string, dataHint?: string, dir = join(home, name)): Promise<string> {
   await mkdir(join(dir, ".agentproto", "workflows", "do-thing"), { recursive: true })
   await mkdir(join(dir, ".agentproto", "agents", "worker"), { recursive: true })
   await writeFile(
@@ -138,5 +138,41 @@ describe("app install <dir> without a daemon", () => {
     await writeFile(join(home, ".agentproto", "apps.json"), JSON.stringify({ apps: [{ appId: "@t/old", dir: "/tmp/app-old" }] }))
     const { listInstalledApps } = await import("../app-serve.js")
     expect(listInstalledApps()).toEqual([{ appId: "@t/old", dir: "/tmp/app-old", dataDir: resolve("/tmp/app-old", "data") }])
+  })
+})
+
+describe("app install <dir> --repoint (linked git worktree)", () => {
+  function git(cwd: string, ...args: string[]): void {
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", ...args], {
+      cwd,
+      stdio: "ignore",
+    })
+  }
+
+  it("refuses (exit 1) to move a live install into a worktree, and does it with --repoint", async () => {
+    const main = join(home, "repo")
+    const wt = join(home, "wts", "feature")
+    await mkdir(main, { recursive: true })
+    git(main, "init", "-q", "-b", "main")
+    await writeFile(join(main, "README.md"), "x\n")
+    git(main, "add", "README.md")
+    git(main, "commit", "-q", "-m", "init")
+    await mkdir(join(home, "wts"), { recursive: true })
+    git(main, "worktree", "add", "-q", "-b", "feature", wt)
+    const mainApp = await writeApp("fx", undefined, join(main, "apps", "fx"))
+    const wtApp = await writeApp("fx", undefined, join(wt, "apps", "fx"))
+    const errs: string[] = []
+    vi.mocked(process.stderr.write).mockImplementation((chunk: unknown) => {
+      errs.push(String(chunk))
+      return true
+    })
+
+    expect(await install(mainApp)).toBe(0)
+    expect(await install(wtApp)).toBe(1)
+    expect(errs.join("")).toContain("worktree-repoint-refused")
+    expect((await readApps())[0]!["dir"]).toBe(mainApp)
+
+    expect(await install(wtApp, "--repoint")).toBe(0)
+    expect((await readApps())[0]!["dir"]).toBe(wtApp)
   })
 })

@@ -25,7 +25,7 @@ import { dirname, join, resolve } from "node:path"
 import matter from "gray-matter"
 import { mcpToolCall, withDaemon } from "./workflow.js"
 import { httpGetJson, type DaemonEndpoint } from "./_daemon-helpers.js"
-import { waitForRunEnd, type MaintainRunShape } from "./maintain.js"
+import { isWorktreeRepointRefusal, waitForRunEnd, type MaintainRunShape } from "./maintain.js"
 
 /** Mirrors `ACTIONS` in the app's `actions.mjs` (the workflow re-validates). */
 export const STEWARD_ACTIONS = [
@@ -420,10 +420,21 @@ export async function runSteward(args: readonly string[]): Promise<number> {
 	try {
 		await mcpToolCall(daemon.endpoint, "app_install", { dir: app.appDir })
 	} catch (err) {
-		process.stderr.write(
-			`agentproto steward: failed to install the session-steward app: ${err instanceof Error ? err.message : String(err)}\n`,
-		)
-		return 1
+		// Run from a linked worktree's build while the app is installed from a
+		// live checkout: the daemon refuses to re-point the global record into
+		// the worktree (it would break the app for every caller once the
+		// worktree is removed). Keep the installed copy and run anyway.
+		if (isWorktreeRepointRefusal(err)) {
+			process.stderr.write(
+				`agentproto steward: kept the installed session-steward app (not re-pointed into this worktree; ` +
+					`\`agentproto app install <dir> --repoint\` does that on purpose).\n`,
+			)
+		} else {
+			process.stderr.write(
+				`agentproto steward: failed to install the session-steward app: ${err instanceof Error ? err.message : String(err)}\n`,
+			)
+			return 1
+		}
 	}
 
 	const first = await startAndWait(daemon.endpoint, app.workflowPath(WORKFLOW_IDS[sub]), input, wait, sub)

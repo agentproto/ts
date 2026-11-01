@@ -30,7 +30,7 @@ const dataDirField = z.string().optional()
 
 /** `app_install` input: exactly one of `{dir}` | `{url, ref?, subdir?, sha?, sha256?, allowBuild?}` | `{file, sha256?}`. */
 export const appInstallInputSchema = z.union([
-  z.object({ dir: z.string(), dataDir: dataDirField }).strict(),
+  z.object({ dir: z.string(), dataDir: dataDirField, repoint: z.boolean().optional() }).strict(),
   z
     .object({
       url: z.string(),
@@ -49,7 +49,7 @@ export type AppInstallInput = z.infer<typeof appInstallInputSchema>
 
 export const APP_INSTALL_EXCLUSIVE_ERROR =
   "pass exactly one source: {dir} (local app dir), {url, ref?, subdir?, sha?, allowBuild?} (git repo), " +
-  "{url, sha256?} (a .agentapp URL), or {file, sha256?} (local .agentapp path); `dataDir` may accompany any of them, `catalogUrl` any remote one."
+  "{url, sha256?} (a .agentapp URL), or {file, sha256?} (local .agentapp path); `dataDir` may accompany any of them, `catalogUrl` any remote one, `repoint` only {dir}."
 
 /** A `{url}` ending in `.agentapp` (ignoring query/fragment) is a bundle, anything else is git. */
 export function isAgentappUrl(url: string): boolean {

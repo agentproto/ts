@@ -1606,6 +1606,9 @@ export interface RuntimeHttpServerOptions {
       dir: string | null
       problems: readonly string[]
     }[]
+    /** Self-heals the app registry applied. Kept in sync with the
+     *  `daemon_health` MCP tool's `appRegistryRepairs`. */
+    appRegistryRepairs?: () => readonly { kind: string; appId: string; from: string; to: string; at: string }[]
   }
 }
 
@@ -2725,6 +2728,7 @@ export async function startHttpServer(
         restartSweepIntervalMs: opts.meta.restartSweepIntervalMs ?? 0,
         turnStallAfterMs: opts.meta.turnStallAfterMs ?? 0,
         appRegistryIssues: opts.meta.appRegistryIssues?.() ?? [],
+        appRegistryRepairs: opts.meta.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.meta.modelCooldowns?.() ?? [],
         ...(opts.meta.sandboxSessions ? { sandboxSessions: opts.meta.sandboxSessions() } : {}),
       }),

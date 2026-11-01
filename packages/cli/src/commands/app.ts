@@ -1,7 +1,7 @@
 /**
  * `agentproto app pack <appDir> [--out <path.agentapp>] [--release] [--json]`
  * `agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]`
- * `agentproto app install <dir|url|file.agentapp|appId> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir]`
+ * `agentproto app install <dir|url|file.agentapp|appId> [--ref] [--subdir] [--sha] [--sha256] [--allow-build] [--data-dir] [--repoint]`
  * `agentproto app resync <appId>`
  * `agentproto app catalog [--refresh] [--json]`
  * `agentproto app uninstall <appId> [--json]`
@@ -56,7 +56,7 @@ Usage:
                                         [--media-base-url <url>]
   agentproto app unpack <file.agentapp> [--dir <outDir>] [--json]
   agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--sha <commit>]
-                         [--sha256 <digest>] [--allow-build] [--data-dir <path>]
+                         [--sha256 <digest>] [--allow-build] [--data-dir <path>] [--repoint]
   agentproto app resync <appId>
   agentproto app catalog [--refresh] [--json]
   agentproto app uninstall <appId> [--json]
@@ -123,6 +123,9 @@ install:
   --allow-build (git only) lets the daemon run the app's APP.md \`ui.build\`
   shell command from the cloned repo. Without it a remote app must ship its
   UI prebuilt; a .agentapp never runs ui.build.
+  --repoint (local dir only) lets an <appDir> inside a linked git worktree
+  replace an install whose dir still exists. Without it that is refused:
+  the worktree goes away with its branch and would break the app.
 
 resync:
   Ask the running daemon to re-check an app installed from git or a
@@ -255,6 +258,7 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
       sha: { type: "string" },
       sha256: { type: "string" },
       "allow-build": { type: "boolean" },
+      repoint: { type: "boolean" },
     },
   })
 
@@ -281,8 +285,13 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
   const shaArg = typeof values.sha === "string" ? values.sha : undefined
   const sha256Arg = typeof values.sha256 === "string" ? values.sha256 : undefined
   const allowBuild = values["allow-build"] === true
+  const repoint = values.repoint === true
 
   if (isRemoteInstallUrl(appDirArg)) {
+    if (repoint) {
+      process.stderr.write(`agentproto app install: --repoint only applies to a local app dir.\n`)
+      return 2
+    }
     const kind = /\.agentapp(\?.*)?$/.test(appDirArg) ? "agentapp" : "git"
     if (kind === "agentapp" && (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined)) {
       process.stderr.write(`agentproto app install: --ref/--subdir/--sha only apply to git URLs (use --sha256 for a .agentapp).\n`)
@@ -321,6 +330,10 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
   }
   if (refArg !== undefined || subdirArg !== undefined || shaArg !== undefined || allowBuild) {
     process.stderr.write(`agentproto app install: --ref/--subdir/--sha/--allow-build only apply to git URLs.\n`)
+    return 2
+  }
+  if (repoint && appDirArg.endsWith(".agentapp")) {
+    process.stderr.write(`agentproto app install: --repoint only applies to a local app dir.\n`)
     return 2
   }
   if (appDirArg.endsWith(".agentapp")) {
@@ -365,11 +378,15 @@ export async function runAppInstall(args: readonly string[]): Promise<number> {
     return callDaemonAppTool("install", "app_install", {
       dir: appDir,
       ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
+      ...(repoint ? { repoint: true } : {}),
     })
   }
 
   const { installAppDirOffline } = await import("@agentproto/runtime/app-install-offline")
-  const result = await installAppDirOffline(appDir, dataDirArg !== undefined ? { dataDir: dataDirArg } : undefined)
+  const result = await installAppDirOffline(appDir, {
+    ...(dataDirArg !== undefined ? { dataDir: dataDirArg } : {}),
+    ...(repoint ? { repoint: true } : {}),
+  })
   if (!result.ok) {
     process.stderr.write(`agentproto app install: ${result.error}\n`)
     return 1

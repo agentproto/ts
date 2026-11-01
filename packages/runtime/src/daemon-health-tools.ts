@@ -89,6 +89,11 @@ export interface RegisterDaemonHealthToolsOptions {
     dir: string | null
     problems: readonly string[]
   }[]
+  /** Self-heals the app registry applied (`AppRegistry.listRepairs`), e.g. a
+   *  `dir-missing` record re-pointed at the main worktree's copy. Surfaced as
+   *  `appRegistryRepairs`, apart from `appRegistryIssues`: informational, so
+   *  a healed registry does not read as degraded. */
+  appRegistryRepairs?: () => readonly { kind: string; appId: string; from: string; to: string; at: string }[]
 }
 
 function text(value: string | object): {
@@ -135,6 +140,7 @@ export function registerDaemonHealthTools(
         version: opts.version ?? null,
         build: opts.build ?? null,
         appRegistryIssues: opts.appRegistryIssues?.() ?? [],
+        appRegistryRepairs: opts.appRegistryRepairs?.() ?? [],
         modelCooldowns: opts.modelCooldowns?.() ?? [],
         ...(opts.sandboxSessions ? { sandboxSessions: opts.sandboxSessions() } : {}),
       })
