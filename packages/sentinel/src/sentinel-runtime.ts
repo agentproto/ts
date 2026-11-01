@@ -451,9 +451,39 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     })
   }
 
+  /** The target cannot be written to and has no successor: hand the notice to
+   *  its live parent and re-target the sentinel there, so the watch survives
+   *  its executor. Returns false when there is no live parent to take it. */
+  async function retargetToLiveParent(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+    parentId: string | undefined,
+  ): Promise<boolean> {
+    const target = sentinel.spec.target
+    if (target.kind !== "session" || !parentId || parentId === target.sessionId) return false
+    if (!opts.isSessionAlive(parentId)) return false
+    const key = coalesceKeyFor(event)
+    try {
+      await opts.registry.sendMessage(
+        { ...msg, to: parentId },
+        { source: "sentinel", origin: sentinel.id, ...(key ? { coalesceKey: key } : {}) },
+      )
+    } catch (err) {
+      if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
+      return false
+    }
+    store.update(sentinel.id, {
+      spec: { ...sentinel.spec, target: { ...target, sessionId: parentId } },
+    })
+    const current = store.get(sentinel.id)
+    if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+    return true
+  }
+
   /** The target was closed on purpose: never resume it. Hand the notice to
-   *  its live parent (as `fyi`, so it lands in the inbox without forcing a
-   *  turn); with no live parent, park it in the journal. */
+   *  its live parent and re-target the sentinel there; with no live parent,
+   *  park it in the journal. */
   async function routeAroundClosedSession(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -461,19 +491,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sessionId: string,
     info: SentinelSessionInfo,
   ): Promise<void> {
-    const parentId = info.parentSessionId
-    const key = coalesceKeyFor(event)
-    if (parentId && opts.isSessionAlive(parentId)) {
-      try {
-        await opts.registry.sendMessage(
-          { ...msg, to: parentId, urgency: "fyi", text: `[for closed session ${sessionId}] ${msg.text}` },
-          { source: "sentinel", origin: sentinel.id, ...(key ? { coalesceKey: key } : {}) },
-        )
-        return
-      } catch (err) {
-        if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
-      }
-    }
+    if (await retargetToLiveParent(sentinel, event, msg, info.parentSessionId)) return
     parkEvent(
       sentinel,
       event,
@@ -563,6 +581,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       const current = store.get(sentinel.id)
       if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
     } catch (err) {
+      if (await retargetToLiveParent(sentinel, event, msg, info?.parentSessionId).catch(() => false)) return
       parkEvent(sentinel, event, describeError(err))
       markOrphaned(sentinel)
     }

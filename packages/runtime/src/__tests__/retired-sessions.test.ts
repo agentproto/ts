@@ -858,6 +858,29 @@ describe("sweepWiringLifecycle", () => {
     expect(sentinelStore.get(sentinel.id)).toBeUndefined()
   })
 
+  it("relinks a sentinel to the live parent when the recipient is retired with no successor", async () => {
+    const { reg, sentinelStore, followStore, cancelSentinel, ids } = setup(["parent"])
+    const [parentId] = ids as [string]
+    const child = reg.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      adapterSlug: "fake",
+      label: "child",
+      parentSessionId: parentId,
+      agentSession: { sessionId: "acp_child", async *send() {}, async cancel() {}, async close() {} },
+    })
+    const sentinel = watch(sentinelStore, child.id)
+
+    reg.kill(child.id)
+    reg.archiveSession(child.id)
+    const result = await sweepWiringLifecycle({ registry: reg, followStore, sentinelStore, cancelSentinel, log: () => {} })
+
+    expect(result.sentinelsCancelled).toBe(0)
+    expect(result.sentinelsRelinked).toBe(1)
+    const target = sentinelStore.get(sentinel.id)!.spec.target
+    expect(target.kind === "session" && target.sessionId).toBe(parentId)
+  })
+
   it("relinks wiring to a live successor instead of removing it", async () => {
     const { reg, followStore, sentinelStore, cancelSentinel, ids } = setup(["old", "new"])
     const [oldId, newId] = ids as [string, string]

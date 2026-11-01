@@ -2655,6 +2655,14 @@ export async function createGateway(
     // at retirement time.
     resolveTargetSession: id =>
       (sessionsRef ? resolveSuccessor(sid => sessionsRef?.get(sid), id) : undefined) ?? id,
+    // The recorded session's supervisor also watches the PR (live parents only).
+    resolveParentSession: id => {
+      const parentId = sessionsRef?.get(id)?.parentSessionId
+      const parent = parentId ? sessionsRef?.get(parentId) : undefined
+      return parent && !isRetired(parent) && (parent.status === "running" || parent.status === "starting")
+        ? parent.id
+        : undefined
+    },
   })
 
   // Sessions registry — single instance per gateway, captured by

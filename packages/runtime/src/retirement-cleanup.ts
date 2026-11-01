@@ -51,7 +51,8 @@ export interface WiringSweepResult {
  * Mirrors cron-scheduler's `ownerRetirement`:
  *   - `expiresAt` passed → remove (the bounded backstop);
  *   - recipient row gone → remove;
- *   - recipient retired → relink to a live successor, else remove.
+ *   - recipient retired → relink to a live successor (sentinels: else the
+ *     live parent), else remove.
  *
  * Archived rows are included here: unlike the event handler above (which
  * deliberately leaves archive reversible), the sweep is the terminal cleanup
@@ -75,6 +76,11 @@ export async function sweepWiringLifecycle(
     if (!successor) return undefined
     const desc = deps.registry.get(successor)
     return desc && (desc.status === "running" || desc.status === "starting") ? successor : undefined
+  }
+
+  const isLive = (id: string | undefined): id is string => {
+    const desc = id ? deps.registry.get(id) : undefined
+    return !!desc && !isRetired(desc) && (desc.status === "running" || desc.status === "starting")
   }
 
   for (const follow of deps.followStore.list()) {
@@ -103,7 +109,9 @@ export async function sweepWiringLifecycle(
     if (!expired && target.kind === "session") {
       const desc = deps.registry.get(target.sessionId)
       if (desc && !isRetired(desc)) continue
-      const successor = desc ? liveSuccessor(desc.id) : undefined
+      // Same rule as the sentinel runtime's dead-session path: successor
+      // first, else the live parent; cancel only when neither exists.
+      const successor = desc ? (liveSuccessor(desc.id) ?? (isLive(desc.parentSessionId) ? desc.parentSessionId : undefined)) : undefined
       if (successor) {
         deps.sentinelStore.update(sentinel.id, {
           spec: { ...sentinel.spec, target: { ...target, sessionId: successor } },

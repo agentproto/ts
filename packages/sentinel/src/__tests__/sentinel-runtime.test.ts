@@ -749,7 +749,7 @@ describe("SentinelRuntime", () => {
 
   describe("sessions closed with a deliberate outcome", () => {
     for (const endedReason of ["operator-completed", "steward-completed", "steward-abandoned", "operator-stopped"]) {
-      it(`never resumes a session ended "${endedReason}" — notice goes to its live parent`, async () => {
+      it(`never resumes a session ended "${endedReason}" — notice goes to its live parent and the sentinel is re-targeted there`, async () => {
         const store = createSentinelStore({ persist: false })
         const provider = createFakeSentinelProvider()
         newSentinel(store, { sessionId: "sess_done" })
@@ -777,10 +777,38 @@ describe("SentinelRuntime", () => {
         expect(restarts).toBe(0)
         expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done", "sess_parent"])
         const forwarded = registry.calls[1]!.msg
-        expect(forwarded.urgency).toBe("fyi")
-        expect(forwarded.text).toContain("sess_done")
+        expect(forwarded.urgency).toBe("next-turn")
+        expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_parent" })
+        expect(store.list()[0]!.status).toBe("active")
       })
     }
+
+    it("a dead, unresumable target hands the watch to its live parent instead of parking", async () => {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      newSentinel(store, { sessionId: "sess_dead" })
+      provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+      const registry = stubRegistry(async msg => {
+        if (msg.to === "sess_dead") throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: id => id === "sess_parent",
+        restartSession: async () => {
+          throw new Error("cannot resume")
+        },
+        sessionInfo: id => (id === "sess_dead" ? { parentSessionId: "sess_parent" } : undefined),
+      })
+
+      await runtime.pollOnce()
+
+      expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_dead", "sess_parent"])
+      expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_parent" })
+      expect(store.list()[0]!.status).toBe("active")
+    })
 
     it("with no live parent, parks the notice (inbox journal) and still does not resume", async () => {
       const dir = mkdtempSync(join(tmpdir(), "sentinel-closed-"))
