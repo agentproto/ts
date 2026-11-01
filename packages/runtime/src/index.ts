@@ -859,6 +859,7 @@ export {
   type SessionRestartErrorPayload,
 } from "./session-restart-core.js"
 export { isRetired, resolveSuccessor, isAutomatedPromptSource } from "./session-retirement.js"
+export { launchedByOf, launchedByText, type LaunchedBy } from "./launched-by.js"
 // Session identity env var names injected into every spawned process
 // (assigned last, after caller-supplied env, so they cannot be forged).
 export { SESSION_ID_ENV, WORKSPACE_SLUG_ENV } from "./sessions.js"

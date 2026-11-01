@@ -197,6 +197,21 @@ inserted between `WORKSPACE` and `STATUS` showing the worktree's leaf directory
 name. The full path and the worktree id are shown in the `--watch` detail pane
 and in `--json`.
 
+When any row has provenance, a `LAUNCHED BY` column is inserted between `AGE`
+and `COMMAND`. It is derived at read time from fields the descriptor already
+carries, with this precedence: a spawning session's id (`parentSessionId`),
+else a known invoking session (`callerSessionId`), else the operator
+(`operatorLabel`), else only the origin channel (`origin`). A session renders
+as `session <id> (<label>)` when its parent is in the same list with a label,
+`session <id>` without one, and gains ` via <origin>` when the channel is
+known; the operator renders as `operator via <origin>`, and an origin-only row
+as the origin itself. The cell is truncated at 40 characters, and a row with
+nothing renders as `-` once the column is shown. This is a declaration, not an
+authenticated fact: while caller identity is only observed (shadow mode), a
+local process can name any session as its caller, so the text says who the
+session claims launched it. The MCP `session_list` tool carries the same text on
+each compact row as `launchedBy`.
+
 A session whose worktree is still being provisioned reports `starting` plus
 what it is doing: `starting queued #2` while it waits for a provisioning slot
 (see [`worktree`](./worktree.md#provisioning-concurrency)), or `starting deps`

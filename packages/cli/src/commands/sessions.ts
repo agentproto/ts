@@ -92,6 +92,8 @@ import {
   buildSessionRecap,
   defaultTranscriptBaseDir,
   deriveIndexFromTranscript,
+  launchedByOf,
+  launchedByText,
   readAllSessionIndexes,
   readSessionIndex,
   searchSessionIndexes,
@@ -3997,6 +3999,20 @@ function queuedCell(s: SessionDescriptor): string {
   return n > 0 ? `${n} queued` : ""
 }
 
+/** Ceiling for the LAUNCHED BY cell: long parent ids and labels must not
+ *  push COMMAND off the terminal. */
+const LAUNCHED_BY_COL_MAX = 40
+
+/** LAUNCHED BY column text: the derived "who launched this" text, with a
+ *  parent's label resolved from the SAME list (only when that row is present
+ *  and its label is non-empty). Empty when no provenance field is set. */
+function launchedByCell(s: SessionDescriptor, rows: readonly SessionDescriptor[]): string {
+  return launchedByText(launchedByOf(s), id => {
+    const match = rows.find(r => r.id === id)
+    return match?.label !== undefined && match.label !== "" ? match.label : undefined
+  })
+}
+
 /** Pinned sessions first; within the pinned group, the daemon's stored
  *  `pinnedOrder` asc (missing `pinnedOrder` last — legacy rows keep their
  *  incoming relative order); the non-pinned group is untouched. A stable
@@ -4064,6 +4080,11 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
   // A session is only "N queued"-worthy once something actually sits in its
   // prompt FIFO — a column of dashes is noise for the common no-queue case.
   const showQueued = sorted.some(r => (r.queuedPrompts ?? 0) > 0)
+  // LAUNCHED BY earns its width only when some row actually names a launcher
+  // (parent, caller, operator or origin): otherwise the table stays exactly
+  // what it was before the column existed.
+  const launchedByTexts = sorted.map(r => launchedByCell(r, sorted))
+  const showLaunchedBy = launchedByTexts.some(t => t !== "")
   const widths = {
     pin: 3,
     id: Math.max(...sorted.map(r => r.id.length), 4),
@@ -4073,6 +4094,12 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
     queued: showQueued ? Math.max(...sorted.map(r => queuedCell(r).length), 6) : 0,
     status: Math.max(...sorted.map(r => statusLabel(r, attentionDelaySec).length), 8),
     age: 8,
+    launchedBy: showLaunchedBy
+      ? Math.max(
+          "LAUNCHED BY".length,
+          ...launchedByTexts.map(t => (t !== "" ? truncate(t, LAUNCHED_BY_COL_MAX) : "-").length),
+        )
+      : 0,
   }
   const header =
     pad("PIN", widths.pin) +
@@ -4088,12 +4115,15 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
     pad("STATUS", widths.status) +
     "  " +
     pad("AGE", widths.age) +
-    "  COMMAND"
+    "  " +
+    (showLaunchedBy ? pad("LAUNCHED BY", widths.launchedBy) + "  " : "") +
+    "COMMAND"
   process.stdout.write(`\x1b[2m${header}\x1b[0m\n`)
   const now = Date.now()
-  for (const r of sorted) {
+  for (const [i, r] of sorted.entries()) {
     const age = humaniseDelta(now - new Date(r.startedAt).getTime())
     const tone = statusColour(r, attentionDelaySec)
+    const launchedBy = launchedByTexts[i]!
     process.stdout.write(
       pad(r.pinned === true ? "●" : "", widths.pin) +
         "  " +
@@ -4109,6 +4139,9 @@ function printTable(rows: SessionDescriptor[], attentionDelaySec?: number): void
         "  " +
         pad(age, widths.age) +
         "  " +
+        (showLaunchedBy
+          ? pad(launchedBy !== "" ? truncate(launchedBy, LAUNCHED_BY_COL_MAX) : "-", widths.launchedBy) + "  "
+          : "") +
         truncate(r.command, 60) +
         "\n"
     )
