@@ -22,6 +22,7 @@ import {
   linuxPidfilePath,
   pathNeedsRefresh,
   systemdUnitPath,
+  winDaemonInstallCommand,
   type DaemonHealthInfo,
   type LinuxDaemonMode,
 } from "../../commands/daemon.js"
@@ -38,7 +39,26 @@ interface HealthResult {
   info: DaemonHealthInfo | null
 }
 
-async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise<HealthResult> {
+/** The `daemon install` hint for this Windows session. Typing a bare
+ *  `agentproto` resolves to the agentproto.ps1 shim first, which a
+ *  Restricted/AllSigned execution policy refuses, so `daemon install` never
+ *  runs; the .cmd shim is a batch file and is always allowed. The policy
+ *  probe is read-only and best-effort — an unreadable policy keeps the plain
+ *  command. */
+async function winDaemonInstallFix(ctx: StepContext): Promise<string> {
+  const out = await ctx.exec(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+    { timeoutMs: 3_000 },
+  )
+  return winDaemonInstallCommand(out.code === 0 ? out.stdout : null)
+}
+
+async function checkHealth(
+  ctx: StepContext,
+  serviceInstalled: boolean,
+  installCommand = "agentproto daemon install",
+): Promise<HealthResult> {
   const config = await ctx.sources.loadConfig()
   const port = config.daemon?.port ?? DEFAULT_PORT
   const info = await fetchHealth({ config, fetchImpl: ctx.fetch })
@@ -46,7 +66,7 @@ async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise
     ctx.platform === "win32" || ctx.platform === "linux"
       ? serviceInstalled
         ? "agentproto daemon start"
-        : "agentproto daemon install"
+        : installCommand
       : null
   if (!info) {
     return {
@@ -171,6 +191,7 @@ async function checkService(
 async function checkTask(
   ctx: StepContext,
   taskName: string,
+  installCommand = "agentproto daemon install",
 ): Promise<StepCheck> {
   const out = await ctx.exec("schtasks", ["/Query", "/TN", taskName], { timeoutMs: 3_000 })
   if (out.code !== 0) {
@@ -179,7 +200,7 @@ async function checkTask(
       title: "Scheduled task",
       status: "warn",
       detail: "not registered (a foreground `agentproto serve` also works)",
-      fix: "agentproto daemon install",
+      fix: installCommand,
       data: { task: taskName, installed: false, running: false },
     }
   }
@@ -325,9 +346,10 @@ export const daemonStep: OnboardingStep = {
   required: true,
   async detect(ctx) {
     if (ctx.platform === "win32") {
-      const task = await checkTask(ctx, SCHTASKS_TASK_NAME)
+      const installFix = await winDaemonInstallFix(ctx)
+      const task = await checkTask(ctx, SCHTASKS_TASK_NAME, installFix)
       const installed = task.status === "ok"
-      const health = await checkHealth(ctx, installed)
+      const health = await checkHealth(ctx, installed, installFix)
       const checks = [health.check, task]
       if (health.info) {
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
@@ -373,7 +395,9 @@ export const daemonStep: OnboardingStep = {
     const path = checks.find((c) => c.id === "daemon.path")
     const actions: SetupAction[] = []
     if (ctx.platform === "win32") {
-      if (service?.status === "warn" && service.fix === "agentproto daemon install") {
+      // The hint may be `agentproto.cmd daemon install` when the PowerShell
+      // policy blocks the .ps1 shim, so recognise either spelling.
+      if (service?.status === "warn" && service.fix?.endsWith("daemon install")) {
         actions.push({
           id: "daemon.install",
           title: "Install the daemon as a scheduled task at logon and start it",

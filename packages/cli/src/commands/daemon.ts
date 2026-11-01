@@ -1117,7 +1117,15 @@ export function renderSchtasksTr(commandPath: string): string {
  *  died EPERM. The first line therefore `cd /d`s to a writable home before
  *  anything execs: the configured `daemon.workspace` when one is set,
  *  `%USERPROFILE%` (expanded by cmd at run time — never a hardcoded path)
- *  otherwise. */
+ *  otherwise.
+ *
+ *  Non-ASCII paths (a Windows user profile such as `MathildeDugué`): the file
+ *  is written as UTF-8, but cmd.exe parses a batch file through the console
+ *  code page (OEM 850 on a Western install), so UTF-8 bytes in the node/CLI
+ *  paths would be read as mojibake and the launch would fail. Switching the
+ *  console to 65001 before those lines are parsed is what makes the UTF-8
+ *  file self-consistent; no BOM, which cmd would treat as part of the first
+ *  command. */
 export function renderWinDaemonScript(
   argv: readonly string[],
   logPath: string,
@@ -1128,7 +1136,62 @@ export function renderWinDaemonScript(
   const cdLine = cwd
     ? `cd /d "${cwd.replace(/"/g, '""')}"`
     : `cd /d "%USERPROFILE%"`
-  return `@echo off\n${cdLine}\n${argv.map(q).join(" ")} >> "${logPath}" 2>&1\n`
+  return `@echo off\nchcp 65001 > nul\n${cdLine}\n${argv.map(q).join(" ")} >> "${logPath}" 2>&1\n`
+}
+
+/** True when an effective PowerShell execution policy refuses script shims.
+ *  Stock Windows ships `Restricted`, which makes a bare `agentproto` fail
+ *  because PowerShell resolves it to `agentproto.ps1` first ("running
+ *  scripts is disabled on this system"). `AllSigned` is just as fatal for
+ *  the unsigned npm shim. Pure — unit-tested without PowerShell. */
+export function winExecutionPolicyBlocksScripts(
+  policy: string | null | undefined,
+): boolean {
+  const effective = policy?.trim().toLowerCase()
+  return effective === "restricted" || effective === "allsigned"
+}
+
+/** The `daemon install` command a Windows user should be told to run. The
+ *  plain name is safe under a permissive policy, but under Restricted /
+ *  AllSigned it would die before `daemon install` ever runs; the `.cmd` shim
+ *  is a batch file and needs no script policy. Pure. */
+export function winDaemonInstallCommand(
+  policy: string | null | undefined,
+): string {
+  return winExecutionPolicyBlocksScripts(policy)
+    ? "agentproto.cmd daemon install"
+    : "agentproto daemon install"
+}
+
+/** Read the EFFECTIVE PowerShell execution policy (no `-Scope`, so GPO
+ *  scopes count — that is what decides whether a bare `agentproto` runs).
+ *  Best-effort: any probe failure yields `null`, and callers keep the plain
+ *  command rather than guessing. Never throws. */
+export function readWinExecutionPolicy(): Promise<string | null> {
+  return new Promise(resolve => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const done = (value: string | null): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve(value)
+    }
+    const child = spawn(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+      { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
+    )
+    let stdout = ""
+    child.stdout?.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk))
+    timer = setTimeout(() => {
+      child.kill()
+      done(stdout.trim() || null)
+    }, 3_000)
+    timer.unref()
+    child.on("error", () => done(null))
+    child.on("exit", () => done(stdout.trim() || null))
+  })
 }
 
 function schtasks(args: string[]): Promise<LaunchctlResult> {
@@ -1185,6 +1248,8 @@ export async function runWinInstall(
 
   await fs.mkdir(dirname(p.log), { recursive: true })
   try {
+    // UTF-8 with no BOM: renderWinDaemonScript's `chcp 65001` makes cmd read
+    // the same encoding back, and a BOM would corrupt its first command.
     await fs.writeFile(scriptPath, script, "utf8")
   } catch (err) {
     process.stderr.write(
@@ -1224,7 +1289,12 @@ export async function runWinUninstall(
   await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   const out = await schtasksFn(["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"])
   if (out.code !== 0) {
-    if (/\b(ERROR:)?\s*the system cannot find|does not exist|no such task/i.test(out.stderr + out.stdout)) {
+    // Don't parse schtasks' error TEXT: it is localized and emitted in the
+    // OEM console code page (850 on a French Windows), while we read pipes as
+    // UTF-8, so the old English regex both missed French installs and saw
+    // mojibake. `/Query` is the authority: exit 0 iff the task still exists.
+    const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
+    if (query.code !== 0) {
       process.stdout.write(
         `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
       )
@@ -1243,12 +1313,17 @@ export async function runWinStart(
   schtasksFn: SchtasksFn = schtasks,
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
+  readPolicy: () => Promise<string | null> = readWinExecutionPolicy,
 ): Promise<number> {
   const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
   if (out.code !== 0) {
+    // The exit code is the signal — schtasks' message is localized and in the
+    // OEM code page, so echoing it just shows mojibake. The actionable hint
+    // is the `.cmd` shim whenever the PowerShell policy blocks the `.ps1` one.
+    const install = winDaemonInstallCommand(await readPolicy())
     process.stderr.write(
-      `agentproto daemon start: ${out.stderr || "schtasks exited " + out.code}\n` +
-        `  Run \`agentproto daemon install\` first.\n`,
+      `agentproto daemon start: schtasks /Run exited ${out.code}\n` +
+        `  Run \`${install}\` first.\n`,
     )
     return out.code
   }
@@ -1260,14 +1335,16 @@ export async function runWinRestart(
   schtasksFn: SchtasksFn = schtasks,
   health: HealthFetchFn = fetchHealth,
   probeAttempts = 20,
+  readPolicy: () => Promise<string | null> = readWinExecutionPolicy,
 ): Promise<number> {
   // /End fails harmlessly when the task isn't mid-run; /Run always relaunches.
   await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   const out = await schtasksFn(["/Run", "/TN", SCHTASKS_TASK_NAME])
   if (out.code !== 0) {
+    const install = winDaemonInstallCommand(await readPolicy())
     process.stderr.write(
-      `agentproto daemon restart: ${out.stderr || "schtasks exited " + out.code}\n` +
-        `  Run \`agentproto daemon install\` first.\n`,
+      `agentproto daemon restart: schtasks /Run exited ${out.code}\n` +
+        `  Run \`${install}\` first.\n`,
     )
     return out.code
   }
