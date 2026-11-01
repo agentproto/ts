@@ -14,6 +14,7 @@
  */
 
 import { z } from "zod"
+import type { Grant } from "@agentproto/policy"
 import { CatalogProviderSchema } from "@agentproto/model-catalog"
 // The browser entry: the same pure URL helpers, without pulling node:crypto in.
 import { resolvePairPageUrl, DEFAULT_PAIR_PAGE } from "@agentproto/secrets/pairing/browser"
@@ -174,6 +175,65 @@ const mcpDefaultsConfigSchema: z.ZodType<McpDefaultsConfig> = z
   })
   .passthrough()
 
+/**
+ * `defaults.messaging.grants` - explicit AIP-38 grants the messaging ACL
+ * honors. The accepted shape is a strict subset of an AIP-38 `Grant`:
+ * a string principal, a `session:message` action (with an optional scope),
+ * `ttl_seconds`, `granted_at` and `revoked`. Other actions, an object-form
+ * principal and conditions belong to later drivers (`session:prompt` and
+ * `session:control` follow with TS-12b), so they are rejected here.
+ */
+const unsupportedMessageGrantMessage =
+  "only session:message grants with a string principal are honored here (session:prompt and session:control follow with TS-12b)"
+const configMessageGrantSchema: z.ZodType<Grant> = z
+  .object({
+    principal: z.unknown(),
+    effect: z.unknown().optional(),
+    actions: z.unknown(),
+    conditions: z.unknown().optional(),
+    ttl_seconds: z.unknown().optional(),
+    granted_at: z.unknown().optional(),
+    revoked: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((g, ctx) => {
+    const issue = (path: (string | number)[], message: string) =>
+      ctx.addIssue({ code: "custom", path, message })
+    if (typeof g.principal !== "string" || g.principal.length === 0) {
+      issue(["principal"], unsupportedMessageGrantMessage)
+    }
+    if (g.effect !== undefined && g.effect !== "allow" && g.effect !== "deny") {
+      issue(["effect"], 'effect must be "allow" or "deny"')
+    }
+    if (!Array.isArray(g.actions) || g.actions.length === 0) {
+      issue(["actions"], unsupportedMessageGrantMessage)
+    } else {
+      g.actions.forEach((a: unknown, i) => {
+        if (typeof a !== "object" || a === null || (a as { action?: unknown }).action !== "session:message") {
+          issue(["actions", i, "action"], unsupportedMessageGrantMessage)
+          return
+        }
+        const scope = (a as { scope?: unknown }).scope
+        if (scope !== undefined && typeof scope !== "string") issue(["actions", i, "scope"], "scope must be a string")
+      })
+    }
+    if (g.conditions !== undefined) issue(["conditions"], unsupportedMessageGrantMessage)
+    if (
+      g.ttl_seconds !== undefined &&
+      !(typeof g.ttl_seconds === "number" && Number.isFinite(g.ttl_seconds) && g.ttl_seconds > 0)
+    ) {
+      issue(["ttl_seconds"], "ttl_seconds must be a positive number")
+    }
+    if (g.granted_at !== undefined && typeof g.granted_at !== "string") {
+      issue(["granted_at"], "granted_at must be an ISO 8601 string")
+    }
+    if (g.revoked !== undefined && typeof g.revoked !== "boolean") {
+      issue(["revoked"], "revoked must be a boolean")
+    }
+  })
+  .transform(v => v as Grant)
+const messagingGrantsSchema = z.array(configMessageGrantSchema)
+
 const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
   .object({
     skills: z.array(z.string()).optional(),
@@ -196,6 +256,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
         allowSiblings: z.boolean().optional(),
         allowSameWorkspace: z.boolean().optional(),
         peerGroups: z.array(z.array(z.string().min(1))).optional(),
+        grants: z.array(configMessageGrantSchema).optional(),
         peerBinding: z.enum(["slug", "verified"]).optional(),
         agentInterrupt: z.enum(["allow", "deny"]).optional(),
         pendingPromptStaleMinutes: z.number().positive().optional(),
@@ -585,6 +646,7 @@ const strArray = z.array(z.string())
  *  must be a non-empty string (an empty slug would never match a session's
  *  workspace and only widens the config's surface). */
 const peerGroupsSchema = z.array(z.array(z.string().min(1)))
+
 /** `defaults.reactions.brainIngest.workspaces` - workspace slugs whose
  *  completed sessions are ingested by the durable brain-ingest reaction. */
 const brainIngestWorkspacesSchema = z.array(z.string().min(1))
@@ -1485,6 +1547,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Peer workspace binding",
     help: "\"slug\" (default): peers by recorded workspace slug; \"verified\": both cwds must resolve to the same registered workspace, whatever slug each session recorded (so it can also link pairs the slug rule does not). Takes effect on the next call.",
     default: "slug",
+  },
+  {
+    path: "defaults.messaging.grants",
+    schema: messagingGrantsSchema,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Explicit message grants",
+    help: "AIP-38 grants that may admit a session:message pair the tree and the messaging switches refuse (relation \"granted\"). Each accepted grant has a string principal, at least one { action: \"session:message\", scope? } and optional effect/ttl_seconds/granted_at/revoked. Scope forms that work match the RECIPIENT: <sessionId>, label:<recipient operator label>, workspace:<recipient verified workspace slug>. A matching deny wins. Empty (the default) changes nothing. Takes effect on the next call.",
+    default: [],
   },
   {
     path: "defaults.messaging.agentInterrupt",

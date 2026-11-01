@@ -22,6 +22,8 @@
  * a small file read and is already called this often elsewhere.
  */
 
+import type { Grant } from "@agentproto/policy"
+
 import { loadConfig } from "./config.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 
@@ -41,6 +43,10 @@ export interface ResolvedMessagingDefaults {
    *  workspace slugs sit in the SAME group. Default [] (no
    *  cross-workspace link). Independent of `allowSameWorkspace`. */
   peerGroups: string[][]
+  /** `defaults.messaging.grants` - explicit AIP-38 `session:message`
+   *  grants. A matching allow admits a pair the tree and the switches
+   *  refuse; a matching deny wins. Default [] (nothing changes). */
+  grants: Grant[]
   /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
    *  workspace slug; "verified": both cwds must resolve to the same
    *  registered workspace. */
@@ -61,6 +67,7 @@ export const DEFAULT_MESSAGING_DEFAULTS: ResolvedMessagingDefaults = {
   allowSiblings: false,
   allowSameWorkspace: true,
   peerGroups: [],
+  grants: [],
   peerBinding: "slug",
   agentInterrupt: "deny",
   pendingPromptStaleMinutes: 5,
@@ -77,6 +84,7 @@ export async function resolveMessagingDefaults(
       allowSameWorkspace:
         d?.messaging?.allowSameWorkspace ?? DEFAULT_MESSAGING_DEFAULTS.allowSameWorkspace,
       peerGroups: d?.messaging?.peerGroups ?? DEFAULT_MESSAGING_DEFAULTS.peerGroups,
+      grants: d?.messaging?.grants ?? DEFAULT_MESSAGING_DEFAULTS.grants,
       peerBinding: d?.messaging?.peerBinding ?? DEFAULT_MESSAGING_DEFAULTS.peerBinding,
       agentInterrupt: d?.messaging?.agentInterrupt ?? DEFAULT_MESSAGING_DEFAULTS.agentInterrupt,
       pendingPromptStaleMinutes:

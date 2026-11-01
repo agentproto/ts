@@ -28,9 +28,10 @@
  * (`evaluateGrants` from `@agentproto/policy`): an explicit deny removes the
  * grant-derived reasons of `session.message` (sibling, peer) and refuses
  * `tool.invoke`. A tree edge, the operator and the system are never removed
- * by a deny (AIP-46 §Who may message whom rule 3). The context is read per
- * call, so a revoked grant applies on the next call. No caller passes
- * `policy` yet, so every existing decision is unchanged.
+ * by a deny (AIP-46 §Who may message whom rule 3). A matching ALLOW under
+ * `defaults.messaging.grants` (messaging-context.ts) admits a pair the tree
+ * and the switches refuse, with relation `granted`. The context is read per
+ * call, so a revoked grant applies on the next call.
  *
  * Pure module: no registry, no I/O. Callers resolve the principal and the
  * policy (config) and pass them in.
@@ -488,40 +489,83 @@ function describeGrantSource(d: GrantDecision): string {
     : `policy input ${d.inputIndex}${d.grantIndex !== undefined ? `, grant ${d.grantIndex}` : ""}`
 }
 
+/** One evaluation of the policy for `session:message` to `recipient`. */
+type MessageGrantEvaluation =
+  | { ok: true; decision: GrantDecision }
+  | { ok: false; error: PolicyGrantError }
+  | undefined
+
 /**
- * Does an AIP-38 explicit deny (or a policy that cannot be read) refuse a
- * `session:message` to the recipient? Only a deny counts: a policy allow
- * cannot admit a message, because the envelope needs a relation to carry.
+ * Evaluate the AIP-38 policy for a `session:message` to the RECIPIENT. Both
+ * the explicit-deny path and the explicit-allow admission read this one
+ * result, so they cannot build the request differently. The typed scope
+ * values are the recipient's label and VERIFIED workspace; an unresolvable
+ * one is `undefined`, which fails closed.
  */
-function messageRefusal(
+function evaluateMessageGrant(
   principal: Principal,
   recipient: MessageTreeNode,
   ctx: PermissionContext,
-): { rule: string; reason: string } | undefined {
+): MessageGrantEvaluation {
   const policy = ctx.policy
   if (!policy) return undefined
   const label = ctx.operatorLabelOf ? ctx.operatorLabelOf(recipient.id)?.trim() || null : undefined
   const workspace =
     ctx.workspaceOfCwd && recipient.cwd ? ctx.workspaceOfCwd(recipient.cwd)?.trim() || null : undefined
   try {
-    const d = evaluateGrants(policy.inputs, {
-      ...grantRequest(principal, policy, ctx),
-      action: "session:message",
-      scope: recipient.id,
-      typed: { label, workspace },
-    })
-    return d.reason === "explicit-deny"
-      ? {
-          rule: "policy.explicit-deny",
-          reason: `an explicit deny (${describeGrantSource(d)}) refuses session:message to "${recipient.id}"`,
-        }
-      : undefined
-  } catch (err) {
-    if (err instanceof PolicyGrantError) {
-      return { rule: "policy.invalid", reason: `the policy grants cannot be read, so the send is refused: ${err.message}` }
+    return {
+      ok: true,
+      decision: evaluateGrants(policy.inputs, {
+        ...grantRequest(principal, policy, ctx),
+        action: "session:message",
+        scope: recipient.id,
+        typed: { label, workspace },
+      }),
     }
+  } catch (err) {
+    if (err instanceof PolicyGrantError) return { ok: false, error: err }
     throw err
   }
+}
+
+/**
+ * Does an AIP-38 explicit deny (or a policy that cannot be read) refuse a
+ * `session:message` to the recipient? Only a deny counts on this path: it
+ * removes a grant-derived reason (sibling, peer), never a tree edge.
+ */
+function messageRefusal(
+  evaluation: MessageGrantEvaluation,
+  recipient: MessageTreeNode,
+): { rule: string; reason: string } | undefined {
+  if (!evaluation) return undefined
+  if (!evaluation.ok) {
+    return {
+      rule: "policy.invalid",
+      reason: `the policy grants cannot be read, so the send is refused: ${evaluation.error.message}`,
+    }
+  }
+  const d = evaluation.decision
+  return d.reason === "explicit-deny"
+    ? {
+        rule: "policy.explicit-deny",
+        reason: `an explicit deny (${describeGrantSource(d)}) refuses session:message to "${recipient.id}"`,
+      }
+    : undefined
+}
+
+/**
+ * An explicit allow grant that MATCHES admits the pair. Only a real grant
+ * counts: a composed `default: allow` has `via: "default"` and must not
+ * admit anything. A malformed policy admits nothing.
+ */
+function messageAdmission(
+  evaluation: MessageGrantEvaluation,
+): { source: string } | undefined {
+  if (!evaluation?.ok) return undefined
+  const d = evaluation.decision
+  return d.decision === "allow" && d.reason === "matched-grant" && d.via === "grant"
+    ? { source: describeGrantSource(d) }
+    : undefined
 }
 
 function decideTool(principal: Principal, resource: PermissionResource, ctx: PermissionContext, policy: PermissionPolicy): Decision {
@@ -601,9 +645,11 @@ function decideMessage(
   // A matching AIP-38 deny removes only the grant-derived reasons (sibling,
   // peer); a tree edge, the operator and the system stay (AIP-46 rule 3).
   const candidates = RELATION_STRENGTH.filter(r => relations.includes(r)).map(r => ({ r, g: relationGrant(r, ctx) }))
+  // One policy evaluation feeds both the deny path and the admission path.
+  const evaluation = principal.kind === "session" ? evaluateMessageGrant(principal, recipient, ctx) : undefined
   const refusal =
     principal.kind === "session" && relations.some(r => GRANT_DERIVED_RELATIONS.has(r))
-      ? messageRefusal(principal, recipient, ctx)
+      ? messageRefusal(evaluation, recipient)
       : undefined
   const granted = refusal ? candidates.filter(x => !GRANT_DERIVED_RELATIONS.has(x.r)) : candidates
   const hit = granted.find(x => x.g.allow)
@@ -625,6 +671,21 @@ function decideMessage(
               ? "sender shares the recipient's workspace or peer group"
               : `sender is the recipient's ${hit.r}`,
     })
+  }
+  // No relation allowed. An EXPLICIT `session:message` grant under
+  // `defaults.messaging.grants` may still admit the pair (relation
+  // `granted`); a matching deny (already `refusal`) wins over it.
+  if (principal.kind === "session" && !refusal) {
+    const admission = messageAdmission(evaluation)
+    if (admission) {
+      return mint({
+        ...base,
+        allow: true,
+        relation: "granted",
+        rule: "policy.matched-grant",
+        reason: `a configured session:message grant admits the send (${admission.source})`,
+      })
+    }
   }
   if (refusal && candidates.some(x => x.g.allow)) {
     return mint({ ...base, allow: false, relation: strongest(relations), rule: refusal.rule, reason: refusal.reason })

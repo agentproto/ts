@@ -13,6 +13,9 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
+import type { Grant } from "@agentproto/policy"
+
+import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import { SessionRetiredError, retiredErrorWire, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
 import { decide, type PermissionContext } from "./permissions.js"
@@ -57,6 +60,9 @@ export interface RegisterMessageToolsOptions {
    *  group, even without a tree edge and even when the same-workspace
    *  allowance is off. Empty (the default) = no cross-workspace link. */
   peerGroups?: readonly (readonly string[])[]
+  /** `defaults.messaging.grants` - explicit AIP-38 `session:message` grants.
+   *  A matching allow admits a pair the tree and switches refuse. */
+  messagingGrants?: readonly Grant[]
   /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
   peerBinding?: "slug" | "verified"
   /** cwd to registered workspace slug, for the verified peer binding. */
@@ -119,16 +125,20 @@ export function registerMessageTools(server: McpServer, opts: RegisterMessageToo
   /** `defaults.messaging.peerGroups` - the operator's workspace families.
    *  Empty (the default) = no cross-workspace link. */
   const peerGroups = opts.peerGroups ?? []
-  const policy: PermissionContext = {
-    messaging: {
+  // One shared messaging context (messaging-context.ts) so the tools,
+  // `POST /sessions/:id/messages` and `permissions_explain` cannot drift.
+  const policy: PermissionContext = buildMessagingPermissionContext({
+    defaults: {
       allowSiblings: allowSiblings === true,
       allowSameWorkspace,
       peerGroups,
       peerBinding: opts.peerBinding ?? "slug",
       agentInterrupt: allowInterrupt ? "allow" : "deny",
+      grants: opts.messagingGrants ?? [],
     },
+    registry,
     ...(opts.workspaceOfCwd ? { workspaceOfCwd: opts.workspaceOfCwd } : {}),
-  }
+  })
 
   /** The verified caller, or a tool error explaining why there's none. */
   const resolveCaller = (tool: string): SessionDescriptor | ToolResult => {

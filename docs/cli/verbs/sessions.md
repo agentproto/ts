@@ -1278,6 +1278,71 @@ relation `granted`. Two siblings of the SAME workspace are still gated by
 `allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
 and a peer-group link always passes.
 
+### Explicit message grants
+
+An operator can also write a pair down directly, as an AIP-38 grant under
+`defaults.messaging.grants`. A matching `allow` admits a send the tree and
+the switches above refuse, with relation `granted`; a matching `deny` wins.
+This is the migration input for turning a switch off for everyone and
+granting only the pairs that need it (for example
+`defaults.messaging.allowSameWorkspace: false` plus a grant for the brain).
+
+The accepted shape is a strict subset of an AIP-38 `Grant`: a non-empty
+string `principal`, at least one `{ "action": "session:message", "scope"? }`,
+and optional `effect`, `ttl_seconds`, `granted_at` and `revoked`. Other
+actions (`session:prompt`, `session:control`), an object-form principal and
+`conditions` are rejected for now.
+
+Scope forms, all matched against the **recipient**:
+
+- `<sessionId>` - one exact session.
+- `label:<operatorLabel>` - the recipient's operator label.
+- `workspace:<slug>` - the recipient's **verified** workspace (its cwd
+  resolves to a registered workspace); an unresolvable cwd fails closed.
+
+Sender principals:
+
+- `session-label://<label>` - a session carrying that operator label.
+- `*` - any sender.
+
+Worked example for R12: the Pygmalion brain may message the `agentik-studio`
+workspace, and any session of the daemon may reply to the brain:
+
+```json
+{
+  "defaults": {
+    "messaging": {
+      "allowSameWorkspace": false,
+      "grants": [
+        {
+          "principal": "session-label://pygmalion-brain-persistent",
+          "effect": "allow",
+          "actions": [{ "action": "session:message", "scope": "workspace:agentik-studio" }]
+        },
+        {
+          "principal": "*",
+          "effect": "allow",
+          "actions": [{ "action": "session:message", "scope": "label:pygmalion-brain-persistent" }]
+        }
+      ]
+    }
+  }
+}
+```
+
+How a grant is read: `GET /permissions/grants` returns the explicit grants
+as written under `configured`, beside the switch-derived `grants`;
+`permissions_explain` for `session.message` answers the deciding rule
+(`policy.matched-grant` for an admitted pair), through the same `decide()`
+the send paths enforce.
+
+A matching deny removes only grant-derived reasons: it never overrides a
+tree edge, the operator or the system. The three switches
+(`allowSiblings`, `allowSameWorkspace`, `peerGroups`) keep working exactly
+as before and stay the migration input for one release. `message_parent`
+and the box parent relay are tree-only: a grant can neither create nor
+remove those relations.
+
 ### Tools (MCP)
 
 | Tool | Inputs | Use |

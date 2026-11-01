@@ -23,6 +23,7 @@
  */
 
 import type { SpawnBrowserMode } from "./browser-mount.js"
+import type { Grant } from "@agentproto/policy"
 import type { DelegationGateMode } from "./delegation-gate.js"
 import type { ProfileGateMode } from "./profile-gate.js"
 import type { StdioMountGateMode } from "./stdio-mount-gate.js"
@@ -207,6 +208,10 @@ export interface SpawnDefaultsConfig {
      *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
      *  no cross-workspace link. Independent of `allowSameWorkspace`. */
     peerGroups?: string[][]
+    /** Explicit AIP-38 `session:message` grants. A matching allow admits a
+     *  pair the tree and the messaging switches refuse (relation `granted`);
+     *  a matching deny wins. Default []: nothing changes. */
+    grants?: Grant[]
     /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
      *  workspace slug (existing behaviour). "verified": peers only when both
      *  cwds resolve to the same registered workspace (`findWorkspaceByPath`).

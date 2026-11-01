@@ -26,6 +26,7 @@ describe("resolveMessagingDefaults", () => {
           allowSiblings: true,
           allowSameWorkspace: false,
           peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+          grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
           agentInterrupt: "allow",
           pendingPromptStaleMinutes: 12,
         },
@@ -36,10 +37,17 @@ describe("resolveMessagingDefaults", () => {
       allowSiblings: true,
       allowSameWorkspace: false,
       peerGroups: [["agentik-studio", "app-agentik-pygmalion"]],
+      grants: [{ principal: "session-label://brain", actions: [{ action: "session:message" }] }],
       peerBinding: "slug",
       agentInterrupt: "allow",
       pendingPromptStaleMinutes: 12,
     })
+  })
+
+  it("defaults the explicit message grants to none", async () => {
+    const result = await resolveMessagingDefaults(async () => ({}))
+    expect(result.grants).toEqual([])
+    expect(DEFAULT_MESSAGING_DEFAULTS.grants).toEqual([])
   })
 
   it("defaults the peer groups to none (no cross-workspace link)", async () => {

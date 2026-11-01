@@ -76,6 +76,7 @@ import {
   type MessageUrgency,
 } from "./session-message.js"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
+import { buildMessagingPermissionContext } from "./messaging-context.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
 import { delegationReport, type DelegationGateMode, DEFAULT_DELEGATION_GATE_MODE } from "./delegation-gate.js"
 import { profileReport, type ProfileGateMode, DEFAULT_PROFILE_GATE_MODE } from "./profile-gate.js"
@@ -86,7 +87,7 @@ import {
 } from "./stdio-mount-gate.js"
 import type { AllowlistEntry } from "./command-allowlist.js"
 import { spawnAdmissionReport } from "./action-hooks/spawn-admission-counters.js"
-import { decide, type PermissionContext, type Principal } from "./permissions.js"
+import { decide, type Principal } from "./permissions.js"
 import { createWorkspaceOfCwd, warnPeerUnverified } from "./workspace-binding.js"
 import type { WorkspaceBrains } from "./workspace-brains.js"
 import type { TunnelRegistry } from "./tunnel-registry.js"
@@ -8278,16 +8279,14 @@ code { color: #9ad; }
     // Same ACL decision as the `message_send` tool (siblings,
     // same-workspace, peer groups) - read fresh from config per request.
     const messaging = await messagingDefaultsFor()
-    const policy: PermissionContext = {
-      messaging: {
-        allowSiblings: messaging.allowSiblings,
-        allowSameWorkspace: messaging.allowSameWorkspace,
-        peerGroups: messaging.peerGroups,
-        peerBinding: messaging.peerBinding,
-        agentInterrupt: messaging.agentInterrupt,
-      },
+    // The same shared context as `message_send` / `message_reply`, including
+    // any explicit `defaults.messaging.grants`; `operatorLabelOf` is what
+    // makes a sender's `session-label://<label>` principal resolvable.
+    const policy = buildMessagingPermissionContext({
+      defaults: messaging,
+      registry,
       workspaceOfCwd: createWorkspaceOfCwd(),
-    }
+    })
     const principal: Principal = sender
       ? { kind: "session", session: sender }
       : { kind: "operator", via: "anonymous-local" }
@@ -11747,6 +11746,9 @@ async function handlePermissions(
     })
     json(200, {
       ...report,
+      // The explicit grants as the operator wrote them, beside the derived
+      // list above.
+      configured: messaging.grants,
       delegation: delegationReport(delegationGateMode ?? DEFAULT_DELEGATION_GATE_MODE),
       profileUse: profileReport(profileGateMode ?? DEFAULT_PROFILE_GATE_MODE),
       stdioMounts: stdioMountReport(stdioMountGateMode ?? DEFAULT_STDIO_MOUNT_GATE_MODE),

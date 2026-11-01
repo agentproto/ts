@@ -543,3 +543,52 @@ describe("defaults.identity.requireProof key", () => {
     ).toBeGreaterThan(0)
   })
 })
+
+describe("defaults.messaging.grants key", () => {
+  const valid = {
+    principal: "session-label://pygmalion-brain-persistent",
+    effect: "allow" as const,
+    actions: [{ action: "session:message", scope: "workspace:agentik" }],
+    ttl_seconds: 3600,
+    granted_at: "2026-11-01T00:00:00Z",
+    revoked: false,
+  }
+
+  it("is hot and writable, and defaults to an empty list", () => {
+    expect(findConfigKey("defaults.messaging.grants")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("accepts a valid grant in a key value and in a full config", () => {
+    expect(validateConfigKeyValue("defaults.messaging.grants", [valid])).toEqual({ ok: true })
+    expect(validateConfigKeyValue("defaults.messaging.grants", [])).toEqual({ ok: true })
+    expect(
+      validateConfig({ defaults: { messaging: { grants: [valid] } } }).issues,
+    ).toEqual([])
+  })
+
+  it("rejects a non-array, an empty actions list, another action, an object principal and conditions", () => {
+    expect(validateConfigKeyValue("defaults.messaging.grants", valid).ok).toBe(false)
+    expect(
+      validateConfigKeyValue("defaults.messaging.grants", [{ principal: "*", actions: [] }]).ok,
+    ).toBe(false)
+    const got = validateConfigKeyValue("defaults.messaging.grants", [
+      { principal: "*", actions: [{ action: "session:prompt" }] },
+    ])
+    expect(got.ok).toBe(false)
+    expect(got.error).toContain("only session:message grants with a string principal are honored here")
+    expect(
+      validateConfigKeyValue("defaults.messaging.grants", [
+        { principal: { ref: "operator://ops" }, actions: [{ action: "session:message" }] },
+      ]).ok,
+    ).toBe(false)
+    const conditions = validateConfigKeyValue("defaults.messaging.grants", [
+      { principal: "*", actions: [{ action: "session:message" }], conditions: [{ kind: "mfa-recent" }] },
+    ])
+    expect(conditions.ok).toBe(false)
+    expect(conditions.error).toContain("session:prompt and session:control follow with TS-12b")
+  })
+})
