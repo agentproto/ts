@@ -27,6 +27,15 @@
  * swallowed and the wrapper always exits with the real `gh`'s exit code. If no
  * real `gh` is on PATH, the shim behaves exactly like the absence would.
  *
+ * A body REWRITE gets the same treatment: `gh pr edit --body/-b/--body-file/-F`
+ * and `gh api -X PATCH repos/…/(pulls|issues)/<n>` replace the whole body, so
+ * an agent rewriting its own PR description silently dropped the footer the
+ * runner had stamped, and Hygiene went red on the next push (agentproto/ts#2442).
+ * The shim reads the body BEFORE the rewrite, runs the agent's command verbatim
+ * (same args, stdio, exit code), and only when the old body carried a rendered
+ * footer and the new one doesn't, PATCHes that exact footer back on. Never adds
+ * a footer that wasn't there, never stacks a second one.
+ *
  * This module owns the PURE, testable pieces (script generation, PATH
  * assembly, env assembly, the opt-in resolver); the shim's own runtime logic
  * (URL parse, exit-code passthrough) is exercised by generating the script and
@@ -177,6 +186,13 @@ const WORKSPACE_SLUG_ENV = ${JSON.stringify(WORKSPACE_SLUG_ENV)}
 const ADAPTER_ENV = ${JSON.stringify(GH_PROVENANCE_ADAPTER_ENV)}
 const MODEL_ENV = ${JSON.stringify(GH_PROVENANCE_MODEL_ENV)}
 
+// A RENDERED footer line, not a prose mention of the marker.
+const FOOTER_RE = new RegExp("<sub>[^\\n]*" + MARKER + "[^\\n]*</sub>")
+const PR_ENDPOINT_RE = /^\\/?repos\\/[^\\/\\s]+\\/[^\\/\\s]+\\/(pulls|issues)\\/\\d+\\/?$/
+// Side reads/writes never touch stdin (a \`--body-file -\` edit owns it), never
+// print, and never hang the agent's command.
+const SIDE_OPTS = { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000 }
+
 const args = process.argv.slice(2)
 const shimDir = __dirname
 
@@ -202,10 +218,13 @@ if (!realGh) {
   process.exit(127)
 }
 
-// Only \`gh pr create\` is targeted (v1). Everything else passes straight
-// through to the real gh, exit code and all.
+// Targeted: \`gh pr create\` (stamp a footer) and a PR body rewrite (keep the
+// footer it already had). Everything else passes straight through to the real
+// gh, exit code and all.
 const positionals = args.filter(a => !a.startsWith("-"))
 const isPrCreate = positionals[0] === "pr" && positionals[1] === "create"
+let rewrite = null
+try { rewrite = isPrCreate ? null : bodyRewriteTarget(args) } catch { rewrite = null }
 
 function exitFrom(result) {
   if (result.error) {
@@ -213,6 +232,20 @@ function exitFrom(result) {
     return 127
   }
   return typeof result.status === "number" ? result.status : 1
+}
+
+if (rewrite) {
+  // Read the footer BEFORE the rewrite (afterwards it's gone), run the agent's
+  // command verbatim, then put that exact footer back if the new body lost it.
+  // COSMETIC like the create path: no failure here may touch the exit code.
+  let kept = null
+  try { kept = readFooter(rewrite) } catch { kept = null }
+  const edit = spawnSync(realGh, args, { stdio: "inherit" })
+  const editExit = exitFrom(edit)
+  try {
+    if (editExit === 0 && kept) restoreFooter(kept)
+  } catch { /* swallow: keeping the footer never fails the underlying gh */ }
+  process.exit(editExit)
 }
 
 if (!isPrCreate) {
@@ -285,6 +318,107 @@ function stampFooter(parsed) {
   if (parsed.host && parsed.host !== "github.com") apiArgs.push("--hostname", parsed.host)
   apiArgs.push(apiPath, "-X", "PATCH", "-f", "body=" + newBody)
   spawnSync(realGh, apiArgs, { stdio: "ignore" })
+}
+
+// --- body rewrite: keep the footer (mirrors pr-provenance.ts's hasProvenanceFooter) ---
+
+// Split one argv token into its flag name and inline value: \`--body=x\`,
+// \`-bx\`, or a bare \`--body\` / \`-b\` (value is the next token).
+function splitFlag(a) {
+  if (a.startsWith("--")) {
+    const eq = a.indexOf("=")
+    return eq >= 0 ? { name: a.slice(0, eq), inline: a.slice(eq + 1) } : { name: a, inline: null }
+  }
+  return a.length > 2 ? { name: a.slice(0, 2), inline: a.slice(2) } : { name: a, inline: null }
+}
+
+// Which PR a body rewrite targets, or null when \`argv\` is not one:
+//   gh pr edit [<number|url|branch>] (--body|-b|--body-file|-F) ... [-R repo]
+//   gh api -X PATCH repos/<owner>/<repo>/(pulls|issues)/<n> with a body= field or --input
+function bodyRewriteTarget(argv) {
+  if (argv[0] === "pr" && argv[1] === "edit") {
+    let selector = null
+    let repo = null
+    let body = false
+    for (let i = 2; i < argv.length; i++) {
+      const a = argv[i]
+      if (a === "--") { if (selector === null && i + 1 < argv.length) selector = argv[i + 1]; break }
+      if (!a.startsWith("-") || a === "-") { if (selector === null) selector = a; continue }
+      const f = splitFlag(a)
+      if (f.name === "-h" || f.name === "--help") return null
+      let value = f.inline
+      // Every \`gh pr edit\` flag takes a value except this boolean.
+      if (value === null && f.name !== "--remove-milestone") value = argv[++i]
+      if (f.name === "--body" || f.name === "-b" || f.name === "--body-file" || f.name === "-F") body = true
+      if (f.name === "--repo" || f.name === "-R") repo = value
+    }
+    return body ? { kind: "pr", selector, repo } : null
+  }
+  if (argv[0] === "api") {
+    let method = null
+    let endpoint = null
+    let hostname = null
+    let body = false
+    for (let i = 1; i < argv.length; i++) {
+      const a = argv[i]
+      if (!a.startsWith("-")) { if (endpoint === null && PR_ENDPOINT_RE.test(a)) endpoint = a; continue }
+      const f = splitFlag(a)
+      const value = f.inline !== null ? f.inline : argv[i + 1]
+      if (f.name === "-X" || f.name === "--method") method = String(value || "").toUpperCase()
+      else if (f.name === "--hostname") hostname = value
+      else if (f.name === "-f" || f.name === "-F" || f.name === "--field" || f.name === "--raw-field") {
+        if (String(value || "").startsWith("body=")) body = true
+      } else if (f.name === "--input") body = true
+      else continue
+      if (f.inline === null) i++
+    }
+    return method === "PATCH" && endpoint && body ? { kind: "api", endpoint, hostname } : null
+  }
+  return null
+}
+
+// The rendered footer the PR carries right now, plus where to PATCH it back;
+// null when the body has none (nothing to keep) or the read fails.
+function readFooter(target) {
+  let apiPath
+  let host
+  let body
+  if (target.kind === "pr") {
+    const viewArgs = ["pr", "view"]
+    if (target.selector !== null) viewArgs.push(target.selector)
+    if (target.repo) viewArgs.push("-R", target.repo)
+    viewArgs.push("--json", "url,body")
+    const view = spawnSync(realGh, viewArgs, SIDE_OPTS)
+    if (view.status !== 0) return null
+    const pr = JSON.parse(view.stdout)
+    const loc = parsePrUrl(String(pr.url || ""))
+    if (!loc) return null
+    apiPath = "repos/" + loc.owner + "/" + loc.repo + "/pulls/" + loc.number
+    host = loc.host && loc.host !== "github.com" ? ["--hostname", loc.host] : []
+    body = pr.body
+  } else {
+    // The same endpoint string the agent used, so gh resolves any
+    // {owner}/{repo} placeholder exactly as it does for the rewrite itself.
+    apiPath = target.endpoint
+    host = target.hostname ? ["--hostname", target.hostname] : []
+    const get = spawnSync(realGh, ["api", ...host, apiPath], SIDE_OPTS)
+    if (get.status !== 0) return null
+    body = JSON.parse(get.stdout).body
+  }
+  const m = typeof body === "string" ? FOOTER_RE.exec(body) : null
+  return m ? { footer: m[0], apiPath, host } : null
+}
+
+// After a successful rewrite: if the new body lost the footer, append that
+// exact footer back (the shape buildFooter emits) with one PATCH.
+function restoreFooter(kept) {
+  const get = spawnSync(realGh, ["api", ...kept.host, kept.apiPath], SIDE_OPTS)
+  if (get.status !== 0) return
+  const raw = JSON.parse(get.stdout).body
+  const body = typeof raw === "string" ? raw : ""
+  if (FOOTER_RE.test(body)) return
+  const newBody = body.replace(/\\n+$/, "") + "\\n\\n---\\n" + kept.footer
+  spawnSync(realGh, ["api", ...kept.host, kept.apiPath, "-X", "PATCH", "-f", "body=" + newBody], { ...SIDE_OPTS, stdio: "ignore" })
 }
 `
 }

@@ -204,7 +204,7 @@ export function createPrProvenanceReconciler(opts: {
         ? opts.registry.get(desc.parentSessionId) ?? { id: desc.parentSessionId }
         : null
 
-    const stamp = async (pr: { number: number; url: string }): Promise<void> => {
+    const stamp = async (pr: { number: number; url: string }, requireTrailerAuthorship = false): Promise<void> => {
       const outcome = await stampFooterOnPr({
         registry: opts.registry,
         session: desc,
@@ -215,6 +215,7 @@ export function createPrProvenanceReconciler(opts: {
         ...(opts.run ? { run: opts.run } : {}),
         ...(opts.host ? { host: opts.host } : {}),
         checkpointRefPrefix: checkpointRefPrefixForSession(desc, opts.checkpointRefPrefix),
+        ...(requireTrailerAuthorship ? { requireTrailerAuthorship: true } : {}),
       })
       // Record this PR as stamped only on a real stamp (or an already-stamped
       // body). A transient `gh` failure leaves it unstamped so a later event
@@ -285,7 +286,9 @@ export function createPrProvenanceReconciler(opts: {
       const pr = host.branch
         ? await opts.resolveOpenPr(cwd, { branch: host.branch })
         : await opts.resolveOpenPr(cwd)
-      if (pr && shouldStamp(pr.url)) await stamp(pr)
+      // A sandboxed session on the PR's head branch may only have checked it
+      // out (a reviewer box does): require its trailer before stamping.
+      if (pr && shouldStamp(pr.url)) await stamp(pr, desc.remote === true)
     }
 
     await refreshCost(desc, supervisor, cwd)

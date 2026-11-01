@@ -69,7 +69,7 @@ export const realExec: ExecFn = (cmd, args, opts = {}) =>
       clearTimeout(timer)
       resolve({ code, stdout, stderr })
     }
-    const child = spawn(cmd, [...args], { stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(cmd, [...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     const timer = setTimeout(() => {
       child.kill("SIGKILL")
       done(124)
