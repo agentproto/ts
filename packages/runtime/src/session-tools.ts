@@ -4889,10 +4889,13 @@ export function registerSessionTools(
       "page of entries (name, kind, sha, class, status, reclaimReason / " +
       "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard " +
       "when set), default 100 rows with `page.nextCursor`; pass it back as " +
-      "`cursor` to read the next page of the SAME run (no re-run). An apply " +
-      "keeps every outcome and the restore log. `fields` keeps only the named " +
-      "keys of each full entry, `classes` filters entries, `full: true` " +
-      "returns whole entries (alone: the whole unpaged result).",
+      "`cursor` to read the next page of the SAME run (no re-run; the cursor " +
+      "keeps the `section`, `classes` and `limit` it was created with). An " +
+      "apply pages its outcomes by default (the large plan entries stay on " +
+      "disk; pass `section: \"entries\"` to page those instead) and keeps the " +
+      "restore log and `applySummary`. `fields` keeps only the named keys of " +
+      "each full entry, `classes` filters entries, `full: true` returns whole " +
+      "rows (alone: the whole unpaged result).",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -4925,17 +4928,21 @@ export function registerSessionTools(
         .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `branch_gc_status`. Only meaningful with the default `wait: true`."),
       full: mcpBool
         .optional()
-        .describe("Whole entries instead of the compact projection. Alone (no `fields`/`classes`/`limit`/`cursor`): the whole unpaged result. Default false."),
-      fields: z.array(z.string()).optional().describe("Keep only these keys of each full entry (e.g. [\"name\", \"sha\", \"residualFiles\"])."),
+        .describe("Whole rows instead of the compact projection. Alone (no `fields`/`classes`/`section`/`limit`/`cursor`): the whole unpaged result. Default false."),
+      fields: z.array(z.string()).optional().describe("Entries only: keep only these keys of each full entry (e.g. [\"name\", \"sha\", \"residualFiles\"])."),
       classes: z
         .array(z.enum(["reclaim", "review", "hold"]))
         .optional()
-        .describe("Keep only entries of these classes (e.g. [\"review\"]). Counts in `summary` are unaffected."),
-      limit: mcpNumber.optional().describe(`Entries per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
+        .describe("Entries only: keep only entries of these classes (e.g. [\"review\"]). Counts in `summary` are unaffected."),
+      section: z
+        .enum(["entries", "outcomes"])
+        .optional()
+        .describe("Which list to page: plan `entries` or apply `outcomes`. Default `entries` for a plan, `outcomes` for an apply."),
+      limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
       cursor: z
         .string()
         .optional()
-        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run without re-running the gc (every other run option is ignored)."),
+        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run and slice without re-running the gc. The cursor's `section`/`classes`/`limit` win over any passed here; `fields` still shapes entries."),
     },
     async input => {
       const reply: BranchGcReplyInput = {
@@ -4943,11 +4950,12 @@ export function registerSessionTools(
         ...(input.fields ? { fields: input.fields } : {}),
         ...(input.classes ? { classes: input.classes } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        ...(input.section ? { section: input.section } : {}),
       }
       if (input.cursor !== undefined) {
         // Page an earlier run from its stored result, in memory or on disk.
         try {
-          const { jobId, offset } = decodeBranchGcCursor(input.cursor)
+          const { jobId, offset, section, classes, limit } = decodeBranchGcCursor(input.cursor)
           const job = branchGcJobs.get(jobId)
           const stored = job?.result ?? (await branchGcJobs.readResultFile(jobId))
           if (!stored) {
@@ -4956,7 +4964,14 @@ export function registerSessionTools(
               isError: true,
             }
           }
-          return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, { ...reply, offset }, jobId)) }] }
+          const page: BranchGcReplyInput = {
+            ...reply,
+            offset,
+            ...(section !== undefined ? { section } : {}),
+            ...(classes !== undefined ? { classes } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+          }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, page, jobId)) }] }
         } catch (err) {
           return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true }
         }
@@ -5050,7 +5065,10 @@ export function registerSessionTools(
         .optional()
         .describe("Outcomes only: keep these outcome results."),
       limit: mcpNumber.optional().describe(`Rows per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
-      cursor: z.string().optional().describe("`page.nextCursor` from the previous page."),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from the previous `branch_gc_status` page (not a `branch_gc` cursor — the two formats are not interchangeable)."),
     },
     async input => {
       const wantsSlice =

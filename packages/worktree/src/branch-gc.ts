@@ -1659,15 +1659,17 @@ export interface BranchGcSummary {
    * The same counts keyed by branch NAME across kinds: a local branch and its
    * remote twin are one branch with two refs. A name whose refs land in
    * different classes (or statuses) counts once in each, so these buckets can
-   * sum to more than `branches`.
+   * sum to more than `branches`. Optional so existing `BranchGcSummary`
+   * literals stay assignable; a summary from this engine always sets it.
    */
-  distinct: BranchGcDistinctSummary
+  distinct?: BranchGcDistinctSummary
 }
 
 export interface BranchGcDistinctSummary {
   /** Distinct branch names across every kind. */
   branches: number
-  /** Refs those names carry (the sum of `byClass`). */
+  /** Refs those names carry: one per plan entry. NOT the sum of `byClass`,
+   *  which counts distinct names and so undercounts names spanning classes. */
   refs: number
   /** class → distinct names with at least one ref in that class. */
   byClass: Record<BranchGcClass, number>

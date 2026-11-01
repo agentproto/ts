@@ -254,10 +254,12 @@ function printPlan(plan: BranchGcPlan, summary: BranchGcSummary): void {
   }
   // A local branch and its remote twin are one branch with two refs.
   const d = summary.distinct
-  const distinctStatuses = Object.entries(d.byStatus).map(([k, v]) => `${k}=${v}`).join("  ")
-  process.stdout.write(
-    `  ${d.branches} branches (${d.refs} refs): reclaim=${d.byClass.reclaim}  review=${d.byClass.review}  hold=${d.byClass.hold}    [${distinctStatuses}]\n`,
-  )
+  if (d) {
+    const distinctStatuses = Object.entries(d.byStatus).map(([k, v]) => `${k}=${v}`).join("  ")
+    process.stdout.write(
+      `  ${d.branches} branches (${d.refs} refs): reclaim=${d.byClass.reclaim}  review=${d.byClass.review}  hold=${d.byClass.hold}    [${distinctStatuses}]\n`,
+    )
+  }
   if (plan.otherRemoteRefs) process.stdout.write(`  (${plan.otherRemoteRefs} ref(s) of other configured remotes left alone)\n`)
   process.stdout.write("\nDry run — pass --apply --scopes <kinds> to delete reclaim entries.\n")
 }

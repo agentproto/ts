@@ -317,28 +317,65 @@ export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactE
 }
 
 export interface BranchGcReplyInput {
-  /** Whole entries instead of the compact projection; alone (no other
-   *  option), the unchanged full result. */
+  /** Whole rows instead of the compact projection; alone (no other option),
+   *  the unchanged full result. */
   full?: boolean
-  /** Keep only these keys of each FULL entry. */
+  /** Entries only: keep only these keys of each FULL entry. */
   fields?: string[]
-  /** Keep only entries of these classes. */
+  /** Entries only: keep only entries of these classes. */
   classes?: BranchGcClass[]
   limit?: number
-  /** Offset into the filtered entries (decoded from a `branch_gc` cursor). */
+  /** Which list to page. Default: `entries` for a plan, `outcomes` for an
+   *  apply (mirroring `branch_gc_status`). */
+  section?: BranchGcResultSection
+  /** Offset into the selected list (decoded from a `branch_gc` cursor). */
   offset?: number
 }
 
-/** A `branch_gc` cursor names the run it pages, so the next page is read from
- *  that run's stored result instead of re-running the gc. */
-export function encodeBranchGcCursor(jobId: string, offset: number): string {
-  return Buffer.from(JSON.stringify({ j: jobId, o: offset })).toString("base64url")
+/**
+ * A `branch_gc` cursor names the run it pages AND the slice it was created
+ * for (`section`, `classes`, `limit`), so the next page is read from that
+ * run's stored result with the exact same filtered list instead of
+ * re-running the gc. Not interchangeable with `branch_gc_status`'s
+ * `o:<n>` cursor ({@link sliceBranchGcResult}): each tool rejects the other.
+ */
+export function encodeBranchGcCursor(
+  jobId: string,
+  offset: number,
+  section: BranchGcResultSection,
+  classes: BranchGcClass[],
+  limit: number,
+): string {
+  return Buffer.from(JSON.stringify({ j: jobId, o: offset, s: section, c: classes, l: limit })).toString("base64url")
 }
 
-export function decodeBranchGcCursor(cursor: string): { jobId: string; offset: number } {
+export function decodeBranchGcCursor(cursor: string): {
+  jobId: string
+  offset: number
+  section?: BranchGcResultSection
+  classes?: BranchGcClass[]
+  limit?: number
+} {
   try {
-    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { j?: unknown; o?: unknown }
-    if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) return { jobId: v.j, offset: v.o }
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as {
+      j?: unknown
+      o?: unknown
+      s?: unknown
+      c?: unknown
+      l?: unknown
+    }
+    if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) {
+      const section = v.s === "entries" || v.s === "outcomes" ? v.s : undefined
+      const classes = Array.isArray(v.c) ? (v.c.filter(c => c === "reclaim" || c === "review" || c === "hold") as BranchGcClass[]) : undefined
+      const limit = typeof v.l === "number" && Number.isInteger(v.l) && v.l >= 1 ? v.l : undefined
+      return {
+        jobId: v.j,
+        offset: v.o,
+        ...(section !== undefined ? { section } : {}),
+        ...(classes !== undefined ? { classes } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      }
+    }
   } catch {
     // Fall through to the error below.
   }
@@ -347,36 +384,59 @@ export function decodeBranchGcCursor(cursor: string): { jobId: string; offset: n
 
 /**
  * Pure: the `branch_gc` tool reply. A real repo's full result is ~800k chars
- * on one line, which no MCP client can read, so by default the plan entries
- * are compact ({@link compactBranchGcEntry}) and paged (`page`, with a
- * `nextCursor` naming `jobId`). The summary, the plan metadata and, for an
- * apply, every outcome plus the restore log stay whole. `full: true` alone
- * returns the result unchanged.
+ * on one line, which no MCP client can read, so by default ONE list is
+ * projected down and paged (`page`, with a `nextCursor` naming `jobId` and
+ * the slice it belongs to): plan entries are compact
+ * ({@link compactBranchGcEntry}); apply outcomes are paged as-is. The
+ * summary, the plan metadata, the restore log and `applySummary` stay whole;
+ * the list that was not selected stays on disk. `full: true` alone returns
+ * the result unchanged.
  */
 export function branchGcReply(result: BranchGcResult, opts: BranchGcReplyInput, jobId: string): object {
-  const shaped = opts.fields !== undefined || opts.classes !== undefined || opts.limit !== undefined || opts.offset !== undefined
+  const section: BranchGcResultSection = opts.section ?? (result.mode === "apply" ? "outcomes" : "entries")
+  const shaped =
+    opts.fields !== undefined ||
+    opts.classes !== undefined ||
+    opts.limit !== undefined ||
+    opts.section !== undefined ||
+    opts.offset !== undefined
   if (opts.full === true && !shaped) return result
-  const rows = result.plan.entries.filter(e => !opts.classes?.length || opts.classes.includes(e.class))
   const limit = Math.min(Math.max(Math.trunc(opts.limit ?? BRANCH_GC_PAGE_DEFAULT), 1), BRANCH_GC_PAGE_MAX)
   const start = opts.offset ?? 0
-  const fields = opts.fields
-  const pageRows = rows
-    .slice(start, start + limit)
-    .map(e =>
-      fields !== undefined
-        ? Object.fromEntries(Object.entries(e).filter(([key]) => fields.includes(key)))
-        : opts.full === true
-          ? e
-          : compactBranchGcEntry(e),
-    )
+  let total: number
+  let pageRows: object[]
+  let cursorClasses: BranchGcClass[] = []
+  if (section === "outcomes") {
+    if (result.mode !== "apply") throw new Error("branch_gc: `section: outcomes` is only available on an apply result")
+    total = result.outcomes.length
+    pageRows = result.outcomes.slice(start, start + limit)
+  } else {
+    cursorClasses = opts.classes ?? []
+    const rows = result.plan.entries.filter(e => !opts.classes?.length || opts.classes.includes(e.class))
+    total = rows.length
+    pageRows = rows
+      .slice(start, start + limit)
+      .map(e =>
+        opts.fields !== undefined
+          ? Object.fromEntries(Object.entries(e).filter(([key]) => opts.fields!.includes(key)))
+          : opts.full === true
+            ? e
+            : compactBranchGcEntry(e),
+      )
+  }
   const next = start + limit
   const page: BranchGcResultPage = {
-    section: "entries",
-    total: rows.length,
+    section,
+    total,
     returned: pageRows.length,
-    ...(next < rows.length ? { nextCursor: encodeBranchGcCursor(jobId, next) } : {}),
+    ...(next < total ? { nextCursor: encodeBranchGcCursor(jobId, next, section, cursorClasses, limit) } : {}),
   }
-  return { ...result, plan: { ...result.plan, entries: pageRows }, jobId, page }
+  const { outcomes: _outcomes, ...rest } = result as BranchGcResult & { outcomes?: unknown }
+  if (section === "outcomes") {
+    const { entries: _entries, ...planMeta } = result.plan
+    return { ...rest, plan: planMeta, outcomes: pageRows, jobId, page }
+  }
+  return { ...rest, plan: { ...result.plan, entries: pageRows }, jobId, page }
 }
 
 /** Input to the injected runner. `apply` defaults to false at the tool/route
