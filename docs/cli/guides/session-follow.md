@@ -150,6 +150,52 @@ feeding the digest counts in that merge (even a follow that did not itself set
 - `session_unfollow { id }` - follow id (`fol_...`) or key.
 - `session_follows { follower? }` - list.
 
+## Desktop host integration
+
+The default follower requires an actual caller identity. Daemon-spawned agents
+carry `?callerSessionId=` on their MCP self-mount. The stdio bridge can derive
+an external `codex:<thread-id>` caller from the Desktop host's per-call MCP
+metadata (see [mcp-bridge](../verbs/mcp-bridge.md#codex-desktop-conversation-identity)).
+An unscoped call without that metadata still returns `no_follower`; it must
+never choose another session based on recency or the host product name.
+Explicit `follower` continues to take precedence.
+
+An **external** session is inbox-only. Even a `next-turn` digest cannot start a
+Desktop turn: the daemon does not own that chat's executor. Registration
+returns `delivery.mode: "external-inbox"` and `delivery.wakesFollower: false`
+to make this boundary visible. Do not report a successful registration as
+proof that Desktop will wake.
+
+For durable local Desktop wakes the host needs to implement both halves:
+
+1. Attach the current chat identity to **each** MCP tool request, including
+   calls made after a chat switch or reconnect. A shared stdio process's
+   environment or MCP handshake is not a per-chat identity source.
+2. Own an inbox consumer for each subscribed chat, independently of the
+   model's current turn. For example, call `inbox_wait` with `ack: false` and
+   the same per-call metadata, renewing its bounded wait. On a `next-turn`
+   digest, durably enqueue the digest text in that original chat, then call
+   `inbox_ack`. Deduplicate by message id and recover unacked messages after
+   reconnect. Busy chats must queue the turn; `fyi` must not start a turn.
+   Stop the consumer and remove its follows when the chat is closed.
+
+The second half belongs in the Desktop host/app integration, not in a tool
+argument or an inferred agentproto session. The bridge deliberately does not
+spawn `codex --resume` (which creates a separate executor), send messages to
+an arbitrary chat, or treat a generic MCP notification as a supported wake.
+The [Codex app-server API](https://learn.chatgpt.com/docs/app-server) exposes
+thread/turn control to host applications; wiring it into the running
+Desktop chat requires that application's support. The documented
+[MCP Events integration](https://developers.openai.com/plugins/build/mcp-events)
+uses host-provided webhook subscriptions in Work Cloud chats and dots; it is
+not an automatic local stdio wake channel.
+
+Regression coverage verifies two concurrent chat identities, a real watched
+turn-end reaching each corresponding inbox with `next-turn` urgency, no
+identity reuse on an unscoped subsequent call, and explicit-follower
+compatibility. It does **not** establish a live Desktop wake without the host
+consumer above.
+
 ## HTTP
 
 ```text
