@@ -1023,4 +1023,21 @@ describe("createSupervisorTaskGateRunner (ownerless inline shell gate)", () => {
     expect(outcome.passed).toBe(true)
     expect(calls).toEqual([{ command: "test", args: ["-s", "/tmp/x/RAPPORT.md"] }])
   })
+
+  it("a relative file path containing a space resolves against the gate cwd", async () => {
+    const workspace = workspaceAllowing(["check my.sh"])
+    mkdirSync(join(workspace, "scripts"), { recursive: true })
+    writeFileSync(
+      join(workspace, "scripts", "check my.sh"),
+      "#!/bin/sh\nexit 0\n",
+      "utf8",
+    )
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runnerFor(workspace, calls)({
+      gate: { command: "check my.sh" },
+      cwd: join(workspace, "scripts"),
+    })
+    expect(outcome).toMatchObject({ passed: true, exitCode: 0 })
+    expect(calls).toEqual([{ command: "check my.sh", args: [] }])
+  })
 })

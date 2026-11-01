@@ -1701,4 +1701,48 @@ describe("runShellGate() with a shell line in `command`", () => {
     expect(outcome).toMatchObject({ kind: "ran", passed: true })
     expect(calls).toEqual([{ command: script, args: [] }])
   })
+
+  it("a relative file path containing a space resolves against the gate's cwd", async () => {
+    const workspace = await ws(["check my.sh"])
+    await mkdir(join(workspace, "scripts"), { recursive: true })
+    await writeFile(
+      join(workspace, "scripts", "check my.sh"),
+      "#!/bin/sh\nexit 0\n",
+      "utf8",
+    )
+    const calls: Array<{ command: string; args: string[]; cwd: string }> = []
+    const outcome = await runShellGate(
+      { command: "check my.sh", cwd: "scripts" },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args, cwd: input.cwd })
+          return ok
+        },
+      },
+    )
+    expect(outcome).toMatchObject({ kind: "ran", passed: true })
+    expect(calls).toEqual([
+      { command: "check my.sh", args: [], cwd: join(workspace, "scripts") },
+    ])
+  })
+
+  it("a whitespace-only command is not rewritten to `bash -c`", async () => {
+    const workspace = await ws(["bash"])
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runShellGate(
+      { command: "   " },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(outcome.kind).toBe("not-allowlisted")
+    expect(calls).toEqual([])
+  })
 })

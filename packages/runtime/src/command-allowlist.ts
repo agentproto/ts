@@ -150,14 +150,23 @@ export interface ResolvedShellGateExec {
  * is run as `bash -c <line>`. The allowlist then applies to `bash`, which is
  * exactly the explicit `{command:"bash", args:["-c", ...]}` form. Anything
  * else is returned unchanged.
+ *
+ * `cwd` is the directory the gate will actually run in (`sessionCwd` anchored
+ * by `gate.cwd`), so a RELATIVE file path containing a space is recognised
+ * against that directory rather than the daemon's own `process.cwd()`.
  */
 export function resolveShellGateExec(spec: {
   command: string
   args?: readonly string[]
+  cwd?: string
 }): ResolvedShellGateExec {
   const args = spec.args ?? []
   const line = spec.command.trim()
-  if (args.length === 0 && /\s/.test(line) && !existsSync(spec.command)) {
+  if (
+    args.length === 0 &&
+    /\s/.test(line) &&
+    !existsSync(resolve(spec.cwd ?? process.cwd(), spec.command))
+  ) {
     return { command: "bash", args: ["-c", line], shellLine: line }
   }
   return { command: spec.command, args: [...args] }

@@ -272,7 +272,8 @@ export async function runShellGate(
   const exec = opts.runCommand ?? defaultRunCommand
   try {
     const allowlist = await loadAllowlist(opts.workspace)
-    const target = resolveShellGateExec(gate)
+    const resolvedCwd = gate.cwd ? makeCwdAnchor(opts.sessionCwd)(gate.cwd) : opts.sessionCwd
+    const target = resolveShellGateExec({ ...gate, cwd: resolvedCwd })
     const baseName = basename(target.command)
     if (!allowlist.has(baseName)) {
       return {
@@ -280,7 +281,6 @@ export async function runShellGate(
         message: describeGateRefusal("gate", baseName, target.shellLine),
       }
     }
-    const resolvedCwd = gate.cwd ? makeCwdAnchor(opts.sessionCwd)(gate.cwd) : opts.sessionCwd
     const result = await exec({
       command: target.command,
       args: target.args,

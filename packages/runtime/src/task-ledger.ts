@@ -419,7 +419,8 @@ export function createSupervisorTaskGateRunner(opts: {
     }
     try {
       const allowlist = await loadAllowlist(workspace)
-      const target = resolveShellGateExec(gate)
+      const resolvedCwd = gate.cwd ?? cwd ?? workspace
+      const target = resolveShellGateExec({ ...gate, cwd: resolvedCwd })
       const baseName = basename(target.command)
       if (!allowlist.has(baseName)) {
         return {
@@ -430,7 +431,7 @@ export function createSupervisorTaskGateRunner(opts: {
       const result = await exec({
         command: target.command,
         args: target.args,
-        cwd: gate.cwd ?? cwd ?? workspace,
+        cwd: resolvedCwd,
         timeoutMs: gate.timeoutMs ?? 60_000,
       })
       return result.exitCode === 0
