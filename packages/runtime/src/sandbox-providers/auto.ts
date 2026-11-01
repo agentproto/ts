@@ -652,7 +652,15 @@ export function createAutoSandboxProviderHandle(
       let computerErr: unknown
       try {
         const computer = await resolve("computer")
-        const booted = await computer.provider.boot(specFor(spec, "computer", config), opts)
+        const legSpec = specFor(spec, "computer", config)
+        // With overflow on, a fleet-capacity refusal should overflow now
+        // rather than first wait out the computer leg's fleet-capacity window
+        // (default 12 min). An explicit `computer.fleetCapacityWaitMs` wins.
+        const computerSpec: SandboxSpec =
+          config.overflow?.enabled === true && legSpec.config?.fleetCapacityWaitMs === undefined
+            ? { ...legSpec, config: { ...legSpec.config, fleetCapacityWaitMs: 0 } }
+            : legSpec
+        const booted = await computer.provider.boot(computerSpec, opts)
         const choice: SandboxProviderChoice = {
           requested,
           provider: "computer",

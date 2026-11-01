@@ -84,6 +84,9 @@ export interface FakeControllerOptions {
   createErrorExtra?: Record<string, unknown>
   /** `Retry-After` header sent with a create error. */
   createRetryAfter?: string
+  /** With `createStatus`: refuse only this many creates, then serve them
+   *  normally (a fleet that wakes a shelved host). Unset refuses every one. */
+  createRefusals?: number
   /** Delay the create response by this many ms (deadline/cancel tests). A
    *  request aborted during the delay creates nothing. */
   createDelayMs?: number
@@ -104,6 +107,12 @@ export class FakeController {
   readonly server: Server
   readonly requestHeaders: Array<Record<string, string | string[] | undefined>> = []
   readonly createBodies: Array<Record<string, unknown>> = []
+  /** `Idempotency-Key` of every create attempt, refused ones included. */
+  readonly createIdempotencyKeys: Array<string | undefined> = []
+  /** Successful create answers by `Idempotency-Key`, replayed for the same
+   *  key like the real controller and fleet do. */
+  private readonly createdByIdempotencyKey = new Map<string, unknown>()
+  private createRefusalsServed = 0
   readonly execs: Array<{ id: string; argv: string[]; timeoutSec: number }> = []
   readonly suspended: string[] = []
   readonly resumed: string[] = []
@@ -232,11 +241,22 @@ export class FakeController {
     }
 
     if (url.pathname === "/v1/computers" && req.method === "POST") {
-      if (this.options.createStatus) {
+      const rawKey = req.headers["idempotency-key"]
+      const idempotencyKey = typeof rawKey === "string" ? rawKey : undefined
+      this.createIdempotencyKeys.push(idempotencyKey)
+      if (idempotencyKey !== undefined && this.createdByIdempotencyKey.has(idempotencyKey)) {
+        return reply(res, 201, this.createdByIdempotencyKey.get(idempotencyKey))
+      }
+      const refusalStatus = this.options.createStatus
+      if (
+        refusalStatus !== undefined &&
+        (this.options.createRefusals === undefined || this.createRefusalsServed < this.options.createRefusals)
+      ) {
+        this.createRefusalsServed++
         const body = { error: this.options.createError ?? "failed", ...this.options.createErrorExtra }
         assertContract(errorResponseSchema, body)
         if (this.options.createRetryAfter !== undefined) res.setHeader("Retry-After", this.options.createRetryAfter)
-        return reply(res, this.options.createStatus, body)
+        return reply(res, refusalStatus, body)
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
       assertContract(createComputerRequestSchema, parsed)
@@ -260,6 +280,7 @@ export class FakeController {
         ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
       }
       assertContract(createComputerResponseSchema, responseBody)
+      if (idempotencyKey !== undefined) this.createdByIdempotencyKey.set(idempotencyKey, responseBody)
       this.options.onCreate?.(id)
       return reply(res, 201, responseBody)
     }
