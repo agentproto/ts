@@ -81,8 +81,8 @@ export function withReviewWorktreeZones(boundary: AppBoundary, cwd: string): App
  *    loading is forced off: `tool_search` isn't on the list, so a deferred
  *    tool would be unreachable.
  *  - No list declared: the same default `agent_start` applies
- *    (`shouldInjectDaemonSelfMount` — hermes and on-host claude-code get the
- *    full gateway, other adapters none).
+ *    (`shouldInjectDaemonSelfMount` -- every on-host adapter gets the
+ *    full gateway; sandbox non-hermes adapters get none).
  *
  * Every mount carries `callerSessionId` so calls attribute to the step's
  * session. `undefined` ⇒ mount nothing (no gateway URL wired, or an adapter

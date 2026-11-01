@@ -235,9 +235,9 @@ describe("capabilities inventory — per-import reach (P2)", () => {
     ],
   }
 
-  it("empty defaults: daemon-default harnesses are indirect, the rest none", () => {
+  it("empty defaults: every ACP adapter is indirect (universal on-host daemon mount), non-ACP none", () => {
     const m = computeImportedReach(["a"], adapters, {}, bundles)
-    expect(m.get("a")).toEqual({ "claude-code": "indirect", hermes: "indirect", opencode: "none", printer: "none" })
+    expect(m.get("a")).toEqual({ "claude-code": "indirect", hermes: "indirect", opencode: "indirect", printer: "none" })
   })
 
   it("a default bundle makes its imports native for that adapter only", () => {

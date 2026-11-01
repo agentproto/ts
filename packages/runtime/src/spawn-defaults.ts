@@ -130,9 +130,9 @@ export interface DefaultsAdapterConfig {
    *  {@link resolveBundleDefaults}. */
   bundles?: string[]
   /** Explicitly mount the daemon's own scoped `/mcp` for spawns of this
-   *  adapter — the only way an adapter outside `shouldInjectDaemonSelfMount`'s
-   *  allowlist (opencode, codex, gemini, …) gets it by default. Overridden
-   *  per-spawn by `agent_start.daemonMount`. */
+   *  adapter -- mainly useful for sandbox spawns or after an `mcpServers: []`
+   *  opt-out, since the universal on-host default now covers all adapters.
+   *  Overridden per-spawn by `agent_start.daemonMount`. */
   daemonMount?: boolean
   /** Context profile (`full` | `lean` | an adapter-declared id) applied to
    *  spawns of this adapter that name none themselves. `"full"` opts an
