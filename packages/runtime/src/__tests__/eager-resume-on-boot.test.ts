@@ -345,9 +345,9 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       registry: reg,
       concurrency: 2,
       policy: "keepalive",
-      // Pin "now" near the fixture dates so the keepAlive idle cutoff does
-      // not age these rows out of the pass.
-      now: Date.parse("2026-07-23T01:00:00Z"),
+      // Pin "now" 10 min after the fixture start so the keepAlive idle cutoff
+      // does not age this row out of the pass (default is 30 min).
+      now: Date.parse("2026-07-23T00:10:00Z"),
     })
     expect(summary).toMatchObject({ candidates: 1, resumed: 1 })
     expect(reg.get("persistent")?.status).toBe("running")
@@ -441,8 +441,9 @@ describe("runEagerResumePass (bounded boot pass)", () => {
 
   it("does not eager-resume a keepAlive row idle past the cutoff — but pinned and operator-labelled rows still come back", async () => {
     const now = Date.parse("2026-11-01T12:00:00Z")
-    const stale = "2026-10-01T00:00:00Z"
-    const fresh = "2026-11-01T11:00:00Z"
+    // Default cutoff is 30 minutes: 31 min idle is stale, 29 min is fresh.
+    const stale = "2026-11-01T11:29:00Z"
+    const fresh = "2026-11-01T11:31:00Z"
     writeSessions(persistPath, [
       { id: "stale-keepalive", keepAlive: true, lastTurnEndedAt: stale },
       // Legacy row persisted before `lastTurnEndedAt` existed, but with an old
@@ -499,7 +500,7 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       {
         id: "completed",
         keepAlive: true,
-        lastTurnEndedAt: "2026-11-01T11:00:00Z",
+        lastTurnEndedAt: "2026-11-01T11:59:00Z",
         outcome: {
           status: "completed",
           verdict: "done",

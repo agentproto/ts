@@ -36,7 +36,7 @@ import {
   type SessionsRegistry,
 } from "./sessions.js"
 
-/** Default idle cutoff for reviving a `keepAlive` row at boot (24 hours). A
+/** Default idle cutoff for reviving a `keepAlive` row at boot (30 minutes). A
  *  `keepAlive` session is exempt from the idle reaper and therefore never
  *  reaches the `idle-reaped` end reason that excludes a row from this pass —
  *  so without a cutoff, a finished executor parked with `keepAlive: true`
@@ -44,8 +44,8 @@ import {
  *  enough to plausibly still be in use come back; older ones stay
  *  dead-but-lazy-resumable (the next prompt or an explicit `session_restart`
  *  revives them on demand). Override with
- *  `daemon.bootResumeKeepAliveMaxIdleHours`; 0 disables the cutoff. */
-export const DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS = 24 * 60 * 60 * 1000
+ *  `daemon.bootResumeKeepAliveMaxIdleMinutes`; 0 disables the cutoff. */
+export const DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS = 30 * 60 * 1000
 
 /** Return the newest parseable ISO-8601 timestamp, or undefined when none
  *  parses. */
@@ -113,9 +113,9 @@ export async function runEagerResumePass(opts: {
   policy?: "all" | "keepalive"
   /** How long a `keepAlive` row may be idle before this pass stops reviving
    *  it automatically (published as
-   *  `daemon.bootResumeKeepAliveMaxIdleHours`). `pinned` rows and rows with an
+   *  `daemon.bootResumeKeepAliveMaxIdleMinutes`). `pinned` rows and rows with an
    *  operator-assigned label (`operatorLabel`, e.g. the persistent brains and
-   *  PMs) are always exempt. `undefined` ⇒ the 24 h default; `0` or negative
+   *  PMs) are always exempt. `undefined` ⇒ the 30 min default; `0` or negative
    *  disables the cutoff. The row itself is never killed, archived or
    *  modified: it just stays dead-but-lazy-resumable until the next prompt or
    *  an explicit `session_restart`. */

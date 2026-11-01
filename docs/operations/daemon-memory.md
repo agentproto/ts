@@ -86,7 +86,7 @@ the sandbox reap, [`daemon.sandboxIdleReapAfterMs`](../cli/verbs/config.md#sandb
 Because `keepAlive` sessions are never idle-reaped, a finished one would
 otherwise be respawned on every daemon restart forever. The boot pass therefore
 stops eagerly resuming a `keepAlive` session that has been idle longer than
-`daemon.bootResumeKeepAliveMaxIdleHours` (default `24`, measured from its last
+`daemon.bootResumeKeepAliveMaxIdleMinutes` (default `30`, measured from its last
 turn-end; `0` disables the cutoff). The row is not killed, archived or changed:
 it stays dead-but-lazy-resumable, and its next prompt or an explicit
 `session_restart` brings it back. Pinned sessions and sessions carrying an
@@ -96,7 +96,7 @@ completed through `session_mark_completed` (or the `operator-completed` close
 path) also drops its `keepAlive` flag and is never eagerly resumed.
 
 ```sh
-agentproto config set daemon.bootResumeKeepAliveMaxIdleHours 24
+agentproto config set daemon.bootResumeKeepAliveMaxIdleMinutes 30
 ```
 
 HTTP `/health` and MCP `daemon_health` now expose `bootResumePolicy` and a

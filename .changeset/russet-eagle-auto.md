@@ -3,4 +3,4 @@
 "@agentproto/cli": patch
 ---
 
-Stop eager-resuming keepAlive sessions idle past a configurable cutoff
+Stop eager-resuming keepAlive sessions idle past a 30-minute default cutoff
