@@ -237,3 +237,190 @@ exit 0
     expect(r.status).toBe(127)
   })
 })
+
+// --- Behavioural: a body rewrite keeps the runner's footer --------------------
+
+describe("generated shim — body rewrites keep an existing footer", () => {
+  let root: string
+  let shimDir: string
+  let fakeDir: string
+  let ghLog: string
+  let state: string
+
+  const PR_URL = "https://github.com/acme/widgets/pull/42"
+  const FOOTER = `<sub>🤖 **${MARKER}** — PR · session \`sess-0\` · claude-code</sub>`
+  const STAMPED = `Old body\n\n---\n${FOOTER}`
+
+  /** A stateful node fake `gh`: the PR body lives in `$FAKE_GH_STATE`, so a
+   *  `pr edit` / `api -X PATCH` really replaces it and a later read sees the
+   *  result. Each invocation's argv is logged as one JSON line. */
+  const FAKE_GH = String.raw`#!${process.execPath}
+"use strict"
+const fs = require("node:fs")
+const args = process.argv.slice(2)
+fs.appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(args) + "\n")
+const read = () => fs.readFileSync(process.env.FAKE_GH_STATE, "utf8")
+const write = b => fs.writeFileSync(process.env.FAKE_GH_STATE, b)
+const URL = "${PR_URL}"
+if (args[0] === "pr" && args[1] === "view") {
+  if (process.env.FAKE_GH_READ_FAIL) process.exit(1)
+  process.stdout.write(JSON.stringify({ url: URL, body: read() }) + "\n")
+  process.exit(0)
+}
+if (args[0] === "pr" && args[1] === "edit") {
+  const code = Number(process.env.FAKE_GH_EDIT_EXIT || 0)
+  if (code !== 0) { process.stderr.write("edit failed\n"); process.exit(code) }
+  for (let i = 2; i < args.length; i++) {
+    const a = args[i]
+    if (a === "--body" || a === "-b") write(args[++i])
+    else if (a.startsWith("--body=")) write(a.slice(7))
+    else if (a === "--body-file" || a === "-F") {
+      const f = args[++i]
+      write(fs.readFileSync(f === "-" ? 0 : f, "utf8"))
+    }
+  }
+  process.stdout.write(URL + "\n")
+  process.exit(0)
+}
+if (args[0] === "api") {
+  const field = args.find(a => a.startsWith("body="))
+  if (args.includes("PATCH") && field) {
+    write(field.slice(5))
+    process.stdout.write("{}\n")
+    process.exit(0)
+  }
+  if (process.env.FAKE_GH_READ_FAIL) process.exit(1)
+  process.stdout.write(JSON.stringify({ body: read() }) + "\n")
+  process.exit(0)
+}
+process.exit(0)
+`
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), "gh-shim-edit-"))
+    fakeDir = join(root, "bin")
+    shimDir = await ensureGhShimDir({ baseDir: join(root, "shim"), nodePath: process.execPath })
+    ghLog = join(root, "gh.log")
+    state = join(root, "body.txt")
+    mkdirSync(fakeDir, { recursive: true })
+    writeFileSync(join(fakeDir, "gh"), FAKE_GH)
+    chmodSync(join(fakeDir, "gh"), 0o755)
+  })
+
+  function runShim(args: string[], extraEnv: Record<string, string> = {}, input?: string) {
+    return spawnSync(process.execPath, [join(shimDir, "gh"), ...args], {
+      encoding: "utf8",
+      ...(input !== undefined ? { input } : {}),
+      env: {
+        ...process.env,
+        PATH: `${shimDir}${delimiter}${fakeDir}`,
+        FAKE_GH_LOG: ghLog,
+        FAKE_GH_STATE: state,
+        [SESSION_ID_ENV]: "sess-1",
+        ...extraEnv,
+      },
+    })
+  }
+
+  const calls = (): string[][] =>
+    existsSync(ghLog)
+      ? readFileSync(ghLog, "utf8").trim().split("\n").filter(Boolean).map(l => JSON.parse(l) as string[])
+      : []
+  const patches = () => calls().filter(c => c[0] === "api" && c.includes("PATCH") && c.some(a => a.startsWith("body=")))
+  const body = () => readFileSync(state, "utf8")
+  const footerCount = (s: string) => s.split(FOOTER).length - 1
+
+  it("`pr edit --body` keeps the footer the PR already carried", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten body"])
+    expect(r.status).toBe(0)
+    // gh's own output is untouched.
+    expect(r.stdout).toBe(`${PR_URL}\n`)
+    expect(body()).toBe(`Rewritten body\n\n---\n${FOOTER}`)
+    // The rewrite went through on the shared PATCH path, against the right PR.
+    expect(patches()).toHaveLength(1)
+    expect(patches()[0]).toContain("repos/acme/widgets/pulls/42")
+  })
+
+  it("covers the short and inline body flags (`-b`, `--body=`)", () => {
+    writeFileSync(state, STAMPED)
+    expect(runShim(["pr", "edit", "42", "-b", "Short flag"]).status).toBe(0)
+    expect(body()).toBe(`Short flag\n\n---\n${FOOTER}`)
+    writeFileSync(state, STAMPED)
+    expect(runShim(["pr", "edit", "--body=Inline flag"]).status).toBe(0)
+    expect(body()).toBe(`Inline flag\n\n---\n${FOOTER}`)
+  })
+
+  it("`pr edit --body-file` keeps the footer", () => {
+    writeFileSync(state, STAMPED)
+    const file = join(root, "new-body.md")
+    writeFileSync(file, "From a file\n")
+    const r = runShim(["pr", "edit", PR_URL, "--body-file", file])
+    expect(r.status).toBe(0)
+    expect(body()).toBe(`From a file\n\n---\n${FOOTER}`)
+  })
+
+  it("`pr edit -F -` keeps the footer and leaves stdin to gh", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "-F", "-"], {}, "From stdin\n")
+    expect(r.status).toBe(0)
+    // The fake gh read the body off stdin, so the shim's own reads never ate it.
+    expect(body()).toBe(`From stdin\n\n---\n${FOOTER}`)
+  })
+
+  it("never duplicates a footer the new body already carries", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", `Agent kept it\n\n---\n${FOOTER}`])
+    expect(r.status).toBe(0)
+    expect(footerCount(body())).toBe(1)
+    expect(patches()).toHaveLength(0)
+  })
+
+  it("never adds a footer to a PR that had none", () => {
+    writeFileSync(state, `Plain body that only mentions ${MARKER} in prose`)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"])
+    expect(r.status).toBe(0)
+    expect(body()).toBe("Rewritten")
+    expect(patches()).toHaveLength(0)
+  })
+
+  it("a failed body read leaves the edit's exit code and result intact", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"], { FAKE_GH_READ_FAIL: "1" })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe(`${PR_URL}\n`)
+    expect(body()).toBe("Rewritten")
+    expect(patches()).toHaveLength(0)
+  })
+
+  it("a failed edit keeps its own exit code and is never followed by a PATCH", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--body", "Rewritten"], { FAKE_GH_EDIT_EXIT: "4" })
+    expect(r.status).toBe(4)
+    expect(r.stderr).toContain("edit failed")
+    expect(body()).toBe(STAMPED)
+    expect(patches()).toHaveLength(0)
+  })
+
+  it("an edit that doesn't touch the body passes straight through", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["pr", "edit", PR_URL, "--title", "New title"])
+    expect(r.status).toBe(0)
+    expect(calls()).toEqual([["pr", "edit", PR_URL, "--title", "New title"]])
+  })
+
+  it("`gh api -X PATCH .../pulls/N -f body=...` keeps the footer", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["api", "-X", "PATCH", "repos/acme/widgets/pulls/42", "-f", "body=Via the API"])
+    expect(r.status).toBe(0)
+    expect(body()).toBe(`Via the API\n\n---\n${FOOTER}`)
+    expect(patches()).toHaveLength(2)
+  })
+
+  it("a plain `gh api` read passes straight through", () => {
+    writeFileSync(state, STAMPED)
+    const r = runShim(["api", "repos/acme/widgets/pulls/42"])
+    expect(r.status).toBe(0)
+    expect(calls()).toEqual([["api", "repos/acme/widgets/pulls/42"]])
+  })
+})
