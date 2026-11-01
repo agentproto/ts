@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -35,7 +35,7 @@ import { MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -57,6 +57,10 @@ Usage:
                    Default: the daemon's modelRolePreset (switch it with
                    \`agentproto config set modelRolePreset <name>\`), else
                    Sonnet/Opus. \`model_roles\` lists what each one uses.
+  --max-reviews <n> Most unmerged branches to send to a reviewer this run
+                   (newest tip first). Default: the workflow's own (40).
+                   Branches with a stored verdict are never re-reviewed, so
+                   repeated runs walk the backlog.
   --wait           Block until each run ends, then print its markdown report
                    (exit 0 when all done, 1 when any failed/was cancelled).
   --json           Print the raw workflow_run_file reply (with --wait: the
@@ -74,6 +78,7 @@ Examples:
   agentproto maintain --repo ~/code/my-app --apply-merged --apply-reviewed
   agentproto maintain --all --apply-merged
   agentproto maintain --review-preset go-free --wait
+  agentproto maintain --max-reviews 10 --wait
   agentproto maintain --wait
 `
 
@@ -86,6 +91,14 @@ function resolveRepoMaintenanceApp(): { appDir: string; workflowPath: string } {
 	const appsPackageJson = require.resolve("@agentproto/apps/package.json")
 	const appDir = join(dirname(appsPackageJson), "repo-maintenance")
 	return { appDir, workflowPath: join(appDir, ".agentproto", "workflows", "maintain", "WORKFLOW.md") }
+}
+
+/** `--max-reviews`: undefined when absent (the workflow default applies),
+ *  null when it is not a positive integer. */
+export function parseMaxReviews(raw: string | undefined): number | undefined | null {
+	if (raw === undefined) return undefined
+	if (!/^[1-9][0-9]*$/.test(raw.trim())) return null
+	return Number(raw.trim())
 }
 
 /** The `--repo` values actually given (possibly none, possibly repeated). */
@@ -109,6 +122,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			"apply-merged": { type: "boolean" },
 			"apply-reviewed": { type: "boolean" },
 			"review-preset": { type: "string" },
+			"max-reviews": { type: "string" },
 			wait: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
@@ -118,6 +132,14 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 	if (reviewPreset !== undefined && !MODEL_ROLE_PRESET_NAMES.includes(reviewPreset)) {
 		process.stderr.write(
 			`agentproto maintain: unknown --review-preset "${reviewPreset}" (known: ${MODEL_ROLE_PRESET_NAMES.join(", ")})\n`,
+		)
+		return 2
+	}
+
+	const maxReviews = parseMaxReviews(values["max-reviews"])
+	if (maxReviews === null) {
+		process.stderr.write(
+			`agentproto maintain: --max-reviews must be a positive integer, got "${values["max-reviews"]}"\n`,
 		)
 		return 2
 	}
@@ -207,6 +229,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 					applyMerged: values["apply-merged"] === true,
 					applyReviewed: values["apply-reviewed"] === true,
 					...(reviewPreset !== undefined ? { reviewPreset } : {}),
+					...(maxReviews !== undefined ? { maxReviews } : {}),
 				},
 			})) as Record<string, unknown>
 		} catch (err) {
