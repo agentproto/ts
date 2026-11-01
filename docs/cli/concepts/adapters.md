@@ -28,7 +28,11 @@ Per the
 
 The CLI doesn't care about the scope — any package on the resolution
 path with a valid `AgentCliHandle` works. The conventions exist for
-human discoverability.
+human discoverability. Discovery (CLI ≥ 1.32.0) also accepts the
+canonical AIP-70 `harness-` spelling — `@agentproto/harness-<slug>` or
+`@<vendor>/agentproto-harness-<slug>` — which wins a same-slug collision
+with the `adapter-` package; the bare `@agentproto/harness` package
+never matches a slug.
 
 ## Installing
 
@@ -234,8 +238,9 @@ See [`verbs/acp.md`](../verbs/acp.md).
 `agentproto run <slug>` (and every other path through `resolveAdapter`)
 resolves a slug in this order:
 
-1. **npm** — `@agentproto/adapter-<slug>` (a real adapter package always
-   wins).
+1. **npm** — `@agentproto/harness-<slug>` first, then
+   `@agentproto/adapter-<slug>` (a real adapter package always wins;
+   on a same-slug collision the `harness-` spelling wins).
 2. **config** — `config.acpAgents[<slug>]`.
 3. **catalog** — `ACP_CATALOG`.
 
