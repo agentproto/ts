@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: MiniMax pricing page + committed PascalCase list, pricing: committed first-party rows + OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: no priced rows parsed from the MiniMax pricing page, synced 2026-10-28T04:17:38.458Z)
+// (ids: MiniMax pricing page + committed PascalCase list, pricing: committed first-party rows + OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: no priced rows parsed from the MiniMax pricing page, synced 2026-11-01T15:27:59.917Z)
 // OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when
 // missing; OpenRouter's minimax/* routes carry no input_cache_write, so those
 // rows have no cacheWriteMultiplier.
