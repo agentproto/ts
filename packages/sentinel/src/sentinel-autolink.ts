@@ -36,6 +36,12 @@
  * already existed when the row was retired are re-pointed by
  * `retirement-cleanup.ts`.
  *
+ * Owner rule: a PR is watched by the session it was recorded on AND that
+ * session's live parent (the supervisor), one sentinel each. A supervisor that
+ * opened the PR for a child (REST, `pr_open` on its behalf) or a reconciler
+ * that discovered it on the executor both land on the same pair, so the
+ * supervisor is never left blind and a dead executor never means no watch.
+ *
  * Dead session note: if the owning session later exits for good (not
  * resumable), this sentinel is NOT cancelled — same as every sentinel, its
  * provider-side watch keeps running (design §2: "the PR is still real").
@@ -85,6 +91,9 @@ export interface SentinelAutoLinkOptions {
    *  the daemon wires the end of the `continuedTo` chain (see the module
    *  doc). Defaults to identity. */
   resolveTargetSession?: (sessionId: string) => string
+  /** The live supervisor of a session (its recorded parent), or undefined.
+   *  The daemon wires the parent when it is running. Defaults to none. */
+  resolveParentSession?: (sessionId: string) => string | undefined
 }
 
 export interface SentinelAutoLinker {
@@ -120,7 +129,10 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
     if (!parsed) return // not a github.com PR url — local-gh has nothing to watch
 
     const subject = `github:${parsed.repo}#${parsed.number}`
-    if (alreadyWatching(subject, sessionId)) return
+    const parentId = opts.resolveParentSession?.(sessionId)
+    const owners = parentId && parentId !== sessionId ? [sessionId, parentId] : [sessionId]
+    const pending = owners.filter(owner => !alreadyWatching(subject, owner))
+    if (pending.length === 0) return
 
     const urgency = (await opts.autoWatchUrgency?.()) ?? "next-turn"
 
@@ -133,31 +145,33 @@ export function createSentinelAutoLinker(opts: SentinelAutoLinkOptions): Sentine
     })
     const candidates = selected === LOCAL_GH_SLUG ? [LOCAL_GH_SLUG] : [selected, LOCAL_GH_SLUG]
 
-    for (const slug of candidates) {
-      const provider = await opts.resolveProvider(slug)
-      if (!provider) {
-        log(`[sentinel-autolink] provider "${slug}" unavailable — not watching ${subject} via it`)
-        continue
-      }
-      const spec: SentinelSpec = {
-        match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
-        until: { kind: "subject_terminal" },
-        target: { kind: "session", sessionId, urgency },
-        provider: slug,
-        label: `auto:pr#${parsed.number}`,
-        group: sessionId,
-      }
-      const id = mintSentinelId()
-      try {
-        const handle = await provider.create(
-          spec,
-          deliveryPreferenceFor(provider, opts.activeIntervalMs ?? 15_000),
-          { sentinelId: id },
-        )
-        opts.store.create({ id, spec, provider: slug, handle })
-        return
-      } catch (err) {
-        log(`[sentinel-autolink] failed to auto-watch ${subject} via ${slug}: ${err instanceof Error ? err.message : String(err)}`)
+    for (const owner of pending) {
+      for (const slug of candidates) {
+        const provider = await opts.resolveProvider(slug)
+        if (!provider) {
+          log(`[sentinel-autolink] provider "${slug}" unavailable — not watching ${subject} via it`)
+          continue
+        }
+        const spec: SentinelSpec = {
+          match: singleMatch(subject, [...GITHUB_DEFAULT_PR_TYPES]),
+          until: { kind: "subject_terminal" },
+          target: { kind: "session", sessionId: owner, urgency },
+          provider: slug,
+          label: `auto:pr#${parsed.number}`,
+          group: owner,
+        }
+        const id = mintSentinelId()
+        try {
+          const handle = await provider.create(
+            spec,
+            deliveryPreferenceFor(provider, opts.activeIntervalMs ?? 15_000),
+            { sentinelId: id },
+          )
+          opts.store.create({ id, spec, provider: slug, handle })
+          break
+        } catch (err) {
+          log(`[sentinel-autolink] failed to auto-watch ${subject} via ${slug}: ${err instanceof Error ? err.message : String(err)}`)
+        }
       }
     }
   }

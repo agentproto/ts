@@ -51,7 +51,8 @@ export interface WiringSweepResult {
  * Mirrors cron-scheduler's `ownerRetirement`:
  *   - `expiresAt` passed → remove (the bounded backstop);
  *   - recipient row gone → remove;
- *   - recipient retired → relink to a live successor, else remove.
+ *   - recipient retired → relink to a live successor (sentinels: else the
+ *     live parent), else remove.
  *
  * Archived rows are included here: unlike the event handler above (which
  * deliberately leaves archive reversible), the sweep is the terminal cleanup
@@ -76,6 +77,24 @@ export async function sweepWiringLifecycle(
     const desc = deps.registry.get(successor)
     return desc && (desc.status === "running" || desc.status === "starting") ? successor : undefined
   }
+
+  const isLive = (id: string | undefined): id is string => {
+    const desc = id ? deps.registry.get(id) : undefined
+    return !!desc && !isRetired(desc) && (desc.status === "running" || desc.status === "starting")
+  }
+
+  /** Another live sentinel already watches one of `subjects` for `targetId`? */
+  const alreadyWatched = (sentinelId: string, targetId: string, subjects: readonly string[]): boolean =>
+    deps.sentinelStore
+      .list()
+      .some(
+        s =>
+          s.id !== sentinelId &&
+          (s.status === "active" || s.status === "orphaned") &&
+          s.spec.target.kind === "session" &&
+          s.spec.target.sessionId === targetId &&
+          s.spec.match.some(m => subjects.includes(m.subject)),
+      )
 
   for (const follow of deps.followStore.list()) {
     const expired = isExpiresAtReached(follow.expiresAt, now)
@@ -103,10 +122,28 @@ export async function sweepWiringLifecycle(
     if (!expired && target.kind === "session") {
       const desc = deps.registry.get(target.sessionId)
       if (desc && !isRetired(desc)) continue
-      const successor = desc ? liveSuccessor(desc.id) : undefined
+      // Same rule as the sentinel runtime's dead-session path: successor
+      // first, else the live parent; cancel only when neither exists.
+      const successor = desc ? (liveSuccessor(desc.id) ?? (isLive(desc.parentSessionId) ? desc.parentSessionId : undefined)) : undefined
       if (successor) {
+        // Auto-link gives the parent its own sentinel for this subject; a
+        // second watch on the same target would double every notice.
+        if (alreadyWatched(sentinel.id, successor, sentinel.spec.match.map(m => m.subject))) {
+          await deps.cancelSentinel(sentinel.id).catch(err => {
+            log(
+              `[retirement-cleanup] failed to cancel duplicate sentinel ${sentinel.id}: ${err instanceof Error ? err.message : String(err)}`,
+            )
+          })
+          result.sentinelsCancelled++
+          log(`[retirement-cleanup] cancelled sentinel ${sentinel.id} (duplicate watch for ${successor} already exists)`)
+          continue
+        }
         deps.sentinelStore.update(sentinel.id, {
-          spec: { ...sentinel.spec, target: { ...target, sessionId: successor } },
+          spec: {
+            ...sentinel.spec,
+            target: { ...target, sessionId: successor },
+            ...(sentinel.spec.group !== undefined ? { group: successor } : {}),
+          },
         })
         result.sentinelsRelinked++
         log(`[retirement-cleanup] sentinel ${sentinel.id} re-pointed at ${successor}`)

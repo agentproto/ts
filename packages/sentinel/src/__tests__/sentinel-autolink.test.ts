@@ -205,3 +205,41 @@ describe("sentinel auto-link — superseded sessions (restart / continue)", () =
     expect(s.spec.group).toBe("sess_new")
   })
 })
+
+describe("sentinel auto-link — owner is the recording session and its live parent", () => {
+  const make = (parents: Record<string, string>) => {
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider({ slug: LOCAL_GH_SLUG })
+    const linker = createSentinelAutoLinker({
+      store,
+      resolveProvider: resolverFor(provider),
+      autoWatchPrs: async () => true,
+      resolveParentSession: id => parents[id],
+    })
+    return { store, linker }
+  }
+
+  it("a PR recorded on an executor also reaches its supervisor, once each", async () => {
+    const { store, linker } = make({ sess_exec: "sess_sup" })
+
+    await linker.linkNow("sess_exec", OPENED, {})
+    await linker.linkNow("sess_exec", OPENED, {})
+
+    const targets = store.list().map(s => (s.spec.target.kind === "session" ? s.spec.target.sessionId : ""))
+    expect(targets.sort()).toEqual(["sess_exec", "sess_sup"])
+    for (const s of store.list()) expect(s.spec.group).toBe(s.spec.target.kind === "session" ? s.spec.target.sessionId : "")
+  })
+
+  it("a session with no live parent gets a single sentinel", async () => {
+    const { store, linker } = make({})
+    await linker.linkNow("sess_exec", OPENED, {})
+    expect(store.list()).toHaveLength(1)
+  })
+
+  it("the supervisor's sentinel survives an executor that was already watched", async () => {
+    const { store, linker } = make({ sess_exec: "sess_sup" })
+    await linker.linkNow("sess_sup", OPENED, {})
+    await linker.linkNow("sess_exec", OPENED, {})
+    expect(store.list()).toHaveLength(2)
+  })
+})

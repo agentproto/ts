@@ -451,9 +451,82 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     })
   }
 
+  /** Another live sentinel already delivers `subject` to `targetId`? */
+  function hasLiveWatchFor(targetId: string, subject: string, exceptId: string): boolean {
+    return store
+      .list()
+      .some(
+        s =>
+          s.id !== exceptId &&
+          POLLABLE_STATUSES.has(s.status) &&
+          s.spec.target.kind === "session" &&
+          s.spec.target.sessionId === targetId &&
+          s.spec.match.some(m => m.subject === subject),
+      )
+  }
+
+  /** The target cannot be written to and has no successor: hand the notice to
+   *  its live parent and re-target the sentinel there, so the watch survives
+   *  its executor. If the parent already watches the same subject (auto-link
+   *  gives it its own sentinel), drop this duplicate instead of pointing a
+   *  second watch at the parent. Returns false when there is no live parent
+   *  to take it. */
+  async function retargetToLiveParent(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    msg: SessionMessage,
+    parentId: string | undefined,
+    oneShot?: { urgency: MessageUrgency; textPrefix: string },
+  ): Promise<boolean> {
+    const target = sentinel.spec.target
+    if (target.kind !== "session" || !parentId || parentId === target.sessionId) return false
+    if (!opts.isSessionAlive(parentId)) return false
+    // Same retirement check the dead-session path uses: `isSessionAlive` is a
+    // pid probe and reads "alive" for a pid-less retired row.
+    const parentInfo = opts.sessionInfo?.(parentId)
+    if (parentInfo && sentinelPlatform().lifecycle.isRetired(parentInfo)) return false
+
+    if (hasLiveWatchFor(parentId, event.subject, sentinel.id)) {
+      try {
+        await cancelTombstones.cancel(sentinel.handle, () => store.remove(sentinel.id))
+      } catch (err) {
+        log(`[sentinel-runtime] failed to drop duplicate sentinel ${sentinel.id}: ${describeError(err)}`)
+        store.remove(sentinel.id)
+      }
+      return true
+    }
+
+    const key = coalesceKeyFor(event)
+    const forwarded: SessionMessage = oneShot
+      ? { ...msg, to: parentId, urgency: oneShot.urgency, text: `${oneShot.textPrefix}${msg.text}` }
+      : { ...msg, to: parentId }
+    try {
+      await opts.registry.sendMessage(forwarded, {
+        source: "sentinel",
+        origin: sentinel.id,
+        ...(key ? { coalesceKey: key } : {}),
+      })
+    } catch (err) {
+      if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
+      return false
+    }
+    store.update(sentinel.id, {
+      spec: {
+        ...sentinel.spec,
+        target: { ...target, sessionId: parentId },
+        ...(sentinel.spec.group !== undefined ? { group: parentId } : {}),
+      },
+    })
+    const current = store.get(sentinel.id)
+    if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+    return true
+  }
+
   /** The target was closed on purpose: never resume it. Hand the notice to
-   *  its live parent (as `fyi`, so it lands in the inbox without forcing a
-   *  turn); with no live parent, park it in the journal. */
+   *  its live parent and re-target the sentinel there; with no live parent,
+   *  park it in the journal. This first forward is `fyi` with a context
+   *  prefix so the parent is not forced into a turn; later deliveries use the
+   *  sentinel's normal urgency. */
   async function routeAroundClosedSession(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -461,18 +534,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sessionId: string,
     info: SentinelSessionInfo,
   ): Promise<void> {
-    const parentId = info.parentSessionId
-    const key = coalesceKeyFor(event)
-    if (parentId && opts.isSessionAlive(parentId)) {
-      try {
-        await opts.registry.sendMessage(
-          { ...msg, to: parentId, urgency: "fyi", text: `[for closed session ${sessionId}] ${msg.text}` },
-          { source: "sentinel", origin: sentinel.id, ...(key ? { coalesceKey: key } : {}) },
-        )
-        return
-      } catch (err) {
-        if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
-      }
+    if (
+      await retargetToLiveParent(sentinel, event, msg, info.parentSessionId, {
+        urgency: "fyi",
+        textPrefix: `[for closed session ${sessionId}] `,
+      })
+    ) {
+      return
     }
     parkEvent(
       sentinel,
@@ -563,6 +631,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       const current = store.get(sentinel.id)
       if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
     } catch (err) {
+      if (await retargetToLiveParent(sentinel, event, msg, info?.parentSessionId).catch(() => false)) return
       parkEvent(sentinel, event, describeError(err))
       markOrphaned(sentinel)
     }
