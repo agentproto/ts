@@ -113,9 +113,10 @@ export async function runEagerResumePass(opts: {
   policy?: "all" | "keepalive"
   /** How long a `keepAlive` row may be idle before this pass stops reviving
    *  it automatically (published as
-   *  `daemon.bootResumeKeepAliveMaxIdleMinutes`). `pinned` rows and rows with an
-   *  operator-assigned label (`operatorLabel`, e.g. the persistent brains and
-   *  PMs) are always exempt. `undefined` ⇒ the 30 min default; `0` or negative
+   *  `daemon.bootResumeKeepAliveMaxIdleMinutes`). Only explicitly `pinned` rows
+   *  are exempt: pinning is the deliberate "always keep" flag, while an
+   *  `operatorLabel` is identity only and is stamped on every operator spawn.
+   *  `undefined` ⇒ the 30 min default; `0` or negative
    *  disables the cutoff. The row itself is never killed, archived or
    *  modified: it just stays dead-but-lazy-resumable until the next prompt or
    *  an explicit `session_restart`. */
@@ -136,10 +137,10 @@ export async function runEagerResumePass(opts: {
   // A keepAlive row outlives the idle reaper by design, so a finished one
   // never acquires the `idle-reaped` reason that excludes ordinary rows from
   // this pass. Age it from its last turn-end instead: young enough ⇒ resume,
-  // stale ⇒ leave it lazy-resumable. Pinned rows and operator-labelled brains
-  // are explicitly exempt (they are meant to be permanent).
+  // stale ⇒ leave it lazy-resumable. Only an explicit pin is exempt; an
+  // operatorLabel is just identity and does not mean "keep forever".
   const staleKeepAlive = (d: SessionDescriptor): boolean => {
-    if (d.keepAlive !== true || d.pinned === true || d.operatorLabel !== undefined) return false
+    if (d.keepAlive !== true || d.pinned === true) return false
     if (keepAliveMaxIdleMs <= 0) return false
     const last = lastActiveMs(d)
     return last !== undefined && now - last > keepAliveMaxIdleMs

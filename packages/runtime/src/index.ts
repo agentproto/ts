@@ -1668,8 +1668,8 @@ export interface CreateGatewayOptions {
    *  `daemon.bootResumeKeepAliveMaxIdleMinutes` config knob; default 30. A
    *  `keepAlive` row idle longer than this (measured from its last turn-end)
    *  stays dead-but-lazy-resumable instead of being respawned on every boot.
-   *  Pinned rows and operator-labelled brains are always resumed. 0 disables
-   *  the cutoff. */
+   *  Only explicitly pinned rows are always resumed; an operator label does
+   *  not exempt a row. 0 disables the cutoff. */
   bootResumeKeepAliveMaxIdleMinutes?: number
   /** Boot re-ensure of app-service owners. Mirrors the
    *  `daemon.resumeServicesOnBoot` config knob; DEFAULT ON (services are

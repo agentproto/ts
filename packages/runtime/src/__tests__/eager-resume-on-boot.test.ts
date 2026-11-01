@@ -439,7 +439,7 @@ describe("runEagerResumePass (bounded boot pass)", () => {
     reg.shutdown()
   })
 
-  it("does not eager-resume a keepAlive row idle past the cutoff — but pinned and operator-labelled rows still come back", async () => {
+  it("does not eager-resume a keepAlive row idle past the cutoff, even with an operatorLabel; pinned rows still come back", async () => {
     const now = Date.parse("2026-11-01T12:00:00Z")
     // Default cutoff is 30 minutes: 31 min idle is stale, 29 min is fresh.
     const stale = "2026-11-01T11:29:00Z"
@@ -450,8 +450,10 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       // activity stamp — the fallback chain still ages it.
       { id: "stale-legacy", keepAlive: true, lastActivityAt: stale },
       { id: "stale-pinned", keepAlive: true, pinned: true, lastTurnEndedAt: stale },
+      // An operatorLabel is identity only (agent_start stamps it on every
+      // operator spawn, executors included), so it must NOT exempt a stale row.
       {
-        id: "stale-brain",
+        id: "stale-operator-label",
         keepAlive: true,
         operatorLabel: "pygmalion-brain-persistent",
         lastTurnEndedAt: stale,
@@ -465,13 +467,13 @@ describe("runEagerResumePass (bounded boot pass)", () => {
 
     const summary = await runEagerResumePass({ registry: reg, concurrency: 4, now })
 
-    expect(summary).toEqual({ enabled: true, candidates: 4, resumed: 4, failed: 0, skipped: 0 })
-    // The two stale keepAlive executors stay dead-but-lazy-resumable, untouched.
+    expect(summary).toEqual({ enabled: true, candidates: 3, resumed: 3, failed: 0, skipped: 0 })
+    // Every stale keepAlive row stays dead-but-lazy-resumable, untouched.
     expect(reg.get("stale-keepalive")?.status).toBe("killed")
     expect(reg.get("stale-legacy")?.status).toBe("killed")
-    // Permanent rows are exempt from the cutoff.
+    expect(reg.get("stale-operator-label")?.status).toBe("killed")
+    // Only an explicit pin is exempt from the cutoff.
     expect(reg.get("stale-pinned")?.status).toBe("running")
-    expect(reg.get("stale-brain")?.status).toBe("running")
     expect(reg.get("fresh-keepalive")?.status).toBe("running")
     expect(reg.get("ordinary-stale")?.status).toBe("running")
     reg.shutdown()
