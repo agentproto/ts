@@ -31,7 +31,7 @@
 
 import { existsSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 
 export const ALLOWLIST_REL = ".agentproto/allowed-commands.json"
 
@@ -149,27 +149,39 @@ export interface ResolvedShellGateExec {
  * contains whitespace, has no `args` and is not itself an existing file path
  * is run as `bash -c <line>`. The allowlist then applies to `bash`, which is
  * exactly the explicit `{command:"bash", args:["-c", ...]}` form. Anything
- * else is returned unchanged.
- *
- * `cwd` is the directory the gate will actually run in (`sessionCwd` anchored
- * by `gate.cwd`), so a RELATIVE file path containing a space is recognised
- * against that directory rather than the daemon's own `process.cwd()`.
+ * else is returned unchanged. A relative `command` is probed against `cwd`
+ * (the directory the gate runs in), not the daemon's own cwd.
  */
-export function resolveShellGateExec(spec: {
-  command: string
-  args?: readonly string[]
-  cwd?: string
-}): ResolvedShellGateExec {
+export function resolveShellGateExec(
+  spec: { command: string; args?: readonly string[] },
+  cwd?: string,
+): ResolvedShellGateExec {
   const args = spec.args ?? []
   const line = spec.command.trim()
   if (
     args.length === 0 &&
     /\s/.test(line) &&
-    !existsSync(resolve(spec.cwd ?? process.cwd(), spec.command))
+    !existsSync(resolve(cwd ?? process.cwd(), spec.command))
   ) {
     return { command: "bash", args: ["-c", line], shellLine: line }
   }
   return { command: spec.command, args: [...args] }
+}
+
+/**
+ * Allowlist check for a resolved shell gate. Plain gates keep the historical
+ * basename-only rule; a rewritten `bash -c <line>` additionally honours any
+ * argv constraint on a `bash` entry, so the auto-rewrite cannot bypass an
+ * operator who allowlisted bash for specific arguments only.
+ */
+export function isShellGateExecAllowed(
+  entries: readonly AllowlistEntry[],
+  target: ResolvedShellGateExec,
+): boolean {
+  const baseName = basename(target.command)
+  return target.shellLine === undefined
+    ? entries.some(e => e.command === baseName)
+    : isCommandAllowed(entries, baseName, target.args)
 }
 
 /** `not in allowlist` text for a gate refusal. Names the command that was

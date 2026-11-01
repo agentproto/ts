@@ -132,7 +132,12 @@ import {
   makeCwdAnchor,
 } from "./command-tools.js"
 import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
-import { describeGateRefusal, resolveShellGateExec } from "./command-allowlist.js"
+import {
+  describeGateRefusal,
+  isShellGateExecAllowed,
+  loadAllowlistEntries,
+  resolveShellGateExec,
+} from "./command-allowlist.js"
 import { resolveAccessProfileAuth } from "./session-spawn.js"
 import type { RouteSpec } from "./session-config.js"
 import type { ResolvedAuthSpec } from "./spawn-defaults.js"
@@ -271,14 +276,13 @@ export async function runShellGate(
 ): Promise<ShellGateOutcome> {
   const exec = opts.runCommand ?? defaultRunCommand
   try {
-    const allowlist = await loadAllowlist(opts.workspace)
+    const entries = await loadAllowlistEntries(opts.workspace)
     const resolvedCwd = gate.cwd ? makeCwdAnchor(opts.sessionCwd)(gate.cwd) : opts.sessionCwd
-    const target = resolveShellGateExec({ ...gate, cwd: resolvedCwd })
-    const baseName = basename(target.command)
-    if (!allowlist.has(baseName)) {
+    const target = resolveShellGateExec(gate, resolvedCwd)
+    if (!isShellGateExecAllowed(entries, target)) {
       return {
         kind: "not-allowlisted",
-        message: describeGateRefusal("gate", baseName, target.shellLine),
+        message: describeGateRefusal("gate", basename(target.command), target.shellLine),
       }
     }
     const result = await exec({

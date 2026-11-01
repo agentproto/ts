@@ -1702,47 +1702,88 @@ describe("runShellGate() with a shell line in `command`", () => {
     expect(calls).toEqual([{ command: script, args: [] }])
   })
 
-  it("a relative file path containing a space resolves against the gate's cwd", async () => {
+  it("a relative path with a space that exists in sessionCwd stays a plain command", async () => {
+    const cwdDir = await mkdtemp(join(tmpdir(), "agentproto-shellgate-cwd-"))
+    workspaces.push(cwdDir)
+    await mkdir(join(cwdDir, "scripts"))
+    await writeFile(join(cwdDir, "scripts", "check my.sh"), "#!/bin/sh\nexit 0\n", "utf8")
     const workspace = await ws(["check my.sh"])
-    await mkdir(join(workspace, "scripts"), { recursive: true })
-    await writeFile(
-      join(workspace, "scripts", "check my.sh"),
-      "#!/bin/sh\nexit 0\n",
-      "utf8",
-    )
-    const calls: Array<{ command: string; args: string[]; cwd: string }> = []
-    const outcome = await runShellGate(
-      { command: "check my.sh", cwd: "scripts" },
-      {
-        workspace,
-        sessionCwd: workspace,
-        runCommand: async input => {
-          calls.push({ command: input.command, args: input.args, cwd: input.cwd })
-          return ok
-        },
-      },
-    )
-    expect(outcome).toMatchObject({ kind: "ran", passed: true })
-    expect(calls).toEqual([
-      { command: "check my.sh", args: [], cwd: join(workspace, "scripts") },
-    ])
-  })
-
-  it("a whitespace-only command is not rewritten to `bash -c`", async () => {
-    const workspace = await ws(["bash"])
     const calls: Array<{ command: string; args: string[] }> = []
     const outcome = await runShellGate(
-      { command: "   " },
+      { command: "scripts/check my.sh" },
       {
         workspace,
-        sessionCwd: workspace,
+        sessionCwd: cwdDir,
         runCommand: async input => {
           calls.push({ command: input.command, args: input.args })
           return ok
         },
       },
     )
+    expect(outcome).toMatchObject({ kind: "ran", passed: true })
+    expect(calls).toEqual([{ command: "scripts/check my.sh", args: [] }])
+  })
+
+  it("a relative path with a space is resolved against an explicit gate.cwd", async () => {
+    const cwdDir = await mkdtemp(join(tmpdir(), "agentproto-shellgate-cwd-"))
+    workspaces.push(cwdDir)
+    await mkdir(join(cwdDir, "sub", "scripts"), { recursive: true })
+    await writeFile(join(cwdDir, "sub", "scripts", "check my.sh"), "#!/bin/sh\nexit 0\n", "utf8")
+    const workspace = await ws(["check my.sh"])
+    const calls: Array<{ command: string; args: string[] }> = []
+    await runShellGate(
+      { command: "scripts/check my.sh", cwd: "sub" },
+      {
+        workspace,
+        sessionCwd: cwdDir,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(calls).toEqual([{ command: "scripts/check my.sh", args: [] }])
+  })
+
+  it("a whitespace-only command is refused, never turned into bash -c", async () => {
+    const workspace = await ws(["bash"])
+    const calls: string[] = []
+    const outcome = await runShellGate(
+      { command: "   " },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push(input.command)
+          return ok
+        },
+      },
+    )
     expect(outcome.kind).toBe("not-allowlisted")
+    expect(calls).toEqual([])
+  })
+
+  it("an allowlist entry constraining bash to other argv refuses the rewritten line", async () => {
+    const workspace = await ws([])
+    await writeFile(
+      join(workspace, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands: [{ command: "bash", args: ["-c", "echo hi"] }] }),
+      "utf8",
+    )
+    const calls: string[] = []
+    const outcome = await runShellGate(
+      { command: LINE },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push(input.command)
+          return ok
+        },
+      },
+    )
+    expect(outcome.kind).toBe("not-allowlisted")
+    expect((outcome as { message: string }).message).toMatch(/'bash' not in allowlist/)
     expect(calls).toEqual([])
   })
 })
