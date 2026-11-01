@@ -48,7 +48,15 @@ const input = (recent: RecentKeys, now: number, target = "sess_1") => ({
 })
 
 describe("classifySentinelEvent", () => {
-  it("terminal wins first: a terminal event wakes even when its key is a recent repeat", () => {
+  it("the GitHub triage table overrides the terminal rule for a closed PR", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request.closed", terminal: true, data: { merged: true } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+
+  it("terminal still wins for a non-table event, even when its key is a recent repeat", () => {
     const recent = new RecentKeys()
     recent.record("sess_1", "sentinel:github-push:push:github:acme/widgets#42", 0)
 
@@ -72,15 +80,19 @@ describe("classifySentinelEvent", () => {
 
   it("a repeat counts per target, not globally", () => {
     const recent = new RecentKeys()
-    const e1 = push()
+    const e1 = makeEvent({ type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } })
     expect(classifySentinelEvent(e1, input(recent, 0, "sess_1"))).toEqual({
-      decision: "fyi",
-      rule: "github-triage-table",
+      decision: "wake",
+      rule: "default",
     })
     recordSentinelTriageKey(e1, input(recent, 0, "sess_1"))
-    expect(classifySentinelEvent(push({ id: "evt_2" }), input(recent, 1_000, "sess_2"))).toEqual({
+    expect(classifySentinelEvent(e1, input(recent, 1_000, "sess_1"))).toEqual({
       decision: "fyi",
-      rule: "github-triage-table",
+      rule: "coalesced-repeat",
+    })
+    expect(classifySentinelEvent(e1, input(recent, 1_000, "sess_2"))).toEqual({
+      decision: "wake",
+      rule: "default",
     })
   })
 
@@ -183,7 +195,7 @@ describe("classifySentinelEvent", () => {
 
   it("default: an event without a coalesce key always wakes", () => {
     const recent = new RecentKeys()
-    const event = makeEvent({ type: "github.pull_request.closed" })
+    const event = makeEvent({ type: "github.pull_request.labeled" })
     expect(classifySentinelEvent(event, input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
     expect(classifySentinelEvent({ ...event, id: "evt_2" }, input(recent, 1_000))).toEqual({
       decision: "wake",

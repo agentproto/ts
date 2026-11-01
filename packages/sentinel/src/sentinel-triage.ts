@@ -8,11 +8,17 @@
  * stage, not a gate.
  *
  * Rules are checked in order; the first match wins:
- * 1. GitHub triage table (event class to delivery)
- * 2. `terminal`: an event that ends its subject's lifecycle always wakes.
+ * 1. GitHub triage table (event class to delivery). It runs BEFORE the generic
+ *    rules below, so it deliberately overrides them for the GitHub event
+ *    classes it covers: a terminal `github.pull_request.closed` (merged or
+ *    not) is `fyi` rather than `wake`, and a failing check, workflow run or
+ *    `changes_requested` review records `github-triage-table` rather than
+ *    `failure`.
+ * 2. `terminal`: an event that ends its subject's lifecycle always wakes,
+ *    unless a GitHub triage row above already classified it.
  * 3. `failure`: a failing verdict (conclusion/state) always wakes, because a
  *    real failure must never be demoted by an earlier pending tick on the
- *    same head.
+ *    same head, unless a GitHub triage row above already classified it.
  * 4. `coalesced-repeat`: the same `(target, triage key)` was first classified
  *    within the last 10 minutes, so this one is only `fyi`.
  * 5. `default`: everything else wakes.
@@ -41,7 +47,6 @@ export const SENTINEL_TRIAGE_REPEAT_WINDOW_MS = 10 * 60 * 1000
 export const DEFAULT_RECENT_KEYS_CAP = 1000
 
 export type SentinelTriageRule = "terminal" | "failure" | "coalesced-repeat" | "default" | "github-triage-table"
-
 
 export interface SentinelTriageInput {
   /** Delivery target identity (the target session id). */
@@ -96,7 +101,6 @@ export class RecentKeys {
     }
   }
 }
-
 
 export type SentinelGithubTriageEventClass =
   | "github.check_suite.completed"
@@ -190,7 +194,6 @@ export const SENTINEL_GITHUB_TRIAGE_RULE_TABLE: readonly SentinelGithubTriageRul
     decision: "fyi",
   },
 ]
-
 
 const FAILURE_VERDICTS: ReadonlySet<string> = new Set([
   "failure",
