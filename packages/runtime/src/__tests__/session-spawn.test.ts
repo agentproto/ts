@@ -894,15 +894,18 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toEqual([])
   })
 
-  it("(c) shouldInjectDaemonSelfMount: hermes always, claude-code on-host only, others never", () => {
+  it("(c) shouldInjectDaemonSelfMount: hermes always, claude-code/opencode on-host only, others never", () => {
     // hermes keeps its historical behaviour even for a sandbox spawn (the
-    // box's own daemon re-resolves the spawn on its side); claude-code's
-    // mount is identity-only and a box can't reach this daemon's loopback
-    // gateway, so a sandbox spawn is excluded.
+    // box's own daemon re-resolves the spawn on its side); claude-code and
+    // opencode mounts are identity-only and a box can't reach this daemon's
+    // loopback gateway, so sandbox spawns are excluded.
     expect(shouldInjectDaemonSelfMount("hermes", undefined)).toBe(true)
     expect(shouldInjectDaemonSelfMount("hermes", "e2b")).toBe(true)
     expect(shouldInjectDaemonSelfMount("claude-code", undefined)).toBe(true)
     expect(shouldInjectDaemonSelfMount("claude-code", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("opencode", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("opencode", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("opencode", "computer")).toBe(false)
     expect(shouldInjectDaemonSelfMount("codex", undefined)).toBe(false)
     expect(shouldInjectDaemonSelfMount("gemini", undefined)).toBe(false)
   })

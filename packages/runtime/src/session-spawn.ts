@@ -1124,6 +1124,13 @@ export function delegationReachFor(
  *    A sandbox spawn is excluded — the box cannot reach this daemon's
  *    loopback gateway, and unlike hermes there is no historical behaviour
  *    to preserve.
+ *  - `opencode`: on-host spawns only. Same IDENTITY rationale as
+ *    claude-code — opencode sessions reach this daemon through their own
+ *    ambient MCP config (`~/.config/opencode/mcp.json`), but that static
+ *    mount cannot carry a per-session `callerSessionId`. Without the
+ *    injected entry, `delegationReachFor` sees no daemon mount and
+ *    `resolveRole` downgrades to executor even at depth 0. A sandbox
+ *    spawn is excluded — the box cannot reach this daemon's loopback.
  *  - everything else: never. Mounting the daemon into adapters that never
  *    had it (codex, gemini, …) would be a capability grant, not a fix —
  *    those callers opt in explicitly via `mcpServers`.
@@ -1134,6 +1141,7 @@ export function shouldInjectDaemonSelfMount(
 ): boolean {
   if (adapter === "hermes") return true
   if (adapter === "claude-code") return sandbox === undefined
+  if (adapter === "opencode") return sandbox === undefined
   return false
 }
 
