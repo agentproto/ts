@@ -165,6 +165,9 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
         name: "chrome-devtools",
         transport: "http",
         ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}`,
+        // The imported passthrough is identity-stamped like the /mcp mount,
+        // but never with the session token (it does not evaluate proof).
+        headers: { "x-agentproto-caller-session-id": ownId },
       },
       {
         name: "agentproto",
@@ -506,7 +509,12 @@ describe("spawnAgentSession — native default mounts (P2)", () => {
         // Shadow-mode session token (the default), adapter copy only.
         headers: { "x-agentproto-caller-session-id": ownId, "x-agentproto-session-token": expect.stringMatching(/^apst_/) },
       },
-      { name: "chrome-devtools", transport: "http", ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}` },
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}`,
+        headers: { "x-agentproto-caller-session-id": ownId },
+      },
     ])
   })
 

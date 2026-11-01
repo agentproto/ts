@@ -116,6 +116,19 @@ changes the decision — it only tags a match for `tool_calls_list`). A
 permission from its exit code, with `git push` as the canonical first rule —
 is in flight as PR 5 (#630, open at the time of writing).
 
+A `hold` (or `deny`/`gate`) rule also applies to imported-MCP tool calls
+through the per-call guard. Every path that reaches an imported tool now
+carries the calling session (`/mcp/imported/<id>`, `POST /mcps/proxy/call`,
+`transmit_message`, plus the existing `mcp_imported_call` and the `/mcp`
+`app_tool_call`), so a hold shows under that session, the rule is read from
+that session's own `.agentproto/hooks.json`, and a session the daemon does
+not know is refused. A call with no caller stays a host call: the rule comes
+from the daemon's workspace and the approval is attributed to `"daemon"`.
+A bundle's imported mounts already named the session in their URL; they now
+also carry the identity header, and an imported mount a caller supplies itself
+is stamped with the session id at spawn the same way the daemon self-mount is
+(never with the session token: the passthrough does not evaluate proof).
+
 **`.agentproto/command-sandbox.json`** — Plane 2's config, covering the two
 axes above with deliberately separate keys (a misconfigured
 `command_execute` jail breaks one shell command; a misconfigured

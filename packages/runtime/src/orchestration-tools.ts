@@ -2535,6 +2535,7 @@ export function registerOrchestrationTools(
           }
         }
 
+        const caller = callerScope?.ownerSessionId ?? callerSessionId
         const out = await sendOutbound(
           provider,
           {
@@ -2544,7 +2545,7 @@ export function registerOrchestrationTools(
             text,
             attachments: input.attachments,
           },
-          { mcpProxy, telegramCreds },
+          { mcpProxy, telegramCreds, ...(caller ? { callerSessionId: caller } : {}) },
         )
 
         if (!out.ok) {

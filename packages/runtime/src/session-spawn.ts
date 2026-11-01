@@ -1214,17 +1214,43 @@ export function targetsDaemonGateway(ref: string, daemonMcpUrl: string): boolean
   } catch {
     return false
   }
-  if (target.protocol !== daemon.protocol) return false
-  // The daemon is loopback-bound, so a different SPELLING of the same
-  // loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same
-  // endpoint, not a different one. A non-loopback host must match exactly.
-  if (target.host !== daemon.host) {
-    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
-  }
-  if (effectivePort(target) !== effectivePort(daemon)) return false
+  if (!sameDaemonOrigin(target, daemon)) return false
   const targetPath = target.pathname.replace(/\/+$/, "")
   const daemonPath = daemon.pathname.replace(/\/+$/, "")
   return targetPath === daemonPath
+}
+
+/** Is `ref` on the daemon's imported-MCP passthrough (`<daemon /mcp>/imported/<id>`)?
+ *  Same origin matching as {@link targetsDaemonGateway}, but a deeper path:
+ *  the passthrough is the route a capability bundle mounts into another
+ *  harness, and it reads the caller session exactly like `/mcp` does. */
+export function targetsDaemonImportedPassthrough(
+  ref: string,
+  daemonMcpUrl: string,
+): boolean {
+  let target: URL
+  let daemon: URL
+  try {
+    target = new URL(ref)
+    daemon = new URL(daemonMcpUrl)
+  } catch {
+    return false
+  }
+  if (!sameDaemonOrigin(target, daemon)) return false
+  const daemonPath = daemon.pathname.replace(/\/+$/, "")
+  const importedPrefix = `${daemonPath}/imported/`
+  return target.pathname.replace(/\/+$/, "").startsWith(importedPrefix)
+}
+
+/** The daemon is loopback-bound, so a different SPELLING of the same
+ *  loopback host (`localhost` vs `127.0.0.1` vs `::1`) is the same endpoint,
+ *  not a different one. A non-loopback host must match exactly. */
+function sameDaemonOrigin(target: URL, daemon: URL): boolean {
+  if (target.protocol !== daemon.protocol) return false
+  if (target.host !== daemon.host) {
+    if (!isLoopbackHost(target.hostname) || !isLoopbackHost(daemon.hostname)) return false
+  }
+  return effectivePort(target) === effectivePort(daemon)
 }
 
 /** The port a URL actually talks to (empty ⇒ the protocol's default). */
@@ -1278,6 +1304,12 @@ export function stampDaemonCallerSessionId(
   if (!mcpServers) return undefined
   return mcpServers.map(entry => {
     if (entry.transport !== "http" || typeof entry.ref !== "string") return entry
+    if (targetsDaemonImportedPassthrough(entry.ref, opts.daemonMcpUrl)) {
+      return stampImportedPassthrough(
+        entry as AcpMcpServer & { ref: string },
+        opts.callerSessionId,
+      )
+    }
     if (!targetsDaemonGateway(entry.ref, opts.daemonMcpUrl)) return entry
     // An entry that already carries a caller identity (an explicit pin, or
     // one left over from a prior stamp) is respected and never overwritten.
@@ -1302,6 +1334,66 @@ export function stampDaemonCallerSessionId(
     }
     return next
   })
+}
+
+/**
+ * Identity-stamp an imported-passthrough mount. The mount carries no
+ * capability the id does not already grant, so the only question is whether
+ * it names a DIFFERENT session: an explicit foreign pin (query or header) is
+ * respected and left exactly as it is. Otherwise the missing carriers are
+ * filled in, so a mount produced by `mountImports` (query already present)
+ * also gains the header that survives a client rebuilding the URL. The
+ * session token is deliberately never added here: the passthrough route does
+ * not evaluate proof, so a token on it would only leak into the adapter's
+ * config for no gate.
+ */
+function stampImportedPassthrough(
+  entry: AcpMcpServer & { ref: string },
+  callerSessionId: string,
+): AcpMcpServer {
+  const query = queryCallerSessionId(entry.ref)
+  const header = headerValue(entry.headers, CALLER_SESSION_ID_HEADER)
+  if (
+    (query !== null && query !== callerSessionId) ||
+    (header !== undefined && header !== callerSessionId)
+  ) {
+    return entry
+  }
+  let next = entry
+  if (query === null) {
+    const sep = entry.ref.includes("?") ? "&" : "?"
+    next = {
+      ...next,
+      ref: `${entry.ref}${sep}callerSessionId=${encodeURIComponent(callerSessionId)}`,
+    }
+  }
+  if (header === undefined) {
+    next = {
+      ...next,
+      headers: { ...next.headers, [CALLER_SESSION_ID_HEADER]: callerSessionId },
+    }
+  }
+  return next
+}
+
+/** The `callerSessionId` query value of a ref, or null when absent or the
+ *  ref is not a parseable URL. */
+function queryCallerSessionId(ref: string): string | null {
+  try {
+    return new URL(ref).searchParams.get("callerSessionId")
+  } catch {
+    return null
+  }
+}
+
+/** The value of header `name`, matched case-insensitively. */
+function headerValue(
+  headers: Record<string, string> | undefined,
+  name: string,
+): string | undefined {
+  if (!headers) return undefined
+  const key = Object.keys(headers).find(k => k.toLowerCase() === name)
+  return key === undefined ? undefined : headers[key]
 }
 
 /** Does this mount already carry header `name`? Header names are

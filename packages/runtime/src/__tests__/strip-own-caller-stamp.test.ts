@@ -72,3 +72,25 @@ describe("stripOwnCallerStamp", () => {
     expect(out[0]!.headers).toBeUndefined()
   })
 })
+
+describe("stripOwnCallerStamp - imported passthrough mounts", () => {
+  const IMPORTED = `${BASE}/imported/imp1`
+
+  it("strips our query and header from an imported mount so the spawn re-stamps it", () => {
+    const out = stripOwnCallerStamp(
+      mount({
+        ref: `${IMPORTED}?callerSessionId=${PREV}`,
+        headers: { [CALLER_SESSION_ID_HEADER]: PREV },
+      }),
+      PREV,
+    )!
+    expect(out[0]!.ref).toBe(IMPORTED)
+    expect(out[0]!.headers).toBeUndefined()
+  })
+
+  it("keeps a foreign pin on an imported mount", () => {
+    const entry = mount({ ref: `${IMPORTED}?callerSessionId=sess_other` })
+    const out = stripOwnCallerStamp(entry, PREV)!
+    expect(out[0]!.ref).toBe(`${IMPORTED}?callerSessionId=sess_other`)
+  })
+})
