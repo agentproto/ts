@@ -1062,17 +1062,25 @@ async function buildMergedPrCommits(ctx: LadderContext, heads: ReadonlyMap<strin
  * merged PR's history with the same author time + email AND the same `git
  * patch-id --stable` (what `git cherry` matches on). The author key only
  * narrows which PR commits get hashed: a rebase or cherry-pick keeps it. A
- * tip with no unique non-merge commit, or any commit left unmatched, is no
+ * merge commit in `base..tip` must itself be in a merged PR's history. A tip
+ * with no unique non-merge commit, or any commit left unmatched, is no
  * match.
  */
 async function patchMatchMergedPr(ctx: LadderContext, idx: MergedPrCommits, tip: string): Promise<number | null> {
   if (idx.byAuthor.size === 0 || !ctx.patchIds) return null
-  const res = await git(ctx.repoRoot, ["log", "--no-merges", "--format=%H%x09%at%x09%ae", tip, ...excludeBaseRevs(ctx), "--"])
+  const res = await git(ctx.repoRoot, ["log", "--format=%H%x09%P%x09%at%x09%ae", tip, ...excludeBaseRevs(ctx), "--"])
   if (res.exitCode !== 0) return null
   const tipCommits: Array<{ sha: string; candidates: string[] }> = []
   for (const line of res.stdout.split("\n")) {
-    const [commit, at, ae] = line.split("\t")
+    const [commit, parents, at, ae] = line.split("\t")
     if (!commit) continue
+    // A merge has no patch-id, but its conflict resolution may be the only
+    // copy of some work: accept it only when that exact merge is in a merged
+    // PR's history (unlike `git cherry`, which skips merges).
+    if (parents && parents.includes(" ")) {
+      if (!idx.prOf.has(commit)) return null
+      continue
+    }
     const candidates = idx.byAuthor.get(`${at}\t${ae}`)
     if (!candidates) return null
     tipCommits.push({ sha: commit, candidates })

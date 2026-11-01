@@ -478,6 +478,27 @@ describe("branch gc — pr-merged through a merged PR's history", () => {
     expect(entry(p, "fix/amended")).toMatchObject({ status: "unmerged", class: "review" })
   })
 
+  it("patch: a merge commit carrying its own resolution keeps the branch in review even when every non-merge commit matches", async () => {
+    const repo = await makeRepo()
+    const own = await branchWith(repo, "feat/evil-merge", { "a.txt": "a\n" })
+    const side = await branchWith(repo, "side/merged-in", { "b.txt": "b\n" })
+    await execGit(repo, ["checkout", "-q", "feat/evil-merge"])
+    await execGit(repo, ["merge", "-q", "--no-ff", "--no-commit", "side/merged-in"])
+    await writeFile(join(repo, "resolution.txt"), "only in the merge commit\n")
+    await execGit(repo, ["add", "resolution.txt"])
+    await execGit(repo, ["commit", "-q", "--no-edit"])
+    await execGit(repo, ["checkout", "-q", "main"])
+    await execGit(repo, ["branch", "-q", "-D", "side/merged-in"])
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    // Both non-merge commits landed through a PR; the merge's resolution.txt never did.
+    const head = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", own, side])
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(209, "feat/evil-merge", head)]) })
+    expect(entry(p, "feat/evil-merge")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
   it("a merged PR head missing from the object database offers no match (the plan never fetches)", async () => {
     const repo = await makeRepo()
     await branchWith(repo, "feat/unknown-head", { "a.txt": "a\n" })
