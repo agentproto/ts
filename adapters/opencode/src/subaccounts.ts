@@ -61,6 +61,10 @@ export interface OpencodeConsoleAccount {
   expiresAt?: number
 }
 
+export interface OpencodeConsoleAccountRecord extends OpencodeConsoleAccount {
+  expired: boolean
+}
+
 export interface OpencodeConsoleDeps {
   dbPath?: string
   fetch?: typeof fetch
@@ -84,6 +88,56 @@ function loginHint(): string {
   return "Log in once with `opencode auth login` (opencode.ai/console) so its console session is fresh, then retry."
 }
 
+interface AccountRow {
+  id: string
+  email?: string | null
+  url: string
+  access_token: string
+  token_expiry?: number | null
+}
+
+function accountFromRow(row: AccountRow, expiresAt?: number): OpencodeConsoleAccount {
+  return {
+    id: row.id,
+    ...(row.email ? { email: row.email } : {}),
+    url: row.url.replace(/\/+$/, ""),
+    accessToken: row.access_token,
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
+  }
+}
+
+function isExpired(row: AccountRow, now: number): boolean {
+  const expiresAt = typeof row.token_expiry === "number" ? row.token_expiry : undefined
+  if (expiresAt !== undefined && expiresAt - now < EXPIRY_SKEW_MS) {
+    return true
+  }
+  return false
+}
+
+export async function readAllOpencodeConsoleAccounts(
+  deps: OpencodeConsoleDeps = {},
+): Promise<{ accounts: AccountRow[]; activeId?: string | null }> {
+  const dbPath = deps.dbPath ?? opencodeDbPath()
+  let db: SqliteHandle | undefined
+  try {
+    db = await openReadonly(dbPath)
+    const active = db.prepare("SELECT active_account_id FROM account_state LIMIT 1").get() as
+      | { active_account_id?: string | null }
+      | undefined
+    const rows = db.prepare("SELECT * FROM account").all() as AccountRow[]
+    return { accounts: rows, activeId: active?.active_account_id ?? null }
+  } catch (err) {
+    throw new SubaccountError(`opencode console login unreadable at ${dbPath} (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
+    )
+  } finally {
+    try {
+      db?.close()
+    } catch {
+      // already closed
+    }
+  }
+}
+
 /**
  * Read the logged-in console account from opencode.db, read-only. The active
  * account wins when several are stored. Throws {@link SubaccountError}
@@ -94,9 +148,7 @@ export async function readOpencodeConsoleAccount(
 ): Promise<OpencodeConsoleAccount> {
   const dbPath = deps.dbPath ?? opencodeDbPath()
   const now = deps.now ?? Date.now
-  let row:
-    | { id: string; email?: string; url: string; access_token: string; token_expiry?: number | null }
-    | undefined
+  let row: AccountRow | undefined
   let db: SqliteHandle | undefined
   try {
     db = await openReadonly(dbPath)
@@ -105,7 +157,7 @@ export async function readOpencodeConsoleAccount(
       | undefined
     row = (active?.active_account_id
       ? db.prepare("SELECT * FROM account WHERE id = ?").get(active.active_account_id)
-      : db.prepare("SELECT * FROM account LIMIT 1").get()) as typeof row
+      : db.prepare("SELECT * FROM account LIMIT 1").get()) as AccountRow | undefined
   } catch (err) {
     throw new SubaccountError(`opencode console login unreadable at ${dbPath} (${err instanceof Error ? err.message : String(err)}). ${loginHint()}`,
     )
@@ -125,13 +177,7 @@ export async function readOpencodeConsoleAccount(
     throw new SubaccountError(`the opencode console session for ${row.email ?? row.id} expired at ${new Date(expiresAt).toISOString()}. ${loginHint()}`,
     )
   }
-  return {
-    id: row.id,
-    ...(row.email ? { email: row.email } : {}),
-    url: row.url.replace(/\/+$/, ""),
-    accessToken: row.access_token,
-    ...(expiresAt !== undefined ? { expiresAt } : {}),
-  }
+  return accountFromRow(row, expiresAt)
 }
 
 async function consoleGet(
@@ -194,27 +240,81 @@ export async function resolveOpencodeConsoleOrg(
   profileId: string,
   deps: OpencodeConsoleDeps = {},
 ): Promise<ResolvedOpencodeConsoleOrg> {
-  const account = await readOpencodeConsoleAccount(deps)
-  let provider: unknown
-  try {
-    const body = (await consoleGet(account, "/api/config", deps, orgId)) as {
-      config?: { provider?: unknown }
+  const dbPath = deps.dbPath ?? opencodeDbPath()
+  const now = deps.now ?? Date.now
+  const { accounts, activeId } = await readAllOpencodeConsoleAccounts(deps)
+  if (accounts.length === 0 || !accounts.some(a => a.access_token)) {
+    throw new SubaccountError(`no opencode console account in ${dbPath}. ${loginHint()}`)
+  }
+
+  const ordered: Array<{ row: AccountRow; isActive: boolean }> = []
+  if (activeId) {
+    const active = accounts.find(a => a.id === activeId)
+    if (active) ordered.push({ row: active, isActive: true })
+  }
+  for (const a of accounts) {
+    if (ordered.some(o => o.row.id === a.id)) continue
+    ordered.push({ row: a, isActive: false })
+  }
+
+  const tried: string[] = []
+  const expiredList: string[] = []
+
+  for (const entry of ordered) {
+    const row = entry.row
+    if (!row.access_token) continue
+    if (isExpired(row, now())) {
+      expiredList.push(`${row.email ?? row.id} (${row.id})`)
+      continue
     }
-    provider = body?.config?.provider
-  } catch (err) {
-    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
-        `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
-    )
+    const account = accountFromRow(row, typeof row.token_expiry === "number" ? row.token_expiry : undefined)
+    tried.push(`${row.email ?? row.id} (${row.id})`)
+    let orgs: OpencodeConsoleOrg[]
+    try {
+      let body: unknown
+      try {
+        body = await consoleGet(account, "/api/orgs", deps)
+      } catch (err) {
+        throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
+            `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
+        )
+      }
+      orgs = (Array.isArray(body) ? body : [])
+        .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
+        .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
+    } catch (err) {
+      if (err instanceof SubaccountError) throw err
+      throw err
+    }
+    if (!orgs.some(o => o.id === orgId)) {
+      continue
+    }
+    let provider: unknown
+    try {
+      const body = (await consoleGet(account, "/api/config", deps, orgId)) as {
+        config?: { provider?: unknown }
+      }
+      provider = body?.config?.provider
+    } catch (err) {
+      throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
+          `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
+      )
+    }
+    if (!provider || typeof provider !== "object" || Object.keys(provider).length === 0) {
+      throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} returned no provider config.`,
+      )
+    }
+    return {
+      orgId,
+      credential: account.accessToken,
+      extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) },
+    }
   }
-  if (!provider || typeof provider !== "object" || Object.keys(provider).length === 0) {
-    throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} returned no provider config.`,
-    )
-  }
-  return {
-    orgId,
-    credential: account.accessToken,
-    extraEnv: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider }) },
-  }
+
+  const triedStr = tried.length > 0 ? tried.join(", ") : "(none)"
+  const expiredStr = expiredList.length > 0 ? ` expired: ${expiredList.join(", ")}` : ""
+  throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} not found in any console account (tried: ${triedStr}${expiredStr}). ${loginHint()}`,
+  )
 }
 
 /**
