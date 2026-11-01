@@ -49,7 +49,7 @@ import {
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
-import { linkedWorktreeOf, mainWorktreeOf } from "./git-worktree-paths.js"
+import { resolveMainRepoPath, resolveWorktreeIdentity } from "./worktree-identity.js"
 import { loadWorkspacesConfig } from "./workspaces-config.js"
 import {
   createAppServiceStore,
@@ -1480,13 +1480,13 @@ export async function performInstall(
     resolve(installed.dir) !== resolve(dir) &&
     existsSync(installed.dir)
   ) {
-    const linked = linkedWorktreeOf(dir)
+    const linked = resolveWorktreeIdentity(dir)
     if (linked !== undefined) {
       return {
         ok: false,
         error:
           `${APP_INSTALL_WORKTREE_REPOINT_REFUSED}: "${handle.id}" is installed from "${installed.dir}"; ` +
-          `"${dir}" is inside the linked git worktree "${linked.worktreeRoot}", which goes away with its branch. ` +
+          `"${dir}" is inside the linked git worktree "${linked.worktreePath}", which goes away with its branch. ` +
           "Not re-pointing the installed app there implicitly: pass repoint: true (CLI: --repoint) to install from the worktree on purpose.",
       }
     }
@@ -1688,6 +1688,12 @@ export async function repairIncompleteApps(
   return repaired
 }
 
+/** `path` is strictly below `root`. */
+function isInside(path: string, root: string): boolean {
+  const rel = relative(root, path)
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+}
+
 /**
  * Self-heal `dir-missing` records left by a removed linked git worktree (an
  * app installed, or silently re-pointed, from a PR worktree that was then
@@ -1705,12 +1711,14 @@ export async function repairIncompleteApps(
  * manifest declaring the same `appId`; a different id, no copy, or more
  * than one match leaves the `dir-missing` issue as it was. Returns the app
  * ids re-pointed.
+ *
+ * A removed path cannot prove it WAS a linked worktree, so this considers
+ * every `dir-missing` record: any one whose dir reappears, unambiguously and
+ * with the same `appId`, under a known main worktree is healed, whatever
+ * removed it. A `dataDir` at or under the dead dir keeps its position
+ * relative to the app dir (`<from>/data` becomes `<to>/data`, `<from>` itself
+ * becomes `<to>`).
  */
-function isInside(path: string, root: string): boolean {
-  const rel = relative(root, path)
-  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
-}
-
 export async function repairWorktreeMissingApps(
   appRegistry: AppRegistry,
   listRegisteredToolIds: () => Promise<string[]>,
@@ -1732,7 +1740,7 @@ export async function repairWorktreeMissingApps(
   }
   const mainRoots = new Set<string>()
   for (const d of knownDirs) {
-    const main = mainWorktreeOf(d)
+    const main = resolveMainRepoPath(d)
     if (main !== undefined) mainRoots.add(resolve(main))
   }
 
@@ -2514,8 +2522,21 @@ export function registerAppTools(
         ...app,
         dataDir: appDataDir(app),
         dirMissing: !existsSync(app.dir),
-        ...(issues.some(i => i.appId === app.appId)
-          ? { registryProblems: issues.filter(i => i.appId === app.appId).flatMap(i => [...i.problems]) }
+        // `dir-repointed` is a completed self-heal, not a problem: reported
+        // apart so a healed app does not read as broken.
+        ...(issues.some(i => i.appId === app.appId && i.kind !== "dir-repointed")
+          ? {
+              registryProblems: issues
+                .filter(i => i.appId === app.appId && i.kind !== "dir-repointed")
+                .flatMap(i => [...i.problems]),
+            }
+          : {}),
+        ...(issues.some(i => i.appId === app.appId && i.kind === "dir-repointed")
+          ? {
+              registryNotes: issues
+                .filter(i => i.appId === app.appId && i.kind === "dir-repointed")
+                .flatMap(i => [...i.problems]),
+            }
           : {}),
         runs: runs
           .filter(r => r.appId === app.appId)

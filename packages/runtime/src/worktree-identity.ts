@@ -136,20 +136,39 @@ function readWorktreeId(gitDir: string): string | undefined {
  * enclosing tree.
  */
 export function resolveWorktreeIdentity(cwd: string): WorktreeIdentity | undefined {
+  return resolveCheckout(cwd)?.linked
+}
+
+/**
+ * The primary repo root of the checkout containing `dir`: the checkout itself
+ * when it is a normal one, its `mainRepoPath` when it is a linked worktree,
+ * `undefined` outside any repo (or a linked worktree with no `commondir`).
+ * Same nearest-`.git`-wins walk as {@link resolveWorktreeIdentity}.
+ */
+export function resolveMainRepoPath(dir: string): string | undefined {
+  const found = resolveCheckout(dir)
+  return found === undefined ? undefined : (found.linked?.mainRepoPath ?? found.mainRoot)
+}
+
+function resolveCheckout(
+  cwd: string,
+): { linked: WorktreeIdentity; mainRoot?: undefined } | { linked?: undefined; mainRoot: string } | undefined {
   let dir = resolve(cwd)
   for (;;) {
     const dotGit = statOrUndefined(join(dir, ".git"))
     if (dotGit) {
       // A directory means a normal checkout: in a repo, but not a worktree.
-      if (!dotGit.isFile()) return undefined
+      if (!dotGit.isFile()) return { mainRoot: dir }
       const gitDir = readWorktreeGitDir(dir)
       if (gitDir === undefined) return undefined
       const worktreeId = readWorktreeId(gitDir)
       const mainRepoPath = readMainRepoPath(gitDir)
       return {
-        worktreePath: dir,
-        ...(worktreeId === undefined ? {} : { worktreeId }),
-        ...(mainRepoPath === undefined ? {} : { mainRepoPath }),
+        linked: {
+          worktreePath: dir,
+          ...(worktreeId === undefined ? {} : { worktreeId }),
+          ...(mainRepoPath === undefined ? {} : { mainRepoPath }),
+        },
       }
     }
     const parent = dirname(dir)

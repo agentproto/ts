@@ -17,7 +17,7 @@ import { defineAgent } from "@agentproto/agent"
 import { defineWorkflow } from "@agentproto/workflow"
 import { createAppRegistry, type AppRegistry } from "../app-registry.js"
 import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, performInstall, repairWorktreeMissingApps } from "../app-tools.js"
-import { linkedWorktreeOf, mainWorktreeOf } from "../git-worktree-paths.js"
+import { resolveMainRepoPath, resolveWorktreeIdentity } from "../worktree-identity.js"
 
 const APP_REL = join("packages", "apps", "fx")
 
@@ -113,11 +113,11 @@ afterEach(async () => {
 
 describe("git worktree classification", () => {
   it("tells a linked worktree from the main one, and finds the main worktree from either", () => {
-    expect(linkedWorktreeOf(join(mainRepo, APP_REL))).toBeUndefined()
-    expect(linkedWorktreeOf(join(worktree, APP_REL))).toEqual({ worktreeRoot: worktree, mainWorktree: mainRepo })
-    expect(mainWorktreeOf(join(worktree, APP_REL))).toBe(mainRepo)
-    expect(mainWorktreeOf(join(mainRepo, APP_REL))).toBe(mainRepo)
-    expect(mainWorktreeOf(join(root, "elsewhere"))).toBeUndefined()
+    expect(resolveWorktreeIdentity(join(mainRepo, APP_REL))).toBeUndefined()
+    expect(resolveWorktreeIdentity(join(worktree, APP_REL))).toMatchObject({ worktreePath: worktree, mainRepoPath: mainRepo })
+    expect(resolveMainRepoPath(join(worktree, APP_REL))).toBe(mainRepo)
+    expect(resolveMainRepoPath(join(mainRepo, APP_REL))).toBe(mainRepo)
+    expect(resolveMainRepoPath(join(root, "elsewhere"))).toBeUndefined()
   })
 })
 
@@ -172,6 +172,10 @@ describe("self-heal: dir-missing record from a removed linked worktree", () => {
         problems: [`dir re-pointed from ${dead} to ${join(mainRepo, APP_REL)}`],
       },
     ])
+    // A second pass changes nothing and does not stack a second note.
+    expect(await repairWorktreeMissingApps(reg, async () => [], undefined, { workspacesConfigPath })).toEqual([])
+    reg.recordRepoint("@t/fx", dead, join(mainRepo, APP_REL))
+    expect(reg.listIssues()).toHaveLength(1)
   })
 
   it("finds the main worktree through another installed app's live dir", async () => {

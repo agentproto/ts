@@ -216,7 +216,9 @@ interface AppRegistryState {
  *  reinstalled from a live checkout. `dir-repointed` is informational: a
  *  `dir-missing` record the daemon healed on its own by re-pointing it at
  *  the main worktree's copy of the same app (`repairWorktreeMissingApps`,
- *  app-tools.ts), kept so the repair is visible in `daemon_health`. */
+ *  app-tools.ts), kept so the repair is visible in `daemon_health` (one per
+ *  app, the latest repair; `app_list` shows it as `registryNotes`, not as a
+ *  problem). */
 export interface AppRegistryIssue {
   readonly kind: "dropped" | "incomplete" | "dir-missing" | "dir-repointed"
   readonly appId: string | null
@@ -451,6 +453,9 @@ export function createAppRegistry(opts?: {
       return record
     },
     recordRepoint(appId, from, to) {
+      for (let i = issues.length - 1; i >= 0; i--) {
+        if (issues[i]!.appId === appId && issues[i]!.kind === "dir-repointed") issues.splice(i, 1)
+      }
       issues.push({ kind: "dir-repointed", appId, dir: to, problems: [`dir re-pointed from ${from} to ${to}`] })
     },
     getApp(appId) {
