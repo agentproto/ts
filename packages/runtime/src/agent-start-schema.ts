@@ -204,12 +204,12 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       `One-owner lock key: \`pr:<owner>/<repo>#<n>\` or \`branch:<name>\`. ` +
-        `A second spawn while a live (or <24h-ended) session holds it is refused \`owner_busy\` with that session's id.`
+        `A second spawn while a live (or <24h-ended) session holds it is refused \`owner_busy\` with that session's id. ${help("ownerKey")}`
     ),
   takeOver: mcpBool
     .optional()
     .describe(
-      `Explicitly take over an \`ownerKey\` already held by another session. Default false.`
+      `Explicit override for an \`ownerKey\` already held by another session (does not stop that session). Default false. ${help("takeOver")}`
     ),
   permissionHold: mcpBool
     .optional()

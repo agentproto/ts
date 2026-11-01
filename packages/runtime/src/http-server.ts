@@ -6619,6 +6619,7 @@ function spawnFailureStatus(code: string): number {
     code === "orchestrator_max_depth_exceeded" ||
     code === "orchestrator_child_quota_exceeded" ||
     code === "role_spawn_denied" ||
+    code === "owner_busy" ||
     code === "already_continued"
   ) {
     return 409
@@ -6643,6 +6644,7 @@ function spawnFailureStatus(code: string): number {
     code === "cloud_spawn_refused" ||
     code === "model_policy_refused" ||
     code === "session_preset_invalid" ||
+    code === "owner_key_invalid" ||
     code === "operator_unresolvable"
   ) {
     return 400

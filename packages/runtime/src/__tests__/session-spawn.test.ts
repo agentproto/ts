@@ -1642,6 +1642,85 @@ describe("spawnAgentSession — one owner per PR/branch (ownerKey lock)", () => 
     if (result.ok) throw new Error("expected malformed ownerKey to be refused")
     expect(result.code).toBe("owner_key_invalid")
   })
+
+  it("serialises two CONCURRENT spawns on one key — exactly one wins", async () => {
+    const { deps } = baseDeps()
+    const results = await Promise.all([
+      spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: "/tmp",
+        label: "race-a",
+        ownerKey,
+      }),
+      spawnAgentSession(deps, {
+        adapter: "mock",
+        cwd: "/tmp",
+        label: "race-b",
+        ownerKey,
+      }),
+    ])
+    const winners = results.filter(r => r.ok)
+    const losers = results.filter(r => !r.ok)
+    expect(winners).toHaveLength(1)
+    expect(losers).toHaveLength(1)
+    const winner = winners[0]
+    const loser = losers[0]
+    if (!winner || !winner.ok) throw new Error("expected a successful winner")
+    if (!loser || loser.ok) throw new Error("expected a refused loser")
+    expect(loser.code).toBe("owner_busy")
+    expect(loser.details?.ownerSessionId).toBe(winner.descriptor.id)
+  })
+
+  it("still sees an archived owner that ended less than 24h ago", async () => {
+    const { registry, deps } = baseDeps()
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-a",
+      ownerKey,
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected first spawn to succeed")
+    expect(registry.reapIdle(first.descriptor.id, 5)).toBe(true)
+    registry.archiveSession(first.descriptor.id)
+
+    const second = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-b",
+      ownerKey,
+    })
+    expect(second.ok).toBe(false)
+    if (second.ok) throw new Error("expected archived owner to still hold the key")
+    expect(second.code).toBe("owner_busy")
+    expect(second.details?.ownerSessionId).toBe(first.descriptor.id)
+  })
+
+  it("takeOver starts a second session WITHOUT stopping the previous owner", async () => {
+    const { registry, deps } = baseDeps()
+    const first = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-a",
+      ownerKey,
+    })
+    expect(first.ok).toBe(true)
+    if (!first.ok) throw new Error("expected first spawn to succeed")
+
+    const taken = await spawnAgentSession(deps, {
+      adapter: "mock",
+      cwd: "/tmp",
+      label: "fix-pr-1440-b",
+      ownerKey,
+      takeOver: true,
+    })
+    expect(taken.ok).toBe(true)
+    if (!taken.ok) throw new Error("expected takeOver spawn to succeed")
+    // The override only skips the lock; it never kills the incumbent.
+    const original = registry.get(first.descriptor.id)
+    expect(original?.status).toBe("running")
+    expect(original?.meta?.ownerKey).toBe(ownerKey)
+  })
 })
 
 describe("spawnAgentSession — resolved-claim eviction policy (gcSpawnClaims)", () => {

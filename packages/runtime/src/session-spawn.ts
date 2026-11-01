@@ -572,6 +572,48 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
   return claims
 }
 
+/** In-flight `ownerKey` reservations, per registry. The descriptor-based
+ *  conflict scan only sees rows that already exist; a spawn spends many
+ *  `await`s between its owner check and the row's registration, so two
+ *  concurrent `agent_start` calls could both observe a free key. Reserving it
+ *  synchronously at check time closes that window. Released as soon as the
+ *  spawn settles (success or failure) — the descriptor's `meta.ownerKey`
+ *  takes over from there. */
+interface OwnerReservation {
+  sessionId: string
+  at: number
+}
+
+/** A reservation that outlives its spawn's `finish` (a thrown path that
+ *  bypassed every release, or a hung spawn) must not wedge the key forever. */
+const OWNER_RESERVATION_TTL_MS = 10 * 60 * 1000
+
+const ownerReservationsByRegistry = new WeakMap<SessionsRegistry, Map<string, OwnerReservation>>()
+
+function ownerReservationsFor(registry: SessionsRegistry): Map<string, OwnerReservation> {
+  let reservations = ownerReservationsByRegistry.get(registry)
+  if (!reservations) {
+    reservations = new Map()
+    ownerReservationsByRegistry.set(registry, reservations)
+  }
+  return reservations
+}
+
+/** Drop a stale reservation, then return the live one (if any) for `key`. */
+function takeLiveOwnerReservation(
+  reservations: Map<string, OwnerReservation>,
+  key: string,
+  now: number,
+): OwnerReservation | undefined {
+  const reservation = reservations.get(key)
+  if (!reservation) return undefined
+  if (now - reservation.at > OWNER_RESERVATION_TTL_MS) {
+    reservations.delete(key)
+    return undefined
+  }
+  return reservation
+}
+
 /** Two independent eviction passes — see the sizing docblock above the two
  *  constants. Time first (a claim past its OWN `windowMs` — explicit and
  *  implicit claims share one map but carry different windows, see
@@ -5392,7 +5434,12 @@ export async function spawnAgentSession(
   // explicit `owner_busy` naming the first — never a silent second process.
   // A live session, or one that ended less than 24h ago, keeps its key;
   // `takeOver: true` is the only intentional way past it.
+  //
+  // The descriptor scan alone is racy: this spawn then `await`s many things
+  // before its row exists. Reserve the key synchronously here and release it
+  // when the spawn settles, so two concurrent calls cannot both win.
   let normalizedOwnerKey: string | undefined
+  let releaseOwnerReservation: (() => void) | undefined
   if (input.ownerKey !== undefined) {
     const normalized = normalizeOwnerKey(input.ownerKey)
     if (!normalized.ok) {
@@ -5403,8 +5450,13 @@ export async function spawnAgentSession(
       }
     }
     normalizedOwnerKey = normalized.key
+    const reservations = ownerReservationsFor(registry)
     if (input.takeOver !== true) {
-      const owner = findOwnerConflict(registry.list(), normalizedOwnerKey, Date.now())
+      const owner = findOwnerConflict(
+        registry.list({ includeArchived: true }),
+        normalizedOwnerKey,
+        Date.now(),
+      )
       if (owner) {
         return {
           ok: false,
@@ -5415,6 +5467,22 @@ export async function spawnAgentSession(
           details: { ownerKey: normalizedOwnerKey, ownerSessionId: owner.id },
         }
       }
+      const inflight = takeLiveOwnerReservation(reservations, normalizedOwnerKey, Date.now())
+      if (inflight) {
+        return {
+          ok: false,
+          code: "owner_busy",
+          message:
+            `agent_start: ownerKey "${normalizedOwnerKey}" is being claimed by an in-flight ` +
+            `spawn (session ${inflight.sessionId}); pass takeOver:true to take it over explicitly.`,
+          details: { ownerKey: normalizedOwnerKey, ownerSessionId: inflight.sessionId },
+        }
+      }
+    }
+    reservations.set(normalizedOwnerKey, { sessionId: mintedSessionId, at: Date.now() })
+    releaseOwnerReservation = () => {
+      const current = reservations.get(normalizedOwnerKey!)
+      if (current?.sessionId === mintedSessionId) reservations.delete(normalizedOwnerKey!)
     }
   }
 
@@ -5470,6 +5538,7 @@ export async function spawnAgentSession(
               `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
               `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
           )
+          releaseOwnerReservation?.()
           return { ...result, deduped: true, dedupeSource: claimAdmission.dedupeSource }
         }
         throw new Error("unreachable spawn admission outcome")
@@ -5482,6 +5551,7 @@ export async function spawnAgentSession(
       const failedClaimAdmission = evaluateSpawnAdmission(failedClaimCheck)
       notifySpawnAdmission(failedClaimCheck, failedClaimAdmission)
       if (spawnAdmissionOutcome(failedClaimAdmission) === "deny") {
+        releaseOwnerReservation?.()
         return result
       }
       throw new Error("unreachable spawn admission outcome")
@@ -5514,6 +5584,7 @@ export async function spawnAgentSession(
     }
   }
   const finish = (result: SpawnAgentSessionResult): SpawnAgentSessionResult => {
+    releaseOwnerReservation?.()
     settleClaim?.(result)
     return result
   }
@@ -6709,6 +6780,10 @@ export async function spawnAgentSession(
         err instanceof Error ? err.message : String(err)
       }`,
     })
+  } finally {
+    // Belt-and-braces: `finish` already releases, but every thrown/early path
+    // through this block must not leave the ownerKey reserved.
+    releaseOwnerReservation?.()
   }
 }
 

@@ -173,6 +173,33 @@ counts only (`total`, `stages`, `dedupeSources`, `codes`, `since`) and resets
 on a daemon restart. Each non-allow decision also writes one
 `[spawn-admission] stage=... outcome=... code=...` line to the daemon log.
 
+## ownerKey
+
+One-owner lock key for a PR or branch: `pr:<owner>/<repo>#<n>` or
+`branch:<name>`. The key is canonicalised before matching — case, a
+`https://github.com/…` / `git@github.com:…` prefix, a `.git` suffix and
+leading zeros in the PR number are all normalised, so `PR:Owner/Repo#01440`
+and `pr:owner/repo#1440` name the same PR. Branch names keep their case
+(git branches are case-sensitive); only a `refs/heads/` prefix and
+surrounding whitespace are stripped.
+
+While a LIVE session — or one that ended less than 24 hours ago, including
+an idle-reaped row — carries the same key in its descriptor
+`meta.ownerKey`, a spawn is refused `owner_busy`. `details.ownerSessionId`
+names the incumbent; no second process or session row is created. After
+24h the key frees itself. A malformed key is refused `owner_key_invalid`
+rather than ignored. The check is reserved synchronously, so two concurrent
+spawns on one key cannot both win.
+
+## takeOver
+
+Explicit override for an `ownerKey` already held by another session.
+Default false. `takeOver: true` lets THIS spawn proceed even though another
+session (live or recently ended) still carries the key — it does NOT stop
+or retire that session, so both may then be alive under the same key. Use
+it only when you have intentionally decided to replace the previous owner
+and will stop it yourself.
+
 ## permissionHold
 
 Start the session in permission-hold mode: every ACP permission request the
