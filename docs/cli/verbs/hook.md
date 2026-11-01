@@ -79,3 +79,9 @@ key is unset it runs the CLI that serves the daemon, by absolute path, so a
 daemon with a minimal PATH still finds it; set a value there to override it.
 That absolute-path fallback is POSIX-only: a win32 daemon falls back to the
 bare `agentproto`, resolved on the harness's PATH.
+
+## Claude Desktop setup
+
+MCP URL: `http://127.0.0.1:<port>/mcp?callerSessionId=<id>&host=claude-desktop`
+Env: `AGENTPROTO_SESSION_ID=<id>`
+Hooks (UserPromptSubmit, PostToolUse): `agentproto hook inbox`
