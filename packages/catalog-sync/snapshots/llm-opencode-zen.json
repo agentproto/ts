@@ -1528,6 +1528,7 @@
         "name": "Nemotron 3 Ultra Free",
         "family": "nemotron",
         "release_date": "2026-06-04",
+        "status": "deprecated",
         "cost": {
           "input": 0,
           "output": 0,

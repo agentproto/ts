@@ -475,3 +475,21 @@ for that.
 
 ### llm:openai
 - Added: gpt-6.1-terra, gpt-6.1-terra-pro, gpt-6.1-terra-pro:batch, gpt-6.1-terra:batch
+
+## 2026-11-01
+
+### llm:openrouter
+- Added: particle-ai/particle-1
+- Removed: openai/gpt-4-turbo, openai/o1, openai/o1-pro, openai/o3-mini, openai/o3-mini-high, openai/o4-mini, openai/o4-mini-high, poolside/laguna-s-2.1, poolside/laguna-xs-2.1, qwen/qwen3-next-80b-a3b-thinking, upstage/solar-pro-3
+
+### llm:requesty
+- Added: azure/gpt-6.1-terra@eastus, fireworks/ultramarine-1-flash, particle/particle-1
+
+### llm:opencode-zen
+- Removed: opencode/nemotron-3-ultra-free
+
+### llm:huggingface
+- Removed: CohereLabs/c4ai-command-r7b-arabic-02-2025, swiss-ai/Apertus-70B-Instruct-2509, swiss-ai/Apertus-8B-Instruct-2509
+
+### llm:openai
+- Removed: gpt-4-turbo, o1, o1-pro, o3-mini, o3-mini-high, o4-mini, o4-mini-high

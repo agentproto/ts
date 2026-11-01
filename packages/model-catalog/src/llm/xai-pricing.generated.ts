@@ -1,4 +1,4 @@
-// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: llm-xai.json snapshot (xAI API fetch failed), synced 2026-10-28T04:17:40.078Z)
+// GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-xai.mjs (data: llm-xai.json snapshot (xAI API fetch failed), synced 2026-11-01T15:28:01.648Z)
 //
 // Prices are xAI's NATIVE rates (no OpenRouter passthrough): raw
 // `prompt_text_token_price` / `completion_text_token_price` /

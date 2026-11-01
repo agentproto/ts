@@ -964,6 +964,14 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
     vendor: "azure",
     provider: "requesty",
   },
+  "azure/gpt-6.1-terra@eastus": {
+    inputPer1M: 1,
+    outputPer1M: 5,
+    cacheReadMultiplier: 0.05,
+    addedAt: "2026-10-26",
+    vendor: "azure",
+    provider: "requesty",
+  },
   "azure/gpt-6.1-terra@francecentral": {
     inputPer1M: 1.2,
     outputPer1M: 6,
@@ -2949,6 +2957,14 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
     vendor: "fireworks",
     provider: "requesty",
   },
+  "fireworks/ultramarine-1-flash": {
+    inputPer1M: 0.225,
+    outputPer1M: 0.75,
+    cacheReadMultiplier: 0.2,
+    addedAt: "2026-10-27",
+    vendor: "fireworks",
+    provider: "requesty",
+  },
   "google/gemini-2.5-flash": {
     inputPer1M: 0.3,
     outputPer1M: 2.5,
@@ -4438,6 +4454,14 @@ export const REQUESTY_ROUTES: Record<string, LLMPricing> = {
     outputPer1M: 0.85,
     addedAt: "2025-07-21",
     vendor: "parasail",
+    provider: "requesty",
+  },
+  "particle/particle-1": {
+    inputPer1M: 0.25,
+    outputPer1M: 1,
+    cacheReadMultiplier: 0.12,
+    addedAt: "2026-10-29",
+    vendor: "particle",
     provider: "requesty",
   },
   "perplexity/pplx-decider-v1-27b": {
@@ -6230,6 +6254,7 @@ export const REQUESTY_PROVIDERS: readonly string[] = [
   "novita",
   "openai",
   "parasail",
+  "particle",
   "perplexity",
   "runware",
   "sail",

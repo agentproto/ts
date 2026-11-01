@@ -1,5 +1,5 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-openai.mjs
-// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-10-28T04:17:39.928Z)
+// (ids: openrouter.ai/api/v1/models openai/* only (no OPENAI_API_KEY at sync time); prices: platform.openai.com/docs/pricing.md, OpenRouter fallback per row; synced 2026-11-01T15:28:01.497Z)
 //
 // Provenance is recorded PER ROW — `idSource` says which list the id came
 // from, `priceSource` which source priced it:
@@ -21,7 +21,6 @@ export const OPENAI_GENERATED_PRICING = {
   "gpt-3.5-turbo-0613": { inputPer1M: 1, outputPer1M: 2, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-3.5-turbo-16k": { inputPer1M: 3, outputPer1M: 4, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-4": { inputPer1M: 30, outputPer1M: 60, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "gpt-4-turbo": { inputPer1M: 10, outputPer1M: 30, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-4-turbo:batch": { inputPer1M: 5, outputPer1M: 15, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-4.1": { inputPer1M: 2, outputPer1M: 8, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "gpt-4.1-mini": { inputPer1M: 0.4, outputPer1M: 1.6, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
@@ -106,21 +105,15 @@ export const OPENAI_GENERATED_PRICING = {
   "gpt-audio": { inputPer1M: 2.5, outputPer1M: 10, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-audio-mini": { inputPer1M: 0.6, outputPer1M: 2.4, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-chat-latest": { inputPer1M: 5, outputPer1M: 30, cacheReadMultiplier: 0.1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "gpt-oss-120b": { inputPer1M: 0.15, outputPer1M: 0.6, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
+  "gpt-oss-120b": { inputPer1M: 0.021, outputPer1M: 0.076, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-120b:batch": { inputPer1M: 0.0296, outputPer1M: 0.136, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "gpt-oss-20b": { inputPer1M: 0.018, outputPer1M: 0.09, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
+  "gpt-oss-20b": { inputPer1M: 0.03, outputPer1M: 0.13, cacheReadMultiplier: 1, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-20b:batch": { inputPer1M: 0.024, outputPer1M: 0.112, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "gpt-oss-safeguard-20b": { inputPer1M: 0.075, outputPer1M: 0.3, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
-  "o1": { inputPer1M: 15, outputPer1M: 60, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "o1-pro": { inputPer1M: 150, outputPer1M: 600, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "o3": { inputPer1M: 2, outputPer1M: 8, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "o3-mini": { inputPer1M: 1.1, outputPer1M: 4.4, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "o3-mini-high": { inputPer1M: 1.1, outputPer1M: 4.4, cacheReadMultiplier: 0.5, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "o3-mini:batch": { inputPer1M: 0.55, outputPer1M: 2.2, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "o3-pro": { inputPer1M: 20, outputPer1M: 80, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
   "o3:batch": { inputPer1M: 1, outputPer1M: 4, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "o4-mini": { inputPer1M: 1.1, outputPer1M: 4.4, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
-  "o4-mini-high": { inputPer1M: 1.1, outputPer1M: 4.4, cacheReadMultiplier: 0.25, vendor: "openai", provider: "openai", priceSource: "openrouter", idSource: "openrouter" },
   "o4-mini:batch": { inputPer1M: 0.55, outputPer1M: 2.2, vendor: "openai", provider: "openai", priceSource: "openai", idSource: "openrouter" },
 } as const
 

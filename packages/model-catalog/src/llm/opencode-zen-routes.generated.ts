@@ -628,13 +628,6 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "opencode",
     provider: "opencode",
   },
-  "opencode/nemotron-3-ultra-free": {
-    inputPer1M: 0,
-    outputPer1M: 0,
-    addedAt: "2026-06-04",
-    vendor: "nvidia",
-    provider: "opencode",
-  },
   "opencode/nemotron-3.5-lightning-free": {
     inputPer1M: 0,
     outputPer1M: 0,
