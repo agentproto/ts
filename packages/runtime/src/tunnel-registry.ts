@@ -882,6 +882,7 @@ function identityOf(desc: TunnelDescriptor): TunnelIdentity {
   return {
     key: desc.name ? `${desc.name}-${desc.id.slice(0, 8)}` : desc.id,
     hostnames: hostnamesOf(desc),
+    ...(desc.tunnelId ? { tunnelId: desc.tunnelId } : {}),
   }
 }
 
