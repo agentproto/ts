@@ -153,6 +153,67 @@ describe("mcps proxy call — bearer gate", () => {
     }
   })
 
+  it("passes a ?callerSessionId= claim to the proxy as the call context", async () => {
+    const port = await freePort()
+    const callTool = vi.fn(
+      async () =>
+        ({ ok: true, result: {} }) as Awaited<ReturnType<McpProxyRegistry["callTool"]>>,
+    )
+    const http = await startWithProxy(port, undefined, callTool)
+    try {
+      const res = await fetch(`${proxyCallUrl(port)}?callerSessionId=sess_route`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ alias: "chrome", toolName: "navigate", args: {} }),
+      })
+      expect(res.status).toBe(200)
+      expect(callTool).toHaveBeenCalledWith("chrome", "navigate", {}, {
+        callerSessionId: "sess_route",
+      })
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("passes a trusted identity header claim to the proxy as the call context", async () => {
+    const port = await freePort()
+    const callTool = vi.fn(
+      async () =>
+        ({ ok: true, result: {} }) as Awaited<ReturnType<McpProxyRegistry["callTool"]>>,
+    )
+    const http = await startWithProxy(port, undefined, callTool)
+    try {
+      const res = await postProxyCall(port, {
+        "x-agentproto-caller-session-id": "sess_header",
+      })
+      expect(res.status).toBe(200)
+      expect(callTool).toHaveBeenCalledWith("chrome", "navigate", {}, {
+        callerSessionId: "sess_header",
+      })
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("keeps a bare identity header on a proxied request a host call", async () => {
+    const port = await freePort()
+    const callTool = vi.fn(
+      async () =>
+        ({ ok: true, result: {} }) as Awaited<ReturnType<McpProxyRegistry["callTool"]>>,
+    )
+    const http = await startWithProxy(port, undefined, callTool)
+    try {
+      const res = await postProxyCall(port, {
+        "x-agentproto-caller-session-id": "sess_spoofed",
+        "x-forwarded-for": "203.0.113.9",
+      })
+      expect(res.status).toBe(200)
+      expect(callTool).toHaveBeenCalledWith("chrome", "navigate", {})
+    } finally {
+      await http.stop()
+    }
+  })
+
   it("keeps the route callable without a token (auth mode none, local dev)", async () => {
     const port = await freePort()
     const callTool = vi.fn(

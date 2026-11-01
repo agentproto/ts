@@ -214,6 +214,37 @@ describe("continueAgentSessionFresh", () => {
     ])
   })
 
+  it("strips the retired id from an imported passthrough mount too, so the spawn re-stamps it", async () => {
+    const prev = makePrev()
+    prev.mcpServers = [
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: `http://127.0.0.1:18790/mcp/imported/imp1?callerSessionId=${prev.id}`,
+        headers: { "x-agentproto-caller-session-id": prev.id },
+      },
+    ]
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.mcpServers).toEqual([
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: "http://127.0.0.1:18790/mcp/imported/imp1",
+      },
+    ])
+  })
+
   it("keeps the previous label and title verbatim (only a legacy (continued) tail is stripped)", async () => {
     const prev = makePrev()
     prev.label = "pm-agentproto (continued)"

@@ -2602,6 +2602,11 @@ export async function startHttpServer(
     importId: string,
   ): Promise<void> {
     if (!authorizeMcp(req, res)) return
+    // Same caller carriers as `/mcp` (trusted query claim, else a trusted
+    // identity header). This route does NOT `touchExternal`: an id the daemon
+    // does not know is refused by the imported-call guard, which is the
+    // existing rule for `mcp_imported_call`. No claim stays a host call.
+    const callerSessionId = resolveCallerSessionId(req)
     if (!opts.mcpProxy) {
       res.writeHead(501, { "content-type": "application/json" })
       res.end(
@@ -2672,7 +2677,12 @@ export async function startHttpServer(
           `tool "${request.params.name}" is not available on this import (denyTools/allowTools filter)`,
         )
       }
-      const out = await proxy.callTool(importId, request.params.name, request.params.arguments ?? {})
+      const out = await proxy.callTool(
+        importId,
+        request.params.name,
+        request.params.arguments ?? {},
+        ...(callerSessionId ? [{ callerSessionId }] : []),
+      )
       if (!out.ok) {
         return { content: [{ type: "text", text: out.error }], isError: true }
       }
@@ -4594,10 +4604,16 @@ export async function startHttpServer(
             )
             return
           }
+          // Same caller carriers as `/mcp`: a claim the caller is allowed to
+          // make (trusted query, else trusted header), so an imported-call
+          // hold on this route is attributed to the calling session instead
+          // of the `"daemon"` pseudo-session. No claim stays a host call.
+          const callerSessionId = resolveCallerSessionId(req)
           const result = await opts.mcpProxy.callTool(
             body.alias,
             body.toolName,
-            body.args ?? {}
+            body.args ?? {},
+            ...(callerSessionId ? [{ callerSessionId }] : []),
           )
           res.writeHead(result.ok ? 200 : 502, {
             "content-type": "application/json",
