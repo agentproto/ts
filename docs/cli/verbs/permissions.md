@@ -168,8 +168,10 @@ current mode (`off`, `observe` or `enforce`, from
 the `would_deny` caller/child pairs most frequent first, and the
 `unbound`/`undeclared` callers. Its `profileUse` field reports the AIP-46
 auth-profile gate the same way (`defaults.spawn.profileGate`, the verdict
-counts, and the `would_deny` caller-profile/requested-profile pairs). It is
-read-only; the counters reset when the daemon restarts.
+counts, and the `would_deny` caller-profile/requested-profile pairs). Its
+`stdioMounts` field reports the stdio mount gate (`defaults.spawn.stdioMountGate`,
+the verdict counts, and the `would_deny` command basenames most frequent
+first). It is read-only; the counters reset when the daemon restarts.
 
 The read-only `permissions_explain` tool takes an optional `profile` (a
 profile ref). It then builds an `auth.profile.use` decision for that ref,

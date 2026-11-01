@@ -25,6 +25,7 @@
 import type { SpawnBrowserMode } from "./browser-mount.js"
 import type { DelegationGateMode } from "./delegation-gate.js"
 import type { ProfileGateMode } from "./profile-gate.js"
+import type { StdioMountGateMode } from "./stdio-mount-gate.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
 import type { CatalogProvider } from "@agentproto/model-catalog"
 import { resolveCustomRoute } from "@agentproto/model-catalog/route-identity"
@@ -295,6 +296,11 @@ export interface SpawnDefaultsConfig {
      *  refuse without changing a decision, `enforce` refuses a profile
      *  outside the caller's set. */
     profileGate?: ProfileGateMode
+    /** Command-allowlist gate for stdio MCP servers a spawn mounts: `off`
+     *  skips evaluation, `observe` (default) counts what it would refuse
+     *  without changing a decision, `enforce` refuses a mount whose command
+     *  the workspace allowlist does not admit. */
+    stdioMountGate?: StdioMountGateMode
     /** Profile ids any session may name at spawn, in addition to its own
      *  recorded profile. Default []. */
     sharedProfiles?: string[]

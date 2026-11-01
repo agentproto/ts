@@ -351,6 +351,18 @@ child agent a host-chosen scoped toolset (e.g. the daemon's own
 orchestration gateway so it can spawn + supervise sub-agents). Adapters
 that don't model MCP mounting ignore it.
 
+A `transport: "stdio"` entry is command execution: its `ref` is the
+command and `args` its argv. `defaults.spawn.stdioMountGate` gates those
+entries when a trusted session made the request: the command basename (and
+an argv prefix, when the allowlist constrains it) must be admitted by the
+same `.agentproto/allowed-commands.json` allowlist `command_execute` uses.
+`observe` (default) only counts and warns; `enforce` refuses the spawn with
+`stdio_mount_denied` and `details.denied` naming each `{ name, command }`.
+Only the entries the request names are evaluated (not preset, manifest,
+bundle, config or daemon-injected mounts), and root spawns, external or
+unknown callers and sandboxed spawns are never gated. `env` is not
+evaluated. Counters are on `GET /permissions/grants` under `stdioMounts`.
+
 A `mcpServers` entry in the descriptor (or the daemon self-mount) only
 means the mount was *requested*: it does not guarantee the child actually
 loaded any tools. A client can connect yet end up with 0 tools if the

@@ -212,6 +212,14 @@ import {
   recordProfileUse,
   type ProfileVerdict,
 } from "./profile-gate.js"
+import {
+  DEFAULT_STDIO_MOUNT_GATE_MODE,
+  decideStdioMount,
+  recordStdioMount,
+  stdioMountRequests,
+  type StdioMountVerdict,
+} from "./stdio-mount-gate.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
 import { decide as decidePermission } from "./permissions.js"
 import { resolveDeferredToolsGatewayOption, resolveSpawnDeferredTools } from "./deferred-tools.js"
 import { loadDefaultRoleRegistry } from "./role-registry.js"
@@ -1486,6 +1494,12 @@ export interface SpawnAgentSessionDeps {
    *  `loadConfig` when omitted; tests inject a stub to avoid touching
    *  the real file. */
   loadDefaultsConfig?: () => Promise<SpawnDefaultsConfig | undefined>
+  /** Loads the workspace command allowlist (`.agentproto/allowed-commands.json`)
+   *  for the stdio mount gate; the SAME workspace `command_execute` gates
+   *  against. Omitted ⇒ an EMPTY list, so every session stdio mount reads
+   *  `would_deny` (conservative). Read per spawn, only when the gate is not
+   *  `off` and the request carries at least one stdio mount. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /** Loads `~/.agentproto/bundles.json` for capability-bundle expansion
    *  (`agent_start.bundles` / config `defaults.bundles`, PLAN D phase 1).
    *  Defaults to the real loader when omitted; tests inject a stub to avoid
@@ -2148,6 +2162,7 @@ export type SpawnAgentSessionResult =
         | "operator_unresolvable"
         | "delegation_denied"
         | "auth_profile_denied"
+        | "stdio_mount_denied"
       message: string
       details?: Record<string, unknown>
     }
@@ -2312,6 +2327,11 @@ export async function spawnAgentSession(
   // preset, AGENT.md manifest, config). The profile gate evaluates only what
   // the caller asked for, never operator or author configuration.
   const requestedAccess = input.access
+  // The MCP servers the REQUEST names, captured before any later layer
+  // (preset, manifest, bundle, checkpoint resume) can merge or replace
+  // `input.mcpServers` and before the daemon injects its own mounts. The
+  // stdio mount gate evaluates only what the caller asked for.
+  const requestedMcpServers = input.mcpServers
   // AIP-46 operator binding, validated before any side effect.
   const operatorBinding = resolveOperatorBinding({
     ...(input.operator !== undefined ? { operator: input.operator } : {}),
@@ -3506,6 +3526,88 @@ export async function spawnAgentSession(
           gate: "profile",
           denied: [...denied],
           callerProfiles: [...callerProfiles],
+        },
+      }
+    }
+  }
+  // Command-allowlist gate for stdio MCP mounts, observe first. A stdio
+  // mount is an arbitrary command the agent CLI launches, so a session may
+  // mount only a command the workspace allowlist admits (the SAME evaluator
+  // `command_execute` uses). Only the mounts the REQUEST names are
+  // evaluated, captured before any preset/AGENT.md/bundle layer and before
+  // the daemon injects its own mounts. A spawn with no trusted caller, an
+  // external or unknown caller, and a sandboxed spawn are counted, never
+  // gated.
+  const stdioMountGateMode =
+    configDefaults?.spawn?.stdioMountGate ?? DEFAULT_STDIO_MOUNT_GATE_MODE
+  let stdioMountVerdict: StdioMountVerdict | undefined
+  if (stdioMountGateMode !== "off") {
+    const requestedMounts = stdioMountRequests(requestedMcpServers)
+    const gateCallerId = callerScope?.ownerSessionId ?? input.autoParentSessionId
+    const callerDescriptor = gateCallerId !== undefined ? registry.get(gateCallerId) : undefined
+    const callerKnown = callerDescriptor !== undefined
+    const callerExternal = callerDescriptor?.kind === "external"
+    const sandboxed = input.sandbox !== undefined
+    // The allowlist is read per spawn, only when the decision could reach
+    // the allowlist at all: a known, internal, non-sandboxed caller that
+    // named at least one stdio mount.
+    const couldReachAllowlist =
+      gateCallerId !== undefined &&
+      callerKnown &&
+      !callerExternal &&
+      !sandboxed &&
+      requestedMounts.length > 0
+    const allowlist: readonly AllowlistEntry[] = couldReachAllowlist
+      ? deps.loadCommandAllowlist
+        ? await deps.loadCommandAllowlist()
+        : []
+      : []
+    const decision = decideStdioMount({
+      callerSessionId: gateCallerId,
+      callerKnown,
+      callerExternal,
+      sandboxed,
+      requested: requestedMounts,
+      allowlist,
+    })
+    stdioMountVerdict = decision.verdict
+    let denied = decision.denied
+    if (
+      (stdioMountVerdict === "allowed" || stdioMountVerdict === "would_deny") &&
+      callerDescriptor
+    ) {
+      // decide() answers "may this session mount this command" for each
+      // request; the gate derives its verdict from those answers so
+      // introspection and enforcement cannot drift.
+      const principal = { kind: "session" as const, session: callerDescriptor }
+      denied = requestedMounts.filter(
+        request =>
+          !decidePermission(
+            principal,
+            "mcp.mount.stdio",
+            { kind: "command", command: request.command, args: request.args },
+            { mounts: { allowlist } },
+          ).allow,
+      )
+      stdioMountVerdict = denied.length > 0 ? "would_deny" : "allowed"
+    }
+    recordStdioMount(stdioMountVerdict, {
+      mode: stdioMountGateMode,
+      denied,
+      surface: callerScope ? "scoped" : "mcp",
+    })
+    if (stdioMountGateMode === "enforce" && stdioMountVerdict === "would_deny") {
+      const mounts = denied.map(request => `"${request.name}" (${request.command})`).join(", ")
+      return {
+        ok: false,
+        code: "stdio_mount_denied",
+        message:
+          `agent_start: a session may not mount stdio MCP server${denied.length > 1 ? "s" : ""} ` +
+          `whose command is outside the command allowlist: ${mounts}. Add the command ` +
+          `(with an argv prefix where possible) to .agentproto/allowed-commands.json to allow it.`,
+        details: {
+          gate: "mount",
+          denied: denied.map(request => ({ name: request.name, command: request.command })),
         },
       }
     }

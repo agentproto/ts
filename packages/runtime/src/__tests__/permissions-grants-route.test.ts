@@ -12,6 +12,7 @@ import type { HeartbeatRunner } from "../heartbeat.js"
 import { DEFAULT_MESSAGING_DEFAULTS } from "../messaging-defaults.js"
 import { recordDelegation, resetDelegationObservations } from "../delegation-gate.js"
 import { recordProfileUse, resetProfileObservations } from "../profile-gate.js"
+import { recordStdioMount, resetStdioMountObservations } from "../stdio-mount-gate.js"
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -87,11 +88,13 @@ describe("GET /permissions/grants", () => {
       resolveOperatorDelegates,
       resolveDelegationGateMode: async () => "observe",
       resolveProfileGateMode: async () => "observe",
+      resolveStdioMountGateMode: async () => "observe",
       meta: { workspace: process.cwd(), registered: [] },
     })
     const base = `http://127.0.0.1:${port}`
     resetDelegationObservations()
     resetProfileObservations()
+    resetStdioMountObservations()
     try {
       const res = await fetch(`${base}/permissions/grants`)
       expect(res.status).toBe(200)
@@ -115,6 +118,12 @@ describe("GET /permissions/grants", () => {
           since: string
           counts: Record<string, number>
           wouldDeny: Array<{ callerProfile: string; requestedProfile: string; count: number }>
+        }
+        stdioMounts: {
+          mode: string
+          since: string
+          counts: Record<string, number>
+          wouldDeny: Array<{ command: string; count: number; lastAt: string }>
         }
       }
       expect(body.inputs).toMatchObject({ allowSameWorkspace: true, peerBinding: "slug" })
@@ -157,6 +166,16 @@ describe("GET /permissions/grants", () => {
         caller_unknown: 0,
         external: 0,
       })
+      expect(body.stdioMounts.mode).toBe("observe")
+      expect(body.stdioMounts.counts).toEqual({
+        allowed: 0,
+        would_deny: 0,
+        none: 0,
+        no_caller: 0,
+        caller_unknown: 0,
+        external: 0,
+        sandboxed: 0,
+      })
 
       recordDelegation("would_deny", {
         mode: "observe",
@@ -170,6 +189,11 @@ describe("GET /permissions/grants", () => {
         denied: ["p-other"],
         surface: "mcp",
       })
+      recordStdioMount("would_deny", {
+        mode: "observe",
+        denied: [{ name: "x", command: "evil", args: [] }],
+        surface: "mcp",
+      })
       const after = (await (await fetch(`${base}/permissions/grants`)).json()) as typeof body
       expect(after.delegation.counts.would_deny).toBe(1)
       expect(after.delegation.wouldDeny).toEqual([
@@ -179,10 +203,15 @@ describe("GET /permissions/grants", () => {
       expect(after.profileUse.wouldDeny).toEqual([
         expect.objectContaining({ callerProfile: "p-own", requestedProfile: "p-other", count: 1 }),
       ])
+      expect(after.stdioMounts.counts.would_deny).toBe(1)
+      expect(after.stdioMounts.wouldDeny).toEqual([
+        expect.objectContaining({ command: "evil", count: 1 }),
+      ])
     } finally {
       await http.stop()
       resetDelegationObservations()
       resetProfileObservations()
+      resetStdioMountObservations()
     }
   })
 

@@ -59,6 +59,7 @@ import {
 import { promptInputSchema } from "./spawn-field-schemas.js"
 import { opaqueSchema } from "./tool-schema-opaque.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
+import type { AllowlistEntry } from "./command-allowlist.js"
 import type { WebhookNotifier } from "./webhook-notifier.js"
 import {
   spawnAgentSession,
@@ -430,6 +431,11 @@ export interface RegisterAgentToolsOptions {
    *  sidecar instead of assuming it's already running. Omitted ⇒ unchanged
    *  pre-existing behavior. */
   ensureLlmEndpointRunning?: SpawnAgentSessionDeps["ensureLlmEndpointRunning"]
+  /** Workspace command allowlist loader for the stdio mount gate, wired by
+   *  the host with the SAME workspace `command_execute` gates against.
+   *  Omitted ⇒ the gate treats every session stdio mount as outside the
+   *  allowlist. */
+  loadCommandAllowlist?: () => Promise<readonly AllowlistEntry[]>
   /** The daemon's own plain `/mcp` gateway URL (e.g.
    *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
    *  caller-supplied `mcpServers` defaults to mounting this gateway for
@@ -596,6 +602,7 @@ export function registerAgentTools(
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
+    loadCommandAllowlist,
   } = opts
   // Effective `interrupt` when a call leaves it unset: config default, else
   // false. An explicit boolean on the call always wins (checked at each site).
@@ -787,6 +794,7 @@ export function registerAgentTools(
           // Lets the generic `adapter_not_found` error name the installed
           // adapters (session-spawn.ts) instead of only saying "install it".
           ...(listAgentAdapters ? { listAgentAdapters } : {}),
+          ...(loadCommandAllowlist ? { loadCommandAllowlist } : {}),
         },
         {
           ...spawnInput,
@@ -930,7 +938,8 @@ export function registerAgentTools(
         result.code === "cloud_spawn_refused" ||
         result.code === "operator_unresolvable" ||
         result.code === "delegation_denied" ||
-        result.code === "auth_profile_denied"
+        result.code === "auth_profile_denied" ||
+        result.code === "stdio_mount_denied"
           ? JSON.stringify(
               { error: result.code, message: result.message, ...result.details },
               null,

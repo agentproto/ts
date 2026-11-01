@@ -3935,6 +3935,10 @@ export async function createGateway(
     // can declare `sandbox` and resolve a provider, instead of throwing
     // `sandbox_provider_not_found`.
     resolveSandboxProvider: resolveSandboxProviderResolved,
+    // Same workspace allowlist as the root gateway: a nested supervisor
+    // spawns through this scoped surface, which is the one the stdio mount
+    // gate exists for.
+    loadCommandAllowlist: () => loadAllowlistEntries(workspace),
     // No `defaultAgentPromptInterrupt` / `messagingAllowSiblings` /
     // `messagingAgentInterrupt` override here: the factory's own per-call
     // closure (orchestrator-gateway.ts) reads `defaults.agentPromptInterrupt`
@@ -4260,6 +4264,10 @@ export async function createGateway(
       daemonMcpUrl,
       resolveSandboxProvider: resolveSandboxProviderResolved,
       ...(ensureLlmEndpointRunning ? { ensureLlmEndpointRunning } : {}),
+      // The stdio mount gate reads the SAME workspace allowlist
+      // `command_execute` gates against, so `agent_start` mounts and
+      // `command_execute` cannot drift.
+      loadCommandAllowlist: () => loadAllowlistEntries(workspace),
       // `messagingDefaults` (resolved fresh above, per call) — the
       // unset-defaults for `interrupt` on agent_prompt/message_parent and
       // for message_send/message_reply's sibling/interrupt gates.
@@ -4871,6 +4879,7 @@ export async function createGateway(
     },
     mcpServerFactory,
     orchestratorMcpServerFactory,
+    loadCommandAllowlist: () => loadAllowlistEntries(workspace),
     ...(eventsMcp ? { eventsMcp } : {}),
     verifyOrchestratorScope: scopeTokens.verify,
     conversations,

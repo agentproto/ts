@@ -127,6 +127,7 @@ import { SubscriptionSourceError } from "../spawn-defaults.js"
 import { EXECUTOR_ROLE, SUPERVISOR_ROLE } from "../role.js"
 import { delegationReport, resetDelegationObservations } from "../delegation-gate.js"
 import { profileReport, resetProfileObservations } from "../profile-gate.js"
+import { resetStdioMountObservations, stdioMountReport } from "../stdio-mount-gate.js"
 import { getMcpCredentialDeps, setMcpCredentialDeps } from "../mcp-credential-deps.js"
 import {
   createSessionsRegistry,
@@ -8041,5 +8042,315 @@ describe("spawnAgentSession - auth-profile gate", () => {
     if (!result.ok) expect(result.code).not.toBe("auth_profile_denied")
     expect(profileReport("enforce").counts.unnamed).toBe(1)
     expect(profileReport("enforce").counts.would_deny).toBe(0)
+  })
+})
+
+describe("spawnAgentSession - stdio mount gate", () => {
+  function scopeFor(ownerSessionId: string): OrchestratorScope {
+    return {
+      token: "tok",
+      tools: new Set(["agent_start"]),
+      ownerSessionId,
+      depth: 0,
+      maxDepth: 3,
+      maxChildren: 8,
+      role: "supervisor",
+    }
+  }
+
+  function stdioGateConfig(mode: "off" | "observe" | "enforce") {
+    return {
+      loadDefaultsConfig: async () => ({
+        spawn: { stdioMountGate: mode },
+      }),
+    }
+  }
+
+  function registerCaller(registry: SessionsRegistry) {
+    return registry.spawn({
+      kind: "command",
+      workspaceSlug: "default",
+      argv: ["true"],
+      cwd: "/tmp",
+    })
+  }
+
+  const evilMount = {
+    name: "x",
+    transport: "stdio" as const,
+    ref: "/opt/bin/evil",
+    args: ["--token", "S3CRET-ARG"],
+    env: { K: "S3CRET-ENV" },
+  }
+
+  const childRequest = (mcpServers?: AcpMcpServer[]) => ({
+    adapter: "mock",
+    cwd: "/tmp",
+    role: "executor",
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
+  })
+
+  const allowlist = (entries: Array<{ command: string; args?: string[] }>) => ({
+    loadCommandAllowlist: async () => entries,
+  })
+
+  beforeEach(() => {
+    resetStdioMountObservations()
+  })
+
+  afterEach(() => {
+    resetStdioMountObservations()
+  })
+
+  it("observe: a stdio mount outside the allowlist is counted, not refused", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("observe"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([evilMount]),
+    )
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("observe").counts.would_deny).toBe(1)
+    expect(stdioMountReport("observe").wouldDeny).toEqual([
+      expect.objectContaining({ command: "evil", count: 1 }),
+    ])
+  })
+
+  it("enforce: the same spawn is refused with stdio_mount_denied and creates no session", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+    const before = registry.list().length
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([evilMount]),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("stdio_mount_denied")
+    expect(result.details).toMatchObject({
+      gate: "mount",
+      denied: [{ name: "x", command: "evil" }],
+    })
+    expect(registry.list()).toHaveLength(before)
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(1)
+    const serialized = JSON.stringify({ result, report: stdioMountReport("enforce") })
+    expect(serialized).not.toContain("S3CRET-ARG")
+    expect(serialized).not.toContain("S3CRET-ENV")
+  })
+
+  it("enforce: a path ref whose basename the allowlist admits is allowed", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([{ name: "n", transport: "stdio", ref: "/usr/local/bin/node" }]),
+    )
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.allowed).toBe(1)
+  })
+
+  it("enforce: a constrained allowlist admits the argv prefix and refuses another", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([{ command: "node", args: ["server.js"] }]),
+    })
+    const caller = registerCaller(registry)
+
+    const admitted = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([
+        { name: "n", transport: "stdio", ref: "/usr/local/bin/node", args: ["server.js", "--x"] },
+      ]),
+    )
+    if (!admitted.ok) expect(admitted.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.allowed).toBe(1)
+
+    const refused = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([
+        { name: "n", transport: "stdio", ref: "/usr/local/bin/node", args: ["-e", "x"] },
+      ]),
+    )
+    expect(refused.ok).toBe(false)
+    if (refused.ok) throw new Error("expected failure")
+    expect(refused.code).toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(1)
+  })
+
+  it("enforce: two mounts, one admitted one not, denies only the bad one", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([
+        { name: "good", transport: "stdio", ref: "node", args: ["server.js"] },
+        { name: "bad", transport: "stdio", ref: "evil" },
+      ]),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("stdio_mount_denied")
+    expect(result.details).toMatchObject({ denied: [{ name: "bad", command: "evil" }] })
+  })
+
+  it("enforce: an http mount only is none", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([{ name: "h", transport: "http", ref: "https://example.test/mcp" }]),
+    )
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.none).toBe(1)
+  })
+
+  it("enforce: a root spawn with a stdio mount is no_caller and never refused", async () => {
+    const { deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+
+    const result = await spawnAgentSession(deps, childRequest([evilMount]))
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.no_caller).toBe(1)
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce: an external caller is never refused", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+    const desk = registry.touchExternal({ id: "desk", host: "claude-desktop" })
+    expect(desk?.kind).toBe("external")
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest([evilMount]),
+      autoParentSessionId: "desk",
+    })
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.external).toBe(1)
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce: an unknown caller id is caller_unknown, not refused", async () => {
+    const { deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest([evilMount]),
+      autoParentSessionId: "ghost",
+    })
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.caller_unknown).toBe(1)
+  })
+
+  it("enforce: a sandboxed spawn is sandboxed and never refused", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      { ...childRequest([evilMount]), sandbox: "e2b" },
+    )
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.sandboxed).toBe(1)
+  })
+
+  it("off: nothing is recorded", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("off"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+
+    await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([evilMount]),
+    )
+    expect(stdioMountReport("off")).toMatchObject({
+      counts: {
+        allowed: 0,
+        would_deny: 0,
+        none: 0,
+        no_caller: 0,
+        caller_unknown: 0,
+        external: 0,
+        sandboxed: 0,
+      },
+      wouldDeny: [],
+    })
+  })
+
+  it("the caller-supplied parentSessionId hint is ignored: a root spawn stays no_caller", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest([evilMount]),
+      parentSessionId: caller.id,
+    })
+    if (!result.ok) expect(result.code).not.toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.no_caller).toBe(1)
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(0)
+  })
+
+  it("enforce via autoParentSessionId: refused like a scoped caller", async () => {
+    const { registry, deps } = baseDeps({
+      ...stdioGateConfig("enforce"),
+      ...allowlist([{ command: "node" }]),
+    })
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(deps, {
+      ...childRequest([evilMount]),
+      autoParentSessionId: caller.id,
+    })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("stdio_mount_denied")
+    expect(result.details).toMatchObject({ denied: [{ name: "x", command: "evil" }] })
+  })
+
+  it("no loadCommandAllowlist dep: a session stdio mount is would_deny", async () => {
+    const { registry, deps } = baseDeps(stdioGateConfig("enforce"))
+    const caller = registerCaller(registry)
+
+    const result = await spawnAgentSession(
+      { ...deps, callerScope: scopeFor(caller.id) },
+      childRequest([{ name: "n", transport: "stdio", ref: "node", args: ["server.js"] }]),
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected failure")
+    expect(result.code).toBe("stdio_mount_denied")
+    expect(stdioMountReport("enforce").counts.would_deny).toBe(1)
   })
 })
