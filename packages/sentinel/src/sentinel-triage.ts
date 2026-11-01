@@ -8,13 +8,20 @@
  * stage, not a gate.
  *
  * Rules are checked in order; the first match wins:
- * 1. `terminal`: an event that ends its subject's lifecycle always wakes.
- * 2. `failure`: a failing verdict (conclusion/state) always wakes, because a
+ * 1. GitHub triage table (event class to delivery). It runs BEFORE the generic
+ *    rules below, so it deliberately overrides them for the GitHub event
+ *    classes it covers: a terminal `github.pull_request.closed` (merged or
+ *    not) is `fyi` rather than `wake`, and a failing check, workflow run or
+ *    `changes_requested` review records `github-triage-table` rather than
+ *    `failure`.
+ * 2. `terminal`: an event that ends its subject's lifecycle always wakes,
+ *    unless a GitHub triage row above already classified it.
+ * 3. `failure`: a failing verdict (conclusion/state) always wakes, because a
  *    real failure must never be demoted by an earlier pending tick on the
- *    same head.
- * 3. `coalesced-repeat`: the same `(target, triage key)` was first classified
+ *    same head, unless a GitHub triage row above already classified it.
+ * 4. `coalesced-repeat`: the same `(target, triage key)` was first classified
  *    within the last 10 minutes, so this one is only `fyi`.
- * 4. `default`: everything else wakes.
+ * 5. `default`: everything else wakes.
  *
  * The triage key is the delivery coalesce key plus the event's verdict when
  * it carries one, so a different conclusion/state on the same head is not a
@@ -28,9 +35,8 @@
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
-import type { TriageDecision } from "./local-types.js"
+import type { TriageDecision, MessageUrgency } from "./local-types.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import type { MessageUrgency } from "./local-types.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a
@@ -40,7 +46,7 @@ export const SENTINEL_TRIAGE_REPEAT_WINDOW_MS = 10 * 60 * 1000
 /** Default bound on the recent-key map. */
 export const DEFAULT_RECENT_KEYS_CAP = 1000
 
-export type SentinelTriageRule = "terminal" | "failure" | "coalesced-repeat" | "default"
+export type SentinelTriageRule = "terminal" | "failure" | "coalesced-repeat" | "default" | "github-triage-table"
 
 export interface SentinelTriageInput {
   /** Delivery target identity (the target session id). */
@@ -96,6 +102,99 @@ export class RecentKeys {
   }
 }
 
+export type SentinelGithubTriageEventClass =
+  | "github.check_suite.completed"
+  | "github.workflow_run.completed"
+  | "github.pull_request_review.submitted"
+  | "github.pull_request.closed"
+  | "github.pull_request.synchronize"
+  | "github.issue_comment.created"
+
+export interface SentinelGithubTriageRuleRow {
+  eventClass: SentinelGithubTriageEventClass
+  match: (event: SentinelEvent) => boolean
+  decision: TriageDecision
+}
+
+export const SENTINEL_GITHUB_TRIAGE_RULE_TABLE: readonly SentinelGithubTriageRuleRow[] = [
+  {
+    eventClass: "github.check_suite.completed",
+    match: (event: SentinelEvent) => {
+      const v = verdictOf(event)
+      return v === "failure" || v === "error" || v === "cancelled" || v === "timed_out" || v === "action_required"
+    },
+    decision: "wake",
+  },
+  {
+    eventClass: "github.workflow_run.completed",
+    match: (event: SentinelEvent) => {
+      const v = verdictOf(event)
+      return v === "failure" || v === "error" || v === "cancelled" || v === "timed_out" || v === "action_required"
+    },
+    decision: "wake",
+  },
+  {
+    eventClass: "github.pull_request_review.submitted",
+    match: (event: SentinelEvent) => verdictOf(event) === "changes_requested",
+    decision: "wake",
+  },
+  {
+    eventClass: "github.issue_comment.created",
+    match: (event: SentinelEvent) => {
+      const actor = typeof event.data.actor === "string" ? event.data.actor : ""
+      return !actor.toLowerCase().endsWith("[bot]")
+    },
+    decision: "wake",
+  },
+  {
+    eventClass: "github.issue_comment.created",
+    match: (event: SentinelEvent) => {
+      const actor = typeof event.data.actor === "string" ? event.data.actor : ""
+      return actor.toLowerCase().endsWith("[bot]")
+    },
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.pull_request.closed",
+    match: (event: SentinelEvent) => event.data.merged === false,
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.check_suite.completed",
+    match: (event: SentinelEvent) => {
+      const v = verdictOf(event)
+      return v === "success" || v === "neutral" || v === "skipped"
+    },
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.workflow_run.completed",
+    match: (event: SentinelEvent) => {
+      const v = verdictOf(event)
+      return v === "success" || v === "neutral" || v === "skipped"
+    },
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.pull_request_review.submitted",
+    match: (event: SentinelEvent) => {
+      const v = verdictOf(event)
+      return v === "approved" || v === "commented"
+    },
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.pull_request.closed",
+    match: (event: SentinelEvent) => event.data.merged === true,
+    decision: "fyi",
+  },
+  {
+    eventClass: "github.pull_request.synchronize",
+    match: () => true,
+    decision: "fyi",
+  },
+]
+
 const FAILURE_VERDICTS: ReadonlySet<string> = new Set([
   "failure",
   "error",
@@ -137,6 +236,12 @@ export function classifySentinelEvent(
   input: SentinelTriageInput,
 ): SentinelTriageResult {
   const key = sentinelTriageKeyFor(event)
+
+  for (const row of SENTINEL_GITHUB_TRIAGE_RULE_TABLE) {
+    if (row.eventClass === event.type && row.match(event)) {
+      return { decision: row.decision, rule: "github-triage-table" }
+    }
+  }
 
   if (event.terminal === true) {
     return { decision: "wake", rule: "terminal" }
