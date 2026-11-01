@@ -341,7 +341,14 @@ describe("runEagerResumePass (bounded boot pass)", () => {
       { id: "stopped", keepAlive: true, status: "killed" },
     ])
     const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
-    const summary = await runEagerResumePass({ registry: reg, concurrency: 2, policy: "keepalive" })
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      policy: "keepalive",
+      // Pin "now" near the fixture dates so the keepAlive idle cutoff does
+      // not age these rows out of the pass.
+      now: Date.parse("2026-07-23T01:00:00Z"),
+    })
     expect(summary).toMatchObject({ candidates: 1, resumed: 1 })
     expect(reg.get("persistent")?.status).toBe("running")
     expect(reg.get("idle")?.status).toBe("killed")
@@ -429,6 +436,92 @@ describe("runEagerResumePass (bounded boot pass)", () => {
     expect(summary.candidates).toBe(2)
     expect(summary.resumed).toBe(1)
     expect(summary.failed).toBe(1)
+    reg.shutdown()
+  })
+
+  it("does not eager-resume a keepAlive row idle past the cutoff — but pinned and operator-labelled rows still come back", async () => {
+    const now = Date.parse("2026-11-01T12:00:00Z")
+    const stale = "2026-10-01T00:00:00Z"
+    const fresh = "2026-11-01T11:00:00Z"
+    writeSessions(persistPath, [
+      { id: "stale-keepalive", keepAlive: true, lastTurnEndedAt: stale },
+      // Legacy row persisted before `lastTurnEndedAt` existed, but with an old
+      // activity stamp — the fallback chain still ages it.
+      { id: "stale-legacy", keepAlive: true, lastActivityAt: stale },
+      { id: "stale-pinned", keepAlive: true, pinned: true, lastTurnEndedAt: stale },
+      {
+        id: "stale-brain",
+        keepAlive: true,
+        operatorLabel: "pygmalion-brain-persistent",
+        lastTurnEndedAt: stale,
+      },
+      { id: "fresh-keepalive", keepAlive: true, lastTurnEndedAt: fresh },
+      // The cutoff is keepAlive-only: an ordinary stale ghost is still the
+      // eager pass's business, exactly as before.
+      { id: "ordinary-stale", lastTurnEndedAt: stale },
+    ])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
+
+    const summary = await runEagerResumePass({ registry: reg, concurrency: 4, now })
+
+    expect(summary).toEqual({ enabled: true, candidates: 4, resumed: 4, failed: 0, skipped: 0 })
+    // The two stale keepAlive executors stay dead-but-lazy-resumable, untouched.
+    expect(reg.get("stale-keepalive")?.status).toBe("killed")
+    expect(reg.get("stale-legacy")?.status).toBe("killed")
+    // Permanent rows are exempt from the cutoff.
+    expect(reg.get("stale-pinned")?.status).toBe("running")
+    expect(reg.get("stale-brain")?.status).toBe("running")
+    expect(reg.get("fresh-keepalive")?.status).toBe("running")
+    expect(reg.get("ordinary-stale")?.status).toBe("running")
+    reg.shutdown()
+  })
+
+  it("keepAliveMaxIdleMs: 0 disables the cutoff (legacy resume-everything behavior)", async () => {
+    writeSessions(persistPath, [
+      { id: "stale-keepalive", keepAlive: true, lastTurnEndedAt: "2020-01-01T00:00:00Z" },
+    ])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: makeRecordingResumer([]) })
+
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      keepAliveMaxIdleMs: 0,
+      now: Date.parse("2026-11-01T12:00:00Z"),
+    })
+
+    expect(summary.resumed).toBe(1)
+    expect(reg.get("stale-keepalive")?.status).toBe("running")
+    reg.shutdown()
+  })
+
+  it("never revives a row an operator/judge already marked completed", async () => {
+    writeSessions(persistPath, [
+      {
+        id: "completed",
+        keepAlive: true,
+        lastTurnEndedAt: "2026-11-01T11:00:00Z",
+        outcome: {
+          status: "completed",
+          verdict: "done",
+          source: "declared",
+          summary: "PR merged",
+          recordedAt: "2026-11-01T11:30:00Z",
+          termination: { reason: "operator-completed", previousReason: "daemon-restart" },
+        } as unknown as SessionDescriptor["outcome"],
+      },
+    ])
+    const resumer = makeRecordingResumer([])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+
+    const summary = await runEagerResumePass({
+      registry: reg,
+      concurrency: 2,
+      now: Date.parse("2026-11-01T12:00:00Z"),
+    })
+
+    expect(summary.candidates).toBe(0)
+    expect(resumer).not.toHaveBeenCalled()
+    expect(reg.get("completed")?.status).toBe("killed")
     reg.shutdown()
   })
 

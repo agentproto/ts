@@ -76,6 +76,18 @@ export interface DaemonConfig {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Idle cutoff, in hours, for eagerly resuming a `keepAlive` session at
+   *  boot. A `keepAlive` row is exempt from the idle reaper, so without this
+   *  it would be revived on every daemon restart even after its work finished
+   *  days earlier. Rows idle longer than this (measured from their last
+   *  turn-end) are left dead-but-lazy-resumable: the next prompt, or an
+   *  explicit `session_restart`, revives them on demand. Pinned sessions and
+   *  sessions with an operator-assigned `operatorLabel` (the persistent
+   *  brains / PMs) are always resumed. Default 24. Set to 0 to disable the
+   *  cutoff (restore the old resume-everything behavior); only meaningful
+   *  when `resumeSessionsOnBoot` is on. Set via
+   *  `agentproto config set daemon.bootResumeKeepAliveMaxIdleHours 24`. */
+  bootResumeKeepAliveMaxIdleHours?: number
   /** Boot re-ensure of installed apps' service owners. DEFAULT ON: an
    *  installed app's services are part of the service contract, and they
    *  are deterministic processes (cost/spawn-storm concerns behind

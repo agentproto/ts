@@ -882,6 +882,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // method short-circuits and only lazy resume-on-prompt applies.
         resumeSessionsOnBoot: cfgDaemon.resumeSessionsOnBoot === true,
         bootResumePolicy: cfgDaemon.bootResumePolicy,
+        // A keepAlive row is exempt from the idle reaper, so without this
+        // cutoff a finished one is revived on every restart forever. Stale
+        // ones stay lazy-resumable instead (default 24h; 0 disables).
+        bootResumeKeepAliveMaxIdleHours: cfgDaemon.bootResumeKeepAliveMaxIdleHours,
         // App-service boot re-ensure: OWN knob, default ON — resolved from
         // daemon.resumeServicesOnBoot (only an explicit false disables).
         // Decoupled from resumeSessionsOnBoot (bedrock F-11): installed
