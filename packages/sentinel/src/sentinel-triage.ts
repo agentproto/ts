@@ -29,9 +29,8 @@
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
-import type { TriageDecision } from "./local-types.js"
+import type { TriageDecision, MessageUrgency } from "./local-types.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import type { MessageUrgency } from "./local-types.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a
@@ -107,28 +106,9 @@ export type SentinelGithubTriageEventClass =
   | "github.pull_request.synchronize"
   | "github.issue_comment.created"
 
-export type SentinelGithubTriageVerdict =
-  | "failure"
-  | "error"
-  | "cancelled"
-  | "timed_out"
-  | "action_required"
-  | "success"
-  | "neutral"
-  | "skipped"
-  | "changes_requested"
-  | "approved"
-  | "commented"
-  | "merged_true"
-  | "merged_false"
-  | "bot"
-  | "human"
-  | "any"
-
 export interface SentinelGithubTriageRuleRow {
   eventClass: SentinelGithubTriageEventClass
   match: (event: SentinelEvent) => boolean
-  verdict?: string
   decision: TriageDecision
 }
 
