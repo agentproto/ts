@@ -114,6 +114,14 @@ nothing), and refuses to touch a file it cannot parse.
 It prints the `claude mcp add` line for step 1; registering the MCP URL stays
 manual because Claude Code keeps MCP servers outside the settings file.
 
+### Liveness of an `external` session
+
+An `external` row idle past the liveness window (30 minutes by default) is
+shown as `exited`, but it keeps accepting inbox delivery: nothing can restart
+it, so events wait in the inbox until the next hook run, and any later MCP
+request or inbox poll marks it `running` again. A row that was killed or
+retired is refused.
+
 ## `hook pre-compact`
 
 The Claude Code `PreCompact` hook the daemon projects into a claude-code
