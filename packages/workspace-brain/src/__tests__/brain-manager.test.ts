@@ -158,4 +158,20 @@ describe("createBrainManager", () => {
     const status = await second.status()
     expect(status.skippedSessions).toBe(0)
   })
+
+  it("refuses a query over the configured index ceiling, with the reason", async () => {
+    const capped = createBrainManager({
+      workspace: "capped-ws",
+      brainDir,
+      maxIndexDocs: 1,
+      readSession: async () => transcript("Ship it", "we cut a release with cargo cut"),
+      listSessionRefs: async () => [],
+    })
+    await capped.ingestSession("sess-one")
+    await capped.ingestSession("sess-two")
+    await expect(capped.getProvider().query({ query: "cargo" })).rejects.toThrow(
+      /files engine \(capped-ws\): refusing to build the in-process index: 2 indexable files exceed the ceiling of 1/,
+    )
+    await capped.dispose()
+  })
 })

@@ -13,6 +13,7 @@ import { join } from "node:path"
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  DEFAULT_BRAIN_MAX_INDEX_DOCS,
   resolveBrainIngestLimits,
 } from "../brain-ingest-limits.js"
 import { CONVERSATION_STORES, type ConversationStore } from "../conversation-store.js"
@@ -136,6 +137,7 @@ describe("resolveBrainIngestLimits", () => {
     ).toEqual({
       maxTranscriptBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
       maxTranscriptTextBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+      maxIndexDocs: DEFAULT_BRAIN_MAX_INDEX_DOCS,
     })
     expect(
       resolveBrainIngestLimits({
@@ -145,13 +147,15 @@ describe("resolveBrainIngestLimits", () => {
     ).toEqual({
       maxTranscriptBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
       maxTranscriptTextBytes: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+      maxIndexDocs: DEFAULT_BRAIN_MAX_INDEX_DOCS,
     })
     expect(
       resolveBrainIngestLimits({
         maxTranscriptBytes: 123,
         maxTranscriptTextBytes: 456,
+        maxIndexDocs: 789,
       }),
-    ).toEqual({ maxTranscriptBytes: 123, maxTranscriptTextBytes: 456 })
+    ).toEqual({ maxTranscriptBytes: 123, maxTranscriptTextBytes: 456, maxIndexDocs: 789 })
   })
 })
 

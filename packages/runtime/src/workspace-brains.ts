@@ -79,7 +79,7 @@ export async function readSessionForBrain(
  *  through this function, so they keep their uncapped behavior. */
 export async function readSessionForBrainWithLimits(
   sessionId: string,
-  limits?: BrainIngestLimits,
+  limits?: Pick<BrainIngestLimits, "maxTranscriptBytes" | "maxTranscriptTextBytes">,
 ): Promise<SessionReadResult> {
   const located = await locateConversationBySessionId(
     BUCKETS_ROOT(),
@@ -141,8 +141,9 @@ export async function readSessionForBrainWithLimits(
 }
 
 export interface CreateWorkspaceBrainsOptions {
-  /** Ingest ceilings for the transcript reader. Defaults to
-   *  {@link resolveBrainIngestLimits} values (32 MB file / 8 MB text). */
+  /** Ingest ceilings for the transcript reader, plus the per-brain index
+   *  ceiling. Defaults to {@link resolveBrainIngestLimits} values (32 MB file /
+   *  8 MB text / 100,000 indexed files). */
   readonly limits?: BrainIngestLimits
 }
 
@@ -166,6 +167,7 @@ export function createWorkspaceBrains(
           workspace: slug,
           brainDir,
           readSession: ref => readSessionForBrainWithLimits(ref, limits),
+          maxIndexDocs: limits.maxIndexDocs,
           listSessionRefs: async () =>
             (await readConversationIndex(BUCKETS_ROOT(), slug)).map(r => r.sessionId),
           // Optional per-workspace knowledge.json — the brain defaults to a

@@ -63,6 +63,10 @@ export function createBrainManager(config: BrainConfig): BrainManager {
       const knowledge = config.knowledge ?? DEFAULT_KNOWLEDGE_CONFIG
       const resolved = resolveKnowledgeProviders(knowledge, {
         brainDir: config.brainDir,
+        workspace: config.workspace,
+        ...(config.maxIndexDocs !== undefined
+          ? { maxIndexDocs: config.maxIndexDocs }
+          : {}),
       })
       provider = new FederatedKnowledgeProvider({
         providers: resolved,

@@ -153,6 +153,13 @@ export interface BrainConfig {
    */
   readonly knowledge?: KnowledgeConfig
   /**
+   * Ceiling on the files a `files` provider indexes in process; above it the
+   * provider refuses to build and queries fail with the reason. A
+   * `knowledge.json` entry's own `maxIndexDocs` wins. Absent → the adapter's
+   * `DEFAULT_MAX_INDEX_DOCS`.
+   */
+  readonly maxIndexDocs?: number
+  /**
    * Resolve a session reference to its exported transcript, or `null` when
    * the session has nothing readable (unknown, no store, empty). Returning
    * `null` makes the pipeline skip the session with a warning, never throw.

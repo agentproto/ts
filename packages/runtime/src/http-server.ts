@@ -3607,7 +3607,7 @@ export async function startHttpServer(
         // `all`: enumerate the SAME workspace list `GET /workspaces`
         // reads (`loadWorkspacesConfig`, plus the implicit `default`
         // bucket every daemon has even unregistered), query each one's
-        // provider in parallel, tag every hit with the bucket it came
+        // provider one at a time, tag every hit with the bucket it came
         // from, merge, sort by score desc, and take `topK` overall. A
         // per-bucket provider throw in federated mode is swallowed and
         // that slug listed in `workspacesErrored` — one bad brain must
@@ -3717,19 +3717,21 @@ export async function startHttpServer(
             slugs = [DEFAULT_BUCKET]
           }
 
+          // One brain at a time, never `Promise.all`: a cold query rebuilds
+          // that brain's whole in-process index, and building every brain at
+          // once stacks their peaks (E96: a federated cold query needed the sum
+          // of all brains' heaps).
           const workspacesErrored: string[] = []
-          const perBrain = await Promise.all(
-            slugs.map(async slug => {
-              try {
-                const brain = opts.brains!.getBrain(slug)
-                const result = await brain.getProvider().query({ query: q, topK })
-                return result.hits.map(hit => mapHit(hit, slug))
-              } catch {
-                workspacesErrored.push(slug)
-                return []
-              }
-            }),
-          )
+          const perBrain: Array<Array<ReturnType<typeof mapHit>>> = []
+          for (const slug of slugs) {
+            try {
+              const brain = opts.brains!.getBrain(slug)
+              const result = await brain.getProvider().query({ query: q, topK })
+              perBrain.push(result.hits.map(hit => mapHit(hit, slug)))
+            } catch {
+              workspacesErrored.push(slug)
+            }
+          }
           const hits = perBrain
             .flat()
             .sort((a, b) => b.score - a.score)

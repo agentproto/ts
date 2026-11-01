@@ -39,7 +39,8 @@ import {
   type KnowledgeProvenance,
 } from "@agentproto/knowledge-engine"
 import {
-  buildIndexYielding as buildBm25IndexYielding,
+  Bm25IndexBuilder,
+  makeSnippet,
   score as scoreBm25,
   tokenize,
   type Bm25Index,
@@ -85,6 +86,73 @@ const INDEX_READ_CONCURRENCY = 10
  */
 const INDEX_QUERY_TIMEOUT_MS = 4_000
 
+/** Docs read, tokenized, and folded into the index per step of a build, and
+ *  the interval at which the build yields to the event loop (see
+ *  `buildIndexYielding` in bm25.ts for why the yield matters). Only one
+ *  step's text is alive at a time. */
+const INDEX_BUILD_STEP = 50
+
+/**
+ * Default ceiling on the files a brain may index in process. Above it the
+ * engine refuses to build and every query fails with
+ * {@link FilesIndexTooLargeError}. Measured on 5.8 KB transcript-shaped docs:
+ * the lean index costs about 2.4 KB of heap per doc where the old one (text
+ * plus a per-doc `tf` Map) cost about 20 KB. Real brains measured 40 KB per doc
+ * on the old shape, so budget about 5 KB per doc: 100,000 docs is about
+ * 500 MB resident at worst. That covers the 47k and 91k doc brains seen in the
+ * field and refuses the 223k one, which wants a real engine (qdrant,
+ * gbrain-doc) rather than a whole-corpus scan per query.
+ */
+export const DEFAULT_MAX_INDEX_DOCS = 100_000
+
+/**
+ * Thrown by `query()` / `listSources()` / `getSource()` when the brain holds
+ * more indexable files than the configured ceiling. The name is the stable
+ * signal (`err.name === "FilesIndexTooLargeError"`) so a second copy of this
+ * package in the tree still matches.
+ */
+export class FilesIndexTooLargeError extends Error {
+  readonly docCount: number
+  readonly maxDocs: number
+
+  constructor(label: string, docCount: number, maxDocs: number) {
+    super(
+      `files engine (${label}): refusing to build the in-process index: ` +
+        `${docCount} indexable files exceed the ceiling of ${maxDocs}. ` +
+        `Raise maxIndexDocs, or back this brain with a real search engine.`
+    )
+    this.name = "FilesIndexTooLargeError"
+    this.docCount = docCount
+    this.maxDocs = maxDocs
+  }
+}
+
+/**
+ * One index build at a time across every adapter in the process. A build
+ * peaks at its index plus one step of file text, so serializing builds keeps
+ * the peak to the largest single brain instead of the sum of all of them
+ * (a federated query used to build every brain at once).
+ */
+let buildGate: Promise<unknown> = Promise.resolve()
+let buildsRunning = 0
+function runExclusiveBuild<T>(fn: () => Promise<T>): Promise<T> {
+  const run = buildGate.then(async () => {
+    buildsRunning++
+    try {
+      return await fn()
+    } finally {
+      buildsRunning--
+    }
+  })
+  buildGate = run.catch(() => undefined)
+  return run
+}
+
+/** Index builds running right now, process wide (0 or 1). For tests. */
+export function filesIndexBuildsRunning(): number {
+  return buildsRunning
+}
+
 export const FILES_CAPABILITIES: KnowledgeCapabilities = Object.freeze({
   vectorSearch: false,
   graphTraversal: false,
@@ -107,6 +175,18 @@ export interface FilesAdapterConfig {
 export interface FilesKnowledgeAdapterOptions extends FilesAdapterConfig {
   /** FsPort scoped to the workspace the engine lives in. */
   readonly fs: FsPort
+  /** Name used in log lines and errors (e.g. the brain's workspace slug).
+   *  Defaults to `workspacePath`. */
+  readonly label?: string
+  /** Refuse to build the index above this many indexable files. Defaults to
+   *  {@link DEFAULT_MAX_INDEX_DOCS}. */
+  readonly maxIndexDocs?: number
+  /** How long `query()` waits for a cold build before answering with no
+   *  hits (the build keeps going). Defaults to 4 s. */
+  readonly queryTimeoutMs?: number
+  /** Sink for the one-line build / timeout / refusal logs. Defaults to
+   *  `console.log`. */
+  readonly log?: (line: string) => void
 }
 
 export class FilesKnowledgeAdapter implements IKnowledgeProvider {
@@ -115,16 +195,31 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
 
   private readonly fs: FsPort
   private readonly workspacePath: string
+  private readonly label: string
+  private readonly maxIndexDocs: number
+  private readonly queryTimeoutMs: number
+  private readonly log: (line: string) => void
   private cachedIndex: Bm25Index | null = null
   private cachedAt = 0
   // In-flight build promise: concurrent turns that arrive while the index is
   // still being built (cachedIndex === null) coalesce onto this promise instead
   // of each kicking off a redundant 40-50s Supabase Storage re-scan.
   private buildInFlight: Promise<Bm25Index> | null = null
+  private buildStartedAt = 0
+  // A refused build (over the ceiling) is remembered until the next
+  // invalidate(), so repeated queries do not re-walk a huge brain.
+  private refusal: FilesIndexTooLargeError | null = null
 
   constructor(opts: FilesKnowledgeAdapterOptions) {
     this.fs = opts.fs
     this.workspacePath = opts.workspacePath
+    this.label = opts.label ?? opts.workspacePath
+    this.maxIndexDocs =
+      typeof opts.maxIndexDocs === "number" && opts.maxIndexDocs > 0
+        ? opts.maxIndexDocs
+        : DEFAULT_MAX_INDEX_DOCS
+    this.queryTimeoutMs = opts.queryTimeoutMs ?? INDEX_QUERY_TIMEOUT_MS
+    this.log = opts.log ?? (line => console.log(line))
   }
 
   async ingest(input: KnowledgeIngestInput): Promise<KnowledgeSource> {
@@ -203,7 +298,7 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
     // query on the same instance will find the index warm. This prevents a cold
     // Supabase Storage rebuild (50-150 s on large corpora) from blocking every
     // turn on fresh Cloud Run instances.
-    const index = await this.ensureIndex(INDEX_QUERY_TIMEOUT_MS)
+    const index = await this.ensureIndex(this.queryTimeoutMs)
     const tokens = tokenize(q.query)
     if (tokens.length === 0) {
       return {
@@ -217,18 +312,25 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
       topK: q.topK,
       minScore: q.minScore,
     })
-    const hits: KnowledgeHit[] = scored.map(s => {
-      const meta = parseFrontmatterMetadata(s.doc.text)
-      const snippetText = s.snippet?.text ?? s.doc.text.slice(0, 300)
+    // The index holds no text: read the top-K files back for their snippet
+    // and frontmatter. A file that vanished since the build yields an empty
+    // snippet rather than failing the whole query.
+    const texts = await mapWithConcurrency(
+      scored,
+      INDEX_READ_CONCURRENCY,
+      s => this.readText(s.doc.id)
+    )
+    const hits: KnowledgeHit[] = scored.map((s, i) => {
+      const text = texts[i]!
+      const meta = parseFrontmatterMetadata(text)
+      const snippet = makeSnippet(text, tokens)
       return {
         sourceId: s.doc.id,
         chunkId: s.doc.id,
-        text: snippetText,
+        text: snippet.text,
         score: s.score,
         // span is in original-file bytes; matches engine "citations" capability.
-        span: s.snippet
-          ? { start: s.snippet.start, end: s.snippet.end }
-          : undefined,
+        span: { start: snippet.start, end: snippet.end },
         metadata: meta,
       }
     })
@@ -247,21 +349,18 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
     filter?: ListSourcesFilter
   ): Promise<readonly KnowledgeSource[]> {
     const index = await this.ensureIndex()
+    // Every source is kind "file" + status "ready": filter before reading.
+    if (filter?.kind && filter.kind !== "file") return Object.freeze([])
+    if (filter?.status && filter.status !== "ready") return Object.freeze([])
     const out: KnowledgeSource[] = []
-    for (const doc of index.docs) {
-      const meta = parseFrontmatterMetadata(doc.text)
-      const source: KnowledgeSource = {
-        id: doc.id,
-        kind: "file",
-        uri: doc.id,
-        title: typeof meta.title === "string" ? meta.title : undefined,
-        bytes: byteLength(doc.text),
-        status: "ready",
-        metadata: meta,
-      }
-      if (filter?.kind && source.kind !== filter.kind) continue
-      if (filter?.status && source.status !== filter.status) continue
-      out.push(source)
+    for (let i = 0; i < index.docs.length; i += INDEX_BUILD_STEP) {
+      const step = index.docs.slice(i, i + INDEX_BUILD_STEP)
+      const texts = await mapWithConcurrency(
+        step,
+        INDEX_READ_CONCURRENCY,
+        doc => this.readText(doc.id)
+      )
+      step.forEach((doc, j) => out.push(fileSource(doc.id, texts[j]!)))
     }
     return Object.freeze(out)
   }
@@ -270,16 +369,7 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
     const index = await this.ensureIndex()
     const doc = index.docs.find(d => d.id === id)
     if (!doc) return null
-    const meta = parseFrontmatterMetadata(doc.text)
-    return {
-      id: doc.id,
-      kind: "file",
-      uri: doc.id,
-      title: typeof meta.title === "string" ? meta.title : undefined,
-      bytes: byteLength(doc.text),
-      status: "ready",
-      metadata: meta,
-    }
+    return fileSource(doc.id, await this.readText(doc.id))
   }
 
   async deleteSource(id: string): Promise<void> {
@@ -333,6 +423,7 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
   private invalidate(): void {
     this.cachedIndex = null
     this.cachedAt = 0
+    this.refusal = null
     // Do NOT clear buildInFlight: an in-flight build that started before the
     // invalidate will still store its result, which is immediately stale. The
     // next ensureIndex() call after it resolves will see cachedIndex !== null
@@ -346,14 +437,20 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
     if (this.cachedIndex && Date.now() - this.cachedAt < CACHE_TTL_MS) {
       return this.cachedIndex
     }
+    if (this.refusal) throw this.refusal
     // Coalesce concurrent callers onto one in-flight build. Without this,
     // two turns arriving before the first build completes both see
     // cachedIndex===null and each kick off a full 40-50s Supabase Storage
     // re-scan — wasting resources and keeping both turns slow.
     if (!this.buildInFlight) {
-      this.buildInFlight = this._buildIndex().finally(() => {
+      this.buildStartedAt = Date.now()
+      const build = runExclusiveBuild(() => this._buildIndex()).finally(() => {
         this.buildInFlight = null
       })
+      // A caller that gave up at its deadline no longer awaits the build;
+      // keep a failure from surfacing as an unhandled rejection.
+      build.catch(() => undefined)
+      this.buildInFlight = build
     }
     if (timeoutMs !== undefined) {
       // Non-blocking mode: race the build against a deadline. If the build
@@ -362,38 +459,105 @@ export class FilesKnowledgeAdapter implements IKnowledgeProvider {
       // build continues in background; the next call to ensureIndex() will
       // either find the cache populated (build done) or coalesce onto the
       // still-in-flight promise again.
-      const EMPTY: Bm25Index = { docs: [], avgDocLength: 0, df: new Map() }
-      const deadline = new Promise<Bm25Index>(resolve =>
-        setTimeout(() => resolve(EMPTY), timeoutMs)
+      const build = this.buildInFlight
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const deadline = new Promise<null>(resolve => {
+        timer = setTimeout(() => resolve(null), timeoutMs)
+      })
+      const winner = await Promise.race([build, deadline]).finally(() =>
+        clearTimeout(timer)
       )
-      return Promise.race([this.buildInFlight, deadline])
+      if (winner) return winner
+      this.log(
+        `[knowledge-files:${this.label}] query timed out after ${timeoutMs} ms ` +
+          `waiting for the index build (running for ${Date.now() - this.buildStartedAt} ms); ` +
+          `returning no hits, the build keeps going`
+      )
+      return EMPTY_INDEX
     }
     return this.buildInFlight
   }
 
   private async _buildIndex(): Promise<Bm25Index> {
+    const start = Date.now()
+    const heapBefore = heapUsedMb()
     const allPaths = await this.fs.walk(this.workspacePath)
     const candidates = allPaths.filter(p =>
       INDEXED_EXTENSIONS.some(ext => p.toLowerCase().endsWith(ext))
     )
-    const inputs = await mapWithConcurrency(
-      candidates,
-      INDEX_READ_CONCURRENCY,
-      async path => ({
-        id: path,
-        content: await this.fs.readFile(path).catch(() => ""),
+    if (candidates.length > this.maxIndexDocs) {
+      const refusal = new FilesIndexTooLargeError(
+        this.label,
+        candidates.length,
+        this.maxIndexDocs
+      )
+      this.refusal = refusal
+      this.log(
+        `[knowledge-files:${this.label}] index build refused: ` +
+          `${candidates.length} indexable files exceed the ceiling of ${this.maxIndexDocs}`
+      )
+      throw refusal
+    }
+    // Read, tokenize, and fold in one step at a time, in walk order, so only
+    // one step's text is ever alive (the old build held every file's text,
+    // then kept it in the index).
+    const builder = new Bm25IndexBuilder()
+    let bytesRead = 0
+    for (let i = 0; i < candidates.length; i += INDEX_BUILD_STEP) {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      const step = candidates.slice(i, i + INDEX_BUILD_STEP)
+      const texts = await mapWithConcurrency(
+        step,
+        INDEX_READ_CONCURRENCY,
+        path => this.fs.readFile(path).catch(() => "")
+      )
+      step.forEach((path, j) => {
+        const content = texts[j]!
+        if (content.length === 0) return
+        bytesRead += byteLength(content)
+        builder.add(path, content)
       })
-    )
-    const index = await buildBm25IndexYielding(
-      inputs.filter(i => i.content.length > 0)
-    )
+    }
+    const index = builder.finish()
     this.cachedIndex = index
     this.cachedAt = Date.now()
+    this.log(
+      `[knowledge-files:${this.label}] index built: ${index.docs.length} docs, ` +
+        `${bytesRead} bytes read, ${Date.now() - start} ms, ` +
+        `heapUsed ${heapBefore} MB -> ${heapUsedMb()} MB`
+    )
     return index
+  }
+
+  /** A doc's current text, or "" when it can no longer be read. */
+  private readText(id: string): Promise<string> {
+    return this.fs.readFile(id).catch(() => "")
   }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
+
+const EMPTY_INDEX = new Bm25IndexBuilder().finish()
+
+/** `process.memoryUsage().heapUsed` in MB, or "?" off Node. */
+function heapUsedMb(): number | "?" {
+  if (typeof process === "undefined" || !process.memoryUsage) return "?"
+  return Math.round(process.memoryUsage().heapUsed / (1024 * 1024))
+}
+
+/** The {@link KnowledgeSource} for an indexed file and its current text. */
+function fileSource(id: string, text: string): KnowledgeSource {
+  const meta = parseFrontmatterMetadata(text)
+  return {
+    id,
+    kind: "file",
+    uri: id,
+    title: typeof meta.title === "string" ? meta.title : undefined,
+    bytes: byteLength(text),
+    status: "ready",
+    metadata: meta,
+  }
+}
 
 /**
  * Map `items` through `fn` with at most `limit` calls in flight at once,

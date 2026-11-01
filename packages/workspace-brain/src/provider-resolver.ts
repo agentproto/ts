@@ -45,6 +45,11 @@ export const KNOWLEDGE_PROVIDER_ADAPTERS: readonly KnowledgeProviderAdapterId[] 
 export interface ProviderResolutionContext {
   /** Absolute brain directory — roots the `files` adapter's FsPort. */
   readonly brainDir: string
+  /** Workspace slug: names the brain in the `files` adapter's log lines. */
+  readonly workspace?: string
+  /** Default `files` index ceiling (docs); an entry's own `maxIndexDocs`
+   *  wins. Absent → the adapter's `DEFAULT_MAX_INDEX_DOCS`. */
+  readonly maxIndexDocs?: number
 }
 
 /** A provider entry resolved to a live provider + its merge-affecting knobs. */
@@ -150,9 +155,13 @@ export function resolveKnowledgeProvider(
         typeof entry.workspacePath === "string"
           ? entry.workspacePath
           : "knowledge"
+      const maxIndexDocs =
+        typeof entry.maxIndexDocs === "number" ? entry.maxIndexDocs : ctx.maxIndexDocs
       const provider = new FilesKnowledgeAdapter({
         fs: new LocalFs({ root: ctx.brainDir }),
         workspacePath,
+        ...(ctx.workspace ? { label: ctx.workspace } : {}),
+        ...(maxIndexDocs !== undefined ? { maxIndexDocs } : {}),
       })
       return { id, weight, auto, provider }
     }

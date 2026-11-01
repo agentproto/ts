@@ -17,7 +17,7 @@ _are_ the index, with no separate store to keep in sync.
 | `FilesKnowledgeAdapter` | The `IKnowledgeProvider` implementation. Consumes an injected `FsPort`; knows nothing about `node:fs` or `process.env`. |
 | `LocalFs` | A `node:fs`-backed `FsPort` (from `@agentproto/corpus`) so the adapter runs standalone. Paths are workspace-relative and can't escape the root. |
 | `createStandaloneFilesAdapter()` | Wires `LocalFs` + the typed env into a ready-to-use adapter. |
-| BM25 (`tokenize`, `buildIndex`, `buildIndexYielding`, `score`) | The dependency-free ranking core. Confined to this package. |
+| BM25 (`tokenize`, `buildIndex`, `buildIndexYielding`, `Bm25IndexBuilder`, `score`, `makeSnippet`) | The dependency-free ranking core. Confined to this package. |
 | provider-kit family (`KNOWLEDGE_FILES_CATALOG`, `makeKnowledgeFilesResolver`, `resolveKnowledgeBackend`) | Registers the `files` backend under the `@agentproto/adapter-knowledge-*` discovery convention. |
 
 ## Usage
@@ -69,6 +69,20 @@ names live:
   it's rebuilt only when the adapter `invalidate()`s (via `ingest`/`delete`) or
   a fresh instance is created. Hosts wanting second-precision freshness on
   external edits can wire fs-watch into a new instance.
+- **Memory:** the resident index holds no doc text: per doc only its id and
+  token count, plus every doc's (term id, term frequency) pairs packed into
+  shared typed arrays and one term vocabulary. A query reads the top-K files
+  back from disk for their snippet and frontmatter. A build reads files 50 at a
+  time, so only one step of text is alive at once.
+- **One build at a time:** index builds are serialized across every adapter in
+  the process, so cold queries on several brains never stack their peaks.
+- **Ceiling:** above `maxIndexDocs` indexable files (default 100,000) the
+  adapter refuses to build and `query()` / `listSources()` / `getSource()`
+  throw `FilesIndexTooLargeError` with the counts.
+- **Logs:** one line per build (`[knowledge-files:<label>] index built: N docs,
+  B bytes read, T ms, heapUsed X MB -> Y MB`), per refusal, and per query that
+  times out waiting for a cold build (the build keeps going). Inject `log` to
+  route them elsewhere.
 
 ## Provenance and supersession
 
