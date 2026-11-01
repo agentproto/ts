@@ -39,8 +39,9 @@ agentproto sessions terminal [--preset <name>] [-- <argv...>]
                                            [--cols <n>] [--rows <n>]
                                            [--attach] [--json] [--no-color]
 agentproto sessions restart  <id-or-name> [--attach] [--json] [--no-color]
-                                           [--prefer-native-terminal]
-                                           [--auto-compact-at-tokens <n>]
+                                         [--model <id>] [--access-profile <ref>]
+                                         [--prefer-native-terminal]
+                                         [--auto-compact-at-tokens <n>]
 agentproto sessions switch-profile --from <profileRef> --to <profileRef>
                                            [--dry-run] [--json]
 agentproto sessions prompt   <id-or-name> --prompt <text> [--wait] [--interrupt]
@@ -61,6 +62,7 @@ agentproto sessions wait     <id-or-name>... [--until <event>] [--any]
                                            [--policy <policyId>] [--json]
 agentproto sessions gc       [--older-than-days <n>] [--forget] [--json]
 agentproto sessions gc       --retention [--dry-run] [--json]
+agentproto sessions gc       --adapter-caches [--dry-run] [--json]
 agentproto sessions continue-interrupted [--send] [--id <id-or-name>...]
                                            [--prompt <text>] [--json]
 agentproto sessions queue    <id-or-name> [--force <n>] [--deliver <n>]
@@ -647,6 +649,8 @@ daemon returns 501 and this verb fails.
 ```bash
 agentproto sessions restart claude-tui
 agentproto sessions restart ses_abc12 --attach
+agentproto sessions restart ses_abc12 --model anthropic/claude-opus-4-8
+agentproto sessions restart ses_abc12 --model opencode/deepseek-v4.1-flash-free --access-profile work
 ```
 
 Looks up the (possibly historical) descriptor and spawns a new
@@ -656,6 +660,12 @@ fresh shape when the adapter reports the id is unknown ("session
 killed too early to persist"). The banner reports which path was
 taken: `(resumed via claude --resume from ses_abc12)` or
 `(fresh — resume not available)`.
+
+`--model` and `--access-profile` keep the model, billing profile and
+lineage when restarting: the CLI routes agent restarts through the
+daemon so those spawn fields survive. Both require an agent-cli
+restart (a PTY/command restart with them exits non-zero). A restart
+carrying either flag re-resolves auth like any other config change.
 
 **Restart-with-override (MCP/HTTP).** The `session_restart` MCP tool (and the
 `POST /sessions/:id/restart` route) accept per-axis overrides — `model`,
@@ -960,6 +970,21 @@ deletes nothing. The daemon also runs this pass itself 10 minutes after boot
 and every 6 hours. Over MCP / HTTP the same pass is `session_gc` /
 `POST /sessions/gc` with `retention: true`, plus optional `dryRun`,
 `reviewMaxAgeDays` and `maxAgeDays` overrides.
+
+```bash
+agentproto sessions gc --adapter-caches --dry-run   # preview the cache sweep
+agentproto sessions gc --adapter-caches             # reclaim disposable caches
+```
+
+`--adapter-caches` runs the **adapter-config cache sweep** instead: once every
+session of a dead lineage is quiet for `daemon.adapterCacheRetentionDays`
+(default `1`), the disposable paths a spawn recorded in its
+`.agentproto-cache.json` (e.g. opencode's per-session `snapshot`,
+`tool-output`, `log` under a redirected `XDG_DATA_HOME`) are deleted. The
+resume store and non-disposable caches (pnpm store, uv-managed Pythons, …) are
+kept. `--dry-run` reports what would be reclaimed and deletes nothing. Over
+MCP / HTTP the same pass is `session_gc` with `adapterCaches: true` (plus
+optional `dryRun` and `maxAgeDays`, the quiet-days override).
 
 ### `continue-interrupted`
 
