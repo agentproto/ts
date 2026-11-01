@@ -285,6 +285,51 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
+  it("federated: queries the brains one at a time, never two at once", async () => {
+    registerWorkspaces("agentproto", "agentik-studio")
+    // Each query stands in for a cold index build: it holds the brain for a
+    // while. Federated mode must not overlap two of them.
+    let running = 0
+    let maxRunning = 0
+    const order: string[] = []
+    const brains: WorkspaceBrains = {
+      getBrain: (workspace: string) =>
+        stubBrainManager(() =>
+          stubProvider(async () => {
+            running++
+            maxRunning = Math.max(maxRunning, running)
+            order.push(workspace)
+            await new Promise(r => setTimeout(r, 25))
+            running--
+            return {
+              hits: [
+                {
+                  sourceId: `sess-${workspace}`,
+                  chunkId: `sess-${workspace}`,
+                  text: workspace,
+                  score: 1,
+                  metadata: { sessionId: `sess-${workspace}` },
+                },
+              ],
+              tookMs: 0,
+              engine: "fake",
+              modeUsed: "hybrid" as const,
+            }
+          }),
+        ),
+      resolveWorkspace: async () => undefined,
+      resolveWorkspaceSlug: (workspace, callerSlug) => workspace ?? callerSlug ?? "default",
+    }
+    await withServer(async base => {
+      const res = await fetch(`${base}/brain/query?q=hit`)
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { hits: Array<{ workspace: string }> }
+      expect(body.hits.map(h => h.workspace).sort()).toEqual(["agentik-studio", "agentproto", "default"])
+    }, brains)
+    expect(order).toEqual(["default", "agentproto", "agentik-studio"])
+    expect(maxRunning).toBe(1)
+  })
+
   it('explicit workspace=all is equivalent to the default federated mode', async () => {
     const brains = fakeBrains({ default: [] })
     await withServer(async base => {

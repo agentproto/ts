@@ -67,6 +67,12 @@ function isNotSupported(err: unknown): boolean {
   return err instanceof Error && err.name === "KnowledgeNotSupportedError"
 }
 
+/** A `files` provider refusing to build an index over its ceiling. Same
+ *  name-check rationale as {@link isNotSupported}. */
+function isIndexTooLarge(err: unknown): err is Error {
+  return err instanceof Error && err.name === "FilesIndexTooLargeError"
+}
+
 export class FederatedKnowledgeProvider implements IKnowledgeProvider {
   readonly id = "federated"
   readonly capabilities: KnowledgeCapabilities
@@ -106,6 +112,12 @@ export class FederatedKnowledgeProvider implements IKnowledgeProvider {
       return fulfilled[0]!.result
     }
     if (fulfilled.length === 0) {
+      // A refusal carries a reason the caller must see (the brain is over its
+      // in-process index ceiling); any other failure still degrades to empty.
+      const refusal = settled.find(
+        r => r.status === "rejected" && isIndexTooLarge(r.reason),
+      )
+      if (refusal?.status === "rejected") throw refusal.reason
       return { hits: [], tookMs: 0, engine: this.id, modeUsed: "none" }
     }
 

@@ -75,6 +75,7 @@ import { DEFAULT_STDIO_MOUNT_GATE_MODE, type StdioMountGateMode } from "./stdio-
 import {
   DEFAULT_BRAIN_MAX_TRANSCRIPT_BYTES,
   DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  DEFAULT_BRAIN_MAX_INDEX_DOCS,
 } from "./brain-ingest-limits.js"
 
 // ── nested zod schemas, one per `config.ts` / `spawn-defaults.ts` interface ──
@@ -291,6 +292,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
             workspaces: z.array(z.string().min(1)).optional(),
             maxTranscriptBytes: z.number().positive().optional(),
             maxTranscriptTextBytes: z.number().positive().optional(),
+            maxIndexDocs: z.number().int().positive().optional(),
           })
           .passthrough()
           .optional(),
@@ -1659,6 +1661,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Brain-ingest transcript text ceiling",
     help: "Maximum accumulated message text, in bytes, the workspace brain will materialize from one transcript. A smaller file can still expand past this, so it is checked while parsing. Default 8 MB. Read at daemon boot.",
     default: DEFAULT_BRAIN_MAX_TRANSCRIPT_TEXT_BYTES,
+  },
+  {
+    path: "defaults.reactions.brainIngest.maxIndexDocs",
+    schema: z.number().int().positive(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "Brain index file ceiling",
+    help: "Maximum files one workspace brain indexes in process for search. Above it the brain refuses to build its index and a query fails with the reason instead of loading the whole corpus into memory. A knowledge.json files entry's own maxIndexDocs wins. Default 100,000. Read at daemon boot.",
+    default: DEFAULT_BRAIN_MAX_INDEX_DOCS,
   },
   {
     path: "defaults.reactions.clerk.workspaces",

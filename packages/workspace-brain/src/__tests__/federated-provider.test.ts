@@ -204,6 +204,25 @@ describe("FederatedKnowledgeProvider.query", () => {
     expect(r.engine).toBe("federated")
   })
 
+  it("surfaces a files index refusal when no provider answered", async () => {
+    const a = makeStub("a", { scores: [0.5] })
+    const refusal = Object.assign(
+      new Error("files engine (ws): refusing to build the in-process index: 9 indexable files exceed the ceiling of 3."),
+      { name: "FilesIndexTooLargeError" },
+    )
+    a.resolved.provider.query = async () => {
+      throw refusal
+    }
+    const alone = new FederatedKnowledgeProvider({ providers: [a.resolved] })
+    await expect(alone.query({ query: "x" })).rejects.toBe(refusal)
+
+    // With another provider answering, the refused one just drops out.
+    const b = makeStub("b", { scores: [0.7] })
+    const both = new FederatedKnowledgeProvider({ providers: [a.resolved, b.resolved] })
+    const r = await both.query({ query: "x", topK: 10 })
+    expect(r.hits.map(h => h.chunkId)).toEqual(["b-chunk-0"])
+  })
+
   it("returns empty (never throws) when EVERY provider fails", async () => {
     const a = makeStub("a", { scores: [0.5], failQuery: true })
     const fed = new FederatedKnowledgeProvider({ providers: [a.resolved] })
