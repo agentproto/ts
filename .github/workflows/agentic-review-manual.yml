@@ -75,6 +75,12 @@ jobs:
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.review.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
           cli-source: workspace
           workflow-input: |

@@ -101,6 +101,42 @@ inputs:
       loudly and the workflow step fails (no silent host spawn).
     required: false
     default: ''
+  computer-controller-url:
+    description: >
+      Computer fleet controller URL (secrets.COMPUTER_FLEET_URL), exported as
+      COMPUTER_CONTROLLER_URL on the daemon env. The `computer` leg of a
+      `reviewerSandbox.provider: "auto"` spec reads it; the workflow lane
+      (`sandboxRefFor` in .github/agentproto-workflows/lib/sandbox-agent.mjs)
+      falls back to plain e2b when it is empty. Setting it also exports
+      COMPUTER_DAEMON_ROUTE=1 (the runner reaches boxes through the controller,
+      not directly). Empty ⇒ none of the COMPUTER_* variables are set.
+    required: false
+    default: ''
+  computer-token:
+    description: >
+      Fleet tenant token (secrets.COMPUTER_CI_TOKEN), exported as
+      COMPUTER_CONTROLLER_TOKEN. Empty ⇒ not set.
+    required: false
+    default: ''
+  computer-tenant-id:
+    description: >
+      Fleet tenant id (secrets.COMPUTER_CI_TENANT), exported as
+      COMPUTER_TENANT_ID. Empty ⇒ not set.
+    required: false
+    default: ''
+  computer-access-client-id:
+    description: >
+      Cloudflare Access service-token client id (secrets.COMPUTER_ACCESS_CLIENT_ID),
+      exported as COMPUTER_ACCESS_CLIENT_ID. Empty ⇒ not set.
+    required: false
+    default: ''
+  computer-access-client-secret:
+    description: >
+      Cloudflare Access service-token client secret
+      (secrets.COMPUTER_ACCESS_CLIENT_SECRET), exported as
+      COMPUTER_ACCESS_CLIENT_SECRET. Empty ⇒ not set.
+    required: false
+    default: ''
   langfuse-public-key:
     description: >
       Langfuse public key (pk-lf-…, secrets.LANGFUSE_PUBLIC_KEY). All of
@@ -210,6 +246,9 @@ runs:
         API_KEY: ${{ inputs.api-key }}
         PROVIDER_KEY: ${{ inputs.provider-key }}
         E2B_KEY: ${{ inputs.e2b-api-key }}
+        COMPUTER_TOKEN: ${{ inputs.computer-token }}
+        COMPUTER_ACCESS_ID: ${{ inputs.computer-access-client-id }}
+        COMPUTER_ACCESS_SECRET: ${{ inputs.computer-access-client-secret }}
         LF_SECRET: ${{ inputs.langfuse-secret-key }}
         LF_PUBLIC: ${{ inputs.langfuse-public-key }}
       run: |
@@ -217,6 +256,9 @@ runs:
         if [ -n "$API_KEY" ]; then echo "::add-mask::$API_KEY"; fi
         if [ -n "$PROVIDER_KEY" ]; then echo "::add-mask::$PROVIDER_KEY"; fi
         if [ -n "$E2B_KEY" ]; then echo "::add-mask::$E2B_KEY"; fi
+        if [ -n "$COMPUTER_TOKEN" ]; then echo "::add-mask::$COMPUTER_TOKEN"; fi
+        if [ -n "$COMPUTER_ACCESS_ID" ]; then echo "::add-mask::$COMPUTER_ACCESS_ID"; fi
+        if [ -n "$COMPUTER_ACCESS_SECRET" ]; then echo "::add-mask::$COMPUTER_ACCESS_SECRET"; fi
         if [ -n "$LF_SECRET" ]; then echo "::add-mask::$LF_SECRET"; fi
         if [ -n "$LF_PUBLIC" ]; then echo "::add-mask::$LF_PUBLIC"; fi
 
@@ -276,6 +318,16 @@ runs:
         # exist for that path only — HOST spawns still authenticate via
         # ~/.agentproto/config.json (write-config.mjs above), never ambient env.
         E2B_API_KEY: ${{ inputs.e2b-api-key }}
+        # Computer fleet leg of an `auto` sandbox (same path as E2B_API_KEY:
+        # the daemon's `computer` provider reads these from its own env).
+        # Empty values are removed by driver.mjs before the daemon spawns, so
+        # an unset input never reaches the provider as an empty string.
+        COMPUTER_CONTROLLER_URL: ${{ inputs.computer-controller-url }}
+        COMPUTER_CONTROLLER_TOKEN: ${{ inputs.computer-token }}
+        COMPUTER_TENANT_ID: ${{ inputs.computer-tenant-id }}
+        COMPUTER_ACCESS_CLIENT_ID: ${{ inputs.computer-access-client-id }}
+        COMPUTER_ACCESS_CLIENT_SECRET: ${{ inputs.computer-access-client-secret }}
+        COMPUTER_DAEMON_ROUTE: ${{ inputs.computer-controller-url != '' && '1' || '' }}
         # Gated like ANTHROPIC_AUTH_TOKEN below — a stale ambient OAuth token
         # in api-key mode would shadow the API key for claude-code spawns.
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.auth-mode == 'subscription' && inputs.oauth-token || '' }}

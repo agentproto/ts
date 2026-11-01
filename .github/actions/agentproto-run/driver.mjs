@@ -139,6 +139,12 @@ await mkdir(cwd, { recursive: true })
 const providerKeyEnv = (process.env.PROVIDER_KEY_ENV ?? "").trim()
 const providerKey = process.env.PROVIDER_KEY ?? ""
 const daemonEnv = { ...process.env }
+// The action exports every COMPUTER_* input unconditionally; an unset one
+// arrives as "" and would be read by the computer provider as a real (empty)
+// value (e.g. tenantId ""). Drop empties so "empty = not set" holds.
+for (const name of Object.keys(daemonEnv)) {
+  if (name.startsWith("COMPUTER_") && daemonEnv[name].trim() === "") delete daemonEnv[name]
+}
 if (providerKeyEnv && providerKey) {
   daemonEnv[providerKeyEnv] = providerKey
   console.log(`driver: injected provider key env ${providerKeyEnv} into the daemon process env`)

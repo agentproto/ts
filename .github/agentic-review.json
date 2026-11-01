@@ -13,9 +13,45 @@
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/mimo-v2.6-flash-free",
       "reviewerSandbox": {
-        "provider": "e2b",
+        "provider": "auto",
         "lifecycle": {
           "destroy_on": "workspace-close"
+        },
+        "config": {
+          "computer": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "overflow": {
+            "enabled": true,
+            "maxBoxesPerDay": 20,
+            "maxEurPerDay": 5,
+            "maxEurPerBox": 0.5,
+            "allowSecrets": true,
+            "secretAllowlist": [
+              "OPENCODE_API_KEY",
+              "GITHUB_TOKEN",
+              "AGENTPROTO_JOIN",
+              "AGENTPROTO_JOIN_NAME",
+              "AGENTPROTO_JOIN_PROVIDER",
+              "AGENTPROTO_JOIN_SANDBOX_ID",
+              "AGENTPROTO_JOIN_LABELS"
+            ]
+          }
         }
       },
       "reviewerSandboxEnv": [
@@ -28,9 +64,45 @@
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/step-5-preview-free",
       "reviewerSandbox": {
-        "provider": "e2b",
+        "provider": "auto",
         "lifecycle": {
           "destroy_on": "workspace-close"
+        },
+        "config": {
+          "computer": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "overflow": {
+            "enabled": true,
+            "maxBoxesPerDay": 20,
+            "maxEurPerDay": 5,
+            "maxEurPerBox": 0.5,
+            "allowSecrets": true,
+            "secretAllowlist": [
+              "OPENCODE_API_KEY",
+              "GITHUB_TOKEN",
+              "AGENTPROTO_JOIN",
+              "AGENTPROTO_JOIN_NAME",
+              "AGENTPROTO_JOIN_PROVIDER",
+              "AGENTPROTO_JOIN_SANDBOX_ID",
+              "AGENTPROTO_JOIN_LABELS"
+            ]
+          }
         }
       },
       "reviewerSandboxEnv": [
@@ -47,9 +119,45 @@
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/deepseek-v4.1-flash-free",
       "reviewerSandbox": {
-        "provider": "e2b",
+        "provider": "auto",
         "lifecycle": {
           "destroy_on": "workspace-close"
+        },
+        "config": {
+          "computer": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "overflow": {
+            "enabled": true,
+            "maxBoxesPerDay": 20,
+            "maxEurPerDay": 5,
+            "maxEurPerBox": 0.5,
+            "allowSecrets": true,
+            "secretAllowlist": [
+              "OPENCODE_API_KEY",
+              "GITHUB_TOKEN",
+              "AGENTPROTO_JOIN",
+              "AGENTPROTO_JOIN_NAME",
+              "AGENTPROTO_JOIN_PROVIDER",
+              "AGENTPROTO_JOIN_SANDBOX_ID",
+              "AGENTPROTO_JOIN_LABELS"
+            ]
+          }
         }
       },
       "reviewerSandboxEnv": [
@@ -62,9 +170,45 @@
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode-go/step-5-preview-free",
       "reviewerSandbox": {
-        "provider": "e2b",
+        "provider": "auto",
         "lifecycle": {
           "destroy_on": "workspace-close"
+        },
+        "config": {
+          "computer": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "overflow": {
+            "enabled": true,
+            "maxBoxesPerDay": 20,
+            "maxEurPerDay": 5,
+            "maxEurPerBox": 0.5,
+            "allowSecrets": true,
+            "secretAllowlist": [
+              "OPENCODE_API_KEY",
+              "GITHUB_TOKEN",
+              "AGENTPROTO_JOIN",
+              "AGENTPROTO_JOIN_NAME",
+              "AGENTPROTO_JOIN_PROVIDER",
+              "AGENTPROTO_JOIN_SANDBOX_ID",
+              "AGENTPROTO_JOIN_LABELS"
+            ]
+          }
         }
       },
       "reviewerSandboxEnv": [
@@ -77,9 +221,45 @@
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/mimo-v2.6-flash-free",
       "reviewerSandbox": {
-        "provider": "e2b",
+        "provider": "auto",
         "lifecycle": {
           "destroy_on": "workspace-close"
+        },
+        "config": {
+          "computer": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "overflow": {
+            "enabled": true,
+            "maxBoxesPerDay": 20,
+            "maxEurPerDay": 5,
+            "maxEurPerBox": 0.5,
+            "allowSecrets": true,
+            "secretAllowlist": [
+              "OPENCODE_API_KEY",
+              "GITHUB_TOKEN",
+              "AGENTPROTO_JOIN",
+              "AGENTPROTO_JOIN_NAME",
+              "AGENTPROTO_JOIN_PROVIDER",
+              "AGENTPROTO_JOIN_SANDBOX_ID",
+              "AGENTPROTO_JOIN_LABELS"
+            ]
+          }
         }
       },
       "reviewerSandboxEnv": [
@@ -115,9 +295,45 @@
   "reviewerAuthMode": "api-key",
   "reviewerModel": "opencode/deepseek-v4.1-flash-free",
   "reviewerSandbox": {
-    "provider": "e2b",
+    "provider": "auto",
     "lifecycle": {
       "destroy_on": "workspace-close"
+    },
+    "config": {
+      "computer": {
+        "template": "agentproto-workstation",
+        "cpus": 2,
+        "memoryMiB": 4096,
+        "fleetCapacityWaitMs": 240000,
+        "egress": [
+          "github.com",
+          "api.github.com",
+          "codeload.github.com",
+          "objects.githubusercontent.com",
+          "raw.githubusercontent.com",
+          "registry.npmjs.org",
+          "opencode.ai",
+          "models.opencode.ai",
+          "models.dev",
+          "rdv.agentproto.sh"
+        ]
+      },
+      "overflow": {
+        "enabled": true,
+        "maxBoxesPerDay": 20,
+        "maxEurPerDay": 5,
+        "maxEurPerBox": 0.5,
+        "allowSecrets": true,
+        "secretAllowlist": [
+          "OPENCODE_API_KEY",
+          "GITHUB_TOKEN",
+          "AGENTPROTO_JOIN",
+          "AGENTPROTO_JOIN_NAME",
+          "AGENTPROTO_JOIN_PROVIDER",
+          "AGENTPROTO_JOIN_SANDBOX_ID",
+          "AGENTPROTO_JOIN_LABELS"
+        ]
+      }
     }
   },
   "reviewerSandboxEnv": [

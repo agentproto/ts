@@ -1283,7 +1283,7 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           # Home-daemon join token (see AIP-36 `join.tokenEnv`, and
           # sandbox-agent.mjs's gated AGENTPROTO_JOIN passthrough default) —
-          # lets a freshly booted e2b box dial home and register itself as a
+          # lets a freshly booted sandbox box dial home and register itself as a
           # driveable host. Absent on a fork PR (no access to repo secrets),
           # which is a deliberate no-op end to end: sandbox-agent.mjs only
           # adds the passthrough NAME when this env var actually has a value.
@@ -1297,9 +1297,9 @@ jobs:
           # doesn't know the join token's own name ("ci-reviewer"), only the
           # home daemon does — join-token-registry.ts synthesizes
           # "<token name> #<pr>" from these labels when the box doesn't
-          # self-report one. reviewerSandbox.provider is pinned to "e2b" in
-          # .github/agentic-review.json, so that part's a safe literal too.
-          AGENTPROTO_JOIN_PROVIDER: e2b
+          # self-report one. No AGENTPROTO_JOIN_PROVIDER here: reviewerSandbox
+          # is `auto` (computer first, e2b fallback), so sandboxRefFor sets it
+          # to the leg it picked (computer, or e2b without a fleet URL).
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
@@ -1312,11 +1312,22 @@ jobs:
           provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
-          # e2b microVM sandbox for the reviewer session (reviewerSandbox in
+          # Sandbox for the reviewer session: `auto` (computer fleet, e2b
+          # fallback/overflow; reviewerSandbox in
           # .github/agentic-review.json) — the daemon-internal spawn failure on
           # the runner does not reproduce inside a sandbox, whose own daemon
           # spawns the adapter.
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet leg of the `auto` reviewer sandbox (reviewerSandbox in
+          # .github/agentic-review.json). All five are optional: with no
+          # COMPUTER_FLEET_URL (fork PR, secrets not provisioned) sandboxRefFor
+          # resolves the sandbox to plain e2b. E2B_API_KEY above stays: it funds the
+          # e2b leg (the fallback, and the capped overflow when the fleet is full).
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           # Langfuse session tracing for the reviewer (HOST daemon emits — it
           # owns the proxied sandbox session). All-or-nothing: missing secrets
           # ⇒ tracing silently skipped, never a red review.
@@ -1516,10 +1527,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           # Same join-token passthrough as the primary attempt above — this
-          # is still an e2b sandbox reviewer run, just billed to the fallback
+          # is still a sandboxed (auto) reviewer run, just billed to the fallback
           # account. See that step's comment for the no-op-on-fork guarantee.
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
-          AGENTPROTO_JOIN_PROVIDER: e2b
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
@@ -1532,6 +1542,12 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           model: ${{ steps.cliver.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
@@ -1714,7 +1730,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
-          AGENTPROTO_JOIN_PROVIDER: e2b
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         with:
           adapter: opencode
@@ -1724,6 +1739,12 @@ jobs:
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
+          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
+          computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
+          computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
+          computer-access-client-id: ${{ secrets.COMPUTER_ACCESS_CLIENT_ID }}
+          computer-access-client-secret: ${{ secrets.COMPUTER_ACCESS_CLIENT_SECRET }}
           langfuse-public-key: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}

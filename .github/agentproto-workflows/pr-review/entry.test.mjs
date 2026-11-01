@@ -358,3 +358,228 @@ test('blank/whitespace join metadata vars are treated as absent, same as AGENTPR
     delete process.env.AGENTPROTO_JOIN_NAME
   }
 })
+
+// ── reviewerSandbox provider "auto" (computer fleet first, capped e2b overflow) ──
+
+import { readFileSync } from 'node:fs'
+
+const AUTO_ENV_KEYS = [
+  'COMPUTER_CONTROLLER_URL',
+  'AGENTPROTO_JOIN',
+  'AGENTPROTO_JOIN_NAME',
+  'AGENTPROTO_JOIN_PROVIDER',
+  'AGENTPROTO_JOIN_SANDBOX_ID',
+  'AGENTPROTO_JOIN_LABELS',
+]
+
+const withEnv = (vars, fn) => {
+  const saved = Object.fromEntries(AUTO_ENV_KEYS.map(k => [k, process.env[k]]))
+  for (const k of AUTO_ENV_KEYS) delete process.env[k]
+  Object.assign(process.env, vars)
+  try {
+    return fn()
+  } finally {
+    for (const k of AUTO_ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  }
+}
+
+const reviewConfig = JSON.parse(
+  readFileSync(new URL('../../agentic-review.json', import.meta.url), 'utf8'),
+)
+const autoSandbox = {
+  provider: 'auto',
+  lifecycle: { destroy_on: 'workspace-close' },
+  config: {
+    computer: {
+      template: 'agentproto-workstation',
+      cpus: 2,
+      memoryMiB: 4096,
+      fleetCapacityWaitMs: 240000,
+      egress: ['github.com'],
+    },
+    overflow: {
+      enabled: true,
+      maxBoxesPerDay: 20,
+      maxEurPerDay: 5,
+      maxEurPerBox: 0.5,
+      allowSecrets: true,
+      secretAllowlist: [
+        'OPENCODE_API_KEY',
+        'GITHUB_TOKEN',
+        'AGENTPROTO_JOIN',
+        'AGENTPROTO_JOIN_NAME',
+        'AGENTPROTO_JOIN_PROVIDER',
+        'AGENTPROTO_JOIN_SANDBOX_ID',
+        'AGENTPROTO_JOIN_LABELS',
+      ],
+    },
+  },
+}
+const autoConfig = {
+  reviewerSandbox: autoSandbox,
+  reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN'],
+  cliVersion: '1.31.0',
+}
+const e2bConfig = {
+  reviewerSandbox: { provider: 'e2b', lifecycle: { destroy_on: 'workspace-close' } },
+  reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN'],
+  cliVersion: '1.31.0',
+}
+
+test('auto without COMPUTER_CONTROLLER_URL degrades to the plain e2b spec, byte for byte', () => {
+  withEnv({}, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(JSON.stringify(spec), JSON.stringify(sandboxRefFor(e2bConfig, 'review')))
+    assert.equal(spec.provider, 'e2b')
+  })
+})
+
+test('auto with a blank COMPUTER_CONTROLLER_URL still degrades to e2b', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: '   ' }, () => {
+    assert.equal(sandboxRefFor(autoConfig, 'review').provider, 'e2b')
+  })
+})
+
+test('auto degraded to e2b keeps join gating and reports e2b as the provider', () => {
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(spec.provider, 'e2b')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'e2b')
+    assert.deepEqual(spec.env.passthrough, [
+      'OPENCODE_API_KEY',
+      'GITHUB_TOKEN',
+      'AGENTPROTO_JOIN',
+      'AGENTPROTO_JOIN_PROVIDER',
+    ])
+  })
+})
+
+test('auto with COMPUTER_CONTROLLER_URL keeps the auto spec with the computer config and overflow caps', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(spec.provider, 'auto')
+    assert.deepEqual(spec.lifecycle, { destroy_on: 'workspace-close' })
+    assert.deepEqual(spec.config.computer, autoSandbox.config.computer)
+    assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
+    assert.equal(spec.config.overflow.enabled, true)
+    assert.equal(spec.config.overflow.maxEurPerBox, 0.5)
+    assert.equal(spec.config.cliVersion, '1.31.0')
+    assert.equal(spec.config.setupCommands.length, 1)
+    assert.deepEqual(spec.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN'])
+    assert.equal(JSON.stringify(spec).includes('fleet.example'), false)
+  })
+})
+
+test('auto narrows the overflow secret allowlist to the names this run actually passes', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    assert.deepEqual(sandboxRefFor(autoConfig, 'review').config.overflow.secretAllowlist, [
+      'OPENCODE_API_KEY',
+      'GITHUB_TOKEN',
+    ])
+  })
+  withEnv(
+    {
+      COMPUTER_CONTROLLER_URL: 'https://fleet.example',
+      AGENTPROTO_JOIN: 'https://join.example/token',
+      AGENTPROTO_JOIN_NAME: 'ci-box',
+    },
+    () => {
+      const spec = sandboxRefFor(autoConfig, 'review')
+      assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'computer')
+      assert.deepEqual(spec.env.passthrough, [
+        'OPENCODE_API_KEY',
+        'GITHUB_TOKEN',
+        'AGENTPROTO_JOIN',
+        'AGENTPROTO_JOIN_NAME',
+        'AGENTPROTO_JOIN_PROVIDER',
+      ])
+      assert.deepEqual(spec.config.overflow.secretAllowlist, spec.env.passthrough)
+    },
+  )
+})
+
+test('auto never allowlists a passthrough name the config did not declare (the overflow then refuses)', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(
+      { ...autoConfig, reviewerSandboxEnv: ['OPENCODE_API_KEY', 'GITHUB_TOKEN', 'SOME_OTHER_SECRET'] },
+      'review',
+    )
+    assert.equal(spec.env.passthrough.includes('SOME_OTHER_SECRET'), true)
+    assert.equal(spec.config.overflow.secretAllowlist.includes('SOME_OTHER_SECRET'), false)
+  })
+})
+
+test('a pre-set AGENTPROTO_JOIN_PROVIDER is not overwritten by the auto default', () => {
+  withEnv(
+    { COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENTPROTO_JOIN: 'x', AGENTPROTO_JOIN_PROVIDER: 'custom' },
+    () => {
+      sandboxRefFor(autoConfig, 'review')
+      assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, 'custom')
+    },
+  )
+})
+
+test('the join provider default is gated on AGENTPROTO_JOIN: nothing is set or passed without it', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    const spec = sandboxRefFor(autoConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, undefined)
+    assert.equal(spec.env.passthrough.includes('AGENTPROTO_JOIN_PROVIDER'), false)
+  })
+})
+
+test('non-auto providers do not get a join provider default (join gating unchanged)', () => {
+  withEnv({ AGENTPROTO_JOIN: 'https://join.example/token' }, () => {
+    const spec = sandboxRefFor(e2bConfig, 'review')
+    assert.equal(process.env.AGENTPROTO_JOIN_PROVIDER, undefined)
+    assert.deepEqual(spec.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN', 'AGENTPROTO_JOIN'])
+  })
+})
+
+test('agentic-review.json: every reviewerSandbox is the auto spec with the same lifecycle and a safe overflow', () => {
+  const sandboxes = [
+    reviewConfig.reviewerSandbox,
+    ...Object.values(reviewConfig.agentPresets ?? {})
+      .map(p => p.reviewerSandbox)
+      .filter(Boolean),
+  ]
+  assert.ok(sandboxes.length >= 6)
+  for (const sb of sandboxes) {
+    assert.equal(sb.provider, 'auto')
+    assert.deepEqual(sb.lifecycle, { destroy_on: 'workspace-close' })
+    assert.equal(sb.config.computer.template, 'agentproto-workstation')
+    assert.equal(sb.config.computer.fleetCapacityWaitMs, 240000)
+    assert.equal(sb.config.overflow.enabled, true)
+    assert.equal(sb.config.overflow.allowSecrets, true)
+    for (const name of ['maxBoxesPerDay', 'maxEurPerDay', 'maxEurPerBox']) {
+      assert.ok(sb.config.overflow[name] > 0, name)
+    }
+    assert.ok(sb.config.computer.egress.length > 0)
+    assert.deepEqual(sb, reviewConfig.reviewerSandbox)
+  }
+})
+
+test('agentic-review.json: without a fleet URL every lane resolves to the legacy e2b spec', () => {
+  withEnv({}, () => {
+    for (const cfg of [reviewConfig, ...Object.values(reviewConfig.agentPresets ?? {}).filter(p => p.reviewerSandbox)]) {
+      const merged = { ...reviewConfig, ...cfg }
+      const legacy = { ...merged, reviewerSandbox: { provider: 'e2b', lifecycle: { destroy_on: 'workspace-close' } } }
+      assert.equal(
+        JSON.stringify(sandboxRefFor(merged, 'review')),
+        JSON.stringify(sandboxRefFor(legacy, 'review')),
+      )
+    }
+  })
+})
+
+test('agentic-review.json: the 4 min fleet wait reaches the auto spec of every lane when a fleet URL is set', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    for (const cfg of [reviewConfig, ...Object.values(reviewConfig.agentPresets ?? {}).filter(p => p.reviewerSandbox)]) {
+      const spec = sandboxRefFor({ ...reviewConfig, ...cfg }, 'review')
+      assert.equal(spec.provider, 'auto')
+      assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
+    }
+  })
+})
