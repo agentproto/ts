@@ -19,16 +19,18 @@ export const TEMPLATES = {
     id: "53ybr99wdfgoebi9nee8",
     alias: "agentproto-workstation",
     baked: {
-      "cli": "1.20.0",
+      "cli": "1.31.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.38",
-        "@agentproto/adapter-mastra-agent": "0.7.33",
-        "@agentproto/adapter-opencode": "1.8.2"
+        "@agentproto/adapter-claude-code": "2.6.0",
+        "@agentproto/adapter-hermes": "0.5.7",
+        "@agentproto/adapter-mastra-agent": "0.7.45",
+        "@agentproto/adapter-openclaw": "0.1.39",
+        "@agentproto/adapter-opencode": "1.9.4"
       },
       "tools": {
         "gh": "2.102.0"
       },
-      "builtAt": "2026-10-13T17:51:52.964Z"
+      "builtAt": "2026-11-01T04:52:49.979Z"
     },
   },
   dev: {
@@ -65,16 +67,18 @@ export const SIZES = {
     id: "7yx8uii7vrtsp6tt0103",
     alias: "agentproto-workstation-nano",
     baked: {
-      "cli": "1.20.0",
+      "cli": "1.31.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.38",
-        "@agentproto/adapter-mastra-agent": "0.7.33",
-        "@agentproto/adapter-opencode": "1.8.2"
+        "@agentproto/adapter-claude-code": "2.6.0",
+        "@agentproto/adapter-hermes": "0.5.7",
+        "@agentproto/adapter-mastra-agent": "0.7.45",
+        "@agentproto/adapter-openclaw": "0.1.39",
+        "@agentproto/adapter-opencode": "1.9.4"
       },
       "tools": {
         "gh": "2.102.0"
       },
-      "builtAt": "2026-10-13T17:52:28.558Z"
+      "builtAt": "2026-11-01T04:53:52.240Z"
     },
   },
   "small": {
@@ -84,16 +88,18 @@ export const SIZES = {
     id: "9j0rfk5m784o1w6ctv1z",
     alias: "agentproto-workstation-small",
     baked: {
-      "cli": "1.20.0",
+      "cli": "1.31.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.38",
-        "@agentproto/adapter-mastra-agent": "0.7.33",
-        "@agentproto/adapter-opencode": "1.8.2"
+        "@agentproto/adapter-claude-code": "2.6.0",
+        "@agentproto/adapter-hermes": "0.5.7",
+        "@agentproto/adapter-mastra-agent": "0.7.45",
+        "@agentproto/adapter-openclaw": "0.1.39",
+        "@agentproto/adapter-opencode": "1.9.4"
       },
       "tools": {
         "gh": "2.102.0"
       },
-      "builtAt": "2026-10-13T17:52:58.137Z"
+      "builtAt": "2026-11-01T04:54:40.483Z"
     },
   },
   "medium": {
@@ -103,16 +109,18 @@ export const SIZES = {
     id: "9lj8jvwetb8stm4d2cuh",
     alias: "agentproto-workstation-medium",
     baked: {
-      "cli": "1.20.0",
+      "cli": "1.31.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.38",
-        "@agentproto/adapter-mastra-agent": "0.7.33",
-        "@agentproto/adapter-opencode": "1.8.2"
+        "@agentproto/adapter-claude-code": "2.6.0",
+        "@agentproto/adapter-hermes": "0.5.7",
+        "@agentproto/adapter-mastra-agent": "0.7.45",
+        "@agentproto/adapter-openclaw": "0.1.39",
+        "@agentproto/adapter-opencode": "1.9.4"
       },
       "tools": {
         "gh": "2.102.0"
       },
-      "builtAt": "2026-10-13T17:53:31.135Z"
+      "builtAt": "2026-11-01T04:55:21.878Z"
     },
   },
   "large": {
@@ -122,16 +130,18 @@ export const SIZES = {
     id: "8f432exc83sk00i0imyc",
     alias: "agentproto-workstation-large",
     baked: {
-      "cli": "1.20.0",
+      "cli": "1.31.0",
       "adapters": {
-        "@agentproto/adapter-hermes": "0.4.38",
-        "@agentproto/adapter-mastra-agent": "0.7.33",
-        "@agentproto/adapter-opencode": "1.8.2"
+        "@agentproto/adapter-claude-code": "2.6.0",
+        "@agentproto/adapter-hermes": "0.5.7",
+        "@agentproto/adapter-mastra-agent": "0.7.45",
+        "@agentproto/adapter-openclaw": "0.1.39",
+        "@agentproto/adapter-opencode": "1.9.4"
       },
       "tools": {
         "gh": "2.102.0"
       },
-      "builtAt": "2026-10-13T17:54:03.405Z"
+      "builtAt": "2026-11-01T04:56:09.085Z"
     },
   },
   "x-large": {
