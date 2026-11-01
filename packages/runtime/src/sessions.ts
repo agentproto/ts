@@ -1962,6 +1962,15 @@ export interface SessionDescriptor {
    *  turn end (normal or abnormal); absent when the turn ended with no
    *  reason to report. */
   lastTurnReason?: string
+  /** ISO 8601 instant of the LAST turn that reached a turn-end (normal,
+   *  error, aborted, or autonomous). Unlike `lastActivityAt` (which pulses
+   *  on every adapter/protocol event and during a long in-flight turn), this
+   *  is specifically when the session last became idle after work. The eager
+   *  resume-on-boot pass measures how long a `keepAlive` row has been idle
+   *  from this stamp (falling back to `lastActivityAt`, then `startedAt`, for
+   *  rows persisted before it existed). PERSISTED; absent until the first
+   *  turn-end. */
+  lastTurnEndedAt?: string
   /** Device-spawn only: true when this session's FIRST turn ended errored or
    *  EMPTY — the field-observed shape where a `device:<fp>` spawn lands on a
    *  host whose adapter rejects the model id and the turn completes with no
@@ -7133,6 +7142,11 @@ export function createSessionsRegistry(opts?: {
       },
       recordedAt: new Date().toISOString(),
     }
+    // A completed session is no longer a permanent agent — drop the
+    // idle-reaper exemption so a later boot pass (and every other keepAlive
+    // consumer) stops treating it as live-forever. The row stays exactly as
+    // terminal as it was; only the revival exemption is lifted.
+    delete rt.desc.keepAlive
     schedulePersist()
     emitOutcomeRecorded(rt)
   }
@@ -11468,6 +11482,7 @@ export function createSessionsRegistry(opts?: {
         // after a fast turn already ended) can still fast-return.
         const turnNumber = (rt.desc.turnsCompleted ?? 0) + 1
         rt.desc.turnsCompleted = turnNumber
+        rt.desc.lastTurnEndedAt = new Date().toISOString()
 
         // ── Interrupted-turn contract (§4): a SUCCESSFUL turn-end clears the
         // daemon-restart interruption markers, so the derived `interrupted`
@@ -11746,6 +11761,7 @@ export function createSessionsRegistry(opts?: {
         // (or any consumer waiting on completion) doesn't hang on a turn
         // that will never signal done through the normal path.
         rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+        rt.desc.lastTurnEndedAt = new Date().toISOString()
         // Not an "empty" turn in the tracked sense (that classification is
         // normal-path only, mirroring the bus event) — but the reason still
         // needs to reach the sync fast-path the same way. See
@@ -12028,6 +12044,7 @@ export function createSessionsRegistry(opts?: {
     rt.activeToolCalls?.clear()
     clearStalledFlag(rt)
     rt.desc.turnsCompleted = (rt.desc.turnsCompleted ?? 0) + 1
+    rt.desc.lastTurnEndedAt = new Date().toISOString()
     rt.desc.lastTurnReason = reason
     if (rt.desc.lastTurnEmpty !== undefined) delete rt.desc.lastTurnEmpty
     if (rt.desc.lastTurnSilent !== undefined) delete rt.desc.lastTurnSilent
@@ -14629,6 +14646,7 @@ export function createSessionsRegistry(opts?: {
         // (re)labels the recorded outcome — nothing is retired or relabeled.
         if (outcome && reason === undefined) {
           layerDeclaredOutcome(rt, outcome)
+          if (outcome.verdict === "done") delete rt.desc.keepAlive
           return true
         }
         // "Mark as completed" on an already-ended row (see
@@ -14667,6 +14685,12 @@ export function createSessionsRegistry(opts?: {
       // timer here rather than letting it expire on the next tick.
       stopUsageRefresh(rt)
       if (reason) rt.desc.endedReason = reason
+      // A completion ends the "permanent agent" contract: drop the idle-reaper
+      // exemption so the row can never look like a live-forever keepAlive
+      // session again (the eager boot pass also skips completed outcomes).
+      if (reason === "operator-completed" || outcome?.verdict === "done") {
+        delete rt.desc.keepAlive
+      }
       // A dead row carries no live parked-with-background-tasks flag. kill()
       // doesn't run clearInFlightFlags (an idle kill has no in-flight turn to
       // unwind), so drop it here — same "no dangling flag on a dead row" rule.
@@ -14740,6 +14764,11 @@ export function createSessionsRegistry(opts?: {
       // ("abandoned"/"partial"/"failed") closes as not-completed — the
       // Level-2 `outcome.verdict` below keeps the nuance either way.
       const reason: SessionEndReason = input.verdict === "done" ? "steward-completed" : "steward-abandoned"
+      // A declared completion ends the "permanent agent" contract too: clear
+      // the idle-reaper exemption so the row never looks like a live-forever
+      // keepAlive session again (the eager boot pass also skips completed
+      // outcomes, but clearing the flag is the durable half).
+      if (input.verdict === "done") delete rt.desc.keepAlive
 
       rt.desc.killedMidTurn = false // guaranteed by the busy guard above
       rt.desc.status = "killed"

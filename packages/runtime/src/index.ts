@@ -138,7 +138,11 @@ import { createIdentityModeReader, resolveIdentityDefaults } from "./identity-de
 import { identityObservationsFile } from "./identity-observations.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { withSessionToken } from "./session-spawn.js"
-import { runEagerResumePass, type EagerResumeSummary } from "./eager-resume.js"
+import {
+  DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS,
+  runEagerResumePass,
+  type EagerResumeSummary,
+} from "./eager-resume.js"
 import {
   DEFAULT_REATTACH_TIMEOUT_MS,
   runSandboxReattachPass,
@@ -1659,6 +1663,14 @@ export interface CreateGatewayOptions {
   resumeSessionsOnBoot?: boolean
   /** Which sessions automatic boot recovery restores; all preserves legacy behavior. */
   bootResumePolicy?: "all" | "keepalive"
+  /** Idle cutoff, in hours, for eagerly resuming a `keepAlive` session after
+   *  a daemon restart. Mirrors the
+   *  `daemon.bootResumeKeepAliveMaxIdleHours` config knob; default 24. A
+   *  `keepAlive` row idle longer than this (measured from its last turn-end)
+   *  stays dead-but-lazy-resumable instead of being respawned on every boot.
+   *  Pinned rows and operator-labelled brains are always resumed. 0 disables
+   *  the cutoff. */
+  bootResumeKeepAliveMaxIdleHours?: number
   /** Boot re-ensure of app-service owners. Mirrors the
    *  `daemon.resumeServicesOnBoot` config knob; DEFAULT ON (services are
    *  deterministic processes, so the agent-adapter spawn-storm concerns
@@ -5419,6 +5431,10 @@ export async function createGateway(
         registry: sessions,
         concurrency: bootResumeConcurrency(),
         policy: opts.bootResumePolicy,
+        keepAliveMaxIdleMs:
+          opts.bootResumeKeepAliveMaxIdleHours === undefined
+            ? DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS
+            : Math.max(0, opts.bootResumeKeepAliveMaxIdleHours) * 60 * 60 * 1000,
         ...(passOpts?.isServed ? { isServed: passOpts.isServed } : {}),
       })
     },

@@ -83,6 +83,22 @@ continuation remains available for other sessions. Config takes effect on
 next daemon start. KeepAlive also exempts a session from idle reaping (including
 the sandbox reap, [`daemon.sandboxIdleReapAfterMs`](../cli/verbs/config.md#sandbox-idle-reap)).
 
+Because `keepAlive` sessions are never idle-reaped, a finished one would
+otherwise be respawned on every daemon restart forever. The boot pass therefore
+stops eagerly resuming a `keepAlive` session that has been idle longer than
+`daemon.bootResumeKeepAliveMaxIdleHours` (default `24`, measured from its last
+turn-end; `0` disables the cutoff). The row is not killed, archived or changed:
+it stays dead-but-lazy-resumable, and its next prompt or an explicit
+`session_restart` brings it back. Pinned sessions and sessions carrying an
+operator-assigned `operatorLabel` (the persistent brains and PMs, e.g.
+`pygmalion-brain-persistent`) are exempt and always resume. A session marked
+completed through `session_mark_completed` (or the `operator-completed` close
+path) also drops its `keepAlive` flag and is never eagerly resumed.
+
+```sh
+agentproto config set daemon.bootResumeKeepAliveMaxIdleHours 24
+```
+
 HTTP `/health` and MCP `daemon_health` now expose `bootResumePolicy` and a
 `memory` object with Node RSS, heapUsed, heapTotal, external and arrayBuffers.
 These counters are not a macOS footprint/native-allocation breakdown. External

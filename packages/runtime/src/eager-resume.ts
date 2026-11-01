@@ -27,6 +27,7 @@
  * invoking this only once the gateway (and its supervisor) is fully built.
  */
 
+import { isOutcomeCompleted } from "./session-outcome.js"
 import {
   canResume,
   isProviderBoxSession,
@@ -34,6 +35,38 @@ import {
   type SessionDescriptor,
   type SessionsRegistry,
 } from "./sessions.js"
+
+/** Default idle cutoff for reviving a `keepAlive` row at boot (24 hours). A
+ *  `keepAlive` session is exempt from the idle reaper and therefore never
+ *  reaches the `idle-reaped` end reason that excludes a row from this pass —
+ *  so without a cutoff, a finished executor parked with `keepAlive: true`
+ *  would be respawned on every single daemon restart, forever. Rows young
+ *  enough to plausibly still be in use come back; older ones stay
+ *  dead-but-lazy-resumable (the next prompt or an explicit `session_restart`
+ *  revives them on demand). Override with
+ *  `daemon.bootResumeKeepAliveMaxIdleHours`; 0 disables the cutoff. */
+export const DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS = 24 * 60 * 60 * 1000
+
+/** Return the newest parseable ISO-8601 timestamp, or undefined when none
+ *  parses. */
+function newestTimestamp(...values: Array<string | undefined>): number | undefined {
+  let newest: number | undefined
+  for (const value of values) {
+    if (!value) continue
+    const ms = Date.parse(value)
+    if (Number.isNaN(ms)) continue
+    if (newest === undefined || ms > newest) newest = ms
+  }
+  return newest
+}
+
+/** The newest of this row's last turn-end, last adapter activity and start
+ *  time. Used only to age `keepAlive` rows against the boot-resume idle
+ *  cutoff (a long in-flight turn pulses `lastActivityAt`; a finished one is
+ *  aged from its last turn-end). */
+function lastActiveMs(desc: SessionDescriptor): number | undefined {
+  return newestTimestamp(desc.lastTurnEndedAt, desc.lastActivityAt, desc.startedAt)
+}
 
 /** Tally of one eager resume-on-boot pass, for the boot-banner summary line. */
 export interface EagerResumeSummary {
@@ -78,6 +111,17 @@ export async function runEagerResumePass(opts: {
   concurrency: number
   /** Restrict automatic recovery without changing lazy resume-on-prompt. */
   policy?: "all" | "keepalive"
+  /** How long a `keepAlive` row may be idle before this pass stops reviving
+   *  it automatically (published as
+   *  `daemon.bootResumeKeepAliveMaxIdleHours`). `pinned` rows and rows with an
+   *  operator-assigned label (`operatorLabel`, e.g. the persistent brains and
+   *  PMs) are always exempt. `undefined` ⇒ the 24 h default; `0` or negative
+   *  disables the cutoff. The row itself is never killed, archived or
+   *  modified: it just stays dead-but-lazy-resumable until the next prompt or
+   *  an explicit `session_restart`. */
+  keepAliveMaxIdleMs?: number
+  /** Clock override for tests. Default `Date.now()`. */
+  now?: number
   /** Cross-process gate (§5): with two daemons sharing the workspace buckets,
    *  each must only resume rows for the workspace IT serves. Return false to
    *  exclude a row from THIS daemon's pass. Omitted ⇒ every eligible row is
@@ -86,6 +130,20 @@ export async function runEagerResumePass(opts: {
 }): Promise<EagerResumeSummary> {
   const { registry, isServed } = opts
   const limit = Math.max(1, Math.floor(opts.concurrency))
+  const keepAliveMaxIdleMs = opts.keepAliveMaxIdleMs ?? DEFAULT_KEEPALIVE_BOOT_RESUME_MAX_IDLE_MS
+  const now = opts.now ?? Date.now()
+
+  // A keepAlive row outlives the idle reaper by design, so a finished one
+  // never acquires the `idle-reaped` reason that excludes ordinary rows from
+  // this pass. Age it from its last turn-end instead: young enough ⇒ resume,
+  // stale ⇒ leave it lazy-resumable. Pinned rows and operator-labelled brains
+  // are explicitly exempt (they are meant to be permanent).
+  const staleKeepAlive = (d: SessionDescriptor): boolean => {
+    if (d.keepAlive !== true || d.pinned === true || d.operatorLabel !== undefined) return false
+    if (keepAliveMaxIdleMs <= 0) return false
+    const last = lastActiveMs(d)
+    return last !== undefined && now - last > keepAliveMaxIdleMs
+  }
 
   // Candidate selection. `canResume` folds in `isResumable` + the attempt cap;
   // the `daemon-restart` clause is the eager-only gate; `isServed` is the
@@ -102,6 +160,11 @@ export async function runEagerResumePass(opts: {
         // resumed in place on the host. The sandbox reattach pass owns it.
         !isProviderBoxSession(d) &&
         d.endedReason === "daemon-restart" &&
+        // An operator/judge already signed this row off — never resurrect it,
+        // even if the keepAlive flag predates the completion (mark-completed
+        // clears that flag, but old snapshots may still carry both).
+        !isOutcomeCompleted(d.outcome) &&
+        !staleKeepAlive(d) &&
         (isServed?.(d) ?? true),
     )
     .sort(byLastActivityDesc)
