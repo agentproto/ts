@@ -224,12 +224,16 @@ describe("agentStepMcpServers", () => {
     expect(q.get("callerSessionId")).toBe("sess_1")
   })
 
-  it("with no declared tools, follows agent_start's default self-mount (claude-code yes, codex no)", () => {
+  it("with no declared tools, follows the universal on-host self-mount default for every adapter", () => {
     const cc = agentStepMcpServers({ adapter: "claude-code", daemonMcpUrl: url, sessionId: "sess_2" })!
     const q = new URL(cc[0]!.ref as string).searchParams
     expect(q.get("allowTools")).toBeNull()
     expect(q.get("callerSessionId")).toBe("sess_2")
-    expect(agentStepMcpServers({ adapter: "codex", daemonMcpUrl: url, sessionId: "sess_3" })).toBeUndefined()
+    // With universal mount, codex also gets the gateway entry on-host.
+    const codex = agentStepMcpServers({ adapter: "codex", daemonMcpUrl: url, sessionId: "sess_3" })!
+    expect(codex).toBeDefined()
+    expect(codex[0]!.name).toBe("agentproto")
+    expect(new URL(codex[0]!.ref as string).searchParams.get("callerSessionId")).toBe("sess_3")
   })
 
   it("mounts nothing without a daemon URL", () => {

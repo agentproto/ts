@@ -136,7 +136,7 @@ function bundlesFile(bundles: BundlesFile["bundles"]): BundlesFile {
 }
 
 describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
-  it("expands mcpImports + includeDaemon + skills for an adapter outside the default self-mount set (opencode)", async () => {
+  it("expands mcpImports + skills; the universal default self-mount is already present so includeDaemon is a no-op", async () => {
     const { deps, captured } = baseDeps({
       loadBundlesConfig: async () =>
         bundlesFile([
@@ -160,19 +160,20 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
     const ownId = result.ok ? result.descriptor.id : "(failed)"
 
     const daemonUrl = "http://127.0.0.1:18790/mcp"
+    // The universal on-host default injects agentproto FIRST; the bundle
+    // then appends chrome-devtools and skips its own includeDaemon (name
+    // collision with the already-present agentproto entry).
     expect(captured[0]?.mcpServers).toEqual([
-      {
-        name: "chrome-devtools",
-        transport: "http",
-        ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}`,
-        // The imported passthrough is identity-stamped like the /mcp mount,
-        // but never with the session token (it does not evaluate proof).
-        headers: { "x-agentproto-caller-session-id": ownId },
-      },
       {
         name: "agentproto",
         transport: "http",
         ref: `${daemonUrl}?deferred=0&callerSessionId=${ownId}`,
+        headers: { "x-agentproto-caller-session-id": ownId },
+      },
+      {
+        name: "chrome-devtools",
+        transport: "http",
+        ref: `${daemonUrl}/imported/imp1?callerSessionId=${ownId}`,
         headers: { "x-agentproto-caller-session-id": ownId },
       },
     ])
@@ -259,7 +260,9 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
     const result = await spawnAgentSession(deps, { adapter: "opencode", cwd: "/tmp", bundles: ["research"] })
     expect(result.ok).toBe(true)
     expect(result.ok && result.warnings?.some(w => w.includes("ghost-import"))).toBe(true)
-    expect(captured[0]?.mcpServers).toBeUndefined()
+    // The universal on-host default still injects the daemon self-mount
+    // even when the bundle's own import is dangling.
+    expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["agentproto"])
   })
 
   it("skips an unknown bundle id with a warning, keeps spawning", async () => {
@@ -544,7 +547,9 @@ describe("spawnAgentSession — native default mounts (P2)", () => {
     })
     const result = await spawnAgentSession(deps, { adapter: "opencode", cwd: "/tmp", bundles: ["all"] })
     expect(result.ok).toBe(true)
-    expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["one", "two"])
+    // Universal on-host default injects agentproto first, then bundle
+    // appends the two wildcard imports.
+    expect(captured[0]?.mcpServers?.map(e => e.name)).toEqual(["agentproto", "one", "two"])
   })
 })
 

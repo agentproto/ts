@@ -441,15 +441,12 @@ export interface RegisterAgentToolsOptions {
   /** The daemon's own plain `/mcp` gateway URL (e.g.
    *  `http://127.0.0.1:18790/mcp`). When set, `agent_start` with no
    *  caller-supplied `mcpServers` defaults to mounting this gateway for
-   *  the adapters in `shouldInjectDaemonSelfMount` (session-spawn.ts):
-   *  hermes (capability — it has zero built-in tools, so omitting
-   *  `mcpServers` silently produced a chat-only session) and on-host
-   *  claude-code (identity — the injected entry carries
-   *  `callerSessionId=<own id>` and shadows the ambient unstamped
-   *  project/global mount of the same name, so the session's spawns
-   *  auto-attach instead of landing as anonymous orphans). An explicit
+   *  every on-host adapter (see `shouldInjectDaemonSelfMount`). The
+   *  injected entry carries `callerSessionId=<own id>` and makes
+   *  `agent_start` visible to `delegationReachFor`, preventing the
+   *  session from being downgraded to executor at depth 0. An explicit
    *  `mcpServers: []` is still respected as a deliberate opt-out.
-   *  Omitted → no default. */
+   *  Omitted -> no default. */
   daemonMcpUrl?: string
   /** Optional orchestrator-injection builder (WP3). When wired, the
    *  `orchestrator` field on `agent_start` mints a scoped
