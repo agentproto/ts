@@ -358,6 +358,24 @@ describe("opencode console sub-account provider", () => {
     expect(out.credential).toBe("st_OTHER_2")
   })
 
+  it("(f) /api/orgs fails for the first account: the next account is still tried", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (u.endsWith("/api/orgs")) {
+        return auth === `Bearer ${TOKEN}` ? jsonResponse({ error: "boom" }, 500) : jsonResponse([{ id: "org_b" }])
+      }
+      return jsonResponse({ config: { provider: { "opencode-go": {} } } })
+    })
+    const out = await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe("st_OTHER_2")
+  })
+
   it("(e) single-account behaviour unchanged", async () => {
     const f = track(await makeDb({ accounts: 1 }))
     const provider = { "opencode-go": {} }
@@ -368,6 +386,7 @@ describe("opencode console sub-account provider", () => {
       fetch: fetchMock as unknown as typeof fetch,
     })
     expect(out.credential).toBe(TOKEN)
-    expect(fetchMock.mock.calls[0][0].toString()).toContain("/api/config")
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String((fetchMock.mock.calls as unknown[][])[0]![0])).toContain("/api/config")
   })
 })

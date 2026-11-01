@@ -72,7 +72,7 @@ export interface OpencodeConsoleDeps {
 }
 
 interface SqliteHandle {
-  prepare(sql: string): { get(...a: unknown[]): unknown }
+  prepare(sql: string): { get(...a: unknown[]): unknown; all(...a: unknown[]): unknown[] }
   close(): void
 }
 
@@ -259,6 +259,10 @@ export async function resolveOpencodeConsoleOrg(
 
   const tried: string[] = []
   const expiredList: string[] = []
+  const failedList: string[] = []
+  // With a single usable login there is nothing to choose between: go straight
+  // to the config fetch, as before, so its error names the org and the account.
+  const usable = ordered.filter(e => e.row.access_token && !isExpired(e.row, now())).length
 
   for (const entry of ordered) {
     const row = entry.row
@@ -269,25 +273,19 @@ export async function resolveOpencodeConsoleOrg(
     }
     const account = accountFromRow(row, typeof row.token_expiry === "number" ? row.token_expiry : undefined)
     tried.push(`${row.email ?? row.id} (${row.id})`)
-    let orgs: OpencodeConsoleOrg[]
-    try {
-      let body: unknown
+    if (usable > 1) {
+      let orgs: OpencodeConsoleOrg[]
       try {
-        body = await consoleGet(account, "/api/orgs", deps)
+        const body = await consoleGet(account, "/api/orgs", deps)
+        orgs = (Array.isArray(body) ? body : [])
+          .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
+          .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
       } catch (err) {
-        throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} config fetch failed (${err instanceof Error ? err.message : String(err)}) ` +
-            `— the console account ${account.email ?? account.id} may not belong to that org. ${loginHint()}`,
-        )
+        // One broken account must not hide the org held by another one.
+        failedList.push(`${row.email ?? row.id} (${err instanceof Error ? err.message : String(err)})`)
+        continue
       }
-      orgs = (Array.isArray(body) ? body : [])
-        .filter((o): o is { id: string; name?: string } => typeof (o as { id?: unknown })?.id === "string")
-        .map(o => ({ id: o.id, name: typeof o.name === "string" ? o.name : o.id }))
-    } catch (err) {
-      if (err instanceof SubaccountError) throw err
-      throw err
-    }
-    if (!orgs.some(o => o.id === orgId)) {
-      continue
+      if (!orgs.some(o => o.id === orgId)) continue
     }
     let provider: unknown
     try {
@@ -312,8 +310,9 @@ export async function resolveOpencodeConsoleOrg(
   }
 
   const triedStr = tried.length > 0 ? tried.join(", ") : "(none)"
-  const expiredStr = expiredList.length > 0 ? ` expired: ${expiredList.join(", ")}` : ""
-  throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} not found in any console account (tried: ${triedStr}${expiredStr}). ${loginHint()}`,
+  const expiredStr = expiredList.length > 0 ? `; expired: ${expiredList.join(", ")}` : ""
+  const failedStr = failedList.length > 0 ? `; org list failed: ${failedList.join(", ")}` : ""
+  throw new SubaccountError(`profile "${profileId}": opencode org ${orgId} not found in any console account (tried: ${triedStr}${expiredStr}${failedStr}). ${loginHint()}`,
   )
 }
 
