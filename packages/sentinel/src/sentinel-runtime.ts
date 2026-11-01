@@ -527,6 +527,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const sessionId = target.sessionId
 
     const info = opts.sessionInfo?.(sessionId)
+    // External rows (claude-desktop etc.) have no process to revive: an
+    // event for one never orphans the sentinel — it parks and is pulled via
+    // the inbox at the next prompt/tool call.
+    if (info && (info as { kind?: string }).kind === "external") {
+      parkEvent(sentinel, event, "external session has no process to revive; parked for inbox pull")
+      return
+    }
     if (info && sentinelPlatform().lifecycle.isRetired(info)) {
       // Retired (closed on purpose / archived / superseded): never revived,
       // in place or under a new id. Its notices go to the successor when
