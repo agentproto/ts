@@ -393,7 +393,13 @@ const autoSandbox = {
   provider: 'auto',
   lifecycle: { destroy_on: 'workspace-close' },
   config: {
-    computer: { template: 'agentproto-workstation', cpus: 2, memoryMiB: 4096, egress: ['github.com'] },
+    computer: {
+      template: 'agentproto-workstation',
+      cpus: 2,
+      memoryMiB: 4096,
+      fleetCapacityWaitMs: 240000,
+      egress: ['github.com'],
+    },
     overflow: {
       enabled: true,
       maxBoxesPerDay: 20,
@@ -457,6 +463,7 @@ test('auto with COMPUTER_CONTROLLER_URL keeps the auto spec with the computer co
     assert.equal(spec.provider, 'auto')
     assert.deepEqual(spec.lifecycle, { destroy_on: 'workspace-close' })
     assert.deepEqual(spec.config.computer, autoSandbox.config.computer)
+    assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
     assert.equal(spec.config.overflow.enabled, true)
     assert.equal(spec.config.overflow.maxEurPerBox, 0.5)
     assert.equal(spec.config.cliVersion, '1.31.0')
@@ -543,6 +550,7 @@ test('agentic-review.json: every reviewerSandbox is the auto spec with the same 
     assert.equal(sb.provider, 'auto')
     assert.deepEqual(sb.lifecycle, { destroy_on: 'workspace-close' })
     assert.equal(sb.config.computer.template, 'agentproto-workstation')
+    assert.equal(sb.config.computer.fleetCapacityWaitMs, 240000)
     assert.equal(sb.config.overflow.enabled, true)
     assert.equal(sb.config.overflow.allowSecrets, true)
     for (const name of ['maxBoxesPerDay', 'maxEurPerDay', 'maxEurPerBox']) {
@@ -562,6 +570,16 @@ test('agentic-review.json: without a fleet URL every lane resolves to the legacy
         JSON.stringify(sandboxRefFor(merged, 'review')),
         JSON.stringify(sandboxRefFor(legacy, 'review')),
       )
+    }
+  })
+})
+
+test('agentic-review.json: the 4 min fleet wait reaches the auto spec of every lane when a fleet URL is set', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
+    for (const cfg of [reviewConfig, ...Object.values(reviewConfig.agentPresets ?? {}).filter(p => p.reviewerSandbox)]) {
+      const spec = sandboxRefFor({ ...reviewConfig, ...cfg }, 'review')
+      assert.equal(spec.provider, 'auto')
+      assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
     }
   })
 })

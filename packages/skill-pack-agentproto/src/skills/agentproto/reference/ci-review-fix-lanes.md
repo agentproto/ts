@@ -210,8 +210,10 @@ This is what took the most work to get right.
   it to the names this run actually passes, because `auto` refuses an
   allowlisted secret that has no value. With `overflow.enabled` and no explicit
   `computer.fleetCapacityWaitMs`, `auto` skips the fleet's capacity wait, so a
-  `fleet-capacity` refusal overflows to e2b immediately instead of after the
-  wait.
+  `fleet-capacity` refusal would overflow to e2b immediately. The reviewer lanes
+  set `computer.fleetCapacityWaitMs: 240000` instead: an idle host is shelved
+  and the fleet wakes it in about 2.5 min on a capacity refusal, so the box
+  waits up to 4 min for the woken host and only then overflows to e2b.
 - **Why sandbox at all:** the daemon-internal spawn failure (`-32001`) on the CI
   runner does not reproduce inside a box — the box's own daemon spawns the
   adapter cleanly. `workspaceCwdFor` lands the session in `/home/user` and the

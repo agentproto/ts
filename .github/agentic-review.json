@@ -22,6 +22,7 @@
             "template": "agentproto-workstation",
             "cpus": 2,
             "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
             "egress": [
               "github.com",
               "api.github.com",
@@ -72,6 +73,7 @@
             "template": "agentproto-workstation",
             "cpus": 2,
             "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
             "egress": [
               "github.com",
               "api.github.com",
@@ -126,6 +128,7 @@
             "template": "agentproto-workstation",
             "cpus": 2,
             "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
             "egress": [
               "github.com",
               "api.github.com",
@@ -176,6 +179,7 @@
             "template": "agentproto-workstation",
             "cpus": 2,
             "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
             "egress": [
               "github.com",
               "api.github.com",
@@ -226,6 +230,7 @@
             "template": "agentproto-workstation",
             "cpus": 2,
             "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
             "egress": [
               "github.com",
               "api.github.com",
@@ -299,6 +304,7 @@
         "template": "agentproto-workstation",
         "cpus": 2,
         "memoryMiB": 4096,
+        "fleetCapacityWaitMs": 240000,
         "egress": [
           "github.com",
           "api.github.com",
