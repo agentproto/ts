@@ -206,6 +206,51 @@ describe("classifySentinelEvent", () => {
   })
 })
 
+describe("classifySentinelEvent: review and check verdicts that need action", () => {
+  const review = (state: string, over?: Partial<SentinelEvent>): SentinelEvent =>
+    makeEvent({ type: "github.pull_request_review.submitted", data: { action: "submitted", state }, ...over })
+  const check = (conclusion: string): SentinelEvent =>
+    makeEvent({ type: "github.check_suite.completed", data: { conclusion, headSha: "sha1" } })
+
+  it("changes_requested wakes as a failure-class verdict in either casing, even on a repeat", () => {
+    for (const state of ["changes_requested", "CHANGES_REQUESTED", "Changes_Requested"]) {
+      const recent = new RecentKeys()
+      const first = review(state)
+      expect(classifySentinelEvent(first, input(recent, 0))).toEqual({ decision: "wake", rule: "failure" })
+      recordSentinelTriageKey(first, input(recent, 0))
+      expect(classifySentinelEvent(review(state, { id: "evt_2" }), input(recent, 1_000))).toEqual({
+        decision: "wake",
+        rule: "failure",
+      })
+    }
+  })
+
+  it("action_required wakes as a failure-class verdict", () => {
+    expect(classifySentinelEvent(check("action_required"), input(new RecentKeys(), 0))).toEqual({
+      decision: "wake",
+      rule: "failure",
+    })
+  })
+
+  it("approved and commented reviews are not failures, in either casing", () => {
+    for (const state of ["approved", "APPROVED", "commented", "COMMENTED"]) {
+      expect(classifySentinelEvent(review(state), input(new RecentKeys(), 0))).toEqual({
+        decision: "wake",
+        rule: "default",
+      })
+    }
+  })
+
+  it("the repeat key is case-insensitive so a provider's casing never splits one verdict in two", () => {
+    const recent = new RecentKeys()
+    recordSentinelTriageKey(check("SUCCESS"), input(recent, 0))
+    expect(classifySentinelEvent(check("success"), input(recent, 1_000))).toEqual({
+      decision: "fyi",
+      rule: "coalesced-repeat",
+    })
+  })
+})
+
 describe("RecentKeys", () => {
   it("is bounded at 1000 entries and evicts the oldest key", () => {
     const recent = new RecentKeys()
