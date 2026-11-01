@@ -178,7 +178,7 @@ jobs:
           steps.parse.outputs.sandboxable == 'true' &&
           steps.compose.outputs.cli_source == 'workspace'
         env:
-          TURBO_API: https://turbo-cache-f5mennea6a-ew.a.run.app
+          TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
           TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
           TURBO_SCM_BASE: origin/main
