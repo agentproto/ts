@@ -34,10 +34,11 @@ function git(cwd: string, ...args: string[]): void {
   })
 }
 
-async function emitApp(id: string, dir: string): Promise<void> {
+async function emitApp(id: string, dir: string, dataDir?: string): Promise<void> {
   await defineApp({
     id,
     name: id,
+    ...(dataDir !== undefined ? { data: { dir: dataDir } } : {}),
     agents: [
       {
         agent: defineAgent({
@@ -112,6 +113,33 @@ afterEach(async () => {
 })
 
 describe("git worktree classification", () => {
+  it("treats a submodule and a --separate-git-dir checkout as primary checkouts, never linked worktrees", async () => {
+    const sub = join(mainRepo, "vendor", "sub")
+    await mkdir(join(mainRepo, "vendor"), { recursive: true })
+    const subOrigin = join(root, "sub-origin")
+    await mkdir(subOrigin, { recursive: true })
+    git(subOrigin, "init", "-q", "-b", "main")
+    await writeFile(join(subOrigin, "f"), "x\n")
+    git(subOrigin, "add", "f")
+    git(subOrigin, "commit", "-q", "-m", "init")
+    git(mainRepo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subOrigin, "vendor/sub")
+    const sep = join(root, "sep")
+    git(root, "init", "-q", "-b", "main", "--separate-git-dir", join(root, "sep.git"), sep)
+
+    for (const checkout of [sub, sep]) {
+      expect(resolveWorktreeIdentity(join(checkout, APP_REL))).toBeUndefined()
+      expect(resolveMainRepoPath(join(checkout, APP_REL))).toBe(checkout)
+    }
+    // ...so installing from one over a live install is not refused.
+    await emitApp("@t/fx", join(mainRepo, APP_REL))
+    await emitApp("@t/fx", join(sub, APP_REL))
+    await emitApp("@t/fx", join(sep, APP_REL))
+    expect((await install(join(mainRepo, APP_REL))).ok).toBe(true)
+    expect((await install(join(sub, APP_REL))).ok).toBe(true)
+    expect((await install(join(sep, APP_REL))).ok).toBe(true)
+    expect(reg.getApp("@t/fx")!.dir).toBe(join(sep, APP_REL))
+  })
+
   it("tells a linked worktree from the main one, and finds the main worktree from either", () => {
     expect(resolveWorktreeIdentity(join(mainRepo, APP_REL))).toBeUndefined()
     expect(resolveWorktreeIdentity(join(worktree, APP_REL))).toMatchObject({ worktreePath: worktree, mainRepoPath: mainRepo })
@@ -162,20 +190,45 @@ describe("self-heal: dir-missing record from a removed linked worktree", () => {
     const app = reg.getApp("@t/fx")!
     expect(app.dir).toBe(join(mainRepo, APP_REL))
     expect(app.workflows.map(w => w.path)).toEqual([join(mainRepo, APP_REL, ".agentproto/workflows/maintain/WORKFLOW.md")])
-    // The default dataDir lived under the dead dir: it follows the app.
+    // The default dataDir lived under the dead dir: resolved afresh under the new one.
     expect(app.dataDir).toBe(join(mainRepo, APP_REL, "data"))
-    expect(reg.listIssues()).toEqual([
-      {
-        kind: "dir-repointed",
-        appId: "@t/fx",
-        dir: join(mainRepo, APP_REL),
-        problems: [`dir re-pointed from ${dead} to ${join(mainRepo, APP_REL)}`],
-      },
+    // Healed: no issue left, the repair reported apart.
+    expect(reg.listIssues()).toEqual([])
+    expect(reg.listRepairs()).toEqual([
+      { kind: "dir-repointed", appId: "@t/fx", from: dead, to: join(mainRepo, APP_REL), at: expect.any(String) },
     ])
-    // A second pass changes nothing and does not stack a second note.
+    // A second pass changes nothing, and a repeated record replaces rather than stacks.
     expect(await repairWorktreeMissingApps(reg, async () => [], undefined, { workspacesConfigPath })).toEqual([])
-    reg.recordRepoint("@t/fx", dead, join(mainRepo, APP_REL))
-    expect(reg.listIssues()).toHaveLength(1)
+    reg.recordRepoint("@t/fx", "/elsewhere", join(mainRepo, APP_REL))
+    expect(reg.listRepairs()).toHaveLength(1)
+    expect(reg.listRepairs()[0]!.from).toBe("/elsewhere")
+  })
+
+  it("a dataDir equal to the dead app dir resolves afresh to <to>/data, not the app root", async () => {
+    await emitApp("@t/fx", join(mainRepo, APP_REL))
+    const dead = await breakIntoRemovedWorktree()
+    reg.upsertApp({ ...reg.getApp("@t/fx")!, dataDir: dead })
+    await writeWorkspaces([mainRepo])
+    expect(await repairWorktreeMissingApps(reg, async () => [], undefined, { workspacesConfigPath })).toEqual(["@t/fx"])
+    expect(reg.getApp("@t/fx")!.dataDir).toBe(join(mainRepo, APP_REL, "data"))
+  })
+
+  it("a dataDir under the dead dir follows the main copy's APP.md data.dir hint", async () => {
+    await emitApp("@t/fx", join(mainRepo, APP_REL), "store")
+    await breakIntoRemovedWorktree()
+    await writeWorkspaces([mainRepo])
+    expect(await repairWorktreeMissingApps(reg, async () => [], undefined, { workspacesConfigPath })).toEqual(["@t/fx"])
+    expect(reg.getApp("@t/fx")!.dataDir).toBe(join(mainRepo, APP_REL, "store"))
+  })
+
+  it("a dataDir outside the dead dir is live data and is kept", async () => {
+    await emitApp("@t/fx", join(mainRepo, APP_REL))
+    await breakIntoRemovedWorktree()
+    const outside = join(root, "kept-data")
+    reg.upsertApp({ ...reg.getApp("@t/fx")!, dataDir: outside })
+    await writeWorkspaces([mainRepo])
+    expect(await repairWorktreeMissingApps(reg, async () => [], undefined, { workspacesConfigPath })).toEqual(["@t/fx"])
+    expect(reg.getApp("@t/fx")!.dataDir).toBe(outside)
   })
 
   it("finds the main worktree through another installed app's live dir", async () => {

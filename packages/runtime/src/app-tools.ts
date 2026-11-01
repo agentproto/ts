@@ -1695,29 +1695,33 @@ function isInside(path: string, root: string): boolean {
 }
 
 /**
- * Self-heal `dir-missing` records left by a removed linked git worktree (an
- * app installed, or silently re-pointed, from a PR worktree that was then
- * removed): re-install the record from the main worktree's copy of the
- * same app, and record the repair (`dir-repointed` issue + a log line).
+ * Self-heal ANY `dir-missing` record (local installs included, not only one
+ * a removed linked worktree left) whose app reappears under a known main
+ * worktree: re-install it from that copy and record the repair
+ * (`AppRegistry.recordRepoint` + a log line). The motivating case is an app
+ * installed, or silently re-pointed, from a PR worktree that was then
+ * removed; a removed path cannot prove it WAS a linked worktree, so the
+ * scope is every `dir-missing` record and the safety comes from the match
+ * rule below, not from the record's history.
  *
- * The removed worktree's own `.git` file is gone with it, so its main
- * worktree cannot be read off the dead path. The candidates come from what
- * the daemon already knows instead: the main worktree of every user
- * workspace root (`workspaces.json`) and of every other installed app whose
- * dir is live. The relative path is the part of the dead dir below its
- * topmost missing ancestor (the removed worktree's root, when the whole
- * worktree went away). Fail-closed: the record is re-pointed only when
- * exactly one candidate `<mainWorktree>/<relative path>` holds an app
- * manifest declaring the same `appId`; a different id, no copy, or more
- * than one match leaves the `dir-missing` issue as it was. Returns the app
- * ids re-pointed.
+ * Candidates come only from what the daemon already knows (the removed
+ * worktree's `.git` file is gone, so its main worktree cannot be read off
+ * the dead path): the main worktree of every user workspace root
+ * (`workspaces.json`) and of every other installed app whose dir is live.
+ * The relative path is the part of the dead dir below its topmost missing
+ * ancestor (the removed worktree's root, when the whole worktree went away).
+ * Fail-closed: the record is re-pointed only when exactly one candidate
+ * `<mainWorktree>/<relative path>` holds an app manifest declaring the same
+ * `appId`, and never into a main worktree that contains the dead dir; a
+ * different id, no copy, an unloadable manifest, or more than one match
+ * leaves the `dir-missing` issue exactly as it was. Returns the app ids
+ * re-pointed.
  *
- * A removed path cannot prove it WAS a linked worktree, so this considers
- * every `dir-missing` record: any one whose dir reappears, unambiguously and
- * with the same `appId`, under a known main worktree is healed, whatever
- * removed it. A `dataDir` at or under the dead dir keeps its position
- * relative to the app dir (`<from>/data` becomes `<to>/data`, `<from>` itself
- * becomes `<to>`).
+ * A `dataDir` at or under the dead dir lost its contents with
+ * it, so it is resolved afresh as on a first install from the new dir (the
+ * APP.md `data.dir` hint, else `<to>/data`; never the app root itself, even
+ * when the old dataDir was `<from>`). A `dataDir` outside the dead dir is
+ * kept.
  */
 export async function repairWorktreeMissingApps(
   appRegistry: AppRegistry,
@@ -1751,27 +1755,29 @@ export async function repairWorktreeMissingApps(
     let top = from
     while (!existsSync(dirname(top)) && dirname(top) !== top) top = dirname(top)
     const rel = relative(top, from)
-    const matches: string[] = []
+    const matches: { dir: string; dataHint: string | undefined }[] = []
     for (const root of mainRoots) {
       if (from === root || isInside(from, root)) continue
       const candidate = join(root, rel)
       if (!existsSync(join(candidate, ".agentproto", "APP.md"))) continue
-      let id: string | undefined
+      let handle: Awaited<ReturnType<typeof loadAppHandle>>
       try {
-        id = (await loadAppHandle(candidate)).id
+        handle = await loadAppHandle(candidate)
       } catch {
         continue
       }
-      if (id === appId) matches.push(candidate)
+      if (handle.id === appId) matches.push({ dir: candidate, dataHint: handle.data?.dir })
     }
     if (matches.length !== 1) continue
-    const to = matches[0]!
-    const previous = appRegistry.getApp(appId)
-    // A dataDir under the dead dir went with it: follow the app to its new dir.
-    const prevData = previous?.dataDir
+    const { dir: to, dataHint } = matches[0]!
+    // A dataDir at or under the dead dir went with it: there is no data left
+    // to keep a relation to, so it resolves as on a first install from `to`
+    // (the APP.md `data.dir` hint, else `<to>/data`). A dataDir elsewhere is
+    // live data and is kept (`performInstall` prefers the previous one).
+    const prevData = appRegistry.getApp(appId)?.dataDir
     const dataDir =
       prevData !== undefined && (resolve(prevData) === from || isInside(resolve(prevData), from))
-        ? join(to, relative(from, resolve(prevData)))
+        ? (dataHint ?? DEFAULT_APP_DATA_SUBDIR)
         : undefined
     const result = await performInstall(to, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
       skipDaemonChecks: true,
@@ -2518,26 +2524,16 @@ export function registerAppTools(
     handler: async () => {
       const runs = appRegistry.listRuns()
       const issues = appRegistry.listIssues()
+      const repairs = new Map(appRegistry.listRepairs().map(r => [r.appId, r]))
       return appRegistry.listApps().map(app => ({
         ...app,
         dataDir: appDataDir(app),
         dirMissing: !existsSync(app.dir),
-        // `dir-repointed` is a completed self-heal, not a problem: reported
-        // apart so a healed app does not read as broken.
-        ...(issues.some(i => i.appId === app.appId && i.kind !== "dir-repointed")
-          ? {
-              registryProblems: issues
-                .filter(i => i.appId === app.appId && i.kind !== "dir-repointed")
-                .flatMap(i => [...i.problems]),
-            }
+        ...(issues.some(i => i.appId === app.appId)
+          ? { registryProblems: issues.filter(i => i.appId === app.appId).flatMap(i => [...i.problems]) }
           : {}),
-        ...(issues.some(i => i.appId === app.appId && i.kind === "dir-repointed")
-          ? {
-              registryNotes: issues
-                .filter(i => i.appId === app.appId && i.kind === "dir-repointed")
-                .flatMap(i => [...i.problems]),
-            }
-          : {}),
+        // A completed self-heal, not a problem: reported apart.
+        ...(repairs.has(app.appId) ? { registryRepair: repairs.get(app.appId) } : {}),
         runs: runs
           .filter(r => r.appId === app.appId)
           .map(r => ({

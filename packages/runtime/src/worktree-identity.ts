@@ -141,8 +141,10 @@ export function resolveWorktreeIdentity(cwd: string): WorktreeIdentity | undefin
 
 /**
  * The primary repo root of the checkout containing `dir`: the checkout itself
- * when it is a normal one, its `mainRepoPath` when it is a linked worktree,
- * `undefined` outside any repo (or a linked worktree with no `commondir`).
+ * when it is a primary one (a `.git` directory, a submodule, or a
+ * `--separate-git-dir` checkout), its `mainRepoPath` when it is a linked
+ * worktree, `undefined` outside any repo (or a linked worktree with no
+ * `commondir`).
  * Same nearest-`.git`-wins walk as {@link resolveWorktreeIdentity}.
  */
 export function resolveMainRepoPath(dir: string): string | undefined {
@@ -159,8 +161,11 @@ function resolveCheckout(
     if (dotGit) {
       // A directory means a normal checkout: in a repo, but not a worktree.
       if (!dotGit.isFile()) return { mainRoot: dir }
+      // A `.git` FILE that is not a linked worktree's (a submodule, or a
+      // `--separate-git-dir` checkout) is still that repo's own primary
+      // checkout.
       const gitDir = readWorktreeGitDir(dir)
-      if (gitDir === undefined) return undefined
+      if (gitDir === undefined) return { mainRoot: dir }
       const worktreeId = readWorktreeId(gitDir)
       const mainRepoPath = readMainRepoPath(gitDir)
       return {
