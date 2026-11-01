@@ -20,6 +20,9 @@ import {
   runWinStart,
   runWinRestart,
   runWinStop,
+  winDaemonInstallCommand,
+  winDaemonShimCommand,
+  winExecutionPolicyBlocksScripts,
   type SchtasksFn,
 } from "../commands/daemon.js"
 
@@ -42,6 +45,47 @@ function captureStdout(): { chunks: string[]; restore: () => void } {
   return { chunks, restore: () => spy.mockRestore() }
 }
 
+function captureStderr(): { chunks: string[]; restore: () => void } {
+  const chunks: string[] = []
+  const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+    chunks.push(String(chunk))
+    return true
+  })
+  return { chunks, restore: () => spy.mockRestore() }
+}
+
+describe("winDaemonInstallCommand", () => {
+  it("cites the .cmd shim when a Restricted/AllSigned policy blocks the .ps1 shim", () => {
+    expect(winExecutionPolicyBlocksScripts("Restricted")).toBe(true)
+    expect(winExecutionPolicyBlocksScripts("AllSigned\n")).toBe(true)
+    expect(winExecutionPolicyBlocksScripts("RemoteSigned")).toBe(false)
+    expect(winExecutionPolicyBlocksScripts("Bypass")).toBe(false)
+    expect(winExecutionPolicyBlocksScripts(null)).toBe(false)
+    expect(winDaemonInstallCommand("Restricted")).toBe("agentproto.cmd daemon install")
+    expect(winDaemonInstallCommand("AllSigned")).toBe("agentproto.cmd daemon install")
+    expect(winDaemonInstallCommand("RemoteSigned")).toBe("agentproto daemon install")
+    expect(winDaemonInstallCommand(null)).toBe("agentproto daemon install")
+  })
+
+  it("rewrites start and restart hints too, not just install", () => {
+    expect(winDaemonShimCommand("agentproto daemon start", "Restricted")).toBe("agentproto.cmd daemon start")
+    expect(winDaemonShimCommand("agentproto daemon restart", "AllSigned")).toBe("agentproto.cmd daemon restart")
+    expect(winDaemonShimCommand("agentproto daemon start", "RemoteSigned")).toBe("agentproto daemon start")
+  })
+
+  it("never double-rewrites a hint that already names the .cmd shim", () => {
+    expect(winDaemonShimCommand("agentproto.cmd daemon install", "Restricted")).toBe(
+      "agentproto.cmd daemon install",
+    )
+    expect(winDaemonShimCommand("agentproto.cmd daemon start", "AllSigned")).toBe(
+      "agentproto.cmd daemon start",
+    )
+    expect(winDaemonShimCommand("agentproto.cmd daemon restart", "Restricted")).toBe(
+      "agentproto.cmd daemon restart",
+    )
+  })
+})
+
 describe("renderSchtasksTr", () => {
   it("double-quotes the launcher path", () => {
     expect(renderSchtasksTr("C:\\Users\\u\\.agentproto\\agentproto-daemon.cmd")).toBe(
@@ -57,8 +101,24 @@ describe("renderWinDaemonScript", () => {
       "C:\\Users\\u\\.agentproto\\daemon.log",
     )
     expect(body).toBe(
-      '@echo off\ncd /d "%USERPROFILE%"\n"C:\\Program Files\\node.exe" C:\\cli.mjs serve --port 18790 >> "C:\\Users\\u\\.agentproto\\daemon.log" 2>&1\n',
+      '@echo off\nchcp 65001 > nul\ncd /d "%USERPROFILE%"\n"C:\\Program Files\\node.exe" C:\\cli.mjs serve --port 18790 >> "C:\\Users\\u\\.agentproto\\daemon.log" 2>&1\n',
     )
+  })
+
+  it("switches the console to UTF-8 before any non-ASCII path so cmd reads the file back as written (accents in the user profile)", () => {
+    const acct = "C:\\Users\\MathildeDugué\\.agentproto\\daemon.log"
+    const body = renderWinDaemonScript(
+      ["C:\\Program Files\\nodejs\\node.exe", "C:\\Users\\MathildeDugué\\cli.mjs", "serve"],
+      acct,
+      "C:\\Users\\MathildeDugué\\work",
+    )
+    const lines = body.split("\n")
+    expect(lines[0]).toBe("@echo off")
+    // chcp must precede every line carrying a non-ASCII path.
+    expect(lines[1]).toBe("chcp 65001 > nul")
+    expect(lines[2]).toBe('cd /d "C:\\Users\\MathildeDugué\\work"')
+    expect(body).toContain("MathildeDugué\\cli.mjs")
+    expect(body).toContain(`>> "${acct}" 2>&1`)
   })
 
   it("doubles embedded quotes so cmd keeps them literal", () => {
@@ -68,13 +128,13 @@ describe("renderWinDaemonScript", () => {
 
   it("starts with a cd /d so the daemon never runs from C:\\Windows\\System32 (WIN11 field test 2026-09-30: System32 runtime.json EPERM)", () => {
     const noWorkspace = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log")
-    expect(noWorkspace.split("\n")[1]).toBe('cd /d "%USERPROFILE%"')
+    expect(noWorkspace.split("\n")[2]).toBe('cd /d "%USERPROFILE%"')
 
     const withWorkspace = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log", "C:\\ws\\mine")
-    expect(withWorkspace.split("\n")[1]).toBe('cd /d "C:\\ws\\mine"')
+    expect(withWorkspace.split("\n")[2]).toBe('cd /d "C:\\ws\\mine"')
 
     const quoted = renderWinDaemonScript(["node", "cli.mjs", "serve"], "log", 'C:\\a "b"')
-    expect(quoted.split("\n")[1]).toBe('cd /d "C:\\a ""b"""')
+    expect(quoted.split("\n")[2]).toBe('cd /d "C:\\a ""b"""')
   })
 })
 
@@ -179,25 +239,80 @@ describe("runWinInstall", () => {
 })
 
 describe("runWinUninstall / start / restart / stop", () => {
-  it("uninstall ends the task then deletes with /F; already-absent is idempotent", async () => {
+  it("uninstall queries first, then ends and deletes with /F; already-absent is idempotent", async () => {
     const calls: string[][] = []
-    let failDelete = false
+    let present = true
     const fake: SchtasksFn = async args => {
       calls.push(args)
-      if (failDelete) return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." }
+      if (args[0] === "/Query" && !present) {
+        return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified.\n" }
+      }
       return { code: 0, stdout: "deleted", stderr: "" }
     }
     let out = captureStdout()
     expect(await runWinUninstall(fake)).toBe(0)
     out.restore()
-    expect(calls).toEqual([["/End", "/TN", SCHTASKS_TASK_NAME], ["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"]])
+    expect(calls).toEqual([
+      ["/Query", "/TN", SCHTASKS_TASK_NAME],
+      ["/End", "/TN", SCHTASKS_TASK_NAME],
+      ["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"],
+    ])
 
     calls.length = 0
-    failDelete = true
+    present = false
     out = captureStdout()
     expect(await runWinUninstall(fake)).toBe(0)
     out.restore()
+    expect(calls).toEqual([["/Query", "/TN", SCHTASKS_TASK_NAME]])
     expect(out.chunks.join("")).toContain("already absent")
+  })
+
+  it("recognizes an absent task in English, French and OEM-mojibake, whatever the display language", async () => {
+    const messages = [
+      "ERROR: The system cannot find the file specified.\n",
+      "ERREUR : Le système ne peut pas trouver le fichier spécifié.\n",
+      // The same French message in the OEM code page, decoded as UTF-8.
+      "ERREUR: Le syst?me ne peut pas trouver le fichier sp?cifi?.\n",
+    ]
+    for (const stderr of messages) {
+      const calls: string[][] = []
+      const fake: SchtasksFn = async args => {
+        calls.push(args)
+        return { code: 1, stdout: "", stderr }
+      }
+      const out = captureStdout()
+      expect(await runWinUninstall(fake)).toBe(0)
+      out.restore()
+      expect(calls.map(c => c[0])).toEqual(["/Query"])
+      expect(out.chunks.join("")).toContain("already absent")
+    }
+  })
+
+  it("an access-denied /Query is a surfaced error, never a silent success and never deletes blindly", async () => {
+    const calls: string[][] = []
+    const fake: SchtasksFn = async args => {
+      calls.push(args)
+      return { code: 1, stdout: "", stderr: "ERROR: Access is denied.\n" }
+    }
+    const out = captureStdout()
+    const err = captureStderr()
+    expect(await runWinUninstall(fake)).toBe(1)
+    out.restore()
+    err.restore()
+    expect(calls).toEqual([["/Query", "/TN", SCHTASKS_TASK_NAME]])
+    expect(err.chunks.join("")).toContain("cannot query scheduled task")
+    expect(err.chunks.join("")).toContain("Access is denied")
+  })
+
+  it("uninstall still fails when /Delete fails but /Query confirms the task exists", async () => {
+    const fake: SchtasksFn = async args => {
+      if (args[0] === "/Query") return { code: 0, stdout: "TaskName: agentproto-daemon\n", stderr: "" }
+      return { code: 1, stdout: "", stderr: "denied" }
+    }
+    const err = captureStderr()
+    expect(await runWinUninstall(fake)).toBe(1)
+    err.restore()
+    expect(err.chunks.join("")).toContain("schtasks delete failed")
   })
 
   it("start runs the task once and reports health", async () => {
@@ -331,7 +446,53 @@ describe("runWinUninstall / start / restart / stop", () => {
   })
 
   it("start surfaces the schtasks failure code", async () => {
-    const code = await runWinStart(async () => ({ code: 1, stdout: "", stderr: "ERROR: not found" }), async () => null, 1)
+    const code = await runWinStart(
+      async () => ({ code: 1, stdout: "", stderr: "ERROR: not found" }),
+      async () => null,
+      1,
+      async () => "RemoteSigned",
+    )
     expect(code).toBe(1)
+  })
+
+  it("start cites `agentproto.cmd daemon install` when the PowerShell policy blocks the .ps1 shim", async () => {
+    const err = captureStderr()
+    const code = await runWinStart(
+      async () => ({ code: 1, stdout: "", stderr: "sp?cifi?\n" }),
+      async () => null,
+      1,
+      async () => "Restricted",
+    )
+    err.restore()
+    expect(code).toBe(1)
+    const text = err.chunks.join("")
+    expect(text).toContain("agentproto.cmd daemon install")
+    // Never echo the OEM-codepage schtasks text back as mojibake.
+    expect(text).not.toContain("sp?cifi?")
+  })
+
+  it("start keeps the plain command when the policy allows scripts", async () => {
+    const err = captureStderr()
+    await runWinStart(
+      async () => ({ code: 1, stdout: "", stderr: "" }),
+      async () => null,
+      1,
+      async () => "RemoteSigned",
+    )
+    err.restore()
+    expect(err.chunks.join("")).toContain("Run `agentproto daemon install` first.")
+  })
+
+  it("restart cites the .cmd shim under a blocking policy too", async () => {
+    const err = captureStderr()
+    const code = await runWinRestart(
+      async args => (args[0] === "/Run" ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" }),
+      async () => null,
+      1,
+      async () => "AllSigned",
+    )
+    err.restore()
+    expect(code).toBe(1)
+    expect(err.chunks.join("")).toContain("agentproto.cmd daemon install")
   })
 })
