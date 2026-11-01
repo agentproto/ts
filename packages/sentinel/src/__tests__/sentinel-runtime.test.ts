@@ -777,11 +777,84 @@ describe("SentinelRuntime", () => {
         expect(restarts).toBe(0)
         expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done", "sess_parent"])
         const forwarded = registry.calls[1]!.msg
-        expect(forwarded.urgency).toBe("next-turn")
+        expect(forwarded.urgency).toBe("fyi")
+        expect(forwarded.text).toContain("sess_done")
         expect(store.list()[0]!.spec.target).toMatchObject({ sessionId: "sess_parent" })
         expect(store.list()[0]!.status).toBe("active")
       })
     }
+
+    it("drops the child's sentinel instead of duplicating a watch the parent already owns", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sentinel-dedupe-"))
+      try {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        const childSentinel = newSentinel(store, { sessionId: "sess_done" })
+        const parentSentinel = newSentinel(store, { sessionId: "sess_parent" })
+        provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+        const registry = stubRegistry(async msg => {
+          if (msg.to === "sess_done") throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+          return okResult()
+        })
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: id => id === "sess_parent",
+          restartSession: async () => {
+            throw new Error("cannot resume")
+          },
+          sessionInfo: id =>
+            id === "sess_done" ? { endedReason: "operator-completed", parentSessionId: "sess_parent" } : undefined,
+          cancelTombstonePath: join(dir, "tombstones.json"),
+        })
+
+        await runtime.pollOnce()
+
+        // The parent's own sentinel delivers the event; the child's sentinel
+        // must not forward a second copy and must not survive as a duplicate.
+        expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done", "sess_parent"])
+        expect(store.get(childSentinel.id)).toBeUndefined()
+        expect(store.get(parentSentinel.id)).toBeDefined()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("does not re-target to a parent that is itself retired", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "sentinel-retired-parent-"))
+      const parkedPath = join(dir, "sentinels-parked.jsonl")
+      try {
+        const store = createSentinelStore({ persist: false })
+        const provider = createFakeSentinelProvider()
+        const sentinel = newSentinel(store, { sessionId: "sess_done" })
+        provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+        const registry = stubRegistry(async msg => {
+          if (msg.to === "sess_done") throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+          return okResult()
+        })
+        const runtime = createSentinelRuntime({
+          store,
+          registry,
+          resolveProvider: resolverFor(provider),
+          isSessionAlive: id => id === "sess_parent",
+          restartSession: async () => "sess_revived",
+          sessionInfo: id =>
+            id === "sess_done"
+              ? { endedReason: "operator-completed", parentSessionId: "sess_parent" }
+              : { endedReason: "operator-completed" },
+          parkedPath,
+        })
+
+        await runtime.pollOnce()
+
+        expect(registry.calls.map(c => c.msg.to)).toEqual(["sess_done"])
+        expect(store.get(sentinel.id)?.status).toBe("orphaned")
+        expect(readFileSync(parkedPath, "utf8")).toContain("no live parent")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
 
     it("a dead, unresumable target hands the watch to its live parent instead of parking", async () => {
       const store = createSentinelStore({ persist: false })
