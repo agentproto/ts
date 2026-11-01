@@ -28,6 +28,14 @@ describe("prUrlFromPayload", () => {
     expect(prUrlFromPayload({ ...payload, tool_input: { command: "gh pr view 2447" } })).toBeUndefined()
     expect(prUrlFromPayload({ ...payload, tool_name: "Read" })).toBeUndefined()
   })
+  it("prefers the url on stdout over one elsewhere in the response", () => {
+    const tool_response = { stderr: "see https://github.com/agentproto/ts/pull/1\n", stdout: `${URL}\n` }
+    expect(prUrlFromPayload({ ...payload, tool_response })).toBe(URL)
+  })
+  it("falls back to the whole response when stdout carries no url", () => {
+    expect(prUrlFromPayload({ ...payload, tool_response: `created ${URL}` })).toBe(URL)
+    expect(prUrlFromPayload({ ...payload, tool_response: { stdout: "", output: URL } })).toBe(URL)
+  })
 })
 
 describe("runPrStamp", () => {

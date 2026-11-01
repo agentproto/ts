@@ -62,9 +62,9 @@ daemon did not spawn. After a successful \`gh pr create\` it appends the
 created PR's body. It skips daemon-spawned sessions (AGENTPROTO_SESSION_ID
 starting with sess_), never stamps twice, and always exits 0.
 
-\`install --host claude-desktop\` merges AGENTPROTO_SESSION_ID and the two
-\`hook inbox\` hooks (UserPromptSubmit, PostToolUse) into a Claude Desktop
-settings file (default ~/.claude/settings.json, or $CLAUDE_CONFIG_DIR). It is
+\`install --host claude-desktop\` merges AGENTPROTO_SESSION_ID, the two
+\`hook inbox\` hooks (UserPromptSubmit, PostToolUse) and the \`hook pr-stamp\`
+hook (PostToolUse, matcher Bash) into a Claude Desktop settings file (default ~/.claude/settings.json, or $CLAUDE_CONFIG_DIR). It is
 idempotent, leaves other keys alone, and prints the MCP URL to register. With
 --dry-run it prints the merged settings JSON and writes nothing.
 `

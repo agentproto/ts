@@ -43,6 +43,11 @@ export function prUrlFromPayload(payload: PrStampPayload): string | undefined {
   const command = payload.tool_input?.command
   if (typeof command !== "string" || !GH_PR_CREATE_RE.test(command)) return undefined
   const response = payload.tool_response
+  // `gh pr create` prints the url on stdout: read that first, so a PR url
+  // quoted on stderr (a warning, a template) is never the one edited.
+  const stdout = (response as { stdout?: unknown } | null | undefined)?.stdout
+  const fromStdout = typeof stdout === "string" ? PR_URL_RE.exec(stdout)?.[0] : undefined
+  if (fromStdout) return fromStdout
   const text = typeof response === "string" ? response : JSON.stringify(response ?? "")
   return PR_URL_RE.exec(text)?.[0]
 }
@@ -73,6 +78,10 @@ const realGh: GhRun = (args, cwd) =>
 
 export async function runPrStamp(raw: string, deps: PrStampDeps = {}): Promise<number> {
   const env = deps.env ?? process.env
+  // Every daemon-spawned session id comes from `mintSessionId()` in
+  // packages/runtime/src/sessions.ts (`sess_` + 8 hex). A desktop session
+  // carries the id `hook install` wrote (`claude-desktop` unless `--session`
+  // names another), so keep that prefix out of `--session` values.
   if (env.AGENTPROTO_SESSION_ID?.startsWith("sess_")) return 0
   let payload: PrStampPayload
   try {
