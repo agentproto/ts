@@ -178,12 +178,13 @@ export class ComputerControllerClient {
     schema: { safeParse: (v: unknown) => { success: true; data: T } | { success: false } },
     body?: unknown,
     signal?: AbortSignal,
+    requestHeaders?: Record<string, string>,
   ): Promise<T> {
     let res: Response
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         method,
-        headers: this.headers(),
+        headers: { ...requestHeaders, ...this.headers() },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         ...(signal !== undefined ? { signal } : {}),
       })
@@ -253,9 +254,12 @@ export class ComputerControllerClient {
 
   /** `POST /v1/computers`. Rejects with 400 (validation / unknown template),
    *  429 (capacity), 500 (msb create failure). */
+  /** `POST /v1/computers`. `idempotencyKey` is sent as `Idempotency-Key`:
+   *  the controller and the fleet replay the first successful answer for the
+   *  same key and tenant, so a retry of the same boot never creates twice. */
   async createComputer(
     input: CreateComputerInput,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; idempotencyKey?: string } = {},
   ): Promise<CreateComputerResponse> {
     // Outbound bodies are contract-checked too: a mistyped input fails
     // locally, wrapped in a redacted ComputerApiError, not as a
@@ -272,7 +276,14 @@ export class ComputerControllerClient {
         ),
       )
     }
-    return this.request("POST", "/v1/computers", createComputerResponseSchema, body.data, opts.signal)
+    return this.request(
+      "POST",
+      "/v1/computers",
+      createComputerResponseSchema,
+      body.data,
+      opts.signal,
+      opts.idempotencyKey !== undefined ? { "Idempotency-Key": opts.idempotencyKey } : undefined,
+    )
   }
 
   /** `GET /v1/computers` - every computer the controller holds for the

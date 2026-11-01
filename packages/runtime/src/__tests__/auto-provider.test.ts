@@ -145,6 +145,25 @@ describe("auto sandbox provider — boot", () => {
     expect(legs.e2bBoot).toHaveBeenCalledTimes(1)
   })
 
+  it("turns off the computer leg's fleet-capacity wait when overflow is on, so it overflows at once", async () => {
+    const legs = fakeLegs()
+    await legs.auto.provider.boot(spec({ overflow: { enabled: true } }), { env: {} })
+    expect(legs.computerBoot.mock.calls[0]?.[0].config).toMatchObject({ fleetCapacityWaitMs: 0 })
+  })
+
+  it("keeps the computer leg's fleet-capacity wait when overflow is off or the wait is set", async () => {
+    const off = fakeLegs()
+    await off.auto.provider.boot(spec(), { env: {} })
+    expect(off.computerBoot.mock.calls[0]?.[0].config).not.toHaveProperty("fleetCapacityWaitMs")
+
+    const explicit = fakeLegs()
+    await explicit.auto.provider.boot(
+      spec({ overflow: { enabled: true }, computer: { fleetCapacityWaitMs: 60_000 } }),
+      { env: {} },
+    )
+    expect(explicit.computerBoot.mock.calls[0]?.[0].config).toMatchObject({ fleetCapacityWaitMs: 60_000 })
+  })
+
   it("returns the capacity error unchanged when overflow is off (the default)", async () => {
     const err = new ComputerSandboxError("sandbox_capacity", "host capacity exhausted")
     const legs = fakeLegs({ computer: async () => Promise.reject(err) })

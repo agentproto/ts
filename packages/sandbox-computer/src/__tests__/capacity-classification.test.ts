@@ -32,7 +32,10 @@ describe("capacity refusal classification", () => {
     controller.options.createError = code
     controller.options.createErrorExtra = extra
     if (retryAfter !== undefined) controller.options.createRetryAfter = retryAfter
-    return computerSandboxProvider.boot(spec(controller.url), bootOpts).catch((err: unknown) => err)
+    // fleetCapacityWaitMs 0: classify the first refusal, do not wait it out.
+    return computerSandboxProvider
+      .boot(spec(controller.url, { fleetCapacityWaitMs: 0 }), bootOpts)
+      .catch((err: unknown) => err)
   }
 
   it("maps a 503 fleet-capacity refusal to sandbox_fleet_capacity", async () => {

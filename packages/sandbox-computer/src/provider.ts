@@ -61,7 +61,7 @@ import {
 } from "./client.js"
 import { ComputerSandboxError, type ComputerSandboxErrorCode } from "./errors.js"
 import { startLocalDaemonProxy, type LocalDaemonProxy } from "./local-daemon-proxy.js"
-import type { ComputerListEntry, ComputerStatus, PortPublish } from "@agentproto/computer-api"
+import type { ComputerListEntry, ComputerStatus, CreateComputerResponse, PortPublish } from "@agentproto/computer-api"
 
 /** `serve.ts`'s default port (`DEFAULT_MCP_URL` in `@agentproto/session-presets`). */
 export const DEFAULT_PORT = 18790
@@ -107,6 +107,11 @@ const DAEMON_READY_TIMEOUT_MS = 30_000
  *  healthy -> attach), so a wedge in any phase fails in bounded time instead
  *  of hanging the caller indefinitely. */
 const DEFAULT_BOOT_DEADLINE_MS = 300_000
+/** Unshelving a host measured 568 s to ACTIVE plus the autoscaler cooldown
+ *  (about 10 min 42 s from the first refusal, 2026-11-01): 12 min covers it. */
+const DEFAULT_FLEET_CAPACITY_WAIT_MS = 12 * 60_000
+const DEFAULT_FLEET_CAPACITY_RETRY_MS = 30_000
+const MIN_FLEET_CAPACITY_RETRY_AFTER_MS = 1_000
 const UPDATE_CLI_TIMEOUT_MS = 600_000
 /** Base64 chunk size for writeFile chunks: ~6668 chars stays under the
  *  controller's 8192-character argv element cap. */
@@ -220,6 +225,17 @@ interface ComputerSandboxConfig {
    *  attach). Default 5 minutes. On expiry the boot fails with a
    *  `sandbox_boot_timeout` typed error naming the phase it was stuck in. */
   bootDeadlineMs?: number
+  /**
+   * How long a create answered `503 fleet-capacity` keeps being retried while
+   * the fleet frees or wakes a host (a shelved host takes about 10 min to come
+   * back). Default 12 minutes; 0 fails on the first refusal. Time spent
+   * waiting here does not count against `bootDeadlineMs`. Every retry reuses
+   * one `Idempotency-Key`, so a replayed create never makes a second box.
+   */
+  fleetCapacityWaitMs?: number
+  /** Wait between two fleet-capacity retries when the refusal carries no
+   *  `Retry-After`. Default 30 s. */
+  fleetCapacityRetryMs?: number
   /** Internal: headers added to `authHeaders` in `daemonRoute` mode. */
   routeHeaders?: Record<string, string>
 }
@@ -364,6 +380,8 @@ function readComputerConfig(spec: SandboxSpec): ComputerSandboxConfig {
     waitReadyTimeoutMs: int(config.waitReadyTimeoutMs),
     daemonReadyTimeoutMs: int(config.daemonReadyTimeoutMs),
     bootDeadlineMs: int(config.bootDeadlineMs),
+    fleetCapacityWaitMs: int(config.fleetCapacityWaitMs),
+    fleetCapacityRetryMs: int(config.fleetCapacityRetryMs),
   }
 }
 
@@ -748,6 +766,28 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Sleep that ends early, throwing the boot-cancelled error, when `signal`
+ *  aborts. */
+async function cancellableSleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  throwIfBootCancelled(signal)
+  if (signal === undefined) return sleep(ms)
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      clearTimeout(timer)
+      reject(new SandboxBootCancelledError("sandbox boot cancelled"))
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort)
+      resolve()
+    }, ms)
+    signal.addEventListener("abort", onAbort, { once: true })
+  })
+}
+
+function formatSeconds(ms: number): string {
+  return `${Math.ceil(ms / 1000)}s`
+}
+
 /** URL for reaching `port` on a computer: the gateway template with
  *  `{port}`/`{id}`/`{hostPort}` substituted, else the computer's own
  *  generated name — the default assumes the box network is addressable by
@@ -978,7 +1018,7 @@ async function bootOnClient(
   const port = config.port ?? DEFAULT_PORT
   const workspace = config.workspace ?? DEFAULT_WORKSPACE
   const bootDeadlineMs = config.bootDeadlineMs ?? DEFAULT_BOOT_DEADLINE_MS
-  const deadlineAt = Date.now() + bootDeadlineMs
+  let deadlineAt = Date.now() + bootDeadlineMs
   const deadlineLeft = (): number => deadlineAt - Date.now()
   let sandboxId: string | undefined
 
@@ -1029,7 +1069,7 @@ async function bootOnClient(
   withBoxNodeOptions(createEnv, config.memoryMiB)
 
   throwIfBootCancelled(opts.signal)
-  let created
+  let created: CreateComputerResponse
   const template = config.template ?? DEFAULT_TEMPLATE
   // No direct logging: the provider stays silent unless the daemon passes
   // `opts.log` (see `SandboxBootOpts.log`). One helper keeps every phase line
@@ -1039,9 +1079,16 @@ async function bootOnClient(
     `create requested (${template}` +
       `${config.memoryMiB !== undefined ? `, ${config.memoryMiB} MiB` : ""})`,
   )
-  try {
+  // One key for every attempt of this boot: a retry after a fleet-capacity
+  // refusal (or a replay of a create that did land) gets the same box back.
+  const idempotencyKey = `boot-${randomUUID()}`
+  const fleetCapacityWaitMs = Math.max(0, config.fleetCapacityWaitMs ?? DEFAULT_FLEET_CAPACITY_WAIT_MS)
+  const fleetCapacityRetryMs = Math.max(0, config.fleetCapacityRetryMs ?? DEFAULT_FLEET_CAPACITY_RETRY_MS)
+  const fleetWaitStartedAt = Date.now()
+  let fleetAttempt = 1
+  const attemptCreate = async (): Promise<CreateComputerResponse> => {
     const createAbort = new AbortController()
-    created = await withinDeadline(
+    return withinDeadline(
       "create",
       () =>
         client.createComputer(
@@ -1057,10 +1104,46 @@ async function bootOnClient(
             ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
             env: createEnv,
           },
-          { signal: createAbort.signal },
+          { signal: createAbort.signal, idempotencyKey },
         ),
       { onTimeout: () => createAbort.abort() },
     )
+  }
+  try {
+    for (;;) {
+      try {
+        created = await attemptCreate()
+        break
+      } catch (err) {
+        if (!(err instanceof ComputerApiError) || err.code !== "fleet-capacity") throw err
+        const waited = Date.now() - fleetWaitStartedAt
+        const left = fleetCapacityWaitMs - waited
+        // A Retry-After of 0 must not spin for the whole window; a long one
+        // still gets a last attempt when the window closes.
+        const asked =
+          err.retryAfterMs !== undefined ? Math.max(MIN_FLEET_CAPACITY_RETRY_AFTER_MS, err.retryAfterMs) : fleetCapacityRetryMs
+        const delay = Math.min(asked, left)
+        if (left <= 0) {
+          if (fleetAttempt > 1) {
+            bootLog(
+              `fleet capacity still exhausted after ${fleetAttempt} attempts over ${formatSeconds(waited)}; giving up`,
+            )
+          }
+          throw err
+        }
+        bootLog(
+          `create refused (HTTP ${err.status}, "fleet-capacity"), attempt ${fleetAttempt}: ` +
+            `waiting ${formatSeconds(delay)} for the fleet to free or wake a host ` +
+            `(${formatSeconds(left)} left of ${formatSeconds(fleetCapacityWaitMs)})`,
+        )
+        const sleptFrom = Date.now()
+        await cancellableSleep(delay, opts.signal)
+        // Waiting on the fleet is not boot time: the deadline covers create
+        // through attach, so push it out by the time spent asleep.
+        deadlineAt += Date.now() - sleptFrom
+        fleetAttempt++
+      }
+    }
   } catch (err) {
     // A create with NO answer used to hang the whole spawn with no provider
     // line once the outer request timed out. Surface the phase deadline here
@@ -1075,6 +1158,9 @@ async function bootOnClient(
     }
     if (err instanceof ComputerApiError) {
       const mapped = await mapControllerError(err, client)
+      if (mapped instanceof ComputerSandboxError && mapped.code === "sandbox_fleet_capacity" && fleetAttempt > 1) {
+        mapped.message += ` (still refused after ${fleetAttempt} attempts over ${formatSeconds(Date.now() - fleetWaitStartedAt)})`
+      }
       if (mapped !== err) {
         bootLog(
           `create rejected (HTTP ${err.status}${err.code ? `, "${err.code}"` : ""}): ` +
