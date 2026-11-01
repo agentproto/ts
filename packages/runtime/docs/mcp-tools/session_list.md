@@ -95,7 +95,12 @@ of the process tree via `ps`, one spawn per call). For the host-level view
 
 Compact projection by default (id, kind, name, label, status, command, cwd,
 model, busy, awaitingInput, blockedOn, lastActivityAt, depth,
-parentSessionId, continuedFrom, lastTurnErroredAt, interrupted);
+parentSessionId, continuedFrom, lastTurnErroredAt, interrupted, launchedBy);
+`launchedBy` is derived text naming who launched the session (a parent or
+caller session by id, the operator, or only the origin channel), present only
+when one of those fields is set. It never looks up a label, so a parent shows
+by id; the CLI table resolves labels from its own rows. See
+[`agentproto sessions`](../../../../docs/cli/verbs/sessions.md#one-shot-list).
 `interrupted: true` marks a session a daemon restart cut off mid-turn (see
 `session_continue_interrupted`). `fields:[…]` keeps only some keys per row
 (honoured with or without `limit`), `full:true` returns the whole descriptor.

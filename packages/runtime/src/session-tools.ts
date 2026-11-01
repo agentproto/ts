@@ -25,6 +25,7 @@ import type {
 } from "./sessions.js"
 import { applyBracketedPasteWrap } from "./sessions.js"
 import { getSlug } from "./sessions.js"
+import { launchedByOf, launchedByText } from "./launched-by.js"
 import { canonicalOperatorRef, operatorDigestStale } from "./session-operator.js"
 import type { SpawnDefaultsConfig } from "./spawn-defaults.js"
 import {
@@ -891,6 +892,11 @@ export interface SessionListCompactItem {
    *  is a terminal record: no pid, not promptable. */
   cold?: boolean
   pty?: boolean
+  /** Who launched this session, as derived text (`launchedByText`): a parent
+   *  or caller session, the operator, or only the origin channel. No label
+   *  lookup is done here, so a parent is shown by id only. Absent when no
+   *  provenance field is set. Not persisted; the full descriptor is untouched. */
+  launchedBy?: string
   /** What was actually run — quoted joined, same string the full record carries. */
   command: string
   cwd?: string
@@ -994,6 +1000,13 @@ const publicSessionDescriptor = (
   return publicDescriptor
 }
 
+/** The `launchedBy` key of a compact row: present only when some provenance
+ *  field is set, so a plain root row keeps exactly its old shape. */
+const launchedByField = (s: SessionDescriptor): { launchedBy?: string } => {
+  const launchedBy = launchedByText(launchedByOf(s))
+  return launchedBy ? { launchedBy } : {}
+}
+
 export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem => ({
   id: s.id,
   kind: s.kind,
@@ -1048,6 +1061,7 @@ export const compactSessionItem = (s: SessionDescriptor): SessionListCompactItem
   // UI can show "host: <id>" straight off the list.
   ...(s.hostSessionId ? { hostSessionId: s.hostSessionId } : {}),
   ...(s.hostFingerprint ? { hostFingerprint: s.hostFingerprint } : {}),
+  ...launchedByField(s),
 })
 
 // ── session_commands rows ────────────────────────────────────────────────

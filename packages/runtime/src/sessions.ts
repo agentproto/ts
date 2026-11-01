@@ -2758,12 +2758,14 @@ export interface SessionDescriptor {
    *  clears `blockedOn` when its toolCallId matches — so a nested or
    *  interleaved tool finishing first can't clear the flag early. */
   pendingToolCallId?: string
-  /** Session id of the orchestrator that spawned this session, set when
-   *  the spawn arrived via the scoped orchestrator sub-gateway (the
-   *  token carried the spawner's identity). Absent for direct `/mcp`
-   *  spawns (the root operator). Powers the subtree scoping of
-   *  list/kill and the per-parent child quota (orchestrator WP4).
-   *  Persisted so the tree survives a daemon restart. */
+  /** Session id of the session that spawned this one, set from the caller
+   *  session id the daemon trusts (the scoped orchestrator gateway's token,
+   *  or the derived caller the attach policy records on the anonymous
+   *  `/mcp` path - see `spawn-attach.ts`). Absent for a root spawn that
+   *  names no caller session (the human operator) or that asked for
+   *  `attach: false`. Powers the subtree scoping of list/kill and the
+   *  per-parent child quota (orchestrator WP4). Persisted so the tree
+   *  survives a daemon restart. */
   parentSessionId?: string
   /** A REMOTE parent: this session lives in a BOX daemon's registry while its
    *  parent lives in the HOST daemon's registry (see
