@@ -664,6 +664,7 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
     const ghCwds: string[] = []
     const run: GhRunner = async (args, cwd) => {
       ghCwds.push(cwd)
+      if (args.includes("commits")) return { exitCode: 0, stdout: "wip\n\nAgentproto-Session: sess_exec" }
       return okRun(args, cwd)
     }
     const localRepoCwdFor = vi.fn(async (s: ReconcilerSession) => (s.workspaceSlug === "ts" ? "/host/ts" : undefined))
@@ -684,6 +685,33 @@ describe("createPrProvenanceReconciler — sandboxed sessions", () => {
     expect(recorded).toEqual([{ sessionId: "sess_exec", number: 42, url: PR.url }])
     expect(ghCwds.length).toBeGreaterThan(0)
     expect(ghCwds.every(c => c === "/host/ts")).toBe(true)
+  })
+
+  it("does not stamp a sandboxed session that only checked out the PR branch (reviewer, #2447)", async () => {
+    const { reg, recorded } = fakeRegistry([boxSession(), SUPER])
+    const resolveOpenPr = vi.fn<OpenPrResolver>(async () => PR)
+    const edits: string[] = []
+    const run: GhRunner = async (args, cwd) => {
+      if (args[1] === "edit") edits.push(args[4] as string)
+      if (args.includes("commits")) return { exitCode: 0, stdout: "fix\n\nAgentproto-Session: sess_other" }
+      return okRun(args, cwd)
+    }
+    const bus = createSessionEventBus()
+    createPrProvenanceReconciler({
+      registry: reg,
+      listToolCalls: async () => [],
+      sessionEvents: bus,
+      resolveOpenPr,
+      run,
+      localRepoCwdFor: async () => "/host/ts",
+    })
+
+    bus.emit(turnEnd("sess_exec"))
+    await flush()
+
+    expect(resolveOpenPr).toHaveBeenCalled()
+    expect(edits).toEqual([])
+    expect(recorded).toEqual([])
   })
 
   it("without a host checkout, skips the branch lane but still records an exact (tool-call) PR", async () => {
