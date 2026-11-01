@@ -55,16 +55,18 @@
       "id": "53ybr99wdfgoebi9nee8",
       "alias": "agentproto-workstation",
       "baked": {
-        "cli": "1.20.0",
+        "cli": "1.31.0",
         "adapters": {
-          "@agentproto/adapter-hermes": "0.4.38",
-          "@agentproto/adapter-mastra-agent": "0.7.33",
-          "@agentproto/adapter-opencode": "1.8.2"
+          "@agentproto/adapter-claude-code": "2.6.0",
+          "@agentproto/adapter-hermes": "0.5.7",
+          "@agentproto/adapter-mastra-agent": "0.7.45",
+          "@agentproto/adapter-openclaw": "0.1.39",
+          "@agentproto/adapter-opencode": "1.9.4"
         },
         "tools": {
           "gh": "2.102.0"
         },
-        "builtAt": "2026-10-13T17:51:52.964Z"
+        "builtAt": "2026-11-01T04:27:07.354Z"
       }
     },
     "dev": {
