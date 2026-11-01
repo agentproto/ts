@@ -15,6 +15,11 @@ Status: Stable
   and prompts it, `--command` runs an allowlisted shell command, and
   `--target-session` re-prompts an existing session in place (a session id, or
   `agent:<label>` resolved to a session at fire time).
+- Each job records `createdBy` (operator, system, external, or a session with
+  `proven` or `claimed` proof), frozen at creation. The operator caller is
+  `{ kind: "operator" }`. `createdBy` is distinct from `ownedBy` (lifetime);
+  a fired job still runs as the operator and is not clamped by its creator yet.
+  A job created before this change shows no `createdBy`.
 - Fires missed during downtime are not backfilled: after a restart a recurring
   job resumes from "now" rather than catching up on what it slept through.
 

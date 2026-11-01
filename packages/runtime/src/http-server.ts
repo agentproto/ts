@@ -12367,6 +12367,10 @@ async function handleCron(
         ...(b.notify !== undefined
           ? { notify: b.notify as import("./cron-scheduler.js").CronNotify }
           : {}),
+        // This route is operator/loopback-gated and carries no session
+        // identity, so the creator is always the operator. `agentproto cron
+        // add`, hooks and desktop create jobs here.
+        createdBy: { kind: "operator" },
       })
       json(201, job)
     } catch (err) {

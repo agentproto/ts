@@ -49,7 +49,7 @@ function makeFakeCronScheduler(): CronScheduler {
   const jobs = new Map<string, CronJob>()
   let counter = 0
   return {
-    async create({ label, schedule, timezone, recurring = true, action }) {
+    async create({ label, schedule, timezone, recurring = true, action, createdBy }) {
       const id = `fake_cron_${++counter}`
       const job: CronJob = {
         id,
@@ -60,6 +60,7 @@ function makeFakeCronScheduler(): CronScheduler {
         action,
         createdAt: new Date().toISOString(),
         active: true,
+        ...(createdBy ? { createdBy } : {}),
       }
       jobs.set(id, job)
       return job
@@ -251,6 +252,8 @@ describe("createRoutineRegistrar — unit (fakes)", () => {
     expect(jobs).toHaveLength(1)
     expect(jobs[0]!.label).toBe("routine:demo-gc")
     expect(jobs[0]!.action).toEqual({ kind: "tool", tool: "worktree_gc", inputs: { apply: true } })
+    // The jobs the registrar reconciles from routine files are the daemon's own.
+    expect(jobs[0]!.createdBy).toEqual({ kind: "system" })
   })
 
   it("reconcile() skips a disabled routine and does not register a job", async () => {

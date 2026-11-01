@@ -24,6 +24,15 @@ Manage durable cron jobs on the daemon — run a command, spawn an agent, or
 re-prompt a live session on a schedule. Jobs persist to
 `~/.agentproto/cron-jobs.json` and survive daemon restarts.
 
+Each job records `createdBy` (operator, system, external, or a session with
+`proven` or `claimed` proof), frozen at creation and shown by `cron_create` and
+`cron_list`. A job created before this change shows no `createdBy`. The
+operator caller (CLI, hooks, desktop, anonymous loopback) is
+`{ kind: "operator" }`. The field records who created the job and how well
+proven they were; it is distinct from `ownedBy` (which governs lifetime and
+is moved by `rearmSessionTarget`). A fired job still runs as the operator and
+is not clamped by its creator yet.
+
 Requires a running daemon ([`serve.md`](./serve.md) or
 [`daemon.md`](./daemon.md)); the verb drives the `/cron` HTTP routes.
 

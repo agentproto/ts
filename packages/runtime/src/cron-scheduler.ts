@@ -58,6 +58,9 @@ import { restartAgentSession } from "./session-restart-core.js"
 import { isRetired, resolveSuccessor } from "./session-retirement.js"
 import { authProfileAsAdapterHint, type AuthProfileLookup } from "./adapter-slug-hint.js"
 import { toAgentStartCall, type DetachedAgentStartInput } from "./agent-start-schema.js"
+import { isCronCreator, type CronCreator } from "./cron-creator.js"
+
+export type { CronCreator }
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -324,6 +327,15 @@ export interface CronJob {
    * absent for unowned jobs (which never expire).
    */
   expiresAt?: string
+  /**
+   * Who created the job and how well that creator was proven (AIP-46
+   * §Session principals), recorded once at creation and never changed by
+   * `update`, a pause, a resume or a re-arm. Distinct from {@link ownedBy},
+   * which governs the job's lifetime and moves to a successor session.
+   * Absent on jobs persisted before this field existed ("not recorded").
+   * Not yet used to restrict what a fired job may do.
+   */
+  createdBy?: CronCreator
 }
 
 /** Real outcome of a single cron run, as recorded in the ledger. */
@@ -457,6 +469,8 @@ export interface CronScheduler {
     ownedBy?: string
     /** ISO expiry — see {@link CronJob.expiresAt}. */
     expiresAt?: string
+    /** The creating principal — see {@link CronJob.createdBy}. */
+    createdBy?: CronCreator
   }): Promise<CronJob>
 
   list(): CronJob[]
@@ -607,6 +621,9 @@ function loadJobs(persistPath: string): Map<string, JobState> {
     // A persisted unknown notify value falls back to the absent (= always)
     // meaning instead of making the whole job file suspect.
     if (job.notify !== undefined && !isCronNotify(job.notify)) job.notify = undefined
+    // A malformed persisted creator is dropped (the job reads as "not recorded")
+    // rather than making the whole job file suspect.
+    if (job.createdBy !== undefined && !isCronCreator(job.createdBy)) delete job.createdBy
     if (job.finished === undefined && !job.recurring && !job.active && !!job.lastRunAt) {
       job.finished = true
     }
@@ -1324,7 +1341,7 @@ export function createCronScheduler(opts: {
   // ── Public interface ──────────────────────────────────────────────
 
   return {
-    async create({ label, schedule, timezone, recurring = true, action: rawAction, notify: rawNotify, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt }) {
+    async create({ label, schedule, timezone, recurring = true, action: rawAction, notify: rawNotify, maxConsecutiveFailures, runTimeoutMs, ownedBy, expiresAt, createdBy }) {
       assertCronActionAllowed(rawAction)
       const notify = normalizeCronNotify(rawNotify)
       // Normalizes the `agent:<label>` spelling into the action's `agent`
@@ -1363,6 +1380,7 @@ export function createCronScheduler(opts: {
         ...(runTimeoutMs !== undefined ? { runTimeoutMs } : {}),
         ...(ownedBy ? { ownedBy } : {}),
         ...(effectiveExpiresAt ? { expiresAt: effectiveExpiresAt } : {}),
+        ...(createdBy !== undefined ? { createdBy } : {}),
       }
       jobs.set(id, { job, cronInstance })
       persistNow()

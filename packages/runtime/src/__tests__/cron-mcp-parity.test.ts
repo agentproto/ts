@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
@@ -15,7 +15,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 
 import { registerOrchestrationTools } from "../orchestration-tools.js"
 import { createCronScheduler, type CronJob, type CronScheduler } from "../cron-scheduler.js"
-import { createSessionsRegistry } from "../sessions.js"
+import { createSessionsRegistry, type SessionsRegistry } from "../sessions.js"
 import { createSessionEventBus } from "../session-event-bus.js"
 import { createEventRing } from "../event-ring.js"
 import { agentStartInputShape } from "../agent-start-schema.js"
@@ -50,17 +50,24 @@ function makeScheduler(opts: { dispatchTool?: DispatchTool; persistPath?: string
 
 async function buildClient(
   scheduler: CronScheduler,
-  extra: { toolSubset?: ReadonlySet<string>; callerSessionId?: string } = {},
+  extra: {
+    toolSubset?: ReadonlySet<string>
+    callerSessionId?: string
+    callerScope?: { ownerSessionId?: string }
+    credentialSessionId?: string
+    registry?: SessionsRegistry
+  } = {},
 ): Promise<Client> {
   const sessionEvents = createSessionEventBus()
-  const registry = createSessionsRegistry({ sessionEvents, persist: false })
+  const { registry: givenRegistry, ...toolOptions } = extra
+  const registry = givenRegistry ?? createSessionsRegistry({ sessionEvents, persist: false })
   const server = new McpServer({ name: "cron-parity-test", version: "0.0.0" })
   registerOrchestrationTools(server, {
     registry,
     sessionEvents,
     eventRing: createEventRing(),
     cronScheduler: scheduler,
-    ...extra,
+    ...toolOptions,
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -544,5 +551,158 @@ describe("cron notify", () => {
     const { jobs } = JSON.parse(listed.text) as { jobs: Array<{ id: string; notify?: string }> }
     expect(jobs.find(j => j.id === "cron_legacy_notify")?.notify).toBe("always")
     expect(jobs.find(j => j.id === "cron_modern_notify")?.notify).toBe("onFailure")
+  })
+})
+
+describe("cron createdBy: the creating principal, frozen", () => {
+  type Listed = { jobs: Array<{ id: string; createdBy?: unknown }> }
+
+  function registeredSession(registry: SessionsRegistry): string {
+    return registry.spawn({ kind: "command", workspaceSlug: "default", argv: ["true"], cwd: "/tmp" }).id
+  }
+
+  async function createJob(client: Client) {
+    const created = await call(client, "cron_create", {
+      schedule: "0 20 * * *",
+      action: { kind: "tool", tool: "worktree_gc" },
+    })
+    expect(created.isError).toBe(false)
+    return JSON.parse(created.text) as { jobId: string; createdBy?: unknown }
+  }
+
+  function makeRegistry(): SessionsRegistry {
+    return createSessionsRegistry({ sessionEvents: createSessionEventBus(), persist: false })
+  }
+
+  it("an operator call (no caller) records {kind:operator}; the answer, the compact list and the job carry it", async () => {
+    const { scheduler } = makeScheduler()
+    const client = await buildClient(scheduler)
+    const { jobId, createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "operator" })
+    expect(scheduler.get(jobId)?.createdBy).toEqual({ kind: "operator" })
+    const listed = JSON.parse((await call(client, "cron_list", {})).text) as Listed
+    expect(listed.jobs.find(j => j.id === jobId)?.createdBy).toEqual({ kind: "operator" })
+  })
+
+  it("a caller claim without a credential is a claimed session", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    const sessionId = registeredSession(registry)
+    const client = await buildClient(scheduler, { registry, callerSessionId: sessionId })
+    const { createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "session", sessionId, proof: "claimed" })
+  })
+
+  it("a credential minted for the claimed session is a proven session", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    const sessionId = registeredSession(registry)
+    const client = await buildClient(scheduler, {
+      registry,
+      callerSessionId: sessionId,
+      credentialSessionId: sessionId,
+    })
+    const { createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "session", sessionId, proof: "proven" })
+  })
+
+  it("a credential minted for another session is recorded as the claim it was", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    const sessionId = registeredSession(registry)
+    const otherId = registeredSession(registry)
+    const client = await buildClient(scheduler, {
+      registry,
+      callerSessionId: sessionId,
+      credentialSessionId: otherId,
+    })
+    const { createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "session", sessionId, proof: "claimed" })
+  })
+
+  it("a scoped server (callerScope.ownerSessionId) records a proven session", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    const sessionId = registeredSession(registry)
+    const client = await buildClient(scheduler, { registry, callerScope: { ownerSessionId: sessionId } })
+    const { createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "session", sessionId, proof: "proven" })
+  })
+
+  it("an external row (Claude Desktop, a bare CLI) is recorded as external with its id", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    registry.touchExternal({ id: "desk", host: "claude-desktop" })
+    const client = await buildClient(scheduler, { registry, callerSessionId: "desk" })
+    const { createdBy } = await createJob(client)
+    expect(createdBy).toEqual({ kind: "external", id: "desk" })
+  })
+
+  it("is frozen: cron_update (even handed a createdBy), pause, resume and re-arm leave it alone", async () => {
+    const { scheduler } = makeScheduler()
+    const registry = makeRegistry()
+    const sessionId = registeredSession(registry)
+    const client = await buildClient(scheduler, {
+      registry,
+      callerSessionId: sessionId,
+      credentialSessionId: sessionId,
+    })
+    const { jobId } = await createJob(client)
+    const frozen = { kind: "session", sessionId, proof: "proven" }
+
+    await call(client, "cron_update", { jobId, label: "renamed", createdBy: { kind: "operator" } })
+    expect(scheduler.get(jobId)?.label).toBe("renamed")
+    expect(scheduler.get(jobId)?.createdBy).toEqual(frozen)
+
+    await scheduler.update(jobId, { active: false })
+    await scheduler.update(jobId, { active: true })
+    expect(scheduler.get(jobId)?.createdBy).toEqual(frozen)
+
+    const prompt = await scheduler.create({
+      schedule: "* * * * *",
+      action: { kind: "prompt-session", sessionId: "sess_old", prompt: "status?" },
+      createdBy: { kind: "operator" },
+    })
+    expect(scheduler.rearmSessionTarget("sess_old", "sess_new")).toEqual([prompt.id])
+    expect(scheduler.get(prompt.id)?.createdBy).toEqual({ kind: "operator" })
+  })
+
+  it("survives a persist and reload; a legacy job loads unchanged and a malformed value is dropped", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cron-parity-created-by-"))
+    tmpDirs.push(dir)
+    const persistPath = join(dir, "cron-jobs.json")
+    const first = makeScheduler({ persistPath }).scheduler
+    const job = await first.create({
+      schedule: "0 9 * * 1-5",
+      action: { kind: "command", command: "echo" },
+      createdBy: { kind: "session", sessionId: "sess_creator", proof: "claimed" },
+    })
+    first.shutdown()
+
+    const legacy = {
+      id: "cron_legacy_created_by",
+      schedule: "0 9 * * 1-5",
+      recurring: true,
+      active: false,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      action: { kind: "command", command: "echo" },
+    }
+    const malformed = {
+      ...legacy,
+      id: "cron_malformed_created_by",
+      createdBy: { kind: "session", sessionId: "sess_x", proof: "root" },
+    }
+    const saved = JSON.parse(readFileSync(persistPath, "utf8")) as unknown[]
+    writeFileSync(persistPath, JSON.stringify([...saved, legacy, malformed]))
+
+    const { scheduler } = makeScheduler({ persistPath })
+    expect(scheduler.get(job.id)?.createdBy).toEqual({
+      kind: "session",
+      sessionId: "sess_creator",
+      proof: "claimed",
+    })
+    expect(scheduler.get("cron_legacy_created_by")).toEqual(legacy)
+    expect(scheduler.get("cron_malformed_created_by")).toEqual({ ...legacy, id: "cron_malformed_created_by" })
+    expect(scheduler.get("cron_malformed_created_by")?.createdBy).toBeUndefined()
   })
 })
