@@ -52,8 +52,11 @@ describe("classifySentinelEvent", () => {
     const recent = new RecentKeys()
     recent.record("sess_1", "sentinel:github-push:push:github:acme/widgets#42", 0)
 
-    const result = classifySentinelEvent(push({ terminal: true }), input(recent, 60_000))
-    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.other.ended", terminal: true, data: { headSha: "sha1" } }),
+      input(recent, 60_000),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "terminal" })
   })
 
   it("coalesced-repeat: the same (target, key) within 10 minutes is fyi", () => {
