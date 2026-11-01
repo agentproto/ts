@@ -4305,6 +4305,7 @@ export async function createGateway(
       messagingAllowSameWorkspace: messagingDefaults.allowSameWorkspace,
       messagingPeerBinding: messagingDefaults.peerBinding,
       messagingPeerGroups: messagingDefaults.peerGroups,
+      messagingGrants: messagingDefaults.grants,
       messagingAgentInterrupt: messagingDefaults.agentInterrupt,
       ...(opts.provisionWorktree ? { provisionWorktree: opts.provisionWorktree } : {}),
       ...(opts.resolveAgentAdapter

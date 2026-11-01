@@ -589,4 +589,30 @@ describe("operator-only config keys (AIP-46 §Operator-only configuration)", () 
     expect(await loadConfig(configPath)).toEqual({ version: 1 })
     await client.close()
   })
+
+  it("refuses a session principal's config_set of defaults.messaging.grants like peerGroups", async () => {
+    await writeCfg({})
+    const server = new McpServer({ name: "operator-only-grants-proof", version: "0" })
+    registerConfigTools(server, makeDeps({}), {
+      claimedSessionId: "sess_x",
+      isHostSpawned: () => true,
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await server.connect(serverTransport)
+    const client = new Client({ name: "operator-only-grants-proof-client", version: "0" })
+    await client.connect(clientTransport)
+
+    const res = await client.callTool({
+      name: "config_set",
+      arguments: {
+        key: "defaults.messaging.grants",
+        value: [{ principal: "*", effect: "allow", actions: [{ action: "session:message" }] }],
+      },
+    })
+    expect(res.isError).toBe(true)
+    expect(JSON.stringify(res.content)).toContain("operator_only")
+    expect(JSON.stringify(res.content)).toContain("defaults.messaging.grants")
+    expect(await loadConfig(configPath)).toEqual({ version: 1 })
+    await client.close()
+  })
 })

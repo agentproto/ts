@@ -774,6 +774,8 @@ export interface RegisterSessionToolsOptions {
   /** `defaults.messaging.peerGroups` - forwarded to
    *  `registerAgentTools`. */
   messagingPeerGroups?: RegisterAgentToolsOptions["messagingPeerGroups"]
+  /** `defaults.messaging.grants` - forwarded to `registerAgentTools`. */
+  messagingGrants?: RegisterAgentToolsOptions["messagingGrants"]
   /** `defaults.messaging.peerBinding` - forwarded to
    *  `registerAgentTools`. */
   messagingPeerBinding?: RegisterAgentToolsOptions["messagingPeerBinding"]

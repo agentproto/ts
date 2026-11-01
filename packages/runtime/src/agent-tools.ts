@@ -90,6 +90,8 @@ import {
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import type { Grant } from "@agentproto/policy"
+
 import { defaultUrgencyForKind, registerMessageTools } from "./message-tools.js"
 import { registerPermissionsTools } from "./permissions-tools.js"
 import { decide } from "./permissions.js"
@@ -570,6 +572,11 @@ export interface RegisterAgentToolsOptions {
    *  workspace slug sits in the same group, even without a tree edge.
    *  Default [] (no cross-workspace link). */
   messagingPeerGroups?: string[][]
+  /** config.json `defaults.messaging.grants` - explicit AIP-38
+   *  `session:message` grants that may ADMIT a pair the tree and the
+   *  switches refuse. Forwarded to `message_send` / `message_reply` and
+   *  `permissions_explain`, never to `message_parent` (tree-only). */
+  messagingGrants?: Grant[]
   /** config.json `defaults.messaging.agentInterrupt` — whether a SESSION
    *  sender's `urgency: "interrupt"` (or `message_parent`'s `interrupt:
    *  true`) may cancel the recipient's turn. Default "deny": downgraded to
@@ -606,6 +613,7 @@ export function registerAgentTools(
     messagingAllowSameWorkspace,
     messagingPeerBinding,
     messagingPeerGroups,
+    messagingGrants,
     messagingAgentInterrupt,
     ensureLlmEndpointRunning,
     deviceMirrorSync,
@@ -1398,6 +1406,7 @@ export function registerAgentTools(
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),
   })
   // ── permissions_explain (read-only twin of decide()) ─────────
@@ -1412,6 +1421,7 @@ export function registerAgentTools(
     ...(messagingPeerGroups && messagingPeerGroups.length > 0
       ? { peerGroups: messagingPeerGroups }
       : {}),
+    ...(messagingGrants && messagingGrants.length > 0 ? { messagingGrants } : {}),
     ...(messagingPeerBinding ? { peerBinding: messagingPeerBinding } : {}),
     workspaceOfCwd: createWorkspaceOfCwd(),
     ...(messagingAgentInterrupt === "allow" ? { allowInterrupt: true } : {}),

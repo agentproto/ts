@@ -9,6 +9,9 @@
 import { z } from "zod"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
+import type { Grant } from "@agentproto/policy"
+
+import { buildMessagingPermissionContext } from "./messaging-context.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionsRegistry } from "./sessions.js"
 import { loadConfig } from "./config.js"
@@ -32,6 +35,9 @@ export interface RegisterPermissionsToolsOptions {
   allowSameWorkspace?: boolean
   /** `defaults.messaging.peerGroups`, resolved for this request. */
   peerGroups?: readonly (readonly string[])[]
+  /** `defaults.messaging.grants`, resolved for this request: explicit
+   *  AIP-38 `session:message` grants that may admit a pair. */
+  messagingGrants?: readonly Grant[]
   /** `defaults.messaging.agentInterrupt === "allow"`, resolved for this request. */
   allowInterrupt?: boolean
   /** `defaults.messaging.peerBinding` - "slug" (default) or "verified". */
@@ -57,6 +63,7 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
     allowSiblings,
     allowSameWorkspace,
     peerGroups,
+    messagingGrants,
     allowInterrupt,
     peerBinding,
     workspaceOfCwd,
@@ -144,17 +151,22 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         }
         resource = { kind: "session", session: target }
       }
-      const decision = decide(principal, input.action, resource, {
-        messaging: {
+      // The same shared messaging context the enforcement sites build, so
+      // explain and enforce cannot drift (including explicit grants).
+      const messagingContext = buildMessagingPermissionContext({
+        defaults: {
           allowSiblings: allowSiblings === true,
-          ...(allowSameWorkspace !== undefined ? { allowSameWorkspace } : {}),
-          ...(peerGroups ? { peerGroups } : {}),
-          ...(peerBinding ? { peerBinding } : {}),
+          allowSameWorkspace: allowSameWorkspace !== false,
+          peerGroups: peerGroups ?? [],
+          peerBinding: peerBinding ?? "slug",
           agentInterrupt: allowInterrupt ? "allow" : "deny",
+          grants: messagingGrants ?? [],
         },
+        registry,
         ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
+      })
+      const decision = decide(principal, input.action, resource, {
+        ...messagingContext,
         ...(input.profile
           ? {
               profiles: {

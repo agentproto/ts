@@ -3,6 +3,7 @@ import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
 
 import { createMcpServer } from "@agentproto/mcp-server"
+import type { Grant } from "@agentproto/policy"
 
 import { createSessionsRegistry, type AgentSessionLike } from "../sessions.js"
 import { startHttpServer, type AgentAdapterResolver } from "../http-server.js"
@@ -105,6 +106,7 @@ describe("GET /permissions/grants", () => {
           sessionId?: string
         }>
         unmapped: Array<{ source: string; entry: string }>
+        configured: unknown[]
         inputs: { allowSameWorkspace: boolean; peerBinding: string }
         delegation: {
           mode: string
@@ -127,6 +129,7 @@ describe("GET /permissions/grants", () => {
         }
       }
       expect(body.inputs).toMatchObject({ allowSameWorkspace: true, peerBinding: "slug" })
+      expect(body.configured).toEqual([])
       expect(body.grants.map(g => g.source)).toEqual([
         "defaults.messaging.allowSameWorkspace",
         "session.allowPromptFrom",
@@ -246,6 +249,50 @@ describe("GET /permissions/grants", () => {
       expect(body.error).toBe("not_found")
     } finally {
       await http.stop()
+    }
+  })
+
+  it("reports the explicit configured grants beside the derived ones", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const grants: Grant[] = [
+      {
+        principal: "session-label://pygmalion-brain-persistent",
+        effect: "allow" as const,
+        actions: [{ action: "session:message", scope: "workspace:agentik-studio" }],
+      },
+    ]
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(),
+      commandPreview: "x",
+    })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      resolveMessagingDefaults: async () => ({ ...DEFAULT_MESSAGING_DEFAULTS, grants }),
+      resolveOperatorDelegates: async () => [],
+      resolveDelegationGateMode: async () => "observe",
+      resolveProfileGateMode: async () => "observe",
+      resolveStdioMountGateMode: async () => "observe",
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const body = (await (await fetch(`http://127.0.0.1:${port}/permissions/grants`)).json()) as {
+        configured: unknown[]
+        grants: Array<{ source: string }>
+      }
+      expect(body.configured).toEqual(grants)
+      // The derived list is unchanged: only the default same-workspace link.
+      expect(body.grants.map(g => g.source)).toEqual(["defaults.messaging.allowSameWorkspace"])
+    } finally {
+      await http.stop()
+      registry.shutdown()
     }
   })
 })

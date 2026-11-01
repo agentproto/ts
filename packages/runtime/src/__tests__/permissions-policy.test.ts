@@ -116,10 +116,13 @@ describe("session.message: an explicit deny", () => {
 
 describe("a policy with only allow grants, or none, changes no messaging outcome", () => {
   it("matches the decision without a policy over every ordered pair", () => {
+    // Non-matching grants only: a MATCHING allow grant now admits a pair the
+    // tree and the switches refuse (the intended change below). `workspace:`
+    // is a typed form with no resolver in this context, so it matches nothing.
     const policies: GrantInput[][] = [
       [],
-      [grant("allow")],
-      [grant("allow", "B"), { default: "allow" as const }],
+      [grant("allow", "workspace:nowhere")],
+      [grant("allow", "nowhere"), { default: "allow" as const }],
       [grant("allow", "label:ops"), grant("allow", "A", { revoked: true })],
     ]
     for (const allowSiblings of [true, false]) {
@@ -135,6 +138,20 @@ describe("a policy with only allow grants, or none, changes no messaging outcome
         }
       }
     }
+  })
+})
+
+describe("a MATCHING allow grant admits a pair the tree refuses", () => {
+  it("is the one messaging outcome an allow grant may change", () => {
+    const x: MessageTreeNode = { id: "X", workspaceSlug: "w" }
+    const y: MessageTreeNode = { id: "Y", workspaceSlug: "w2" }
+    const without = decide(as(x), "session.message", to(y), { messaging: { allowSameWorkspace: false } })
+    expect(without).toMatchObject({ allow: false, rule: "tree.none" })
+    const withGrant = decide(as(x), "session.message", to(y), {
+      messaging: { allowSameWorkspace: false },
+      policy: { inputs: [grant("allow", "Y")] },
+    })
+    expect(withGrant).toMatchObject({ allow: true, relation: "granted", rule: "policy.matched-grant" })
   })
 })
 
