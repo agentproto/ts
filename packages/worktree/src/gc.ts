@@ -56,6 +56,7 @@ import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
 import { salvageWorktree } from "./salvage.js"
+import { discardProvenDirt, proveDirtCarriesNoWork, type DirtyNoWorkCase, type DirtyNoWorkProof } from "./dirty-no-work.js"
 import { sweepWorktreeTrash } from "./fast-remove.js"
 import type { ForgeClient } from "./forge.js"
 import { mapWithConcurrency } from "./concurrency.js"
@@ -65,6 +66,7 @@ import {
   DEFAULT_STATUS_CONCURRENCY,
   listGitWorktrees,
   computeWorktreeStatus,
+  RECENT_WRITE_HOLD_WINDOW_MS,
   type GitWorktreeRef,
   type IntegrationState,
   type LivenessState,
@@ -172,7 +174,7 @@ export function classifyForGc(
  *     only irreversible thing history nearly did to it (deleting the branch)
  *     must not happen either. See "prunable reclaim" below.
  */
-export type GcReclaimReason = "dep-bump" | "orphan" | "prunable" | InBaseReclaimReason
+export type GcReclaimReason = "dep-bump" | "orphan" | "prunable" | "dirty-no-work" | InBaseReclaimReason
 
 /**
  * `branch gc`'s proof tiers (`classifyTip`, branch-gc.ts) that promote a
@@ -418,6 +420,11 @@ export interface ResolveGcClassOptions extends ClassifyForGcOptions {
   inBaseCheck?: boolean
   /** The tip commit of the worktree being classified — `worktree.head`. */
   tipSha: string
+  /**
+   * The worktree's own path. Needed only for the dirty-no-work proof (see
+   * "dirty, but no work" below); omitted ⇒ a dirty tree is never promoted.
+   */
+  worktreePath?: string
   /** Forge handle for the merged-PR-head tier of the detached proof. Omitted ⇒ that tier is skipped (never read as "no merged PR"). */
   forge?: ForgeClient
   /** Default `"origin/main"` — matches `reconcileIntegration`'s own default. */
@@ -428,6 +435,8 @@ export interface ResolvedGcClass {
   class: GcClass
   /** Set only when `class === "reclaim"` via the dep-bump exemption rather than the ordinary merged/fresh path. */
   reclaimReason?: GcReclaimReason
+  /** Set only with `reclaimReason: "dirty-no-work"`: the fresh proof, including the exact paths a removal must put back. */
+  dirtyNoWork?: DirtyNoWorkProof
 }
 
 /**
@@ -450,6 +459,10 @@ export async function resolveGcClass(
     detachedProof = await provenDetachedInBase(options.repoRoot, baseRef, options.tipSha, options.forge)
   }
   const baseClass = classifyForGc(tree, integration, liveness, { ...options, detachedInBase: detachedProof !== null })
+  if (tree.state === "dirty" && baseClass !== "reclaim") {
+    const dirtyNoWork = await provenDirtyNoWork(tree, integration, liveness, options, baseRef, detachedProof !== null)
+    if (dirtyNoWork) return { class: "reclaim", reclaimReason: "dirty-no-work", dirtyNoWork }
+  }
   if (baseClass !== "hold") {
     const reason = detachedProof === "squash-merged" || detachedProof === "patch-merged" ? detachedProof : undefined
     return reason ? { class: baseClass, reclaimReason: reason } : { class: baseClass }
@@ -464,6 +477,45 @@ export async function resolveGcClass(
     if (inBase) return { class: "reclaim", reclaimReason: inBase }
   }
   return { class: "hold" }
+}
+
+// ── dirty, but no work ──────────────────────────────────────────────────
+//
+// A dirty tree used to end the road to `reclaim` outright: `classify` only
+// reclaims `tree = clean`, a `merged` dirty tree goes to `salvage` (skipped
+// without `--salvage-dirty`), and every promotion in `resolveGcClass` above
+// bails on `tree.state !== "clean"`. Some dirt carries no work, though, and
+// the operator was left force-removing it by hand: an emptied checkout,
+// turbo's self-written `AGENTS.md` block, changes that already landed on
+// base through another PR. `proveDirtCarriesNoWork` (dirty-no-work.ts)
+// proves those from content; this gate decides when it is worth asking:
+//   - the branch's own commits are integrated: `merged`, `fresh`, a detached
+//     HEAD proven in base, or `branch gc`'s in-base ladder;
+//   - idle/daemon-unreachable liveness, and no dirty path written inside
+//     `RECENT_WRITE_HOLD_WINDOW_MS` (same backstop as `classify`'s).
+// Anything unproven keeps the class it already had.
+
+async function provenDirtyNoWork(
+  tree: TreeState,
+  integration: IntegrationState,
+  liveness: LivenessState,
+  options: ResolveGcClassOptions,
+  baseRef: string,
+  detachedInBase: boolean,
+): Promise<DirtyNoWorkProof | null> {
+  if (!options.worktreePath || tree.state !== "dirty") return null
+  if (liveness.state !== "idle" && liveness.state !== "daemon-unreachable") return null
+  const nowMs = options.nowMs ?? Date.now()
+  if (typeof tree.newestMtimeMs === "number" && nowMs - tree.newestMtimeMs < RECENT_WRITE_HOLD_WINDOW_MS) return null
+  const proof = await proveDirtCarriesNoWork(options.repoRoot, options.worktreePath, baseRef)
+  if (!proof) return null
+  if (integration.state === "merged" || integration.state === "fresh") return proof
+  if (integration.state === "detached") {
+    if (detachedInBase) return proof
+    return (await provenDetachedInBase(options.repoRoot, baseRef, options.tipSha, options.forge)) ? proof : null
+  }
+  if (options.inBaseCheck === false) return null
+  return (await provenInBase(integration, liveness, options.repoRoot, baseRef, options.tipSha)) ? proof : null
 }
 
 // ── in-base promotion ───────────────────────────────────────────────────
@@ -574,6 +626,12 @@ export interface GcPlanEntry {
   reclaimReason?: GcReclaimReason
   /** Set only when `class === "hold"` via `protectedPaths` (`isProtectedPath`) or the recent-activity guard (`activeMinutes`) — distinguishes this from an ordinary snapshot-based hold. */
   holdReason?: GcHoldReason
+  /**
+   * Set only with `reclaimReason: "dirty-no-work"`: which sub-cases explained
+   * the dirt and how many paths a removal will put back first, so a dry run
+   * shows why a dirty worktree is leaving.
+   */
+  dirtyNoWork?: { cases: DirtyNoWorkCase[]; paths: number }
   /**
    * mtime (epoch ms) of the worktree's git index when the plan read it. `applyGc`
    * compares it with the index as it is at apply time and skips the entry as
@@ -964,6 +1022,7 @@ async function toPlanEntry(
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot,
     tipSha: worktree.head,
+    worktreePath: worktree.path,
     forge,
     defaultBranchRef,
     includeDetached,
@@ -973,6 +1032,9 @@ async function toPlanEntry(
     ...entry,
     class: resolved.class,
     ...(resolved.reclaimReason ? { reclaimReason: resolved.reclaimReason } : {}),
+    ...(resolved.dirtyNoWork
+      ? { dirtyNoWork: { cases: resolved.dirtyNoWork.cases, paths: resolved.dirtyNoWork.paths.length } }
+      : {}),
   }
 }
 
@@ -1135,9 +1197,13 @@ async function reclaimOne(
   worktree: GitWorktreeRef,
   reclaimReason?: GcReclaimReason,
   tree?: TreeState,
+  dirtyNoWork?: DirtyNoWorkProof,
 ): Promise<GcApplyOutcome> {
   try {
     if (tree?.state === "clean" && tree.noise?.length) await discardNoise(options.repoRoot, worktree.path, tree.noise)
+    // Same posture as the noise discard: only the exact paths the fresh
+    // proof just listed, then the plain non-force removal below.
+    if (dirtyNoWork) await discardProvenDirt(options.repoRoot, worktree.path, dirtyNoWork.paths)
     await runTool({
       tool: cleanupWorktreeTool,
       candidates,
@@ -1147,8 +1213,9 @@ async function reclaimOne(
         ...(worktree.branch ? { branch: worktree.branch } : {}),
         // Branch deletion only ever runs for a `reclaim`-class entry, which by
         // construction requires `integration ∈ {merged(*), fresh}` and
-        // `tree = clean` (PLAN.md's invariant: branch -D only when there's
-        // nothing uncommitted to lose, never a hold class).
+        // `tree = clean`, or dirt just proven to carry no work and put back
+        // above (PLAN.md's invariant: branch -D only when there's nothing
+        // uncommitted to lose, never a hold class).
         deleteBranch: true,
         // No discardUntracked/discardModified, ever, on this path (PLAN.md
         // §5.2 layer 3): `reclaim` means `tree = clean`, so plain `git
@@ -1319,6 +1386,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   const resolved = await resolveGcClass(status.tree, status.integration, status.liveness, {
     repoRoot: options.repoRoot,
     tipSha: fresh.head,
+    worktreePath: fresh.path,
     forge: options.forge,
     defaultBranchRef: options.defaultBranchRef,
     includeDetached: Boolean(options.includeDetached),
@@ -1354,7 +1422,7 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   const stale = staleSincePlan(entry, fresh, indexActivity.mtimeMs)
   if (stale) return { path: entry.path, branch: fresh.branch, result: "skipped-stale", reason: stale }
 
-  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason, status.tree)
+  if (resolved.class === "reclaim") return reclaimOne(options, fresh, resolved.reclaimReason, status.tree, resolved.dirtyNoWork)
   // The only other class that reaches this point is "salvage" with
   // `options.salvageDirty` true (both earlier guards above already returned
   // for "hold" and for "salvage" without the flag).
