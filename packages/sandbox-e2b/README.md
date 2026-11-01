@@ -145,7 +145,7 @@ thrown when calling `exposePort()` on a provider that does not support exposure.
   `https://<getHost>/mcp`.
 <!-- sync-templates:start -->
 - The default `agentproto-workstation` template is declared in
-  `templates/workstation/versions.json`: `@agentproto/cli@1.31.0`, `@agentproto/adapter-hermes@0.4.38`, `@agentproto/adapter-mastra-agent@0.7.33`, `@agentproto/adapter-opencode@1.8.2`, `opencode-ai@1.19.0`, `gh@2.102.0`. The on-boot
+  `templates/workstation/versions.json`: `@agentproto/cli@1.31.0`, `@agentproto/adapter-claude-code@2.6.0`, `@agentproto/adapter-hermes@0.5.7`, `@agentproto/adapter-mastra-agent@0.7.45`, `@agentproto/adapter-openclaw@0.1.39`, `@agentproto/adapter-opencode@1.9.4`, `@anthropic-ai/claude-code@2.1.316`, `opencode-ai@1.19.5`, `gh@2.102.0`. The on-boot
   `npm i -g` is skipped by default only once the template's recorded `baked`
   block PROVES the image already carries the requested pin; until then the
   legacy boot install stays on.
