@@ -329,6 +329,55 @@ can still set `PATH` or `NODE_OPTIONS` for an allowlisted command. An
 interpreter allowlisted without an argv constraint (`node`, `python3`)
 admits `node -e ...` exactly as it does for `command_execute`.
 
+## Requiring proof to spawn
+
+AIP-46 §Session principals has three proof levels. A caller is `proven` when
+it presents a credential: a scoped orchestrator's scope token, or a session
+token the daemon minted for the session it names. It is `claimed` when it
+only names a session, and `none` when it names none. On loopback, `none` is
+the operator the daemon trusts (CLI, hooks, desktop), and it is never
+refused. A `kind: "external"` identifier (a bare Claude Desktop or CLI
+label) is evaluated as anonymous, and an id the registry does not hold is
+`caller_unknown`; neither is refused.
+
+`defaults.identity.requireProof` lists the actions that require `proven`. It
+is empty by default and today only `"session:spawn"` is evaluated
+(`session:control` and `auth-profile:use` follow later). A `claimed` caller
+of a listed action is refused `identity_unverified`; a caller whose session
+token was minted for another session than its claim is refused
+`identity_mismatch`. Both happen before any other spawn gate or side effect.
+A scoped orchestrator child is `proven` by its scope token, so nothing
+changes for it.
+
+The list is opt-in because enforcement never outruns delivery (AIP-46 rule
+8): a session whose adapter or placement cannot carry a token (codex,
+opencode, a sandboxed session, one spawned while `sessionTokens` was `off`)
+can never be proven, and would stop being able to spawn the moment the action
+was listed. The gate is also ignored while
+`defaults.identity.sessionTokens` is `"off"`: no token is minted, so nobody
+could be proven, and the reading is counted as `requireProofIgnored` with one
+warning.
+
+Before listing anything, read `GET /identity`. Its `spawnProof` block counts
+every verdict, splits `claimed` by whether a token was ever deliverable
+(`claimedByClass.delivered` / `undelivered`), and reports `wouldRefuse`
+(claimed plus mismatch), `refused`, and `requireProofIgnored` since the
+process started. The counters are in memory and reset on a restart; the
+warning line for a new verdict/class pair is the durable record. A `claimed`
+caller on an `undelivered` adapter cannot spawn while the action is listed,
+so check that split before turning it on.
+
+The same proof gate and the same trusted caller id are used by the
+delegation, auth-profile and stdio mount gates. A session spawning over the
+HTTP routes (`POST /sessions/agent`, `POST /sessions/chat`) now carries its
+trusted caller id into all of them too, so those spawns are judged by the
+three gates instead of reading `no_caller`.
+
+The limits: only `session:spawn` is evaluated today; a session that omits
+both its token and its claim is indistinguishable from the operator under the
+loopback trust model; and the counters live in memory, so a restart starts a
+new reading window.
+
 ## Depth-derived default
 
 Omitting `role` (and `agent`) on `agent_start` doesn't leave the child

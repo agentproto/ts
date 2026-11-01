@@ -4283,6 +4283,9 @@ export async function createGateway(
       // a spawn made by an agent session attaches under it by default (see
       // spawn-attach.ts). Absent on a human/root `/mcp` call → no auto-parent.
       ...(callerSessionId ? { callerSessionId } : {}),
+      // The session a valid session token on this request was minted for:
+      // the spawn proof gate's credential leg (AIP-46 §Session principals).
+      ...(credentialSessionId ? { credentialSessionId } : {}),
       // `?origin=` query (#session-visibility) — the connecting client's source
       // label, used as the default origin for a spawn that doesn't set its own.
       ...(origin ? { mcpBridgeOrigin: origin } : {}),
@@ -5070,6 +5073,11 @@ export async function createGateway(
     // `defaults.identity.sessionTokens` is hot within that window.
     identity: {
       mode: createIdentityModeReader(),
+      // Read per request (GET /identity is a read model): the actions that
+      // require a proven caller, `defaults.identity.requireProof`. Empty
+      // unless the operator lists one.
+      resolveRequireProof: async () =>
+        (await loadConfig()).defaults?.identity?.requireProof ?? [],
       ...(persist ? { observations: { path: identityObservationsFile() } } : {}),
     },
   })

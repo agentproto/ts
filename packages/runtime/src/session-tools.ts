@@ -720,6 +720,10 @@ export interface RegisterSessionToolsOptions {
    *  this `/mcp` request, used as the implicit auto-parent for attach-by-
    *  default. See `RegisterAgentToolsOptions.callerSessionId`. */
   callerSessionId?: string
+  /** Forwarded to `registerAgentTools`: the session a valid session token on
+   *  this `/mcp` request was minted for. See
+   *  `RegisterAgentToolsOptions.credentialSessionId`. */
+  credentialSessionId?: string
   /** Forwarded to `registerAgentTools` — the connecting client's source label
    *  from this `/mcp` request's `?origin=` query, used as the default origin
    *  for a spawn that doesn't set its own. See

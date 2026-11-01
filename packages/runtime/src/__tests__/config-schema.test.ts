@@ -515,3 +515,31 @@ describe("defaults.spawn.delegationGate key", () => {
     ).toBeGreaterThan(0)
   })
 })
+
+describe("defaults.identity.requireProof key", () => {
+  it("is hot, writable and defaults to an empty list", () => {
+    expect(findConfigKey("defaults.identity.requireProof")).toMatchObject({
+      apply: "hot",
+      writable: true,
+      default: [],
+    })
+  })
+
+  it("accepts session:spawn and rejects an unknown action or a non-array", () => {
+    expect(validateConfigKeyValue("defaults.identity.requireProof", ["session:spawn"])).toEqual({
+      ok: true,
+    })
+    expect(validateConfigKeyValue("defaults.identity.requireProof", [])).toEqual({ ok: true })
+    expect(validateConfigKeyValue("defaults.identity.requireProof", ["session:control"]).ok).toBe(false)
+    expect(validateConfigKeyValue("defaults.identity.requireProof", "session:spawn").ok).toBe(false)
+  })
+
+  it("accepts the key inside a full config and rejects an unknown action", () => {
+    expect(
+      validateConfig({ defaults: { identity: { requireProof: ["session:spawn"] } } }).issues,
+    ).toEqual([])
+    expect(
+      validateConfig({ defaults: { identity: { requireProof: ["session:control"] } } }).issues.length,
+    ).toBeGreaterThan(0)
+  })
+})
