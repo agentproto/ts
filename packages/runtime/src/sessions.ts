@@ -13740,7 +13740,17 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(msg.to)
       if (!rt) throw new Error(`sendMessage: no session "${msg.to}"`)
       expireExternalIfStale(rt)
-      if (rt.desc.status !== "running" && rt.desc.status !== "starting") {
+      // An external row has no process to die: `exited` from a lapsed
+      // liveness window only means "not seen lately", so its inbox stays
+      // deliverable until the row is killed or retired. Otherwise a quiet
+      // Desktop session would bounce sentinel / follow events that nothing
+      // can restart (`restartSession` rejects external rows).
+      const externalInboxOpen =
+        rt.desc.kind === "external" &&
+        rt.desc.status === "exited" &&
+        rt.desc.endedReason === undefined &&
+        !isRetired(rt.desc)
+      if (!externalInboxOpen && rt.desc.status !== "running" && rt.desc.status !== "starting") {
         if (isRetired(rt.desc)) {
           throw new SessionRetiredError(msg.to, rt.desc.status, "sendMessage", rt.desc.continuedTo)
         }

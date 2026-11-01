@@ -208,12 +208,20 @@ describe("delivery to an external inbox", () => {
     expect(registry.listInbox("desktop-1")).toEqual([])
   })
 
-  it("throws session_not_alive only after liveness expiry, and a fresh sighting restores delivery", async () => {
+  it("keeps delivering to an expired external row (no process to restart), and a fresh sighting revives it", async () => {
     clock += WINDOW + 1_000
-    await expect(registry.sendMessage(fyi("desktop-1", "late"))).rejects.toBeInstanceOf(SessionNotAliveError)
+    expect(registry.get("desktop-1")?.status).toBe("exited")
+    await expect(registry.sendMessage(fyi("desktop-1", "late"))).resolves.toMatchObject({ delivered: { via: "inbox" } })
+    expect(registry.listInbox("desktop-1")!.map(m => m.text)).toEqual(["late"])
 
     registry.touchExternal({ id: "desktop-1" })
+    expect(registry.get("desktop-1")?.status).toBe("running")
     await expect(registry.sendMessage(fyi("desktop-1", "back"))).resolves.toMatchObject({ delivered: { via: "inbox" } })
+  })
+
+  it("throws session_not_alive for an external row that was deliberately ended", async () => {
+    registry.kill("desktop-1")
+    await expect(registry.sendMessage(fyi("desktop-1", "late"))).rejects.toBeInstanceOf(SessionNotAliveError)
   })
 })
 
@@ -392,7 +400,7 @@ describe("workflow caller notifications", () => {
     })
   })
 
-  it("a caller that has expired never breaks the run", async () => {
+  it("a caller that has expired never breaks the run, and still gets the item in its inbox", async () => {
     let clock = Date.parse("2026-01-01T00:00:00.000Z")
     const r2 = createSessionsRegistry({
       persist: false,
@@ -411,7 +419,7 @@ describe("workflow caller notifications", () => {
     })
     const run = await runner.startFromFile({ path: writeWorkflowFile("wf-gone"), callerSessionId: "gone" })
     await waitStatus(runner, run.runId, "done")
-    expect(r2.listInbox("gone")).toEqual([])
+    expect(r2.listInbox("gone")!.map(m => m.correlationId)).toEqual([`workflow:${run.runId}`])
     r2.shutdown()
   })
 })
