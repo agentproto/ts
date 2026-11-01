@@ -80,6 +80,13 @@ targets with no real usage yet, then what sentinels don't do.
    (`done`/`abandoned`) is never resumed - the notice instead goes to its
    live parent at `fyi` urgency, or is parked if there's no live parent.
 
+   Parked events are not lost: the daemon retries them once the sentinel's
+   target becomes reachable again - when the sentinel is retargeted to a live
+   session, when that session registers, or on a later poll if an unchanged
+   target starts accepting delivery. Each successfully redelivered event is
+   dropped from `sentinels-parked.jsonl`, so it is not sent twice. Events
+   parked only because their PR/issue had already closed are never replayed.
+
 ## Listing, stopping, expiry
 
 ```bash

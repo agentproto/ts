@@ -9,7 +9,7 @@
  */
 
 import { afterAll, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -1038,6 +1038,68 @@ describe("SentinelRuntime parked-event replay", () => {
     }
   })
 
+  it("retries a parked event on the next tick after a transient send failure", async () => {
+    const reachable = new Set<string>()
+    const { dir, parkedPath, store, sentinel, registry, runtime } = setup(reachable)
+    try {
+      await runtime.pollOnce()
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+
+      reachable.add("sess_new")
+      store.update(sentinel.id, {
+        spec: { ...sentinel.spec, target: { kind: "session", sessionId: "sess_new", urgency: "next-turn" } },
+      })
+
+      const send = registry.sendMessage.bind(registry)
+      let failNext = true
+      registry.sendMessage = async (msg, opts) => {
+        if (failNext && msg.to === "sess_new") {
+          failNext = false
+          throw new Error("transient registry failure")
+        }
+        return send(msg, opts)
+      }
+
+      // The failed attempt must not record the target as replayed.
+      await runtime.pollOnce()
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+      expect(registry.calls.filter(c => c.msg.to === "sess_new")).toHaveLength(0)
+
+      await runtime.pollOnce()
+      expect(registry.calls.filter(c => c.msg.to === "sess_new")).toHaveLength(1)
+      expect(parkedLines(parkedPath)).toHaveLength(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("does not replay again for an unchanged target after a successful replay", async () => {
+    const reachable = new Set<string>()
+    const { dir, parkedPath, store, sentinel, registry, runtime } = setup(reachable)
+    try {
+      await runtime.pollOnce()
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+      const parkedLine = readFileSync(parkedPath, "utf8")
+
+      reachable.add("sess_new")
+      store.update(sentinel.id, {
+        spec: { ...sentinel.spec, target: { kind: "session", sessionId: "sess_new", urgency: "next-turn" } },
+      })
+      await runtime.pollOnce()
+      expect(registry.calls.filter(c => c.msg.to === "sess_new")).toHaveLength(1)
+      expect(parkedLines(parkedPath)).toHaveLength(0)
+
+      // Simulate the line surviving compaction (or another writer appending
+      // it): an unchanged target must not trigger a second delivery.
+      writeFileSync(parkedPath, parkedLine)
+      await runtime.pollOnce()
+      expect(registry.calls.filter(c => c.msg.to === "sess_new")).toHaveLength(1)
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("replayParked(sessionId) redelivers for a session that registers, and only once", async () => {
     const reachable = new Set<string>()
     const { dir, parkedPath, registry, runtime } = setup(reachable)
@@ -1067,7 +1129,6 @@ describe("SentinelRuntime parked-event replay", () => {
     try {
       const store = createSentinelStore({ persist: false })
       const sentinel = newSentinel(store, { sessionId: "sess_1" })
-      const { writeFileSync } = await import("node:fs")
       writeFileSync(
         parkedPath,
         JSON.stringify({

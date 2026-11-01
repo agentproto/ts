@@ -246,8 +246,9 @@ export interface SentinelRuntime {
    *  a reachable target, then drop them from the journal so each is delivered
    *  once. With a session id: only sentinels targeting it (call it when that
    *  session registers/starts). Without: every sentinel whose target changed
-   *  since its last attempt (each poll tick does this, which also covers
-   *  boot and out-of-band retargets). Resolves to the number redelivered. */
+   *  since its last successful replay (each poll tick does this, which also
+   *  covers boot and out-of-band retargets; a failed replay is retried).
+   *  Resolves to the number redelivered. */
   replayParked(sessionId?: string): Promise<number>
   /** Force one poll tick across every poll-capable, pollable sentinel —
    *  used by tests and (later) `sentinel_poll_now`. */
@@ -871,8 +872,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   // ── Replay of parked events ─────────────────────────────────────────
 
-  /** Last target session a replay was attempted for, per sentinel: a tick
-   *  retries a sentinel only after its target changed. */
+  /** Last target session a replay successfully delivered to, per sentinel: a
+   *  tick retries a sentinel only after its target changed (or the last
+   *  attempt failed and so never set this). */
   const replayTried = new Map<string, string>()
   let replayChain: Promise<unknown> = Promise.resolve()
 
@@ -897,13 +899,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       let ok = target.kind === "session" && isDeliverableLive(sentinel.id)
       if (ok && target.kind === "session") {
         ok = sessionId !== undefined ? target.sessionId === sessionId : replayTried.get(sentinel.id) !== target.sessionId
-        if (ok) replayTried.set(sentinel.id, target.sessionId)
       }
       eligible.set(sentinel.id, ok)
       return ok
     }
 
     const delivered: string[] = []
+    const replayed = new Set<string>()
+    const failed = new Set<string>()
     for (const line of raw.split("\n")) {
       if (!line.trim()) continue
       let entry: { sentinelId?: string; event?: SentinelEvent; replay?: boolean }
@@ -923,17 +926,40 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
           origin: sentinel.id,
           ...(key ? { coalesceKey: key } : {}),
         })
-      } catch {
+      } catch (err) {
+        failed.add(sentinel.id)
         eligible.set(sentinel.id, false) // target still unreachable; later entries would fail too
+        log(`[sentinel-runtime] parked replay for ${sentinel.id} failed: ${describeError(err)}`)
         continue
       }
+      replayed.add(sentinel.id)
+      // No eventCount/lastEventTs/applyLifetime here on purpose: parking
+      // happens inside deliverEvent, and processEvents then runs the normal
+      // bookkeeping (markSeen, eventCount++, lastEventTs, applyLifetime) for
+      // that event. Counting it again on replay would double-count `until:
+      // { kind: "count" }` and expire the sentinel early; replay only re-sends
+      // the message body.
       delivered.push(line)
       const current = store.get(sentinel.id)
       if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
     }
+    // Record the attempted target ONLY after the sends succeeded. Recording it
+    // before (or on failure) would make the next no-arg tick treat it as
+    // unchanged and strand the event forever after a transient failure.
+    if (sessionId === undefined) {
+      for (const id of replayed) {
+        if (failed.has(id)) continue
+        const target = store.get(id)?.spec.target
+        if (target?.kind === "session") replayTried.set(id, target.sessionId)
+      }
+    }
     if (delivered.length === 0) return 0
 
     // Re-read so lines parked while the sends were in flight survive.
+    // Compaction is safe within one process (no await between the re-read,
+    // write and rename), but it is NOT coordinated with a second daemon
+    // appending to the same journal under the same home; one daemon per home
+    // is the supported deployment.
     try {
       const remaining = readFileSync(parkedPath, "utf8").split("\n").filter(l => l.trim())
       for (const line of delivered) {
