@@ -2067,19 +2067,14 @@ jobs:
           # pushes: moving the PR head mid-turn raced the dedupe gates above and
           # produced duplicate reviews (PR #1137, #1241, #1576). This step runs
           # AFTER every gate, so landing the file here is race-free. Never
-          # overwrites a changeset already on the branch.
+          # overwrites a changeset already on the branch, and adds nothing when
+          # the branch already adds changesets declaring every proposed package
+          # (#2448).
           gh api --paginate "repos/${{ github.repository }}/issues/$PR_NUMBER/comments" \
             | jq -rs 'add | [.[] | select(.user.type=="Bot" and (.body // "" | test("<!-- agentic-changeset:")))] | sort_by(.created_at) | last | .body // empty' \
             > changeset-comment.txt || true
           if [ -s changeset-comment.txt ]; then
-            node -e '
-              const fs = require("fs")
-              const body = fs.readFileSync("changeset-comment.txt", "utf8")
-              const m = body.match(/<!-- agentic-changeset:(\.changeset\/[A-Za-z0-9._-]+\.md) -->[\s\S]*?```md\n([\s\S]*?)```/)
-              if (!m) { console.log("agentic-changeset: marker found but no fenced block — ignoring"); process.exit(0) }
-              if (fs.existsSync(m[1])) { console.log("agentic-changeset: " + m[1] + " already on the branch — keeping it"); process.exit(0) }
-              fs.writeFileSync(m[1], m[2]); console.log("agentic-changeset: materialized " + m[1] + " from the reviewer comment")
-            '
+            node scripts/materialize-agentic-changeset.mjs changeset-comment.txt origin/main || true
           fi
           rm -f changeset-comment.txt
           node scripts/check-changesets.mjs --fix || true

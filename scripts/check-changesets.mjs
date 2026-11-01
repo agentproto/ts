@@ -70,6 +70,26 @@ export function declaredPackages(md) {
 }
 
 /**
+ * The changeset a sandboxed reviewer handed over in a PR comment
+ * (`<!-- agentic-changeset:<path> -->` then a fenced md block): its target
+ * path and markdown, or null when the body carries no such block.
+ */
+export function parseAgenticChangesetComment(body) {
+  const m = /<!-- agentic-changeset:(\.changeset\/[A-Za-z0-9._-]+\.md) -->[\s\S]*?```md\n([\s\S]*?)```/.exec(body)
+  return m ? { path: m[1], md: m[2] } : null
+}
+
+/**
+ * True when the `existing` changesets (markdown) already declare every
+ * package the `proposed` changeset declares, so adding it would only
+ * duplicate a release note (agentproto/ts#2448, #2449).
+ */
+export function changesetCovered(proposed, existing) {
+  const have = new Set(existing.flatMap((md) => declaredPackages(md)))
+  return declaredPackages(proposed).every((name) => have.has(name))
+}
+
+/**
  * The single workspace package a bad name most likely meant — but only when the
  * answer is unambiguous. Normalising away `@`, `/`, `-` collapses the common
  * scope↔dash confusion (`@agentproto/vscode` ≡ `agentproto-vscode`). Returns
