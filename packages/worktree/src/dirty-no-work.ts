@@ -260,6 +260,13 @@ export async function proveDirtCarriesNoWork(
  * accepts the tree: restore a HEAD path (index and file), drop a non-HEAD one
  * from the index and from disk. Only ever the exact paths the fresh proof
  * listed; anything else that turned dirty since still makes git refuse.
+ *
+ * The proof was read moments earlier (apply re-proves from scratch), but a
+ * working-tree-only edit landing between that read and this discard does not
+ * move the git index mtime, so the apply-time stale check cannot see it. This
+ * matches `discardNoise`'s window and posture; closing it fully would mean a
+ * content re-verify per path here, which the non-force removal does not need
+ * (anything dirty outside these paths still makes git refuse).
  */
 export async function discardProvenDirt(repoRoot: string, worktreePath: string, paths: readonly DirtyNoWorkPath[]): Promise<void> {
   const inHead = paths.filter((p) => p.inHead).map((p) => p.path)

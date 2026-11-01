@@ -144,16 +144,17 @@ Usage:
             and kept otherwise (--force deletes it anyway, --keep-branch
             always keeps it). A detached HEAD has no branch to keep, so
             archive its unmerged commits elsewhere first.
-  gc        Classify every linked worktree into reclaim ((merged|fresh)+clean+idle) /
-            salvage (merged+dirty, and not written to in the last 15m) /
-            hold (everything else — including a fresh or merged branch with
-            uncommitted work), then print the plan. DRY RUN by default —
-            nothing is touched without --apply. --apply removes every
-            reclaim-class worktree (plain, non-force \`git worktree remove\`
-            — refuses if the tree turned dirty since the plan was made) and
-            deletes its branch. --salvage-dirty additionally archives every
-            salvage-class worktree (salvage snapshot, then remove — same as
-            \`archive\`).
+  gc        Classify every linked worktree into reclaim ((merged|fresh)+clean+idle,
+            or integrated+idle with dirt that provably carries no work) /
+            salvage (merged+dirty where the dirt is not provably work-free, and
+            not written to in the last 15m) / hold (everything else — including
+            a fresh or merged branch with uncommitted work), then print the
+            plan. DRY RUN by default — nothing is touched without --apply.
+            --apply removes every reclaim-class worktree (plain, non-force
+            \`git worktree remove\` — refuses if the tree turned dirty since
+            the plan was made) and deletes its branch. --salvage-dirty
+            additionally archives every salvage-class worktree (salvage
+            snapshot, then remove — same as \`archive\`).
             hold-class worktrees are never touched, with or without flags.
             A worktree whose own git index was written within --active-minutes
             (default 60) counts as recently active and is held too — someone
@@ -165,12 +166,17 @@ Usage:
             compatibility and no longer widens anything.
             A clean, idle worktree whose branch no merged PR contains is still
             reclaimed when its content is provably in base (squash-, patch- or
-            content-merged, the \`branch gc\` ladder). --noise lists worktree-
-            relative paths whose dirt is known noise (default
-            .opencode/package-lock.json, plus pnpm-lock.yaml while no package.json
-            changed; pass --noise "" to disable, or --noise pnpm-lock.yaml to
-            treat it as noise unconditionally): a worktree dirty only on those
-            counts as clean.
+            content-merged, the \`branch gc\` ladder).
+            An integrated, idle worktree whose dirty paths provably carry no
+            work (an emptied checkout, only turbo's managed AGENTS.md block, or
+            changes byte-identical to base) is reclaimed with reason
+            dirty-no-work; the plan names the sub-cases and paths a removal
+            restores first. Anything unproven keeps its prior class.
+            --noise lists worktree-relative paths whose dirt is known noise
+            (default .opencode/package-lock.json, plus pnpm-lock.yaml while no
+            package.json changed; pass --noise "" to disable, or --noise
+            pnpm-lock.yaml to treat it as noise unconditionally): a worktree
+            dirty only on those counts as clean.
             A worktree with a live session (the daemon's session registry: any
             alive session whose cwd is the worktree or under it) is never
             reclaimed, and neither is one with a file written within

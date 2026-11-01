@@ -4664,9 +4664,10 @@ export function registerSessionTools(
   // ── worktree_gc ──────────────────────────────────────────────────
   // The transport surface over the `gc` engine (`planGc` / `applyGc` in
   // `@agentproto/worktree`). All classification + safety logic lives in the
-  // engine and is untouched here: `reclaim` fires only when integration ∈
-  // {merged, fresh} AND the tree is clean (teardown is merge-gated), an OPEN
-  // PR is always `hold` and never touched, and a dirty-but-integrated
+  // engine and is untouched here: `reclaim` fires when the branch is
+  // integrated AND the tree is clean — or dirty only with dirt a fresh proof
+  // shows carries no work (restored before the non-force remove); an OPEN PR
+  // is always `hold` and never touched, and any other dirty-but-integrated
   // worktree is only ever archived with `salvageDirty`. This tool defaults to
   // a DRY RUN — `apply` is false unless explicitly set — and delegates every
   // fact and mutation to the injected `runWorktreeGc` port.
@@ -4675,9 +4676,11 @@ export function registerSessionTools(
     "worktree_gc",
     "Garbage-collect the linked git worktrees for a repo. DEFAULTS TO A DRY " +
       "RUN: with `apply` false (the default) it returns the plan — each " +
-      "worktree classified as `reclaim` (merged/fresh + clean → safe to " +
-      "remove), `salvage` (integrated but dirty), or `hold` (open PR, live " +
-      "sessions, a recently-touched git index, or anything unresolved) — " +
+      "worktree classified as `reclaim` (merged/fresh + clean, or an " +
+      "integrated idle tree whose dirt provably carries no work → safe to " +
+      "remove), `salvage` (integrated but dirty beyond that), or `hold` " +
+      "(open PR, live sessions, a recently-touched git index, or anything " +
+      "unresolved) — " +
       "and mutates nothing. Pass " +
       "`apply: true` to execute: `reclaim` entries are removed and their " +
       "branch deleted, and `salvage` entries are archived first (only when " +

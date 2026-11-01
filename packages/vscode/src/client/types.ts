@@ -1398,7 +1398,8 @@ export interface WorkspacesConfig {
 
 // ── Worktree GC (mirrors @agentproto/runtime worktree-gc.ts — the client takes
 //    no runtime import; keep in sync by hand). `reclaim` = safe to remove
-//    (merged, clean, no open PR, no live session); `salvage` = dirty, only
+//    (merged/in-base, no open PR, no live session; clean, or dirty only with
+//    dirt a fresh proof shows carries no work); `salvage` = dirty, only
 //    removed with salvageDirty; `hold` = kept (open PR or a live session). ──
 export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
 
@@ -1409,8 +1410,18 @@ export type WorktreeGcClass = "reclaim" | "salvage" | "hold"
  *  worktree list` entry at all (see `WorktreeGcPlanEntryView.orphan`).
  *  `prunable` is the mirror image: `git worktree list --porcelain` itself
  *  already reported the entry dead (registration intact, working directory
- *  gone) — see `WorktreeGcPlanEntryView.prunable`. */
-export type WorktreeGcReclaimReason = "dep-bump" | "orphan" | "prunable"
+ *  gone) — see `WorktreeGcPlanEntryView.prunable`. `squash-merged`,
+ *  `patch-merged` and `content-merged` come from `branch gc`'s in-base
+ *  ladder. `dirty-no-work` marks an integrated tree whose dirt is proven to
+ *  carry no work; see `WorktreeGcPlanEntryView.dirtyNoWork`. */
+export type WorktreeGcReclaimReason =
+  | "dep-bump"
+  | "orphan"
+  | "prunable"
+  | "squash-merged"
+  | "patch-merged"
+  | "content-merged"
+  | "dirty-no-work"
 
 export interface WorktreeGcPlanEntryView {
   path: string
@@ -1418,6 +1429,9 @@ export interface WorktreeGcPlanEntryView {
   head: string
   class: WorktreeGcClass
   reclaimReason?: WorktreeGcReclaimReason
+  /** Set only with `reclaimReason: "dirty-no-work"`: the sub-cases that
+   *  explained the dirt and how many paths removal puts back first. */
+  dirtyNoWork?: { cases: string[]; paths: number }
   /** `true` only for an orphan-scan entry — `tree`/`integration`/`liveness`
    *  carry the literal `"orphan"` placeholder rather than a real axis read. */
   orphan?: boolean
