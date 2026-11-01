@@ -14,6 +14,7 @@ import {
   DEFAULT_RECENT_KEYS_CAP,
   RecentKeys,
   SENTINEL_TRIAGE_REPEAT_WINDOW_MS,
+  SENTINEL_GITHUB_TRIAGE_RULE_TABLE,
   classifySentinelEvent,
   recordSentinelTriageKey,
   writeSentinelTriageLedger,
@@ -52,31 +53,31 @@ describe("classifySentinelEvent", () => {
     recent.record("sess_1", "sentinel:github-push:push:github:acme/widgets#42", 0)
 
     const result = classifySentinelEvent(push({ terminal: true }), input(recent, 60_000))
-    expect(result).toEqual({ decision: "wake", rule: "terminal" })
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
   })
 
   it("coalesced-repeat: the same (target, key) within 10 minutes is fyi", () => {
     const recent = new RecentKeys()
-    const firstEvent = push()
+    const firstEvent = makeEvent({ type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } })
     const first = classifySentinelEvent(firstEvent, input(recent, 0))
     expect(first).toEqual({ decision: "wake", rule: "default" })
     recordSentinelTriageKey(firstEvent, input(recent, 0))
 
-    const second = classifySentinelEvent(push({ id: "evt_2" }), input(recent, 60_000))
-    expect(second).toEqual({ decision: "fyi", rule: "coalesced-repeat" })
+    const second = makeEvent({ id: "evt_2", type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } })
+    expect(classifySentinelEvent(second, input(recent, 60_000))).toEqual({ decision: "fyi", rule: "coalesced-repeat" })
   })
 
   it("a repeat counts per target, not globally", () => {
     const recent = new RecentKeys()
     const e1 = push()
     expect(classifySentinelEvent(e1, input(recent, 0, "sess_1"))).toEqual({
-      decision: "wake",
-      rule: "default",
+      decision: "fyi",
+      rule: "github-triage-table",
     })
     recordSentinelTriageKey(e1, input(recent, 0, "sess_1"))
     expect(classifySentinelEvent(push({ id: "evt_2" }), input(recent, 1_000, "sess_2"))).toEqual({
-      decision: "wake",
-      rule: "default",
+      decision: "fyi",
+      rule: "github-triage-table",
     })
   })
 
@@ -96,7 +97,7 @@ describe("classifySentinelEvent", () => {
     })
     expect(classifySentinelEvent(failure, input(recent, 60_000))).toEqual({
       decision: "wake",
-      rule: "failure",
+      rule: "github-triage-table",
     })
     recordSentinelTriageKey(failure, input(recent, 60_000))
     expect(
@@ -108,7 +109,7 @@ describe("classifySentinelEvent", () => {
         }),
         input(recent, 120_000),
       ),
-    ).toEqual({ decision: "wake", rule: "failure" })
+    ).toEqual({ decision: "wake", rule: "github-triage-table" })
   })
 
   it("failure: a state or conclusion meaning failure, error, cancelled or timed_out wakes", () => {
@@ -122,7 +123,7 @@ describe("classifySentinelEvent", () => {
         makeEvent({ type: "github.check_suite.completed", data }),
         input(new RecentKeys(), 0),
       )
-      expect(result).toEqual({ decision: "wake", rule: "failure" })
+      expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
     }
   })
 
@@ -172,8 +173,8 @@ describe("classifySentinelEvent", () => {
       data: { headSha: "sha1", conclusion: "success" },
     })
     expect(classifySentinelEvent(success, input(recent, 60_000))).toEqual({
-      decision: "wake",
-      rule: "default",
+      decision: "fyi",
+      rule: "github-triage-table",
     })
   })
 
@@ -189,19 +190,19 @@ describe("classifySentinelEvent", () => {
 
   it("a key recorded exactly 10 minutes ago is no longer a repeat, just inside is", () => {
     const inside = new RecentKeys()
-    const e1 = push()
+    const e1 = makeEvent({ type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } })
     expect(classifySentinelEvent(e1, input(inside, 0))).toEqual({ decision: "wake", rule: "default" })
     recordSentinelTriageKey(e1, input(inside, 0))
     expect(
-      classifySentinelEvent(push({ id: "evt_inside" }), input(inside, SENTINEL_TRIAGE_REPEAT_WINDOW_MS - 1)),
+      classifySentinelEvent(makeEvent({ id: "evt_inside", type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } }), input(inside, SENTINEL_TRIAGE_REPEAT_WINDOW_MS - 1)),
     ).toEqual({ decision: "fyi", rule: "coalesced-repeat" })
 
     const boundary = new RecentKeys()
-    const e2 = push()
+    const e2 = makeEvent({ type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } })
     expect(classifySentinelEvent(e2, input(boundary, 0))).toEqual({ decision: "wake", rule: "default" })
     recordSentinelTriageKey(e2, input(boundary, 0))
     expect(
-      classifySentinelEvent(push({ id: "evt_boundary" }), input(boundary, SENTINEL_TRIAGE_REPEAT_WINDOW_MS)),
+      classifySentinelEvent(makeEvent({ id: "evt_boundary", type: "github.check_suite.completed", data: { headSha: "sha1", conclusion: null } }), input(boundary, SENTINEL_TRIAGE_REPEAT_WINDOW_MS)),
     ).toEqual({ decision: "wake", rule: "default" })
   })
 })
@@ -216,11 +217,11 @@ describe("classifySentinelEvent: review and check verdicts that need action", ()
     for (const state of ["changes_requested", "CHANGES_REQUESTED", "Changes_Requested"]) {
       const recent = new RecentKeys()
       const first = review(state)
-      expect(classifySentinelEvent(first, input(recent, 0))).toEqual({ decision: "wake", rule: "failure" })
+      expect(classifySentinelEvent(first, input(recent, 0))).toEqual({ decision: "wake", rule: "github-triage-table" })
       recordSentinelTriageKey(first, input(recent, 0))
       expect(classifySentinelEvent(review(state, { id: "evt_2" }), input(recent, 1_000))).toEqual({
         decision: "wake",
-        rule: "failure",
+        rule: "github-triage-table",
       })
     }
   })
@@ -228,15 +229,15 @@ describe("classifySentinelEvent: review and check verdicts that need action", ()
   it("action_required wakes as a failure-class verdict", () => {
     expect(classifySentinelEvent(check("action_required"), input(new RecentKeys(), 0))).toEqual({
       decision: "wake",
-      rule: "failure",
+      rule: "github-triage-table",
     })
   })
 
   it("approved and commented reviews are not failures, in either casing", () => {
     for (const state of ["approved", "APPROVED", "commented", "COMMENTED"]) {
       expect(classifySentinelEvent(review(state), input(new RecentKeys(), 0))).toEqual({
-        decision: "wake",
-        rule: "default",
+        decision: "fyi",
+        rule: "github-triage-table",
       })
     }
   })
@@ -246,7 +247,7 @@ describe("classifySentinelEvent: review and check verdicts that need action", ()
     recordSentinelTriageKey(check("SUCCESS"), input(recent, 0))
     expect(classifySentinelEvent(check("success"), input(recent, 1_000))).toEqual({
       decision: "fyi",
-      rule: "coalesced-repeat",
+      rule: "github-triage-table",
     })
   })
 })
@@ -268,7 +269,7 @@ describe("RecentKeys", () => {
 
   it("does not record the classifying event; the caller records after a successful delivery", () => {
     const recent = new RecentKeys()
-    expect(classifySentinelEvent(push(), input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
+    expect(classifySentinelEvent(push(), input(recent, 0))).toEqual({ decision: "fyi", rule: "github-triage-table" })
     expect(recent.size).toBe(0)
   })
 })
@@ -321,7 +322,7 @@ describe("writeSentinelTriageLedger", () => {
       writeSentinelTriageLedger(filePath, {
         ts: "2026-10-01T00:05:00.000Z",
         decision: "wake",
-        rule: "failure",
+        rule: "github-triage-table",
         target: "sess_1",
         sentinelId: "sen_1",
         eventId: "evt_1",
@@ -339,7 +340,7 @@ describe("writeSentinelTriageLedger", () => {
         source: "sentinel",
         applied: false,
         decision: "wake",
-        rule: "failure",
+        rule: "github-triage-table",
         target: "sess_1",
         sentinelId: "sen_1",
         eventId: "evt_1",
@@ -370,5 +371,176 @@ describe("writeSentinelTriageLedger", () => {
         urgency: "next-turn",
       }),
     ).not.toThrow()
+  })
+})
+
+describe("sentinel GitHub triage table", () => {
+  it("check_suite.completed failure is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "failure", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("check_suite.completed error is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "error", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("check_suite.completed cancelled is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "cancelled", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("check_suite.completed timed_out is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "timed_out", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("check_suite.completed action_required is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "action_required", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed failure is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "failure", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed error is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "error", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed cancelled is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "cancelled", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed timed_out is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "timed_out", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed action_required is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "action_required", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("pull_request_review.submitted changes_requested is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request_review.submitted", data: { state: "changes_requested" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("issue_comment.created by non-bot is wake via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.issue_comment.created", data: { actor: "octocat" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "wake", rule: "github-triage-table" })
+  })
+  it("issue_comment.created by bot is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.issue_comment.created", data: { actor: "dependabot[bot]" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("pull_request.closed with merged false is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request.closed", data: { merged: false } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("check_suite.completed success is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "success", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("check_suite.completed neutral is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "neutral", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("check_suite.completed skipped is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.check_suite.completed", data: { conclusion: "skipped", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed success is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "success", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed neutral is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "neutral", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("workflow_run.completed skipped is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.workflow_run.completed", data: { conclusion: "skipped", headSha: "sha1" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("pull_request_review.submitted approved is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request_review.submitted", data: { state: "approved" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("pull_request_review.submitted commented is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request_review.submitted", data: { state: "commented" } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("pull_request.closed merged true is fyi via table", () => {
+    const result = classifySentinelEvent(
+      makeEvent({ type: "github.pull_request.closed", data: { merged: true } }),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
+  })
+  it("pull_request.synchronize is fyi via table", () => {
+    const result = classifySentinelEvent(
+      push(),
+      input(new RecentKeys(), 0),
+    )
+    expect(result).toEqual({ decision: "fyi", rule: "github-triage-table" })
   })
 })
