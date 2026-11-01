@@ -57,6 +57,7 @@ import {
 import { randomBytes } from "node:crypto"
 import type { CronScheduler } from "./cron-scheduler.js"
 import { isSelfSchedulingTool } from "./cron-scheduler.js"
+import { cronCreatorOf } from "./cron-creator.js"
 import { detachedAgentStartSchema } from "./agent-start-schema.js"
 import type { RoutineRegistrar } from "./routine-registrar.js"
 import type { ActivityProjector } from "./activities.js"
@@ -638,6 +639,11 @@ export interface RegisterOrchestrationToolsOptions {
    */
   cronScheduler?: CronScheduler
   /**
+   * Session id of a valid session token presented on this request, used to
+   * prove the caller of cron_create (passed to decideSpawnProof).
+   */
+  credentialSessionId?: string
+  /**
    * When wired, exposes `routine_trigger` and `routine_reconcile` — fires
    * an AIP-41 `.routines/<id>/ROUTINE.md` routine's target immediately,
    * bypassing its schedule (mirrors `cron_run`), and re-scans
@@ -829,7 +835,7 @@ export function registerOrchestrationTools(
   const server = opts.toolSubset
     ? withToolSubset(rawServer, opts.toolSubset)
     : rawServer
-  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId } = opts
+  const { registry, sessionEvents, eventRing, callerScope, inboundWatcher, mcpProxy, bindingStore, endpointStore, telegramCreds, callerSessionId, credentialSessionId } = opts
 
   /**
    * WP6: check whether ALL watched sessions of a policy fall within the
@@ -2826,6 +2832,12 @@ export function registerOrchestrationTools(
               `cron action kind "tool" cannot dispatch '${input.action.tool}': not in this server's tool subset`,
             )
           }
+          const createdBy = cronCreatorOf({
+            callerSessionId: opts.callerSessionId,
+            callerScopeOwnerId: callerScope?.ownerSessionId,
+            credentialSessionId,
+            registry,
+          })
           const job = await cronScheduler.create({
             label: input.label,
             schedule: input.schedule,
@@ -2842,6 +2854,7 @@ export function registerOrchestrationTools(
             // human/root call, whose jobs live until deleted or expired.
             ...(opts.callerSessionId ? { ownedBy: opts.callerSessionId } : {}),
             ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+            createdBy,
           })
           return {
             content: [
@@ -2855,6 +2868,7 @@ export function registerOrchestrationTools(
                   active: job.active,
                   ownedBy: job.ownedBy,
                   expiresAt: job.expiresAt,
+                  createdBy: job.createdBy,
                 }),
               },
             ],
@@ -2892,6 +2906,7 @@ export function registerOrchestrationTools(
       // without `full: true` (a job that silently expired must not look live).
       ownedBy: j.ownedBy,
       expiresAt: j.expiresAt,
+      createdBy: j.createdBy,
       // A failed last run must be visible without `full: true`.
       lastOk: j.lastResult?.ok,
       // Real-run health: last outcome, consecutive non-productive count, and

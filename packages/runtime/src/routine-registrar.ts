@@ -312,6 +312,7 @@ export function createRoutineRegistrar(opts: {
             ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
             recurring: true,
             action,
+            createdBy: { kind: "system" },
           })
         } catch (err) {
           errors.push({

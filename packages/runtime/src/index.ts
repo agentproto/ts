@@ -4445,6 +4445,7 @@ export async function createGateway(
       endpointStore: inboundEndpointStore,
       telegramCreds: telegramBotCreds,
       ...(callerSessionId ? { callerSessionId } : {}),
+      ...(credentialSessionId ? { credentialSessionId } : {}),
       operatorDelegates: taskDefaults.operatorDelegates,
     })
     // Review primitive (@agentproto/review) — review_run/status/cancel/
