@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -17,6 +17,7 @@ import {
   type TaskChangedEvent,
 } from "../session-event-bus.js"
 import {
+  createSupervisorTaskGateRunner,
   createTaskLedger,
   type TaskCaller,
   type TaskGateOutcome,
@@ -953,5 +954,73 @@ describe("awaiting_approval — no release while waiting", () => {
     expect(reloaded?.owner).toBe("exec")
     expect(reloaded?.meta?.releasedReason).toBeUndefined()
     second.ledger.dispose()
+  })
+})
+
+// ── Ownerless inline shell gate: whole shell line in `command` ────────
+
+describe("createSupervisorTaskGateRunner (ownerless inline shell gate)", () => {
+  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-chatcommerce/RAPPORT.md"
+  const okResult = {
+    exitCode: 0,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    durationMs: 0,
+  }
+
+  function workspaceAllowing(commands: string[]): string {
+    const ws = mkdtempSync(join(tmpdir(), "task-ledger-gate-"))
+    mkdirSync(join(ws, ".agentproto"), { recursive: true })
+    writeFileSync(
+      join(ws, ".agentproto", "allowed-commands.json"),
+      JSON.stringify({ version: 1, commands }),
+    )
+    return ws
+  }
+
+  function runnerFor(
+    workspace: string,
+    calls: Array<{ command: string; args: string[] }>,
+  ): TaskGateRunner {
+    return createSupervisorTaskGateRunner({
+      supervisor: fakeSupervisor(),
+      registry: { get: () => undefined },
+      workspace,
+      runCommand: async input => {
+        calls.push({ command: input.command, args: input.args })
+        return okResult
+      },
+    })
+  }
+
+  it("runs a shell line as `bash -c <line>` and passes", async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runnerFor(workspaceAllowing(["bash"]), calls)({
+      gate: { command: LINE },
+    })
+    expect(outcome).toMatchObject({ passed: true, exitCode: 0 })
+    expect(calls).toEqual([{ command: "bash", args: ["-c", LINE] }])
+  })
+
+  it("with bash NOT allowlisted the error names 'bash', not 'RAPPORT.md'", async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runnerFor(workspaceAllowing(["test"]), calls)({
+      gate: { command: LINE },
+    })
+    expect(outcome.passed).toBe(false)
+    expect(outcome.error).toMatch(/'bash' not in allowlist/)
+    expect(outcome.error).not.toMatch(/'RAPPORT\.md'/)
+    expect(calls).toEqual([])
+  })
+
+  it("the structured {command:'test', args} form is unchanged", async () => {
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runnerFor(workspaceAllowing(["test"]), calls)({
+      gate: { command: "test", args: ["-s", "/tmp/x/RAPPORT.md"] },
+    })
+    expect(outcome.passed).toBe(true)
+    expect(calls).toEqual([{ command: "test", args: ["-s", "/tmp/x/RAPPORT.md"] }])
   })
 })

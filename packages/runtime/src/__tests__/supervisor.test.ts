@@ -1577,3 +1577,128 @@ describe("runShellGate()", () => {
     expect(outcome).toMatchObject({ kind: "error", message: "boom" })
   })
 })
+
+// ── Shell-line gates: a whole shell line in `command` with no `args` ─────
+// (task ledger rows like `{"command":"grep -q 'x' /a/b/RAPPORT.md"}`).
+// node's basename() of that string is the text after the last "/", i.e.
+// "RAPPORT.md", which used to produce a misleading allowlist refusal.
+
+describe("runShellGate() with a shell line in `command`", () => {
+  const ok = {
+    exitCode: 0,
+    signal: null,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    durationMs: 0,
+  }
+  const LINE = "grep -q 'Re-vérification J+6' /tmp/pm-chatcommerce/RAPPORT.md"
+  let workspaces: string[] = []
+
+  afterEach(async () => {
+    await Promise.all(workspaces.map(w => rm(w, { recursive: true, force: true })))
+    workspaces = []
+  })
+
+  async function ws(commands: string[]): Promise<string> {
+    const w = await makeWorkspace(commands)
+    workspaces.push(w)
+    return w
+  }
+
+  it("runs the line as `bash -c <line>` when bash is allowlisted", async () => {
+    const workspace = await ws(["bash"])
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runShellGate(
+      { command: LINE },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(outcome).toMatchObject({ kind: "ran", exitCode: 0, passed: true })
+    expect(calls).toEqual([{ command: "bash", args: ["-c", LINE] }])
+  })
+
+  it("with bash NOT allowlisted the refusal names 'bash', not 'RAPPORT.md'", async () => {
+    const workspace = await ws(["true"])
+    const outcome = await runShellGate({ command: LINE }, { workspace, sessionCwd: workspace })
+    expect(outcome.kind).toBe("not-allowlisted")
+    const message = (outcome as { message: string }).message
+    expect(message).toMatch(/'bash' not in allowlist/)
+    expect(message).not.toMatch(/'RAPPORT\.md'/)
+    expect(message).toContain("grep -q")
+  })
+
+  it("a multi-command line (`cd x && test -s a`) is also a bash -c line", async () => {
+    const workspace = await ws(["bash"])
+    const line = "cd /x && test -s a && test -s b"
+    const calls: Array<{ command: string; args: string[] }> = []
+    await runShellGate(
+      { command: line },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(calls).toEqual([{ command: "bash", args: ["-c", line] }])
+  })
+
+  it("the structured form {command:'test', args} is unchanged", async () => {
+    const workspace = await ws(["test"])
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runShellGate(
+      { command: "test", args: ["-s", "/tmp/a b/RAPPORT.md"] },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(outcome).toMatchObject({ kind: "ran", passed: true })
+    expect(calls).toEqual([{ command: "test", args: ["-s", "/tmp/a b/RAPPORT.md"] }])
+  })
+
+  it("a command with whitespace AND explicit args is not rewritten", async () => {
+    const workspace = await ws(["bash"])
+    const outcome = await runShellGate(
+      { command: "my tool", args: ["x"] },
+      { workspace, sessionCwd: workspace },
+    )
+    expect(outcome.kind).toBe("not-allowlisted")
+    expect((outcome as { message: string }).message).toMatch(/'my tool' not in allowlist/)
+  })
+
+  it("an existing file path containing a space is not treated as a shell line", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agentproto-shellgate-sp ace-"))
+    workspaces.push(dir)
+    const script = join(dir, "check.sh")
+    await writeFile(script, "#!/bin/sh\nexit 0\n", "utf8")
+    const workspace = await ws(["check.sh"])
+    const calls: Array<{ command: string; args: string[] }> = []
+    const outcome = await runShellGate(
+      { command: script },
+      {
+        workspace,
+        sessionCwd: workspace,
+        runCommand: async input => {
+          calls.push({ command: input.command, args: input.args })
+          return ok
+        },
+      },
+    )
+    expect(outcome).toMatchObject({ kind: "ran", passed: true })
+    expect(calls).toEqual([{ command: script, args: [] }])
+  })
+})

@@ -132,6 +132,7 @@ import {
   makeCwdAnchor,
 } from "./command-tools.js"
 import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
+import { describeGateRefusal, resolveShellGateExec } from "./command-allowlist.js"
 import { resolveAccessProfileAuth } from "./session-spawn.js"
 import type { RouteSpec } from "./session-config.js"
 import type { ResolvedAuthSpec } from "./spawn-defaults.js"
@@ -247,7 +248,8 @@ export type ShellGateOutcome =
 
 /**
  * Run a shell gate command: allowlist-check by basename (same allowlist as
- * `command_execute`), anchor `cwd` against `sessionCwd`, execute via
+ * `command_execute`; a whole shell line in `command` with no `args` runs as
+ * `bash -c <line>`, see `resolveShellGateExec`), anchor `cwd` against `sessionCwd`, execute via
  * `runCommand` (default the host runner; injectable for tests), exit 0 =
  * pass. Shared by the completion-policy supervisor's turn-end gate (`runGate`
  * below) and the semantic hook engine's `"gate"` action (the `agent-prompt`
@@ -270,14 +272,18 @@ export async function runShellGate(
   const exec = opts.runCommand ?? defaultRunCommand
   try {
     const allowlist = await loadAllowlist(opts.workspace)
-    const baseName = basename(gate.command)
+    const target = resolveShellGateExec(gate)
+    const baseName = basename(target.command)
     if (!allowlist.has(baseName)) {
-      return { kind: "not-allowlisted", message: `gate command '${baseName}' not in allowlist` }
+      return {
+        kind: "not-allowlisted",
+        message: describeGateRefusal("gate", baseName, target.shellLine),
+      }
     }
     const resolvedCwd = gate.cwd ? makeCwdAnchor(opts.sessionCwd)(gate.cwd) : opts.sessionCwd
     const result = await exec({
-      command: gate.command,
-      args: gate.args ?? [],
+      command: target.command,
+      args: target.args,
       cwd: resolvedCwd,
       timeoutMs: gate.timeoutMs ?? 60_000,
     })

@@ -131,6 +131,52 @@ export async function loadAllowlist(workspace: string): Promise<Set<string>> {
   return new Set(entries.map(e => e.command))
 }
 
+/** What a shell gate actually executes, after `resolveShellGateExec`. */
+export interface ResolvedShellGateExec {
+  command: string
+  args: string[]
+  /** The original whole-shell-line `command`, set only when it was
+   *  rewritten to `bash -c <line>`; used to make refusals readable. */
+  shellLine?: string
+}
+
+/**
+ * Resolve the argv a shell gate (`{command, args?}`) should run. A task
+ * `verify` or policy gate is often written as a WHOLE shell line in `command`
+ * with no `args` (`"grep -q x /a/b/RAPPORT.md"`, `"cd /x && test -s a"`).
+ * Gating that string by `basename()` yields the text after its last `/`
+ * (`RAPPORT.md`) and refuses with a misleading error, so a `command` that
+ * contains whitespace, has no `args` and is not itself an existing file path
+ * is run as `bash -c <line>`. The allowlist then applies to `bash`, which is
+ * exactly the explicit `{command:"bash", args:["-c", ...]}` form. Anything
+ * else is returned unchanged.
+ */
+export function resolveShellGateExec(spec: {
+  command: string
+  args?: readonly string[]
+}): ResolvedShellGateExec {
+  const args = spec.args ?? []
+  const line = spec.command.trim()
+  if (args.length === 0 && /\s/.test(line) && !existsSync(spec.command)) {
+    return { command: "bash", args: ["-c", line], shellLine: line }
+  }
+  return { command: spec.command, args: [...args] }
+}
+
+/** `not in allowlist` text for a gate refusal. Names the command that was
+ *  actually checked and, when it came from a shell line, that line. */
+export function describeGateRefusal(
+  label: string,
+  baseName: string,
+  shellLine?: string,
+): string {
+  const shown =
+    shellLine === undefined
+      ? ""
+      : ` (shell line: ${shellLine.length > 200 ? `${shellLine.slice(0, 200)}...` : shellLine})`
+  return `${label} command '${baseName}' not in allowlist${shown}`
+}
+
 /** True when `pattern` (an allowed argv prefix) matches the start of
  *  `actual` token-for-token. An empty `pattern` matches anything. */
 function argsMatchPrefix(pattern: readonly string[], actual: readonly string[]): boolean {

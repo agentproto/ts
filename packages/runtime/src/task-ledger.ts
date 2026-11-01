@@ -108,6 +108,7 @@ import {
   loadAllowlist,
 } from "./command-tools.js"
 import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
+import { describeGateRefusal, resolveShellGateExec } from "./command-allowlist.js"
 
 // ── Data model ───────────────────────────────────────────────────────
 
@@ -418,16 +419,17 @@ export function createSupervisorTaskGateRunner(opts: {
     }
     try {
       const allowlist = await loadAllowlist(workspace)
-      const baseName = basename(gate.command)
+      const target = resolveShellGateExec(gate)
+      const baseName = basename(target.command)
       if (!allowlist.has(baseName)) {
         return {
           passed: false,
-          error: `verify gate command '${baseName}' not in allowlist`,
+          error: describeGateRefusal("verify gate", baseName, target.shellLine),
         }
       }
       const result = await exec({
-        command: gate.command,
-        args: gate.args ?? [],
+        command: target.command,
+        args: target.args,
         cwd: gate.cwd ?? cwd ?? workspace,
         timeoutMs: gate.timeoutMs ?? 60_000,
       })
