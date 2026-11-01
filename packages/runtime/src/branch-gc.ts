@@ -61,6 +61,8 @@ export interface BranchGcPlanEntryView {
   class: BranchGcClass
   reclaimReason?: BranchGcReclaimReason
   mergedPr?: number
+  /** How a `pr-merged` tip matched `mergedPr`: its exact head, an ancestor of that head, or patch-equivalent commits. */
+  mergedPrMatch?: "head" | "ancestor" | "patch"
   forgePr?: number
   holdReason?: BranchGcHoldReason
   holdDetail?: string

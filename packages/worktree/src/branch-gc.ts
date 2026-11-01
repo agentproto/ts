@@ -23,12 +23,21 @@
  * expensive checks (`classifyTip`), ported from the audited
  * `branch-hygiene.mjs` maintenance script that first cleaned a 460-ref repo:
  *
- *   pr-merged       the tip IS the head commit (`headRefOid`) of a MERGED PR
- *                   — that exact commit was reviewed and merged, so nothing
- *                   was lost (forge shortcut in `classifyRef`: the ladder
- *                   still runs, but an "unmerged" verdict is overridden
- *                   before any reclaim/hold decision, skipping the
- *                   push-state/verdict lookups below it)
+ *   pr-merged       the tip's work went through a MERGED PR (`mergedPrMatch`):
+ *                   `head` the tip IS the PR's head commit (`headRefOid`),
+ *                   `ancestor` the tip is an ancestor of it (the PR kept
+ *                   going after this branch stopped), `patch` every non-merge
+ *                   commit of the tip has a patch-equivalent commit (same
+ *                   `git patch-id --stable`, same author time + email) in
+ *                   some merged PR's history (the branch was rebased, or its
+ *                   commits landed split across stacked PRs). That work was
+ *                   reviewed and merged, and the forge keeps every PR's
+ *                   commits at `refs/pull/<N>/head`, so nothing is lost
+ *                   (forge shortcut in `classifyRef`: the ladder still runs,
+ *                   but an "unmerged" verdict is overridden before any
+ *                   reclaim/hold decision, skipping the push-state/verdict
+ *                   lookups below it). Only merged PR heads present in the
+ *                   local object database count: the plan never fetches.
  *   merged          tip is an ancestor of base
  *   squash-merged   `git merge-tree --write-tree base tip` == base's tree
  *                   (merging it changes nothing)
@@ -108,6 +117,13 @@ export const CHECKPOINT_BRANCH_PREFIX = "agentproto-checkpoint/"
 
 /** The verdict for one tip, in order of increasing cost (`pr-merged` is the forge shortcut that overrides an "unmerged" ladder verdict, not a check that skips the ladder; `forge-mirror` is the orphan-only shortcut that DOES skip it). */
 export type BranchStatus = "pr-merged" | "forge-mirror" | "merged" | "squash-merged" | "patch-merged" | "content-merged" | "unmerged"
+
+/**
+ * How a `pr-merged` tip matched a merged PR: `head` the tip IS its head
+ * commit, `ancestor` the tip is an ancestor of that head, `patch` every
+ * non-merge commit of the tip is patch-equivalent to a commit of a merged PR.
+ */
+export type MergedPrMatch = "head" | "ancestor" | "patch"
 
 /**
  * `current`: the tip shares history with base. `pre-rewrite`: it doesn't, but
@@ -241,8 +257,10 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   holdReason?: BranchGcHoldReason
   /** Human detail for a hold: the worktree path, `PR #n`, or why the PR check failed. */
   holdDetail?: string
-  /** Set when the status is `pr-merged`: the number of the merged PR whose head commit IS this tip. */
+  /** Set when the status is `pr-merged`: the number of the merged PR that carried this tip's work (the first one, for `patch`). */
   mergedPr?: number
+  /** Set when the status is `pr-merged`: how the tip matched that PR. */
+  mergedPrMatch?: MergedPrMatch
   /** Set when the status is `forge-mirror`: the PR whose `refs/pull/<N>/head` IS this tip. */
   forgePr?: number
   /** Set for unmerged local and orphan refs. */
@@ -984,6 +1002,132 @@ async function isAncestorOf(env: ClassifyEnv, maybeAncestor: string, tip: string
   }
 }
 
+/**
+ * Every commit reachable from a merged PR head that is NOT in base (nor in
+ * the anchor's history): the `ancestor` and `patch` pr-merged matches.
+ */
+interface MergedPrCommits {
+  /** Commit → the merged PR whose head reaches it. */
+  prOf: Map<string, number>
+  /** `<author time>\t<author email>` → the non-merge commits with that key (the `patch` match's pre-filter). */
+  byAuthor: Map<string, string[]>
+}
+
+/** Above this many commits the merged-PR history is abandoned: no `ancestor`/`patch` match, the ladder decides alone. */
+const MAX_MERGED_PR_COMMITS = 200_000
+/** A tip with more unique non-merge commits than this is never `patch`-matched. */
+const MAX_PATCH_MATCH_COMMITS = 500
+
+function excludeBaseRevs(ctx: LadderContext): string[] {
+  return [ctx.baseSha, ...(ctx.anchor ? [ctx.anchor] : [])].map((s) => `^${s}`)
+}
+
+/**
+ * ONE `git log --stdin` over every merged PR head, minus base: each commit
+ * with the PR head that reached it (`%S`). Heads absent from the local
+ * object database are skipped (`--ignore-missing`): the plan never fetches,
+ * so a PR whose commits were never fetched just offers no match. Never
+ * throws: `null` = no `ancestor`/`patch` match available.
+ */
+async function buildMergedPrCommits(ctx: LadderContext, heads: ReadonlyMap<string, number>): Promise<MergedPrCommits | null> {
+  if (heads.size === 0) return null
+  try {
+    const res = await gitWithInput(
+      ctx.repoRoot,
+      ["-c", "log.showSignature=false", "log", "--ignore-missing", "--stdin", "--no-color", "--format=%H%x09%P%x09%at%x09%ae%x09%S"],
+      [...heads.keys(), ...excludeBaseRevs(ctx)].join("\n") + "\n",
+    )
+    if (res.exitCode !== 0) return null
+    const prOf = new Map<string, number>()
+    const byAuthor = new Map<string, string[]>()
+    for (const line of res.stdout.split("\n")) {
+      const [commit, parents, at, ae, source] = line.split("\t")
+      if (!commit || source === undefined) continue
+      const pr = heads.get(source)
+      if (pr === undefined) continue
+      prOf.set(commit, pr)
+      if (prOf.size > MAX_MERGED_PR_COMMITS) return null
+      if (parents && parents.includes(" ")) continue // a merge: no patch to match
+      const key = `${at}\t${ae}`
+      byAuthor.set(key, [...(byAuthor.get(key) ?? []), commit])
+    }
+    return { prOf, byAuthor }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * `patch` match: every non-merge commit `base..tip` has a commit in some
+ * merged PR's history with the same author time + email AND the same `git
+ * patch-id --stable` (what `git cherry` matches on). The author key only
+ * narrows which PR commits get hashed: a rebase or cherry-pick keeps it. A
+ * merge commit in `base..tip` must itself be in a merged PR's history. A tip
+ * with no unique non-merge commit, or any commit left unmatched, is no
+ * match.
+ */
+async function patchMatchMergedPr(ctx: LadderContext, idx: MergedPrCommits, tip: string): Promise<number | null> {
+  if (idx.byAuthor.size === 0 || !ctx.patchIds) return null
+  const res = await git(ctx.repoRoot, ["log", "--format=%H%x09%P%x09%at%x09%ae", tip, ...excludeBaseRevs(ctx), "--"])
+  if (res.exitCode !== 0) return null
+  const tipCommits: Array<{ sha: string; candidates: string[] }> = []
+  for (const line of res.stdout.split("\n")) {
+    const [commit, parents, at, ae] = line.split("\t")
+    if (!commit) continue
+    // A merge has no patch-id, but its conflict resolution may be the only
+    // copy of some work: accept it only when that exact merge is in a merged
+    // PR's history (unlike `git cherry`, which skips merges).
+    if (parents && parents.includes(" ")) {
+      if (!idx.prOf.has(commit)) return null
+      continue
+    }
+    const candidates = idx.byAuthor.get(`${at}\t${ae}`)
+    if (!candidates) return null
+    tipCommits.push({ sha: commit, candidates })
+    if (tipCommits.length > MAX_PATCH_MATCH_COMMITS) return null
+  }
+  if (tipCommits.length === 0) return null
+  const ids = await ctx.patchIds(tipCommits.flatMap((c) => [c.sha, ...c.candidates]))
+  if (!ids) return null
+  let first: number | null = null
+  for (const c of tipCommits) {
+    const id = ids.get(c.sha)
+    if (!id) return null
+    const hit = c.candidates.find((cand) => ids.get(cand) === id)
+    if (hit === undefined) return null
+    first ??= idx.prOf.get(hit) ?? null
+  }
+  return first
+}
+
+/**
+ * The merged PR that carried an unmerged tip's work, if any: its exact head
+ * (`head`), a head it is an ancestor of (`ancestor`), or patch-equivalent
+ * commits (`patch`). Memoized per tip — a local branch and its remote twin
+ * share one answer. Never throws.
+ */
+function mergedPrMatchOf(env: ClassifyEnv, sha: string): Promise<{ pr: number; match: MergedPrMatch } | null> {
+  const head = env.mergedPrShas.get(sha)
+  if (head !== undefined) return Promise.resolve({ pr: head, match: "head" })
+  let pending = env.prMatches.get(sha)
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const idx = env.mergedPrCommits ? await env.mergedPrCommits() : null
+        if (!idx) return null
+        const ancestorOf = idx.prOf.get(sha)
+        if (ancestorOf !== undefined) return { pr: ancestorOf, match: "ancestor" as const }
+        const patchPr = await patchMatchMergedPr(env.ctx, idx, sha)
+        return patchPr === null ? null : { pr: patchPr, match: "patch" as const }
+      } catch {
+        return null
+      }
+    })()
+    env.prMatches.set(sha, pending)
+  }
+  return pending
+}
+
 /** Stamp the stored verdict for `sha` onto `entry` (`BranchVerdictSummary` shape), if one exists. */
 async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: ClassifyEnv): Promise<void> {
   const stored = env.verdicts ? await env.verdicts.get(env.repoName, sha) : null
@@ -1068,7 +1212,7 @@ async function classifyCheckpointRef(b: BranchRef, work: string, env: ClassifyEn
       env.tips.set(wr.sha, pending)
     }
     let cls = await pending
-    if (cls.status === "unmerged" && env.mergedPrShas.has(wr.sha)) cls = { ...cls, status: "pr-merged" }
+    if (cls.status === "unmerged" && (await mergedPrMatchOf(env, wr.sha))) cls = { ...cls, status: "pr-merged" }
     if (cls.status !== "unmerged") {
       mergedLadder ??= cls
       if (!mergedTips.includes(wr.sha)) mergedTips.push(wr.sha)
@@ -1170,6 +1314,10 @@ interface ClassifyEnv {
   prs: OpenPrHeads
   /** Merged PR head sha → PR number (`pr-merged` shortcut). Empty = no shortcut available. */
   mergedPrShas: Map<string, number>
+  /** Lazily computed, memoized history of every merged PR head (`ancestor`/`patch` matches); absent or `null` = exact-head matches only. */
+  mergedPrCommits?: () => Promise<MergedPrCommits | null>
+  /** Tip sha → its memoized merged-PR match (`mergedPrMatchOf`). */
+  prMatches: Map<string, Promise<{ pr: number; match: MergedPrMatch } | null>>
   /** `refs/pull/<N>/head` of the base remote (forge-mirror shortcut for orphan refs). */
   forgePrHeads: ForgePrHeads
   /** Merged PR head ref name → { number, headRefOid } (checkpoint supersession when the work branch is gone — the snapshot's parent must equal `headRefOid`). */
@@ -1267,14 +1415,18 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
   const tip = await pending
   const ageDays = Math.floor((env.nowMs - new Date(b.date).getTime()) / 86_400_000)
   const entry: BranchGcPlanEntry = { ...b, ...tip, ageDays, class: "hold" }
-  // Merged-head shortcut: an "unmerged" tip that is EXACTLY the head commit of
-  // a MERGED PR lost nothing — that commit was reviewed and merged. Override
-  // the ladder's verdict (and skip its push-state/verdict work below) before
-  // any reclaim/hold decision; holds further down still win.
-  if (tip.status === "unmerged" && env.mergedPrShas.has(b.sha)) {
-    const pr = env.mergedPrShas.get(b.sha) as number
-    entry.status = "pr-merged"
-    entry.mergedPr = pr
+  // Merged-PR shortcut: an "unmerged" tip whose work went through a MERGED
+  // PR (its exact head, an ancestor of its head, or patch-equivalent
+  // commits) lost nothing — that work was reviewed and merged. Override the
+  // ladder's verdict (and skip its push-state/verdict work below) before any
+  // reclaim/hold decision; holds further down still win.
+  if (tip.status === "unmerged") {
+    const merged = await mergedPrMatchOf(env, b.sha)
+    if (merged) {
+      entry.status = "pr-merged"
+      entry.mergedPr = merged.pr
+      entry.mergedPrMatch = merged.match
+    }
   }
   if (entry.status === "unmerged") {
     const pushed = await pushStateOf(b, env)
@@ -1369,6 +1521,7 @@ async function snapshot(input: {
   }
   let remoteReachableP: Promise<Set<string> | null> | null = null
   let localOrRemoteP: Promise<Set<string> | null> | null = null
+  let mergedPrCommitsP: Promise<MergedPrCommits | null> | null = null
   return {
     refs,
     otherRemoteRefs,
@@ -1381,6 +1534,8 @@ async function snapshot(input: {
       worktrees,
       prs,
       mergedPrShas: mergedPrs.shas,
+      mergedPrCommits: () => (mergedPrCommitsP ??= buildMergedPrCommits(ctx, mergedPrs.shas)),
+      prMatches: new Map(),
       mergedPrNames: mergedPrs.names,
       forgePrHeads,
       workBranchRefs,

@@ -48,7 +48,8 @@ Usage:
                 and orphan tracking ref (refs/remotes/<ns>/* of a removed remote) against
                 --base (default origin/main):
                   reclaim  work provably in base: pr-merged (tip == the head commit
-                           of a merged PR), merged (ancestor), squash-merged
+                           of a merged PR, an ancestor of it, or every tip commit
+                           patch-equivalent to a merged PR commit), merged (ancestor), squash-merged
                            (merge-tree == base tree), patch-merged (git cherry, only on
                            conflicts), content-merged (every changed file's blob is in
                            base at some path, or gitignored), forge-mirror (an
