@@ -628,6 +628,7 @@ function toGcPlanEntryView(entry: GcPlanEntry): WorktreeGcPlanEntryView {
     class: entry.class,
     ...(entry.reclaimReason ? { reclaimReason: entry.reclaimReason } : {}),
     ...(entry.holdReason ? { holdReason: entry.holdReason } : {}),
+    ...(entry.dirtyNoWork ? { dirtyNoWork: entry.dirtyNoWork } : {}),
     ...(entry.indexMtimeMs !== undefined ? { indexMtimeMs: entry.indexMtimeMs } : {}),
     tree: tree.state,
     integration,
@@ -1445,6 +1446,9 @@ function gcPlanAction(entry: GcPlanEntry, salvageDirty: boolean): string {
     if (entry.reclaimReason === "dep-bump") return "reclaim (dep-bump exemption: rm, delete branch)"
     if (entry.reclaimReason === "squash-merged" || entry.reclaimReason === "patch-merged" || entry.reclaimReason === "content-merged") {
       return `reclaim (${entry.reclaimReason}: rm, delete branch)`
+    }
+    if (entry.reclaimReason === "dirty-no-work") {
+      return `reclaim (dirty-no-work: ${entry.dirtyNoWork?.cases.join("+") ?? "proven"}, restore ${entry.dirtyNoWork?.paths ?? 0} path(s), rm, delete branch)`
     }
     return "reclaim (rm, delete branch)"
   }

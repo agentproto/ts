@@ -214,6 +214,12 @@ export {
   type GcApplyOutcome,
 } from "./gc.js"
 export {
+  proveDirtCarriesNoWork,
+  type DirtyNoWorkCase,
+  type DirtyNoWorkPath,
+  type DirtyNoWorkProof,
+} from "./dirty-no-work.js"
+export {
   BRANCH_GC_SCOPES,
   BRANCH_GC_STATE_DIR,
   BRANCH_TRIAGE_VERDICTS,

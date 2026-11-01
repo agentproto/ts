@@ -60,6 +60,10 @@ export type WorktreeGcReclaimReason =
   | "squash-merged"
   | "patch-merged"
   | "content-merged"
+  // An integrated worktree whose dirt is proven to carry no work (an emptied
+  // checkout, turbo's managed AGENTS.md block, changes already on base); the
+  // entry's `dirtyNoWork` names which.
+  | "dirty-no-work"
 
 /**
  * One entry of the dry-run plan — a runtime-local projection of a
@@ -83,6 +87,8 @@ export interface WorktreeGcPlanEntryView {
    * tree/integration/liveness axes this entry carries.
    */
   holdReason?: string
+  /** Set only with `reclaimReason: "dirty-no-work"`: the sub-cases that explained the dirt and how many paths removal puts back first. */
+  dirtyNoWork?: { cases: string[]; paths: number }
   /**
    * mtime (epoch ms) of the worktree's git index when the plan read it. Echoed
    * back as part of `WorktreeGcRunInput.expectedPlan` so apply can tell the
