@@ -99,6 +99,15 @@ describe("LocalFs", () => {
     expect(await fs.walkStat("missing")).toEqual([])
   })
 
+  it("walkStat reports the same whole-ms mtime as stat(), even with sub-ms precision", async () => {
+    await fs.writeFile("knowledge/sub.md", "s")
+    const { utimes } = await import("node:fs/promises")
+    // 1714979289122.9998 ms: truncating gives ...122, Stats.mtime rounds to ...123.
+    await utimes(path.join(root, "knowledge/sub.md"), 1714979289.1229996, 1714979289.1229996)
+    const [entry] = await fs.walkStat("knowledge")
+    expect(entry!.mtimeMs).toBe((await fs.stat("knowledge/sub.md"))!.modifiedAt!.getTime())
+  })
+
   it("normalizes a leading slash to workspace-relative", async () => {
     await fs.writeFile("/rooted.md", "r")
     expect(await fs.readFile("rooted.md")).toBe("r")

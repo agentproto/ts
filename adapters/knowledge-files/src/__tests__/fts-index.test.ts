@@ -119,6 +119,29 @@ for (const worker of [true, false]) {
       expect(builds()).toHaveLength(1)
     })
 
+    it("does not re-index an ingested doc at the next reconcile, even with sub-ms mtimes", async () => {
+      // Every write lands on a sub-ms mtime whose fraction rounds up, as on
+      // filesystems with ns timestamps.
+      const { utimes } = await import("node:fs/promises")
+      const realWrite = ctx.fs.writeFile.bind(ctx.fs)
+      ctx.fs.writeFile = async (p, content) => {
+        await realWrite(p, content)
+        const t = Math.floor(Date.now() / 1000) + 0.1229996
+        await utimes(path.join(ctx.root, p), t, t)
+      }
+      const adapter = adapterFor()
+      await adapter.whenIndexSynced()
+      await adapter.ingest({ kind: "text", uri: "notes/sub-ms", content: "a sub millisecond mtime" })
+      adapter.invalidate()
+      ctx.reads.length = 0
+      await adapter.query({ query: "x" }) // starts the reconcile
+      await adapter.whenIndexSynced()
+      const reconciled = ctx.logs.filter(l => l.includes("index reconciled"))
+      expect(reconciled).toHaveLength(1)
+      expect(reconciled[0]).toMatch(/ 0 re-indexed, 0 removed, 0 bytes read, /)
+      expect(ctx.reads).toEqual([])
+    })
+
     it("drops a file deleted outside the adapter after a reconcile, and picks up an edit", async () => {
       const adapter = adapterFor()
       await adapter.whenIndexSynced()

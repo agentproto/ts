@@ -40,7 +40,7 @@ export interface LocalFsOptions {
 }
 
 /** A file found by {@link LocalFs.walkStat}: workspace-relative path, size in
- *  bytes, and mtime in whole milliseconds. */
+ *  bytes, and mtime in whole milliseconds (as `stat().modifiedAt`). */
 export interface WalkStatEntry {
   readonly path: string
   readonly size: number
@@ -144,6 +144,9 @@ export class LocalFs implements FsPort {
       const stats = new Map<string, Stats | null>()
       for (let i = 0; i < toStat.length; i += WALK_STAT_CONCURRENCY) {
         const step = toStat.slice(i, i + WALK_STAT_CONCURRENCY)
+        // A file whose stat fails (vanished mid-scan, or a transient error)
+        // is left out; for the reconcile that reads as gone, so its row is
+        // dropped and the next scan that sees it re-indexes it.
         const got = await Promise.all(
           step.map(ent => stat(path.join(dir, ent.name)).catch(() => null))
         )
@@ -168,7 +171,11 @@ export class LocalFs implements FsPort {
           out.push({
             path: prefix + ent.name,
             size: s.size,
-            mtimeMs: Math.trunc(s.mtimeMs),
+            // `Stats.mtime` (Node rounds `mtimeMs` to whole ms), exactly what
+            // `stat()` reports: the reconcile compares rows written from one
+            // against scans from the other, and truncating `mtimeMs` would
+            // differ by 1 ms on sub-ms filesystems and re-index every time.
+            mtimeMs: s.mtime.getTime(),
           })
         }
       }
