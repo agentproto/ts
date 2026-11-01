@@ -377,6 +377,11 @@ import {
   type SpawnDedupeMode,
 } from "./spawn-dedupe.js"
 import {
+  findOwnerConflict,
+  normalizeOwnerKey,
+  OWNER_KEY_META,
+} from "./spawn-owner-lock.js"
+import {
   evaluateSpawnAdmission,
   type SpawnAdmission,
   type SpawnAdmissionCheck,
@@ -565,6 +570,48 @@ function claimsFor(registry: SessionsRegistry): Map<string, SpawnClaim> {
     spawnClaimsByRegistry.set(registry, claims)
   }
   return claims
+}
+
+/** In-flight `ownerKey` reservations, per registry. The descriptor-based
+ *  conflict scan only sees rows that already exist; a spawn spends many
+ *  `await`s between its owner check and the row's registration, so two
+ *  concurrent `agent_start` calls could both observe a free key. Reserving it
+ *  synchronously at check time closes that window. Released as soon as the
+ *  spawn settles (success or failure) — the descriptor's `meta.ownerKey`
+ *  takes over from there. */
+interface OwnerReservation {
+  sessionId: string
+  at: number
+}
+
+/** A reservation that outlives its spawn's `finish` (a thrown path that
+ *  bypassed every release, or a hung spawn) must not wedge the key forever. */
+const OWNER_RESERVATION_TTL_MS = 10 * 60 * 1000
+
+const ownerReservationsByRegistry = new WeakMap<SessionsRegistry, Map<string, OwnerReservation>>()
+
+function ownerReservationsFor(registry: SessionsRegistry): Map<string, OwnerReservation> {
+  let reservations = ownerReservationsByRegistry.get(registry)
+  if (!reservations) {
+    reservations = new Map()
+    ownerReservationsByRegistry.set(registry, reservations)
+  }
+  return reservations
+}
+
+/** Drop a stale reservation, then return the live one (if any) for `key`. */
+function takeLiveOwnerReservation(
+  reservations: Map<string, OwnerReservation>,
+  key: string,
+  now: number,
+): OwnerReservation | undefined {
+  const reservation = reservations.get(key)
+  if (!reservation) return undefined
+  if (now - reservation.at > OWNER_RESERVATION_TTL_MS) {
+    reservations.delete(key)
+    return undefined
+  }
+  return reservation
 }
 
 /** Two independent eviction passes — see the sizing docblock above the two
@@ -1783,6 +1830,16 @@ export interface SpawnAgentSessionInput {
    *  depth/quota/role gates, and an explicit `boardId` on a task verb still
    *  wins over it. */
   boardId?: string
+  /** One-owner lock key for a PR or branch (`pr:<owner>/<repo>#<n>` or
+   *  `branch:<name>`), canonicalised by `normalizeOwnerKey`. While a live
+   *  session — or one that ended less than 24h ago — carries the same key in
+   *  its descriptor `meta.ownerKey`, this spawn is refused `owner_busy` with
+   *  that session's id in `details.ownerSessionId`. Descriptor-only: no gate
+   *  reads it. Pass `takeOver: true` to override explicitly. */
+  ownerKey?: string
+  /** Explicit override for the {@link ownerKey} lock. Default false: a
+   *  conflicting owner is a hard refusal, never a silent redirect. */
+  takeOver?: boolean
   /** Workflow ownership of this spawn, stamped onto the descriptor as
    *  `meta.workflowRunId` / `workflowId` / `workflowStepId` — the same keys a
    *  `wf:*` agent-step session carries, so reports and session outcomes link
@@ -2262,6 +2319,8 @@ export type SpawnAgentSessionResult =
         | "stdio_mount_denied"
         | "identity_unverified"
         | "identity_mismatch"
+        | "owner_busy"
+        | "owner_key_invalid"
       message: string
       details?: Record<string, unknown>
     }
@@ -5370,6 +5429,63 @@ export async function spawnAgentSession(
   const initialTitle =
     explicitTitle ?? spawnLabel ?? (input.prompt ? deriveSessionTitle(input.prompt) : undefined)
 
+  // ── one owner per PR/branch (see spawn-owner-lock.ts) ─────────────
+  // Checked BEFORE the retry-safety claim so a second owner always gets an
+  // explicit `owner_busy` naming the first — never a silent second process.
+  // A live session, or one that ended less than 24h ago, keeps its key;
+  // `takeOver: true` is the only intentional way past it.
+  //
+  // The descriptor scan alone is racy: this spawn then `await`s many things
+  // before its row exists. Reserve the key synchronously here and release it
+  // when the spawn settles, so two concurrent calls cannot both win.
+  let normalizedOwnerKey: string | undefined
+  let releaseOwnerReservation: (() => void) | undefined
+  if (input.ownerKey !== undefined) {
+    const normalized = normalizeOwnerKey(input.ownerKey)
+    if (!normalized.ok) {
+      return {
+        ok: false,
+        code: "owner_key_invalid",
+        message: `agent_start: ${normalized.reason}`,
+      }
+    }
+    normalizedOwnerKey = normalized.key
+    const reservations = ownerReservationsFor(registry)
+    if (input.takeOver !== true) {
+      const owner = findOwnerConflict(
+        registry.list({ includeArchived: true }),
+        normalizedOwnerKey,
+        Date.now(),
+      )
+      if (owner) {
+        return {
+          ok: false,
+          code: "owner_busy",
+          message:
+            `agent_start: ownerKey "${normalizedOwnerKey}" is held by session ${owner.id}; ` +
+            "pass takeOver:true to take it over explicitly.",
+          details: { ownerKey: normalizedOwnerKey, ownerSessionId: owner.id },
+        }
+      }
+      const inflight = takeLiveOwnerReservation(reservations, normalizedOwnerKey, Date.now())
+      if (inflight) {
+        return {
+          ok: false,
+          code: "owner_busy",
+          message:
+            `agent_start: ownerKey "${normalizedOwnerKey}" is being claimed by an in-flight ` +
+            `spawn (session ${inflight.sessionId}); pass takeOver:true to take it over explicitly.`,
+          details: { ownerKey: normalizedOwnerKey, ownerSessionId: inflight.sessionId },
+        }
+      }
+    }
+    reservations.set(normalizedOwnerKey, { sessionId: mintedSessionId, at: Date.now() })
+    releaseOwnerReservation = () => {
+      const current = reservations.get(normalizedOwnerKey!)
+      if (current?.sessionId === mintedSessionId) reservations.delete(normalizedOwnerKey!)
+    }
+  }
+
   // ── retry-safety claim (see SpawnClaim docblock above) ────────────
   // Two independent doors into the SAME claim map. An EXPLICIT
   // `idempotencyKey` is a caller PROMISE ("these are the same logical
@@ -5422,6 +5538,7 @@ export async function spawnAgentSession(
               `${result.descriptor.id}${input.label ? ` (label "${input.label}")` : ""} ` +
               `for a repeated spawn (adapter ${input.adapter}, cwd ${cwd})`,
           )
+          releaseOwnerReservation?.()
           return { ...result, deduped: true, dedupeSource: claimAdmission.dedupeSource }
         }
         throw new Error("unreachable spawn admission outcome")
@@ -5434,6 +5551,7 @@ export async function spawnAgentSession(
       const failedClaimAdmission = evaluateSpawnAdmission(failedClaimCheck)
       notifySpawnAdmission(failedClaimCheck, failedClaimAdmission)
       if (spawnAdmissionOutcome(failedClaimAdmission) === "deny") {
+        releaseOwnerReservation?.()
         return result
       }
       throw new Error("unreachable spawn admission outcome")
@@ -5466,6 +5584,7 @@ export async function spawnAgentSession(
     }
   }
   const finish = (result: SpawnAgentSessionResult): SpawnAgentSessionResult => {
+    releaseOwnerReservation?.()
     settleClaim?.(result)
     return result
   }
@@ -5690,6 +5809,7 @@ export async function spawnAgentSession(
     // Always present: every spawn records at least its resolved `role`.
     const spawnDescriptorMeta = (): Record<string, string> => ({
       ...(input.boardId ? { boardId: input.boardId } : {}),
+      ...(normalizedOwnerKey ? { [OWNER_KEY_META]: normalizedOwnerKey } : {}),
       ...workflowOwnerMeta(input.workflowOwner),
       ...(appBoundary ? boundaryMeta(appBoundary) : {}),
       ...(cloudMeta ? { cloud: encodeCloudSessionMeta(cloudMeta) } : {}),
@@ -6660,6 +6780,10 @@ export async function spawnAgentSession(
         err instanceof Error ? err.message : String(err)
       }`,
     })
+  } finally {
+    // Belt-and-braces: `finish` already releases, but every thrown/early path
+    // through this block must not leave the ownerKey reserved.
+    releaseOwnerReservation?.()
   }
 }
 
