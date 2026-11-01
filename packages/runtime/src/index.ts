@@ -3755,6 +3755,12 @@ export async function createGateway(
     },
   })
 
+  // A session that registers may be the target of events parked while it was
+  // unreachable; redeliver them once (the runtime's tick covers retargets).
+  sessionEvents.on("session:spawned", ev => {
+    void sentinelRuntime.replayParked(ev.sessionId).catch(() => {})
+  })
+
   // Session-follow — wakes a follower session (no polling) when sessions
   // matching a selector end a turn / await input / exit / get a PR opened or
   // merged. Delivery never interrupts; a dead follower is resumed through the

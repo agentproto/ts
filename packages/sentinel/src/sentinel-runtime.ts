@@ -31,7 +31,7 @@
 
 import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
-import { mkdirSync, appendFileSync } from "node:fs"
+import { mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 
 import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
 import { sentinelPlatform } from "./platform.js"
@@ -242,6 +242,13 @@ export interface SentinelRuntime {
    *  every persisted webhook outbox row (by exact stored bytes). */
   start(): Promise<void>
   stop(): void
+  /** Redeliver parked events (`sentinels-parked.jsonl`) whose sentinel now has
+   *  a reachable target, then drop them from the journal so each is delivered
+   *  once. With a session id: only sentinels targeting it (call it when that
+   *  session registers/starts). Without: every sentinel whose target changed
+   *  since its last attempt (each poll tick does this, which also covers
+   *  boot and out-of-band retargets). Resolves to the number redelivered. */
+  replayParked(sessionId?: string): Promise<number>
   /** Force one poll tick across every poll-capable, pollable sentinel —
    *  used by tests and (later) `sentinel_poll_now`. */
   pollOnce(): Promise<void>
@@ -278,13 +285,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   // ── Parking (dead, unresumable session) ─────────────────────────────
 
-  function parkEvent(sentinel: Sentinel, event: SentinelEvent, reason: string): void {
+  function parkEvent(sentinel: Sentinel, event: SentinelEvent, reason: string, replay = true): void {
     try {
       mkdirSync(dirname(parkedPath), { recursive: true })
       const line = JSON.stringify({
         sentinelId: sentinel.id,
         event,
         reason,
+        ...(replay ? {} : { replay: false }),
         ts: new Date(nowMs()).toISOString(),
       })
       appendFileSync(parkedPath, line + "\n", { mode: 0o600 })
@@ -751,7 +759,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (closedNow && !event.terminal) {
         // Post-merge/close noise (a check_suite failing after the merge):
         // journal it, never wake or resume anything for it.
-        parkEvent(current, event, `subject ${event.subject} already closed`)
+        parkEvent(current, event, `subject ${event.subject} already closed`, false)
         store.markSeen(current.id, event.id)
         continue
       }
@@ -861,6 +869,86 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
+  // ── Replay of parked events ─────────────────────────────────────────
+
+  /** Last target session a replay was attempted for, per sentinel: a tick
+   *  retries a sentinel only after its target changed. */
+  const replayTried = new Map<string, string>()
+  let replayChain: Promise<unknown> = Promise.resolve()
+
+  function replayParked(sessionId?: string): Promise<number> {
+    const run = replayChain.then(() => replayParkedNow(sessionId))
+    replayChain = run.catch(() => undefined)
+    return run
+  }
+
+  async function replayParkedNow(sessionId?: string): Promise<number> {
+    let raw: string
+    try {
+      raw = readFileSync(parkedPath, "utf8")
+    } catch {
+      return 0
+    }
+    const eligible = new Map<string, boolean>()
+    const isEligible = (sentinel: Sentinel): boolean => {
+      const cached = eligible.get(sentinel.id)
+      if (cached !== undefined) return cached
+      const target = sentinel.spec.target
+      let ok = target.kind === "session" && isDeliverableLive(sentinel.id)
+      if (ok && target.kind === "session") {
+        ok = sessionId !== undefined ? target.sessionId === sessionId : replayTried.get(sentinel.id) !== target.sessionId
+        if (ok) replayTried.set(sentinel.id, target.sessionId)
+      }
+      eligible.set(sentinel.id, ok)
+      return ok
+    }
+
+    const delivered: string[] = []
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      let entry: { sentinelId?: string; event?: SentinelEvent; replay?: boolean }
+      try {
+        entry = JSON.parse(line) as typeof entry
+      } catch {
+        continue
+      }
+      if (entry.replay === false || !entry.event || !entry.sentinelId) continue
+      const sentinel = store.get(entry.sentinelId)
+      const target = sentinel?.spec.target
+      if (!sentinel || target?.kind !== "session" || !isEligible(sentinel)) continue
+      const key = coalesceKeyFor(entry.event)
+      try {
+        await opts.registry.sendMessage(buildMessage(sentinel, entry.event, target.sessionId, target.urgency), {
+          source: "sentinel",
+          origin: sentinel.id,
+          ...(key ? { coalesceKey: key } : {}),
+        })
+      } catch {
+        eligible.set(sentinel.id, false) // target still unreachable; later entries would fail too
+        continue
+      }
+      delivered.push(line)
+      const current = store.get(sentinel.id)
+      if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+    }
+    if (delivered.length === 0) return 0
+
+    // Re-read so lines parked while the sends were in flight survive.
+    try {
+      const remaining = readFileSync(parkedPath, "utf8").split("\n").filter(l => l.trim())
+      for (const line of delivered) {
+        const at = remaining.indexOf(line)
+        if (at >= 0) remaining.splice(at, 1)
+      }
+      const tmp = `${parkedPath}.tmp`
+      writeFileSync(tmp, remaining.length > 0 ? remaining.join("\n") + "\n" : "", { mode: 0o600 })
+      renameSync(tmp, parkedPath)
+    } catch (err) {
+      log(`[sentinel-runtime] failed to compact parked journal: ${describeError(err)}`)
+    }
+    return delivered.length
+  }
+
   async function pollOnce(): Promise<void> {
     if (inFlight) return
     inFlight = true
@@ -870,6 +958,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       await sweepExpiredSentinels()
       await cancelTombstones.sweep().catch(err => log(`[sentinel-runtime] tombstone sweep failed: ${describeError(err)}`))
       outbox.sweep()
+      await replayParked().catch(err => log(`[sentinel-runtime] parked replay failed: ${describeError(err)}`))
       const pollable = store.list().filter(s => POLLABLE_STATUSES.has(s.status))
       for (const sentinel of pollable) {
         await pollSentinel(sentinel)
@@ -978,6 +1067,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
     },
     pollOnce,
+    replayParked,
     deliverPushed,
     webhookOutbox: outbox,
     quarantine,

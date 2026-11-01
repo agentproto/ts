@@ -979,3 +979,120 @@ describe("SentinelRuntime", () => {
     })
   })
 })
+
+describe("SentinelRuntime parked-event replay", () => {
+  const parkedLines = (path: string): unknown[] => {
+    try {
+      return readFileSync(path, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l) as unknown)
+    } catch {
+      return []
+    }
+  }
+
+  const setup = (reachable: Set<string>) => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-replay-"))
+    const parkedPath = join(dir, "sentinels-parked.jsonl")
+    const store = createSentinelStore({ persist: false })
+    const provider = createFakeSentinelProvider()
+    const sentinel = newSentinel(store, { sessionId: "sess_dead" })
+    provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+    const registry = stubRegistry(async msg => {
+      if (!reachable.has(msg.to)) throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+      return okResult()
+    })
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: resolverFor(provider),
+      isSessionAlive: () => false,
+      restartSession: async () => {
+        throw new Error("cannot resume")
+      },
+      sessionInfo: () => ({}),
+      parkedPath,
+    })
+    return { dir, parkedPath, store, sentinel, registry, runtime }
+  }
+
+  it("redelivers a parked event once when the sentinel is retargeted to a live session", async () => {
+    const reachable = new Set<string>()
+    const { dir, parkedPath, store, sentinel, registry, runtime } = setup(reachable)
+    try {
+      await runtime.pollOnce()
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+      expect(store.get(sentinel.id)?.status).toBe("orphaned")
+
+      reachable.add("sess_new")
+      store.update(sentinel.id, {
+        spec: { ...sentinel.spec, target: { kind: "session", sessionId: "sess_new", urgency: "next-turn" } },
+      })
+      await runtime.pollOnce()
+      await runtime.pollOnce()
+
+      expect(registry.calls.filter(c => c.msg.to === "sess_new")).toHaveLength(1)
+      expect((registry.calls.find(c => c.msg.to === "sess_new")!.msg.data as { id: string }).id).toBe("evt_1")
+      expect(parkedLines(parkedPath)).toHaveLength(0)
+      expect(store.get(sentinel.id)?.status).toBe("active")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("replayParked(sessionId) redelivers for a session that registers, and only once", async () => {
+    const reachable = new Set<string>()
+    const { dir, parkedPath, registry, runtime } = setup(reachable)
+    try {
+      await runtime.pollOnce()
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+
+      expect(await runtime.replayParked("sess_other")).toBe(0)
+      expect(await runtime.replayParked("sess_dead")).toBe(0) // still unreachable: stays parked
+      expect(parkedLines(parkedPath)).toHaveLength(1)
+
+      const before = registry.calls.length
+      reachable.add("sess_dead")
+      expect(await runtime.replayParked("sess_dead")).toBe(1)
+      expect(await runtime.replayParked("sess_dead")).toBe(0)
+      expect(registry.calls.length - before).toBe(1)
+      expect(parkedLines(parkedPath)).toHaveLength(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("never replays an event parked because its subject was already closed", async () => {
+    const reachable = new Set<string>(["sess_1"])
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-replay-"))
+    const parkedPath = join(dir, "sentinels-parked.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const sentinel = newSentinel(store, { sessionId: "sess_1" })
+      const { writeFileSync } = await import("node:fs")
+      writeFileSync(
+        parkedPath,
+        JSON.stringify({
+          sentinelId: sentinel.id,
+          event: makeFakeEvent({ id: "evt_late", type: "fake.widget.created", subject: "fake:widget-1" }),
+          reason: "subject fake:widget-1 already closed",
+          replay: false,
+        }) + "\n",
+      )
+      const registry = stubRegistry(async msg => {
+        if (!reachable.has(msg.to)) throw new SessionNotAliveError(msg.to, "exited", "sendMessage")
+        return okResult()
+      })
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(createFakeSentinelProvider()),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        parkedPath,
+      })
+      expect(await runtime.replayParked("sess_1")).toBe(0)
+      expect(registry.calls).toHaveLength(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
