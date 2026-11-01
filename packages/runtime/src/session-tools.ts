@@ -33,7 +33,8 @@ import {
   collectSubtree,
   stripAnsi,
 } from "./agent-tools.js"
-import { checkSessionOwnerGate, effectiveCallerSessionId } from "./session-owner.js"
+import { effectiveCallerSessionId } from "./session-owner.js"
+import { checkDrive } from "./drive-gate.js"
 import { registerLineageTools } from "./lineage-tools.js"
 import type { RegisterAgentToolsOptions } from "./agent-tools.js"
 import { discoverMcps } from "./mcp-discovery.js"
@@ -2905,19 +2906,17 @@ export function registerSessionTools(
           isError: true,
         }
       }
-      // Session-owner gate (session-owner.ts): the fresh-continuation
-      // target may only be driven by its owner (the session that spawned it,
-      // or the operator), itself, or an `allowPromptFrom` grantee.
+      // Drive gate (drive-gate.ts): the fresh-continuation target may only be
+      // driven by its owner (the session that spawned it, or the operator),
+      // itself, an ancestor, or an `allowPromptFrom` grantee. An explicit
+      // `session:control` grant may admit another caller.
       const freshCaller = effectiveCallerSessionId(callerScope, callerSessionId)
-      const freshOwnerGate = checkSessionOwnerGate({
+      const freshOwnerGate = checkDrive({
+        registry,
+        ...(opts.messagingGrants !== undefined ? { grants: opts.messagingGrants } : {}),
         callerSessionId: freshCaller,
         target: desc,
         tool: "session_continue_fresh",
-        // Ancestor-chain rule (see session-owner.ts): a spawn-tree ancestor
-        // (grandparent / orchestrator root) keeps its existing subtree
-        // authority over the target.
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!freshOwnerGate.ok) {
         return {
@@ -5737,22 +5736,19 @@ export function registerSessionTools(
         }
       }
 
-      // ── session-owner gate (session-owner.ts) — the same drive rule the
-      // other drive tools enforce: another agent session (neither the target's
-      // owner, the target itself, the operator, nor an `allowPromptFrom`
-      // grantee) may not restart it. Runs after the scoped-orchestrator
-      // subtree gate so orchestrator callers keep their stricter check.
+      // ── drive gate (drive-gate.ts) - the same drive rule the other drive
+      // tools enforce: another agent session (neither the target's owner, the
+      // target itself, an ancestor, the operator, nor an `allowPromptFrom`
+      // grantee) may not restart it, unless an explicit `session:control`
+      // grant admits it. Runs after the scoped-orchestrator subtree gate so
+      // orchestrator callers keep their stricter check.
       const restartCaller = effectiveCallerSessionId(callerScope, callerSessionId)
-      const restartOwnerGate = checkSessionOwnerGate({
+      const restartOwnerGate = checkDrive({
+        registry,
+        ...(opts.messagingGrants !== undefined ? { grants: opts.messagingGrants } : {}),
         callerSessionId: restartCaller,
         target: prev,
         tool: "session_restart",
-        // Ancestor-chain rule (see session-owner.ts): a scoped orchestrator's
-        // subtree authority over transitive descendants is pre-existing
-        // behaviour (the subtree gate below is unchanged) — the owner gate
-        // must not revoke it.
-        parentOf: id => registry.get(id)?.parentSessionId,
-        operatorLabelOf: id => registry.get(id)?.operatorLabel,
       })
       if (!restartOwnerGate.ok) {
         return {

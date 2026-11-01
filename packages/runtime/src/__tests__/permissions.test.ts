@@ -181,9 +181,18 @@ describe("decide(session.drive) mirrors the owner gate", () => {
         const gate = checkSessionOwnerGate({ callerSessionId: caller?.id, target, tool: "x", parentOf })
         const d = decide(caller ? as(caller) : operator, "session.drive", to(target), { parentOf })
         expect(d.allow).toBe(gate.ok)
-        expect(d.authoritative).toBe(false)
+        expect(d.authoritative).toBe(true)
       }
     }
+  })
+
+  it("is authoritative for the operator, a session, the system and a relay", () => {
+    expect(decide(operator, "session.drive", to(P)).authoritative).toBe(true)
+    expect(decide(as(A), "session.drive", to(P)).authoritative).toBe(true)
+    expect(decide({ kind: "system" }, "session.drive", to(P)).authoritative).toBe(true)
+    expect(
+      decide({ kind: "relay", boxSessionId: "box", parentSessionId: "P" }, "session.drive", to(P)).authoritative,
+    ).toBe(true)
   })
 })
 
@@ -191,6 +200,7 @@ describe("action vocabulary", () => {
   it("declares every action, and only the routed actions are routed", () => {
     for (const a of PERMISSION_ACTIONS) expect(PERMISSION_ACTION_INFO[a]).toBeDefined()
     expect(PERMISSION_ACTIONS.filter(a => PERMISSION_ACTION_INFO[a].routed)).toEqual([
+      "session.drive",
       "session.message",
       "session.message.interrupt",
       "mcp.mount.stdio",
@@ -199,7 +209,7 @@ describe("action vocabulary", () => {
   })
   it("an unrouted action is never reported as authoritative", () => {
     for (const a of PERMISSION_ACTIONS) {
-      if (PERMISSION_ACTION_INFO[a].routed || a === "session.drive") continue
+      if (PERMISSION_ACTION_INFO[a].routed) continue
       const d = decide(operator, a, { kind: "none" })
       expect(d).toMatchObject({ action: a, allow: false, authoritative: false, rule: "not-routed" })
     }

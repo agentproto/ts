@@ -16,10 +16,12 @@
  *    `message_parent`, `POST /sessions/:id/messages`, the box parent relay)
  *    all route through them, and `registry.sendMessage` refuses a message
  *    whose attached decision does not allow it.
- *  - `session.drive` is evaluated with the exact predicate the drive tools
- *    already call (`checkSessionOwnerGate`), but the drive tools do not
- *    route through `decide()` yet, so its decisions are marked
- *    non-authoritative.
+ *  - `session.drive` is AUTHORITATIVE: the five drive tools
+ *    (`agent_prompt`, `agent_interrupt`, `agent_kill`, `session_restart`,
+ *    `session_continue_fresh`) route through it via `drive-gate.ts`, and the
+ *    legacy owner-gate rules are evaluated unchanged. An explicit
+ *    `session:prompt` or `session:control` grant may admit a caller the owner
+ *    gate refuses.
  *  - Every other action in the vocabulary is declared (types, enforcement
  *    site) but not routed: `decide()` answers `allow: false,
  *    authoritative: false` and names the site that enforces it today.
@@ -107,8 +109,9 @@ export const PERMISSION_ACTION_INFO: Readonly<Record<PermissionAction, ActionInf
     surfaces: ["agent_start", "cron_create (agent action)", "workflow_start", "app_run", "POST /sessions"],
   },
   "session.drive": {
-    routed: false,
-    enforcedAt: "session-owner.ts checkSessionOwnerGate (agent-tools.ts / session-tools.ts)",
+    routed: true,
+    enforcedAt:
+      "permissions.ts decide(), called by the five drive tools through drive-gate.ts (the owner-gate rules are unchanged; explicit session:prompt / session:control grants may admit a caller)",
     surfaces: ["agent_prompt", "agent_interrupt", "agent_kill", "session_restart", "session_continue_fresh"],
   },
   "session.message": {
@@ -223,6 +226,9 @@ export type Principal =
 export interface SessionResource {
   kind: "session"
   session: MessageTreeNode & { allowPromptFrom?: readonly string[] }
+  /** The drive tool calling through `decide()`: picks the refusal text's tool
+   *  name and the AIP-38 action an explicit grant must match. */
+  drive?: { tool: string; action: "session:prompt" | "session:control" }
 }
 
 /** A tool call. `name` is the registry's full name `<server>/<name>`, or a legacy bare built-in. */
@@ -496,29 +502,31 @@ type MessageGrantEvaluation =
   | undefined
 
 /**
- * Evaluate the AIP-38 policy for a `session:message` to the RECIPIENT. Both
- * the explicit-deny path and the explicit-allow admission read this one
- * result, so they cannot build the request differently. The typed scope
- * values are the recipient's label and VERIFIED workspace; an unresolvable
- * one is `undefined`, which fails closed.
+ * Evaluate the AIP-38 policy for a session action (`session:message`,
+ * `session:prompt`, `session:control`) targeting `target`. Both the
+ * explicit-deny path and the explicit-allow admission read this one result,
+ * so they cannot build the request differently. The typed scope values are
+ * the target's label and VERIFIED workspace; an unresolvable one is
+ * `undefined`, which fails closed.
  */
-function evaluateMessageGrant(
+function evaluateSessionGrant(
+  action: "session:message" | "session:prompt" | "session:control",
   principal: Principal,
-  recipient: MessageTreeNode,
+  target: MessageTreeNode,
   ctx: PermissionContext,
 ): MessageGrantEvaluation {
   const policy = ctx.policy
   if (!policy) return undefined
-  const label = ctx.operatorLabelOf ? ctx.operatorLabelOf(recipient.id)?.trim() || null : undefined
+  const label = ctx.operatorLabelOf ? ctx.operatorLabelOf(target.id)?.trim() || null : undefined
   const workspace =
-    ctx.workspaceOfCwd && recipient.cwd ? ctx.workspaceOfCwd(recipient.cwd)?.trim() || null : undefined
+    ctx.workspaceOfCwd && target.cwd ? ctx.workspaceOfCwd(target.cwd)?.trim() || null : undefined
   try {
     return {
       ok: true,
       decision: evaluateGrants(policy.inputs, {
         ...grantRequest(principal, policy, ctx),
-        action: "session:message",
-        scope: recipient.id,
+        action,
+        scope: target.id,
         typed: { label, workspace },
       }),
     }
@@ -526,6 +534,14 @@ function evaluateMessageGrant(
     if (err instanceof PolicyGrantError) return { ok: false, error: err }
     throw err
   }
+}
+
+function evaluateMessageGrant(
+  principal: Principal,
+  recipient: MessageTreeNode,
+  ctx: PermissionContext,
+): MessageGrantEvaluation {
+  return evaluateSessionGrant("session:message", principal, recipient, ctx)
 }
 
 /**
@@ -754,8 +770,11 @@ function decideInterrupt(principal: Principal, recipient: MessageTreeNode | unde
   })
 }
 
-function decideDrive(principal: Principal, target: SessionResource["session"], ctx: PermissionContext): Decision {
-  const base = { action: "session.drive" as const, authoritative: false, resourceId: target.id }
+function decideDrive(principal: Principal, resource: SessionResource, ctx: PermissionContext): Decision {
+  const target = resource.session
+  const action = resource.drive?.action ?? "session:control"
+  const tool = resource.drive?.tool ?? "session.drive"
+  const base = { action: "session.drive" as const, authoritative: true, resourceId: target.id }
   if (principal.kind === "relay") {
     return mint({ ...base, allow: false, rule: "relay", reason: "a relay grant carries only session.message" })
   }
@@ -763,6 +782,9 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
     return mint({ ...base, allow: true, rule: "system", reason: "daemon-internal" })
   }
   const callerSessionId = principal.kind === "session" ? principal.session.id : undefined
+  // The legacy owner gate, unchanged: the operator, the session itself, its
+  // owner, an ancestor, and `allowPromptFrom` all keep working exactly as
+  // before, and the refusal text names the calling tool byte for byte.
   const r = checkSessionOwnerGate({
     callerSessionId,
     target: {
@@ -770,18 +792,34 @@ function decideDrive(principal: Principal, target: SessionResource["session"], c
       ...(target.parentSessionId ? { parentSessionId: target.parentSessionId } : {}),
       ...(target.allowPromptFrom ? { allowPromptFrom: [...target.allowPromptFrom] } : {}),
     },
-    tool: "session.drive",
+    tool,
     ...(ctx.parentOf ? { parentOf: ctx.parentOf } : {}),
     ...(ctx.operatorLabelOf ? { operatorLabelOf: ctx.operatorLabelOf } : {}),
   })
-  return r.ok
-    ? mint({
+  if (r.ok) {
+    return mint({
+      ...base,
+      allow: true,
+      rule: "owner-gate",
+      reason: callerSessionId ? "caller is the session, an ancestor, or granted by allowPromptFrom" : "the operator may drive any session",
+    })
+  }
+  // The legacy gate refused. An explicit `session:prompt` / `session:control`
+  // grant may still admit a session caller; only a real matching allow counts
+  // (a composed `default: allow` never admits, a malformed policy admits
+  // nothing, and a matching deny beats the allow).
+  if (principal.kind === "session" && ctx.policy) {
+    const admission = messageAdmission(evaluateSessionGrant(action, principal, target, ctx))
+    if (admission) {
+      return mint({
         ...base,
         allow: true,
-        rule: "owner-gate",
-        reason: callerSessionId ? "caller is the session, an ancestor, or granted by allowPromptFrom" : "the operator may drive any session",
+        rule: "policy.matched-grant",
+        reason: `a configured ${action} grant admits the call (${admission.source})`,
       })
-    : mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
+    }
+  }
+  return mint({ ...base, allow: false, rule: "owner-gate", reason: r.message })
 }
 
 function decideProfile(
@@ -903,10 +941,10 @@ export function decide(
     case "session.message.interrupt":
       return decideInterrupt(principal, recipient, context)
     case "session.drive":
-      if (!recipient) {
-        return mint({ action, allow: false, authoritative: false, rule: "resource", reason: "session.drive needs a target session" })
+      if (resource.kind !== "session") {
+        return mint({ action, allow: false, authoritative: true, rule: "resource", reason: "session.drive needs a target session" })
       }
-      return decideDrive(principal, recipient, context)
+      return decideDrive(principal, resource, context)
     case "auth.profile.use":
       return decideProfile(principal, resource, context)
     case "mcp.mount.stdio":

@@ -12,6 +12,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { Grant } from "@agentproto/policy"
 
 import { buildMessagingPermissionContext } from "./messaging-context.js"
+import { DRIVE_TOOL_ACTIONS } from "./drive-gate.js"
 import type { OrchestratorScope } from "./orchestrator-gateway.js"
 import type { SessionsRegistry } from "./sessions.js"
 import { loadConfig } from "./config.js"
@@ -92,6 +93,12 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
         .min(1)
         .optional()
         .describe("The auth profile ref, for action auth.profile.use."),
+      tool: z
+        .enum(Object.keys(DRIVE_TOOL_ACTIONS) as [string, ...string[]])
+        .optional()
+        .describe(
+          "For action session.drive: the drive tool whose action and refusal text to explain. Default agent_prompt.",
+        ),
     },
     async input => {
       const callerId = callerScope?.ownerSessionId ?? callerSessionId
@@ -150,6 +157,14 @@ export function registerPermissionsTools(server: McpServer, opts: RegisterPermis
           )
         }
         resource = { kind: "session", session: target }
+        if (input.action === "session.drive") {
+          const tool = input.tool ?? "agent_prompt"
+          resource = {
+            kind: "session",
+            session: target,
+            drive: { tool, action: DRIVE_TOOL_ACTIONS[tool] ?? "session:control" },
+          }
+        }
       }
       // The same shared messaging context the enforcement sites build, so
       // explain and enforce cannot drift (including explicit grants).

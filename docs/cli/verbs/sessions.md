@@ -1278,26 +1278,43 @@ relation `granted`. Two siblings of the SAME workspace are still gated by
 `allowSiblings`. With no tree edge, same-workspace needs `allowSameWorkspace`
 and a peer-group link always passes.
 
-### Explicit message grants
+### Explicit session grants
 
-An operator can also write a pair down directly, as an AIP-38 grant under
-`defaults.messaging.grants`. A matching `allow` admits a send the tree and
-the switches above refuse, with relation `granted`; a matching `deny` wins.
-This is the migration input for turning a switch off for everyone and
-granting only the pairs that need it (for example
-`defaults.messaging.allowSameWorkspace: false` plus a grant for the brain).
+An operator can also write a relation down directly, as an AIP-38 grant
+under `defaults.messaging.grants`. This key keeps its name: it is the one
+list of session-to-session grants, and it now covers messaging and the
+drive gate together. A matching `allow` admits a send or a drive call the
+legacy rules refuse; a matching `deny` wins. This is the migration input for
+turning a switch off for everyone and granting only the pairs that need it
+(for example `defaults.messaging.allowSameWorkspace: false` plus a grant for
+the brain).
 
 The accepted shape is a strict subset of an AIP-38 `Grant`: a non-empty
-string `principal`, at least one `{ "action": "session:message", "scope"? }`,
-and optional `effect`, `ttl_seconds`, `granted_at` and `revoked`. Other
-actions (`session:prompt`, `session:control`), an object-form principal and
-`conditions` are rejected for now.
+string `principal`, at least one action from the table below (with an
+optional `scope`), and optional `effect`, `ttl_seconds`, `granted_at` and
+`revoked`. An object-form principal and `conditions` are rejected.
 
-Scope forms, all matched against the **recipient**:
+Which action guards which tool:
+
+| Action | Tools it may admit |
+|---|---|
+| `session:message` | `message_send`, `message_reply`, `POST /sessions/:id/messages`, the box parent relay (unchanged) |
+| `session:prompt` | `agent_prompt` |
+| `session:control` | `agent_interrupt`, `agent_kill`, `session_restart`, `session_continue_fresh` |
+
+For the drive tools the legacy rules stay in `session-owner.ts` and are
+checked FIRST, byte for byte as before: the human operator, the session
+itself, the session that spawned it, an ancestor in the spawn tree, and an
+`allowPromptFrom` entry all still pass without any grant. A grant is
+consulted only when that gate refuses, and only for a session caller. It
+admits any OTHER caller, then reports rule `policy.matched-grant`.
+
+Scope forms, all matched against the target (the message recipient, or the
+session being driven):
 
 - `<sessionId>` - one exact session.
-- `label:<operatorLabel>` - the recipient's operator label.
-- `workspace:<slug>` - the recipient's **verified** workspace (its cwd
+- `label:<operatorLabel>` - the target's operator label.
+- `workspace:<slug>` - the target's **verified** workspace (its cwd
   resolves to a registered workspace); an unresolvable cwd fails closed.
 
 Sender principals:
@@ -1305,8 +1322,9 @@ Sender principals:
 - `session-label://<label>` - a session carrying that operator label.
 - `*` - any sender.
 
-Worked example for R12: the Pygmalion brain may message the `agentik-studio`
-workspace, and any session of the daemon may reply to the brain:
+Worked example: the Pygmalion brain may message the `agentik-studio`
+workspace, may prompt its sessions, and may control them (interrupt, kill,
+restart, continue fresh); any session of the daemon may reply to the brain:
 
 ```json
 {
@@ -1317,7 +1335,11 @@ workspace, and any session of the daemon may reply to the brain:
         {
           "principal": "session-label://pygmalion-brain-persistent",
           "effect": "allow",
-          "actions": [{ "action": "session:message", "scope": "workspace:agentik-studio" }]
+          "actions": [
+            { "action": "session:message", "scope": "workspace:agentik-studio" },
+            { "action": "session:prompt", "scope": "workspace:agentik-studio" },
+            { "action": "session:control", "scope": "workspace:agentik-studio" }
+          ]
         },
         {
           "principal": "*",
@@ -1332,16 +1354,30 @@ workspace, and any session of the daemon may reply to the brain:
 
 How a grant is read: `GET /permissions/grants` returns the explicit grants
 as written under `configured`, beside the switch-derived `grants`;
-`permissions_explain` for `session.message` answers the deciding rule
-(`policy.matched-grant` for an admitted pair), through the same `decide()`
-the send paths enforce.
+`permissions_explain` for `session.message` or `session.drive` answers the
+deciding rule (`policy.matched-grant` for an admitted call) through the same
+`decide()` the send and drive paths enforce. For `session.drive` it accepts
+an optional `tool` (default `agent_prompt`) and reports the decision
+`authoritative: true`.
 
 A matching deny removes only grant-derived reasons: it never overrides a
-tree edge, the operator or the system. The three switches
-(`allowSiblings`, `allowSameWorkspace`, `peerGroups`) keep working exactly
-as before and stay the migration input for one release. `message_parent`
-and the box parent relay are tree-only: a grant can neither create nor
-remove those relations.
+tree edge, the operator or the system. For the drive gate a matching deny
+prevents only the NEW admission; it does not remove an `allowPromptFrom`
+grantee or a parent (a follow-up). The switches (`allowSiblings`,
+`allowSameWorkspace`, `peerGroups`) keep working exactly as before and stay
+the migration input for one release. `message_parent` and the box parent
+relay are tree-only: a grant can neither create nor remove those relations.
+
+Known limits, deliberately left for later PRs:
+
+- `defaults.tasks.operatorDelegates` is NOT a drive action. It gives the
+  task ledger its operator rights, which AIP-39 does not declare, and
+  `effective-grants.ts` lists it as `unmapped` for that reason.
+- The HTTP drive routes (`POST /sessions/:id/prompt`, `/interrupt`, `/kill`,
+  ...) apply no owner gate today and still do not. An anonymous loopback
+  caller is the operator; a claimed session reaching them is not evaluated.
+  This gap is to be taken after the spawn-proof counters are read.
+- `effective-grants.ts` and its derived list are untouched.
 
 ### Tools (MCP)
 

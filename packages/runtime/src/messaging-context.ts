@@ -40,6 +40,28 @@ export interface BuildMessagingPermissionContextInput {
   allowInterrupt?: boolean
 }
 
+export interface BuildSessionGrantContextInput {
+  registry: Pick<SessionsRegistry, "get">
+  grants?: readonly Grant[]
+}
+
+/**
+ * The registry lookups and the explicit AIP-38 grant policy shared by the
+ * messaging and drive contexts. With no grants the returned object has no
+ * `policy` key at all, so the no-grants context stays byte for byte the one
+ * call sites built by hand before explicit grants existed.
+ */
+export function buildSessionGrantContext(
+  input: BuildSessionGrantContextInput,
+): Pick<PermissionContext, "parentOf" | "operatorLabelOf" | "policy"> {
+  const grants = input.grants ?? []
+  return {
+    parentOf: id => input.registry.get(id)?.parentSessionId,
+    operatorLabelOf: id => input.registry.get(id)?.operatorLabel,
+    ...(grants.length > 0 ? { policy: { inputs: [{ default: "deny" as const, grants }] } } : {}),
+  }
+}
+
 export function buildMessagingPermissionContext(
   input: BuildMessagingPermissionContextInput,
 ): PermissionContext {
@@ -55,8 +77,6 @@ export function buildMessagingPermissionContext(
       agentInterrupt: interrupt ? "allow" : "deny",
     },
     ...(workspaceOfCwd ? { workspaceOfCwd } : {}),
-    parentOf: id => registry.get(id)?.parentSessionId,
-    operatorLabelOf: id => registry.get(id)?.operatorLabel,
-    ...(grants.length > 0 ? { policy: { inputs: [{ default: "deny" as const, grants }] } } : {}),
+    ...buildSessionGrantContext({ registry, grants }),
   }
 }

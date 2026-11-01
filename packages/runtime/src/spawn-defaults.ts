@@ -208,9 +208,10 @@ export interface SpawnDefaultsConfig {
      *  (e.g. `[["agentik-studio", "app-agentik-pygmalion"]]`). Default []:
      *  no cross-workspace link. Independent of `allowSameWorkspace`. */
     peerGroups?: string[][]
-    /** Explicit AIP-38 `session:message` grants. A matching allow admits a
-     *  pair the tree and the messaging switches refuse (relation `granted`);
-     *  a matching deny wins. Default []: nothing changes. */
+    /** Explicit AIP-38 `session:message`, `session:prompt` and
+     *  `session:control` grants. A matching allow admits a message pair or a
+     *  drive call the legacy gate refuses; a matching deny wins. Default []:
+     *  nothing changes. */
     grants?: Grant[]
     /** `defaults.messaging.peerBinding` - "slug" (default): peers by recorded
      *  workspace slug (existing behaviour). "verified": peers only when both
