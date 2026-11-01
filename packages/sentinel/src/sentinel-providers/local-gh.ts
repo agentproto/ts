@@ -259,7 +259,7 @@ function diffSnapshots(
         subjects,
         terminal: false,
         time: current.fetchedAt,
-        data: { action: "submitted", state: review.state, repo: ctx.repo, number: ctx.number, actor: review.login },
+        data: { action: "submitted", state: review.state.toLowerCase(), repo: ctx.repo, number: ctx.number, actor: review.login },
         summary: `PR ${prTag} review ${review.state} by ${review.login}`,
       }),
     )

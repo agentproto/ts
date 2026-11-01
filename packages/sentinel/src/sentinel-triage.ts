@@ -101,15 +101,21 @@ const FAILURE_VERDICTS: ReadonlySet<string> = new Set([
   "error",
   "cancelled",
   "timed_out",
+  // Verdicts that need the recipient to act, not just know: a review asking
+  // for changes, a check suite waiting on a human.
+  "changes_requested",
+  "action_required",
 ])
 
 /** The event's own verdict: `conclusion` (check suites/runs, workflow runs)
- *  or `state` (statuses), or "" when it carries neither. */
+ *  or `state` (statuses, reviews), lowercased because providers disagree on
+ *  casing (webhook `changes_requested`, GraphQL `CHANGES_REQUESTED`), or ""
+ *  when it carries neither. */
 function verdictOf(event: SentinelEvent): string {
   const conclusion = event.data.conclusion
-  if (typeof conclusion === "string") return conclusion
+  if (typeof conclusion === "string") return conclusion.toLowerCase()
   const state = event.data.state
-  return typeof state === "string" ? state : ""
+  return typeof state === "string" ? state.toLowerCase() : ""
 }
 
 /** Triage repeat key: the delivery coalesce key plus the verdict, so a
@@ -120,7 +126,7 @@ export function sentinelTriageKeyFor(event: SentinelEvent): string | undefined {
 }
 
 function isFailureEvent(event: SentinelEvent): boolean {
-  return event.terminal !== true && FAILURE_VERDICTS.has(verdictOf(event).toLowerCase())
+  return event.terminal !== true && FAILURE_VERDICTS.has(verdictOf(event))
 }
 
 /** Classify one event without applying anything. The caller records the

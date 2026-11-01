@@ -140,6 +140,18 @@ describe("localGhSentinelProvider", () => {
     expect(after.events[0]!.summary).toContain("carol")
   })
 
+  it("review state is normalised to lowercase so it matches the webhook provider", async () => {
+    const state: FakeGhState = { number: 42, state: "open", merged: false, headSha: "sha1", reviews: [], checks: [] }
+    const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
+    let handle = await provider.create(watchSpec(), { mode: "poll", intervalMs: 15_000 })
+    const baseline = await provider.poll!(handle, 50)
+    handle = { ...handle, cursor: baseline.cursor }
+
+    state.reviews = [{ login: "carol", state: "CHANGES_REQUESTED", submittedAt: "2026-01-01T00:00:00Z" }]
+    const after = await provider.poll!(handle, 50)
+    expect(after.events[0]!.data.state).toBe("changes_requested")
+  })
+
   it("merged -> a terminal pull_request.closed event", async () => {
     const state: FakeGhState = { number: 42, state: "open", merged: false, headSha: "sha1", reviews: [], checks: [] }
     const provider = localGhSentinelProvider({ gh: makeFakeGh(state), nowMs: () => 1_000 })
