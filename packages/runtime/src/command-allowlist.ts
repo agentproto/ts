@@ -31,7 +31,7 @@
 
 import { existsSync } from "node:fs"
 import { readFile, stat } from "node:fs/promises"
-import { resolve } from "node:path"
+import { basename, resolve } from "node:path"
 
 export const ALLOWLIST_REL = ".agentproto/allowed-commands.json"
 
@@ -129,6 +129,73 @@ export async function loadAllowlistEntries(
 export async function loadAllowlist(workspace: string): Promise<Set<string>> {
   const entries = await loadAllowlistEntries(workspace)
   return new Set(entries.map(e => e.command))
+}
+
+/** What a shell gate actually executes, after `resolveShellGateExec`. */
+export interface ResolvedShellGateExec {
+  command: string
+  args: string[]
+  /** The original whole-shell-line `command`, set only when it was
+   *  rewritten to `bash -c <line>`; used to make refusals readable. */
+  shellLine?: string
+}
+
+/**
+ * Resolve the argv a shell gate (`{command, args?}`) should run. A task
+ * `verify` or policy gate is often written as a WHOLE shell line in `command`
+ * with no `args` (`"grep -q x /a/b/RAPPORT.md"`, `"cd /x && test -s a"`).
+ * Gating that string by `basename()` yields the text after its last `/`
+ * (`RAPPORT.md`) and refuses with a misleading error, so a `command` that
+ * contains whitespace, has no `args` and is not itself an existing file path
+ * is run as `bash -c <line>`. The allowlist then applies to `bash`, which is
+ * exactly the explicit `{command:"bash", args:["-c", ...]}` form. Anything
+ * else is returned unchanged. A relative `command` is probed against `cwd`
+ * (the directory the gate runs in), not the daemon's own cwd.
+ */
+export function resolveShellGateExec(
+  spec: { command: string; args?: readonly string[] },
+  cwd?: string,
+): ResolvedShellGateExec {
+  const args = spec.args ?? []
+  const line = spec.command.trim()
+  if (
+    args.length === 0 &&
+    /\s/.test(line) &&
+    !existsSync(resolve(cwd ?? process.cwd(), spec.command))
+  ) {
+    return { command: "bash", args: ["-c", line], shellLine: line }
+  }
+  return { command: spec.command, args: [...args] }
+}
+
+/**
+ * Allowlist check for a resolved shell gate. Plain gates keep the historical
+ * basename-only rule; a rewritten `bash -c <line>` additionally honours any
+ * argv constraint on a `bash` entry, so the auto-rewrite cannot bypass an
+ * operator who allowlisted bash for specific arguments only.
+ */
+export function isShellGateExecAllowed(
+  entries: readonly AllowlistEntry[],
+  target: ResolvedShellGateExec,
+): boolean {
+  const baseName = basename(target.command)
+  return target.shellLine === undefined
+    ? entries.some(e => e.command === baseName)
+    : isCommandAllowed(entries, baseName, target.args)
+}
+
+/** `not in allowlist` text for a gate refusal. Names the command that was
+ *  actually checked and, when it came from a shell line, that line. */
+export function describeGateRefusal(
+  label: string,
+  baseName: string,
+  shellLine?: string,
+): string {
+  const shown =
+    shellLine === undefined
+      ? ""
+      : ` (shell line: ${shellLine.length > 200 ? `${shellLine.slice(0, 200)}...` : shellLine})`
+  return `${label} command '${baseName}' not in allowlist${shown}`
 }
 
 /** True when `pattern` (an allowed argv prefix) matches the start of

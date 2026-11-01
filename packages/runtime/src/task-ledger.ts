@@ -103,11 +103,14 @@ import type {
   TaskChangedEvent,
 } from "./session-event-bus.js"
 import type { GateSpec, JudgeGateSpec, CostGateSpec } from "./supervisor.js"
-import {
-  runCommand as defaultRunCommand,
-  loadAllowlist,
-} from "./command-tools.js"
+import { runCommand as defaultRunCommand } from "./command-tools.js"
 import type { RunCommandInput, ExecuteResult } from "./command-tools.js"
+import {
+  describeGateRefusal,
+  isShellGateExecAllowed,
+  loadAllowlistEntries,
+  resolveShellGateExec,
+} from "./command-allowlist.js"
 
 // ── Data model ───────────────────────────────────────────────────────
 
@@ -417,18 +420,23 @@ export function createSupervisorTaskGateRunner(opts: {
       }
     }
     try {
-      const allowlist = await loadAllowlist(workspace)
-      const baseName = basename(gate.command)
-      if (!allowlist.has(baseName)) {
+      const entries = await loadAllowlistEntries(workspace)
+      const gateCwd = gate.cwd ?? cwd ?? workspace
+      const target = resolveShellGateExec(gate, gateCwd)
+      if (!isShellGateExecAllowed(entries, target)) {
         return {
           passed: false,
-          error: `verify gate command '${baseName}' not in allowlist`,
+          error: describeGateRefusal(
+            "verify gate",
+            basename(target.command),
+            target.shellLine,
+          ),
         }
       }
       const result = await exec({
-        command: gate.command,
-        args: gate.args ?? [],
-        cwd: gate.cwd ?? cwd ?? workspace,
+        command: target.command,
+        args: target.args,
+        cwd: gateCwd,
         timeoutMs: gate.timeoutMs ?? 60_000,
       })
       return result.exitCode === 0
