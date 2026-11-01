@@ -351,6 +351,142 @@ describe("branch gc — pr-merged shortcut", () => {
   })
 })
 
+// ── merged-PR history: ancestor + patch-equivalent matches ──────────────
+
+/** Build a PR head on a throwaway branch, then delete the branch: like a merged PR whose head ref is gone but whose commits were fetched. */
+async function prHeadVia(repo: string, from: string, build: () => Promise<void>): Promise<string> {
+  await execGit(repo, ["checkout", "-q", "-b", "tmp/pr-head", from])
+  await build()
+  const head = await sha(repo, "HEAD")
+  await execGit(repo, ["checkout", "-q", "main"])
+  await execGit(repo, ["branch", "-q", "-D", "tmp/pr-head"])
+  return head
+}
+
+describe("branch gc — pr-merged through a merged PR's history", () => {
+  it("ancestor: the tip is an ancestor of a merged PR's head (the PR kept going after the branch stopped)", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/stopped-early", { "a.txt": "a\n" })
+    const head = await prHeadVia(repo, tip, async () => {
+      await commitFiles(repo, { "b.txt": "b\n" }, "more work on the PR")
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work") // base moved on after the squash merge
+    const forge = new FakeForge([], [mergedPr(201, "feat/kept-going", head)])
+    const p = await plan(repo, { forge })
+    expect(entry(p, "feat/stopped-early")).toMatchObject({
+      status: "pr-merged",
+      mergedPr: 201,
+      mergedPrMatch: "ancestor",
+      class: "reclaim",
+      reclaimReason: "pr-merged",
+    })
+    // No forge data → the same branch stays review.
+    expect(entry(await plan(repo), "feat/stopped-early")).toMatchObject({ status: "unmerged", class: "review" })
+    // apply re-classifies from scratch and keeps the match.
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes } = await applyBranchGc(p, { scopes: ["local"], forge, stateDir })
+    expect(outcomes.find((o) => o.name === "feat/stopped-early")).toMatchObject({ result: "deleted", reclaimReason: "pr-merged" })
+    expect(await refExists(repo, "refs/heads/feat/stopped-early")).toBe(false)
+  })
+
+  it("the exact-head match reports mergedPrMatch head", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/exact", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(202, "feat/exact", tip)]) })
+    expect(entry(p, "feat/exact")).toMatchObject({ status: "pr-merged", mergedPr: 202, mergedPrMatch: "head", class: "reclaim" })
+  })
+
+  it("patch: a rebased branch whose every commit is patch-equivalent to a merged PR's commits", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "fix/rebased-away", { "a.txt": "a\n" })
+    await execGit(repo, ["checkout", "-q", "fix/rebased-away"])
+    const tip = await commitFiles(repo, { "b.txt": "b\n" }, "second fix")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    // The PR was rebased onto the new base (new shas, same patches), then got a review fix.
+    const head = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", "main..fix/rebased-away"])
+      await commitFiles(repo, { "c.txt": "c\n" }, "review fix")
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    expect(await execArgv("git", ["-C", repo, "merge-base", "--is-ancestor", tip, head], repo)).toMatchObject({ exitCode: 1 })
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(203, "fix/rebased-away", head)]) })
+    expect(entry(p, "fix/rebased-away")).toMatchObject({
+      status: "pr-merged",
+      mergedPr: 203,
+      mergedPrMatch: "patch",
+      class: "reclaim",
+      reclaimReason: "pr-merged",
+    })
+    expect(entry(await plan(repo), "fix/rebased-away")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
+  it("patch: the tip's commits landed split across two merged PRs (a stacked branch)", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/stacked", { "a.txt": "a\n" })
+    await execGit(repo, ["checkout", "-q", "feat/stacked"])
+    const first = await sha(repo, "HEAD")
+    await commitFiles(repo, { "b.txt": "b\n" }, "second change")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    const headA = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", first])
+    })
+    const headB = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", "feat/stacked"])
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    // Either PR alone leaves one commit unmatched.
+    const onlyB = await plan(repo, { forge: new FakeForge([], [mergedPr(205, "feat/stacked", headB)]) })
+    expect(entry(onlyB, "feat/stacked")).toMatchObject({ status: "unmerged", class: "review" })
+    const both = await plan(repo, { forge: new FakeForge([], [mergedPr(204, "feat/stacked-base", headA), mergedPr(205, "feat/stacked", headB)]) })
+    expect(entry(both, "feat/stacked")).toMatchObject({ status: "pr-merged", mergedPrMatch: "patch", class: "reclaim" })
+    expect([204, 205]).toContain(entry(both, "feat/stacked").mergedPr)
+  })
+
+  it("patch: one tip commit with no patch-equivalent in any merged PR keeps the branch in review", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "fix/one-extra", { "a.txt": "a\n" })
+    await execGit(repo, ["checkout", "-q", "fix/one-extra"])
+    const landed = await sha(repo, "HEAD")
+    await commitFiles(repo, { "extra.txt": "never in a PR\n" }, "unique follow-up")
+    await execGit(repo, ["checkout", "-q", "main"])
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    const head = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", landed])
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(206, "fix/one-extra", head)]) })
+    expect(entry(p, "fix/one-extra")).toMatchObject({ status: "unmerged", class: "review" })
+    expect(entry(p, "fix/one-extra").mergedPr).toBeUndefined()
+  })
+
+  it("patch: same author and time but a different diff is no match", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "fix/amended", { "a.txt": "a\n" })
+    await commitFiles(repo, { "other.txt": "o\n" }, "unrelated base work")
+    // The PR's commit keeps the tip's author key (cherry-pick, then amend) but changes its content.
+    const head = await prHeadVia(repo, "main", async () => {
+      await execGit(repo, ["cherry-pick", tip])
+      await writeFile(join(repo, "a.txt"), "a, but different\n")
+      await execGit(repo, ["add", "a.txt"])
+      await execGit(repo, ["commit", "-q", "--amend", "--no-edit"])
+    })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(207, "fix/amended", head)]) })
+    expect(entry(p, "fix/amended")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+
+  it("a merged PR head missing from the object database offers no match (the plan never fetches)", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/unknown-head", { "a.txt": "a\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const p = await plan(repo, { forge: new FakeForge([], [mergedPr(208, "feat/unknown-head", "1".repeat(40))]) })
+    expect(entry(p, "feat/unknown-head")).toMatchObject({ status: "unmerged", class: "review" })
+  })
+})
+
 // ── re-rooted base ──────────────────────────────────────────────────────
 
 describe("branch gc — re-rooted base + anchor", () => {
