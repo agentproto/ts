@@ -1151,16 +1151,30 @@ export function winExecutionPolicyBlocksScripts(
   return effective === "restricted" || effective === "allsigned"
 }
 
-/** The `daemon install` command a Windows user should be told to run. The
- *  plain name is safe under a permissive policy, but under Restricted /
- *  AllSigned it would die before `daemon install` ever runs; the `.cmd` shim
- *  is a batch file and needs no script policy. Pure. */
-export function winDaemonInstallCommand(
+/** Rewrite a plain `agentproto ...` hint to the `.cmd` shim when the
+ *  policy blocks scripts. The `.cmd` shim is a batch file and needs no
+ *  script policy. Pure; used for install, start and restart hints alike. */
+export function winDaemonShimCommand(
+  command: string,
   policy: string | null | undefined,
 ): string {
   return winExecutionPolicyBlocksScripts(policy)
-    ? "agentproto.cmd daemon install"
-    : "agentproto daemon install"
+    ? command.replace(/^agentproto\b/, "agentproto.cmd")
+    : command
+}
+
+/** The `daemon install` command a Windows user should be told to run. Pure. */
+export function winDaemonInstallCommand(
+  policy: string | null | undefined,
+): string {
+  return winDaemonShimCommand("agentproto daemon install", policy)
+}
+
+/** The probe behind policy-aware hints. Shared by the `daemon` verb and the
+ *  onboarding step so both ask the same executable with the same flags. */
+export const WIN_EXECUTION_POLICY_PROBE = {
+  cmd: "powershell.exe",
+  args: ["-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"] as const,
 }
 
 /** Read the EFFECTIVE PowerShell execution policy (no `-Scope`, so GPO
@@ -1178,8 +1192,8 @@ export function readWinExecutionPolicy(): Promise<string | null> {
       resolve(value)
     }
     const child = spawn(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+      WIN_EXECUTION_POLICY_PROBE.cmd,
+      [...WIN_EXECUTION_POLICY_PROBE.args],
       { windowsHide: true, stdio: ["ignore", "pipe", "ignore"] },
     )
     let stdout = ""
@@ -1285,21 +1299,22 @@ export async function runWinInstall(
 export async function runWinUninstall(
   schtasksFn: SchtasksFn = schtasks,
 ): Promise<number> {
+  // Idempotent: ask the scheduler first. Don't parse schtasks' error TEXT:
+  // it is localized and emitted in the OEM console code page (850 on a French
+  // Windows) while we read pipes as UTF-8, so the old English regex both
+  // missed French installs and saw mojibake. `/Query` exits 0 iff the task
+  // exists, whatever the display language.
+  const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
+  if (query.code !== 0) {
+    process.stdout.write(
+      `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
+    )
+    return 0
+  }
   // Best-effort stop first — a task mid-run can't be deleted cleanly.
   await schtasksFn(["/End", "/TN", SCHTASKS_TASK_NAME])
   const out = await schtasksFn(["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"])
   if (out.code !== 0) {
-    // Don't parse schtasks' error TEXT: it is localized and emitted in the
-    // OEM console code page (850 on a French Windows), while we read pipes as
-    // UTF-8, so the old English regex both missed French installs and saw
-    // mojibake. `/Query` is the authority: exit 0 iff the task still exists.
-    const query = await schtasksFn(["/Query", "/TN", SCHTASKS_TASK_NAME])
-    if (query.code !== 0) {
-      process.stdout.write(
-        `agentproto daemon: scheduled task ${SCHTASKS_TASK_NAME} already absent\n`,
-      )
-      return 0
-    }
     process.stderr.write(
       `agentproto daemon uninstall: schtasks delete failed (exit ${out.code})\n${out.stderr}\n`,
     )

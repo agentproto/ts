@@ -22,7 +22,9 @@ import {
   linuxPidfilePath,
   pathNeedsRefresh,
   systemdUnitPath,
-  winDaemonInstallCommand,
+  winDaemonShimCommand,
+  winExecutionPolicyBlocksScripts,
+  WIN_EXECUTION_POLICY_PROBE,
   type DaemonHealthInfo,
   type LinuxDaemonMode,
 } from "../../commands/daemon.js"
@@ -39,26 +41,31 @@ interface HealthResult {
   info: DaemonHealthInfo | null
 }
 
-/** The `daemon install` hint for this Windows session. Typing a bare
- *  `agentproto` resolves to the agentproto.ps1 shim first, which a
- *  Restricted/AllSigned execution policy refuses, so `daemon install` never
- *  runs; the .cmd shim is a batch file and is always allowed. The policy
- *  probe is read-only and best-effort — an unreadable policy keeps the plain
- *  command. */
-async function winDaemonInstallFix(ctx: StepContext): Promise<string> {
+/** Under Restricted/AllSigned, a bare `agentproto` resolves to the
+ *  agentproto.ps1 shim first and is refused, so every `agentproto daemon ...`
+ *  hint (install, start, restart) would fail before doing anything. Rewrite
+ *  them to the .cmd shim. Probes only when there is a fix to show, so a
+ *  healthy Windows host pays nothing; an unreadable policy keeps the plain
+ *  commands. */
+async function applyWinScriptPolicyHints(
+  ctx: StepContext,
+  checks: StepCheck[],
+): Promise<void> {
+  const fixable = checks.filter(c => c.fix?.startsWith("agentproto daemon "))
+  if (fixable.length === 0) return
   const out = await ctx.exec(
-    "powershell",
-    ["-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+    WIN_EXECUTION_POLICY_PROBE.cmd,
+    WIN_EXECUTION_POLICY_PROBE.args,
     { timeoutMs: 3_000 },
   )
-  return winDaemonInstallCommand(out.code === 0 ? out.stdout : null)
+  const policy = out.code === 0 ? out.stdout : null
+  if (!winExecutionPolicyBlocksScripts(policy)) return
+  for (const check of fixable) {
+    if (check.fix) check.fix = winDaemonShimCommand(check.fix, policy)
+  }
 }
 
-async function checkHealth(
-  ctx: StepContext,
-  serviceInstalled: boolean,
-  installCommand = "agentproto daemon install",
-): Promise<HealthResult> {
+async function checkHealth(ctx: StepContext, serviceInstalled: boolean): Promise<HealthResult> {
   const config = await ctx.sources.loadConfig()
   const port = config.daemon?.port ?? DEFAULT_PORT
   const info = await fetchHealth({ config, fetchImpl: ctx.fetch })
@@ -66,7 +73,7 @@ async function checkHealth(
     ctx.platform === "win32" || ctx.platform === "linux"
       ? serviceInstalled
         ? "agentproto daemon start"
-        : installCommand
+        : "agentproto daemon install"
       : null
   if (!info) {
     return {
@@ -191,7 +198,6 @@ async function checkService(
 async function checkTask(
   ctx: StepContext,
   taskName: string,
-  installCommand = "agentproto daemon install",
 ): Promise<StepCheck> {
   const out = await ctx.exec("schtasks", ["/Query", "/TN", taskName], { timeoutMs: 3_000 })
   if (out.code !== 0) {
@@ -200,7 +206,7 @@ async function checkTask(
       title: "Scheduled task",
       status: "warn",
       detail: "not registered (a foreground `agentproto serve` also works)",
-      fix: installCommand,
+      fix: "agentproto daemon install",
       data: { task: taskName, installed: false, running: false },
     }
   }
@@ -346,15 +352,15 @@ export const daemonStep: OnboardingStep = {
   required: true,
   async detect(ctx) {
     if (ctx.platform === "win32") {
-      const installFix = await winDaemonInstallFix(ctx)
-      const task = await checkTask(ctx, SCHTASKS_TASK_NAME, installFix)
+      const task = await checkTask(ctx, SCHTASKS_TASK_NAME)
       const installed = task.status === "ok"
-      const health = await checkHealth(ctx, installed, installFix)
+      const health = await checkHealth(ctx, installed)
       const checks = [health.check, task]
       if (health.info) {
         const mismatch = await checkNodeAdapterMismatch(ctx, health.info)
         if (mismatch) checks.push(mismatch)
       }
+      await applyWinScriptPolicyHints(ctx, checks)
       return checks
     }
     if (ctx.platform === "linux") {

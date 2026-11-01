@@ -21,6 +21,7 @@ import {
   runWinRestart,
   runWinStop,
   winDaemonInstallCommand,
+  winDaemonShimCommand,
   winExecutionPolicyBlocksScripts,
   type SchtasksFn,
 } from "../commands/daemon.js"
@@ -64,6 +65,12 @@ describe("winDaemonInstallCommand", () => {
     expect(winDaemonInstallCommand("AllSigned")).toBe("agentproto.cmd daemon install")
     expect(winDaemonInstallCommand("RemoteSigned")).toBe("agentproto daemon install")
     expect(winDaemonInstallCommand(null)).toBe("agentproto daemon install")
+  })
+
+  it("rewrites start and restart hints too, not just install", () => {
+    expect(winDaemonShimCommand("agentproto daemon start", "Restricted")).toBe("agentproto.cmd daemon start")
+    expect(winDaemonShimCommand("agentproto daemon restart", "AllSigned")).toBe("agentproto.cmd daemon restart")
+    expect(winDaemonShimCommand("agentproto daemon start", "RemoteSigned")).toBe("agentproto daemon start")
   })
 })
 
@@ -220,24 +227,29 @@ describe("runWinInstall", () => {
 })
 
 describe("runWinUninstall / start / restart / stop", () => {
-  it("uninstall ends the task then deletes with /F; already-absent is idempotent", async () => {
+  it("uninstall queries first, then ends and deletes with /F; already-absent is idempotent", async () => {
     const calls: string[][] = []
-    let failDelete = false
+    let present = true
     const fake: SchtasksFn = async args => {
       calls.push(args)
-      if (failDelete) return { code: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." }
+      if (args[0] === "/Query" && !present) return { code: 1, stdout: "", stderr: "not found" }
       return { code: 0, stdout: "deleted", stderr: "" }
     }
     let out = captureStdout()
     expect(await runWinUninstall(fake)).toBe(0)
     out.restore()
-    expect(calls).toEqual([["/End", "/TN", SCHTASKS_TASK_NAME], ["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"]])
+    expect(calls).toEqual([
+      ["/Query", "/TN", SCHTASKS_TASK_NAME],
+      ["/End", "/TN", SCHTASKS_TASK_NAME],
+      ["/Delete", "/TN", SCHTASKS_TASK_NAME, "/F"],
+    ])
 
     calls.length = 0
-    failDelete = true
+    present = false
     out = captureStdout()
     expect(await runWinUninstall(fake)).toBe(0)
     out.restore()
+    expect(calls).toEqual([["/Query", "/TN", SCHTASKS_TASK_NAME]])
     expect(out.chunks.join("")).toContain("already absent")
   })
 
@@ -245,7 +257,6 @@ describe("runWinUninstall / start / restart / stop", () => {
     const calls: string[][] = []
     const fake: SchtasksFn = async args => {
       calls.push(args)
-      if (args[0] === "/Query") return { code: 1, stdout: "", stderr: "" }
       // French Windows message in the OEM code page, decoded as UTF-8: it is
       // mojibake and carries none of the old English phrases. Text-matching
       // used to report this harmless state as a hard failure.
@@ -254,7 +265,7 @@ describe("runWinUninstall / start / restart / stop", () => {
     const out = captureStdout()
     expect(await runWinUninstall(fake)).toBe(0)
     out.restore()
-    expect(calls.map(c => c[0])).toEqual(["/End", "/Delete", "/Query"])
+    expect(calls.map(c => c[0])).toEqual(["/Query"])
     expect(out.chunks.join("")).toContain("already absent")
   })
 

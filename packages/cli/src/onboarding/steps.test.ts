@@ -290,7 +290,7 @@ describe("daemon", () => {
         platform: "win32",
         health: null,
         exec: (cmd) =>
-          cmd === "powershell"
+          cmd === "powershell.exe"
             ? { code: 0, stdout: "Restricted\n", stderr: "" }
             : { code: 1, stdout: "", stderr: "" },
       }),
@@ -302,13 +302,30 @@ describe("daemon", () => {
     expect(byId(checks, "daemon.health").fix).toBe("agentproto.cmd daemon install")
   })
 
+  it("windows: an installed task with the daemon down uses `agentproto.cmd daemon start` under a blocking policy", async () => {
+    const checks = await daemonStep.detect(
+      createFakeContext({
+        platform: "win32",
+        health: null,
+        exec: (cmd) =>
+          cmd === "powershell.exe"
+            ? { code: 0, stdout: "Restricted\n", stderr: "" }
+            : cmd === "schtasks"
+              ? { code: 0, stdout: "Status: Ready\n", stderr: "" }
+              : { code: 1, stdout: "", stderr: "" },
+      }),
+    )
+    expect(byId(checks, "daemon.service").status).toBe("ok")
+    expect(byId(checks, "daemon.health").fix).toBe("agentproto.cmd daemon start")
+  })
+
   it("windows: a permissive policy keeps the plain `agentproto daemon install` hint", async () => {
     const checks = await daemonStep.detect(
       createFakeContext({
         platform: "win32",
         health: null,
         exec: (cmd) =>
-          cmd === "powershell"
+          cmd === "powershell.exe"
             ? { code: 0, stdout: "RemoteSigned\n", stderr: "" }
             : { code: 1, stdout: "", stderr: "" },
       }),
