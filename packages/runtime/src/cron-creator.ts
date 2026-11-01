@@ -52,6 +52,9 @@ export function cronCreatorOf(input: {
   if (verdict === "proven") {
     return { kind: "session", sessionId: callerId, proof: "proven" }
   }
-  // claimed, mismatch, caller_unknown
+  // claimed, mismatch, caller_unknown. A credential minted for a different
+  // session collapses into `claimed` here on purpose: the field is record-only
+  // today. A future enforcement step must distinguish `mismatch` (a spoofed
+  // claim) from a plain claim before clamping by the creator.
   return { kind: "session", sessionId: callerId, proof: "claimed" }
 }
