@@ -3,7 +3,7 @@
  * [--settings <path>] [--port <n>] [--dry-run]`
  *
  * Merges what a Claude Desktop (Claude Code) session needs to receive daemon
- * events into its settings file: `env.AGENTPROTO_SESSION_ID` and three hooks —
+ * events into its settings file: `env.AGENTPROTO_SESSION_ID` and three hooks:
  * the two `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse) and the
  * `agentproto hook pr-stamp` PostToolUse hook (matcher Bash). Idempotent:
  * a second run changes nothing, and keys it does not own are left untouched.

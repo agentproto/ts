@@ -31,7 +31,6 @@ const USAGE = `agentproto hook — Claude Code hook commands
 Usage:
   agentproto hook inbox [--session <id>] [--event <name>] [--max <n>]
   agentproto hook pre-compact
-  agentproto hook pre-compact
   agentproto hook pr-stamp
   agentproto hook install --host claude-desktop [--session <id>] [--settings <path>] [--port <n>] [--dry-run]
 
