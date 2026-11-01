@@ -182,6 +182,8 @@ const reviewPrompt = (bindings) => {
         `   (unscoped), NOT \`@agentproto/vscode\` — inventing the scoped form is not a`,
         `   real package and breaks every Release. If the script prints nothing, no`,
         `   workspace package changed → no changeset.`,
+        `   If \`git diff --diff-filter=A --name-only origin/main...HEAD -- '.changeset/*.md'\` lists changesets`,
+        `   that already declare EVERY one of those packages, write no changeset at all (a second one only duplicates the release note).`,
         `   Then write a changeset file to \`.changeset/pr-${prNumber}-agentic.md\` with the format:`,
         ``,
         `   \`\`\`yaml`,
