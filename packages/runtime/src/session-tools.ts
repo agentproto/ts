@@ -214,9 +214,12 @@ import {
 } from "./background-jobs.js"
 import {
   BRANCH_GC_PAGE_MAX,
+  branchGcReply,
+  decodeBranchGcCursor,
   sliceBranchGcResult,
   summarizeBranchGcApply,
   withBranchGcApplySummary,
+  type BranchGcReplyInput,
   type BranchGcResultSliceInput,
   type BranchGcResult,
   type BranchGcRunInput,
@@ -4880,7 +4883,16 @@ export function registerSessionTools(
       "`wait: false` (or `waitMs: 40000`) and poll `branch_gc_status` with " +
       "the returned jobId instead of blocking. A `wait: false` (or `waitMs` " +
       "timed-out) response returns a jobId plus a `followUp` block naming the " +
-      "poll tool and cadence — poll `branch_gc_status` with that jobId.",
+      "poll tool and cadence — poll `branch_gc_status` with that jobId. " +
+      "The finished reply is COMPACT by default: the summary (ref counts per " +
+      "kind plus `distinct` branch-name counts), the plan metadata and one " +
+      "page of entries (name, kind, sha, class, status, reclaimReason / " +
+      "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard " +
+      "when set), default 100 rows with `page.nextCursor`; pass it back as " +
+      "`cursor` to read the next page of the SAME run (no re-run). An apply " +
+      "keeps every outcome and the restore log. `fields` keeps only the named " +
+      "keys of each full entry, `classes` filters entries, `full: true` " +
+      "returns whole entries (alone: the whole unpaged result).",
     {
       repoRoot: z.string().optional().describe("Absolute path to the git repo. Wins over `workspaceSlug`."),
       workspaceSlug: z
@@ -4911,8 +4923,44 @@ export function registerSessionTools(
       waitMs: mcpNumber
         .optional()
         .describe("Block at most this many milliseconds, then fall back to background: returns `{ jobId, status: \"running\" }` to poll with `branch_gc_status`. Only meaningful with the default `wait: true`."),
+      full: mcpBool
+        .optional()
+        .describe("Whole entries instead of the compact projection. Alone (no `fields`/`classes`/`limit`/`cursor`): the whole unpaged result. Default false."),
+      fields: z.array(z.string()).optional().describe("Keep only these keys of each full entry (e.g. [\"name\", \"sha\", \"residualFiles\"])."),
+      classes: z
+        .array(z.enum(["reclaim", "review", "hold"]))
+        .optional()
+        .describe("Keep only entries of these classes (e.g. [\"review\"]). Counts in `summary` are unaffected."),
+      limit: mcpNumber.optional().describe(`Entries per page. Default 100, max ${BRANCH_GC_PAGE_MAX}.`),
+      cursor: z
+        .string()
+        .optional()
+        .describe("`page.nextCursor` from a previous reply: returns the next page of THAT run without re-running the gc (every other run option is ignored)."),
     },
     async input => {
+      const reply: BranchGcReplyInput = {
+        ...(input.full !== undefined ? { full: input.full } : {}),
+        ...(input.fields ? { fields: input.fields } : {}),
+        ...(input.classes ? { classes: input.classes } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      }
+      if (input.cursor !== undefined) {
+        // Page an earlier run from its stored result, in memory or on disk.
+        try {
+          const { jobId, offset } = decodeBranchGcCursor(input.cursor)
+          const job = branchGcJobs.get(jobId)
+          const stored = job?.result ?? (await branchGcJobs.readResultFile(jobId))
+          if (!stored) {
+            return {
+              content: [{ type: "text", text: `branch_gc: the run behind this cursor ('${jobId}') is gone; call branch_gc again without \`cursor\`.` }],
+              isError: true,
+            }
+          }
+          return { content: [{ type: "text", text: JSON.stringify(branchGcReply(stored, { ...reply, offset }, jobId)) }] }
+        } catch (err) {
+          return { content: [{ type: "text", text: err instanceof Error ? err.message : String(err) }], isError: true }
+        }
+      }
       if (!runBranchGc) {
         return {
           content: [
@@ -4958,7 +5006,7 @@ export function registerSessionTools(
           return { content: [{ type: "text", text: JSON.stringify(branchGcBackgroundView(job)) }] }
         }
         const result = await promise
-        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+        return { content: [{ type: "text", text: JSON.stringify(branchGcReply(result, reply, job.id)) }] }
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc failed: ${err instanceof Error ? err.message : String(err)}` }],

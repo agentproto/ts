@@ -692,6 +692,110 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.report).toContain("line coverage 80% of 50 added lines (< 95%)")
     expect(result.report).not.toContain("documented seam")
   })
+
+  it("lists the WHOLE human decision queue, lowest line coverage first, with how to record an operator approval", async () => {
+    // 30 refusals: over the 20-name cap every other list keeps.
+    const pcts = Array.from({ length: 30 }, (_, i) => 90 - ((i * 7) % 60))
+    const refused = pcts.map((pct, i) => ({
+      kind: "local",
+      name: `wt/guarded-${i}`,
+      sha: (i + 1).toString(16).padStart(40, "0"),
+      result: "refused-guard",
+      guard: `line coverage ${pct}% of 50 added lines (< 95%)`,
+    }))
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        if (branchGcCallCount === 3) return mcpResult({ mode: "apply", outcomes: refused, restoreLog: null })
+        return mcpResult(branchGcPlanFixture(true, { triage: "obsolete", agree: true }))
+      }
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+    })
+    const report = (output as { report: string }).report
+    const queue = report.slice(report.indexOf("## Human decision queue"))
+    expect(queue).toContain("(30)")
+    expect(queue).not.toContain("more")
+    const listed = [...queue.matchAll(/^- `(wt\/guarded-\d+)` .* — (\d+)% line coverage/gm)]
+    expect(listed).toHaveLength(30)
+    const listedPcts = listed.map(m => Number(m[2]))
+    expect(listedPcts).toEqual([...pcts].sort((a, b) => a - b))
+    // How to act on it: the MCP verb with a concrete operator block for the
+    // first queued tip, and the honest note that no CLI command exists.
+    const first = refused[pcts.indexOf(Math.min(...pcts))]!
+    expect(queue).toContain("branch_gc_verdict")
+    expect(queue).toContain(`"sha": "${first.sha}"`)
+    expect(queue).toContain(`"name": "${first.name}"`)
+    expect(queue).toContain('"operator"')
+    expect(queue).toContain("no CLI command")
+  })
+
+  it("asks branch_gc for its full reply on every call (the plan entries feed the review queue, the apply output is reported)", async () => {
+    const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      calls.push({ name, inputs })
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") return mcpResult(branchGcPlanFixture(true))
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo" } })
+    const branchGcCalls = calls.filter(c => c.name === "branch_gc")
+    expect(branchGcCalls).toHaveLength(3)
+    for (const c of branchGcCalls) expect(c.inputs.full).toBe(true)
+  })
+
+  it("headlines distinct branch counts next to the ref counts", async () => {
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        const p = branchGcPlanFixture(true)
+        return mcpResult({
+          ...p,
+          summary: { ...p.summary, distinct: { branches: 3, refs: 4, byClass: { reclaim: 1, review: 2, hold: 0 }, byStatus: { unmerged: 2, merged: 1 } } },
+        })
+      }
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input: { repoRoot: "/repo" } })
+    const report = (output as { report: string }).report
+    expect(report).toContain("- 3 branches (4 refs): reclaim=1 review=2 hold=0")
+    expect(report).toContain("- unmerged: 2 branches")
+  })
 })
 
 describe("repo-maintenance maintain workflow — missing-verdict retry", () => {

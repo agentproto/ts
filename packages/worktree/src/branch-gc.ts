@@ -1655,6 +1655,24 @@ export interface BranchGcSummary {
    * script's audit summary, so the two can be compared line for line.
    */
   byStatus: Record<BranchRefKind, Record<string, number>>
+  /**
+   * The same counts keyed by branch NAME across kinds: a local branch and its
+   * remote twin are one branch with two refs. A name whose refs land in
+   * different classes (or statuses) counts once in each, so these buckets can
+   * sum to more than `branches`.
+   */
+  distinct: BranchGcDistinctSummary
+}
+
+export interface BranchGcDistinctSummary {
+  /** Distinct branch names across every kind. */
+  branches: number
+  /** Refs those names carry (the sum of `byClass`). */
+  refs: number
+  /** class → distinct names with at least one ref in that class. */
+  byClass: Record<BranchGcClass, number>
+  /** (status | "protected") → distinct names with at least one ref in it. */
+  byStatus: Record<string, number>
 }
 
 export function summarizeBranchGcPlan(plan: BranchGcPlan): BranchGcSummary {
@@ -1664,13 +1682,27 @@ export function summarizeBranchGcPlan(plan: BranchGcPlan): BranchGcSummary {
     byClass[k] = { reclaim: 0, review: 0, hold: 0 }
     byStatus[k] = {}
   }
+  const names = new Set<string>()
+  const namesByClass: Record<BranchGcClass, Set<string>> = { reclaim: new Set(), review: new Set(), hold: new Set() }
+  const namesByStatus = new Map<string, Set<string>>()
   for (const e of plan.entries) {
     byClass[e.kind][e.class]++
     const isProtected = e.holdReason === "protected" || e.holdReason === "worktree" || e.holdReason === "open-pr"
     const key = isProtected ? "protected" : e.status
     byStatus[e.kind][key] = (byStatus[e.kind][key] ?? 0) + 1
+    names.add(e.name)
+    namesByClass[e.class].add(e.name)
+    const statusNames = namesByStatus.get(key) ?? new Set<string>()
+    statusNames.add(e.name)
+    namesByStatus.set(key, statusNames)
   }
-  return { byClass, byStatus }
+  const distinct: BranchGcDistinctSummary = {
+    branches: names.size,
+    refs: plan.entries.length,
+    byClass: { reclaim: namesByClass.reclaim.size, review: namesByClass.review.size, hold: namesByClass.hold.size },
+    byStatus: Object.fromEntries([...namesByStatus].map(([k, v]) => [k, v.size])),
+  }
+  return { byClass, byStatus, distinct }
 }
 
 // ── review queue ──────────────────────────────────────────────────────

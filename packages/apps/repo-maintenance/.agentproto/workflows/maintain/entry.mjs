@@ -369,7 +369,7 @@ export function verdictLookupTips(b) {
     for (const t of c.allTips ?? [{ sha: c.sha }]) shas.add(t.sha)
   }
   if (b.input?.reviewHeldWorktrees !== false) {
-    for (const v of heldWorktreeVerdicts(b.steps?.branchGcVerify, b.steps?.worktreeGcPlan).slice(0, REPORT_LIST_CAP)) shas.add(v.sha)
+    for (const v of heldWorktreeVerdicts(b.steps?.branchGcVerify, b.steps?.worktreeGcPlan)) shas.add(v.sha)
   }
   return [...shas].map(sha => ({ sha }))
 }
@@ -494,10 +494,83 @@ function reviewCap(input) {
   return typeof n === "number" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_MAX_REVIEWS
 }
 
-/** `names` as inline code, at most `cap` of them, then `… and N more`. */
-export function formatNameList(names, cap = REPORT_LIST_CAP) {
+/** `names` as inline code, at most `cap` of them, then `… and N more`
+ *  (`(full list: <where>)` when the caller names where the rest is). */
+export function formatNameList(names, cap = REPORT_LIST_CAP, where) {
   const shown = names.slice(0, cap).map(n => `\`${n}\``).join(", ")
-  return names.length > cap ? `${shown}, … and ${names.length - cap} more` : shown
+  return names.length > cap ? `${shown}, … and ${names.length - cap} more${fullListAt(where)}` : shown
+}
+
+/** ` (full list: <where>)`, or nothing when `where` is unset. */
+function fullListAt(where) {
+  return where ? ` (full list: ${where})` : ""
+}
+
+/** The `… and N more` line under a capped list, naming where the rest is. */
+function moreLine(prefix, total, where) {
+  return `${prefix}- … and ${total - REPORT_LIST_CAP} more${fullListAt(where)}`
+}
+
+/** Distinct branch names (keyed by name across ref kinds) per class and
+ *  status, from `summary.distinct`. Recomputed from the plan entries for a
+ *  branch_gc that predates it. */
+export function distinctBranchCounts(branchGcPlanResult) {
+  const d = branchGcPlanResult?.summary?.distinct
+  if (d && typeof d.branches === "number") return d
+  const entries = Array.isArray(branchGcPlanResult?.plan?.entries) ? branchGcPlanResult.plan.entries : []
+  if (entries.length === 0) return null
+  const names = new Set()
+  const byClass = { reclaim: new Set(), review: new Set(), hold: new Set() }
+  const byStatus = new Map()
+  for (const e of entries) {
+    names.add(e.name)
+    byClass[e.class]?.add(e.name)
+    const key = e.holdReason === "protected" || e.holdReason === "worktree" || e.holdReason === "open-pr" ? "protected" : e.status
+    if (!byStatus.has(key)) byStatus.set(key, new Set())
+    byStatus.get(key).add(e.name)
+  }
+  return {
+    branches: names.size,
+    refs: entries.length,
+    byClass: { reclaim: byClass.reclaim.size, review: byClass.review.size, hold: byClass.hold.size },
+    byStatus: Object.fromEntries([...byStatus].map(([k, v]) => [k, v.size])),
+  }
+}
+
+/** Per-kind ref count of `status` from `summary.byStatus`. */
+function refsWithStatus(summary, status) {
+  return Object.values(summary?.byStatus ?? {}).reduce((n, byKind) => n + (byKind?.[status] ?? 0), 0)
+}
+
+/** The report's operator-approval instructions for a guard refusal `o`
+ *  (`{ name, sha }`): the operator re-records the tip's verdict with an
+ *  `operator` block, which only the operator MCP surface accepts. `record` is
+ *  the stored verdict when this run read it, so the example is the real call;
+ *  otherwise its reviewer fields are placeholders. */
+export function operatorApprovalHowTo(o, repoRoot, record) {
+  const stored = record?.triage && record?.gate ? record : null
+  const example = {
+    repoRoot: repoRoot ?? "<repo root>",
+    name: o.name,
+    sha: o.sha,
+    reviewer: stored?.reviewer ?? "<stored reviewer>",
+    triage: stored?.triage ?? { verdict: "<stored>", confidence: "<stored>", reason: "<stored>" },
+    gate: stored?.gate ?? { agree: true, verdict: "<stored>", reason: "<stored>", evidence: ["<stored>"] },
+    operator: { by: "<your name>", note: "<why deleting it loses nothing>" },
+  }
+  return [
+    "To approve one, record an operator approval for that exact tip: call the `branch_gc_verdict` MCP tool " +
+      "from the operator surface (an agent session's call is refused) with the stored verdict " +
+      "(`branch_gc_verdict_get` with the same `sha` returns it) plus an `operator` block. `operator.by` must " +
+      "differ from the reviewer. For the first branch above:",
+    "",
+    "```json",
+    JSON.stringify(example, null, 2),
+    "```",
+    "",
+    "The next run with `applyMerged: true` and `applyReviewed: true` then deletes it and writes a restore log. " +
+      "There is no CLI command for this yet: `agentproto branch gc` only plans and applies.",
+  ]
 }
 
 /** The coverage percentage in a `branch_gc` `verdictGuard` string
@@ -653,10 +726,20 @@ export function buildReport(b) {
   lines.push(`- reclaim=${wt.byClass.reclaim} salvage=${wt.byClass.salvage} hold=${wt.byClass.hold}`)
   lines.push("")
   lines.push("## Branches")
+  // A local branch and its remote twin are ONE branch with two refs: headline
+  // distinct names, then the per-kind ref counts.
+  const distinct = distinctBranchCounts(bgPlan)
+  if (distinct) {
+    const dc = distinct.byClass
+    lines.push(`- ${distinct.branches} branches (${distinct.refs} refs): reclaim=${dc.reclaim} review=${dc.review} hold=${dc.hold}`)
+    const unmerged = distinct.byStatus?.unmerged ?? 0
+    if (unmerged > 0) lines.push(`- unmerged: ${unmerged} branches (${refsWithStatus(summary, "unmerged")} refs)`)
+    lines.push("- refs per kind:")
+  }
   for (const kind of plan?.scopes ?? []) {
     const c = summary?.byClass?.[kind]
     if (!c) continue
-    lines.push(`- **${kind}**: reclaim=${c.reclaim} review=${c.review} hold=${c.hold}`)
+    lines.push(`${distinct ? "  " : ""}- **${kind}**: reclaim=${c.reclaim} review=${c.review} hold=${c.hold}`)
   }
   if (plan?.otherRemoteRefs) lines.push(`- (${plan.otherRemoteRefs} ref(s) of other configured remotes left alone)`)
   lines.push("")
@@ -691,14 +774,14 @@ export function buildReport(b) {
     for (const { error, count } of reviewErrors.slice(0, REPORT_LIST_CAP)) {
       lines.push(`  - ${count}× ${error.length > 300 ? `${error.slice(0, 300)}…` : error}`)
     }
-    if (reviewErrors.length > REPORT_LIST_CAP) lines.push(`  - … and ${reviewErrors.length - REPORT_LIST_CAP} more`)
+    if (reviewErrors.length > REPORT_LIST_CAP) lines.push(moreLine("  ", reviewErrors.length, "the run output's `review.results`"))
   }
   if (verdicts.length > 0) {
     lines.push(`- verdicts: ${formatTally(tally(verdicts.map(v => v.triage)))} (deletion agreed on ${verdicts.filter(v => v.agree === true).length})`)
   }
   const salvage = verdicts.filter(v => v.triage === "salvage")
   if (salvage.length > 0) {
-    lines.push(`- **salvage — needs a human**: ${formatNameList(salvage.map(v => v.name))}`)
+    lines.push(`- **salvage — needs a human**: ${formatNameList(salvage.map(v => v.name), REPORT_LIST_CAP, "the run output's `verdictRecords`")}`)
   }
   const heldVerdicts = b.input?.reviewHeldWorktrees === false ? [] : heldWorktreeVerdicts(b.steps.branchGcVerify, wtPlan)
   // Held worktrees get their line in their own section below.
@@ -707,7 +790,7 @@ export function buildReport(b) {
   if (branchVerdicts.length > 0) {
     lines.push("- verdict reasons (one line per verdict: branch, PR state, git cherry, reviewer's reason):")
     for (const v of branchVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(`  ${verdictLine(v, records.get(v.sha))}`)
-    if (branchVerdicts.length > REPORT_LIST_CAP) lines.push(`  - … and ${branchVerdicts.length - REPORT_LIST_CAP} more`)
+    if (branchVerdicts.length > REPORT_LIST_CAP) lines.push(moreLine("  ", branchVerdicts.length, "the run output's `verdictRecords`"))
   }
   if (gaps.length > 0) {
     lines.push(`- **${gaps.length} branch(es) with no recorded verdict** (after a same-session re-prompt and a large-model retry; full list in the run output's \`gaps\`): ${formatNameList(gaps.map(g => g.name))}`)
@@ -719,7 +802,7 @@ export function buildReport(b) {
     lines.push(`## Held worktrees reviewed (${heldVerdicts.length})`)
     lines.push("Idle, clean worktrees whose branch isn't provably merged — gc holds them; the reviewer's verdict says whether they can go. Removal is manual.")
     for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(verdictLine(v, records.get(v.sha)))
-    if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(`- … and ${heldVerdicts.length - REPORT_LIST_CAP} more`)
+    if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(moreLine("", heldVerdicts.length, "the run output's `verdictRecords`"))
   }
   lines.push("")
   lines.push("## Apply")
@@ -758,7 +841,9 @@ export function buildReport(b) {
         "guard (default 95%) did not refuse it.",
     )
     if (reclaimedReviewed.length > 0) {
-      lines.push(`- reclaimed (${reclaimedReviewed.length}): ${formatNameList(reclaimedReviewed.map(o => o.name))}`)
+      lines.push(
+        `- reclaimed (${reclaimedReviewed.length}): ${formatNameList(reclaimedReviewed.map(o => o.name), REPORT_LIST_CAP, "the run output's `branchGcApply.outcomes`")}`,
+      )
     } else {
       lines.push("- reclaimed: none")
     }
@@ -785,15 +870,16 @@ export function buildReport(b) {
         "`branch_gc` refused it deterministically because line coverage was below the guard; " +
         "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
     )
-    for (const o of refusedByGuard.slice(0, REPORT_LIST_CAP)) {
-      const pct = lineCoveragePctOfGuard(o.guard)
-      lines.push(
-        `- \`${o.name}\` (${o.sha.slice(0, 10)}) — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${o.guard}`,
-      )
+    // The one list a human must decide on: never capped, lowest line
+    // coverage (most unmerged work) first, unknown coverage last.
+    const queue = refusedByGuard
+      .map(o => ({ o, pct: lineCoveragePctOfGuard(o.guard) }))
+      .sort((a, b) => (a.pct ?? Number.POSITIVE_INFINITY) - (b.pct ?? Number.POSITIVE_INFINITY))
+    for (const { o, pct } of queue) {
+      lines.push(`- \`${o.name}\` (${o.sha}) — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${o.guard}`)
     }
-    if (refusedByGuard.length > REPORT_LIST_CAP) {
-      lines.push(`- … and ${refusedByGuard.length - REPORT_LIST_CAP} more`)
-    }
+    lines.push("")
+    lines.push(...operatorApprovalHowTo(queue[0].o, plan?.repoRoot, records.get(queue[0].o.sha)))
   }
   return lines.join("\n")
 }
@@ -877,7 +963,10 @@ export default {
       id: "branchGcPlan",
       kind: "tool",
       tool: "branch_gc",
-      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false },
+      // `full: true`: the review queue reads every entry with its reviewer
+      // fields (coverage, residualFiles, lineCoverage, cherry), which the
+      // tool's compact, paged default leaves out.
+      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false, full: true },
     },
     {
       id: "checkpointGcPlan",
@@ -988,7 +1077,10 @@ export default {
       id: "branchGcVerify",
       kind: "tool",
       tool: "branch_gc",
-      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false },
+      // `full: true`: the review queue reads every entry with its reviewer
+      // fields (coverage, residualFiles, lineCoverage, cherry), which the
+      // tool's compact, paged default leaves out.
+      inputs: { repoRoot: "$input.repoRoot", workspaceSlug: "$input.workspaceSlug", apply: false, includeReviewed: false, full: true },
     },
     {
       id: "gaps",
@@ -1046,6 +1138,8 @@ export default {
         apply: "$input.applyMerged",
         includeReviewed: "$input.applyReviewed",
         scopes: ["local", "remote", "orphan"],
+        // The whole result: it is the run output's `branchGcApply`.
+        full: true,
       },
     },
     {
@@ -1206,6 +1300,8 @@ export default {
   result: {
     report: "$steps.reportFinal",
     gaps: "$steps.gaps",
+    review: "$steps.review",
+    verdictRecords: "$steps.verdictRecords",
     applyMerged: "$input.applyMerged",
     applyReviewed: "$input.applyReviewed",
     branchGcApply: "$steps.branchGcApply",

@@ -104,6 +104,14 @@ export interface BranchGcPlanView {
 export interface BranchGcSummaryView {
   byClass: Record<BranchGcKind, Record<BranchGcClass, number>>
   byStatus: Record<BranchGcKind, Record<string, number>>
+  /** The same counts keyed by branch name across kinds (a local branch and
+   *  its remote twin count once). Absent on a result from before it existed. */
+  distinct?: {
+    branches: number
+    refs: number
+    byClass: Record<BranchGcClass, number>
+    byStatus: Record<string, number>
+  }
 }
 
 export interface BranchGcOutcomeView {
@@ -273,6 +281,102 @@ export function sliceBranchGcResult(
       ...(section === "outcomes" ? { outcomes: pageRows } : {}),
     },
   }
+}
+
+/** One plan entry as the `branch_gc` tool returns it by default: what a human
+ *  needs to decide, without the reviewer payload (coverage, residual files,
+ *  missing lines, cherry) that makes a full entry several KB. */
+export interface BranchGcCompactEntry {
+  name: string
+  kind: BranchGcKind
+  sha: string
+  class: BranchGcClass
+  status: BranchGcStatus
+  reclaimReason?: BranchGcReclaimReason
+  mergedPr?: number
+  mergedPrMatch?: BranchGcPlanEntryView["mergedPrMatch"]
+  holdReason?: BranchGcHoldReason
+  lineCoverage?: { pct: number }
+  verdictGuard?: string
+}
+
+export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
+  return {
+    name: e.name,
+    kind: e.kind,
+    sha: e.sha,
+    class: e.class,
+    status: e.status,
+    ...(e.reclaimReason !== undefined ? { reclaimReason: e.reclaimReason } : {}),
+    ...(e.mergedPr !== undefined ? { mergedPr: e.mergedPr } : {}),
+    ...(e.mergedPrMatch !== undefined ? { mergedPrMatch: e.mergedPrMatch } : {}),
+    ...(e.holdReason !== undefined ? { holdReason: e.holdReason } : {}),
+    ...(e.lineCoverage !== undefined ? { lineCoverage: { pct: e.lineCoverage.pct } } : {}),
+    ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
+  }
+}
+
+export interface BranchGcReplyInput {
+  /** Whole entries instead of the compact projection; alone (no other
+   *  option), the unchanged full result. */
+  full?: boolean
+  /** Keep only these keys of each FULL entry. */
+  fields?: string[]
+  /** Keep only entries of these classes. */
+  classes?: BranchGcClass[]
+  limit?: number
+  /** Offset into the filtered entries (decoded from a `branch_gc` cursor). */
+  offset?: number
+}
+
+/** A `branch_gc` cursor names the run it pages, so the next page is read from
+ *  that run's stored result instead of re-running the gc. */
+export function encodeBranchGcCursor(jobId: string, offset: number): string {
+  return Buffer.from(JSON.stringify({ j: jobId, o: offset })).toString("base64url")
+}
+
+export function decodeBranchGcCursor(cursor: string): { jobId: string; offset: number } {
+  try {
+    const v = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { j?: unknown; o?: unknown }
+    if (typeof v.j === "string" && typeof v.o === "number" && Number.isInteger(v.o) && v.o >= 0) return { jobId: v.j, offset: v.o }
+  } catch {
+    // Fall through to the error below.
+  }
+  throw new Error("branch_gc: invalid `cursor`")
+}
+
+/**
+ * Pure: the `branch_gc` tool reply. A real repo's full result is ~800k chars
+ * on one line, which no MCP client can read, so by default the plan entries
+ * are compact ({@link compactBranchGcEntry}) and paged (`page`, with a
+ * `nextCursor` naming `jobId`). The summary, the plan metadata and, for an
+ * apply, every outcome plus the restore log stay whole. `full: true` alone
+ * returns the result unchanged.
+ */
+export function branchGcReply(result: BranchGcResult, opts: BranchGcReplyInput, jobId: string): object {
+  const shaped = opts.fields !== undefined || opts.classes !== undefined || opts.limit !== undefined || opts.offset !== undefined
+  if (opts.full === true && !shaped) return result
+  const rows = result.plan.entries.filter(e => !opts.classes?.length || opts.classes.includes(e.class))
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? BRANCH_GC_PAGE_DEFAULT), 1), BRANCH_GC_PAGE_MAX)
+  const start = opts.offset ?? 0
+  const fields = opts.fields
+  const pageRows = rows
+    .slice(start, start + limit)
+    .map(e =>
+      fields !== undefined
+        ? Object.fromEntries(Object.entries(e).filter(([key]) => fields.includes(key)))
+        : opts.full === true
+          ? e
+          : compactBranchGcEntry(e),
+    )
+  const next = start + limit
+  const page: BranchGcResultPage = {
+    section: "entries",
+    total: rows.length,
+    returned: pageRows.length,
+    ...(next < rows.length ? { nextCursor: encodeBranchGcCursor(jobId, next) } : {}),
+  }
+  return { ...result, plan: { ...result.plan, entries: pageRows }, jobId, page }
 }
 
 /** Input to the injected runner. `apply` defaults to false at the tool/route

@@ -44,7 +44,11 @@ One run:
    verdict agreed for the same tip is reclaimed too. `branch_gc` still
    enforces its deterministic line-coverage guard (default 95%): an approval
    below it is refused (`refused-guard`) and listed in the report's "Human
-   decision queue" with its coverage percentage. Without `--apply-reviewed`,
+   decision queue" with its coverage percentage. That queue is never
+   capped: every refused branch is listed, lowest coverage first, followed by
+   the `branch_gc_verdict` call that approves one (there is no CLI command
+   for it). Other lists in the report stop at 20 names and say where the
+   full list is in the run output. Without `--apply-reviewed`,
    a `review`-class branch is never reclaimed.
 5. Reports a markdown summary.
 
