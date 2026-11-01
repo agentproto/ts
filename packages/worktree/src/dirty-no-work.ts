@@ -36,6 +36,8 @@ export interface DirtyNoWorkPath {
   inHead: boolean
   /** The index differs from HEAD at this path. */
   staged: boolean
+  /** Blob sha of the working-tree file the proof saw, `null` when it was absent. Re-checked right before discarding. */
+  workSha: string | null
 }
 
 export interface DirtyNoWorkProof {
@@ -247,7 +249,12 @@ export async function proveDirtCarriesNoWork(
     if (cases.size === 0) return null
     return {
       cases: [...cases].sort(),
-      paths: entries.map((e) => ({ path: e.path, inHead: e.head !== null, staged: !sameVersion(e.index, e.head) })),
+      paths: entries.map((e) => ({
+        path: e.path,
+        inHead: e.head !== null,
+        staged: !sameVersion(e.index, e.head),
+        workSha: e.work?.sha ?? null,
+      })),
     }
   } catch {
     // A read error proves nothing.
@@ -256,19 +263,40 @@ export async function proveDirtCarriesNoWork(
 }
 
 /**
+ * Throw unless every path's working-tree file is still exactly what the proof
+ * hashed (or still absent). An editor save touches no git state, so the
+ * apply-time index-mtime check cannot see it; this re-read can.
+ */
+async function assertUnchangedSinceProof(repoRoot: string, worktreePath: string, paths: readonly DirtyNoWorkPath[]): Promise<void> {
+  const present = paths.filter((p) => p.workSha !== null)
+  for (const p of paths) {
+    if (p.workSha !== null) continue
+    const gone = await lstat(join(worktreePath, p.path)).then(
+      () => false,
+      (err: NodeJS.ErrnoException) => err.code === "ENOENT",
+    )
+    if (!gone) throw new Error(`${p.path} reappeared since the dirty-no-work proof, nothing discarded`)
+  }
+  for (let i = 0; i < present.length; i += 500) {
+    const chunk = present.slice(i, i + 500)
+    const shas = (await git(repoRoot, ["-C", worktreePath, "hash-object", "--", ...chunk.map((p) => p.path)]))
+      .split("\n")
+      .filter((l) => l.length > 0)
+    chunk.forEach((p, j) => {
+      if (shas[j] !== p.workSha) throw new Error(`${p.path} changed since the dirty-no-work proof, nothing discarded`)
+    })
+  }
+}
+
+/**
  * Put every proven path back to HEAD so git's own non-force `worktree remove`
  * accepts the tree: restore a HEAD path (index and file), drop a non-HEAD one
  * from the index and from disk. Only ever the exact paths the fresh proof
- * listed; anything else that turned dirty since still makes git refuse.
- *
- * The proof was read moments earlier (apply re-proves from scratch), but a
- * working-tree-only edit landing between that read and this discard does not
- * move the git index mtime, so the apply-time stale check cannot see it. This
- * matches `discardNoise`'s window and posture; closing it fully would mean a
- * content re-verify per path here, which the non-force removal does not need
- * (anything dirty outside these paths still makes git refuse).
+ * listed, and only after re-checking each file is still the content the proof
+ * saw; anything else that turned dirty since still makes git refuse.
  */
 export async function discardProvenDirt(repoRoot: string, worktreePath: string, paths: readonly DirtyNoWorkPath[]): Promise<void> {
+  await assertUnchangedSinceProof(repoRoot, worktreePath, paths)
   const inHead = paths.filter((p) => p.inHead).map((p) => p.path)
   const stagedNew = paths.filter((p) => !p.inHead && p.staged).map((p) => p.path)
   for (let i = 0; i < inHead.length; i += 500) {

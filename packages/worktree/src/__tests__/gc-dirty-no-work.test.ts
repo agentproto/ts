@@ -26,7 +26,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 import { execGit } from "../exec.js"
 import { planGc, applyGc } from "../gc.js"
-import { proveDirtCarriesNoWork } from "../dirty-no-work.js"
+import { discardProvenDirt, proveDirtCarriesNoWork } from "../dirty-no-work.js"
 import { InMemoryVerdictMemoStore } from "../status.js"
 import type { ForgeClient, ForgePullRequestRef } from "../forge.js"
 
@@ -293,5 +293,16 @@ describe("gc keeps today's class when the dirt is unexplained", () => {
     await writeFile(join(wtPath, "AGENTS.md"), `${AGENTS_MD}\n${TURBO_BLOCK}`)
     await proveDirtCarriesNoWork(repo, wtPath, "main")
     expect(await readFile(join(wtPath, "AGENTS.md"), "utf8")).toBe(`${AGENTS_MD}\n${TURBO_BLOCK}`)
+  })
+
+  it("discard re-checks content: an edit landing after the proof is never overwritten", async () => {
+    const { repo, wtPath } = await mergedWorktree()
+    await writeFile(join(wtPath, "src/a.ts"), "export const a = 2\n")
+    const proof = await proveDirtCarriesNoWork(repo, wtPath, "main")
+    expect(proof).toMatchObject({ cases: ["on-base"] })
+    // An editor save between proof and discard: touches no git state.
+    await writeFile(join(wtPath, "src/a.ts"), "export const a = 'late edit'\n")
+    await expect(discardProvenDirt(repo, wtPath, proof!.paths)).rejects.toThrow(/changed since the dirty-no-work proof/)
+    expect(await readFile(join(wtPath, "src/a.ts"), "utf8")).toBe("export const a = 'late edit'\n")
   })
 })
