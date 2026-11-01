@@ -470,11 +470,12 @@ describe("spawnAgentSession — capability bundles (PLAN D phase 1)", () => {
         expect(result.ok).toBe(true)
         if (!result.ok) return
         expect(result.warnings?.some(w => w.includes("skipped for a sandbox spawn"))).toBe(true)
-        // Neither the imported-MCP mount nor the daemon self-mount ever
-        // reached the box — a sandboxed box cannot dial back to this
-        // daemon's loopback `/mcp`.
+        // The HOST daemon's bundle MCP mounts (imported chrome-devtools)
+        // never reached the box -- the sandbox cannot dial back to THIS
+        // daemon's loopback /mcp. The box's OWN daemon may legitimately
+        // self-mount for the adapter (universal on-host default).
         const startedMcpServers = (receivedStarts[0]?.mcpServers ?? []) as AcpMcpServer[]
-        expect(startedMcpServers.some(e => e.name === "chrome-devtools" || e.name === "agentproto")).toBe(false)
+        expect(startedMcpServers.some(e => e.name === "chrome-devtools")).toBe(false)
       } finally {
         registry.shutdown()
         await box.gateway.stop()

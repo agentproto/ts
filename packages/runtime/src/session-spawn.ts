@@ -1107,34 +1107,27 @@ export function delegationReachFor(
 
 /**
  * Should this spawn get the daemon's own `/mcp` gateway mounted by default
- * (caller supplied no `mcpServers`)? Pure — the per-adapter reasoning lives
- * here so the injection site and its tests share one decision.
+ * (caller supplied no `mcpServers`)? Pure -- the injection site and its
+ * tests share one decision.
  *
- *  - `hermes`: always. It has zero built-in tools — without a mount it
- *    silently spawns chat-only. Sandbox spawns keep the historical
- *    behaviour (inject) — the box's own daemon re-resolves the spawn on
- *    its side anyway.
- *  - `claude-code`: on-host spawns only. The mount is about IDENTITY, not
- *    capability: ambient MCP config (project `.mcp.json` / global claude
- *    config) already points these sessions at the daemon but can never
- *    carry a per-session `callerSessionId`, leaving every spawn they make
- *    an anonymous depth-0 orphan (observed in production: 0 of 663
- *    sessions ever carried a `parentSessionId`). The injected same-named
- *    entry shadows the ambient one at the SDK layer and carries the stamp.
- *    A sandbox spawn is excluded — the box cannot reach this daemon's
- *    loopback gateway, and unlike hermes there is no historical behaviour
- *    to preserve.
- *  - everything else: never. Mounting the daemon into adapters that never
- *    had it (codex, gemini, …) would be a capability grant, not a fix —
- *    those callers opt in explicitly via `mcpServers`.
+ * On-host (sandbox === undefined): always true for every adapter. The
+ * mount carries the per-session `callerSessionId` that ambient MCP config
+ * can never provide, and makes `agent_start` visible to
+ * `delegationReachFor` so `resolveRole` does not downgrade to executor at
+ * depth 0. Without it, any adapter whose ambient config lacks the daemon
+ * mount silently loses delegation reach.
+ *
+ * Sandbox (sandbox !== undefined): false for every adapter except hermes.
+ * A sandbox box cannot reach this daemon's loopback gateway. Hermes is
+ * the exception -- its box runs its own daemon that re-resolves the spawn
+ * on its side, so the mount is harmless and preserves historical behaviour.
  */
 export function shouldInjectDaemonSelfMount(
   adapter: string,
   sandbox: unknown,
 ): boolean {
-  if (adapter === "hermes") return true
-  if (adapter === "claude-code") return sandbox === undefined
-  return false
+  if (sandbox !== undefined && adapter !== "hermes") return false
+  return true
 }
 
 /**

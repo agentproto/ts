@@ -823,9 +823,9 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toEqual([])
   })
 
-  it("(c) does not default mcpServers for an adapter outside the self-mount set", async () => {
-    // Mounting the daemon into adapters that never had it (codex, gemini, …)
-    // would be a capability grant, not an identity fix — they stay opt-in.
+  it("(c) defaults mcpServers to the daemon gateway for ANY on-host adapter (universal mount)", async () => {
+    // On-host: every adapter gets the daemon mount — it carries the
+    // per-session callerSessionId and makes agent_start reachable.
     const captured: { mcpServers?: AcpMcpServer[] }[] = []
     const startSession = vi.fn(async (opts: { mcpServers?: AcpMcpServer[] }) => {
       captured.push({ mcpServers: opts.mcpServers })
@@ -838,7 +838,8 @@ describe("spawnAgentSession", () => {
 
     const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp" })
     expect(result.ok).toBe(true)
-    expect(captured[0]?.mcpServers).toBeUndefined()
+    expect(captured[0]?.mcpServers).toBeDefined()
+    expect(captured[0]?.mcpServers?.[0]?.name).toBe("agentproto")
   })
 
   it("(c) defaults mcpServers to the stamped daemon gateway for a claude-code spawn with none supplied", async () => {
@@ -894,17 +895,22 @@ describe("spawnAgentSession", () => {
     expect(captured[0]?.mcpServers).toEqual([])
   })
 
-  it("(c) shouldInjectDaemonSelfMount: hermes always, claude-code on-host only, others never", () => {
-    // hermes keeps its historical behaviour even for a sandbox spawn (the
-    // box's own daemon re-resolves the spawn on its side); claude-code's
-    // mount is identity-only and a box can't reach this daemon's loopback
-    // gateway, so a sandbox spawn is excluded.
+  it("(c) shouldInjectDaemonSelfMount: on-host always true, sandbox only hermes", () => {
+    // On-host: every adapter gets the mount (universal default).
     expect(shouldInjectDaemonSelfMount("hermes", undefined)).toBe(true)
-    expect(shouldInjectDaemonSelfMount("hermes", "e2b")).toBe(true)
     expect(shouldInjectDaemonSelfMount("claude-code", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("opencode", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("codex", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("gemini", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("kimi", undefined)).toBe(true)
+    expect(shouldInjectDaemonSelfMount("some-future-adapter", undefined)).toBe(true)
+    // Sandbox: only hermes (box runs its own daemon).
+    expect(shouldInjectDaemonSelfMount("hermes", "e2b")).toBe(true)
     expect(shouldInjectDaemonSelfMount("claude-code", "e2b")).toBe(false)
-    expect(shouldInjectDaemonSelfMount("codex", undefined)).toBe(false)
-    expect(shouldInjectDaemonSelfMount("gemini", undefined)).toBe(false)
+    expect(shouldInjectDaemonSelfMount("opencode", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("codex", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("gemini", "e2b")).toBe(false)
+    expect(shouldInjectDaemonSelfMount("some-future-adapter", "computer")).toBe(false)
   })
 
   it("(c) stamps callerSessionId onto a CALLER-provided mcpServers entry that targets the daemon (identity ≠ capability)", async () => {
@@ -2366,12 +2372,12 @@ describe("spawnAgentSession — role text matches the delegation tools the sessi
     expect(prompt).not.toContain("agent_start")
   }
 
-  it("no daemon mount, no role, depth 0 ⇒ executor text (the default follows reach, not only depth)", async () => {
-    expectExecutorText(await composedPrompt({}))
+  it("no daemon URL, no role, depth 0 ⇒ executor text (the default follows reach, not only depth)", async () => {
+    expectExecutorText(await composedPrompt({}, { daemonMcpUrl: undefined }))
   })
 
-  it("no daemon mount, explicit supervisor ⇒ still executor text — never a phantom agent_start", async () => {
-    expectExecutorText(await composedPrompt({ role: "supervisor" }))
+  it("no daemon URL, explicit supervisor ⇒ still executor text — never a phantom agent_start", async () => {
+    expectExecutorText(await composedPrompt({ role: "supervisor" }, { daemonMcpUrl: undefined }))
   })
 
   it("daemon mount with agent_start denied ⇒ executor text", async () => {
