@@ -399,6 +399,26 @@ describe("opencode console sub-account provider", () => {
     ).rejects.toThrow(/session for user1@example\.test expired at/)
   })
 
+  it("(i) provider.list also lists the orgs of the non-active logins, skipping one that fails", async () => {
+    const f = track(await makeDb({ accounts: 3, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (auth === `Bearer ${TOKEN}`) return jsonResponse([{ id: "org_a", name: "Ws01" }])
+      if (auth === "Bearer st_OTHER_2") return jsonResponse([{ id: "org_a", name: "dup" }, { id: "org_b", name: "Hodl" }])
+      return jsonResponse({ error: "boom" }, 500)
+    })
+    const listing = await createOpencodeSubaccountProvider({
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    }).list({ endpoint: "opencode-go", source: "opencode-console" })
+    expect(listing.account).toEqual({ id: "acc_1", label: "user1@example.test" })
+    expect(listing.subaccounts).toEqual([
+      { kind: "org", id: "org_a", name: "Ws01" },
+      { kind: "org", id: "org_b", name: "Hodl" },
+    ])
+  })
+
   it("(e) single-account behaviour unchanged", async () => {
     const f = track(await makeDb({ accounts: 1 }))
     const provider = { "opencode-go": {} }
