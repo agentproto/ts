@@ -213,9 +213,12 @@ interface AppRegistryState {
  *  is computed live on every `listIssues()` call: an installed app whose
  *  `dir` no longer exists on disk (e.g. installed from a worktree that was
  *  later removed), so its agents and workflows cannot load until it is
- *  reinstalled from a live checkout. */
+ *  reinstalled from a live checkout. `dir-repointed` is informational: a
+ *  `dir-missing` record the daemon healed on its own by re-pointing it at
+ *  the main worktree's copy of the same app (`repairWorktreeMissingApps`,
+ *  app-tools.ts), kept so the repair is visible in `daemon_health`. */
 export interface AppRegistryIssue {
-  readonly kind: "dropped" | "incomplete" | "dir-missing"
+  readonly kind: "dropped" | "incomplete" | "dir-missing" | "dir-repointed"
   readonly appId: string | null
   readonly dir: string | null
   readonly problems: readonly string[]
@@ -229,6 +232,10 @@ export interface AppRegistry {
   upsertApp(
     input: Omit<InstalledApp, "installedAt" | "updatedAt">,
   ): InstalledApp
+  /** Record (in memory, for `listIssues`) that `appId`'s `dir` was
+   *  re-pointed from `from` to `to` by a self-heal. Call after the upsert,
+   *  which clears the app's earlier issues. */
+  recordRepoint(appId: string, from: string, to: string): void
   getApp(appId: string): InstalledApp | undefined
   listApps(): InstalledApp[]
   /** Remove an installed-app record. Returns the removed record, or
@@ -442,6 +449,9 @@ export function createAppRegistry(opts?: {
       }
       persist()
       return record
+    },
+    recordRepoint(appId, from, to) {
+      issues.push({ kind: "dir-repointed", appId, dir: to, problems: [`dir re-pointed from ${from} to ${to}`] })
     },
     getApp(appId) {
       return state.apps.find(a => a.appId === appId)

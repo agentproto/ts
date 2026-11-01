@@ -14,11 +14,12 @@ export const defaultAppsJsonPath = (): string => join(homedir(), ".agentproto", 
 
 export async function installAppDirOffline(
   dir: string,
-  opts?: { dataDir?: string; persistPath?: string },
+  opts?: { dataDir?: string; persistPath?: string; repoint?: boolean },
 ): Promise<{ ok: true; record: InstalledApp } | { ok: false; error: string }> {
   const registry = createAppRegistry({ persist: true, persistPath: opts?.persistPath ?? defaultAppsJsonPath() })
   return performInstall(dir, registry, async () => [], undefined, {
     skipDaemonChecks: true,
     ...(opts?.dataDir !== undefined ? { dataDir: opts.dataDir } : {}),
+    ...(opts?.repoint === true ? { allowWorktreeRepoint: true } : {}),
   })
 }

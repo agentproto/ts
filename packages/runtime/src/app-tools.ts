@@ -49,6 +49,8 @@ import {
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
+import { linkedWorktreeOf, mainWorktreeOf } from "./git-worktree-paths.js"
+import { loadWorkspacesConfig } from "./workspaces-config.js"
 import {
   createAppServiceStore,
   ensureAppServiceOwners,
@@ -1348,6 +1350,14 @@ export interface PerformInstallOptions {
   readonly skipDaemonChecks?: boolean
   /** `workspaces.json` the app-owned workspace is registered in. Default `~/.agentproto/workspaces.json`. */
   readonly workspacesConfigPath?: string
+  /** Allow re-pointing an already-installed app, whose current `dir` still
+   *  exists, at a `dir` inside a linked git worktree. Default false: that
+   *  install is refused ({@link APP_INSTALL_WORKTREE_REPOINT_REFUSED}),
+   *  because the worktree is removed with its branch and the global record
+   *  would then break the app for every caller. A first install, a re-install
+   *  from the same dir, or one replacing a dir that is already gone is never
+   *  refused. */
+  readonly allowWorktreeRepoint?: boolean
   /**
    * Service-owner launcher (frozen `services:` semantics). Called after the
    * record is upserted and the app workspace registered, once per install,
@@ -1402,6 +1412,13 @@ export async function resolveInstallDataDir(input: {
   return { ok: true, dataDir }
 }
 
+/** Stable marker in the error `performInstall` returns when it refuses to
+ *  re-point an installed app into a linked git worktree (see
+ *  `PerformInstallOptions.allowWorktreeRepoint`). Callers that install
+ *  implicitly (`agentproto maintain` / `steward`) match on it to keep the
+ *  installed copy and carry on. */
+export const APP_INSTALL_WORKTREE_REPOINT_REFUSED = "worktree-repoint-refused"
+
 export async function performInstall(
   dir: string,
   appRegistry: AppRegistry,
@@ -1454,6 +1471,25 @@ export async function performInstall(
 
   if (!handle.id) {
     return { ok: false, error: "the app has no `id` — set one in defineApp()/APP.md frontmatter to install it." }
+  }
+
+  const installed = appRegistry.getApp(handle.id)
+  if (
+    installed !== undefined &&
+    opts?.allowWorktreeRepoint !== true &&
+    resolve(installed.dir) !== resolve(dir) &&
+    existsSync(installed.dir)
+  ) {
+    const linked = linkedWorktreeOf(dir)
+    if (linked !== undefined) {
+      return {
+        ok: false,
+        error:
+          `${APP_INSTALL_WORKTREE_REPOINT_REFUSED}: "${handle.id}" is installed from "${installed.dir}"; ` +
+          `"${dir}" is inside the linked git worktree "${linked.worktreeRoot}", which goes away with its branch. ` +
+          "Not re-pointing the installed app there implicitly: pass repoint: true (CLI: --repoint) to install from the worktree on purpose.",
+      }
+    }
   }
 
   // A workflow `tool` step id is satisfied by either a registered daemon
@@ -1648,6 +1684,96 @@ export async function repairIncompleteApps(
       skipDaemonChecks: true,
     }).catch(() => ({ ok: false as const }))
     if (result.ok && result.record.appId === issue.appId) repaired.push(issue.appId)
+  }
+  return repaired
+}
+
+/**
+ * Self-heal `dir-missing` records left by a removed linked git worktree (an
+ * app installed, or silently re-pointed, from a PR worktree that was then
+ * removed): re-install the record from the main worktree's copy of the
+ * same app, and record the repair (`dir-repointed` issue + a log line).
+ *
+ * The removed worktree's own `.git` file is gone with it, so its main
+ * worktree cannot be read off the dead path. The candidates come from what
+ * the daemon already knows instead: the main worktree of every user
+ * workspace root (`workspaces.json`) and of every other installed app whose
+ * dir is live. The relative path is the part of the dead dir below its
+ * topmost missing ancestor (the removed worktree's root, when the whole
+ * worktree went away). Fail-closed: the record is re-pointed only when
+ * exactly one candidate `<mainWorktree>/<relative path>` holds an app
+ * manifest declaring the same `appId`; a different id, no copy, or more
+ * than one match leaves the `dir-missing` issue as it was. Returns the app
+ * ids re-pointed.
+ */
+function isInside(path: string, root: string): boolean {
+  const rel = relative(root, path)
+  return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+}
+
+export async function repairWorktreeMissingApps(
+  appRegistry: AppRegistry,
+  listRegisteredToolIds: () => Promise<string[]>,
+  resolveAgentAdapter?: AgentAdapterResolver,
+  opts?: { workspacesConfigPath?: string },
+): Promise<string[]> {
+  const missing = appRegistry.listIssues().filter(i => i.kind === "dir-missing" && i.appId !== null && i.dir !== null)
+  if (missing.length === 0) return []
+
+  const knownDirs: string[] = appRegistry
+    .listApps()
+    .map(a => a.dir)
+    .filter(d => existsSync(d))
+  try {
+    const config = await loadWorkspacesConfig(opts?.workspacesConfigPath)
+    for (const ws of config.workspaces) if (ws.ownerApp === undefined) knownDirs.push(ws.path)
+  } catch {
+    // An unreadable workspaces.json only narrows the candidates.
+  }
+  const mainRoots = new Set<string>()
+  for (const d of knownDirs) {
+    const main = mainWorktreeOf(d)
+    if (main !== undefined) mainRoots.add(resolve(main))
+  }
+
+  const repaired: string[] = []
+  for (const issue of missing) {
+    const appId = issue.appId!
+    const from = resolve(issue.dir!)
+    let top = from
+    while (!existsSync(dirname(top)) && dirname(top) !== top) top = dirname(top)
+    const rel = relative(top, from)
+    const matches: string[] = []
+    for (const root of mainRoots) {
+      if (from === root || isInside(from, root)) continue
+      const candidate = join(root, rel)
+      if (!existsSync(join(candidate, ".agentproto", "APP.md"))) continue
+      let id: string | undefined
+      try {
+        id = (await loadAppHandle(candidate)).id
+      } catch {
+        continue
+      }
+      if (id === appId) matches.push(candidate)
+    }
+    if (matches.length !== 1) continue
+    const to = matches[0]!
+    const previous = appRegistry.getApp(appId)
+    // A dataDir under the dead dir went with it: follow the app to its new dir.
+    const prevData = previous?.dataDir
+    const dataDir =
+      prevData !== undefined && (resolve(prevData) === from || isInside(resolve(prevData), from))
+        ? join(to, relative(from, resolve(prevData)))
+        : undefined
+    const result = await performInstall(to, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+      skipDaemonChecks: true,
+      ...(dataDir !== undefined ? { dataDir } : {}),
+      ...(opts?.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+    }).catch(() => ({ ok: false as const }))
+    if (!result.ok || result.record.appId !== appId) continue
+    appRegistry.recordRepoint(appId, from, to)
+    console.warn(`[app-registry] re-pointed "${appId}" from ${from} (dir missing) to ${to} (main worktree copy)`)
+    repaired.push(appId)
   }
   return repaired
 }
@@ -1899,9 +2025,18 @@ export function registerAppTools(
 
   // Once per registry (this runs per MCP server instance): heal partial
   // records from disk without blocking the first request.
-  if (!repairStarted.has(appRegistry) && appRegistry.listIssues().some(i => i.kind === "incomplete")) {
+  if (
+    !repairStarted.has(appRegistry) &&
+    appRegistry.listIssues().some(i => i.kind === "incomplete" || i.kind === "dir-missing")
+  ) {
     repairStarted.add(appRegistry)
-    void repairIncompleteApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter).catch(() => {})
+    void repairIncompleteApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter)
+      .then(() =>
+        repairWorktreeMissingApps(appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
+          ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
+        }),
+      )
+      .catch(() => {})
   }
 
   const appsDir =
@@ -2086,6 +2221,13 @@ export function registerAppTools(
           "Remote installs only: URL of the catalog this install comes from (the entry's `catalogUrl` in " +
             "`app_catalog`). Recorded as `source.catalogId` so `app_updates` / `app_resync` follow that catalog's entry.",
         ),
+      repoint: z
+        .boolean()
+        .optional()
+        .describe(
+          "`dir` installs only: allow re-pointing an app that is already installed from a live dir at a `dir` " +
+            "inside a linked git worktree. Default false (refused: the worktree is removed with its branch).",
+        ),
       dataDir: z
         .string()
         .optional()
@@ -2104,6 +2246,7 @@ export function registerAppTools(
       if ("dir" in input) {
         const result = await performInstall(input.dir, appRegistry, listRegisteredToolIds, resolveAgentAdapter, {
           ...(input.dataDir !== undefined ? { dataDir: input.dataDir } : {}),
+          ...(input.repoint === true ? { allowWorktreeRepoint: true } : {}),
           ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
           ensureServices,
         })

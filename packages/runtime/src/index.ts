@@ -376,6 +376,7 @@ export type {
   WorktreeStatusView,
 } from "./worktree-status.js"
 export { toWorktreeStatusView } from "./worktree-status.js"
+export { APP_INSTALL_WORKTREE_REPOINT_REFUSED } from "./app-tools.js"
 export type {
   WorktreeGcRunner,
   WorktreeGcRunInput,

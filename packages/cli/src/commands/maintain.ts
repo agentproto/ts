@@ -30,7 +30,7 @@ import { repoRootOf } from "./worktree.js"
 import { resolveWorktreesRoot } from "./worktree.js"
 import { discoverWorktreeOwningRepos, resolveAllRepos } from "./maintain-discovery.js"
 import { httpGetJson } from "./_daemon-helpers.js"
-import { MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
+import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@agentproto/runtime"
 
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
@@ -91,6 +91,12 @@ function resolveRepoMaintenanceApp(): { appDir: string; workflowPath: string } {
 	const appsPackageJson = require.resolve("@agentproto/apps/package.json")
 	const appDir = join(dirname(appsPackageJson), "repo-maintenance")
 	return { appDir, workflowPath: join(appDir, ".agentproto", "workflows", "maintain", "WORKFLOW.md") }
+}
+
+/** The daemon refused `app_install {dir}` because it would re-point an app
+ *  installed from a live dir into a linked git worktree. */
+export function isWorktreeRepointRefusal(err: unknown): boolean {
+	return err instanceof Error && err.message.includes(APP_INSTALL_WORKTREE_REPOINT_REFUSED)
 }
 
 /** `--max-reviews`: undefined when absent (the workflow default applies),
@@ -206,12 +212,23 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 	try {
 		await mcpToolCall(daemon.endpoint, "app_install", { dir: appDir })
 	} catch (err) {
-		process.stderr.write(
-			`agentproto maintain: failed to install the repo-maintenance app: ${
-				err instanceof Error ? err.message : String(err)
-			}\n`,
-		)
-		return 1
+		// Run from a linked worktree's build while the app is installed from a
+		// live checkout: the daemon refuses to re-point the global record into
+		// the worktree (it would break the app for every caller once the
+		// worktree is removed). Keep the installed copy and run anyway.
+		if (isWorktreeRepointRefusal(err)) {
+			process.stderr.write(
+				`agentproto maintain: kept the installed repo-maintenance app (not re-pointed into this worktree; ` +
+					`\`agentproto app install <dir> --repoint\` does that on purpose).\n`,
+			)
+		} else {
+			process.stderr.write(
+				`agentproto maintain: failed to install the repo-maintenance app: ${
+					err instanceof Error ? err.message : String(err)
+				}\n`,
+			)
+			return 1
+		}
 	}
 
 	// One full workflow per repo, sequential. Any failed run fails the
