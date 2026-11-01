@@ -31,7 +31,10 @@ const CLI = REPO_VERSIONS.cli
 const ADAPTER_OPENCODE = REPO_VERSIONS.adapters["@agentproto/adapter-opencode"]
 const ADAPTER_HERMES = REPO_VERSIONS.adapters["@agentproto/adapter-hermes"]
 const ADAPTER_MASTRA = REPO_VERSIONS.adapters["@agentproto/adapter-mastra-agent"]
+const ADAPTER_CLAUDE = REPO_VERSIONS.adapters["@agentproto/adapter-claude-code"]
+const ADAPTER_OPENCLAW = REPO_VERSIONS.adapters["@agentproto/adapter-openclaw"]
 const OPENCODE_RUNTIME = REPO_VERSIONS.runtime["opencode-ai"]
+const CLAUDE_RUNTIME = REPO_VERSIONS.runtime["@anthropic-ai/claude-code"]
 const DEFAULT_SIZE = REPO_VERSIONS.defaultSize
 const DEFAULT_PRESET = REPO_VERSIONS.sizes[DEFAULT_SIZE]
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -176,7 +179,14 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     // versions.json, so the arg name is the sanitized upper-cased package name).
     assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@${esc(ADAPTER_MASTRA)}`))
     assert.match(df, /npm ls -g --depth=0 @agentproto\/adapter-mastra-agent/)
+    assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_CLAUDE_CODE=@agentproto/adapter-claude-code@${esc(ADAPTER_CLAUDE)}`))
+    assert.match(df, new RegExp(`ARG AGENTPROTO_ADAPTER_OPENCLAW=@agentproto/adapter-openclaw@${esc(ADAPTER_OPENCLAW)}`))
     assert.match(df, new RegExp(`ARG AGENTPROTO_CLI_VERSION=${esc(CLI)}`))
+    // runtime CLIs get their own ARGs and build-time --version smoke checks
+    assert.match(df, new RegExp(`ARG OPENCODE_AI=opencode-ai@${esc(OPENCODE_RUNTIME)}`))
+    assert.match(df, new RegExp(`ARG ANTHROPIC_AI_CLAUDE_CODE=@anthropic-ai/claude-code@${esc(CLAUDE_RUNTIME)}`))
+    assert.match(df, /^RUN opencode --version >\/dev\/null/m)
+    assert.match(df, /^RUN claude --version >\/dev\/null/m)
     // no space-separated adapter ARG declaration (anchored to a real ARG line,
     // not the explanatory comment that names the anti-pattern)
     assert.doesNotMatch(df, /^ARG [A-Z_]*ADAPTERS=/m)
@@ -187,6 +197,7 @@ test("write mode generates all artifacts and is idempotent (second run = no diff
     assert.match(df, /sha256sum -c -/)
     assert.match(df, /^RUN gh --version \| grep -q "gh version \$\{GH_VERSION\} "/m)
     assert.match(toml, new RegExp(`GH_VERSION = "${esc(REPO_VERSIONS.tools.gh.version)}"`))
+    assert.match(toml, new RegExp(`ANTHROPIC_AI_CLAUDE_CODE = "@anthropic-ai/claude-code@${esc(CLAUDE_RUNTIME)}"`))
     assert.match(gen, new RegExp(`BAKED_TOOLS = \\{\\n  gh: "${esc(REPO_VERSIONS.tools.gh.version)}",`))
     // no bare post-FROM ARG re-declaration would shadow the pre-FROM defaults
     assert.doesNotMatch(df, /\nARG AGENTPROTO_CLI_VERSION\n/)

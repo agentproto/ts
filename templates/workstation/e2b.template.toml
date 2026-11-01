@@ -12,7 +12,7 @@
 
 template_id = "agentproto-workstation"
 
-description = "agentproto workstation — Node, git, pinned @agentproto/cli, baked agentproto adapters, and the OpenCode runtime"
+description = "agentproto workstation — Node, git, pinned @agentproto/cli, baked agentproto adapters, and pinned agent runtime CLIs"
 
 # Sandbox runtime resources of the bare alias = the default size preset
 # (versions.json → sizes.large). The e2b default is
@@ -32,10 +32,13 @@ dockerfile = "Dockerfile"
 [build.args]
 BASE_IMAGE = "e2bdev/code-interpreter:latest"
 AGENTPROTO_CLI_VERSION = "1.31.0"
-AGENTPROTO_ADAPTER_HERMES = "@agentproto/adapter-hermes@0.4.38"
-AGENTPROTO_ADAPTER_MASTRA_AGENT = "@agentproto/adapter-mastra-agent@0.7.33"
-AGENTPROTO_ADAPTER_OPENCODE = "@agentproto/adapter-opencode@1.8.2"
-OPENCODE_RUNTIME_VERSION = "1.19.0"
+AGENTPROTO_ADAPTER_CLAUDE_CODE = "@agentproto/adapter-claude-code@2.6.0"
+AGENTPROTO_ADAPTER_HERMES = "@agentproto/adapter-hermes@0.5.7"
+AGENTPROTO_ADAPTER_MASTRA_AGENT = "@agentproto/adapter-mastra-agent@0.7.45"
+AGENTPROTO_ADAPTER_OPENCLAW = "@agentproto/adapter-openclaw@0.1.39"
+AGENTPROTO_ADAPTER_OPENCODE = "@agentproto/adapter-opencode@1.9.4"
+ANTHROPIC_AI_CLAUDE_CODE = "@anthropic-ai/claude-code@2.1.316"
+OPENCODE_AI = "opencode-ai@1.19.5"
 GH_VERSION = "2.102.0"
 GH_SHA256 = "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386"
 

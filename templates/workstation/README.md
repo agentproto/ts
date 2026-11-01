@@ -6,7 +6,7 @@ boots by default. Everything it bakes is pinned in
 
 - `cli` — the `@agentproto/cli` version
 - `adapters` — the agentproto adapter packages (with their pins)
-- `runtime` — agent runtime CLIs (`opencode-ai`)
+- `runtime` — agent runtime CLIs (`opencode-ai`, `@anthropic-ai/claude-code`)
 - `sizes` — named size presets (`cpuCount` / `memoryMb`), each published as
   its own template, plus `defaultSize` (see [Sizes](#sizes)). These are passed
   as `e2b template create` **flags** (`--cpu-count` / `--memory-mb`), NOT read
@@ -256,8 +256,10 @@ The build fails (not the first live agent turn) if any of these fail:
    `npm ls -g --depth=0 <pkg>` per adapter (`agentproto adapters list` shows
    ENABLED adapters from config, empty on a fresh bake, so it cannot prove
    installation).
-3. `gh --version` reports the `tools.gh` pin.
-4. `agentproto serve` answers `/health` on the provider's default port
+3. Every baked runtime CLI answers `--version` on `PATH` (`opencode --version`,
+   `claude --version`).
+4. `gh --version` reports the `tools.gh` pin.
+5. `agentproto serve` answers `/health` on the provider's default port
    (18790).
 
 These build-time checks are **necessary but not sufficient**: E2B can report a

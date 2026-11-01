@@ -162,12 +162,15 @@ export const SIZES = {
 export type WorkstationSize = keyof typeof SIZES
 export const BAKED_CLI_VERSION = "1.31.0"
 export const BAKED_ADAPTERS = {
-  "@agentproto/adapter-hermes": "0.4.38",
-  "@agentproto/adapter-mastra-agent": "0.7.33",
-  "@agentproto/adapter-opencode": "1.8.2",
+  "@agentproto/adapter-claude-code": "2.6.0",
+  "@agentproto/adapter-hermes": "0.5.7",
+  "@agentproto/adapter-mastra-agent": "0.7.45",
+  "@agentproto/adapter-openclaw": "0.1.39",
+  "@agentproto/adapter-opencode": "1.9.4",
 } as const
 export const BAKED_RUNTIME = {
-  "opencode-ai": "1.19.0",
+  "@anthropic-ai/claude-code": "2.1.316",
+  "opencode-ai": "1.19.5",
 } as const
 /** Standalone binaries baked from pinned release tarballs (the GitHub CLI). */
 export const BAKED_TOOLS = {

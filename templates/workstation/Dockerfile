@@ -14,10 +14,13 @@
 # per-package smoke loop passed by accident (verified live). Pre-FROM defaults
 # reach the post-FROM stage ONLY if not re-declared bare after FROM.
 ARG AGENTPROTO_CLI_VERSION=1.31.0
-ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.4.38
-ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.33
-ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.8.2
-ARG OPENCODE_RUNTIME_VERSION=1.19.0
+ARG AGENTPROTO_ADAPTER_CLAUDE_CODE=@agentproto/adapter-claude-code@2.6.0
+ARG AGENTPROTO_ADAPTER_HERMES=@agentproto/adapter-hermes@0.5.7
+ARG AGENTPROTO_ADAPTER_MASTRA_AGENT=@agentproto/adapter-mastra-agent@0.7.45
+ARG AGENTPROTO_ADAPTER_OPENCLAW=@agentproto/adapter-openclaw@0.1.39
+ARG AGENTPROTO_ADAPTER_OPENCODE=@agentproto/adapter-opencode@1.9.4
+ARG ANTHROPIC_AI_CLAUDE_CODE=@anthropic-ai/claude-code@2.1.316
+ARG OPENCODE_AI=opencode-ai@1.19.5
 ARG GH_VERSION=2.102.0
 ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 
@@ -31,10 +34,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Fail loudly if any pin did not propagate (empty ENV) rather than bake a
 # half-empty image.
 RUN [ -n "${AGENTPROTO_CLI_VERSION}" ] \
+  && [ -n "${AGENTPROTO_ADAPTER_CLAUDE_CODE}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_HERMES}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_MASTRA_AGENT}" ] \
+  && [ -n "${AGENTPROTO_ADAPTER_OPENCLAW}" ] \
   && [ -n "${AGENTPROTO_ADAPTER_OPENCODE}" ] \
-  && [ -n "${OPENCODE_RUNTIME_VERSION}" ] \
+  && [ -n "${ANTHROPIC_AI_CLAUDE_CODE}" ] \
+  && [ -n "${OPENCODE_AI}" ] \
   && [ -n "${GH_VERSION}" ] \
   && [ -n "${GH_SHA256}" ] \
   || (echo "smoke: pin ARGs are empty — check ARG propagation" && exit 1)
@@ -50,16 +56,19 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y --no-install-recommends nodejs \
   && rm -rf /var/lib/apt/lists/*
 
-# Baked toolchain in ONE npm invocation: pinned CLI + every adapter + the
-# OpenCode runtime. A single global tree means nothing installed afterwards
+# Baked toolchain in ONE npm invocation: pinned CLI + every adapter + every
+# agent runtime CLI. A single global tree means nothing installed afterwards
 # can replace it and drop the adapters (the on-boot `npm i -g` path in
 # @agentproto/sandbox-e2b documents the same constraint).
 RUN npm i -g \
       @agentproto/cli@${AGENTPROTO_CLI_VERSION} \
+      ${AGENTPROTO_ADAPTER_CLAUDE_CODE} \
       ${AGENTPROTO_ADAPTER_HERMES} \
       ${AGENTPROTO_ADAPTER_MASTRA_AGENT} \
+      ${AGENTPROTO_ADAPTER_OPENCLAW} \
       ${AGENTPROTO_ADAPTER_OPENCODE} \
-      opencode-ai@${OPENCODE_RUNTIME_VERSION}
+      ${ANTHROPIC_AI_CLAUDE_CODE} \
+      ${OPENCODE_AI}
 
 # GitHub CLI from the official cli/cli release tarball, checked against the
 # sha256 pinned in versions.json (tools.gh) — sandbox agents open PRs with
@@ -84,18 +93,28 @@ RUN agentproto --version | grep -q "${AGENTPROTO_CLI_VERSION}" \
 # 2. Every baked adapter is GLOBALLY INSTALLED. (`agentproto adapters list`
 #    shows ENABLED adapters from config — empty on a fresh bake — so it cannot
 #    prove installation here; npm ls -g can. One explicit check per adapter.)
+RUN npm ls -g --depth=0 @agentproto/adapter-claude-code >/dev/null \
+  || (echo "smoke: baked adapter missing: @agentproto/adapter-claude-code" && exit 1)
 RUN npm ls -g --depth=0 @agentproto/adapter-hermes >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-hermes" && exit 1)
 RUN npm ls -g --depth=0 @agentproto/adapter-mastra-agent >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-mastra-agent" && exit 1)
+RUN npm ls -g --depth=0 @agentproto/adapter-openclaw >/dev/null \
+  || (echo "smoke: baked adapter missing: @agentproto/adapter-openclaw" && exit 1)
 RUN npm ls -g --depth=0 @agentproto/adapter-opencode >/dev/null \
   || (echo "smoke: baked adapter missing: @agentproto/adapter-opencode" && exit 1)
 
-# 3. The pinned GitHub CLI is on PATH.
+# 3. Every baked runtime CLI answers --version on PATH.
+RUN claude --version >/dev/null \
+  || (echo "smoke: baked runtime CLI missing: @anthropic-ai/claude-code (claude)" && exit 1)
+RUN opencode --version >/dev/null \
+  || (echo "smoke: baked runtime CLI missing: opencode-ai (opencode)" && exit 1)
+
+# 4. The pinned GitHub CLI is on PATH.
 RUN gh --version | grep -q "gh version ${GH_VERSION} " \
   || (echo "smoke: gh --version does not report ${GH_VERSION}" && gh --version && exit 1)
 
-# 4. The daemon boots and answers /health on the provider's default port.
+# 5. The daemon boots and answers /health on the provider's default port.
 RUN agentproto serve --port 18790 --bind 127.0.0.1 --workspace /home/user >/tmp/serve.log 2>&1 & \
     SERVE_PID=$!; \
     for i in $(seq 1 30); do \
