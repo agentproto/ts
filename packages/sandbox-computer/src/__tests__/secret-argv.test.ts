@@ -106,11 +106,12 @@ describe("computer boot keeps env values out of exec argv", () => {
   })
 
   it("exports the join metadata when connect() has to restart the daemon", async () => {
-    const booted = await computerSandboxProvider.boot(spec(controller.url), { env: REVIEWER_ENV })
+    const holder = { sessionHolder: "holder-a", maxSessions: 2 }
+    const booted = await computerSandboxProvider.boot(spec(controller.url, holder), { env: REVIEWER_ENV })
     controller.serveSeen = false
     const serveBefore = controller.serveCount
 
-    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, { maxSessions: 2 }), {
+    await computerSandboxProvider.connect!(booted.sandboxId, spec(controller.url, holder), {
       env: REVIEWER_ENV,
     })
 

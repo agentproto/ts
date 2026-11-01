@@ -639,15 +639,24 @@ export function buildServeCommand(opts: {
   port: number
   workspace: string
   allowOrigin?: string
-  /** Non-secret descriptive env exported for the daemon (and the agents it
-   *  spawns). The values are inlined in the exec argv, so never pass a
-   *  credential here. */
-  env?: Record<string, string>
 }): string {
+  return serveCommand(opts, {})
+}
+
+/** Internal: `buildServeCommand` plus the descriptive join metadata. The
+ *  values are placed in the exec command line, so they must never be secrets:
+ *  only the names in `DAEMON_ONLY_ENV_KEYS` are exported, anything else is
+ *  dropped. Credentials belong in the create env. */
+function serveCommand(
+  opts: { token: string; port: number; workspace: string; allowOrigin?: string },
+  daemonEnv: Record<string, string>,
+): string {
+  const safeEnv: Record<string, string> = {}
+  for (const [k, v] of Object.entries(daemonEnv)) if (DAEMON_ONLY_ENV_KEYS.has(k)) safeEnv[k] = v
   const origin = opts.allowOrigin ? ` --allow-origin ${shQuote(opts.allowOrigin)}` : ""
   const marker = opts.allowOrigin ? `printf %s ${shQuote(opts.allowOrigin)} > "${DAEMON_ORIGIN_PATH}"; ` : ""
   const tokenFile = `umask 077; printf %s ${shQuote(opts.token)} > "${DAEMON_TOKEN_PATH}"; `
-  const envPrefix = inlineEnv(opts.env)
+  const envPrefix = inlineEnv(safeEnv)
   return (
     USER_BIN_PATH_EXPORT +
     (envPrefix ? `${envPrefix} ` : "") +
@@ -1473,7 +1482,7 @@ async function startDaemonAndWait(
   await hardExec(
     client,
     id,
-    bashArgv(buildServeCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin, env: daemonEnv })),
+    bashArgv(serveCommand({ token: daemonToken, port, workspace, allowOrigin: mcpOrigin }, daemonEnv)),
     15,
   )
 
