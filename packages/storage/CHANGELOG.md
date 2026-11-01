@@ -1,5 +1,13 @@
 # @agentproto/storage
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [c73874f]
+- Updated dependencies [c73874f]
+  - @agentproto/policy@0.3.0
+
 ## 0.4.0
 
 ### Minor Changes

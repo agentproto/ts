@@ -1,5 +1,32 @@
 # @agentproto/worktree
 
+## 0.20.0
+
+### Minor Changes
+
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches, both read from one `git log --stdin` over every merged PR head that is present locally: `ancestor` (the tip is an ancestor of a merged PR's head, the PR kept going after the branch stopped) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. Before, these branches sat in the review class, where the line-coverage guard refused their agreeing verdicts. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- 467af3b: Reviewer-proposed changeset for PR #2323. The PR's own changeset covers the worktree/cli/runtime/apps changes; this file additionally bumps `agentproto-vscode` for the mirrored `skipped-stale` outcome and `reason` field in its worktree GC client types. All five packages are listed here in one frontmatter block so no changed package is missed.
+- ac14e7d: branch gc: a branch whose work landed through a merged PR is now `pr-merged` (reclaim) even when its tip is not that PR's exact head. Two new deterministic matches read from one `git log --stdin` over every merged PR head present locally: `ancestor` (the tip is an ancestor of a merged PR's head) and `patch` (every non-merge commit of the tip has a patch-equivalent commit, same `git patch-id --stable` and same author time and email, in some merged PR's history, so a rebased branch or one whose commits landed across stacked PRs matches). Entries carry `mergedPrMatch` (`head`, `ancestor` or `patch`) next to `mergedPr`. The plan still never fetches: a merged PR head missing from the object database offers no match.
+- a255a13: Make `worktree gc` and `worktree archive`/`rm` safe for unmerged commits. A detached HEAD is now reclaimed by `gc` only when its sha is proven in base (ancestor, squash, patch, or a merged PR's head) and is held otherwise; proven ones are reclaimed by default, so `maintain` handles them, and `--include-detached` stays accepted. `archive`/`rm` keep the branch unless it is proven merged into base (`--force` overrides), print the decision, and record it in `MANIFEST.json`. The `worktree --help` text for `archive` now states exactly what is preserved.
+- 467af3b: Follow-ups on `worktree gc`/`status` and the `maintain` workflow:
+
+  - `worktree gc --apply` (and the daemon's `worktree_gc` apply from a precomputed plan) re-checks each entry's branch, HEAD sha and index mtime right before touching it, and skips with `skipped-stale` if anything moved since the plan was made.
+  - Liveness now consults the daemon's session registry (an alive session whose cwd is the worktree, or under it, blocks reclaim) and the newest mtime among modified/untracked files, not only the index; it degrades to mtime-only and says so when the daemon is unreachable.
+  - `pnpm-lock.yaml` is noise only when the worktree's `package.json` files are unchanged versus HEAD; a changed manifest keeps the lockfile as real dirt. An explicit `--noise` override still wins outright.
+  - `worktree ls --status` and the gc/maintain integration state gain `closed-unmerged(#N)` for a branch whose PR was closed without merge.
+  - The `maintain` reviewer input carries each candidate's PR state (open/merged/closed-unmerged/none) and a `git cherry` summary against the compare base; the maintain report prints one reason line per verdict.
+  - Forge resolution normalizes `github.com-<alias>` SSH host aliases to `github.com` for the owner/repo slug, resolves the `gh` token from a neutral cwd, and both `ls --status` and `gc` print once to stderr when PR status can't be fetched instead of staying silent.
+  - `worktree gc` lists and classifies worktrees with bounded concurrency instead of serially, cutting a ~40-worktree sweep from the 50s+ range down substantially (see PR body for before/after numbers).
+
+### Patch Changes
+
+- Updated dependencies [66c9f6d]
+- Updated dependencies [66c9f6d]
+  - @agentproto/session-presets@0.7.1
+  - @agentproto/workflow-runtime@0.20.3
+  - @agentproto/driver@0.4.1
+  - @agentproto/tool@0.6.1
+
 ## 0.19.1
 
 ### Patch Changes

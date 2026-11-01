@@ -1,5 +1,15 @@
 # @agentproto/workspace
 
+## 2.0.0
+
+### Major Changes
+
+- e301b84: Emit the canonical AIP-70 tags `workspace.export/v1` (EXPORT.md), `workspace.lock/v1` and `review.pack-digest/v1:` pack digests (agentproto.lock), and `workspace.types/v1` (TYPES.md) instead of the legacy `workspace-export/v1`, `agentproto-lock/v1`, `agentproto-pack-digest/v1` and `workspace-types/v1`. Breaking for readers: files written by this version need @agentproto/workspace >= 1.1.0 to read. Readers of this version still accept the legacy tags.
+
+### Minor Changes
+
+- 9fb4e90: Add AIP-34 node-scope helpers: `resolveNodeScope` (nearest declared node containing a session's ground, with subpath), `nodeChain` and `nodeProjection` (chain to the tree root with walls, cut after the first sealed or hard node), `composeNodeChainPolicy`, and `loadNodeTree` / `canonicalizeGround` on `./checker`. Add `validateTypesRegistry` for TYPES.md `extends` cycles and undeclared parents (also reported by `checkWorkspaceTree`), and stop `resolveTypeEntry` from overflowing the stack on a cycle.
+
 ## 1.1.0
 
 ### Minor Changes

@@ -1,5 +1,12 @@
 # @agentproto/action
 
+## 0.2.1
+
+### Patch Changes
+
+- Updated dependencies [e47f3cd]
+  - @agentproto/manifest@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

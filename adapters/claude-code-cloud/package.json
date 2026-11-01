@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/adapter-claude-code-cloud",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "@agentproto/adapter-claude-code-cloud — AIP-66 managed-cloud-agent adapter for Anthropic Claude Code cloud sessions. Relays `claude --cloud` / `claude -p --cloud` and the undocumented Claude Code sessions API behind an AIP-44 ACP server; the vendor owns the machine and the harness, no agentproto daemon runs inside.",
   "keywords": [
     "agentproto",

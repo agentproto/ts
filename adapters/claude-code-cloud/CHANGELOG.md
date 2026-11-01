@@ -1,5 +1,25 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.3.2
+
+### Patch Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+- e7bda96: Fix the Claude Cloud CI lane losing its first `turn-end`. `sessions wait` now accepts `--since <seq>` so a spawn-then-wait caller can replay a turn that finished before the wait process started. The adapter also pre-trusts its cwd without risking the user's config (atomic write, skipped when already trusted, never overwritten on a parse failure) and re-answers a trust dialog that re-renders until it is accepted, so `claude --cloud` cannot stall on the folder-trust prompt.
+- Updated dependencies [68c476e]
+- Updated dependencies [da71f8c]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [c350f3a]
+- Updated dependencies [c53688d]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [c350f3a]
+- Updated dependencies [30961a9]
+- Updated dependencies [dd134f4]
+- Updated dependencies [30961a9]
+  - @agentproto/harness@3.0.0
+  - @agentproto/adapter-claude-sdk@0.7.32
+
 ## 0.3.1
 
 ### Patch Changes

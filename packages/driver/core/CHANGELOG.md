@@ -1,5 +1,13 @@
 # @agentproto/driver
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [e47f3cd]
+  - @agentproto/manifest@0.3.0
+  - @agentproto/tool@0.6.1
+
 ## 0.4.0
 
 ### Minor Changes

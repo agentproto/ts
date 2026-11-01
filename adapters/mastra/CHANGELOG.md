@@ -1,5 +1,12 @@
 # @agentproto/adapter-mastra
 
+## 0.1.18
+
+### Patch Changes
+
+- @agentproto/driver@0.4.1
+- @agentproto/tool@0.6.1
+
 ## 0.1.17
 
 ### Patch Changes

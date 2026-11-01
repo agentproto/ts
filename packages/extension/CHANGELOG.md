@@ -1,5 +1,12 @@
 # @agentproto/extension
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [e47f3cd]
+  - @agentproto/manifest@0.3.0
+
 ## 0.3.0
 
 ### Minor Changes

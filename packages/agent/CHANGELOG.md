@@ -1,5 +1,29 @@
 # @agentproto/agent
 
+## 0.6.0
+
+### Minor Changes
+
+- b67f58e: AGENT.md `tools` accepts the AIP-42 structured item `{ kind: mcp, server, allow?, deny? }` and refuses a malformed one (missing `server`, a `/` in a name, an extra key, an unknown `kind`); the item is part of the generated agent schema and exported as `McpToolRef` / `ToolRef`. The operator `tools` item is that same schema, taken from the agent package, and still accepts the deprecated scoped form `{ id, source?, scope? }`. `projectAgentToSpawn` maps each structured item to a per-server `allowTools` / `denyTools` (`servers` on the projection) instead of dropping it with a warning; a deny wins over an allow and over any other item admitting the same tool, and a bare string joins the `agentproto` server. The spec generator gains `--inline-ref <def>` and proves disjoint closed-object `oneOf` branches, so the agent package is now covered by `check:spec-drift`. The vendored specs are re-synced, which regenerates the memory frontmatter schema line; the bridge and `refKey` in the app package take the widened `ToolRef` (a server ref keys as `mcp:<server>`).
+
+  Narrowing: a `server` in an operator or agent `tools` item must now match `^[A-Za-z0-9_.-]+$`, so a URL such as `https://mcp.local` is refused; use a host name such as `mcp-local`. The spawn still carries a single `allowTools` list for the daemon gateway, so a filter on any other server, or a `denyTools` with no allowlist, is exposed on `servers` and reported as a harness warning ("not applied") rather than enforced. The corpus validator and the corpus-cli bundle register the AIP-42 AGENT schema they now `$ref`.
+
+- e47f3cd: AIP-42 `AgentEntry`, one AGENT.md renderer, and a configurable instructions composer.
+
+  - `@agentproto/agent` exports `AgentEntry { agent, body? }` and `renderAgentMd(entry)`, the single AGENT.md renderer. `agentVerbs` (create and update) and the app emitter both go through it, so the same agent renders to the same bytes on either path. The body is trimmed on render, so an update no longer grows blank lines.
+  - `defineAgent` refuses a missing or blank `model` with `model is required` (the generated schema types `model` as `any`, so a blank string used to pass).
+  - `composeInstructions(handle, body, opts?)` takes `boundariesHeader` and `sectionOrder`. The default boundaries header is now `Hard rules (these MUST be followed):`, without the em dash.
+  - `@agentproto/manifest`: `DoctypeSpec` gains an optional `render(handle, body)` hook that `create` and `update` use in place of the generic frontmatter renderer.
+  - `@agentproto/skill` exports `SkillEntry { skill, body }`.
+  - `@agentproto/app`: `renderAgentManifest` and `emitApp` delegate to `renderAgentMd`; ref comments cite AIP-54.
+
+### Patch Changes
+
+- 152ec6e: The daemon serves the AIP-72 memory store as MCP tools: `memory_search`, `memory_list`, `memory_read`, `memory_write` (default mode `propose`), `memory_supersede`, `memory_archive` and `memory_dismiss`. Anyone proposes; a commit, supersede, archive or dismiss needs the operator or a session spawned with the `supervisor` role, read from the role now recorded on every session's descriptor (`meta.role`); a session whose agent sets AIP-42 `memory.enabled: false` writes nothing. The default store lives at `~/.agentproto/memory` (new config key `memory.root`), and an agent's AIP-42 `memory.store` wins when it names a files root. An agent whose AGENT.md binds memory (`memory.enabled: true`, `store` or `anchors`) gets the AIP-72 section 9 digest of its in-force, in-scope items appended to its system prompt at spawn, bounded with an "items left out" line; an adapter declaring `capabilities.memory.inject: native-dir` gets none through this path. `@agentproto/cli` forwards the adapter's `capabilities.memory.inject` to the runtime. `@agentproto/agent` types the AIP-42 `memory` block's AIP-72 fields (`enabled`, `store`, `anchors`) on `MemoryConfig`.
+- 152ec6e: AIP-72 daemon memory surface. `@agentproto/runtime` serves the memory store as seven `memory_*` MCP tools with a propose/commit write policy (commit, supersede, archive and dismiss require the operator or a `supervisor` session, read from `meta.role` on both the sync and async-worktree descriptors; `memory.enabled: false` sessions write nothing), resolves a per-agent `memory.store` for both the spawn digest and the tools, adds the `memory.root` config key, and appends a bounded AIP-72 section 9 digest to the system prompt at spawn. `@agentproto/agent` types the AIP-42 `memory` block's AIP-72 fields (`enabled`, `store`, `anchors`). `@agentproto/cli` forwards the adapter's `capabilities.memory.inject` to the runtime. `@agentproto/memory` documents the daemon tools and digest in its README.
+- Updated dependencies [e47f3cd]
+  - @agentproto/manifest@0.3.0
+
 ## 0.5.0
 
 ### Minor Changes

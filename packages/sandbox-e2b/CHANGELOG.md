@@ -1,5 +1,20 @@
 # @agentproto/sandbox-e2b
 
+## 0.11.0
+
+### Minor Changes
+
+- e395b66: Tag e2b sandboxes with tenantId, owner and label metadata
+- a5475aa: Add fail-closed overflow safety rails to the auto sandbox provider: residency, daily box and EUR caps, a secret allowlist, template CLI parity, and a maxEurPerBox timeout ceiling.
+
+### Patch Changes
+
+- b027bf4: Bake the `@anthropic-ai/claude-code` runtime CLI alongside `opencode-ai` in the workstation template, and generalize the template generator to emit one ARG and one build-time `--version` smoke check per runtime package.
+- f765a96: Record the proven stable `agentproto-workstation` bake: template `53ybr99wdfgoebi9nee8` now reports CLI `1.31.0`, the bumped adapter set (including `@agentproto/adapter-claude-code` and `@agentproto/adapter-openclaw`), and the matching runtime pins in the generated `TEMPLATES.stable.baked` metadata.
+- 2584203: Bump baked @agentproto/cli in e2b workstation template to 1.31.0
+- Updated dependencies [e395b66]
+  - @agentproto/sandbox@0.15.0
+
 ## 0.10.0
 
 ### Minor Changes

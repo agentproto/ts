@@ -1,5 +1,66 @@
 # @agentproto/harness
 
+## 3.0.0
+
+### Major Changes
+
+- c53688d: Remove the `defineAgentCli` export from `@agentproto/harness` (it aliased `defineHarness`; use `defineHarness`) and the `defineAgencyV2` export from `@agentproto/agency` (it aliased `defineAgency`; use `defineAgency`). The nine deprecated re-export shim packages are deleted from the repo; use their replacements (`provider-kit`, `agency`, `app`, `doctype`, `harness`, `inference-endpoint`, `bridge`, `pairing`, `processor`). The in-repo adapters and the CLI now call `defineHarness`; no behaviour change.
+
+### Minor Changes
+
+- 68c476e: Stop per-session adapter config dirs (`~/.agentproto/adapter-config/<id>`) from growing without bound. When a spawn redirects a base dir (opencode's credential `XDG_DATA_HOME`), the tool caches known to derive from it (pnpm store, uv managed Pythons) are now symlinked to the operator's own location instead of being rebuilt per session; confined spawns keep per-session caches. The driver records each dir's disposable paths in `.agentproto-cache.json` (`credentialDataHome.disposable`; opencode lists `snapshot`, `tool-output`, `log`), and a new adapter-cache sweep deletes them once every session of the lineage is dead and quiet for `daemon.adapterCacheRetentionDays` (default 1), keeping the resume store. Runs with the periodic retention sweep, and on demand via `session_gc adapterCaches:true` and `agentproto sessions gc --adapter-caches`.
+- 0e0fd10: Adopt the AIP-45 `mode-changed` stream event and typed `agent-prompt` requests (agentproto/agentproto #121).
+
+  `@agentproto/acp`: `StreamEvent` gains the `mode-changed` variant (`modeId`, `previousModeId`, `cause: "caller" | "agent"`, `reason?`) and the `agent-prompt` event gains `request?` (`tool-permission | question | plan-approval`, absent reads as `tool-permission`) with the `question` and `planApproval` payloads (new `AgentPromptRequestKind`, `AgentPromptQuestion`, `AgentPromptPlanApproval` types). The ACP client turns a `current_mode_update` into `mode-changed`: `cause: "caller"` when it echoes the caller's own `setSessionMode`, `"agent"` otherwise, with `previousModeId` from the tracked mode. A `setSessionMode` the agent does not echo is reported once it is applied; when the agent reports another mode during the call, that report stands. No-op updates are not reported.
+
+  `@agentproto/harness`: `capabilities` accepts `mode_events` and `typed_prompts` (booleans, the `HARNESS.schema.json` fields), and re-exports the new acp types.
+
+  `@agentproto/adapter-mastra-controller`: a controller mode switch is a `mode-changed` event instead of the `thought` notice (`cause: "agent"`, `reason: "plan approved"` after an approved plan), and the host's own `setSessionMode` is reported with `cause: "caller"`. Prompts carry `request`, with a `question` payload (choices, or free text on the `answer` option) or a `planApproval` payload (plan text, `planRef`, target mode, approve and reject option ids). Declares `mode_events` and `typed_prompts`. Deprecated: the `_meta` keys `mastra-controller/request`, `mastra-controller/plan` and `mastra-controller/transitionsTo` (and the `META_REQUEST`, `META_PLAN`, `META_TRANSITIONS_TO` exports) are kept for one release as aliases of the typed fields.
+
+  `@agentproto/runtime`: the pending-permission inbox (`GET /permissions`, `permissions_list`) and the session transcript carry `request`, `question` and `planApproval` unchanged; `mode-changed` is recorded in the transcript, relayed from sandbox sessions, exported, and shown as a `[mode]` output line.
+
+  `@agentproto/cli`: `permissions ls` renders a plan from the typed `planApproval` first, falling back to the `_meta` aliases.
+
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (`projectNativeMemory`, `diffNativeMemory`, `nativeToMemoryV1`, `nativeMemoryProposals`, `nativeMemoryUnavailable` and the snapshot helpers) and a `memoryProjection` start option: the claude-code driver pins `autoMemoryDirectory: <configDir>/memory` in the isolated `settings.json`, writes one `agentproto_<slug>.md` topic file per in-force item plus a bounded fenced block at the top of `MEMORY.md`, and persists a `{file: sha}` snapshot in the config dir. When auto memory is off (`CLAUDE_CODE_DISABLE_AUTO_MEMORY`, a repo `autoMemoryEnabled: false`) or the repo pins its own `autoMemoryDirectory`, it projects nothing and appends the digest to the system prompt instead. `@agentproto/runtime` routes a `native-dir` adapter's digest selection into that option and, at each turn end and session exit, diffs the dir and writes new or changed native files to the agent's store as proposals, never commits, once per content. `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's `capabilities.memory.capture`.
+- dd134f4: Retry transient model re-assert on resume and enforce profile allowlists
+- c350f3a: AIP-72 section 9 native-dir projection and native-dir-diff capture for claude-code. `@agentproto/harness` adds `native-memory.ts` (project/normalize/diff/snapshot helpers) and a `memoryProjection` start option that pins `autoMemoryDirectory` inside the session config dir, writes one `agentproto_<slug>.md` per in-force item plus a bounded `MEMORY.md` index block, and falls back to the system-prompt digest when auto memory is off or the repo pins its own dir. `@agentproto/runtime` routes a `native-dir` adapter's selection into that option, splits `selectMemoryItems`/`renderMemoryDigest` out of the digest builder, and diffs the projected dir at turn end and exit to write new or changed native files as proposals (never commits, once per content). `@agentproto/adapter-claude-code` declares `capabilities.memory { inject: "native-dir", capture: "native-dir-diff" }`. `@agentproto/cli` forwards the projection and the adapter's capture capability. `@agentproto/memory` documents the native memory behavior.
+- 30961a9: Projected PreCompact checkpoint hook: `defaults.nativeHooks.preCompactCheckpoint: "on"` gives a local claude-code session a synchronous PreCompact (auto) hook running `agentproto hook pre-compact`, which asks the daemon for a checkpoint and always exits 0. Adds the `agentproto hook pre-compact` CLI command, the `preCompactCommand` harness start option, and `reason` / `occurrenceId` / `trigger` on `POST /sessions/:id/checkpoint` (`reason: "native-pre-compact"` never asks the session for a handoff turn and repeats are deduped by `occurrenceId`).
+- dd134f4: Retry transient model re-assert on resume and enforce profile allow-lists.
+
+  - `@agentproto/acp`: add optional `AcpClientOptions.modelApplyRetry` to bound the re-assert retry after a connect-time model-apply failure, retrying only transient (429/rate-limit) rejections.
+  - `@agentproto/harness`: expose `AgentCliRuntimeSession.modelApplyRejection` so hosts can see a rejected model apply instead of assuming the requested model.
+  - `@agentproto/runtime`: fold per-profile model curation into spawn eligibility (ordered `profileRefs` fall through to the next model-eligible profile), share one canonical identity rule between the catalog read path and the spawn/live `set_model` write paths, and stop the descriptor from claiming a rejected/unknown model.
+
+- 30961a9: Checkpoint before Claude Code's own compaction: `defaults.nativeHooks.preCompactCheckpoint: "on"` projects a synchronous PreCompact (auto) hook running `agentproto hook pre-compact`, which asks the daemon for a checkpoint and always exits 0.
+  `POST /sessions/:id/checkpoint` accepts `reason`, `occurrenceId` (deduped) and `trigger`; `reason: "native-pre-compact"` never asks the session for a handoff turn.
+
+### Patch Changes
+
+- da71f8c: `@agentproto/adapter-mastra-controller` now answers the Mastra AgentController's requests. A tool approval, an `ask_user` question and a `submit_plan` plan approval each surface as an AIP-45 `agent-prompt` event, answered through `respondPermission`. An approved plan lets the controller switch to the mode's `transitionsTo`, reported as the existing mode-switch notice; a rejected plan stays in its mode with the feedback. The manifest's `permissions` rules pre-answer matching tools. Without `permissionHold` the client answers in place: tools are allowed, a question gets a "no user" answer, a plan is rejected. Capabilities now claim `tool_calls`. A plan's text is read only from a regular file under the session cwd (symlinks resolved), at most 256 KiB; otherwise the prompt carries "plan not readable: <reason>". A `multi_select` question is answered with a single pick.
+
+  `@agentproto/cli` lists `mastra-controller` in the bundled adapter catalog, and `permissions ls` renders a mastra-controller plan approval's plan text.
+
+  `@agentproto/harness`: the `respondPermission` doc no longer says only the ACP arm implements it.
+
+- f1dab61: `@agentproto/memory` adds the AIP-72 section 8 store: the `MemoryStore` port (alias `IMemoryStore`), its typed errors (`MemoryConflictError`, `MemoryNotFoundError`, `MemoryTransitionError`, `MemorySlugTakenError`), and `FilesMemoryStore`, a store over the reference layout (`items/<type>/<id>.md`, `proposals/<sha256>.md`) with SHA-256 compare-and-set revisions, status-only supersede and archive, no hard delete, and a keyword search that can merge an AIP-10 knowledge provider's hits. `@agentproto/harness` accepts the AIP-72 `capabilities.memory` projection declaration (`inject`, `capture`) in a harness manifest.
+- Updated dependencies [b67f58e]
+- Updated dependencies [0e0fd10]
+- Updated dependencies [c53688d]
+- Updated dependencies [03d7c58]
+- Updated dependencies [11b18bf]
+- Updated dependencies [4ed9796]
+- Updated dependencies [cda5782]
+- Updated dependencies [f1dab61]
+- Updated dependencies [dd134f4]
+- Updated dependencies [152ec6e]
+- Updated dependencies [c350f3a]
+- Updated dependencies [4ed9796]
+- Updated dependencies [dd134f4]
+- Updated dependencies [03d7c58]
+  - @agentproto/memory@0.1.0
+  - @agentproto/acp@0.13.0
+  - @agentproto/command-sandbox@0.3.2
+
 ## 2.16.0
 
 ### Minor Changes

@@ -1,5 +1,22 @@
 # @agentproto/adapter-knowledge-files
 
+## 0.4.0
+
+### Minor Changes
+
+- 30a58b6: Keep the workspace brain's BM25 index lean and log every build. The files engine no longer keeps each doc's text or a per-doc `tf` Map in the resident index: docs keep only id and token count, every doc's (term id, frequency) pairs live in shared packed typed arrays, and a query reads the top-K files back for their snippet and frontmatter (same ids, order, scores, spans, and snippets as before). A build reads files 50 at a time, builds are serialized across the process, and one line is logged per build (docs, bytes read, duration, heapUsed before and after), per refusal, and per query that times out while a cold build keeps going. Above `maxIndexDocs` indexable files (default 100,000; `defaults.reactions.brainIngest.maxIndexDocs`, or a `knowledge.json` files entry's own `maxIndexDocs`) the engine refuses to build and the query fails with `FilesIndexTooLargeError`, which the federated provider now surfaces instead of swallowing. The federated `GET /brain/query` queries brains one at a time. Breaking for direct BM25 users: `Bm25Index` is reshaped (`vocab` + typed arrays, `df` is a `Uint32Array`), `Bm25Doc` has no `text`/`tf`, and `score()` no longer attaches snippets (use `makeSnippet`).
+- 30a58b6: Keep the workspace brain's in-process BM25 index lean: docs retain only id and token count, postings live in shared packed typed arrays, and a query reads the top-K files back for their snippet and frontmatter. Builds run one step of 50 files at a time and are serialized across the process, with one log line per build, refusal, and cold-build query timeout. A new `maxIndexDocs` ceiling (default 100,000, configurable via `defaults.reactions.brainIngest.maxIndexDocs` or a `knowledge.json` files entry) refuses to build and surfaces `FilesIndexTooLargeError`, and federated `GET /brain/query` now queries brains one at a time. Breaking for direct BM25 users (pre-1.0 minor channel): `Bm25Index`/`Bm25Doc` are reshaped and `score()` no longer attaches snippets — use `makeSnippet`.
+
+### Patch Changes
+
+- Updated dependencies [b67f58e]
+- Updated dependencies [3f90a9d]
+- Updated dependencies [e301b84]
+- Updated dependencies [e301b84]
+  - @agentproto/corpus@1.0.0
+  - @agentproto/provider-kit@0.6.0
+  - @agentproto/knowledge-engine@0.3.5
+
 ## 0.3.5
 
 ### Patch Changes
