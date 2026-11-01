@@ -86,12 +86,89 @@ export const ATTRIBUTION_STRIP_SETUP_COMMAND = [
   `git config --global core.hooksPath "$HOME/.agentproto-git-hooks"`,
 ].join("\n")
 
+const isPlainObject = v => v !== null && typeof v === "object" && !Array.isArray(v)
+
+const loggedAutoLegs = new Set()
+const logAutoLeg = line => {
+  if (loggedAutoLegs.has(line)) return
+  loggedAutoLegs.add(line)
+  console.log(line)
+}
+
+/**
+ * `reviewerSandbox.provider === "auto"`: computer fleet first, opt-in capped
+ * overflow to e2b (`packages/runtime/src/sandbox-providers/auto.ts`).
+ *
+ *   · The computer leg needs `COMPUTER_CONTROLLER_URL` on THIS process (the
+ *     runner exports it from the `computer-controller-url` action input). Without
+ *     it (fork PR, secrets not provisioned) the spec degrades to the plain e2b
+ *     spec, identical to a `provider: "e2b"` reviewerSandbox, so the reviewer
+ *     runs exactly as it did before `auto` existed.
+ *   · With it, the spec stays `auto` and `config.overflow.secretAllowlist` is
+ *     narrowed to the names actually in this run's passthrough. The overflow
+ *     refuses when an allowlisted name has no value (a run without
+ *     AGENTPROTO_JOIN) or a passed name is not allowlisted, so the declared
+ *     list in agentic-review.json is the ceiling, not the exact set.
+ *   · AGENTPROTO_JOIN_PROVIDER defaults to the leg that is tried first, only
+ *     when a join token is present (same gate as the other JOIN_* names).
+ *     An overflow to e2b still reports "computer": the daemon env is fixed
+ *     before the box is placed.
+ */
+const autoSpecFor = ({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig, hasJoinToken }) => {
+  const computerUrl = process.env.COMPUTER_CONTROLLER_URL
+  const hasComputer = typeof computerUrl === "string" && computerUrl.trim() !== ""
+  const leg = hasComputer ? "computer" : "e2b"
+  if (
+    hasJoinToken &&
+    !(typeof process.env.AGENTPROTO_JOIN_PROVIDER === "string" && process.env.AGENTPROTO_JOIN_PROVIDER.trim() !== "")
+  ) {
+    process.env.AGENTPROTO_JOIN_PROVIDER = leg
+    if (!passthrough.includes("AGENTPROTO_JOIN_PROVIDER")) passthrough = [...passthrough, "AGENTPROTO_JOIN_PROVIDER"]
+  }
+  const { computer, fleet, e2b, residency, overflow, ...shared } = nativeConfig
+  if (!hasComputer) {
+    logAutoLeg(
+      "reviewerSandbox auto: COMPUTER_CONTROLLER_URL is not set on this runner, using the e2b leg only",
+    )
+    const { config: _config, ...rest } = raw
+    return {
+      ...rest,
+      provider: "e2b",
+      config: { ...sandboxConfig, ...shared, ...(isPlainObject(e2b) ? e2b : {}) },
+      env: { ...(nativeEnv ?? {}), passthrough },
+    }
+  }
+  logAutoLeg(
+    `reviewerSandbox auto: computer leg configured, overflow to e2b ${isPlainObject(overflow) && overflow.enabled === true ? "enabled" : "disabled"}`,
+  )
+  const narrowedOverflow =
+    isPlainObject(overflow) && Array.isArray(overflow.secretAllowlist)
+      ? { ...overflow, secretAllowlist: passthrough.filter(name => overflow.secretAllowlist.includes(name)) }
+      : overflow
+  return {
+    ...raw,
+    provider: "auto",
+    config: {
+      ...sandboxConfig,
+      ...shared,
+      ...(computer !== undefined ? { computer } : {}),
+      ...(fleet !== undefined ? { fleet } : {}),
+      ...(e2b !== undefined ? { e2b } : {}),
+      ...(residency !== undefined ? { residency } : {}),
+      ...(narrowedOverflow !== undefined ? { overflow: narrowedOverflow } : {}),
+    },
+    env: { ...(nativeEnv ?? {}), passthrough },
+  }
+}
+
 /**
  * Sandbox placement. `reviewerSandbox` accepts two shapes:
  *
  *   · **string** (e.g. "e2b") — a provider slug; the spec is fully derived
  *     here (adapter install + attribution-strip hook + env passthrough).
- *   · **object** — a NATIVE SandboxSpec used verbatim as the base:
+ *   · **object**: a NATIVE SandboxSpec used verbatim as the base (a
+ *     `provider: "auto"` object is resolved by `autoSpecFor`: it stays `auto`
+ *     when this process has `COMPUTER_CONTROLLER_URL`, else degrades to plain e2b):
  *     `{ provider: "e2b", config?: {...}, env?: { passthrough?: [...] },
  *     lifecycle?: {...}, reuse?: … }`. Defaults are merged under it, never
  *     over it: if the object's `env.passthrough` is absent it falls back to
@@ -200,6 +277,9 @@ export const sandboxRefFor = (config, verb) => {
     // derived defaults merge UNDER it (its own config/env keys win).
     const nativeConfig =
       raw.config !== null && typeof raw.config === "object" ? raw.config : {}
+    if (nativeProvider === "auto") {
+      return autoSpecFor({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig, hasJoinToken })
+    }
     return {
       ...raw,
       provider: nativeProvider,

@@ -194,6 +194,24 @@ This is what took the most work to get right.
 - **`env.passthrough`** names the daemon-process env vars injected into the box;
   the box's OWN daemon + adapter resolve auth from that env (there is no
   `~/.agentproto/config.json` inside a fresh box).
+- **`provider: "auto"` (this repo's own reviewer lanes).** `reviewerSandbox`
+  can be a native spec `{ provider: "auto", lifecycle, config }`: the box is
+  placed on the self-hosted computer fleet first, with an opt-in, capped
+  overflow to e2b only when the fleet refuses for capacity
+  (`config.overflow`: `maxBoxesPerDay`, `maxEurPerDay`, `maxEurPerBox`, and a
+  `secretAllowlist` for what the e2b leg may receive). The fleet leg is
+  configured by the workflow action's `computer-*` inputs, fed from the secrets
+  `COMPUTER_FLEET_URL`, `COMPUTER_CI_TOKEN`, `COMPUTER_CI_TENANT`,
+  `COMPUTER_ACCESS_CLIENT_ID` and `COMPUTER_ACCESS_CLIENT_SECRET`; `E2B_API_KEY`
+  stays for the e2b leg. When the runner has no `COMPUTER_CONTROLLER_URL` (fork
+  PR, secrets not provisioned) `sandboxRefFor` resolves the spec to the plain
+  e2b one, identical to `provider: "e2b"`, and logs which leg it chose. The
+  overflow allowlist declared in the JSON is a ceiling: `sandboxRefFor` narrows
+  it to the names this run actually passes, because `auto` refuses an
+  allowlisted secret that has no value. With `overflow.enabled` and no explicit
+  `computer.fleetCapacityWaitMs`, `auto` skips the fleet's capacity wait, so a
+  `fleet-capacity` refusal overflows to e2b immediately instead of after the
+  wait.
 - **Why sandbox at all:** the daemon-internal spawn failure (`-32001`) on the CI
   runner does not reproduce inside a box — the box's own daemon spawns the
   adapter cleanly. `workspaceCwdFor` lands the session in `/home/user` and the
