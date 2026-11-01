@@ -251,4 +251,165 @@ describe("opencode console sub-account provider", () => {
     expect(JSON.parse(out.env!.OPENCODE_CONFIG_CONTENT!)).toEqual({ provider })
     expect(JSON.stringify(out.env)).not.toContain(TOKEN)
   })
+
+  it("(a) two accounts, active does not hold the org, the other does: resolves with the second account's token", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (u.endsWith("/api/orgs")) {
+        if (auth === `Bearer ${TOKEN}`) {
+          return jsonResponse([{ id: "org_a" }])
+        }
+        if (auth === "Bearer st_OTHER_2") {
+          return jsonResponse([{ id: "org_b" }])
+        }
+        return jsonResponse([])
+      }
+      if (u.endsWith("/api/config")) {
+        if (auth === "Bearer st_OTHER_2") {
+          return jsonResponse({ config: { provider: { "opencode-go": { options: { headers: { "x-opencode-org-id": "org_b" } } } } } })
+        }
+        return jsonResponse({ error: "forbidden" }, 403)
+      }
+      return jsonResponse({}, 404)
+    })
+    const out = await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe("st_OTHER_2")
+    expect(JSON.stringify(out.extraEnv)).not.toContain(TOKEN)
+  })
+
+  it("(b) active account holds the org: only one /api/orgs call is made", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (u.endsWith("/api/orgs")) {
+        if (auth === `Bearer ${TOKEN}`) {
+          return jsonResponse([{ id: "org_a" }])
+        }
+        return jsonResponse([])
+      }
+      if (u.endsWith("/api/config")) {
+        return jsonResponse({ config: { provider: { "opencode-go": {} } } })
+      }
+      return jsonResponse({}, 404)
+    })
+    const out = await resolveOpencodeConsoleOrg("org_a", "opencode-ws01", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe(TOKEN)
+    const orgsCalls = fetchMock.mock.calls.filter(c => String(c[0]).endsWith("/api/orgs"))
+    expect(orgsCalls.length).toBe(1)
+  })
+
+  it("(c) org in no account: error names both accounts and contains no token", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url)
+      if (u.endsWith("/api/orgs")) {
+        return jsonResponse([{ id: "org_a" }])
+      }
+      return jsonResponse({}, 404)
+    })
+    const err = (await resolveOpencodeConsoleOrg("org_z", "opencode-ws09", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    }).catch((e: unknown) => e as Error)) as Error
+    expect(err).toBeInstanceOf(SubaccountError)
+    expect(err.message).toMatch(/acc_1|user1@example\.test/)
+    expect(err.message).toMatch(/acc_2|user2@example\.test/)
+    expect(err.message).not.toContain(TOKEN)
+    expect(err.message).not.toContain("st_OTHER_2")
+  })
+
+  it("(d) one account expired, the other holds the org: resolves", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1", expiry: NOW - 1000 }))
+    // Make acc_1 expired, acc_2 not expired
+    const specifier = ["node", "sqlite"].join(":")
+    const { DatabaseSync } = (await import(specifier)) as typeof import("node:sqlite")
+    const db = new DatabaseSync(f.dbPath)
+    db.prepare("UPDATE account SET token_expiry = ? WHERE id = ?").run(NOW + 3_600_000, "acc_2")
+    db.close()
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (u.endsWith("/api/orgs")) {
+        if (auth === "Bearer st_OTHER_2") return jsonResponse([{ id: "org_b" }])
+        return jsonResponse([])
+      }
+      if (u.endsWith("/api/config")) {
+        return jsonResponse({ config: { provider: { "opencode-go": {} } } })
+      }
+      return jsonResponse({}, 404)
+    })
+    const out = await resolveOpencodeConsoleOrg("org_b", "opencode-ws03", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe("st_OTHER_2")
+  })
+
+  it("(f) /api/orgs fails for the first account: the next account is still tried", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url)
+      const auth = (init?.headers as Record<string, string>)?.authorization
+      if (u.endsWith("/api/orgs")) {
+        return auth === `Bearer ${TOKEN}` ? jsonResponse({ error: "boom" }, 500) : jsonResponse([{ id: "org_b" }])
+      }
+      return jsonResponse({ config: { provider: { "opencode-go": {} } } })
+    })
+    const out = await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe("st_OTHER_2")
+  })
+
+  it("(g) /api/orgs fails on every account: the error lists them and holds no token", async () => {
+    const f = track(await makeDb({ accounts: 2, activeId: "acc_1" }))
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500))
+    const err = (await resolveOpencodeConsoleOrg("org_b", "opencode-ws02", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    }).catch((e: unknown) => e as Error)) as Error
+    expect(err).toBeInstanceOf(SubaccountError)
+    expect(err.message).toMatch(/org list failed/)
+    expect(err.message).toMatch(/user1@example\.test/)
+    expect(err.message).toMatch(/user2@example\.test/)
+    expect(err.message).not.toContain(TOKEN)
+    expect(err.message).not.toContain("st_OTHER_2")
+  })
+
+  it("(h) a single expired account keeps the explicit expired-session message", async () => {
+    const f = track(await makeDb({ expiry: NOW - 1000 }))
+    await expect(
+      resolveOpencodeConsoleOrg("org_a", "opencode-ws01", { dbPath: f.dbPath, now: () => NOW, fetch: vi.fn() }),
+    ).rejects.toThrow(/session for user1@example\.test expired at/)
+  })
+
+  it("(e) single-account behaviour unchanged", async () => {
+    const f = track(await makeDb({ accounts: 1 }))
+    const provider = { "opencode-go": {} }
+    const fetchMock = vi.fn(async () => jsonResponse({ config: { provider } }))
+    const out = await resolveOpencodeConsoleOrg("org_a", "opencode-ws01", {
+      dbPath: f.dbPath,
+      now: () => NOW,
+      fetch: fetchMock as unknown as typeof fetch,
+    })
+    expect(out.credential).toBe(TOKEN)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String((fetchMock.mock.calls as unknown[][])[0]![0])).toContain("/api/config")
+  })
 })
