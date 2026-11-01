@@ -81,9 +81,9 @@ export interface DaemonConfig {
    *  it would be revived on every daemon restart even after its work finished
    *  days earlier. Rows idle longer than this (measured from their last
    *  turn-end) are left dead-but-lazy-resumable: the next prompt, or an
-   *  explicit `session_restart`, revives them on demand. Pinned sessions and
-   *  sessions with an operator-assigned `operatorLabel` (the persistent
-   *  brains / PMs) are always resumed. Default 30. Set to 0 to disable the
+   *  explicit `session_restart`, revives them on demand. Explicitly pinned
+   *  sessions are always resumed; an `operatorLabel` does not exempt a row
+   *  (it is an identity stamped on every operator spawn). Default 30. Set to 0 to disable the
    *  cutoff (restore the old resume-everything behavior); only meaningful
    *  when `resumeSessionsOnBoot` is on. Set via
    *  `agentproto config set daemon.bootResumeKeepAliveMaxIdleMinutes 30`. */

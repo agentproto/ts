@@ -89,9 +89,10 @@ stops eagerly resuming a `keepAlive` session that has been idle longer than
 `daemon.bootResumeKeepAliveMaxIdleMinutes` (default `30`, measured from its last
 turn-end; `0` disables the cutoff). The row is not killed, archived or changed:
 it stays dead-but-lazy-resumable, and its next prompt or an explicit
-`session_restart` brings it back. Pinned sessions and sessions carrying an
-operator-assigned `operatorLabel` (the persistent brains and PMs, e.g.
-`pygmalion-brain-persistent`) are exempt and always resume. A session marked
+`session_restart` brings it back. Only explicitly pinned sessions are exempt
+and always resume; an operator-assigned `operatorLabel` is identity only and
+does not exempt a session (agent_start stamps it on every operator spawn,
+executors included). A session marked
 completed through `session_mark_completed` (or the `operator-completed` close
 path) also drops its `keepAlive` flag and is never eagerly resumed.
 

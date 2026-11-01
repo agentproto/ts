@@ -747,7 +747,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "daemon",
     label: "KeepAlive boot-resume idle cutoff (minutes)",
-    help: "When resumeSessionsOnBoot is enabled, do not eagerly resume a keepAlive session that has been idle (since its last turn-end) longer than this many minutes. It stays resumable on its next prompt or session_restart. Pinned sessions and operator-labelled sessions are always resumed. 0 disables the cutoff. Default 30.",
+    help: "When resumeSessionsOnBoot is enabled, do not eagerly resume a keepAlive session that has been idle (since its last turn-end) longer than this many minutes. It stays resumable on its next prompt or session_restart. Only explicitly pinned sessions are always resumed; an operator label does not exempt a row. 0 disables the cutoff. Default 30.",
     default: 30,
   },
   {
