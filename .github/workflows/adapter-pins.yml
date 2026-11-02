@@ -42,8 +42,10 @@ jobs:
           const fs = require("fs");
           const data = JSON.parse(fs.readFileSync("/tmp/adapter-pins.json", "utf8"));
           const rows = data.rows || [];
-          const drifted = rows.filter((row) => ["patch", "minor", "major"].includes(row.drift));
-          const unknown = rows.filter((row) => row.drift === "unknown");
+          const summary = data.summary || {};
+          const drifted = summary.drifted || [];
+          const unknown = summary.unknown || [];
+          const fresh = summary.fresh === true;
 
           let body = `# Adapter pin freshness\n\n`;
           body += `Run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}\n\n`;
@@ -65,6 +67,7 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `drifted=${drifted.length > 0}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `count=${drifted.length}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `unknown=${unknown.length}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `fresh=${fresh}\n`);
           NODE
 
       - name: Report to step summary
@@ -91,8 +94,8 @@ jobs:
               --body-file /tmp/adapter-pins.md
           fi
 
-      - name: Close tracking issue when all pins are fresh
-        if: steps.pins.outputs.drifted == 'false' && steps.pins.outputs.unknown == '0'
+      - name: Close tracking issue when the report is fresh
+        if: steps.pins.outputs.fresh == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

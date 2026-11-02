@@ -3,11 +3,14 @@ import { dirname, join } from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
 import {
+  buildRows,
   classifyDrift,
   collectPins,
+  compareSemver,
   parseAdapterSource,
   parseRangeFloor,
   splitPackageSpec,
+  summarizeRows,
 } from "./check-adapter-pins.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -26,14 +29,40 @@ test("reads the lower bound from a version range", () => {
   assert.equal(parseRangeFloor("*"), null)
 })
 
-test("classifies drift as none, patch, minor or major", () => {
+test("compares semver including prerelease ordering", () => {
+  assert.equal(compareSemver("1.2.3", "1.2.3"), 0)
+  assert.equal(compareSemver("1.2.3", "1.2.4"), -1)
+  assert.equal(compareSemver("2.0.0", "1.9.9"), 1)
+  assert.equal(compareSemver("1.2.3-beta.1", "1.2.3"), -1)
+  assert.equal(compareSemver("1.2.3-beta.2", "1.2.3-beta.1"), 1)
+})
+
+test("classifies drift as none, ahead, patch, minor or major", () => {
   assert.equal(classifyDrift("1.2.3", "1.2.3"), "none")
   assert.equal(classifyDrift("1.2.3", "1.2.4"), "patch")
   assert.equal(classifyDrift("1.2.3", "1.3.0"), "minor")
   assert.equal(classifyDrift("1.2.3", "2.0.0"), "major")
-  assert.equal(classifyDrift("2.0.0", "1.9.9"), "none")
+  assert.equal(classifyDrift("2.0.0", "1.9.9"), "ahead")
   assert.equal(classifyDrift("1.2.3-beta.1", "1.2.3"), "patch")
   assert.equal(classifyDrift("1.2.3", null), "unknown")
+})
+
+test("summarizes a registry failure as indeterminate rather than fresh", () => {
+  const summary = summarizeRows([
+    { drift: "none" },
+    { drift: "unknown" },
+    { drift: "patch" },
+    { drift: "ahead" },
+  ])
+  assert.equal(summary.indeterminate, true)
+  assert.equal(summary.fresh, false)
+  assert.equal(summary.unknown.length, 1)
+  assert.equal(summary.drifted.length, 2)
+  assert.equal(summary.current.length, 1)
+
+  const clean = summarizeRows([{ drift: "none" }])
+  assert.equal(clean.indeterminate, false)
+  assert.equal(clean.fresh, true)
 })
 
 test("extracts an exact install/bin_args pin", () => {
@@ -56,12 +85,30 @@ test("falls back to a version_check range floor when no exact pin exists", () =>
   `), [{ package: "ranged-cli", pinned: "1.4.0" }])
 })
 
-test("collects the fixture adapters and skips non-npm and local-only pins", () => {
+test("collects fixture adapters and skips non-npm and local-only pins", () => {
   const { pins, skipped } = collectPins(FIXTURES)
   assert.deepEqual(pins, [
+    { adapter: "ahead", package: "ahead-cli", pinned: "9.9.9" },
     { adapter: "exact", package: "@scope/wrapper", pinned: "1.2.3" },
+    { adapter: "final", package: "final-cli", pinned: "5.6.7" },
     { adapter: "ranged", package: "ranged-cli", pinned: "1.4.0" },
+    { adapter: "reordered", package: "reordered-cli", pinned: "3.4.5" },
     { adapter: "robust", package: "robust-cli", pinned: "2.3.4" },
   ])
   assert.deepEqual(skipped, ["local", "non-npm"])
+})
+
+test("buildRows reports ahead and none from injected registry results", async () => {
+  const { pins } = collectPins(FIXTURES)
+  const latest = {
+    "ahead-cli": "1.0.0",
+    "@scope/wrapper": "1.2.3",
+    "final-cli": "5.6.7",
+    "ranged-cli": "1.4.0",
+    "reordered-cli": "3.4.5",
+    "robust-cli": "2.3.4",
+  }
+  const rows = await buildRows(pins, async (pkg) => latest[pkg] ?? null)
+  assert.equal(rows.find((row) => row.package === "ahead-cli").drift, "ahead")
+  assert.ok(rows.filter((row) => row.package !== "ahead-cli").every((row) => row.drift === "none"))
 })

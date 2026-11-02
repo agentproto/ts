@@ -59,7 +59,8 @@ export function classifyDrift(pinned, latest) {
   if (!pinned || !latest) return "unknown"
   const comparison = compareSemver(pinned, latest)
   if (comparison === null) return "unknown"
-  if (comparison >= 0) return "none"
+  if (comparison === 0) return "none"
+  if (comparison > 0) return "ahead"
   const a = SEMVER_RE.exec(pinned)
   const b = SEMVER_RE.exec(latest)
   if (Number(a[1]) !== Number(b[1])) return "major"
@@ -243,6 +244,19 @@ export async function buildRows(pins, lookupLatest = fetchLatestStable) {
   return rows
 }
 
+export function summarizeRows(rows) {
+  const drifted = rows.filter((row) => row.drift !== "none" && row.drift !== "unknown")
+  const unknown = rows.filter((row) => row.drift === "unknown")
+  const current = rows.filter((row) => row.drift === "none")
+  return {
+    drifted,
+    unknown,
+    current,
+    indeterminate: unknown.length > 0,
+    fresh: drifted.length === 0 && unknown.length === 0,
+  }
+}
+
 export function renderTable(rows) {
   const headers = ["adapter", "package", "pinned", "latest", "drift"]
   const body = rows.map((row) => [
@@ -265,9 +279,10 @@ async function main() {
   const strict = args.has("--strict")
   const { pins, skipped } = collectPins()
   const rows = await buildRows(pins)
+  const summary = summarizeRows(rows)
 
   if (asJson) {
-    process.stdout.write(`${JSON.stringify({ rows, skipped }, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify({ rows, skipped, summary }, null, 2)}\n`)
   } else {
     console.log(renderTable(rows))
     if (skipped.length > 0) {
@@ -275,7 +290,7 @@ async function main() {
     }
   }
 
-  if (strict && rows.some((row) => row.drift !== "none" && row.drift !== "unknown")) {
+  if (strict && summary.drifted.length > 0) {
     process.exitCode = 1
   }
 }
