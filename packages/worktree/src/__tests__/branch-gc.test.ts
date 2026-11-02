@@ -1978,7 +1978,7 @@ describe("branch gc: dep-bump guard pass", () => {
         "package.json": pkg({ name: "root", private: true, devDependencies: { typescript: "^5.4.0" } }),
         "packages/a/package.json": pkg({ name: "@x/a", version: "1.0.0", dependencies: { zod: "^3.22.0", lodash: "^4.17.20" } }),
         "pnpm-lock.yaml": lock("^3.22.0"),
-        "src/index.ts": "export const answer = 42\n",
+        "src/index.ts": "export const answer = 42\nexport const keep = 'still on base'\n",
       },
       "seed",
     )
@@ -2057,6 +2057,18 @@ describe("branch gc: dep-bump guard pass", () => {
     const e = entry(await plan(repo, { verdicts, includeReviewed: true }), NAME)
     expect(e.class).toBe("review")
     expect(e.depBumpRefusal).toBe(`src/index.ts: "export const sneaky = 'not a dependency'" is not a dependency, lockfile or changeset line`)
+  })
+
+  it("keeps the tip when it only deletes a source line base still has, naming that line", async () => {
+    const { repo, tip, verdicts } = await depBumpBranch({ extra: { "src/index.ts": "export const answer = 42\n" } })
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBump).toBeUndefined()
+    expect(e.depBumpRefusal).toBe(`src/index.ts: deletes "export const keep = 'still on base'", which base still has`)
+    const { outcomes } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
+    expect(outcomes).toContainEqual(expect.objectContaining({ sha: tip, result: "refused-guard", depBumpRefusal: e.depBumpRefusal }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(true)
   })
 
   it("keeps the tip when a dependency moves to a workspace: spec", async () => {

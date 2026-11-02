@@ -1144,7 +1144,7 @@ export function buildReport(b) {
     lines.push(
       "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
         "`branch_gc` refused it deterministically because line coverage was below the guard" +
-        (verifiedPrOn ? " and the verified-pr pass could not prove it either (each row says why)" : "") +
+        (verifiedPrOn ? " and neither the verified-pr nor the dep-bump pass could prove it (each row says why)" : "") +
         "; " +
         "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
     )
@@ -1156,7 +1156,8 @@ export function buildReport(b) {
     for (const { g, pct } of queue) {
       lines.push(
         decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)) +
-          (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : ""),
+          (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : "") +
+          (g.outcome.depBumpRefusal ? ` - dep-bump refused: ${g.outcome.depBumpRefusal}` : ""),
       )
     }
     lines.push("")

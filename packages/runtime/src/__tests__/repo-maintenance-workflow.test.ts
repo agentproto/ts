@@ -731,6 +731,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
                   result: "refused-guard",
                   guard: "line coverage 40% of 50 added lines (< 95%)",
                   verifiedPrRefusal: "1 uncovered file(s) not explained by #949: src/new.ts",
+                  depBumpRefusal: 'src/new.ts: "export const fresh = 1" is not a dependency, lockfile or changeset line',
                 },
                 {
                   kind: "local",
@@ -780,7 +781,10 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(auto).not.toContain("wt/large-residual")
     const queue = on.report.slice(on.report.indexOf("## Human decision queue"))
     expect(queue).toContain("(1)")
-    expect(queue).toContain("verified-pr refused: 1 uncovered file(s) not explained by #949: src/new.ts")
+    expect(queue).toContain(
+      'verified-pr refused: 1 uncovered file(s) not explained by #949: src/new.ts - dep-bump refused: src/new.ts: "export const fresh = 1" is not a dependency, lockfile or changeset line',
+    )
+    expect(queue).toContain("neither the verified-pr nor the dep-bump pass could prove it")
     expect(queue).not.toContain("wt/small-residual")
 
     const off = await run({ repoRoot: "/repo", applyMerged: true, applyReviewed: true, requireOperatorBelowGuard: true })

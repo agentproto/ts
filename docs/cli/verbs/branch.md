@@ -156,7 +156,7 @@ branch changed. Nothing comes from the reviewer's text.
 
 1. the verdict's triage and gate both say `obsolete` or `superseded`, and the
    gate agreed;
-2. every file the branch adds lines to is explained:
+2. every file the branch changes is explained:
    - `pnpm-lock.yaml` (regenerable) or a `.changeset/*.md` (consumed at
      release);
    - a `package.json` whose every changed key is either equal to base's, or:
@@ -176,8 +176,11 @@ branch changed. Nothing comes from the reviewer's text.
      whole only when no base `package.json` carries the branch's package
      `name` (the package is gone, not moved);
    - any other file only when the line guard found all its added lines in
-     base already. A lockfile or binary the line guard does not read (other
-     than `pnpm-lock.yaml`) must be identical to base's.
+     base already AND the branch deletes no non-blank line that base's file
+     at the same path still has (a file with only deletions does not pass
+     vacuously; the refusal names the first such line). A lockfile or binary
+     the line guard does not read (other than `pnpm-lock.yaml`) must be
+     identical to base's.
 
 Any other line (a source line, a script, a `package.json` key outside those)
 keeps the refusal. A pass is recorded as `verdictGuard: "passed by dep-bump
@@ -190,6 +193,14 @@ first unexplained line, for example
 `packages/a/package.json: dependencies.lodash "^4.17.21", base has older
 "~4.17.15"`. Checkpoint refs never take this pass, and
 `--require-operator-below-guard` turns it off with the verified-pr pass.
+
+Residual limit, accepted by design: outside `package.json` (compared key by
+key), line matching is per file and order-free. An added line counts as in
+base when base has that text anywhere in the same path, and a deleted line
+counts as gone from base when base has it nowhere in that path, so a change
+that only moves or duplicates lines within one file is not seen. A
+dependency-bump branch does not touch such files, so in practice any source
+change refuses; [`gc restore`](#gc-restore) undoes any deletion.
 
 ### `gc restore`
 

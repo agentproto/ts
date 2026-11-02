@@ -1524,6 +1524,27 @@ async function firstUncoveredLine(env: ClassifyEnv, entry: BranchGcPlanEntry, fi
   return undefined
 }
 
+/** The first non-blank line the tip deletes from `file` (merge-base..tip) that base's file at the same path still has, trimmed and cut to 120 chars. */
+async function firstDeletedLineOnBase(env: ClassifyEnv, entry: BranchGcPlanEntry, file: string): Promise<string | undefined> {
+  const blob = (await env.ctx.index()).byPath.get(file)
+  if (!blob) return undefined
+  const d = await git(env.ctx.repoRoot, ["--literal-pathspecs", "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv", entry.mergeBase as string, entry.sha, "--", file])
+  // Fail closed: a diff we cannot read proves nothing.
+  if (d.exitCode !== 0) return `(diff of ${file} failed)`
+  const shown = await git(env.ctx.repoRoot, ["cat-file", "blob", blob])
+  if (shown.exitCode !== 0) return `(base blob of ${file} unreadable)`
+  const base = new Set(shown.stdout.split("\n").map((l) => l.trim()))
+  const lines = d.stdout.split("\n")
+  const first = lines.findIndex((l) => l.startsWith("@@"))
+  if (first < 0) return undefined
+  for (const l of lines.slice(first)) {
+    if (!l.startsWith("-")) continue
+    const line = l.slice(1).trim()
+    if (line && base.has(line)) return line.slice(0, 120)
+  }
+  return undefined
+}
+
 /**
  * Why one `package.json` change of the tip is not a proven dependency bump,
  * or `null` when every key it changed (merge-base → tip) is explained:
@@ -1619,13 +1640,19 @@ async function packageJsonRefusal(
  * refused reclaim anyway? Deterministic, git objects only, every condition
  * must hold:
  *   1. triage AND gate say `obsolete` or `superseded`, and the gate agreed;
- *   2. every file the tip adds lines to (merge-base → tip) is explained:
+ *   2. every file the tip changes (merge-base → tip) is explained:
  *      a `pnpm-lock.yaml` (regenerable), a `.changeset/*.md`, a
- *      `package.json` whose every change `packageJsonRefusal` accepts, or a
- *      file whose added lines the line guard found in base already. A
- *      lockfile or binary the line guard does not read (`LINE_SKIP_RE`,
- *      other than `pnpm-lock.yaml`) is not proven.
- * The refusal reason names the first unexplained line.
+ *      `package.json` whose every changed key `packageJsonRefusal` accepts,
+ *      or a file whose added lines the line guard found in base already and
+ *      that deletes no non-blank line base's file at the same path still
+ *      has (so a deletion-only file never passes vacuously). A lockfile or
+ *      binary the line guard does not read (`LINE_SKIP_RE`, other than
+ *      `pnpm-lock.yaml`) must be identical to base's.
+ * The refusal reason names the first unexplained line. Residual limit,
+ * accepted by design: line matching is per file and order-free, so an added
+ * line counts as "in base" when base has that text anywhere in the same
+ * path, and a deleted line counts as "gone from base" when base has it
+ * nowhere in that path.
  */
 async function depBumpCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecord, env: ClassifyEnv): Promise<DepBumpResult> {
   const refuse = (reason: string): DepBumpResult => ({ ok: false, reason })
@@ -1655,18 +1682,26 @@ async function depBumpCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecor
       continue
     }
     const added = Number(m[1])
-    if (added === 0) continue
+    const deleted = Number(m[2])
+    if (added === 0 && deleted === 0) continue
     if (PNPM_LOCK_RE.test(file)) lockfileLines += added
     else if (CHANGESET_RE.test(file)) changesetLines += added
     else if (PACKAGE_JSON_RE.test(file)) {
       packageFiles.push(file)
       const why = await packageJsonRefusal(env, entry, file, counts)
       if (why) return refuse(why)
-    } else if (uncovered.has(file)) {
-      const line = await firstUncoveredLine(env, entry, file)
-      return refuse(`${file}: ${line ? JSON.stringify(line) : "an added line"} is not a dependency, lockfile or changeset line`)
-    } else if (LINE_SKIP_RE.test(file) && !(await sameAsBase())) {
-      return refuse(`${file}: not line-checked (lockfile or binary), not proven`)
+    } else if (LINE_SKIP_RE.test(file)) {
+      if (!(await sameAsBase())) return refuse(`${file}: not line-checked (lockfile or binary), not proven`)
+    } else {
+      if (added > 0 && uncovered.has(file)) {
+        const line = await firstUncoveredLine(env, entry, file)
+        return refuse(`${file}: ${line ? JSON.stringify(line) : "an added line"} is not a dependency, lockfile or changeset line`)
+      }
+      // A deletion of work base still carries is a change too: never proven here.
+      if (deleted > 0) {
+        const line = await firstDeletedLineOnBase(env, entry, file)
+        if (line !== undefined) return refuse(`${file}: deletes ${JSON.stringify(line)}, which base still has`)
+      }
     }
   }
   return {

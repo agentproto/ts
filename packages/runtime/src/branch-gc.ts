@@ -35,7 +35,6 @@ export interface BranchGcLineCoverageView {
   missingFiles?: string[]
 }
 
-/** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
 /** The `dep-bump` pass's proof, mirrors `DepBumpProof`. */
 export interface BranchGcDepBumpView {
   dependencies: number
@@ -46,6 +45,7 @@ export interface BranchGcDepBumpView {
   goneOnBase?: string[]
 }
 
+/** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
 export interface BranchGcVerifiedPrView {
   prs: number[]
   files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base"; pr?: number }>
