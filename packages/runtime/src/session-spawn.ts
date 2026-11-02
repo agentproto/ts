@@ -322,6 +322,18 @@ import {
   type PreflightRegistry,
 } from "./sandbox-preflight.js"
 import { egressHealthLedger, isEgressHealthErrorClass } from "./egress-health.js"
+import {
+  bootErrorClass,
+  formatPlacementAttempts,
+  placementInputSchema,
+  placementRungProblem,
+  resolveLadder,
+  rungOverrides,
+  rungProviderLabel,
+  walkPlacementLadder,
+  type PlacementInput,
+  type SessionPlacement,
+} from "./placement-ladder.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -2063,6 +2075,15 @@ export interface SpawnAgentSessionInput {
    *  meaningful with `sandbox`; an id with no registered probe is refused
    *  (`sandbox_preflight_invalid`) before any box boots. */
   preflight?: string[]
+  /** Ordered placement ladder: rung 1 is tried first and the spawn moves down
+   *  the list when a rung cannot place the box (failed preflight, capacity or
+   *  overflow refusal, egress pool exhausted, any boot failure before the
+   *  agent started). Each rung is a `sandbox` plus optional `model` / `access`
+   *  / `preflight` / `turnRetry` overrides; omitted axes inherit this input's
+   *  own. Mutually exclusive with a top-level `sandbox` (`placement_invalid`).
+   *  Once the agent started the ladder never moves the session: that is
+   *  `turnRetry`'s job. The attempts land on the descriptor's `placement`. */
+  placement?: PlacementInput
   /** INTERNAL (`session_migrate`, never an `agent_start` argument): which
    *  checkpoint snapshot the new box restores onto the work branch's
    *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
@@ -2260,6 +2281,8 @@ export type SpawnAgentSessionResult =
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
         | "sandbox_egress_all_cooling"
+        | "placement_invalid"
+        | "sandbox_placement_exhausted"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -2435,6 +2458,97 @@ function spawnAdmissionOutcome(admission: SpawnAdmission): "allow" | "reuse" | "
 }
 
 export async function spawnAgentSession(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+): Promise<SpawnAgentSessionResult> {
+  if (input.placement === undefined) return spawnAgentSessionOnce(deps, input)
+  return spawnWithPlacementLadder(deps, input, input.placement)
+}
+
+/** Try each rung of `placement.ladder` as an ordinary single-box spawn. The
+ *  walk stops at the first rung that returns a session, so it can never move a
+ *  session whose agent already started; see `placement-ladder.ts` for what
+ *  counts as "this rung cannot place the box". */
+async function spawnWithPlacementLadder(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+  placement: PlacementInput,
+): Promise<SpawnAgentSessionResult> {
+  const invalid = (message: string): SpawnAgentSessionResult => ({ ok: false, code: "placement_invalid", message })
+  if (input.sandbox !== undefined) {
+    return invalid(
+      "agent_start: `placement` and `sandbox` are mutually exclusive; put the sandbox on a ladder rung " +
+        "(placement.ladder[].sandbox) or drop `placement`.",
+    )
+  }
+  const parsed = placementInputSchema.safeParse(placement)
+  if (!parsed.success) {
+    return invalid(`agent_start: invalid placement: ${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`)
+  }
+  const { placement: _stripped, ...inherited } = input
+  const ladder = resolveLadder(parsed.data.ladder, {
+    ...(inherited.model !== undefined ? { model: inherited.model } : {}),
+    ...(inherited.access !== undefined ? { access: inherited.access } : {}),
+    ...(inherited.preflight !== undefined ? { preflight: inherited.preflight } : {}),
+    ...(inherited.turnRetry !== undefined ? { turnRetry: inherited.turnRetry } : {}),
+  })
+  for (const [index, rung] of ladder.entries()) {
+    const problem = placementRungProblem(rung, index)
+    if (problem) return invalid(`agent_start: ${problem}`)
+  }
+  const walk = await walkPlacementLadder(
+    ladder,
+    async (rung, index) => {
+      const result = await spawnAgentSessionOnce(deps, { ...inherited, ...rungOverrides(rung) })
+      if (result.ok) return { ok: true, value: result }
+      if (ladder.length > 1) {
+        console.warn(
+          `[placement] rung ${index + 1}/${ladder.length} (${rungProviderLabel(rung)}) cannot place the box: ` +
+            `${result.code}${typeof result.details?.errorClass === "string" ? ` [${result.details.errorClass}]` : ""}`,
+        )
+      }
+      return { ok: false, code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) }
+    },
+  )
+  if (!walk.ok) {
+    if (walk.exhausted) {
+      return {
+        ok: false,
+        code: "sandbox_placement_exhausted",
+        message:
+          `agent_start: no placement rung could start the session (${formatPlacementAttempts(walk.attempts)}). ` +
+          `Last failure: ${walk.failure.message}`,
+        details: { attempts: walk.attempts },
+      }
+    }
+    return {
+      ok: false,
+      code: walk.failure.code as Extract<SpawnAgentSessionResult, { ok: false }>["code"],
+      message: walk.failure.message,
+      details: { ...walk.failure.details, attempts: walk.attempts },
+    }
+  }
+  const result = walk.value
+  if (result.ok && result.deduped) return result
+  const record: SessionPlacement = { rung: walk.rung, ladder, attempts: walk.attempts }
+  const descriptor = deps.registry.recordPlacement(result.descriptor.id, record) ?? result.descriptor
+  const skipped = walk.attempts.filter(a => a.outcome === "failed")
+  return {
+    ...result,
+    descriptor,
+    ...(skipped.length > 0
+      ? {
+          warnings: [
+            ...(result.warnings ?? []),
+            `agent_start: placement rung ${walk.rung + 1}/${ladder.length} (${rungProviderLabel(ladder[walk.rung]!)}) ` +
+              `after ${skipped.length} skipped (${formatPlacementAttempts(skipped)})`,
+          ],
+        }
+      : {}),
+  }
+}
+
+async function spawnAgentSessionOnce(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
@@ -6501,6 +6615,7 @@ export async function spawnAgentSession(
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
         ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
         : {}),
+      ...(sandboxId && input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),
@@ -7617,6 +7732,10 @@ export async function bootSandboxAgentSession(opts: {
           message:
             `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
             `${err instanceof Error ? err.message : String(err)}`,
+          // The provider's own typed code (capacity, overflow refused, egress
+          // pool exhausted, ...), so a placement ladder records why a rung was
+          // skipped without matching the message.
+          ...(bootErrorClass(err) ? { details: { errorClass: bootErrorClass(err) } } : {}),
         }
   }
 

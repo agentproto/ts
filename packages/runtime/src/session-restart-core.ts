@@ -109,6 +109,13 @@ import {
   uploadBoxLoginCopy,
   withSessionToken,
 } from "./session-spawn.js"
+import {
+  formatPlacementAttempts,
+  rungProviderLabel,
+  walkPlacementLadder,
+  type PlacementAttempt,
+  type PlacementRung,
+} from "./placement-ladder.js"
 import { sessionTokenModeOf } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { revokeSessionTokens } from "./session-credentials.js"
@@ -2309,8 +2316,16 @@ async function restartAgentSessionOnce(
         ...(resumeBranch ? { worktree: { slug: resumeBranch.slice(SANDBOX_BRANCH_PREFIX.length) } } : {}),
       }
     }
-    const booted = await bootSandboxAgentSession({
-      sandbox: providerSlug,
+    // Re-place from rung 1 when the session was ladder-placed: the box that
+    // died may be exactly why the first rung is no longer the right home.
+    // A session without a ladder boots on its one recorded provider.
+    const bootModelFor = (rung?: PlacementRung): string | undefined =>
+      reconciled.model !== undefined ? effModel : (rung?.model ?? effModel)
+    const bootOn = (
+      sandbox: PlacementRung["sandbox"],
+      rung?: PlacementRung,
+    ) => bootSandboxAgentSession({
+      sandbox,
       resolveSandboxProvider: opts.resolveSandboxProvider,
       checkpointConfig,
       // CRASH RESUME - restore the checkpoint the dead session recorded.
@@ -2329,10 +2344,11 @@ async function restartAgentSessionOnce(
       cwd: prev.cwd ?? "",
       explicitCwd: false,
       ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...(bootModelFor(rung) ? { model: bootModelFor(rung) } : {}),
       ...(effRoute?.gateway ? { route: effRoute } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
+      ...((rung?.preflight ?? prev.preflight)?.length ? { preflight: rung?.preflight ?? prev.preflight } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
       // The saved conversation store is extracted into the box before the
       // adapter starts, and its id is the box `agent_start`'s resume target.
@@ -2362,6 +2378,34 @@ async function restartAgentSessionOnce(
       },
       onNotice: text => registry.recordNotice(restartedSessionId, text),
     })
+    const ladder = prev.placement?.ladder
+    let booted: Awaited<ReturnType<typeof bootOn>>
+    let placement: { rung: number; attempts: PlacementAttempt[] } | undefined
+    let bootRung: PlacementRung | undefined
+    let bootProvider = providerSlug
+    if (ladder && ladder.length > 0) {
+      const walk = await walkPlacementLadder(ladder, async (rung, index) => {
+        const res = await bootOn(rung.sandbox, rung)
+        if (res.ok) {
+          bootRung = ladder[index]
+          return { ok: true, value: res }
+        }
+        return { ok: false, code: res.code, message: res.message, ...(res.details ? { details: res.details } : {}) }
+      })
+      if (!walk.ok) {
+        throw new SessionRestartError(
+          "sandbox_box_start_failed",
+          `restartAgentSession: sandbox "${prev.sandboxId}" is gone and no rung of the placement ladder ` +
+            `could start a fresh box for workspace "${slug}": ${formatPlacementAttempts(walk.attempts)}: ${walk.failure.message}`,
+          { action: { kind: "fix-config", detail: walk.failure.message } },
+        )
+      }
+      booted = walk.value
+      placement = { rung: walk.rung, attempts: walk.attempts }
+      bootProvider = bootRung ? rungProviderLabel(bootRung) : providerSlug
+    } else {
+      booted = await bootOn(providerSlug)
+    }
     if (booted.ok) movedToFreshBox = true
     if (!booted.ok) {
       throw new SessionRestartError(
@@ -2384,12 +2428,12 @@ async function restartAgentSessionOnce(
     // failure is not fatal; the handoff falls back to the old digest.
     try {
       const freshHandle = opts.resolveSandboxProvider
-        ? await opts.resolveSandboxProvider(providerSlug)
+        ? await opts.resolveSandboxProvider(bootProvider)
         : null
       const freshBox = await freshHandle?.provider.connect?.(
         booted.sandboxId,
         {
-          provider: providerSlug,
+          provider: bootProvider,
           config: sandboxConfigForReattach(booted.sandboxConfig, restartedSessionId),
         },
         { env: {} },
@@ -2436,6 +2480,9 @@ async function restartAgentSessionOnce(
       ...(booted.deliveryTarget ? { deliveryTarget: booted.deliveryTarget } : {}),
       ...(prev.sandboxRepoRoot ? { sandboxRepoRoot: prev.sandboxRepoRoot } : {}),
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
+      ...(bootModelFor(bootRung) !== effModel ? { model: bootModelFor(bootRung) } : {}),
+      ...(bootRung ? { preflight: bootRung.preflight ?? [] } : {}),
+      ...(placement && ladder ? { placement: { ...placement, ladder: [...ladder] } } : {}),
     })
     for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
     return { ok: true, desc: restarted }
@@ -2464,9 +2511,16 @@ async function restartAgentSessionOnce(
       sandboxPorts?: Record<number, string>
       /** Non-secret re-attach config (with the stable holder) to persist. */
       sandboxConfig?: Record<string, unknown>
+      /** The placement rung's model, when it differs from the restart's. */
+      model?: string
+      /** The placement rung's preflight ids (absent: carry the prior's). */
+      preflight?: string[]
+      /** Where a ladder re-placement landed (absent: carry the prior's). */
+      placement?: { rung: number; ladder: PlacementRung[]; attempts: PlacementAttempt[] }
     },
   ): SessionDescriptor => {
     const { agentSession, deliveryTarget } = box
+    const boxPreflight = box.preflight ?? prev.preflight
     const desc = registry.spawnAgent({
       id: restartedSessionId,
       workspaceSlug: prev.workspaceSlug,
@@ -2493,7 +2547,8 @@ async function restartAgentSessionOnce(
         : {}),
       ...(prev.label ? { label: prev.label } : {}),
       ...(sandboxMcpServers ? { mcpServers: sandboxMcpServers } : {}),
-      ...(effModel ? { model: effModel } : {}),
+      ...((box.model ?? effModel) ? { model: box.model ?? effModel } : {}),
+      ...(boxPreflight && boxPreflight.length > 0 ? { preflight: boxPreflight } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(effPosture !== undefined ? { posture: effPosture } : {}),
       ...(carryAgentPosture
@@ -2543,6 +2598,8 @@ async function restartAgentSessionOnce(
       resumedFrom: prev.id,
       resumeVia: box.resumeVia ?? "",
     })
+    const carriedPlacement = box.placement ?? prev.placement
+    if (carriedPlacement) registry.recordPlacement(desc.id, carriedPlacement)
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)

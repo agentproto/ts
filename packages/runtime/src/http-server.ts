@@ -325,6 +325,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import { MAX_PLACEMENT_RUNGS, placementInputSchema } from "./placement-ladder.js"
 import { modelPolicyInputSchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -6349,6 +6350,14 @@ export function buildSpawnSessionHttpArgs(
     preflightIds !== undefined ? { preflight: preflightIds } : {}
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
+  // Placement ladder: the HTTP twin of `agent_start.placement`. A malformed or
+  // sandbox-conflicting value is refused up front by `invalidSpawnHttpField`.
+  const placementParsed =
+    b.placement !== undefined && b.placement !== null
+      ? parseWithJsonTolerance(placementInputSchema, b.placement)
+      : undefined
+  const placementField: Pick<SpawnAgentSessionInput, "placement"> =
+    placementParsed !== undefined ? { placement: placementParsed } : {}
   const modelPolicyParsed =
     b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy)) : undefined
   const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
@@ -6590,6 +6599,7 @@ export function buildSpawnSessionHttpArgs(
         })()
       : {}),
     ...preflightField,
+    ...placementField,
     // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
     // `appServe` field. Accepts an object or a JSON-stringified one; requires
     // `dir` (and an integer `port` when given).
@@ -6746,7 +6756,7 @@ function spawnFailureStatus(code: string): number {
   if (code === "delegation_denied") return 403
   // The box booted but cannot do what the spawn needs from where it sits: not
   // a caller mistake, and a different placement may work.
-  if (code === "sandbox_preflight_failed") return 502
+  if (code === "sandbox_preflight_failed" || code === "sandbox_placement_exhausted") return 502
   // Every egress address is cooling down for the model: nothing to boot right now.
   if (code === "sandbox_egress_all_cooling") return 503
   if (code === "auth_profile_denied") return 403
@@ -6764,6 +6774,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
     code === "sandbox_preflight_invalid" ||
+    code === "placement_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
@@ -7156,6 +7167,22 @@ function invalidSpawnHttpField(
     return {
       error: "invalid_command_sandbox",
       message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
+    }
+  }
+  if (b.placement !== undefined && b.placement !== null) {
+    if (parseWithJsonTolerance(placementInputSchema, b.placement) === undefined) {
+      return {
+        error: "placement_invalid",
+        message:
+          "placement must be { ladder: [{ sandbox, model?, access?, preflight?, turnRetry? }, ...] } with 1 to " +
+          `${MAX_PLACEMENT_RUNGS} rungs; unknown keys are rejected.`,
+      }
+    }
+    if (b.sandbox !== undefined && b.sandbox !== null && b.sandbox !== "") {
+      return {
+        error: "placement_invalid",
+        message: "placement and sandbox are mutually exclusive; put the sandbox on a ladder rung.",
+      }
     }
   }
   if (
