@@ -49,8 +49,9 @@ export function isExposedService(service: AppService): service is ExposedAppServ
 }
 
 /**
- * The tunnel key of one exposed service (AIP-53 Exposure rule 2,
- * "Tunnel key"): `app.<a>.<s>.<h>`. `<a>` is the app id lowercased, every run
+ * The tunnel key of one exposed service (AIP-53 Exposure rule 2, "Tunnel
+ * key" as amended by agentproto/agentproto#152; the text merged in #151 says
+ * `app:<appId>:<name>`, which the provisioner refuses): `app.<a>.<s>.<h>`. `<a>` is the app id lowercased, every run
  * outside `[a-z0-9-]` replaced by `-`, edge `-` trimmed, cut to 24; `<s>` the
  * service name cut to 24; `<h>` the first 8 hex of sha256(`<appId>:<name>`)
  * over the ORIGINAL id. Always matches the provisioner key alphabet
