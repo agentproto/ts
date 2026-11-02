@@ -16,10 +16,12 @@ import { z } from "zod"
 import { resolveRefString } from "./ref-string.js"
 import type {
   AgentHarness,
+  AgentPlacementRef,
   AgentSandboxRef,
   AgentStep,
   AgentStepAccess,
   AgentStepRetry,
+  AgentTurnRetryRef,
   ApprovalDecision,
   ArtifactEntry,
   ArtifactStep,
@@ -771,6 +773,8 @@ async function spawnOrResolveSession(
   spawnOpts: {
     cwd: string | undefined
     sandbox: AgentSandboxRef | undefined
+    placement: AgentPlacementRef | undefined
+    turnRetry: AgentTurnRetryRef | undefined
     harness: AgentHarness | undefined
     access: AgentStepAccess | undefined
     route: string | undefined
@@ -786,13 +790,15 @@ async function spawnOrResolveSession(
     // WHILE this step's own body is already running (knowledge
     // materialization, sandbox/model resolution, …), before it reaches spawn.
     if (ctx.signal?.aborted) throw new WorkflowCancelledError(step.id)
-    const { cwd, sandbox, harness, access, route } = spawnOpts
+    const { cwd, sandbox, placement, turnRetry, harness, access, route } = spawnOpts
     try {
       sessionId = await ctx.agents!.spawn(resolveSel(step.adapter, b), {
         cwd,
         workspaceSlug: ctx.workspaceSlug,
         stepId: step.id,
         ...(sandbox !== undefined ? { sandbox } : {}),
+        ...(placement !== undefined ? { placement } : {}),
+        ...(turnRetry !== undefined ? { turnRetry } : {}),
         ...(step.options !== undefined ? { options: step.options } : {}),
         ...(harness !== undefined ? { harness } : {}),
         ...(access !== undefined ? { access } : {}),
@@ -898,6 +904,13 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   // literal (slug string or inline spec object) passes through as-is.
   const sandbox =
     typeof step.sandbox === "function" ? step.sandbox(b) : step.sandbox
+  // Placement ladder + turnRetry policy: same selector-or-literal contract.
+  // `turnRetry: null` (explicit opt-out) must survive, only `undefined` is
+  // "not set".
+  const placement =
+    typeof step.placement === "function" ? step.placement(b) : step.placement
+  const turnRetry =
+    typeof step.turnRetry === "function" ? step.turnRetry(b) : step.turnRetry
   // Step-level `model` (same semantics as `agent_start.model`): a selector
   // resolves per-run against the bindings. It is folded into the spawn's
   // harness slot — the channel both spawn paths already forward as the
@@ -937,7 +950,15 @@ async function execAgentStep(step: AgentStep, ctx: RunCtx, b: Bindings): Promise
   for (let attempt = 1; ; attempt++) {
     let attemptSession: string | undefined
     try {
-      attemptSession = await spawnOrResolveSession(step, ctx, b, { cwd, sandbox, harness, access, route })
+      attemptSession = await spawnOrResolveSession(step, ctx, b, {
+        cwd,
+        sandbox,
+        placement,
+        turnRetry,
+        harness,
+        access,
+        route,
+      })
       if (step.adapter) ctx.spawned?.push(attemptSession)
       if (knowledgeWarnings.length > 0 && ctx.agents!.emitHarnessWarning) {
         ctx.agents!.emitHarnessWarning({

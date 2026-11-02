@@ -688,11 +688,37 @@ describe("compileWorkflow — declarative agent step", () => {
       })
       return compileWorkflow(wf, { tools, candidates, agentRefs }).steps[0] as AgentStep
     }
-    for (const step of [compileStep({ sandbox: "e2b" }), compileStep({ adapter: "hermes" })]) {
+    const placement = { ladder: [{ sandbox: "e2b" }] }
+    for (const step of [
+      compileStep({ sandbox: "e2b" }),
+      compileStep({ placement }),
+      compileStep({ adapter: "hermes" }),
+    ]) {
       expect(step.harness?.systemPrompt).toBeUndefined()
       expect(step.prompt(ctx)).toBe("You are a scout.\n\nZone: Luberon.")
       expect(step.agentWarnings?.join("\n")).toMatch(/does not apply to this step.*prefix/)
     }
+  })
+
+  it("carries a declarative step's placement ladder and turnRetry through to the AgentStep", () => {
+    const placement = { ladder: [{ sandbox: "e2b" }] }
+    const turnRetry = { on: ["usage-limit"], fallback: [{ model: "m" }] }
+    const wf = defineWorkflow({
+      name: "Placement",
+      id: "placement-carry",
+      description: "Ladder and retry policy ride the compiled step.",
+      version: "0.1.0",
+      inputs: {},
+      outputs: {},
+      steps: [{ id: "s1", kind: "agent", agent: { ref: "@my-app/scout" }, prompt: "go", placement, turnRetry }],
+    })
+    const step = compileWorkflow(wf, {
+      tools,
+      candidates,
+      agentRefs: { "@my-app/scout": { adapter: "claude-code" } },
+    }).steps[0] as AgentStep
+    expect(step.placement).toEqual(placement)
+    expect(step.turnRetry).toEqual(turnRetry)
   })
 
   it("a step's own harness.skills wins over the agent ref's declared skills", () => {

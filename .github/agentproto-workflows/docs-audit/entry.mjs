@@ -17,7 +17,9 @@
 //   · no reviewConfig (local `workflow_run_file`) ⇒ host spawn, adapter
 //     claude-code, subscription billing from the daemon config.
 //   · reviewConfig with reviewerSandbox:"e2b" (CI) ⇒ sandbox spawn, adapter
-//     claude-sdk (headless-safe), auth env passed through.
+//     claude-sdk (headless-safe), auth env passed through. A config that
+//     declares a reviewerPlacement ladder instead boots its e2b rung (this lane
+//     is a single box with no placement walk of its own).
 //
 // Delivery is a per-run INPUT (`delivery`), NOT an agentic-review.json key, so
 // this lane needs no merge-machinery config edit to be useful:

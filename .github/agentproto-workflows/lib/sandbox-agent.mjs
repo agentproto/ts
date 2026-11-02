@@ -16,7 +16,8 @@
 // already verb-agnostic.
 //
 // Config source of truth: `.github/agentic-review.json`. Global keys set the
-// lane (reviewerAdapter / reviewerSandbox / reviewerSandboxEnv); per-verb
+// lane (reviewerAdapter / reviewerSandbox or reviewerPlacement /
+// reviewerSandboxEnv / reviewerTurnRetry); per-verb
 // `commands.<verb>` overrides (skills, fixDelivery) are resolved with
 // `resolveCommandConfig` — the same shallow-merge semantics as
 // `scripts/lib/agent-core.mjs` (inlined here because this module runs inside
@@ -161,6 +162,209 @@ const autoSpecFor = ({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig,
   }
 }
 
+const envPresent = name => typeof process.env[name] === "string" && process.env[name].trim() !== ""
+
+const loggedLines = new Set()
+const logOnce = line => {
+  if (loggedLines.has(line)) return
+  loggedLines.add(line)
+  console.log(line)
+}
+
+const hasFleet = () => envPresent("COMPUTER_CONTROLLER_URL")
+
+/** Sandbox provider slug of a rung's / `reviewerSandbox`'s declaration. */
+const providerOf = sandbox =>
+  typeof sandbox === "string" ? sandbox.trim() : isPlainObject(sandbox) && typeof sandbox.provider === "string" ? sandbox.provider.trim() : ""
+
+/** `reviewerPlacement.ladder` of the resolved config, or undefined (also for an
+ *  explicit `reviewerPlacement: null`). */
+const ladderOf = cfg => {
+  const ladder = isPlainObject(cfg.reviewerPlacement) ? cfg.reviewerPlacement.ladder : undefined
+  return Array.isArray(ladder) && ladder.length > 0 ? ladder : undefined
+}
+
+/** The e2b declaration of the first e2b rung: what a verb with no placement
+ *  support of its own (`agent-verb`, `docs-audit`) boots when the config
+ *  declares a ladder instead of a plain `reviewerSandbox`. e2b is the rung
+ *  every runner can place, so it is the one a single-box verb can rely on. */
+const e2bRungSandbox = cfg => ladderOf(cfg)?.find(rung => providerOf(rung?.sandbox) === "e2b")?.sandbox
+
+// ── owner-sanctioned metered models + the OpenCode Go key ───────────────────
+//
+// A free-tier cap is answered by a paid `opencode-go/*` model (a placement
+// rung, or a `turnRetry.fallback`). The metered-model guard in ci.yml only
+// inspects `reviewerModel` and `reviewerFallbackModels[0]`, so it never sees
+// those ids; the SAME owner-only allowlist (`AGENT_ALLOWED_METERED_MODELS`, a
+// repo variable a PR cannot set) is therefore enforced here, fail closed: a
+// paid id that is not listed is dropped from the ladder / fallback list, never
+// spawned.
+
+const METERED_ALLOWLIST_ENV = "AGENT_ALLOWED_METERED_MODELS"
+const GO_KEY_ENV = "OPENCODE_GO_API_KEY"
+const OPENCODE_CONFIG_ENV = "OPENCODE_CONFIG_CONTENT"
+const GO_PROVIDER = "opencode-go"
+
+/** Same free test as the ci.yml guard: suffix `-free`, or `big-pickle`. */
+const isFreeModel = model => /-free$/.test(model) || /\/big-pickle$/.test(model)
+
+const isGoModel = model => model.startsWith(`${GO_PROVIDER}/`)
+
+/** May a spawn route to `model`? An `opencode-go/*` id only on the opencode
+ *  adapter. Free ids always; a metered id only when the
+ *  owner listed it (comma / whitespace separated, exact match) and, for an
+ *  `opencode-go/*` id, only when the Go key is present to pay for it. */
+const modelUsable = (model, adapter) => {
+  if (typeof model !== "string" || !model.trim()) return false
+  const id = model.trim()
+  if (isGoModel(id) && adapter !== "opencode") return false
+  if (!isFreeModel(id)) {
+    const allowed = (process.env[METERED_ALLOWLIST_ENV] ?? "").split(/[\s,]+/).filter(Boolean)
+    if (!allowed.includes(id)) {
+      logOnce(`placement: dropping metered model ${id}: not listed in ${METERED_ALLOWLIST_ENV}`)
+      return false
+    }
+  }
+  if (isGoModel(id) && !envPresent(GO_KEY_ENV)) {
+    logOnce(`placement: dropping ${id}: ${GO_KEY_ENV} is not set on this runner`)
+    return false
+  }
+  return true
+}
+
+/** Make `provider.opencode-go.options.apiKey` read `$OPENCODE_GO_API_KEY`.
+ *
+ *  OpenCode Zen (`opencode/*`) and Go (`opencode-go/*`) both read
+ *  `OPENCODE_API_KEY`, and this lane's `api-key` input only carries ONE of the
+ *  two (chosen from the primary model's route), so a Go model reached by a
+ *  fallback or the paid rung needs its own variable. The inline config
+ *  (`OPENCODE_CONFIG_CONTENT`, the per-session top config layer the harness
+ *  merges into) points the Go provider at that variable. Written onto THIS
+ *  process's env so a host session inherits it from the daemon and a boxed one
+ *  receives it through `env.passthrough`. Idempotent; returns the env names that
+ *  must reach the session (empty when no Go key is configured). */
+const prepareGoKeyEnv = () => {
+  if (!envPresent(GO_KEY_ENV)) return []
+  let inline = {}
+  const existing = process.env[OPENCODE_CONFIG_ENV]
+  if (typeof existing === "string" && existing.trim()) {
+    try {
+      const parsed = JSON.parse(existing)
+      if (isPlainObject(parsed)) inline = parsed
+    } catch {
+      // Unparseable inline config from the caller: leave it untouched rather
+      // than overwrite it; the Go key then simply is not wired.
+      logOnce(`placement: ${OPENCODE_CONFIG_ENV} is not valid JSON, not wiring ${GO_KEY_ENV}`)
+      return []
+    }
+  }
+  const provider = isPlainObject(inline.provider) ? inline.provider : {}
+  const goProvider = isPlainObject(provider[GO_PROVIDER]) ? provider[GO_PROVIDER] : {}
+  const options = isPlainObject(goProvider.options) ? goProvider.options : {}
+  process.env[OPENCODE_CONFIG_ENV] = JSON.stringify({
+    ...inline,
+    provider: {
+      ...provider,
+      [GO_PROVIDER]: { ...goProvider, options: { ...options, apiKey: `{env:${GO_KEY_ENV}}` } },
+    },
+  })
+  return [GO_KEY_ENV, OPENCODE_CONFIG_ENV]
+}
+
+/** Keep only the usable `fallback` overlays of a turnRetry policy. */
+const filterTurnRetry = (policy, adapter) => {
+  if (!isPlainObject(policy)) return policy
+  if (!Array.isArray(policy.fallback)) return policy
+  const fallback = policy.fallback.filter(o => !isPlainObject(o) || o.model === undefined || modelUsable(o.model, adapter))
+  const { fallback: _dropped, ...rest } = policy
+  return fallback.length > 0 ? { ...rest, fallback } : rest
+}
+
+/** Any usable `opencode-go/*` model reachable from this placement: a rung model
+ *  or a turnRetry fallback. */
+const goModelsIn = ({ ladder, turnRetry }) => {
+  const models = []
+  for (const rung of ladder ?? []) {
+    if (typeof rung.model === "string") models.push(rung.model)
+    for (const o of rung.turnRetry?.fallback ?? []) if (typeof o?.model === "string") models.push(o.model)
+  }
+  for (const o of turnRetry?.fallback ?? []) if (typeof o?.model === "string") models.push(o.model)
+  return models.filter(isGoModel)
+}
+
+/**
+ * Turn-retry policy for the lane's agent session (host OR boxed), read from
+ * `reviewerTurnRetry` once so every workflow that spawns a reviewer shares it.
+ *
+ *   · key absent ⇒ undefined ⇒ the host's own default;
+ *   · `null` ⇒ null ⇒ explicit opt-out;
+ *   · otherwise the policy with unusable `fallback` overlays removed (see
+ *     {@link modelUsable}). When a usable `opencode-go/*` fallback remains, the
+ *     Go key is wired into this process's env ({@link prepareGoKeyEnv}) so a
+ *     host session started after this call can reach it.
+ *
+ * Idempotent (selectors run more than once per step).
+ */
+export const reviewerTurnRetryFor = (config, verb) => {
+  const cfg = resolveCommandConfig(config, verb)
+  if (cfg.reviewerTurnRetry === null) return null
+  if (!isPlainObject(cfg.reviewerTurnRetry)) return undefined
+  const turnRetry = filterTurnRetry(cfg.reviewerTurnRetry, adapterFor(config, verb))
+  if (goModelsIn({ turnRetry }).length > 0) prepareGoKeyEnv()
+  return turnRetry
+}
+
+/**
+ * Placement ladder for the lane's box session, from `reviewerPlacement`.
+ *
+ *   · no ladder configured ⇒ undefined (the caller falls back to `sandboxRefFor`);
+ *   · each rung's `sandbox` is built exactly like `reviewerSandbox` (adapter
+ *     auth passthrough, attribution-strip hook, join names);
+ *   · a `computer` rung is dropped when this runner has no
+ *     `COMPUTER_CONTROLLER_URL` (fork PR, fleet secrets not provisioned), so the
+ *     review still runs on the e2b rung exactly as before the fleet existed;
+ *   · a rung whose `model` is not usable ({@link modelUsable}) is dropped;
+ *   · when a usable `opencode-go/*` model is reachable (a rung, or a fallback),
+ *     the Go key env names are added to every surviving rung's passthrough, so
+ *     the mid-run fallback works on whichever rung the session started on;
+ *   · a ladder left with no rung throws: a configured review never silently
+ *     degrades to a host spawn.
+ */
+export const reviewerPlacementFor = (config, verb) => {
+  const cfg = resolveCommandConfig(config, verb)
+  const ladder = ladderOf(cfg)
+  if (!ladder) return undefined
+  const adapter = adapterFor(config, verb)
+  const turnRetry = reviewerTurnRetryFor(config, verb)
+  const rungs = ladder
+    .filter(rung => {
+      if (providerOf(rung?.sandbox) === "computer" && !hasFleet()) {
+        logOnce("placement: COMPUTER_CONTROLLER_URL is not set on this runner, skipping computer rungs")
+        return false
+      }
+      return rung.model === undefined || modelUsable(rung.model, adapter)
+    })
+    .map(rung => (rung.turnRetry === undefined ? rung : { ...rung, turnRetry: filterTurnRetry(rung.turnRetry, adapter) }))
+  if (rungs.length === 0) {
+    throw new Error(
+      "reviewerPlacement: no placement rung is usable on this runner (computer rungs need COMPUTER_CONTROLLER_URL; " +
+        `a metered model needs ${METERED_ALLOWLIST_ENV}); add an e2b rung or provision the fleet`,
+    )
+  }
+  const goEnv = goModelsIn({ ladder: rungs, turnRetry }).length > 0 ? prepareGoKeyEnv() : []
+  // The join provider is fixed on the daemon env before any box is placed, so
+  // it names the rung tried first (an overflow to a later rung still reports it).
+  if (envPresent("AGENTPROTO_JOIN") && !envPresent("AGENTPROTO_JOIN_PROVIDER")) {
+    process.env.AGENTPROTO_JOIN_PROVIDER = providerOf(rungs[0].sandbox)
+  }
+  return {
+    ladder: rungs.map(({ sandbox, ...rest }) => ({
+      sandbox: sandboxSpecFor(cfg, sandbox, goEnv),
+      ...rest,
+    })),
+  }
+}
+
 /**
  * Sandbox placement. `reviewerSandbox` accepts two shapes:
  *
@@ -192,7 +396,14 @@ const autoSpecFor = ({ raw, nativeConfig, nativeEnv, passthrough, sandboxConfig,
  */
 export const sandboxRefFor = (config, verb) => {
   const cfg = resolveCommandConfig(config, verb)
-  const raw = cfg.reviewerSandbox
+  return sandboxSpecFor(cfg, cfg.reviewerSandbox ?? e2bRungSandbox(cfg), [])
+}
+
+/** Build the spec for one raw sandbox declaration (a slug, or a native object)
+ *  under an already-resolved command config. `extraPassthrough` names are
+ *  appended to the winning passthrough list (the caller guarantees each one is
+ *  set in this process, since a passthrough name is strict). */
+const sandboxSpecFor = (cfg, raw, extraPassthrough) => {
   const slug = typeof raw === "string" ? raw.trim() : ""
   const nativeProvider =
     raw !== null && typeof raw === "object" && typeof raw.provider === "string"
@@ -256,6 +467,7 @@ export const sandboxRefFor = (config, verb) => {
     ...passthroughBase,
     ...(hasJoinToken && !passthroughBase.includes("AGENTPROTO_JOIN") ? ["AGENTPROTO_JOIN"] : []),
     ...presentJoinMetaEnvVars.filter(name => !passthroughBase.includes(name)),
+    ...extraPassthrough.filter(name => !passthroughBase.includes(name)),
   ]
   // The verb's adapter is NOT installed here anymore: the runtime
   // auto-injects the adapter boot package since #1232

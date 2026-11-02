@@ -214,6 +214,24 @@ This is what took the most work to get right.
   set `computer.fleetCapacityWaitMs: 240000` instead: an idle host is shelved
   and the fleet wakes it in about 2.5 min on a capacity refusal, so the box
   waits up to 4 min for the woken host and only then overflows to e2b.
+- **`reviewerPlacement` (this repo's `pr-review` lane).** Instead of one
+  `reviewerSandbox`, the config can declare `reviewerPlacement: { ladder: [...] }`,
+  an ordered list of rungs `{ sandbox, model?, preflight?, turnRetry? }` that
+  `spawnAgentSession` walks until one boots and passes its preflight. This
+  repo's ladder is computer (with the `model-answers` preflight), e2b (same
+  preflight), then computer again with the paid
+  `opencode-go/deepseek-v4.1-flash`. `reviewerPlacementFor` in
+  `lib/sandbox-agent.mjs` resolves it per run: computer rungs are dropped
+  without `COMPUTER_CONTROLLER_URL`, a metered model is dropped unless listed in
+  the owner-only `AGENT_ALLOWED_METERED_MODELS` variable, and an `opencode-go/*`
+  model additionally needs the `OPENCODE_GO_API_KEY` secret. A ladder is mutually
+  exclusive with `reviewerSandbox`; an empty resolved ladder fails the step
+  instead of degrading to a host spawn.
+- **`reviewerTurnRetry`.** A top-level turn-retry policy applied to the reviewer
+  session, host or boxed (`reviewerTurnRetryFor`, shared by every workflow that
+  spawns a reviewer). This repo's: `on: [usage-limit, rate-limit]` with a
+  `fallback` of `opencode-go/deepseek-v4.1-flash`, filtered by the same
+  allowlist. `null` opts out.
 - **Why sandbox at all:** the daemon-internal spawn failure (`-32001`) on the CI
   runner does not reproduce inside a box — the box's own daemon spawns the
   adapter cleanly. `workspaceCwdFor` lands the session in `/home/user` and the

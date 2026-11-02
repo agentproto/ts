@@ -16,7 +16,8 @@
 //                                                       branch directly
 //
 // Config source of truth: `.github/agentic-review.json` — global lane keys
-// (reviewerAdapter/reviewerSandbox/reviewerSandboxEnv) + per-verb
+// (reviewerAdapter/reviewerSandbox/reviewerSandboxEnv; a reviewerPlacement
+// ladder resolves to its e2b rung here) + per-verb
 // `commands.<verb>` overrides (skills, fixDelivery), resolved by the shared
 // `resolveCommandConfig`.
 

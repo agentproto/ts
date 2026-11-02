@@ -12,12 +12,22 @@ import { adapterConfigDirFor, mintSessionId, SESSION_ID_ENV, SessionNotAliveErro
 import type { SessionEventBus } from "./session-event-bus.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import { AgentSessionLostError } from "@agentproto/workflow-runtime"
-import type { AgentHarness, AgentSandboxRef, AgentSessionHost, AgentStep, AgentStepAccess } from "@agentproto/workflow-runtime"
+import type {
+  AgentHarness,
+  AgentPlacementRef,
+  AgentSandboxRef,
+  AgentSessionHost,
+  AgentStep,
+  AgentStepAccess,
+  AgentTurnRetryRef,
+} from "@agentproto/workflow-runtime"
 import { SandboxSpecSchema } from "@agentproto/sandbox"
 import type { SandboxProviderResolver } from "./sandbox-adapters.js"
 import type { AcpMcpServer } from "@agentproto/acp"
 import { resolveAccessProfileAuth, shouldInjectDaemonSelfMount, spawnAgentSession, type SandboxSpecInput } from "./session-spawn.js"
 import { exportAgentSession } from "./transcript-export.js"
+import type { PlacementInput } from "./placement-ladder.js"
+import { resolveTurnRetryPolicy, turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.js"
 import type { RoutinePolicy } from "@agentproto/run"
 import { AuthResolutionError, normalizeSkillsOption, resolveAuthSpec, resolveSpawnDefaults } from "./spawn-defaults.js"
 import { loadConfig } from "./config.js"
@@ -245,6 +255,8 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       workspaceSlug?: string
       stepId?: string
       sandbox?: AgentSandboxRef
+      placement?: AgentPlacementRef
+      turnRetry?: AgentTurnRetryRef
       options?: Record<string, boolean | number | string>
       harness?: AgentHarness
       access?: AgentStepAccess
@@ -258,9 +270,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     let cwd = opts.cwd ?? this.opts?.cwd ?? process.cwd()
     const boundary = this.opts?.boundary ? withReviewWorktreeZones(this.opts.boundary, cwd) : undefined
     if (boundary) {
-      if (opts.sandbox !== undefined) {
+      if (opts.sandbox !== undefined || opts.placement !== undefined) {
         throw new Error(
-          `agent step spawn refused (app_boundary_sandbox): \`sandbox\` spawns are not available inside app '${boundary.appId}' — ` +
+          `agent step spawn refused (app_boundary_sandbox): \`sandbox\` / \`placement\` spawns are not available inside app '${boundary.appId}' — ` +
             "fs zones cannot follow a session into a remote box",
         )
       }
@@ -275,14 +287,27 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
     const spawnKey = opts.stepKey ?? opts.stepId
     if (spawnKey !== undefined) this.opts?.onSpawnStarted?.(spawnKey)
 
+    // Validated once for both branches: a malformed policy fails the step
+    // loudly before any boot or process start. `null` is the explicit opt-out.
+    let turnRetryInput: TurnRetryInput | undefined
+    if (opts.turnRetry !== undefined) {
+      const parsed = turnRetryInputSchema.safeParse(opts.turnRetry)
+      if (!parsed.success) {
+        throw new Error(`agent step turnRetry invalid: ${parsed.error.message}`)
+      }
+      turnRetryInput = parsed.data
+    }
+
     // Sandbox spawn: delegate to the same `spawnAgentSession` core the MCP
     // `agent_start` tool uses (session-spawn.ts) so the sandbox boot / secret
     // resolution / proxy path is shared rather than re-implemented here. The
     // host's local adapter registry has no bearing on a sandboxed spawn (the
     // box resolves `adapter` itself), so no local resolveAgentAdapter gate.
-    if (opts.sandbox !== undefined) {
-      let sandbox: string | SandboxSpecInput
-      if (typeof opts.sandbox === "string") {
+    if (opts.sandbox !== undefined || opts.placement !== undefined) {
+      let sandbox: string | SandboxSpecInput | undefined
+      if (opts.sandbox === undefined) {
+        sandbox = undefined
+      } else if (typeof opts.sandbox === "string") {
         sandbox = opts.sandbox
       } else {
         // Validate the workflow-authored inline spec against the same AIP-36
@@ -308,7 +333,11 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           adapter,
           cwd,
           workspaceSlug,
-          sandbox,
+          // `spawnAgentSession` validates the ladder (and refuses it next to a
+          // top-level `sandbox`, `placement_invalid`), then walks the rungs.
+          ...(sandbox !== undefined ? { sandbox } : {}),
+          ...(opts.placement !== undefined ? { placement: opts.placement as PlacementInput } : {}),
+          ...(turnRetryInput !== undefined ? { turnRetry: turnRetryInput } : {}),
           label: this.stepLabel(adapter, opts),
           origin: "workflow",
           ...(this.opts?.parentSessionId !== undefined
@@ -596,6 +625,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
         : {}),
       ...(mcpServers ? { mcpServers } : {}),
       ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
+      ...(turnRetryInput !== undefined
+        ? { turnRetry: resolveTurnRetryPolicy(turnRetryInput === null ? { on: [] } : turnRetryInput) }
+        : {}),
       // Recorded regardless of delivery path, like `spawnAgentSession`
       // does, so a later restart/fresh-continuation still knows the text.
       ...(harness?.systemPrompt !== undefined

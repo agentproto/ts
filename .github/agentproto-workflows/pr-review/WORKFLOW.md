@@ -14,7 +14,7 @@ inputs:
     type: string
     description: >-
       Delivery placement — "host" (gh CLI, default), "sandbox" (inferred from
-      reviewConfig.reviewerSandbox + repo), or "local" (no PR, no posting —
+      reviewConfig.reviewerPlacement / reviewerSandbox + repo), or "local" (no PR, no posting —
       emit a structured verdict as the final message; see "Local placement"
       below).
     default: host
@@ -28,7 +28,7 @@ inputs:
     default: main
   repo:
     type: string
-    description: owner/repo slug — required for the sandbox bootstrap clone (reviewerSandbox mode).
+    description: owner/repo slug — required for the sandbox bootstrap clone (reviewerPlacement / reviewerSandbox mode).
     default: ""
   lastReviewedSha:
     type: string
@@ -126,7 +126,7 @@ booted writes), connects over MCP
 (`scripts/lib/daemon-mcp.mjs`), calls `workflow_run_file` against this
 WORKFLOW.md with `input: { placement: "local", baseRef, prNumber: 0,
 reviewConfig }` (`reviewConfig` = `.github/agentic-review.json` with
-`reviewerSandbox` stripped — a local run is always a HOST spawn on the dev's
+`reviewerSandbox` / `reviewerPlacement` stripped — a local run is always a HOST spawn on the dev's
 daemon), polls `workflow_status` to a terminal state, and parses the JSON
 verdict off the last session's output tail
 (`scripts/agentflow/primitives/review.mjs#reviewViaDaemon`). No diff cap: the
