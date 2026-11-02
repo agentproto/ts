@@ -55,6 +55,10 @@ outputs:
 steps:
   - id: supervised-review
     kind: loop
+  - id: needs-final-review
+    kind: branch
+  - id: review
+    kind: agent
 ---
 
 # Agentproto PR Review (supervised)
@@ -91,10 +95,20 @@ review ─▶ changes requested? ─▶ fix ─▶ re-review ─┐
    `git diff` / `git status --porcelain` so it sees the fixer's uncommitted
    edits. It posts a fresh review and a fresh verdict; approve exits, another
    request_changes fixes again.
+5. **final review** - when the loop exhausts its budget without approving, a
+   trailing review-only branch runs ONE last `review` so the last fix is
+   always re-reviewed. It is skipped when the loop already approved.
 
-`max_iterations` is `maxFixIterations + 1` (read from
-`.github/agentic-review.json` at load time): one review per iteration, with
-up to `maxFixIterations` fix rounds.
+`max_iterations` is `maxFixIterations` (read from
+`.github/agentic-review.json` at load time). Each iteration is one review plus
+at most one fix round, so the run performs at most `maxFixIterations` fixes, and
+`maxFixIterations + 1` reviews in the non-converging case (the trailing pass).
+`maxFixIterations: 0` is a review-only run.
+
+Known limitation: the approving review is posted before the calling job commits
+and pushes the fix, so it attaches to the pre-fix HEAD. With "dismiss stale
+approvals" enabled, the pushed fix needs its own review on the next CI run; the
+loop still converges across runs, and `fixDelivery: "commit"` stays intact.
 
 ## Supervisor / children
 

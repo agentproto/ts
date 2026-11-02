@@ -58,10 +58,14 @@ export const resolveMaxFixIterations = (config = reviewConfigFile) => {
 
 export const maxFixIterations = resolveMaxFixIterations()
 
-// One review per loop iteration, plus up to `maxFixIterations` fix rounds.
-// (The condition is checked BEFORE each iteration, so the first review runs
-// even though no `$steps.review` exists yet.)
-export const maxReviewIterations = maxFixIterations + 1
+// The loop body is [review, branch -> fix, fix]: each iteration is ONE review
+// followed by AT MOST one fix round. The loop is therefore capped at
+// `maxFixIterations` iterations (0 = review-only), and a trailing review-only
+// step (outside the loop) runs when the loop exhausted its budget without an
+// approve. That guarantees at most `maxFixIterations` fixes, each followed by
+// a re-review, and the last fix is always re-reviewed.
+export const maxReviewIterations = maxFixIterations
+export const maxTotalReviews = maxFixIterations + 1
 
 /**
  * The typed verdict every `review` step must end with. Hand-written
@@ -326,6 +330,18 @@ export const supervisedReviewStep = {
   ],
 }
 
+// When the loop exhausted its fix budget without approving, one final
+// review-only pass judges the last fix. It is skipped when the loop already
+// approved. It reuses the `review` step id so the prompts and the summary
+// builder see it exactly like any other review execution.
+export const finalReviewBranch = {
+  kind: "branch",
+  id: "needs-final-review",
+  branches: [
+    { when: "$steps.review.output.conclusion != approve", next: "review" },
+  ],
+}
+
 export { fixPrompt, reviewPrompt }
 
 export default {
@@ -373,5 +389,5 @@ export default {
     changesetWritten: { type: "boolean", description: "Whether a changeset was written." },
     error: { type: "string", description: "Error message if the review failed." },
   },
-  steps: [supervisedReviewStep],
+  steps: [supervisedReviewStep, finalReviewBranch, reviewStep],
 }

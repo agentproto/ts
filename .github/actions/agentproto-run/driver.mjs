@@ -73,6 +73,8 @@ const port = Number(process.env.PORT ?? "18790")
 // so every step session the run spawns records a NON-EMPTY `parentSessionId`.
 // The supervisor does no model work (no initial prompt) - it is pure lineage.
 const supervise = (process.env.SUPERVISOR ?? "").trim() === "true"
+/** Set once the idle supervisor is spawned; retired on every exit path. */
+let supervisorToRetire
 
 let workflowInput
 try {
@@ -367,7 +369,10 @@ async function main() {
         ]),
       )
       supervisorSessionId = spawned?.id ?? spawned?.sessionId ?? spawned?.descriptor?.id
-      if (supervisorSessionId) console.log(`driver: supervising session ${supervisorSessionId}`)
+      if (supervisorSessionId) {
+        supervisorToRetire = { client, id: supervisorSessionId }
+        console.log(`driver: supervising session ${supervisorSessionId}`)
+      }
       else console.error("driver: agent_start returned no session id - running unparented")
     } catch (err) {
       console.error(`driver: supervisor spawn failed (${err.message}) - running unparented`)
@@ -805,11 +810,12 @@ async function main() {
   }
   console.log(`driver: summary: ${summary.title} (reviews=${summary.reviews}, fixes=${summary.fixes})`)
 
-  // Retire the idle supervisor: it did no model work, and leaving it alive
-  // would keep a dead root in the sessions tree after the run.
+  // Retire the idle supervisor (fast path). The outer `finally` retires it too,
+  // for any path that throws before reaching here.
   if (supervisorSessionId) {
     try {
       await client.callTool({ name: "agent_kill", arguments: { sessionId: supervisorSessionId } })
+      supervisorToRetire = undefined
     } catch (err) {
       console.error(`driver: supervisor kill failed: ${err.message}`)
     }
@@ -832,6 +838,17 @@ try {
   console.error(`driver: ${err instanceof Error ? err.message : String(err)}`)
   exitCode = 1
 } finally {
+  // Safety net: an early throw must not leave the idle supervisor behind.
+  if (supervisorToRetire) {
+    try {
+      await supervisorToRetire.client.callTool({
+        name: "agent_kill",
+        arguments: { sessionId: supervisorToRetire.id },
+      })
+    } catch (err) {
+      console.error(`driver: supervisor cleanup failed: ${err.message}`)
+    }
+  }
   killDaemon()
   // SIGTERM makes the daemon say goodbye to the home daemon it joined
   // (AGENTPROTO_JOIN) so the reviewer's final output is captured before this

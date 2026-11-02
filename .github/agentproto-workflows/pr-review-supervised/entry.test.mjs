@@ -5,6 +5,7 @@ import workflow, {
   fixerModelFor,
   maxFixIterations,
   maxReviewIterations,
+  maxTotalReviews,
   resolveMaxFixIterations,
   reviewVerdictSchema,
   stageDiagram,
@@ -18,8 +19,11 @@ import { stageDiagram as sharedDiagram } from '../../../scripts/lib/review-run-s
 
 const loop = workflow.steps[0]
 
-test('the review is ONE supervised loop step, not a one-shot review', () => {
-  assert.equal(workflow.steps.length, 1)
+test('the review is a supervised loop plus a final review, not a one-shot review', () => {
+  assert.deepEqual(
+    workflow.steps.map((s) => `${s.id}:${s.kind}`),
+    ['supervised-review:loop', 'needs-final-review:branch', 'review:agent'],
+  )
   assert.equal(loop.kind, 'loop')
   assert.equal(loop.id, 'supervised-review')
 })
@@ -44,13 +48,27 @@ test('the loop re-runs the review after a fix (the re-review path)', () => {
   assert.equal(loop.max_iterations, maxReviewIterations)
 })
 
+test('the trailing review-only pass runs only when the loop never approved', () => {
+  const final = workflow.steps.find((s) => s.id === 'needs-final-review')
+  assert.equal(final.kind, 'branch')
+  assert.deepEqual(final.branches, [
+    { when: '$steps.review.output.conclusion != approve', next: 'review' },
+  ])
+  // it targets the top-level review step, not a loop-body step
+  const top = workflow.steps.find((s) => s.id === 'review')
+  assert.equal(top.kind, 'agent')
+  assert.equal(top.outputSchema, reviewVerdictSchema)
+})
+
 test('the loop is bounded by maxFixIterations from .github/agentic-review.json', () => {
   assert.equal(resolveMaxFixIterations({ maxFixIterations: 3 }), 3)
   assert.equal(resolveMaxFixIterations({ commands: { fix: { maxFixIterations: 1 } } }), 1)
   assert.equal(resolveMaxFixIterations({ maxFixIterations: -1 }), 3)
   assert.equal(resolveMaxFixIterations({}), 3)
-  // one review per iteration, plus up to N fix rounds
-  assert.equal(maxReviewIterations, maxFixIterations + 1)
+  // each loop iteration is at most one fix round; the trailing pass adds one
+  // review, so the non-converging case is N fixes and N + 1 reviews.
+  assert.equal(maxReviewIterations, maxFixIterations)
+  assert.equal(maxTotalReviews, maxFixIterations + 1)
   // this repo's committed config is 3
   assert.equal(maxFixIterations, 3)
 })
