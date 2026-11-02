@@ -8,9 +8,8 @@ target. This package defines the contract, the auth modes, the on-disk
 credential store, and a base HTTP client - and nothing about sessions, apps,
 or routing.
 
-See the draft specification,
-[AIP-73 TUNNEL](https://github.com/agentproto/agentproto/blob/main/specs/aip-73.mdx)
-(proposed in agentproto/agentproto#150).
+See the draft `tunnel/v1` specification, proposed in
+[agentproto/agentproto#150](https://github.com/agentproto/agentproto/pull/150).
 
 ## Install
 
