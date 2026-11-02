@@ -420,6 +420,20 @@ export function cloudflareProvisionedTunnelProvider(
     },
 
     async destroy(tunnel: TunnelIdentity): Promise<void> {
+      try {
+        parseConfig(creds)
+      } catch {
+        if (tunnel.tunnelId) {
+          throw new Error(
+            `cloudflare-provisioned: remote tunnel ${tunnel.tunnelId} still exists and cannot be ` +
+              "deleted because the provider is not configured: run setup_tunnel_provider to " +
+              "configure it first",
+          )
+        }
+        // No remote tunnel id was ever stored, so nothing was provisioned
+        // remotely. Forgetting the local record is the complete cleanup.
+        return
+      }
       const res = await call("DELETE", tunnel.key)
       if (!res.ok && res.status !== 404) throw await failure(res, "delete")
     },

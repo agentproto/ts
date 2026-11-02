@@ -47,6 +47,8 @@ succeeds, then runs the optional `setup[]` pipeline. The ledger at
 idempotent. Pass `--force` to redo, `--dry-run` to plan, `--skip-setup`
 to install but defer configuration.
 
+Adapter package pins are checked weekly by `scripts/check-adapter-pins.mjs`; the schedule and tracking issue live in [`.github/workflows/adapter-pins.yml`](../../../.github/workflows/adapter-pins.yml).
+
 ## Running
 
 Single turn:

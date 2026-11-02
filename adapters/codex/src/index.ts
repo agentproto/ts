@@ -4,7 +4,7 @@
  *
  * The wrapper bundles its own Codex runtime (Rust binary delivered via
  * npm dependency) so a single
- * `npx -y @agentclientprotocol/codex-acp@1.13.1`
+ * `npx -y @agentclientprotocol/codex-acp@2.5.0`
  * invocation is enough — no separate @openai/codex install needed.
  *
  *   import { codex, codexRuntime } from "@agentproto/adapter-codex"
@@ -35,16 +35,18 @@ export const codex: AgentCliHandle = defineHarness({
   // Keep spawn deterministic. An unversioned npx target performs registry
   // resolution at session startup and can silently replace both the bridge
   // and its bundled Codex runtime exactly when either publishes an update.
-  // 1.13.1 bundles @openai/codex 0.156.1 (1.10.0 shipped 0.153.3). Nothing
-  // between 1.10.0 and 1.13.1 is flagged breaking: ACP protocolVersion stays
-  // 1, `session/new` and `session/set_config_option` are unchanged, and the
-  // additions (recommended model/effort, tool names on tool calls,
-  // experimental compaction updates and session notices) are opt-in extras.
-  bin_args: ["-y", "@agentclientprotocol/codex-acp@1.13.1"],
+  // 2.5.0 depends on @openai/codex ^0.165.0 (1.13.1 bundled 0.156.1). The
+  // 2.x wrapper still serves ACP protocolVersion 1 to a v1 client — its
+  // initialize router picks v1 whenever that is what the client requests —
+  // so `session/new` and `session/set_config_option` keep the shapes this
+  // adapter already speaks. The v2 session surface, native subagent sessions,
+  // steering, and background tasks are opt-in via protocol/capability
+  // negotiation, so they stay inert for this adapter.
+  bin_args: ["-y", "@agentclientprotocol/codex-acp@2.5.0"],
   install: [
     {
       method: "npm",
-      package: "@agentclientprotocol/codex-acp@1.13.1",
+      package: "@agentclientprotocol/codex-acp@2.5.0",
       global: true,
     },
   ],
@@ -53,7 +55,7 @@ export const codex: AgentCliHandle = defineHarness({
     // claude-code's version_check note for the npm-view trap this replaces.
     cmd: "npm ls -g @agentclientprotocol/codex-acp --depth=0",
     parse: "(\\d+\\.\\d+\\.\\d+)",
-    range: "=1.13.1",
+    range: "=2.5.0",
     timeout_ms: 15_000,
   },
   auth: {
@@ -124,10 +126,10 @@ export const codex: AgentCliHandle = defineHarness({
     // an app boundary hides (the host git root) and codex aborts on.
     seed: { "config.toml": "project_root_markers = []\n" },
   },
-  // AGENT.md-system-prompt channel: codex-acp 1.13.1 parses the `CODEX_CONFIG`
-  // JSON env at startup and merges it into the config of BOTH `thread/start`
-  // and `thread/resume`; codex 0.157's `developer_instructions` config key adds
-  // a developer message.
+  // AGENT.md-system-prompt channel: codex-acp 2.5.0 still parses the
+  // `CODEX_CONFIG` JSON env at startup and merges its `developer_instructions`
+  // key into the config used for both `thread/start` and `thread/resume`;
+  // codex 0.165 keeps that config key.
   systemPrompt: {
     via: "inline-config",
     env: "CODEX_CONFIG",

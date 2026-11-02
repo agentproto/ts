@@ -5,6 +5,7 @@
  * knobs per test for failures and exec-script interception.
  */
 
+import { createHash } from "node:crypto"
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http"
 import {
   attachRequestSchema,
@@ -102,6 +103,49 @@ export interface FakeControllerOptions {
   }
 }
 
+/** Shorter values are only rejected on an exact match, like the controller. */
+const MIN_SECRET_LEN = 6
+
+/** Hand-kept mirror of the controller's per-computer secret registry check
+ *  (`SecretRegistry.rejectsArgv`, projects/computer/apps/controller/src/policy/secrets.ts;
+ *  re-check it when that rule changes): an argv element is refused when it IS a
+ *  registered value, contains it (or its base64 / hex / sha256 form) once the
+ *  value is at least MIN_SECRET_LEN long, or is a `key=value` whose value part
+ *  matches. Returns the offending argv indexes. */
+export function rejectsArgv(secrets: readonly string[], argv: readonly string[]): number[] {
+  const bad: number[] = []
+  argv.forEach((arg, i) => {
+    for (const value of secrets) {
+      if (value.length === 0) continue
+      if (arg === value) {
+        bad.push(i)
+        return
+      }
+      const b64 = Buffer.from(value, "utf8").toString("base64")
+      const forms = [
+        value,
+        b64,
+        b64.replace(/=+$/, ""),
+        b64.replace(/\+/g, "-").replace(/\//g, "_"),
+        Buffer.from(value, "utf8").toString("hex"),
+        createHash("sha256").update(value).digest("hex"),
+      ]
+      const valuePart = arg.split("=").slice(1).join("=")
+      for (const form of forms) {
+        if (value.length >= MIN_SECRET_LEN && (arg.includes(form) || valuePart.includes(form))) {
+          bad.push(i)
+          return
+        }
+      }
+      if (valuePart === value) {
+        bad.push(i)
+        return
+      }
+    }
+  })
+  return bad
+}
+
 /** Everything recorded, for assertions (no secrets captured in plain logs). */
 export class FakeController {
   readonly server: Server
@@ -137,6 +181,9 @@ export class FakeController {
     headers: Record<string, string | string[] | undefined>
   }> = []
   readonly states = new Map<string, string>()
+  /** Create-time env values per computer: registered as secrets, and an exec
+   *  whose argv carries one is refused with 400, like the real controller. */
+  readonly registeredSecrets = new Map<string, string[]>()
   /** Controller-held session refcount and per-computer cap. */
   readonly sessions = new Map<string, number>()
   readonly maxSessions = new Map<string, number>()
@@ -271,6 +318,7 @@ export class FakeController {
       const state = this.nextStateSnapshot ?? this.lastCreateState
       this.nextStateSnapshot = undefined
       this.states.set(id, state)
+      this.registeredSecrets.set(id, Object.values((parsed.env ?? {}) as Record<string, string>))
       this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
       const responseBody = {
         id,
@@ -440,6 +488,9 @@ export class FakeController {
       const parsed = JSON.parse(body) as { argv: string[]; timeoutSec: number }
       assertContract(execRequestSchema, parsed)
       this.execs.push({ id, argv: parsed.argv, timeoutSec: parsed.timeoutSec })
+      if (rejectsArgv(this.registeredSecrets.get(id) ?? [], parsed.argv).length > 0) {
+        return reply(res, 400, { error: "argv contains a registered secret value" })
+      }
       if (this.states.get(id) !== "running") return reply(res, 409, { error: "sandbox not running", state: this.states.get(id) })
       const out = this.runExec(id, parsed.argv, parsed)
       assertContract(execResponseSchema, out)

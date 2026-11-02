@@ -366,6 +366,11 @@ jobs:
       - name: Run changeset-check tests
         run: node --test scripts/check-changesets.test.mjs scripts/check-changeset-coverage.test.mjs scripts/list-changed-packages.test.mjs scripts/list-published-changes.test.mjs
 
+      # Guards the weekly adapter pin freshness report, including the
+      # indeterminate decision when a registry lookup fails.
+      - name: Run adapter pin check tests
+        run: node --test scripts/check-adapter-pins.test.mjs
+
       # Guards the pr-review workflow's placement switch (host/sandbox/local
       # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
       # file entirely (it lives outside packages/**/adapters/**).

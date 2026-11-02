@@ -159,7 +159,7 @@ describe("createBrainManager", () => {
     expect(status.skippedSessions).toBe(0)
   })
 
-  it("refuses a query over the configured index ceiling, with the reason", async () => {
+  it("answers a query over the configured index ceiling, from the on-disk index", async () => {
     const capped = createBrainManager({
       workspace: "capped-ws",
       brainDir,
@@ -169,9 +169,13 @@ describe("createBrainManager", () => {
     })
     await capped.ingestSession("sess-one")
     await capped.ingestSession("sess-two")
-    await expect(capped.getProvider().query({ query: "cargo" })).rejects.toThrow(
-      /files engine \(capped-ws\): refusing to build the in-process index: 2 indexable files exceed the ceiling of 1/,
-    )
+    const res = await capped.getProvider().query({ query: "cargo" })
+    expect(res.hits.map(h => h.sourceId).sort()).toEqual([
+      "knowledge/sources/sess-one.md",
+      "knowledge/sources/sess-two.md",
+    ])
+    const { stat } = await import("node:fs/promises")
+    expect((await stat(path.join(brainDir, ".index", "fts-local.sqlite"))).isFile()).toBe(true)
     await capped.dispose()
   })
 })

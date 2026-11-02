@@ -17,6 +17,7 @@
  * key-mapping logic without constructing live adapters.
  */
 
+import { join } from "node:path"
 import { FilesKnowledgeAdapter, LocalFs } from "@agentproto/adapter-knowledge-files"
 import {
   GbrainDocKnowledgeAdapter,
@@ -47,8 +48,9 @@ export interface ProviderResolutionContext {
   readonly brainDir: string
   /** Workspace slug: names the brain in the `files` adapter's log lines. */
   readonly workspace?: string
-  /** Default `files` index ceiling (docs); an entry's own `maxIndexDocs`
-   *  wins. Absent → the adapter's `DEFAULT_MAX_INDEX_DOCS`. */
+  /** Default `files` ceiling (docs) for the in-memory fallback index only;
+   *  an entry's own `maxIndexDocs` wins. Absent → the adapter's
+   *  `DEFAULT_MAX_INDEX_DOCS`. */
   readonly maxIndexDocs?: number
 }
 
@@ -140,6 +142,13 @@ export function qdrantOptionsFromEntry(entry: Record<string, unknown>): Record<s
   return opts
 }
 
+/** Where a `files` provider entry keeps its on-disk index:
+ *  `<brain>/.index/fts-<entry id>.sqlite`. Pure, exported for tests. */
+export function filesIndexPath(brainDir: string, providerId: string): string {
+  const safe = providerId.replace(/[^A-Za-z0-9_-]+/g, "_") || "files"
+  return join(brainDir, ".index", `fts-${safe}.sqlite`)
+}
+
 /** Resolve ONE provider entry to a live provider, throwing on misconfig. */
 export function resolveKnowledgeProvider(
   entry: KnowledgeProviderConfig,
@@ -157,11 +166,17 @@ export function resolveKnowledgeProvider(
           : "knowledge"
       const maxIndexDocs =
         typeof entry.maxIndexDocs === "number" ? entry.maxIndexDocs : ctx.maxIndexDocs
+      // On-disk FTS5 index under the brain's hidden `.index/` (never walked),
+      // one file per provider entry. `"onDiskIndex": false` keeps the entry
+      // on the in-memory index.
+      const indexPath =
+        entry.onDiskIndex === false ? undefined : filesIndexPath(ctx.brainDir, id)
       const provider = new FilesKnowledgeAdapter({
         fs: new LocalFs({ root: ctx.brainDir }),
         workspacePath,
         ...(ctx.workspace ? { label: ctx.workspace } : {}),
         ...(maxIndexDocs !== undefined ? { maxIndexDocs } : {}),
+        ...(indexPath ? { indexPath } : {}),
       })
       return { id, weight, auto, provider }
     }

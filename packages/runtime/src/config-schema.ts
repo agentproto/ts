@@ -1668,8 +1668,8 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     apply: "restart",
     writable: true,
     section: "defaults",
-    label: "Brain index file ceiling",
-    help: "Maximum files one workspace brain indexes in process for search. Above it the brain refuses to build its index and a query fails with the reason instead of loading the whole corpus into memory. A knowledge.json files entry's own maxIndexDocs wins. Default 100,000. Read at daemon boot.",
+    label: "Brain in-memory index ceiling",
+    help: "Maximum files a workspace brain indexes when search runs on the in-memory fallback index (Node without node:sqlite FTS5, or a knowledge.json files entry with onDiskIndex false). Above it that index holds the most recently modified files and results are flagged partial; search is never refused. The default on-disk index (brain/.index) has no ceiling. A knowledge.json files entry's own maxIndexDocs wins. Default 100,000. Read at daemon boot.",
     default: DEFAULT_BRAIN_MAX_INDEX_DOCS,
   },
   {

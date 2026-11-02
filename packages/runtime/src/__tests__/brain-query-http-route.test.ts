@@ -129,6 +129,24 @@ describe("GET /brain/query", () => {
     }, brains)
   })
 
+  it("says when a brain answered from an incomplete index", async () => {
+    registerWorkspaces("agentik-studio")
+    const hit = (id: string) => ({ sourceId: id, chunkId: id, text: id, score: 1, metadata: {} })
+    const brains = fakeBrains(
+      { default: [hit("sess-a")], "agentik-studio": [hit("sess-b")] },
+      ["agentik-studio"],
+    )
+    await withServer(async base => {
+      const named = (await (await fetch(`${base}/brain/query?q=x&workspace=agentik-studio`)).json()) as Record<string, unknown>
+      expect(named.partial).toBe(true)
+      const complete = (await (await fetch(`${base}/brain/query?q=x&workspace=default`)).json()) as Record<string, unknown>
+      expect(complete.partial).toBeUndefined()
+      const all = (await (await fetch(`${base}/brain/query?q=x`)).json()) as Record<string, unknown>
+      expect(all.partial).toBe(true)
+      expect(all.workspacesPartial).toEqual(["agentik-studio"])
+    }, brains)
+  })
+
   it("named workspace: falls back to parsing sessionId from sourceId when metadata carries none", async () => {
     const brains = fakeBrains({
       default: [
@@ -406,7 +424,10 @@ function stubBrainManager(getProvider: () => ReturnType<typeof stubProvider>) {
   }
 }
 
-function fakeBrains(hitsByWorkspace: Record<string, FakeHit[]>): WorkspaceBrains {
+function fakeBrains(
+  hitsByWorkspace: Record<string, FakeHit[]>,
+  partialWorkspaces: readonly string[] = [],
+): WorkspaceBrains {
   return {
     getBrain: (workspace: string) =>
       stubBrainManager(() =>
@@ -415,6 +436,7 @@ function fakeBrains(hitsByWorkspace: Record<string, FakeHit[]>): WorkspaceBrains
           tookMs: 0,
           engine: "fake",
           modeUsed: "hybrid" as const,
+          ...(partialWorkspaces.includes(workspace) ? { partial: true } : {}),
         })),
       ),
     resolveWorkspace: async () => undefined,

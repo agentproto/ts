@@ -36,6 +36,11 @@ export interface TunnelIdentity {
   key: string
   /** Hostnames routed to the tunnel, primary first. */
   hostnames: string[]
+  /**
+   * Provider-side tunnel id stored on the descriptor, when one exists. Lets a
+   * provider tell a never-provisioned local record from one with remote state.
+   */
+  tunnelId?: string
 }
 
 export type TunnelHealthState = "active" | "degraded" | "error"

@@ -266,8 +266,9 @@ export interface SpawnDefaultsConfig {
       /** Running ceiling on accumulated message text while the brain reader
        *  parses a transcript. Default 8 MB. */
       maxTranscriptTextBytes?: number
-      /** Ceiling on the files one brain indexes in process for search; above
-       *  it a query fails with the reason. Default 100,000. */
+      /** Ceiling on the files one brain's in-memory fallback search index
+       *  holds (the on-disk index has none); above it results are flagged
+       *  partial. Default 100,000. */
       maxIndexDocs?: number
     }
     /** Debounced clerk passes for these workspace slugs are dispatched by the

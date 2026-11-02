@@ -13,10 +13,12 @@
  *     text while parsing: a small JSONL can still expand into a large
  *     transcript (repetitive delta records, escaped strings, command output).
  *
- * A third ceiling bounds the QUERY side: `maxIndexDocs` caps how many files a
- * brain's `files` provider indexes in process (its BM25 index is rebuilt from
- * every file of the brain after an ingest). Above it the provider refuses to
- * build and the query fails with the reason.
+ * A third ceiling bounds the QUERY side, for the in-memory fallback only:
+ * `maxIndexDocs` caps how many files a brain's `files` provider holds in its
+ * in-process BM25 index when it cannot use the on-disk FTS5 index (no
+ * `node:sqlite` with FTS5). Above it that index keeps the most recently
+ * modified files and results are flagged `partial`. The on-disk index has no
+ * ceiling, and search is never refused.
  *
  * All are defaults, overridable under `defaults.reactions.brainIngest` in
  * `~/.agentproto/config.json`. Explicit operator exports (session transcript,
@@ -45,7 +47,7 @@ export interface BrainIngestLimitConfig {
   readonly maxTranscriptBytes?: number
   /** Running ceiling on accumulated message text, in bytes. */
   readonly maxTranscriptTextBytes?: number
-  /** Ceiling on the files one brain indexes in process. */
+  /** Ceiling on the files one brain's in-memory fallback index holds. */
   readonly maxIndexDocs?: number
 }
 

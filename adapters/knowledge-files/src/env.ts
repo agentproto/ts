@@ -20,17 +20,24 @@ export interface FilesKnowledgeEnv {
    * Default `"knowledge"`.
    */
   readonly workspacePath: string
+  /**
+   * Absolute host path of the on-disk search index (SQLite FTS5), from
+   * `KNOWLEDGE_FILES_INDEX_PATH`. Unset: in-memory index only.
+   */
+  readonly indexPath?: string
 }
 
 /** Load {@link FilesKnowledgeEnv} from `process.env` with defaults. */
 export function loadFilesKnowledgeEnv(): FilesKnowledgeEnv {
   const root = process.env.KNOWLEDGE_FILES_ROOT
   const workspacePath = process.env.KNOWLEDGE_FILES_PATH
+  const indexPath = process.env.KNOWLEDGE_FILES_INDEX_PATH?.trim()
   return {
     root: root !== undefined && root !== "" ? root : process.cwd(),
     workspacePath:
       workspacePath !== undefined && workspacePath !== ""
         ? workspacePath.trim()
         : "knowledge",
+    ...(indexPath ? { indexPath } : {}),
   }
 }
