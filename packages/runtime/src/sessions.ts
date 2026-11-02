@@ -3699,6 +3699,8 @@ interface SessionRuntime {
    *  running child tree killed). Set by `spawnAgentPending`'s `onCancel`;
    *  fired once from `emitExited`, the funnel every terminal path shares. */
   provisionCancel?: () => void
+  /** Partial trailing line of the provisioning output not yet newline-ended. */
+  provisionOutCarry?: string
   /** Per-session cost cap. When set, the turn-end finally block checks
    *  the accumulated costUsd against this ceiling and kills the session
    *  if exceeded. */
@@ -4726,6 +4728,11 @@ export interface SessionsRegistry {
    *  exist until it finishes) — only the descriptor update is skipped. Never
    *  touches a row that already left `starting`. */
   reportProvisioning(id: string, progress: WorktreeProvisionProgress): void
+  /** Append the live stdout/stderr of a still-`starting` row's provisioning
+   *  (deps / `worktree.setup` hooks) to its output, one `[phase] line` per
+   *  complete line, so `agent_output` shows progress during a long setup. A
+   *  no-op for an unknown row or one that already left `starting`. */
+  appendProvisioningOutput(id: string, text: string, stream: "stdout" | "stderr"): void
   /** Spawn a process under a real PTY (node-pty). Bytes flow through
    *  the registry's byte ring buffer + emitter; attach with
    *  `attachPty(id, ...)`. Throws when the registry was constructed
@@ -12939,10 +12946,45 @@ export function createSessionsRegistry(opts?: {
       desc.eventsPath = sessionEventsPath(desc.id, transcriptBaseDir)
       return desc
     },
+    appendProvisioningOutput(id, text, stream) {
+      const rt = sessions.get(id)
+      if (!rt || rt.desc.status !== "starting") return
+      const phase = rt.desc.provisioning?.phase ?? "worktree"
+      const parts = stripAnsiCodes((rt.provisionOutCarry ?? "") + text).split(/\r?\n|\r/)
+      rt.provisionOutCarry = (parts.pop() ?? "").slice(-4096)
+      for (const line of parts) {
+        if (line.trim() !== "") appendLine(rt, `[${phase}] ${line}`, stream)
+      }
+    },
     reportProvisioning(id, progress) {
       const rt = sessions.get(id)
       const ts = new Date().toISOString()
+      console.warn(
+        `[worktree] ${id}${rt?.desc.label ? ` (${rt.desc.label})` : ""} provisioning ` +
+          (progress.kind === "done"
+            ? `done: ${progress.outcome}`
+            : progress.kind === "queued"
+              ? `queued for ${progress.phase} (position ${progress.position})`
+              : progress.kind === "started"
+                ? `started (${progress.phase})`
+                : `phase ${progress.phase}`),
+      )
       if (rt && rt.desc.status === "starting") {
+        if (progress.kind === "done" && rt.provisionOutCarry?.trim()) {
+          appendLine(rt, `[${rt.desc.provisioning?.phase ?? "worktree"}] ${rt.provisionOutCarry}`, "stdout")
+        }
+        if (progress.kind === "done") rt.provisionOutCarry = undefined
+        else {
+          appendLine(
+            rt,
+            progress.kind === "queued"
+              ? `── provisioning: queued for ${progress.phase} (position ${progress.position}) ──`
+              : progress.kind === "started"
+                ? `── provisioning: started (${progress.phase}) ──`
+                : `── provisioning: phase ${progress.phase} ──`,
+            "stdout",
+          )
+        }
         const startedAt = rt.desc.provisioning?.startedAt ?? rt.desc.startedAt
         if (progress.kind === "queued") {
           rt.desc.provisioning = {

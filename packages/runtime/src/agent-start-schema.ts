@@ -596,6 +596,8 @@ export const agentStartInputShape = {
               .optional(),
             base: z.string().min(1).optional(),
             async: z.boolean().optional(),
+            stallTimeoutMs: z.number().int().min(0).optional(),
+            maxMs: z.number().int().min(0).optional(),
           })
           .strict(),
       ]),

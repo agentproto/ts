@@ -7,13 +7,21 @@ import { spawnSync } from "node:child_process"
 import {
   DEFAULT_PROVISION_CONCURRENCY,
   DEFAULT_PROVISION_LIMITS,
+  DEFAULT_PROVISION_MAX_MS,
+  DEFAULT_PROVISION_STALL_TIMEOUT_MS,
   PROVISION_CONCURRENCY_ENV,
+  PROVISION_MAX_ENV,
+  PROVISION_STALL_TIMEOUT_ENV,
   ProvisionCancelledError,
   provisionScheduler,
 } from "@agentproto/worktree"
 import {
   DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  DEFAULT_WORKTREE_PROVISION_MAX_MS,
+  DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
   WORKTREE_PROVISION_CONCURRENCY_ENV,
+  WORKTREE_PROVISION_MAX_ENV,
+  WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
   type WorktreeProvisionProgress,
 } from "@agentproto/runtime"
 import { makeWorktreeProvisioner } from "../commands/worktree.js"
@@ -23,6 +31,8 @@ const cleanup: string[] = []
 afterEach(async () => {
   delete process.env["AGENTPROTO_WORKTREES_ROOT"]
   delete process.env[PROVISION_CONCURRENCY_ENV]
+  delete process.env[PROVISION_STALL_TIMEOUT_ENV]
+  delete process.env[PROVISION_MAX_ENV]
   provisionScheduler.configure(DEFAULT_PROVISION_LIMITS)
   for (const p of cleanup.splice(0)) await rm(p, { recursive: true, force: true }).catch(() => {})
 })
@@ -56,6 +66,13 @@ describe("the runtime and worktree packages agree on the default provisioning ca
   it("DEFAULT_WORKTREE_PROVISION_CONCURRENCY === DEFAULT_PROVISION_CONCURRENCY", () => {
     expect(DEFAULT_WORKTREE_PROVISION_CONCURRENCY).toBe(DEFAULT_PROVISION_CONCURRENCY)
     expect(WORKTREE_PROVISION_CONCURRENCY_ENV).toBe(PROVISION_CONCURRENCY_ENV)
+  })
+
+  it("agree on the boot-bound defaults and env names", () => {
+    expect(DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS).toBe(DEFAULT_PROVISION_STALL_TIMEOUT_MS)
+    expect(DEFAULT_WORKTREE_PROVISION_MAX_MS).toBe(DEFAULT_PROVISION_MAX_MS)
+    expect(WORKTREE_PROVISION_STALL_TIMEOUT_ENV).toBe(PROVISION_STALL_TIMEOUT_ENV)
+    expect(WORKTREE_PROVISION_MAX_ENV).toBe(PROVISION_MAX_ENV)
   })
 })
 
@@ -118,5 +135,70 @@ describe("makeWorktreeProvisioner and the provisioning queue", () => {
     const progress: WorktreeProvisionProgress[] = []
     await makeWorktreeProvisioner(configPath)({ cwd: repoRoot, slug: "progress", base: "main", onProgress: p => progress.push(p) })
     expect(progress.at(-1)).toEqual({ kind: "done", outcome: "ok" })
+  })
+})
+
+describe("makeWorktreeProvisioner boot bounds (stall timeout and hard cap)", () => {
+  async function repoWithHook(setup: string): Promise<string> {
+    const repoRoot = await makeRepo()
+    await writeFile(join(repoRoot, "agentproto.json"), JSON.stringify({ worktree: { setup } }))
+    git(repoRoot, "add", ".")
+    git(repoRoot, "commit", "-q", "-m", "hook")
+    return repoRoot
+  }
+
+  it("fails a setup hook that stays silent past worktrees.provisionStallTimeoutMs, with phase and last output", { timeout: 30_000 }, async () => {
+    const repoRoot = await repoWithHook("echo booting; sleep 60")
+    const configPath = await makeConfig({ provisionStallTimeoutMs: 700 })
+    const progress: WorktreeProvisionProgress[] = []
+    const started = Date.now()
+    await expect(
+      makeWorktreeProvisioner(configPath)({
+        cwd: repoRoot,
+        slug: "stalled",
+        base: "main",
+        onProgress: p => progress.push(p),
+      }),
+    ).rejects.toThrow(/stalled in phase "setup": no output for .*\n[\s\S]*booting/)
+    expect(Date.now() - started).toBeLessThan(15_000)
+    expect(progress.at(-1)).toEqual({ kind: "done", outcome: "failed" })
+    expect(provisionScheduler.snapshot()).toMatchObject({ running: 0, queued: 0 })
+  })
+
+  it("does not fail a slow hook that keeps printing well past the stall timeout, and streams its output", { timeout: 30_000 }, async () => {
+    const repoRoot = await repoWithHook("for i in 1 2 3 4 5 6 7 8; do echo step $i; sleep 0.3; done")
+    const configPath = await makeConfig({ provisionStallTimeoutMs: 1000 })
+    const chunks: string[] = []
+    const started = Date.now()
+    const out = await makeWorktreeProvisioner(configPath)({
+      cwd: repoRoot,
+      slug: "chatty",
+      base: "main",
+      onOutput: t => chunks.push(t),
+    })
+    expect(out.isolated).toBe(true)
+    expect(Date.now() - started).toBeGreaterThan(1500)
+    expect(chunks.join("")).toContain("step 8")
+  })
+
+  it("a per-spawn stallTimeoutMs beats the env var and the config; 0 disables the bound", { timeout: 30_000 }, async () => {
+    const repoRoot = await repoWithHook("sleep 1.5; echo done")
+    const configPath = await makeConfig({ provisionStallTimeoutMs: 300 })
+    process.env[PROVISION_STALL_TIMEOUT_ENV] = "300"
+    const out = await makeWorktreeProvisioner(configPath)({
+      cwd: repoRoot,
+      slug: "no-bound",
+      base: "main",
+      stallTimeoutMs: 0,
+    })
+    expect(out.isolated).toBe(true)
+  })
+
+  it("enforces the hard cap on a hook that prints forever", { timeout: 30_000 }, async () => {
+    const repoRoot = await repoWithHook("while true; do echo tick; sleep 0.1; done")
+    const configPath = await makeConfig({})
+    await expect(
+      makeWorktreeProvisioner(configPath)({ cwd: repoRoot, slug: "capped", base: "main", maxMs: 900 }),
+    ).rejects.toThrow(/timed out in phase "setup": exceeded the/)
   })
 })

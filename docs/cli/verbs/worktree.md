@@ -197,6 +197,34 @@ to the process group, SIGKILL after a grace period), so no orphaned `pnpm`
 survives. A cancelled provisioning removes the half-made worktree and branch;
 a provisioning that merely fails keeps its worktree for inspection, as before.
 
+### Boot timeouts and setup output
+
+A hung or very slow `worktree.setup` / `depsCmd` can no longer leave a session
+in `starting` forever with nothing to read. Once the spawn holds its slot (queue
+wait does not count), two bounds apply to the heavy segment:
+
+- **Stall**: no output for `stallTimeoutMs` (default `120000`, 2 min). Output
+  from the hook resets the clock, so a 13-minute install that keeps printing
+  is fine.
+- **Hard cap**: `maxMs` (default `1800000`, 30 min) for the whole segment,
+  output or not.
+
+When a bound trips, the hook's whole process tree is killed (SIGTERM to the
+process group, SIGKILL after a grace period) and the session ends in `error`
+with a reason naming the phase, the elapsed time and the last 20 output lines
+(also in `lastError`). The worktree is kept for inspection, like any failed
+setup. `0` disables a bound. Set them per spawn with
+`agent_start({ worktree: { slug, stallTimeoutMs, maxMs } })`, or daemon-wide
+with `worktrees.provisionStallTimeoutMs` / `worktrees.provisionMaxMs` (env
+`AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` /
+`AGENTPROTO_WORKTREES_PROVISION_MAX_MS`); per-spawn beats env beats config
+beats the default.
+
+While provisioning runs, the hook's stdout/stderr is streamed into the
+starting session's output (`agent_output`, lines prefixed `[setup]` /
+`[deps]`, with `── provisioning: phase X ──` banners), and `daemon.log` gets
+a `[worktree]` line for each start, phase change and failure.
+
 Two limits: the queue lives in the daemon, so `agentproto worktree new` (its
 own short-lived process) throttles only against itself, not against the
 daemon's spawns; and the synchronous `agent_start` path (`worktree: { async:

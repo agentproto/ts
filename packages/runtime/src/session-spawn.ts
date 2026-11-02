@@ -642,6 +642,15 @@ function worktreeSetupLogPath(sessionId: string): string {
   return join(sessionTranscriptDir(sessionId), "worktree-setup.log")
 }
 
+/** The caller's per-spawn boot bounds, forwarded to the provisioner as-is
+ *  (omitted fields fall through to its env / config / default resolution). */
+function provisionBoundsOf(req: WorktreeRequest): { stallTimeoutMs?: number; maxMs?: number } {
+  return {
+    ...(req.stallTimeoutMs !== undefined ? { stallTimeoutMs: req.stallTimeoutMs } : {}),
+    ...(req.maxMs !== undefined ? { maxMs: req.maxMs } : {}),
+  }
+}
+
 function findWorktreeLabelCwdCollision(
   registry: SessionsRegistry,
   excludeId: string,
@@ -5994,9 +6003,16 @@ async function spawnAgentSessionOnce(
                 signal: provisionAbort.signal,
                 ...(parentSessionId ? { callerId: parentSessionId } : {}),
                 onProgress: progress => registry.reportProvisioning(pendingDesc.id, progress),
+                onOutput: (text, stream) => registry.appendProvisioningOutput(pendingDesc.id, text, stream),
+                ...provisionBoundsOf(worktreeRequest),
               }),
           )
         } catch (err) {
+          console.warn(
+            `[worktree] ${pendingDesc.id} provisioning failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
           registry.settlePendingAgent(pendingDesc.id, {
             ok: false,
             message: `agent_start: worktree provisioning failed — ${
@@ -6124,6 +6140,7 @@ async function spawnAgentSessionOnce(
               // have, but no descriptor field and no mid-provision cancellation.
               ...(parentSessionId ? { callerId: parentSessionId } : {}),
               onProgress: progress => registry.reportProvisioning(mintedSessionId, progress),
+              ...provisionBoundsOf(worktreeRequest),
             }),
         )
       } catch (err) {
