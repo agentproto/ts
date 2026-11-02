@@ -1,0 +1,96 @@
+name: Adapter pin freshness
+
+# Weekly report of adapter package pins against the npm registry. This job
+# only observes: it opens or updates one tracking issue when a pin drifts, and
+# never edits an adapter pin, pushes a branch, or merges anything.
+
+on:
+  schedule:
+    - cron: "0 7 * * 1" # Mondays 07:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: adapter-pins
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    name: Check adapter pins
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Check pins and build report
+        id: pins
+        run: |
+          node scripts/check-adapter-pins.mjs --json > /tmp/adapter-pins.json
+          node - <<'NODE'
+          const fs = require("fs");
+          const data = JSON.parse(fs.readFileSync("/tmp/adapter-pins.json", "utf8"));
+          const rows = data.rows || [];
+          const drifted = rows.filter((row) => row.drift !== "none" && row.drift !== "unknown");
+
+          let body = `# Adapter pin freshness\n\n`;
+          body += `Run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}\n\n`;
+          body += `| adapter | package | pinned | latest | drift |\n`;
+          body += `|---|---|---|---|---|\n`;
+          for (const row of rows) {
+            body += `| ${row.adapter} | \`${row.package}\` | ${row.pinned} | ${row.latest ?? "unavailable"} | ${row.drift} |\n`;
+          }
+          if (data.skipped && data.skipped.length > 0) {
+            body += `\nAdapters without an npm pin: ${data.skipped.join(", ")}\n`;
+          }
+          body += `\nThis workflow only reports drift. It does not edit adapter pins and does not merge.\n`;
+
+          fs.writeFileSync("/tmp/adapter-pins.md", body);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `drifted=${drifted.length > 0}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `count=${drifted.length}\n`);
+          NODE
+
+      - name: Report to step summary
+        run: cat /tmp/adapter-pins.md >> "$GITHUB_STEP_SUMMARY"
+
+      # Dedup: look up the fixed title first and edit its body, so a weekly run
+      # never opens a fresh issue per drifted pin.
+      - name: Open or update tracking issue
+        if: steps.pins.outputs.drifted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NUM=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search '"chore: adapter pin freshness" in:title' \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            echo "Updating existing adapter pin issue #$NUM"
+            gh issue edit "$NUM" --repo "${{ github.repository }}" \
+              --title "chore: adapter pin freshness" --body-file /tmp/adapter-pins.md
+          else
+            echo "Creating adapter pin issue"
+            gh issue create --repo "${{ github.repository }}" \
+              --title "chore: adapter pin freshness" \
+              --body-file /tmp/adapter-pins.md
+          fi
+
+      - name: Close tracking issue when all pins are fresh
+        if: steps.pins.outputs.drifted == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NUM=$(gh issue list --repo "${{ github.repository }}" --state open \
+            --search '"chore: adapter pin freshness" in:title' \
+            --json number --jq '.[0].number // ""' 2>/dev/null || true)
+          if [ -n "$NUM" ]; then
+            gh issue close "$NUM" --repo "${{ github.repository }}" \
+              --comment "All adapter pins are current as of $(date -u +%Y-%m-%d)."
+          fi
