@@ -217,7 +217,11 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   // entry whose `entry` would be destructive if run MUST NOT cause
   // defineApp/emit/load to execute it.
   const services: readonly AppService[] | undefined = fields.services
-    ? Object.freeze(fields.services.map(s => Object.freeze({ ...s })))
+    ? Object.freeze(
+        fields.services.map(s =>
+          Object.freeze({ ...s, ...(s.expose !== undefined ? { expose: Object.freeze({ ...s.expose }) } : {}) }),
+        ),
+      )
     : undefined
   // AIP-53 `setup[]` — the post-install configuration pipeline. Rule 10
   // runs PURELY here (no I/O; app never executes a step — see

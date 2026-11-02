@@ -251,6 +251,9 @@ export type SpawnServiceChild = (
  *  canceler, invoked when the handle is stopped before the restart fires. */
 export type ScheduleRestart = (fn: () => void, delayMs: number) => () => void
 
+/** Mirrors `APP_SERVICE_PUBLIC_URL_ENV` (app-service-expose.ts). */
+const PUBLIC_URL_ENV = "AGENTPROTO_PUBLIC_URL"
+
 export interface StartAppServiceProcessDeps {
   registry: SessionsRegistry
   appId: string
@@ -260,7 +263,8 @@ export interface StartAppServiceProcessDeps {
    *  `serviceOwnerLabel(appId, service.name)`. */
   label?: string
   workspaceSlug?: string
-  /** Extra env on top of the daemon's process.env (e.g. PORT). */
+  /** Extra env on top of the daemon's process.env (e.g. PORT, or the
+   *  `AGENTPROTO_PUBLIC_URL` of an exposed service). Kept for every restart. */
   env?: Record<string, string>
   /** Append the child's stdout/stderr to this file in addition to the
    *  registry ring buffer (durable service log). Omitted = ring buffer only. */
@@ -323,10 +327,17 @@ export function startAppServiceProcess(
   }
   let handleRef: AppServiceProcess | undefined
 
-  const baseEnv = (): Record<string, string> => ({
-    ...(process.env as Record<string, string>),
-    ...(deps.env ?? {}),
-  })
+  const baseEnv = (): Record<string, string> => {
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      ...(deps.env ?? {}),
+    }
+    // AIP-53 Exposure: the public origin is the host's per-service contract.
+    // A service without a live tunnel runs WITHOUT it, even when the daemon's
+    // own environment happens to carry one.
+    if (deps.env?.[PUBLIC_URL_ENV] === undefined) delete env[PUBLIC_URL_ENV]
+    return env
+  }
 
   const handle = (): AppServiceProcess => ({
     // The CURRENT attempt's row id; between a child's death and its next

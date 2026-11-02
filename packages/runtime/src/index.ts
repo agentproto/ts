@@ -1118,6 +1118,7 @@ import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { registerAppTunnelTools } from "./app-tunnel-tools.js"
+import { createTunnelRegistryExposer } from "./app-service-expose.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -2429,6 +2430,14 @@ export async function createGateway(
       // restoreOnBoot already logs per-tunnel failures via onLog.
     })
   }
+  // AIP-53 `services[].expose`: one keyed tunnel per exposed app service on
+  // this same registry. Keyed tunnels are not autostart: the services boot
+  // pass (reensureAppServicesOnBoot) re-ensures them, so boot never doubles.
+  const appServiceExposer = createTunnelRegistryExposer({
+    registry: tunnels,
+    readCreds: slug => tunnelCredsStore.read(slug),
+    configuredProvider: async () => (await loadConfig()).defaults?.apps?.exposeProvider,
+  })
 
   // Public origin GitHub calls back into for the `webhook` sentinel provider:
   // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
@@ -4499,6 +4508,7 @@ export async function createGateway(
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
       persist,
+      serviceExposer: appServiceExposer,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -5546,6 +5556,7 @@ export async function createGateway(
           ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
         }),
         registry: sessions,
+        exposer: appServiceExposer,
         ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
         ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
       })

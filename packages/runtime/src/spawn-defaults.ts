@@ -195,6 +195,14 @@ export interface SpawnDefaultsConfig {
    *  EXPLICIT `interrupt` on the call (true OR false) always wins over this
    *  default. */
   agentPromptInterrupt?: boolean
+  /** Installed-app hosting defaults (AIP-53). */
+  apps?: {
+    /** Tunnel provider slug used for a `services[].expose` (AIP-53
+     *  Exposure). Host config, never the app's. Unset: `cloudflare-provisioned`
+     *  when its creds are registered, else `cloudflare-managed` when
+     *  registered, else `cloudflare-quick` (reported as not stable). */
+    exposeProvider?: string
+  }
   /** Inter-session messaging policy (AIP-46 §Session messages). */
   messaging?: {
     /** Let `message_send` / `message_reply` reach a sibling session (same

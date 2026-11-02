@@ -287,6 +287,23 @@ export interface AppService {
   /** Optional TCP port the service listens on (1..65535). Omitted = a
    *  service that does not listen (no port). */
   readonly port?: number
+  /** Ask the host for a public URL reaching `port` (AIP-53 Exposure).
+   *  Requires `port`. The host picks the tunnel provider. */
+  readonly expose?: AppServiceExpose
+}
+
+/**
+ * AIP-53 `services[].expose`: the service wants a public URL through a
+ * tunnel keyed `app.<a>.<s>.<h>` (AIP-53 Tunnel key). The host passes the
+ * public origin to the process as `AGENTPROTO_PUBLIC_URL`.
+ */
+export interface AppServiceExpose {
+  /** `guard` (default): the host's access guard sits in front of the
+   *  tunnel. `service`: no guard, the service authenticates every request. */
+  readonly auth?: "guard" | "service"
+  /** Hostname request (DNS label or FQDN, lowercase). The provider may
+   *  assign another name. */
+  readonly hostname?: string
 }
 
 /**
