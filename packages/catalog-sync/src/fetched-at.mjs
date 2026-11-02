@@ -3,10 +3,10 @@
  * last observed to change.
  *
  * Unlike `addedAt` (first ever seen), a price's `fetchedAt` should advance
- * when the price actually moves, not on every weekly sync. Hashing the source
- * payload (or the selected price for one model) makes the generated
- * `*.generated.ts` deterministic: an unchanged source keeps its committed
- * date, so `catalog-sync generate --check` stays green between real changes.
+ * when the price actually moves, not on every weekly sync. Hashing the selected
+ * price of ONE route/model (never a whole source payload, where one route's
+ * move would restamp every other) makes the generated `*.generated.ts`
+ * deterministic: an unchanged price keeps its committed date, so `catalog-sync generate --check` stays green between real changes.
  *
  * Ledgers are committed at `packages/catalog-sync/ledger/<id>.json` and
  * included in the generator's `GeneratedFiles`, so the runner's existing
@@ -66,9 +66,23 @@ export function serializeFetchedAtLedger(ledger) {
   return `${JSON.stringify(sorted, null, 2)}\n`
 }
 
-/** sha256 of an arbitrary JSON-serializable value. */
+/** JSON with object keys sorted at every depth, so key order never changes a hash. */
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(v => canonicalJson(v) ?? "null").join(",")}]`
+  if (value && typeof value === "object") {
+    const parts = []
+    for (const key of Object.keys(value).sort()) {
+      const v = canonicalJson(value[key])
+      if (v !== undefined) parts.push(`${JSON.stringify(key)}:${v}`)
+    }
+    return `{${parts.join(",")}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** sha256 of an arbitrary JSON-serializable value, independent of key order. */
 export function hashJson(value) {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex")
+  return createHash("sha256").update(canonicalJson(value)).digest("hex")
 }
 
 /**

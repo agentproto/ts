@@ -1,150 +1,94 @@
 {
   "replicate:agentik/custom-simone_infographic_1": {
-    "hash": "b3fc34c36ff6aff360ded62e02b4c243684c844903bdd228454d548a16c8908f",
+    "hash": "9b41fb8e6907c8fce83c78dc212501f99086bb456e174ec68adaa1bcbb87ed71",
     "fetchedAt": "2026-11-02"
   },
   "replicate:black-forest-labs/flux-1.1-pro": {
-    "hash": "ae8d7f5b5e3000bc550e00d588075f4001c8c575dc7c5a6a14d49eb5dcef1e14",
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
     "fetchedAt": "2026-11-02"
   },
   "replicate:black-forest-labs/flux-1.1-pro-ultra": {
-    "hash": "cefdfda6790e95c77602a3b966e475f4aee90f3b6388b4086a75bee4d90119ae",
+    "hash": "187fa37182308b2fbdbdc7f66dc702cb2a189ebfc108f4371f31ab653e20fd07",
     "fetchedAt": "2026-11-02"
   },
   "replicate:black-forest-labs/flux-kontext-max": {
-    "hash": "d41c40f0de76dba485ed885eeae40267e4b48a59fd898a00f54741617a81629b",
+    "hash": "6ac2b24c595b0df79180194cd89a5adc925fa53f4b7d76a5c3e749c25ef9b74e",
     "fetchedAt": "2026-11-02"
   },
   "replicate:black-forest-labs/flux-kontext-pro": {
-    "hash": "ae8d7f5b5e3000bc550e00d588075f4001c8c575dc7c5a6a14d49eb5dcef1e14",
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
     "fetchedAt": "2026-11-02"
   },
   "replicate:black-forest-labs/flux-schnell": {
-    "hash": "a5e0231d1d07faff6d28ba3415006bea8db82930b60e41552ed90155edbef0f7",
+    "hash": "d9a69bcf245307f32e35eaa9fbb75211ba27eae0c60f6fbe3b0b74c353114730",
     "fetchedAt": "2026-11-02"
   },
   "replicate:bytedance/dreamactor-m2.0": {
-    "hash": "1b00f53bdc35e0f8cd1ac5a789ec4e2dd3703db502039de1bc786823e5f6aac6",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:bytedance/seedance-1-lite": {
-    "hash": "71441b00059af931071538d393fd2d6c4116ce9bd174ab5d633328ef46c202b2",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:bytedance/seedance-1-pro-fast": {
-    "hash": "653a4d27c30fbe100f64e170b3ff8351475e4fa8c27eaa0e392405b7f81fb6d8",
+    "hash": "f7eb4577c7dc9ab17e25577122a310dcfee5d80310980110b96891d6894fd913",
     "fetchedAt": "2026-11-02"
   },
   "replicate:bytedance/seedream-4": {
-    "hash": "da5998f86f1b282d45b33671b818d98442b1b364ee4abb9e490f62b6d192e00c",
+    "hash": "e4b666eda37fcfb7a80de19e1a954d5b419dd4fa6d6ce0189f00084c1b1f1af1",
     "fetchedAt": "2026-11-02"
   },
   "replicate:cjwbw/rembg": {
-    "hash": "733289d257e61a8b89530064377dcb5a97a5cbb9902832fa62b2e326d27e680e",
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
     "fetchedAt": "2026-11-02"
   },
   "replicate:fofr/pulid-base": {
-    "hash": "733289d257e61a8b89530064377dcb5a97a5cbb9902832fa62b2e326d27e680e",
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
     "fetchedAt": "2026-11-02"
   },
   "replicate:fofr/sticker-maker": {
-    "hash": "733289d257e61a8b89530064377dcb5a97a5cbb9902832fa62b2e326d27e680e",
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
     "fetchedAt": "2026-11-02"
   },
   "replicate:google/nano-banana": {
-    "hash": "feb391f4317bf042848d2a7b320facb54954578dea4bece64a4920f0d766538d",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:google/nano-banana-2": {
-    "hash": "36d11400d20e57953bfe51cd8e165d6f522c285588a17bcf0da040889630c8c2",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:google/nano-banana-pro": {
-    "hash": "0b52843c4a4a8cd971256f986d8006ecc257b4b77d8328b5d422d43fb6e63056",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:google/veo-3.1": {
-    "hash": "a1b813380761ff1bf146c3464bf2d8d6f0dbcf3c151276dc71f85d6239faf5f6",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:google/veo-3.1-fast": {
-    "hash": "c2d6769a92d00b540ce61d479b2124208a99ecfe7a4b0a8793d2e570bca74bf1",
+    "hash": "cd2deaed8ab1bdbd991989a07767c8db3e6b16481adf4c73f9a07ed74be1dd98",
     "fetchedAt": "2026-11-02"
   },
   "replicate:ideogram-ai/ideogram-v3-turbo": {
-    "hash": "da5998f86f1b282d45b33671b818d98442b1b364ee4abb9e490f62b6d192e00c",
+    "hash": "e4b666eda37fcfb7a80de19e1a954d5b419dd4fa6d6ce0189f00084c1b1f1af1",
     "fetchedAt": "2026-11-02"
   },
   "replicate:kwaivgi/kling-v2.5-turbo-pro": {
-    "hash": "1c466d03b4b0c5433b566f4b81426b24d7b1675b8b8c5d6462ed609fff091543",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:kwaivgi/kling-v3-omni-video": {
-    "hash": "cf0d5aaf2a260b7b1651aaafe0fd61f68c0c992a7907db0ac16a0814f0eace05",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:kwaivgi/kling-v3-video": {
-    "hash": "cf0d5aaf2a260b7b1651aaafe0fd61f68c0c992a7907db0ac16a0814f0eace05",
+    "hash": "d509baebfed3efc65a4a3452d5f87c78cbf06cf5b988fd165f33484af1c3c307",
     "fetchedAt": "2026-11-02"
   },
   "replicate:minimax/image-01": {
-    "hash": "dea22df0cca30cdbffc62b3abe9cbf1576106a81642415056fa65ec5c9883eef",
+    "hash": "c0707f28592259dcf2af1cda902733ea8841a98302f0ab923c03a86a6280b149",
     "fetchedAt": "2026-11-02"
   },
   "replicate:nvidia/sana": {
-    "hash": "b3fc34c36ff6aff360ded62e02b4c243684c844903bdd228454d548a16c8908f",
+    "hash": "9b41fb8e6907c8fce83c78dc212501f99086bb456e174ec68adaa1bcbb87ed71",
     "fetchedAt": "2026-11-02"
   },
   "replicate:openai/sora-2": {
-    "hash": "b3d5f7dc60c56f98d2f5ed8aff8b3a6e0a28fb1ec4fdc2993b6deec409d54f9b",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:openai/sora-2-pro": {
-    "hash": "72cc5b256f087b5f24a1fb66533e3ae8979e182f087625fb28166c3f037ea9b0",
+    "hash": "6d50441d22a0108b26e497057d02219abcc74c8a3402951b0f08810f4e0f24df",
     "fetchedAt": "2026-11-02"
   },
   "replicate:pixverse/lipsync": {
-    "hash": "e6ea2f466a52a98d6fa123140b7b77505182f3a23ec9b34b9731213bb4a961d8",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:pixverse/pixverse-v5.6": {
-    "hash": "1c466d03b4b0c5433b566f4b81426b24d7b1675b8b8c5d6462ed609fff091543",
+    "hash": "d01e24ed06f77738b5058bf39cb4067f24be98a4d86728235eb5f00558b7d29d",
     "fetchedAt": "2026-11-02"
   },
   "replicate:recraft-ai/recraft-v3": {
-    "hash": "ae8d7f5b5e3000bc550e00d588075f4001c8c575dc7c5a6a14d49eb5dcef1e14",
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
     "fetchedAt": "2026-11-02"
   },
   "replicate:runwayml/gen-4.5": {
-    "hash": "2ae748077a95a54fe8371e66159a56fabc46b80d4bb6448b52e539a70b4849c2",
+    "hash": "11766d0298359035c48c187638e06ce22be2711e533589702b36de91624b92c5",
     "fetchedAt": "2026-11-02"
   },
   "replicate:stability-ai/sdxl": {
-    "hash": "733289d257e61a8b89530064377dcb5a97a5cbb9902832fa62b2e326d27e680e",
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
     "fetchedAt": "2026-11-02"
   },
   "replicate:stability-ai/stable-diffusion-3": {
-    "hash": "95853a68e9237039b2909f723c76e2f69b6becdbd4c07b45724cb4fc070eae42",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:veed/fabric-1.0": {
-    "hash": "d08ce318114164059e3ac6e3882f2aa1200ec6200bf14483e8694569a94eaf87",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:wan-video/wan-2.5-i2v": {
-    "hash": "1b00f53bdc35e0f8cd1ac5a789ec4e2dd3703db502039de1bc786823e5f6aac6",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:wan-video/wan-2.5-i2v-fast": {
-    "hash": "ddddb731ad6daae213a8a55187312613581a6e6bb9361758adf243e62ce9e4a2",
-    "fetchedAt": "2026-11-02"
-  },
-  "replicate:wan-video/wan-2.5-t2v": {
-    "hash": "1b00f53bdc35e0f8cd1ac5a789ec4e2dd3703db502039de1bc786823e5f6aac6",
+    "hash": "0141ace854a41e9975b19e2eb7ccf6d717bbb2a2d53e14d0844ddae9183e4344",
     "fetchedAt": "2026-11-02"
   },
   "replicate:xai/grok-imagine-video": {
-    "hash": "1b00f53bdc35e0f8cd1ac5a789ec4e2dd3703db502039de1bc786823e5f6aac6",
+    "hash": "f7eb4577c7dc9ab17e25577122a310dcfee5d80310980110b96891d6894fd913",
     "fetchedAt": "2026-11-02"
   }
 }

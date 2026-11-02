@@ -6,21 +6,9 @@ import type { MediaPricing } from "../pricing/media.js"
 
 export const REPLICATE_VIDEO_PRICING: Record<string, MediaPricing> = {
   "replicate:bytedance/dreamactor-m2.0": { unit: "per_second", priceUsd: 0.05, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:bytedance/seedance-1-lite": { unit: "per_second", priceUsd: 0.018, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:bytedance/seedance-1-pro-fast": { unit: "per_second", priceUsd: 0.015, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:google/veo-3.1": { unit: "per_second", priceUsd: 0.4, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:google/veo-3.1-fast": { unit: "per_second", priceUsd: 0.15, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:kwaivgi/kling-v2.5-turbo-pro": { unit: "per_second", priceUsd: 0.07, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:kwaivgi/kling-v3-omni-video": { unit: "per_second", priceUsd: 0.168, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:kwaivgi/kling-v3-video": { unit: "per_second", priceUsd: 0.168, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:openai/sora-2": { unit: "per_second", priceUsd: 0.1, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:openai/sora-2-pro": { unit: "per_second", priceUsd: 0.3, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:pixverse/lipsync": { unit: "per_second", priceUsd: 0.04, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:pixverse/pixverse-v5.6": { unit: "per_second", priceUsd: 0.07, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:runwayml/gen-4.5": { unit: "per_second", priceUsd: 0.12, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:veed/fabric-1.0": { unit: "per_second", priceUsd: 0.08, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:wan-video/wan-2.5-i2v": { unit: "per_second", priceUsd: 0.05, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:wan-video/wan-2.5-i2v-fast": { unit: "per_second", priceUsd: 0.068, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:wan-video/wan-2.5-t2v": { unit: "per_second", priceUsd: 0.05, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:xai/grok-imagine-video": { unit: "per_second", priceUsd: 0.05, source: "replicate", fetchedAt: "2026-11-02" },
 }

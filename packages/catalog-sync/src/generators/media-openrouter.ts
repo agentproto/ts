@@ -16,6 +16,7 @@ import { z } from "zod"
 
 import { defineGenerator, type GeneratedFiles, type GeneratorContext } from "../types.js"
 import {
+  type FetchedAtLedger,
   fetchedAtLedgerRelPath,
   hashJson,
   readFetchedAtLedger,
@@ -112,23 +113,25 @@ async function generate(ctx: GeneratorContext, spec: OpenRouterSpec): Promise<Ge
   const parsed = SnapshotSchema.parse(payload)
 
   const today = todayIso()
-  const { ledger, entry: fetchedAtEntry } = resolveFetchedAt(
-    readFetchedAtLedger(spec.ledgerId),
-    spec.sourceId,
-    hashJson(payload),
-    today
-  )
-  const fetchedAt = fetchedAtEntry.fetchedAt
+  const previous = readFetchedAtLedger(spec.ledgerId)
+  const ledger: FetchedAtLedger = {}
 
   const entries: Record<string, MediaPricingEntry> = {}
   for (const model of parsed.data) {
     const priceUsd = perToken(model.pricing?.[spec.priceField])
     if (priceUsd === undefined) continue
+    const { entry } = resolveFetchedAt(
+      previous,
+      model.id,
+      hashJson({ unit: "per_token", priceUsd }),
+      today
+    )
+    ledger[model.id] = entry
     entries[model.id] = {
       unit: "per_token",
       priceUsd,
       source: "openrouter",
-      fetchedAt,
+      fetchedAt: entry.fetchedAt,
     }
   }
 

@@ -49,8 +49,8 @@ import { resolve } from "node:path"
 
 import {
   changelogHeading,
-  modalityOf,
-  outputPathOf,
+  diffIds,
+  outputsOf,
   vendorOf,
 } from "../../packages/catalog-sync/src/modality-output.mjs"
 
@@ -60,7 +60,7 @@ const MODEL_CATALOG_SRC_DIR = resolve(DIR, "../../packages/model-catalog/src")
 const CHANGELOG_PATH = resolve(DIR, "../../packages/model-catalog/CATALOG-CHANGELOG.md")
 const RECORD_KEY_RE = /^ {2}"([^"]+)":\s*\{/gm
 
-const outputOf = script => outputPathOf(script, MODEL_CATALOG_SRC_DIR)
+const outputsOfScript = script => outputsOf(script, MODEL_CATALOG_SRC_DIR)
 
 function readIds(path) {
   if (!existsSync(path)) return new Set()
@@ -102,7 +102,8 @@ const idDiffs = []
 
 for (const script of scripts) {
   console.log(`━━━ ${script} ━━━`)
-  const before = readIds(outputOf(script))
+  const outputs = outputsOfScript(script)
+  const before = outputs.map(o => readIds(o.path))
   const result = spawnSync(process.execPath, [`${DIR}/${script}`], {
     stdio: "inherit",
     env: process.env,
@@ -121,12 +122,12 @@ for (const script of scripts) {
   } else {
     failed.push({ script, reason: `exit ${code}` })
   }
-  const after = readIds(outputOf(script))
-  idDiffs.push({
-    modality: modalityOf(script),
-    vendor: vendorOf(script),
-    added: [...after].filter(id => !before.has(id)).sort(),
-    removed: [...before].filter(id => !after.has(id)).sort(),
+  outputs.forEach((o, i) => {
+    idDiffs.push({
+      modality: o.modality,
+      vendor: vendorOf(script),
+      ...diffIds(before[i], readIds(o.path)),
+    })
   })
   console.log("")
 }

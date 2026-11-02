@@ -14,7 +14,9 @@
  *     catalogs (read-only reference), plus the two test fixtures.
  * A page that is gone (404), has no billing JSON, or bills in a unit this
  * catalog cannot express is reported as SKIPPED and its previous committed
- * price is kept. No price is invented.
+ * price is kept. A page with several distinct tier prices (per resolution,
+ * per duration, ...) has no single price: its committed entry is DROPPED
+ * instead of keeping a one-tier value. No price is invented.
  *
  * A page that EXISTS but has an unrecognised billing shape throws: the script
  * then exits WITHOUT WRITING, so the previously committed prices survive
@@ -28,6 +30,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
 import {
+  distinctTierPrices,
   parseReplicateModelPage,
   selectReplicatePrice,
 } from "../../packages/catalog-sync/src/sources/replicate-model-page.mjs"
@@ -210,11 +213,20 @@ async function main() {
     }
     const selected = selectReplicatePrice(page)
     if (!selected) {
-      skipped.push({
-        id,
-        reason: `no expressible price (tiers: ${page.tierPrices.map(t => t.metric).join(", ") || "none"})`,
-      })
-      console.log(`  - ${id}: skipped (no expressible price)`)
+      const tiers = distinctTierPrices(page)
+      if (tiers.length > 1) {
+        // The committed entry (if any) came from picking one tier; drop it
+        // rather than keep a price that understates the dearer tiers.
+        const dropped = linesByModality[model.modality].delete(id)
+        delete ledger[id]
+        skipped.push({
+          id,
+          reason: `${dropped ? "dropped: " : ""}no single price (tiers: ${tiers.map(t => `${t.metric}=${t.priceUsd}`).join(", ")})`,
+        })
+      } else {
+        skipped.push({ id, reason: "no expressible price" })
+      }
+      console.log(`  - ${id}: skipped (${skipped.at(-1).reason})`)
       continue
     }
     const { ledger: next, entry } = resolveFetchedAt(

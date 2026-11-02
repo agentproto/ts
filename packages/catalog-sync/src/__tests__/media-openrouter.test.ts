@@ -88,3 +88,32 @@ describe("video:openrouter generator", () => {
     expect(src).not.toContain("priceUsd: 0")
   })
 })
+
+describe("openrouter media fetchedAt is per route", () => {
+  it("restamps only the route whose price moved", async () => {
+    const snapshot = JSON.parse(
+      await readFile(join(SNAPSHOTS_DIR, "media-openrouter-image.json"), "utf8")
+    ) as { data: Array<{ id: string; pricing?: Record<string, string> }> }
+    const routes = snapshot.data.filter(m => Number(m.pricing?.image_output) > 0)
+    expect(routes.length).toBeGreaterThan(1)
+    const moved = routes[0]!
+    moved.pricing!.image_output = String(Number(moved.pricing!.image_output) * 2)
+
+    const committed = JSON.parse(
+      await readFile(join(HERE, "..", "..", "ledger", "media-openrouter-image.json"), "utf8")
+    ) as Record<string, { hash: string; fetchedAt: string }>
+    const files = await mediaOpenRouterImage.generate({
+      refresh: false,
+      fetchSource: async () => snapshot,
+    })
+    const next = JSON.parse(files[IMAGE_LEDGER]!) as Record<
+      string,
+      { hash: string; fetchedAt: string }
+    >
+
+    expect(next[moved.id]!.hash).not.toBe(committed[moved.id]!.hash)
+    for (const route of routes.slice(1)) {
+      expect(next[route.id]).toEqual(committed[route.id])
+    }
+  })
+})

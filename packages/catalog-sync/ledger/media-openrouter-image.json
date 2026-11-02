@@ -1,6 +1,250 @@
 {
-  "media-openrouter-image": {
-    "hash": "f3a0f4e20cf7bc980deb211fe7c72e1d61e8a9f5a33d10998a4d20701ef87cf6",
+  "black-forest-labs/flux-3-image": {
+    "hash": "88425a4ba5c20512aa23d3192111bbc06f0d46381a400d732e1fdf46d0c3ce28",
+    "fetchedAt": "2026-11-02"
+  },
+  "black-forest-labs/flux-3-image-klein": {
+    "hash": "f1a2368fff02417f5a50f065eec494a2a4c0e535403683f5dd5e9ecc3a2827e7",
+    "fetchedAt": "2026-11-02"
+  },
+  "black-forest-labs/flux.2-flex": {
+    "hash": "0c14e71fe37b64dba5cd11a46e3bf64c0436a442ba23032f5bf85fda3631cf81",
+    "fetchedAt": "2026-11-02"
+  },
+  "black-forest-labs/flux.2-klein-4b": {
+    "hash": "4d71ecb7be6c93528638ff95654f7990ec43ec860580bff0bc4fe2b9bfe6313c",
+    "fetchedAt": "2026-11-02"
+  },
+  "black-forest-labs/flux.2-max": {
+    "hash": "faf955c3691993e4a955446992788cee14c522dd1060d2080836e2f17832c5c6",
+    "fetchedAt": "2026-11-02"
+  },
+  "black-forest-labs/flux.2-pro": {
+    "hash": "345fa9eead907b9073de5a4b989a59b307ad849f8ed3114d083f9d82fc5a5dcf",
+    "fetchedAt": "2026-11-02"
+  },
+  "bytedance-seed/seedream-4.5": {
+    "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
+    "fetchedAt": "2026-11-02"
+  },
+  "bytedance-seed/seedream-5-0-flash": {
+    "hash": "a20067249499a6936f781f22cf8ffb54805de4247982124de617bf8cf736e6a7",
+    "fetchedAt": "2026-11-02"
+  },
+  "bytedance-seed/seedream-5-0-lite": {
+    "hash": "808deb093de01070d0e834c2e044299ca148cfb7b5d59672139e46cfdb3a6450",
+    "fetchedAt": "2026-11-02"
+  },
+  "bytedance-seed/seedream-5-0-pro": {
+    "hash": "65839b7d8e405cef49bdd05ff68a0fe6649bf04eccb811273093d1729da508e9",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-2.5-flash-image": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-3-pro-image": {
+    "hash": "1e8ee12c0e92eec55b367b5c1ec9f107157516e1ce52529b05e6a2c77450b4a2",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-3-pro-image-preview": {
+    "hash": "1e8ee12c0e92eec55b367b5c1ec9f107157516e1ce52529b05e6a2c77450b4a2",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-3.1-flash-image": {
+    "hash": "9a8d67a674eeb5c7fb49c42c318320ce40ffaf2060b2cc405ffce2e7c20ee450",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-3.1-flash-image-preview": {
+    "hash": "9a8d67a674eeb5c7fb49c42c318320ce40ffaf2060b2cc405ffce2e7c20ee450",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-3.1-flash-lite-image": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "google/gemini-nano-banana-2.1": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "krea/k3-edit": {
+    "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
+    "fetchedAt": "2026-11-02"
+  },
+  "krea/krea-2-large": {
+    "hash": "de59f82cb20d738253b3e98fdfbdcd5f888a2db7f4c6406ddfa5536fe1711ddd",
+    "fetchedAt": "2026-11-02"
+  },
+  "krea/krea-2-medium": {
+    "hash": "a5ad3b01e43ab516810a6b7b72d6e09c4c53c43a8cfb88c5684f601fa60ff0c4",
+    "fetchedAt": "2026-11-02"
+  },
+  "krea/krea-2-medium-turbo": {
+    "hash": "9c9fc1dd221f5cc2b1405c885a0fe6791110b0ddc6e7546080edc2186f5ce6bf",
+    "fetchedAt": "2026-11-02"
+  },
+  "meta/muse-image": {
+    "hash": "f2d83a7d441a7b233705748f155a4283f576368d5e0d8c3f2e99e51c64bbde4b",
+    "fetchedAt": "2026-11-02"
+  },
+  "microsoft/mai-image-2.5": {
+    "hash": "3ae8511bc15b075269df1fe486a1b06cf34429aa129453de6775be23776685d7",
+    "fetchedAt": "2026-11-02"
+  },
+  "microsoft/mai-image-2.5-pro": {
+    "hash": "a8c0e1a1565b7c2e5d61daae229565db15321bb4c17ea2de636157c5dc4b1a57",
+    "fetchedAt": "2026-11-02"
+  },
+  "microsoft/mai-image-2.6": {
+    "hash": "954bc7869d8a7eadbe1396f4ab99a42b7b91b8eadee075a6e438892b1e816b4a",
+    "fetchedAt": "2026-11-02"
+  },
+  "microsoft/mai-image-2.6-flash": {
+    "hash": "15f8a3d3156d89ebb0cd4d2f9d5cc7af8c7b74898a6ada4a675c26588ce3dc03",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-5-image": {
+    "hash": "de00a558ffeeb3b579f43797dc2f04cad0d1fddf6c6402058d56dccd6aa9e824",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-5-image-mini": {
+    "hash": "feab1713a10596acc72475578ef6455d1bab18d03bbeafd8d4b23043439b9dd4",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-5.4-image-2": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-1": {
+    "hash": "de00a558ffeeb3b579f43797dc2f04cad0d1fddf6c6402058d56dccd6aa9e824",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-1-mini": {
+    "hash": "feab1713a10596acc72475578ef6455d1bab18d03bbeafd8d4b23043439b9dd4",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-2": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-2.5-flare": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "openai/gpt-image-2.5-sunburst": {
+    "hash": "e8c8659d2f21bb7d62d2f9dbd0993dd85b2c5ae3d8282b671b16e93dd4366ad3",
+    "fetchedAt": "2026-11-02"
+  },
+  "qwen/qwen-image-2.1-pro": {
+    "hash": "c79f91765668a3844459fd4d46412d8d083b2082688f9e3155a0de7ee14e8db9",
+    "fetchedAt": "2026-11-02"
+  },
+  "qwen/qwen-image-2.1-turbo": {
+    "hash": "86afb788322eda117d33f8d537f21600e99ebaa9ec3132a65a539c81c11eaf0b",
+    "fetchedAt": "2026-11-02"
+  },
+  "qwen/qwen-image-3": {
+    "hash": "a5ad3b01e43ab516810a6b7b72d6e09c4c53c43a8cfb88c5684f601fa60ff0c4",
+    "fetchedAt": "2026-11-02"
+  },
+  "qwen/qwen-image-3-pro": {
+    "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v3": {
+    "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4": {
+    "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-pro": {
+    "hash": "7fb0f3048a596c34992ab12a39a7c52c9c546813c828d5494d0a8b49b6812163",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-pro-vector": {
+    "hash": "303ac6df9ceec6e25bdcee35553ae57853b65d8928b33745229b86b1b35f5c94",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-styles": {
+    "hash": "808deb093de01070d0e834c2e044299ca148cfb7b5d59672139e46cfdb3a6450",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-styles-pro": {
+    "hash": "08084b27c09715b13f236b99dc7322fa988ca61058c7a10ee21785eb96134397",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-styles-pro-vector": {
+    "hash": "4e622979cf2fd6fe28af10c58535f62545a81c1aba342522ff897af93ad35c6d",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-styles-vector": {
+    "hash": "1cc00cd08bb9cfa2ae44836f972d88fe8aef90a2ad423a5a332dff21c4ea77d1",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4-vector": {
+    "hash": "5e8040ecb68ea792e048bdc2e471c221aad595f0e3bbe4b88b2893a278519ccc",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1": {
+    "hash": "808deb093de01070d0e834c2e044299ca148cfb7b5d59672139e46cfdb3a6450",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-flash": {
+    "hash": "92307cc81202595d2a39a621563ebead19748480245771852e59e3adfbed8315",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-pro": {
+    "hash": "fef7ee50756ddd309f292e357d2b065146b845e076f4c2ac4e8fc04d5f189f90",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-pro-vector": {
+    "hash": "303ac6df9ceec6e25bdcee35553ae57853b65d8928b33745229b86b1b35f5c94",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-utility": {
+    "hash": "808deb093de01070d0e834c2e044299ca148cfb7b5d59672139e46cfdb3a6450",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-utility-pro": {
+    "hash": "fef7ee50756ddd309f292e357d2b065146b845e076f4c2ac4e8fc04d5f189f90",
+    "fetchedAt": "2026-11-02"
+  },
+  "recraft/recraft-v4.1-vector": {
+    "hash": "5e8040ecb68ea792e048bdc2e471c221aad595f0e3bbe4b88b2893a278519ccc",
+    "fetchedAt": "2026-11-02"
+  },
+  "sourceful/riverflow-v2-fast": {
+    "hash": "a4bdbcf348d0f4f82c44958790da06d7b9784ffd022a5f5fa322d9ebda5aa183",
+    "fetchedAt": "2026-11-02"
+  },
+  "sourceful/riverflow-v2-pro": {
+    "hash": "7e97010a82ce8ad6f15bcbdba82ea388c842a11ebd7aaa6946ef961adb707ab9",
+    "fetchedAt": "2026-11-02"
+  },
+  "sourceful/riverflow-v2.5-fast": {
+    "hash": "a9d74d4466e9ce0d7a38913c21b8cd6aa10ab4416f625c244600358cdbf2008d",
+    "fetchedAt": "2026-11-02"
+  },
+  "sourceful/riverflow-v2.5-pro": {
+    "hash": "df81b5210830f2e03284c540ba4d70c53a2c8114b5380040c9391de228271f23",
+    "fetchedAt": "2026-11-02"
+  },
+  "sourceful/riverflow-v2.6-pro": {
+    "hash": "df81b5210830f2e03284c540ba4d70c53a2c8114b5380040c9391de228271f23",
+    "fetchedAt": "2026-11-02"
+  },
+  "tencent/hy-image-v3.5-preview": {
+    "hash": "034a46836d071cff189de97d7111bda199cf6e67499d2163ccfb1a32e5faa912",
+    "fetchedAt": "2026-11-02"
+  },
+  "x-ai/grok-imagine-image-2.0": {
+    "hash": "d931f861318d02f4070d77351cc2256ca68f56efbf2921a57cee3635f1c1f1ce",
+    "fetchedAt": "2026-11-02"
+  },
+  "x-ai/grok-imagine-image-quality": {
+    "hash": "1cc00cd08bb9cfa2ae44836f972d88fe8aef90a2ad423a5a332dff21c4ea77d1",
     "fetchedAt": "2026-11-02"
   }
 }

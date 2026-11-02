@@ -52,3 +52,5 @@ export function parseReplicateModelPage(html: string): ParsedReplicateModelPage
 export function selectReplicatePrice(
   page: ParsedReplicateModelPage
 ): ReplicateSelectedPrice | null
+
+export function distinctTierPrices(page: ParsedReplicateModelPage): ReplicateTierPrice[]

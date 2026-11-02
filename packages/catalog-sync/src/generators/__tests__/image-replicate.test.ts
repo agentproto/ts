@@ -4,10 +4,18 @@
 import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, it, expect } from "vitest"
-import { REPLICATE_IMAGE_PRICING } from "@agentproto/model-catalog/image"
+import { describe, it, expect, vi } from "vitest"
+import type { MediaPricing } from "@agentproto/model-catalog/pricing"
 import { imageReplicate } from "../image-replicate.js"
 import type { GeneratorContext, CatalogSource } from "../../types.js"
+
+// File-scoped stand-in for the scraped map: each test file gets its own module
+// registry, so setting a key here never leaks into another suite.
+const scrapedPricing = vi.hoisted(() => ({}) as Record<string, MediaPricing>)
+vi.mock("@agentproto/model-catalog/image", async importOriginal => ({
+  ...(await importOriginal<typeof import("@agentproto/model-catalog/image")>()),
+  REPLICATE_IMAGE_PRICING: scrapedPricing,
+}))
 
 function createOfflineCtx(refresh: boolean): GeneratorContext {
   return {
@@ -314,9 +322,7 @@ describe("image:replicate pricing source", () => {
   }
 
   it("uses the scraped REPLICATE_IMAGE_PRICING value over the hand-written table", async () => {
-    const key = "replicate:black-forest-labs/flux-kontext-pro"
-    const saved = REPLICATE_IMAGE_PRICING[key]
-    REPLICATE_IMAGE_PRICING[key] = {
+    scrapedPricing["replicate:black-forest-labs/flux-kontext-pro"] = {
       unit: "per_image",
       priceUsd: 0.123,
       source: "replicate",
@@ -329,8 +335,7 @@ describe("image:replicate pricing source", () => {
       expect(source).toContain("costTier: \"high\"")
       expect(source).not.toContain("fallback: hand-written PRICING")
     } finally {
-      if (saved === undefined) delete REPLICATE_IMAGE_PRICING[key]
-      else REPLICATE_IMAGE_PRICING[key] = saved
+      delete scrapedPricing["replicate:black-forest-labs/flux-kontext-pro"]
     }
   })
 

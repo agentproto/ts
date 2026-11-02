@@ -115,3 +115,43 @@ describe("selectReplicatePrice - unexpressible unit", () => {
     expect(selectReplicatePrice(page)).toBeNull()
   })
 })
+
+describe("selectReplicatePrice - multiple tiers", () => {
+  function pageWithTiers(tiers: Array<{ price: string; criteria?: unknown[] }>) {
+    return parseReplicateModelPage(
+      `<script type="application/json">${JSON.stringify({
+        model: { owner: "acme", name: "tiered" },
+        billingConfig: {
+          current_tiers: tiers.map(t => ({
+            criteria: t.criteria ?? [],
+            prices: [
+              {
+                metric: "image_output_count",
+                price: t.price,
+                title: "per output image",
+                type: "per-unit",
+              },
+            ],
+          })),
+        },
+      })}</script>`
+    )
+  }
+
+  it("returns null instead of silently taking the first tier when prices differ", () => {
+    const page = pageWithTiers([
+      { price: "$0.04", criteria: [{ name: "resolution", value: "1K" }] },
+      { price: "$0.24", criteria: [{ name: "resolution", value: "4K" }] },
+    ])
+    expect(page.tierPrices).toHaveLength(2)
+    expect(selectReplicatePrice(page)).toBeNull()
+  })
+
+  it("still selects the price when every tier agrees", () => {
+    const page = pageWithTiers([
+      { price: "$0.04", criteria: [{ name: "resolution", value: "1K" }] },
+      { price: "$0.04", criteria: [{ name: "resolution", value: "2K" }] },
+    ])
+    expect(selectReplicatePrice(page)).toMatchObject({ unit: "per_image", priceUsd: 0.04 })
+  })
+})

@@ -152,17 +152,37 @@ export function parseReplicateModelPage(html) {
 }
 
 /**
+ * Distinct (metric, unit, price) rows across all tiers. More than one means the
+ * page bills differently per tier (resolution, duration, ...).
+ *
+ * @param {import("./replicate-model-page.d.mts").ParsedReplicateModelPage} page
+ */
+export function distinctTierPrices(page) {
+  const distinct = new Map()
+  for (const t of page.tierPrices) {
+    distinct.set(`${t.metric}|${t.unit}|${t.priceUsd}`, t)
+  }
+  return [...distinct.values()]
+}
+
+/**
  * Pick the canonical entry to publish for a parsed page:
  *   - a mappable per-unit tier (per image, per second, ...) wins, because that
  *     is the model's real billing rate;
  *   - otherwise fall back to the top-level per-second hardware rate.
- * Returns null when neither is expressible in {@link MediaPriceUnit}.
+ * Returns null when neither is expressible in {@link MediaPriceUnit}, and also
+ * when the tiers disagree: several distinct (metric, unit, price) rows (for
+ * example one price per resolution) cannot be collapsed into one
+ * {@link MediaPricing} without silently picking a tier, which would understate
+ * the cost of the dearer ones. The sync then keeps the last committed price.
  *
  * @param {import("./replicate-model-page.d.mts").ParsedReplicateModelPage} page
  * @returns {import("./replicate-model-page.d.mts").ReplicateSelectedPrice | null}
  */
 export function selectReplicatePrice(page) {
-  const tier = page.tierPrices[0]
+  const distinct = distinctTierPrices(page)
+  if (distinct.length > 1) return null
+  const tier = distinct[0]
   if (tier) {
     return {
       unit: tier.unit,

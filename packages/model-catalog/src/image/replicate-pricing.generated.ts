@@ -16,8 +16,6 @@ export const REPLICATE_IMAGE_PRICING: Record<string, MediaPricing> = {
   "replicate:fofr/pulid-base": { unit: "per_second", priceUsd: 0.000975, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:fofr/sticker-maker": { unit: "per_second", priceUsd: 0.000975, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:google/nano-banana": { unit: "per_image", priceUsd: 0.039, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:google/nano-banana-2": { unit: "per_image", priceUsd: 0.067, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:google/nano-banana-pro": { unit: "per_image", priceUsd: 0.15, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:ideogram-ai/ideogram-v3-turbo": { unit: "per_image", priceUsd: 0.03, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:minimax/image-01": { unit: "per_image", priceUsd: 0.01, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:nvidia/sana": { unit: "per_second", priceUsd: 0.001525, source: "replicate", fetchedAt: "2026-11-02" },
