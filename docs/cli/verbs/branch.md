@@ -2,9 +2,11 @@
 
 ```text
 agentproto branch gc           [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
-                               [--min-age-days N] [--include-reviewed] [--anchor <sha>]
-                               [--apply] [--json]
+                               [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
+                               [--require-operator-below-guard] [--anchor <sha>] [--apply] [--json]
 agentproto branch gc approve   <sha|branch>... --by <name> [--note <text>] [--repo <dir>]
+                               [--dry-run] [--json]
+agentproto branch gc restore   <restore-log> [--sha <sha>...] [--local-only] [--keep-approval]
                                [--dry-run] [--json]
 agentproto branch review-queue [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
 ```
@@ -15,7 +17,7 @@ default, a classified plan, and an apply that re-checks every entry right
 before touching it. It runs locally over `@agentproto/worktree` and needs no
 daemon, except `gc approve`, which records through the running daemon (see
 [`gc approve`](#gc-approve)). The daemon exposes the same engine as the
-`branch_gc` / `branch_gc_verdict` MCP tools and as `POST /branches/gc[/verdict]`.
+`branch_gc` / `branch_gc_verdict` / `branch_gc_restore` MCP tools and as `POST /branches/gc[/verdict]`.
 
 The summary counts refs per kind (`byClass`, `byStatus`) and, in `distinct`,
 branch names across kinds: a local branch and its remote twin are one branch
@@ -24,7 +26,7 @@ with two refs, so "132 branches (149 refs)".
 The `branch_gc` MCP reply is compact by default: the summary, the plan
 metadata and one page of entries (name, kind, sha, class, status, plus
 `reclaimReason`, `mergedPr`, `mergedPrMatch`, `holdReason`,
-`lineCoverage.pct` and `verdictGuard` when set), 100 rows per page. Pass
+`lineCoverage.pct`, `verdictGuard` and `verifiedPrRefusal` when set), 100 rows per page. Pass
 `page.nextCursor` back as `cursor` to read the next page of the same run
 without re-running it. `classes` filters the entries, `fields` keeps only the
 named keys of each full entry, and `full: true` returns whole entries (alone,
@@ -89,7 +91,9 @@ missed, and only when the work branch is merged.
 | `--base <ref>` | `origin/main` | The ref the work must be in. |
 | `--scopes <kinds>` | all three | Comma-separated kinds. **Required with `--apply`.** |
 | `--min-age-days N` | `3` | Unmerged refs younger than this are held. |
-| `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). An agreeing verdict under `--min-line-coverage` is refused unless it carries an `operator` block (see below), which bypasses the guard and is shown as `bypassed by operator <by>`. |
+| `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). An agreeing verdict under `--min-line-coverage` is refused unless the [verified-pr pass](#verified-pr-pass) proves it, or it carries an `operator` block (see below), which bypasses the guard and is shown as `bypassed by operator <by>`. |
+| `--min-line-coverage PCT` | `95` | The line-coverage guard: the share of a tip's added lines that must already be in base. |
+| `--require-operator-below-guard` | `false` | Turn the verified-pr pass off: below the guard only an operator approval reclaims. |
 | `--anchor <sha>` | auto | Old-history twin of a re-rooted base's root. It's auto-detected when base has a single root and some tips share no history with it. |
 | `--apply` | `false` | Execute the plan for `--scopes`. |
 | `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog }` with `--apply`) as JSON. |
@@ -98,7 +102,86 @@ Before each delete, `--apply` lists the refs again and re-classifies the entry
 from scratch. A tip that moved, vanished, or now classifies differently is
 aborted instead of deleted. The restore log
 (`~/.agentproto/branch-gc/<repo>/restore-<ts>.json`, with the sha and exact
-re-create command per ref) is written before the first delete.
+re-create command per ref) is written before the first delete. Undo it with
+[`gc restore`](#gc-restore).
+
+#### Verified-pr pass
+
+Most refusals of the line-coverage guard are false positives: the reviewer
+says the branch is `superseded` by the PR that squash-merged its work, and the
+lines not verbatim in base sit in a consumed `.changeset/*.md`, in a file base
+later moved (`driver/agent-cli` to `packages/harness`), or in lines base
+reworded after the merge. So, with `--include-reviewed`, a guard-refused
+verdict still reclaims when this deterministic check holds (no LLM involved):
+
+1. the verdict's triage and gate both say `superseded`, and the gate agreed;
+2. it cites PRs: `landedIn: [{ pr, commit? }]` when the reviewer filled it,
+   else every `#N` in `gate.reason` and `gate.evidence`;
+3. the forge confirms at least one cited PR is MERGED into base's branch (no
+   usable forge, or a lookup that fails, refuses);
+4. every file with uncovered added lines is explained: a merged cited PR
+   touched that path, it is a `.changeset/*.md`, or base deleted or moved the
+   path in a commit that descends from a merged cited PR's merge commit (a path
+   base dropped before the work landed explains nothing).
+
+A pass is recorded as `verdictGuard: "passed by verified-pr #N: <guard>"` and
+`verifiedPr: { prs, files: [{ file, why, pr? }] }` on the plan entry, and as
+`guard: "verified-pr"` + `verifiedPr` on the apply outcome and the restore log
+entry. A refusal keeps the entry in `review`; `verifiedPrRefusal` on the entry
+and the `refused-guard` outcome names the condition that failed (for example
+`1 uncovered file(s) not explained by #1101: src/new.ts`). Checkpoint refs never
+take this pass.
+
+Residual risk, accepted by design: "touched that path" is file-level. A
+verdict that cites a merged PR which edited the same files passes even when
+the branch's own lines never landed, so the check relies on the reviewer
+citing the PR that actually landed the work; what it adds over the reviewer
+alone is that the citation is a real PR, merged into base, covering every
+file the guard flagged. Run with `--require-operator-below-guard` where that
+is not enough, and [`gc restore`](#gc-restore) undoes any deletion.
+
+`--require-operator-below-guard` (`requireOperatorBelowGuard`
+on `branch_gc` / `POST /branches/gc`) turns it off; apply keeps the plan's
+setting.
+
+### `gc restore`
+
+```text
+agentproto branch gc restore <restore-log> [--repo <dir>] [--sha <sha>...] [--local-only] [--keep-approval] [--dry-run] [--json]
+```
+
+Re-creates the refs an apply deleted, from its restore log, into `--repo`
+(default: the repo of the current directory), which must be the repo the log
+names, or the restore refuses. Every command is rebuilt from the entry's
+validated fields (full sha, valid branch name and ref, a configured remote, a
+ref that matches its kind and name), never run from the `argv` stored in the
+log; an entry that fails that check is `invalid-entry` and nothing runs for
+it. A local ref is re-created with
+`git branch`, a remote ref by pushing the sha back to its remote (and updating
+the tracking ref), an orphan ref with `git update-ref` (a forge mirror is
+re-fetched from its PR head). `--sha` (repeatable; full sha or a 7+ char
+prefix) restores only those tips; a `--sha` that matches no entry is reported.
+`--local-only` re-creates a remote-kind ref as a local branch of the same name
+instead of pushing it.
+
+It never overwrites: a ref with that name at another sha is
+`refused-conflict`, one already at the sha is `already-present`, and a sha no
+longer in the object database is `missing-commit`. Each line prints the git
+command it ran. The exit code is 1 when anything was refused or failed.
+
+Restoring also drops the operator approval from the stored verdict of every
+restored tip (the reviewer verdict stays): otherwise the next
+`gc --include-reviewed --apply` would delete it again on that approval,
+instead of re-judging it through the line guard and the verified-pr pass.
+`--keep-approval` keeps it. The daemon exposes the same as the
+`branch_gc_restore` MCP tool (`repoRoot` or `workspaceSlug`, `logPath`,
+`shas`, `localOnly`, `dryRun`, `keepApproval`).
+
+```bash
+# Put back two tips deleted on an approval, as local branches, and let the next run re-judge them
+agentproto branch gc restore ~/.agentproto/branch-gc/ts/restore-2026-11-02T10-00-00-000Z.json \
+  --repo ~/code/ts --sha 5f1c2e9a --sha 0b7d4410 --local-only
+```
 
 ### `gc approve`
 
@@ -144,7 +227,9 @@ its remote twin share one review). Each candidate carries what a reviewer
 needs: base sha, compare base, merge base, merged tree (or `null` when the
 merge conflicts), coverage, and the residual files. Tips that already have a
 verdict are skipped unless you pass `--all`. Reviewers record verdicts with the
-`branch_gc_verdict` MCP tool. Verdicts are keyed by repo and tip sha in
+`branch_gc_verdict` MCP tool; a `superseded` verdict may add
+`landedIn: [{ pr, commit? }]` for the [verified-pr pass](#verified-pr-pass)
+(refused on any other verdict). Verdicts are keyed by repo and tip sha in
 `~/.agentproto/branch-gc-verdicts.json`, and a verdict for a tip that later
 moves is ignored. Concurrent `branch_gc_verdict` calls are safe in-process and
 across processes: the store serialises writers with an in-process mutex plus

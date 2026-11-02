@@ -81,9 +81,22 @@ whose stored verdict agreed (`gate.agree: true` for that exact tip) can be
 reclaimed. This is safe because `branch_gc` re-classifies every ref
 immediately before touching it and enforces `lineCoverageGuard`: an agreeing
 verdict under the minimum line coverage (95% by default) is refused
-(`refused-guard`) and stays a `review` branch. The report lists those as a
-separate "Human decision queue": one row per tip with its sha, coverage
-percentage, stored verdict, PR state and the reviewer's one-line reason - the
+(`refused-guard`) and stays a `review` branch, unless `branch_gc`'s
+verified-pr pass proves it with no LLM involved: triage and gate both say
+`superseded`, the verdict cites a PR (`landedIn: [{ pr, commit? }]`, which the
+reviewer prompt asks for, else `#N` in the gate's reason/evidence), the forge
+confirms that PR merged into base, and every file with uncovered added lines
+was touched by it, is a consumed `.changeset/*.md`, or is a path base deleted
+or moved after that PR merged. "Touched" is file-level: a verdict citing a PR
+that edited the same files passes even if the branch's own lines never landed,
+so the check trusts the citation to be the PR that landed the work (it still
+has to be a real PR merged into base). No forge, or one unexplained file, keeps the refusal. Those
+tips are listed in their own "Auto-passed by verified-pr" section (branch, PR,
+why), and the outcome and restore log carry `guard: "verified-pr"` with the
+proof. `requireOperatorBelowGuard: true` turns the pass off. The report lists
+the remaining refusals as a separate "Human decision queue": one row per tip
+with its sha, coverage percentage, stored verdict, PR state, the reviewer's
+one-line reason and the reason the verified-pr pass refused it - the
 reviewer's `gate.agree` remains its honest safety judgement, not a statement
 that the guard's policy threshold should be applied by the reviewer. The
 default is false; the weekly routine template enables it, while daily never
@@ -99,7 +112,11 @@ human queue. Recording an operator approval for the **same tip sha**
 the human exit: `branch_gc` with `includeReviewed: true` then reclaims it
 despite the guard, and the plan entry shows
 `verdictGuard: "bypassed by operator <by>..."` with who approved. Apply still
-writes the restore log before deleting. These verdicts are shared with any
+writes the restore log before deleting. To undo a deletion through the system, run
+`agentproto branch gc restore <restore-log> [--sha <sha>...] [--local-only]`
+(or the `branch_gc_restore` MCP tool): it re-creates the refs and drops the
+operator approval of each restored tip, so the next run re-judges it through
+the guard and the verified-pr pass instead of deleting it again. These verdicts are shared with any
 other `includeReviewed`-enabled run (for example the weekly routine); this
 workflow's own apply step runs `includeReviewed: $input.applyReviewed`, so it
 stays false unless the run opts in with `applyReviewed: true`.

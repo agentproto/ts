@@ -34,7 +34,18 @@ inputs:
       no open PR, an agreeing stored verdict for the exact tip) and skips it
       with the reason otherwise. That branch then goes through the same
       branch_gc rung in the same run. branch_gc refuses an approval below its
-      line-coverage guard (default 95%). Default false.
+      line-coverage guard (default 95%) unless its verified-pr pass proves
+      it. Default false.
+    default: false
+  requireOperatorBelowGuard:
+    type: boolean
+    description: >-
+      With `applyReviewed`: turn branch_gc's verified-pr pass off, so a
+      verdict under the line-coverage guard is only reclaimed after an
+      operator approval. By default that pass reclaims a superseded verdict
+      whose cited PR the forge confirms merged into base when every file with
+      uncovered lines is touched by that PR, a consumed `.changeset/*.md`, or
+      a path base deleted or moved after that PR merged. Default false.
     default: false
   reviewModelSmall:
     type: string
@@ -285,13 +296,16 @@ steps:
       `apply` is $input.applyMerged — a dry-run plan again when false.
       `includeReviewed` is $input.applyReviewed: only with `applyMerged` and
       `applyReviewed` true does an agreed `review`-class verdict get applied,
-      and branch_gc's line-coverage guard (default 95%) can still refuse it.
+      and branch_gc's line-coverage guard (default 95%) can still refuse it
+      when its verified-pr pass (off with requireOperatorBelowGuard) cannot
+      prove it either.
     tool: branch_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
       includeReviewed: $input.applyReviewed
+      requireOperatorBelowGuard: $input.requireOperatorBelowGuard
       scopes: [local, remote, orphan]
       full: true
 
@@ -382,6 +396,7 @@ result:
   verdictRecords: $steps.verdictRecords
   applyMerged: $input.applyMerged
   applyReviewed: $input.applyReviewed
+  requireOperatorBelowGuard: $input.requireOperatorBelowGuard
   branchGcApply: $steps.branchGcApply
   worktreeGcApply: $steps.worktreeGcApply
   checkpointGcApply: $steps.checkpointGcApply
@@ -448,8 +463,14 @@ itself. An opt-in `applyReviewed: true` (only meaningful together with
 `review`-class branch whose stored verdict agreed for the SAME tip can be
 reclaimed. `branch_gc` itself still enforces the deterministic line-coverage
 guard (default 95%): an approval below it is refused (`refused-guard`) and
-the branch stays. The report lists both the reclaimed reviewed branches and
-the approvals the guard refused.
+the branch stays, unless the verified-pr pass proves it deterministically:
+a `superseded` verdict that cites a PR (`landedIn`, else `#N` in the gate's
+reason/evidence) the forge confirms merged into base, with every file of
+uncovered lines touched by that PR, a consumed `.changeset/*.md`, or a path
+base deleted or moved after that PR merged. The report lists those in "Auto-passed by verified-pr"
+(branch, PR, why) and keeps only real refusals in the human decision queue,
+each with the reason the pass refused it. `requireOperatorBelowGuard: true`
+turns the pass off.
 
 The same opt-in covers reviewed held worktrees: `worktreeGcApply` removes
 each agreed one's worktree (never its branch) after re-checking it, so the

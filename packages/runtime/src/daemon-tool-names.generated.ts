@@ -70,6 +70,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "auth_profile_set_models",
   "auth_profile_update",
   "branch_gc",
+  "branch_gc_restore",
   "branch_gc_review_worktree",
   "branch_gc_status",
   "branch_gc_verdict",

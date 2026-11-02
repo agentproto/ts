@@ -35,6 +35,8 @@ import type {
   BranchGcPlanView,
   BranchGcOperatorApprovalInput,
   BranchGcOperatorApprover,
+  BranchGcRestorer,
+  BranchGcRestoreInput,
 } from "../branch-gc.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "../session-credentials.js"
 import { compactBranchGcEntry, summarizeBranchGcApply, withBranchGcApplySummary, type BranchGcPlanEntryView } from "../branch-gc.js"
@@ -392,6 +394,7 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       runBranchGc?: BranchGcRunner
       recordBranchGcVerdict?: BranchGcVerdictRecorder
       readBranchGcVerdict?: BranchGcVerdictReader
+      restoreBranchGc?: BranchGcRestorer
       branchGcJobsDir?: string
       callerSessionId?: string
       callerScope?: OrchestratorScope
@@ -727,6 +730,33 @@ describe("branch_gc + branch_gc_verdict — MCP tools", () => {
       expect(scopedSeen()).toBeUndefined()
     } finally {
       await scopedClient.close()
+    }
+  })
+
+  it("branch_gc_restore forwards the selection to the restorer, and is 'not enabled' unwired", async () => {
+    const seen: BranchGcRestoreInput[] = []
+    const restorer: BranchGcRestorer = async input => {
+      seen.push(input)
+      return { logPath: input.logPath, repoRoot: "/repo", outcomes: [], unmatched: [] }
+    }
+    const client = await harness({ restoreBranchGc: restorer })
+    try {
+      const r = await client.callTool({
+        name: "branch_gc_restore",
+        arguments: { repoRoot: "/repo", logPath: "/s/restore.json", shas: ["abcdef12"], localOnly: true, dryRun: true },
+      })
+      expect(JSON.parse(text(r))).toEqual({ logPath: "/s/restore.json", repoRoot: "/repo", outcomes: [], unmatched: [] })
+      expect(seen).toEqual([{ logPath: "/s/restore.json", repoRoot: "/repo", shas: ["abcdef12"], localOnly: true, dryRun: true }])
+    } finally {
+      await client.close()
+    }
+    const unwired = await harness()
+    try {
+      const r = await unwired.callTool({ name: "branch_gc_restore", arguments: { logPath: "/s/restore.json" } })
+      expect(isError(r)).toBe(true)
+      expect(text(r)).toContain("branch_gc_restore is not enabled")
+    } finally {
+      await unwired.close()
     }
   })
 

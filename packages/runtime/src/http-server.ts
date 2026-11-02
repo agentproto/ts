@@ -4017,6 +4017,7 @@ export async function startHttpServer(
                 ...(scopes?.length ? { scopes } : {}),
                 ...(minAgeDays !== undefined && Number.isFinite(minAgeDays) ? { minAgeDays } : {}),
                 ...(minLineCoverage !== undefined && Number.isFinite(minLineCoverage) ? { minLineCoverage } : {}),
+                ...(bool("requireOperatorBelowGuard") ? { requireOperatorBelowGuard: true } : {}),
                 ...(anchor ? { anchor } : {}),
               }),
             )

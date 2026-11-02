@@ -76,6 +76,21 @@
  * reviewer approved 158/167 tips citing "base has foo.ts", some at 0-15%
  * line coverage.
  *
+ * VERIFIED-PR PASS. Most guard refusals of a `superseded` verdict are false
+ * positives of the line measure: the work landed through a squash-merged PR,
+ * and the lines not verbatim in base sit in a consumed `.changeset/*.md`, in
+ * a file base later moved, or in lines base reworded after the merge. So a
+ * refused tip still reclaims (`verdictGuard: "passed by verified-pr ..."`,
+ * `verifiedPr` on the entry, the apply outcome and the restore log) when a
+ * second, deterministic proof holds (`verifiedPrCheck`, no LLM): both triage
+ * and gate say `superseded` and agree, the verdict cites PRs (`landedIn`, else
+ * `#N` in gate.reason/evidence), the forge confirms at least one of them
+ * MERGED into base's branch, and every file carrying uncovered added lines
+ * was touched by such a PR, is a `.changeset/*.md`, or is a path base
+ * deleted or moved after such a PR merged. Anything else, or no forge, keeps the refusal
+ * (`verifiedPrRefusal` says which condition failed). On by default;
+ * `requireOperatorBelowGuard` turns it off. Never for checkpoint refs.
+ *
  * One ref family is classified against something other than base: a SANDBOX
  * CHECKPOINT branch (remote kind, name `agentproto-checkpoint/<work>` — the
  * force-pushed snapshot of a sandbox box's uncommitted work). Its tip is a
@@ -94,13 +109,14 @@
 
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { z } from "zod"
 import { execArgv, type ExecResult } from "./exec.js"
-import type { ForgeClient } from "./forge.js"
+import type { ForgeClient, ForgePullRequestFacts } from "./forge.js"
 import { listGitWorktrees } from "./status.js"
+import { repoLabel } from "./services/context.js"
 
 // ── types ────────────────────────────────────────────────────────────
 
@@ -200,6 +216,8 @@ export interface BranchLineCoverage {
   pct: number
   /** Up to 12 added lines NOT in base (each cut to 120 chars), in residual-file order. */
   missing: Array<{ file: string; line: string }>
+  /** EVERY file with at least one added line not in base (uncapped): what the `verified-pr` pass must explain. Absent on a plan from before it existed. */
+  missingFiles?: string[]
 }
 
 export interface TipClassification {
@@ -264,6 +282,25 @@ export interface BranchVerdictSummary {
   operator?: { by: string; note?: string }
 }
 
+/**
+ * Why one file carrying uncovered added lines does not block the
+ * `verified-pr` pass: `pr-touched` a cited PR merged into base touched that
+ * path (`pr`), `changeset` it is a `.changeset/*.md` (consumed at release),
+ * `gone-on-base` base deleted or moved that path AFTER cited PR `pr` merged.
+ */
+export interface VerifiedPrFile {
+  file: string
+  why: "pr-touched" | "changeset" | "gone-on-base"
+  pr?: number
+}
+
+/** The deterministic second proof that let a guard-refused verdict reclaim. */
+export interface VerifiedPrProof {
+  /** The cited PRs the forge confirmed merged into base's branch. */
+  prs: number[]
+  files: VerifiedPrFile[]
+}
+
 export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   ageDays: number
   class: BranchGcClass
@@ -286,9 +323,14 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
    * `includeReviewed` guard outcome: why an agreeing verdict was refused
    * (`review` class, e.g. line coverage under `minLineCoverage`), or
    * `bypassed by operator <by>: <why>` when an operator approval reclaimed it
-   * despite the guard.
+   * despite the guard, or `passed by verified-pr #N: <why>` when the
+   * `verified-pr` pass reclaimed it.
    */
   verdictGuard?: string
+  /** Set when the `verified-pr` pass reclaimed a guard-refused verdict. */
+  verifiedPr?: VerifiedPrProof
+  /** Set when the guard refused and the `verified-pr` pass did too: the condition that failed. */
+  verifiedPrRefusal?: string
 }
 
 export interface BranchGcPlan {
@@ -307,6 +349,8 @@ export interface BranchGcPlan {
   includeReviewed: boolean
   /** An agreeing verdict only reclaims when the tip's line coverage is at least this (percent). */
   minLineCoverage: number
+  /** true = no `verified-pr` pass: below the line guard only an operator approval reclaims. Absent on an older plan (= false). */
+  requireOperatorBelowGuard?: boolean
   /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut: unavailable = no shortcut. */
   forgeMirrorCheck: { available: boolean; reason?: string }
   generatedAt: string
@@ -673,19 +717,21 @@ async function lineCoverage(ctx: LadderContext, tip: string, mergeBase: string, 
         if (baseLines.has(line)) inBase++
         else if (missing.length < LINE_MISSING_CAP) missing.push({ file, line: line.slice(0, 120) })
       }
-      return { added, inBase, missing }
+      return { file, added, inBase, missing }
     },
   )
   let added = 0
   let inBase = 0
   const missing: BranchLineCoverage["missing"] = []
+  const missingFiles: string[] = []
   for (const r of perFile) {
     if (!r) continue
     added += r.added
     inBase += r.inBase
+    if (r.inBase < r.added) missingFiles.push(r.file)
     for (const m of r.missing) if (missing.length < LINE_MISSING_CAP) missing.push(m)
   }
-  return { added, inBase, pct: added ? Math.round((1000 * inBase) / added) / 10 : 100, missing }
+  return { added, inBase, pct: added ? Math.round((1000 * inBase) / added) / 10 : 100, missing, missingFiles }
 }
 
 /** Why an agreeing verdict must NOT reclaim this entry, or `null` when its line coverage backs it (or was never computed). */
@@ -1197,29 +1243,165 @@ function mergedPrMatchOf(env: ClassifyEnv, sha: string): Promise<{ pr: number; m
   return pending
 }
 
-/** Stamp the stored verdict for `sha` onto `entry` (`BranchVerdictSummary` shape), if one exists. */
-async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: ClassifyEnv): Promise<void> {
+/** Stamp the stored verdict for `sha` onto `entry` (`BranchVerdictSummary` shape), if one exists, and return the full record. */
+async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: ClassifyEnv): Promise<BranchVerdictRecord | null> {
   const stored = env.verdicts ? await env.verdicts.get(env.repoName, sha) : null
-  if (!stored) return
+  if (!stored) return null
   entry.verdict = {
     triage: stored.triage.verdict,
     agree: stored.gate ? stored.gate.agree : null,
     reviewer: stored.reviewer,
     ...(stored.operator ? { operator: stored.operator } : {}),
   }
+  return stored
+}
+
+/** A consumed-at-release changeset: losing its text loses nothing. */
+const CHANGESET_RE = /(^|\/)\.changeset\/[^/]+\.md$/
+const PR_REF_RE = /#(\d{1,9})\b/g
+/** Bound on the PRs one verdict can make the `verified-pr` pass look up. */
+const MAX_CITED_PRS = 10
+
+/**
+ * The PRs a verdict says landed its work: `landedIn` when the reviewer filled
+ * it, else every `#N` in `gate.reason` and `gate.evidence` (verdicts from
+ * before `landedIn` existed). First-seen order, at most 10.
+ */
+export function citedPrsOf(v: Pick<BranchVerdict, "gate" | "landedIn">): number[] {
+  const out: number[] = []
+  const add = (n: number): void => {
+    if (Number.isSafeInteger(n) && n > 0 && !out.includes(n) && out.length < MAX_CITED_PRS) out.push(n)
+  }
+  if (v.landedIn?.length) {
+    for (const l of v.landedIn) add(l.pr)
+    return out
+  }
+  for (const text of [v.gate?.reason ?? "", ...(v.gate?.evidence ?? [])]) {
+    for (const m of text.matchAll(PR_REF_RE)) add(Number(m[1]))
+  }
+  return out
+}
+
+type VerifiedPrResult = { ok: true; proof: VerifiedPrProof } | { ok: false; reason: string }
+
+/** The facts of PR `n`, one forge lookup per PR per snapshot. Rejects when the forge cannot answer. */
+function prFactsOf(env: ClassifyEnv, n: number): Promise<ForgePullRequestFacts | null> {
+  let pending = env.prFacts.get(n)
+  if (!pending) {
+    const forge = env.forge as Required<Pick<ForgeClient, "pullRequestFacts">>
+    pending = forge.pullRequestFacts(n)
+    env.prFacts.set(n, pending)
+  }
+  return pending
+}
+
+/**
+ * The cited PR after whose merge base deleted (or moved away) `file`: the
+ * last commit of base that deleted the path (no rename detection, so a move
+ * counts as a delete of the old path) must descend from that PR's merge
+ * commit. A path base dropped BEFORE the work landed, or a PR whose merge
+ * commit is unknown, explains nothing.
+ */
+async function goneAfterMerge(env: ClassifyEnv, file: string, merged: readonly ForgePullRequestFacts[]): Promise<number | undefined> {
+  const res = await git(env.ctx.repoRoot, [
+    "--literal-pathspecs", "log", "-1", "--no-renames", "--diff-filter=D", "--format=%H", env.ctx.baseSha, "--", file,
+  ])
+  const deletedIn = res.exitCode === 0 ? res.stdout.trim() : ""
+  if (!deletedIn) return undefined
+  for (const f of merged) {
+    if (f.mergeCommitOid && (await isAncestorOf(env, f.mergeCommitOid, deletedIn))) return f.number
+  }
+  return undefined
+}
+
+function describePr(n: number, f: ForgePullRequestFacts | null, baseName: string): string {
+  if (!f) return `#${n} not found`
+  if (!f.merged) return `#${n} ${f.state === "open" ? "open" : "closed unmerged"}`
+  return `#${n} merged into ${f.baseRefName}, not ${baseName}`
+}
+
+/**
+ * The `verified-pr` pass: may a verdict the line guard refused reclaim
+ * anyway? Deterministic, no LLM, every condition must hold:
+ *   1. triage AND gate say `superseded`, and the gate agreed;
+ *   2. the verdict cites PRs (`citedPrsOf`);
+ *   3. the forge confirms at least one cited PR MERGED into base's branch
+ *      (no forge, or a lookup that fails, refuses);
+ *   4. every file with uncovered added lines (`lineCoverage.missingFiles`) is
+ *      explained: one of those merged PRs touched it, it is a
+ *      `.changeset/*.md`, or base deleted/moved the path after one of those
+ *      PRs merged.
+ * The refusal reason names the first condition that failed. Residual risk,
+ * accepted by design: "touched the path" is file-level, so a verdict citing a
+ * PR that merely edited the same files passes even when the branch's own
+ * lines never landed; the citation must still be a real merged PR.
+ */
+async function verifiedPrCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecord, env: ClassifyEnv): Promise<VerifiedPrResult> {
+  const refuse = (reason: string): VerifiedPrResult => ({ ok: false, reason })
+  const gate = record.gate
+  if (record.triage.verdict !== "superseded" || gate?.verdict !== "superseded") {
+    return refuse(`verdict is ${record.triage.verdict}${gate && gate.verdict !== record.triage.verdict ? ` (gate ${gate.verdict})` : ""}, not superseded`)
+  }
+  if (gate.agree !== true) return refuse("gate did not agree")
+  const cited = citedPrsOf(record)
+  if (cited.length === 0) return refuse("no PR cited (landedIn, or #N in gate.reason/evidence)")
+  const missingFiles = entry.lineCoverage?.missingFiles
+  if (!missingFiles) return refuse("no per-file line coverage to explain")
+  if (!env.forge?.pullRequestFacts) return refuse("forge unavailable: no PR lookup")
+  const facts: Array<ForgePullRequestFacts | null> = []
+  for (const n of cited) {
+    try {
+      facts.push(await prFactsOf(env, n))
+    } catch (err) {
+      return refuse(`forge unavailable: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`)
+    }
+  }
+  const merged = facts.filter((f): f is ForgePullRequestFacts => f !== null && f.merged && f.baseRefName === env.baseName)
+  if (merged.length === 0) {
+    return refuse(`no cited PR merged into ${env.baseName}: ${cited.map((n, i) => describePr(n, facts[i] ?? null, env.baseName)).join(", ")}`)
+  }
+  const touchedBy = merged.map((f) => ({ pr: f.number, files: new Set(f.files) }))
+  const idx = await env.ctx.index()
+  const files: VerifiedPrFile[] = []
+  const unexplained: string[] = []
+  for (const file of missingFiles) {
+    const pr = touchedBy.find((t) => t.files.has(file))?.pr
+    if (pr !== undefined) files.push({ file, why: "pr-touched", pr })
+    else if (CHANGESET_RE.test(file)) files.push({ file, why: "changeset" })
+    else {
+      const after = idx.byPath.has(file) ? undefined : await goneAfterMerge(env, file, merged)
+      if (after !== undefined) files.push({ file, why: "gone-on-base", pr: after })
+      else unexplained.push(file)
+    }
+  }
+  if (unexplained.length > 0) {
+    const shown = unexplained.slice(0, 5).join(", ")
+    return refuse(
+      `${unexplained.length} uncovered file(s) not explained by ${merged.map((f) => `#${f.number}`).join(", ")}: ${shown}` +
+        (unexplained.length > 5 ? `, … and ${unexplained.length - 5} more` : ""),
+    )
+  }
+  return { ok: true, proof: { prs: merged.map((f) => f.number), files } }
 }
 
 /**
  * Resolve an unmerged entry that reached the review rung: `includeReviewed`
  * plus an agreeing verdict reclaims it (`reviewed`) unless the deterministic
  * line-coverage guard refuses it (operator approval bypasses the guard and is
- * recorded in `verdictGuard`). Otherwise the entry stays `review`.
+ * recorded in `verdictGuard`; so does a passing `verified-pr` check, recorded
+ * in `verifiedPr`). Otherwise the entry stays `review`.
  *
  * `requireCoverage` makes a missing `lineCoverage` fail closed: checkpoint
  * refs may be the only copy of rescued work, so an agreeing verdict alone must
- * not reclaim one whose added lines were never measured.
+ * not reclaim one whose added lines were never measured. It also keeps the
+ * `verified-pr` pass off checkpoint refs for the same reason.
  */
-function applyReviewedDecision(entry: BranchGcPlanEntry, env: ClassifyEnv, opts: { requireCoverage?: boolean } = {}): void {
+async function applyReviewedDecision(
+  entry: BranchGcPlanEntry,
+  record: BranchVerdictRecord | null,
+  env: ClassifyEnv,
+  opts: { requireCoverage?: boolean } = {},
+): Promise<void> {
   if (!(env.includeReviewed && entry.verdict?.agree === true)) {
     entry.class = "review"
     return
@@ -1235,12 +1417,21 @@ function applyReviewedDecision(entry: BranchGcPlanEntry, env: ClassifyEnv, opts:
     // overrides the deterministic line guard for this exact tip, and the
     // plan records who bypassed it. A reviewer-only verdict stays refused.
     const operator = entry.verdict.operator
-    if (!operator) {
-      entry.verdictGuard = guard
-      entry.class = "review"
-      return
+    if (operator) {
+      entry.verdictGuard = `bypassed by operator ${operator.by}${operator.note ? ` (${operator.note})` : ""}: ${guard}`
+    } else {
+      // The deterministic second proof: a superseded verdict whose cited PR
+      // the forge confirms merged, with every uncovered file explained.
+      const check = opts.requireCoverage || env.requireOperatorBelowGuard || !record ? null : await verifiedPrCheck(entry, record, env)
+      if (!check?.ok) {
+        entry.verdictGuard = guard
+        if (check) entry.verifiedPrRefusal = check.reason
+        entry.class = "review"
+        return
+      }
+      entry.verdictGuard = `passed by verified-pr ${check.proof.prs.map((n) => `#${n}`).join(", ")}: ${guard}`
+      entry.verifiedPr = check.proof
     }
-    entry.verdictGuard = `bypassed by operator ${operator.by}${operator.note ? ` (${operator.note})` : ""}: ${guard}`
   }
   entry.class = "reclaim"
   entry.reclaimReason = "reviewed"
@@ -1357,8 +1548,8 @@ async function reviewCheckpointRef(entry: BranchGcPlanEntry, b: BranchRef, env: 
   else delete entry.residualFiles
   if (snapshotTip.residualFileCount !== undefined) entry.residualFileCount = snapshotTip.residualFileCount
   else delete entry.residualFileCount
-  await stampVerdict(entry, b.sha, env)
-  applyReviewedDecision(entry, env, { requireCoverage: true })
+  const record = await stampVerdict(entry, b.sha, env)
+  await applyReviewedDecision(entry, record, env, { requireCoverage: true })
   return entry
 }
 
@@ -1413,6 +1604,12 @@ interface ClassifyEnv {
   minAgeDays: number
   includeReviewed: boolean
   minLineCoverage: number
+  /** true = no `verified-pr` pass below the line guard. */
+  requireOperatorBelowGuard: boolean
+  /** The forge the `verified-pr` pass asks for PR facts; absent = that pass refuses. */
+  forge?: ForgeClient
+  /** PR number → its memoized facts (`verifiedPrCheck`), one forge lookup per PR per snapshot. */
+  prFacts: Map<number, Promise<ForgePullRequestFacts | null>>
   verdicts?: BranchVerdictStore
   repoName: string
   nowMs: number
@@ -1502,10 +1699,11 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
       entry.mergedPrMatch = merged.match
     }
   }
+  let record: BranchVerdictRecord | null = null
   if (entry.status === "unmerged") {
     const pushed = await pushStateOf(b, env)
     if (pushed) entry.pushed = pushed
-    await stampVerdict(entry, b.sha, env)
+    record = await stampVerdict(entry, b.sha, env)
     if (b.kind !== "orphan") {
       const headPr = headPrOf(b.name, env)
       if (headPr) entry.headPr = headPr
@@ -1527,7 +1725,7 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     entry.holdDetail = `${ageDays}d < ${env.minAgeDays}d`
     return entry
   }
-  applyReviewedDecision(entry, env)
+  await applyReviewedDecision(entry, record, env)
   return entry
 }
 
@@ -1549,6 +1747,7 @@ async function snapshot(input: {
   minAgeDays: number
   includeReviewed: boolean
   minLineCoverage: number
+  requireOperatorBelowGuard: boolean
   nowMs: number
   /** Default true: `git fetch --prune <baseRemote>` before listing refs (best-effort). */
   fetch?: boolean
@@ -1632,6 +1831,9 @@ async function snapshot(input: {
       minAgeDays: input.minAgeDays,
       includeReviewed: input.includeReviewed,
       minLineCoverage: input.minLineCoverage,
+      requireOperatorBelowGuard: input.requireOperatorBelowGuard,
+      ...(input.forge ? { forge: input.forge } : {}),
+      prFacts: new Map(),
       ...(input.verdicts ? { verdicts: input.verdicts } : {}),
       repoName: input.repoName,
       nowMs: input.nowMs,
@@ -1656,6 +1858,8 @@ export interface PlanBranchGcInput {
   includeReviewed?: boolean
   /** `includeReviewed` refuses an agreeing verdict when the tip's line coverage is below this percent. Default 95. */
   minLineCoverage?: number
+  /** Turn the `verified-pr` pass off: below `minLineCoverage` only an operator approval reclaims. Default false. */
+  requireOperatorBelowGuard?: boolean
   /** Explicit anchor for a re-rooted base. Omitted → auto-detected. */
   anchor?: string
   /** Open-PR detection (`listOpenPullRequests`). Omitted or unable → every local/remote ref is `hold` (`pr-check-unavailable`). */
@@ -1690,6 +1894,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     throw new Error(`branch gc: minLineCoverage must be a percent in [0, 100], got ${minLineCoverage}`)
   }
   const nowMs = input.nowMs ?? Date.now()
+  const requireOperatorBelowGuard = input.requireOperatorBelowGuard === true
   const snap = await snapshot({
     repoRoot: input.repoRoot,
     repoName: input.repoName,
@@ -1700,6 +1905,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     minAgeDays,
     includeReviewed,
     minLineCoverage,
+    requireOperatorBelowGuard,
     nowMs,
     ...(input.fetch === false ? { fetch: false } : {}),
   })
@@ -1718,6 +1924,7 @@ export async function planBranchGc(input: PlanBranchGcInput): Promise<BranchGcPl
     minAgeDays,
     includeReviewed,
     minLineCoverage,
+    requireOperatorBelowGuard,
     forgeMirrorCheck: snap.env.forgePrHeads.available
       ? { available: true }
       : { available: false, ...(snap.env.forgePrHeads.reason ? { reason: snap.env.forgePrHeads.reason } : {}) },
@@ -1874,12 +2081,14 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
 // ── apply ────────────────────────────────────────────────────────────
 
 export type BranchGcApplyOutcome =
-  | { kind: BranchRefKind; name: string; sha: string; result: "deleted"; reclaimReason: BranchGcReclaimReason }
+  /** `guard: "verified-pr"` + `verifiedPr`: a guard-refused verdict the `verified-pr` pass reclaimed. */
+  | { kind: BranchRefKind; name: string; sha: string; result: "deleted"; reclaimReason: BranchGcReclaimReason; guard?: "verified-pr"; verifiedPr?: VerifiedPrProof }
   | { kind: BranchRefKind; name: string; sha: string; result: "held"; holdReason?: BranchGcHoldReason }
   /** `review` class: never touched by apply — the review/approval path decides these. */
   | { kind: BranchRefKind; name: string; sha: string; result: "skipped-review" }
   /** `review` class whose agreeing verdict was refused by a deterministic guard (`verdictGuard`, e.g. line coverage). */
-  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string }
+  /** `verifiedPrRefusal`: why the `verified-pr` pass did not reclaim it either (absent when that pass is off). */
+  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string; verifiedPrRefusal?: string }
   /** The ref now points somewhere else than the plan saw — never delete what wasn't classified. */
   | { kind: BranchRefKind; name: string; sha: string; result: "aborted-moved"; currentSha: string }
   /** The ref no longer exists. */
@@ -1922,6 +2131,9 @@ export interface BranchGcRestoreEntry {
   command: string
   /** Set once the delete ran. */
   deleted?: boolean
+  /** Set when the `verified-pr` pass reclaimed this ref past the line guard. */
+  guard?: "verified-pr"
+  verifiedPr?: VerifiedPrProof
 }
 
 export interface BranchGcRestoreLog {
@@ -1953,6 +2165,7 @@ function restoreEntry(repoRoot: string, e: BranchGcPlanEntry, baseRemote: string
     ...(e.remote ? { remote: e.remote } : {}),
     argv,
     command: ["git", "-C", repoRoot, ...argv].map(shellQuote).join(" "),
+    ...(e.verifiedPr ? { guard: "verified-pr" as const, verifiedPr: e.verifiedPr } : {}),
   }
 }
 
@@ -1992,6 +2205,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     includeReviewed: plan.includeReviewed,
     // A plan from before the guard existed carries no threshold: the default applies.
     minLineCoverage: plan.minLineCoverage ?? DEFAULT_MIN_LINE_COVERAGE,
+    requireOperatorBelowGuard: plan.requireOperatorBelowGuard === true,
     nowMs: options.nowMs ?? Date.now(),
     ...(options.fetch === false ? { fetch: false } : {}),
   })
@@ -2007,7 +2221,11 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
       continue
     }
     if (e.class === "review") {
-      outcomes.push(e.verdictGuard ? { ...id, result: "refused-guard", guard: e.verdictGuard } : { ...id, result: "skipped-review" })
+      outcomes.push(
+        e.verdictGuard
+          ? { ...id, result: "refused-guard", guard: e.verdictGuard, ...(e.verifiedPrRefusal ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}) }
+          : { ...id, result: "skipped-review" },
+      )
       continue
     }
     const fresh = current.get(e.ref)
@@ -2113,7 +2331,14 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
   for (const e of confirmed) {
     const r = results.get(e.ref)
     const id = { kind: e.kind, name: e.name, sha: e.sha }
-    if (r?.ok) outcomes.push({ ...id, result: "deleted", reclaimReason: e.reclaimReason as BranchGcReclaimReason })
+    if (r?.ok) {
+      outcomes.push({
+        ...id,
+        result: "deleted",
+        reclaimReason: e.reclaimReason as BranchGcReclaimReason,
+        ...(e.verifiedPr ? { guard: "verified-pr" as const, verifiedPr: e.verifiedPr } : {}),
+      })
+    }
     else outcomes.push({ ...id, result: "failed", message: r && !r.ok ? r.message : "not attempted" })
   }
   return { outcomes, restoreLog: logPath }
@@ -2122,6 +2347,224 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
 /** Read a restore log written by `applyBranchGc`. */
 export async function readBranchGcRestoreLog(path: string): Promise<BranchGcRestoreLog> {
   return JSON.parse(await readFile(path, "utf8")) as BranchGcRestoreLog
+}
+
+// ── restore ──────────────────────────────────────────────────────────
+
+export interface RestoreBranchGcInput {
+  /** A restore log written by `applyBranchGc`. */
+  logPath: string
+  /**
+   * The repo the caller means to restore into. The log names its own
+   * `repoRoot`; when this is set the two must be the same directory, or the
+   * restore refuses outright (a log from another repo, or a crafted one).
+   */
+  repoRoot?: string
+  /** Only entries whose sha equals or starts with one of these (at least 7 hex chars). Default every entry. */
+  shas?: readonly string[]
+  /** Re-create a `remote`-kind ref as a LOCAL branch of the same name instead of pushing it back. */
+  localOnly?: boolean
+  /** Report what would be re-created; touch nothing. */
+  dryRun?: boolean
+  /**
+   * Drop the operator approval from the stored verdict of every restored tip
+   * (the reviewer verdict stays), so the next `--include-reviewed` run
+   * re-judges it through the line guard and the `verified-pr` pass instead
+   * of deleting it again on the old approval. Needs `verdicts`. Default true.
+   */
+  revokeApproval?: boolean
+  verdicts?: BranchVerdictStore
+  /** The verdict store's repo key. Default `repoLabel` of the log's repo. */
+  repoName?: string
+}
+
+export interface BranchGcRestoreOutcome {
+  kind: BranchRefKind
+  name: string
+  sha: string
+  /** The ref re-created (or that would be): `refs/heads/<name>`, or the remote branch for a pushed-back remote ref. */
+  target: string
+  /**
+   * `restored` re-created; `would-restore` dry run; `already-present` the ref
+   * is already at that sha (nothing to do); `refused-conflict` a ref with that
+   * name exists at ANOTHER sha (never overwritten); `missing-commit` the sha
+   * is no longer in the object database; `invalid-entry` the log entry is not
+   * one `applyBranchGc` writes (nothing run); `failed` git refused.
+   */
+  result: "restored" | "would-restore" | "already-present" | "refused-conflict" | "missing-commit" | "invalid-entry" | "failed"
+  /** The git command run (or that would be), as a shell line. */
+  command?: string
+  message?: string
+  /** Set when the operator approval of this tip's stored verdict was dropped. */
+  approvalRevoked?: boolean
+}
+
+export interface BranchGcRestoreResult {
+  logPath: string
+  repoRoot: string
+  outcomes: BranchGcRestoreOutcome[]
+  /** `shas` selectors that matched no entry of the log. */
+  unmatched: string[]
+}
+
+/** The current sha of `ref`, or `null` when it does not exist. */
+async function refSha(repoRoot: string, ref: string): Promise<string | null> {
+  const res = await git(repoRoot, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`])
+  return res.exitCode === 0 ? res.stdout.trim() : null
+}
+
+const REMOTE_NAME_RE = /^[A-Za-z0-9][\w.-]*$/
+const FORGE_MIRROR_SPEC_RE = /^\+refs\/pull\/(\d+)\/head:(.+)$/
+
+/**
+ * A log entry as a restore plan: what to re-create and the git argv to do it,
+ * rebuilt from the entry's validated fields, never taken from its `argv` (a
+ * log is a file anyone can write). `string` = why the entry is refused.
+ */
+async function restorePlanOf(
+  repoRoot: string,
+  e: BranchGcRestoreEntry,
+  remotes: ReadonlySet<string>,
+  localOnly: boolean,
+): Promise<{ target: string; argv: string[]; remote?: string; local: boolean } | string> {
+  if (typeof e.name !== "string" || typeof e.ref !== "string" || typeof e.sha !== "string") return "missing name/ref/sha"
+  if (!FULL_SHA_RE.test(e.sha)) return `sha "${e.sha}" is not a full lowercase hex sha`
+  if (e.name.startsWith("-") || (await git(repoRoot, ["check-ref-format", "--branch", e.name])).exitCode !== 0) {
+    return `"${e.name}" is not a valid branch name`
+  }
+  if ((await git(repoRoot, ["check-ref-format", e.ref])).exitCode !== 0) return `"${e.ref}" is not a valid ref`
+  const remoteOk = (r: unknown): r is string => typeof r === "string" && REMOTE_NAME_RE.test(r) && remotes.has(r)
+  if (e.kind === "local") {
+    if (e.ref !== `refs/heads/${e.name}`) return `local ref ${e.ref} does not match name ${e.name}`
+    return { target: e.ref, argv: ["branch", e.name, e.sha], local: true }
+  }
+  if (e.kind === "remote") {
+    if (!remoteOk(e.remote)) return `remote "${String(e.remote)}" is not a configured remote of ${repoRoot}`
+    if (e.ref !== `refs/remotes/${e.remote}/${e.name}`) return `remote ref ${e.ref} does not match ${e.remote}/${e.name}`
+    if (localOnly) return { target: `refs/heads/${e.name}`, argv: ["branch", e.name, e.sha], local: true }
+    return { target: `${e.remote}:refs/heads/${e.name}`, argv: ["push", "--no-verify", e.remote, `${e.sha}:refs/heads/${e.name}`], remote: e.remote, local: false }
+  }
+  if (e.kind === "orphan") {
+    if (e.ref !== `refs/remotes/${e.name}`) return `orphan ref ${e.ref} does not match name ${e.name}`
+    // A forge mirror's commits may be gone locally: re-fetch its PR head.
+    if (Array.isArray(e.argv) && e.argv[0] === "fetch") {
+      const m = FORGE_MIRROR_SPEC_RE.exec(String(e.argv[2] ?? ""))
+      if (!remoteOk(e.argv[1]) || !m || m[2] !== e.ref || e.argv.length !== 3) return "forge-mirror entry does not match its ref"
+      return { target: e.ref, argv: ["fetch", e.argv[1], `+refs/pull/${m[1]}/head:${e.ref}`], local: true }
+    }
+    return { target: e.ref, argv: ["update-ref", e.ref, e.sha, "0".repeat(e.sha.length)], local: true }
+  }
+  return `unknown kind "${String(e.kind)}"`
+}
+
+/**
+ * Re-create the refs a `branch gc --apply` deleted, from its restore log:
+ * a `local` ref with `git branch`, a `remote` ref by pushing the sha back to
+ * its remote (or, `localOnly`, as a local branch of the same name), an
+ * `orphan` ref with `update-ref` (a forge mirror is re-fetched from its PR
+ * head). Every command is rebuilt from the entry's validated fields, never
+ * run from its stored `argv`, and the log's repo must be the caller's
+ * `repoRoot`. A ref that exists at ANOTHER sha is never overwritten
+ * (`refused-conflict`); one already at the sha is `already-present`. Then,
+ * unless `revokeApproval` is false, the operator approval of each restored
+ * tip's stored verdict is dropped so the next run re-judges it.
+ */
+export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<BranchGcRestoreResult> {
+  const logPath = resolve(input.logPath)
+  const log = await readBranchGcRestoreLog(logPath)
+  if (log?.schema !== "branch-gc-restore/v1" || !Array.isArray(log.entries) || typeof log.repoRoot !== "string") {
+    throw new Error(`${logPath} is not a branch-gc restore log (schema branch-gc-restore/v1)`)
+  }
+  const real = (p: string): Promise<string> => realpath(p).catch(() => resolve(p))
+  const repoRoot = await real(log.repoRoot)
+  if (input.repoRoot !== undefined && (await real(input.repoRoot)) !== repoRoot) {
+    throw new Error(`${logPath} restores into ${log.repoRoot}, not ${input.repoRoot}`)
+  }
+  const top = await git(repoRoot, ["rev-parse", "--show-toplevel"])
+  if (top.exitCode !== 0 || (await real(top.stdout.trim())) !== repoRoot) {
+    throw new Error(`${log.repoRoot} (from ${logPath}) is not the root of a git repository`)
+  }
+  const selectors = (input.shas ?? []).map((x) => x.trim().toLowerCase())
+  for (const sel of selectors) {
+    if (!/^[0-9a-f]{7,64}$/.test(sel)) throw new Error(`--sha "${sel}" is not a sha (7 to 64 hex chars)`)
+  }
+  const shaOf = (e: BranchGcRestoreEntry): string => (typeof e?.sha === "string" ? e.sha : "")
+  const matches = (sha: string): boolean => selectors.length === 0 || selectors.some((sel) => sha.startsWith(sel))
+  const unmatched = selectors.filter((sel) => !log.entries.some((e) => shaOf(e).startsWith(sel)))
+  const remotes = await configuredRemotes(repoRoot)
+  const outcomes: BranchGcRestoreOutcome[] = []
+  const restoredShas = new Set<string>()
+
+  for (const e of log.entries.filter((x) => matches(shaOf(x)))) {
+    const id = { kind: e.kind, name: e.name, sha: e.sha }
+    const plan = await restorePlanOf(repoRoot, e, remotes, input.localOnly === true)
+    if (typeof plan === "string") {
+      outcomes.push({ ...id, target: String(e.ref), result: "invalid-entry", message: plan })
+      continue
+    }
+    const { target, argv } = plan
+    let current: string | null
+    if (plan.remote) {
+      const ls = await git(repoRoot, ["ls-remote", plan.remote, `refs/heads/${e.name}`], { GIT_TERMINAL_PROMPT: "0" })
+      if (ls.exitCode !== 0) {
+        outcomes.push({ ...id, target, result: "failed", message: `ls-remote ${plan.remote}: ${(ls.stderr || ls.stdout).trim() || `exit ${ls.exitCode}`}` })
+        continue
+      }
+      current = ls.stdout.split("\t")[0]?.trim() || null
+    } else {
+      current = await refSha(repoRoot, plan.target)
+    }
+    const command = ["git", "-C", repoRoot, ...argv].map(shellQuote).join(" ")
+    if (current === e.sha) {
+      outcomes.push({ ...id, target, result: "already-present" })
+      restoredShas.add(e.sha)
+      continue
+    }
+    if (current !== null) {
+      outcomes.push({ ...id, target, result: "refused-conflict", message: `${target} exists at ${current.slice(0, 12)}, not ${e.sha.slice(0, 12)}` })
+      continue
+    }
+    if (argv[0] !== "fetch" && (await git(repoRoot, ["cat-file", "-e", `${e.sha}^{commit}`])).exitCode !== 0) {
+      outcomes.push({ ...id, target, result: "missing-commit", command, message: `${e.sha} is no longer in the object database` })
+      continue
+    }
+    if (input.dryRun) {
+      outcomes.push({ ...id, target, result: "would-restore", command })
+      continue
+    }
+    const res = await git(repoRoot, argv, argv[0] === "fetch" ? { GIT_TERMINAL_PROMPT: "0" } : undefined)
+    if (res.exitCode !== 0) {
+      outcomes.push({ ...id, target, result: "failed", command, message: (res.stderr || res.stdout).trim() || `exit ${res.exitCode}` })
+      continue
+    }
+    if (argv[0] === "fetch") {
+      // The PR head moved since the mirror was deleted: not the ref we deleted.
+      const fetched = await refSha(repoRoot, e.ref)
+      if (fetched !== e.sha) {
+        await git(repoRoot, ["update-ref", "-d", e.ref])
+        outcomes.push({ ...id, target, result: "failed", command, message: `the PR head is now ${fetched?.slice(0, 12) ?? "missing"}, not ${e.sha.slice(0, 12)}` })
+        continue
+      }
+    }
+    // Keep the tracking ref in step with the branch just pushed back.
+    if (plan.remote) await git(repoRoot, ["update-ref", e.ref, e.sha])
+    outcomes.push({ ...id, target, result: "restored", command })
+    restoredShas.add(e.sha)
+  }
+
+  if (!input.dryRun && input.revokeApproval !== false && input.verdicts && restoredShas.size > 0) {
+    const repoName = input.repoName ?? repoLabel(log.repoRoot)
+    const revoked = new Set<string>()
+    for (const sha of restoredShas) {
+      const record = await input.verdicts.get(repoName, sha)
+      if (!record?.operator) continue
+      const { operator: _operator, ...rest } = record
+      await input.verdicts.set(rest)
+      revoked.add(sha)
+    }
+    for (const o of outcomes) if (revoked.has(o.sha) && (o.result === "restored" || o.result === "already-present")) o.approvalRevoked = true
+  }
+  return { logPath, repoRoot, outcomes, unmatched }
 }
 
 // ── verdict store ────────────────────────────────────────────────────
@@ -2154,6 +2597,20 @@ export const branchVerdictSchema = z
       })
       .optional(),
     reviewer: z.string().trim().min(1),
+    /**
+     * Structured evidence for a `superseded` verdict: the PR(s) that landed
+     * this tip's work (and optionally the commit on base). The `verified-pr`
+     * pass checks them against the forge; without it, `#N` in gate.reason /
+     * evidence is used instead.
+     */
+    landedIn: z
+      .array(
+        z.object({
+          pr: z.number().int().positive(),
+          commit: z.string().regex(/^[0-9a-f]{7,64}$/, "commit must be a lowercase hex sha (7-64 chars)").optional(),
+        }),
+      )
+      .optional(),
     /** Operator approval that overrides `lineCoverageGuard` for this exact tip. */
     operator: z
       .object({
@@ -2165,6 +2622,11 @@ export const branchVerdictSchema = z
   .superRefine((v, ctx) => {
     if (v.gate?.agree && v.gate.evidence.length === 0) {
       ctx.addIssue({ code: "custom", path: ["gate", "evidence"], message: "gate.agree=true requires at least one evidence entry" })
+    }
+    // `landedIn` says where superseded work landed: on any other verdict it
+    // is a contradiction the store must not keep.
+    if (v.landedIn?.length && v.triage.verdict !== "superseded" && v.gate?.verdict !== "superseded") {
+      ctx.addIssue({ code: "custom", path: ["landedIn"], message: "landedIn is only for a superseded verdict" })
     }
     // The operator approval is a separate trust boundary from the review: an
     // automated reviewer must not self-certify the override it is being

@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -35,7 +35,7 @@ import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -50,8 +50,12 @@ Usage:
   --apply-reviewed With --apply-merged, also reclaim review-class branches
                    whose stored verdict agreed (includeReviewed true).
                    branch_gc refuses approvals below its line-coverage guard
-                   (default 95%) and reports them. Ignored without
-                   --apply-merged.
+                   (default 95%) and reports them, unless its verified-pr
+                   pass proves them (a cited PR merged into base explains
+                   every uncovered file). Ignored without --apply-merged.
+  --require-operator-below-guard
+                   Turn the verified-pr pass off: below the guard only an
+                   operator approval reclaims.
   --review-preset <name>
                    Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.
                    Default: the daemon's modelRolePreset (switch it with
@@ -127,6 +131,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			all: { type: "boolean", default: false },
 			"apply-merged": { type: "boolean" },
 			"apply-reviewed": { type: "boolean" },
+			"require-operator-below-guard": { type: "boolean" },
 			"review-preset": { type: "string" },
 			"max-reviews": { type: "string" },
 			wait: { type: "boolean", default: false },
@@ -245,6 +250,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 					repoRoot: repo,
 					applyMerged: values["apply-merged"] === true,
 					applyReviewed: values["apply-reviewed"] === true,
+					...(values["require-operator-below-guard"] === true ? { requireOperatorBelowGuard: true } : {}),
 					...(reviewPreset !== undefined ? { reviewPreset } : {}),
 					...(maxReviews !== undefined ? { maxReviews } : {}),
 				},

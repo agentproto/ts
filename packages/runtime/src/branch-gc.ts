@@ -31,6 +31,14 @@ export interface BranchGcLineCoverageView {
   inBase: number
   pct: number
   missing: Array<{ file: string; line: string }>
+  /** Every file with an added line not in base. Absent on an older result. */
+  missingFiles?: string[]
+}
+
+/** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
+export interface BranchGcVerifiedPrView {
+  prs: number[]
+  files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base"; pr?: number }>
 }
 
 /** One classified ref — mirrors `BranchGcPlanEntry` structurally. */
@@ -75,8 +83,12 @@ export interface BranchGcPlanEntryView {
     reviewer: string
     operator?: { by: string; note?: string }
   }
-  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator bypassed that guard. */
+  /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator or the `verified-pr` pass got it past that guard. */
   verdictGuard?: string
+  /** Set when the `verified-pr` pass reclaimed a guard-refused verdict. */
+  verifiedPr?: BranchGcVerifiedPrView
+  /** Set when the guard refused and the `verified-pr` pass did too: the condition that failed. */
+  verifiedPrRefusal?: string
 }
 
 export interface BranchGcPlanView {
@@ -93,6 +105,8 @@ export interface BranchGcPlanView {
   includeReviewed: boolean
   /** Absent on a result from before the line-coverage guard. */
   minLineCoverage?: number
+  /** true = the `verified-pr` pass was off. Absent on an older result. */
+  requireOperatorBelowGuard?: boolean
   /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut. Absent on an older result. */
   forgeMirrorCheck?: { available: boolean; reason?: string }
   generatedAt: string
@@ -135,8 +149,12 @@ export interface BranchGcOutcomeView {
   from?: BranchGcClass
   to?: BranchGcClass
   message?: string
-  /** `refused-guard`: why the agreeing verdict was refused. */
+  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"` when that pass reclaimed it. */
   guard?: string
+  /** `deleted` by the `verified-pr` pass: its proof. */
+  verifiedPr?: BranchGcVerifiedPrView
+  /** `refused-guard`: why the `verified-pr` pass refused too. */
+  verifiedPrRefusal?: string
 }
 
 /** Per-scope tally of apply outcomes. `skipped` = everything that was not
@@ -301,6 +319,7 @@ export interface BranchGcCompactEntry {
   lineCoverage?: { pct: number }
   verdictGuard?: string
   headPr?: BranchGcPlanEntryView["headPr"]
+  verifiedPrRefusal?: string
 }
 
 export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
@@ -317,6 +336,7 @@ export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactE
     ...(e.lineCoverage !== undefined ? { lineCoverage: { pct: e.lineCoverage.pct } } : {}),
     ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
     ...(e.headPr !== undefined ? { headPr: e.headPr } : {}),
+    ...(e.verifiedPrRefusal !== undefined ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
   }
 }
 
@@ -461,6 +481,8 @@ export interface BranchGcRunInput {
   includeReviewed: boolean
   /** `includeReviewed` refuses an agreeing verdict below this line coverage (percent). Engine default 95. */
   minLineCoverage?: number
+  /** Turn the `verified-pr` pass off: below the line guard only an operator approval reclaims. Engine default false. */
+  requireOperatorBelowGuard?: boolean
   anchor?: string
 }
 
@@ -479,6 +501,8 @@ export interface BranchGcVerdictRecordView {
   recordedAt: string
   triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string }
   gate?: { agree: boolean; verdict: BranchGcTriageVerdict; reason: string; evidence: string[] }
+  /** The PR(s) a superseded verdict says landed the work. */
+  landedIn?: Array<{ pr: number; commit?: string }>
   reviewer: string
   /** Human operator approval overriding the line-coverage guard for this exact tip. */
   operator?: { by: string; note?: string }
@@ -530,3 +554,39 @@ export type BranchGcOperatorApprovalResult =
  *  for one tip and add the operator block. The route is the trust boundary;
  *  this port only checks the verdict (stored, agreeing, current tip, `by`). */
 export type BranchGcOperatorApprover = (input: BranchGcOperatorApprovalInput) => Promise<BranchGcOperatorApprovalResult>
+
+export interface BranchGcRestoreInput {
+  /** Path of a `branch-gc-restore/v1` log written by an apply. */
+  logPath: string
+  /** The repo to restore into: the log's own `repoRoot` must be this repo, or the restore refuses. */
+  repoRoot: string
+  /** Only entries whose sha equals or starts with one of these. Default every entry. */
+  shas?: string[]
+  /** Re-create remote-kind refs as local branches instead of pushing them back. */
+  localOnly?: boolean
+  dryRun?: boolean
+  /** Keep the operator approval of restored tips (default: dropped, so the next run re-judges them). */
+  keepApproval?: boolean
+}
+
+/** One re-created (or refused) ref, mirrors `BranchGcRestoreOutcome`. */
+export interface BranchGcRestoreOutcomeView {
+  kind: BranchGcKind
+  name: string
+  sha: string
+  target: string
+  result: "restored" | "would-restore" | "already-present" | "refused-conflict" | "missing-commit" | "invalid-entry" | "failed"
+  command?: string
+  message?: string
+  approvalRevoked?: boolean
+}
+
+export interface BranchGcRestoreResultView {
+  logPath: string
+  repoRoot: string
+  outcomes: BranchGcRestoreOutcomeView[]
+  unmatched: string[]
+}
+
+/** Injected port behind `branch_gc_restore`: re-create refs from a restore log. */
+export type BranchGcRestorer = (input: BranchGcRestoreInput) => Promise<BranchGcRestoreResultView>

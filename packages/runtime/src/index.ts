@@ -109,6 +109,7 @@ import type {
   BranchGcVerdictRecorder,
   BranchGcVerdictReader,
   BranchGcOperatorApprover,
+  BranchGcRestorer,
 } from "./branch-gc.js"
 import type { SandboxCheckpointGcRunner } from "./sandbox-checkpoint-gc.js"
 import { startHeartbeat, type BuildHeartbeatAgent } from "./heartbeat.js"
@@ -414,6 +415,11 @@ export type {
   BranchGcOperatorApprovalInput,
   BranchGcOperatorApprovalResult,
   BranchGcOperatorApprover,
+  BranchGcRestorer,
+  BranchGcRestoreInput,
+  BranchGcRestoreOutcomeView,
+  BranchGcRestoreResultView,
+  BranchGcVerifiedPrView,
   BranchGcApplySummary,
   BranchGcApplyScopeCounts,
 } from "./branch-gc.js"
@@ -1930,6 +1936,8 @@ export interface CreateGatewayOptions {
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. */
   readBranchGcVerdict?: BranchGcVerdictReader
+  /** Optional restorer powering `branch_gc_restore`: re-creates refs from a restore log. */
+  restoreBranchGc?: BranchGcRestorer
   /** Optional operator approver powering `POST /branches/gc/approve` (the
    *  `agentproto branch gc approve` CLI). HTTP only: no session tool reaches it. */
   approveBranchGcVerdict?: BranchGcOperatorApprover
@@ -4347,6 +4355,7 @@ export async function createGateway(
         : {}),
       ...(opts.recordBranchGcVerdict ? { recordBranchGcVerdict: opts.recordBranchGcVerdict } : {}),
       ...(opts.readBranchGcVerdict ? { readBranchGcVerdict: opts.readBranchGcVerdict } : {}),
+      ...(opts.restoreBranchGc ? { restoreBranchGc: opts.restoreBranchGc } : {}),
       isSessionChatInstalled,
       // `session_tree`'s `reviews` badge (review-session-panel step) —
       // the same gateway-singleton runner `registerReviewTools` uses below.
