@@ -293,9 +293,9 @@ export interface AppService {
 }
 
 /**
- * AIP-53 `services[].expose`: the service wants a public URL through an
- * AIP-73 tunnel keyed `app:<appId>:<name>`. The host passes the public
- * origin to the process as `AGENTPROTO_PUBLIC_URL`.
+ * AIP-53 `services[].expose`: the service wants a public URL through a
+ * tunnel keyed `app.<a>.<s>.<h>` (AIP-53 Tunnel key). The host passes the
+ * public origin to the process as `AGENTPROTO_PUBLIC_URL`.
  */
 export interface AppServiceExpose {
   /** `guard` (default): the host's access guard sits in front of the

@@ -1,6 +1,6 @@
 /**
  * AIP-53 `services[].expose`: a service an app declares can ask the host for
- * a public URL through an AIP-73 tunnel.
+ * a public URL through a tunnel of the tunnel provider contract.
  *
  *   services:
  *     - name: miniapp
@@ -49,7 +49,7 @@ export function isExposedService(service: AppService): service is ExposedAppServ
 }
 
 /**
- * The AIP-73 tunnel key of one exposed service (AIP-53 Exposure rule 2,
+ * The tunnel key of one exposed service (AIP-53 Exposure rule 2,
  * "Tunnel key"): `app.<a>.<s>.<h>`. `<a>` is the app id lowercased, every run
  * outside `[a-z0-9-]` replaced by `-`, edge `-` trimmed, cut to 24; `<s>` the
  * service name cut to 24; `<h>` the first 8 hex of sha256(`<appId>:<name>`)
@@ -94,7 +94,7 @@ export interface AppServiceExposer {
   status(appId: string, service: ExposedAppService): AppServiceExposure | undefined
   /** Names of the app's services that currently hold a tunnel. */
   list(appId: string): string[]
-  /** Stop the connector and delete the tunnel (AIP-73 `delete`). */
+  /** Stop the connector and delete the tunnel (the provider contract's `delete`). */
   remove(appId: string, name: string): Promise<void>
 }
 

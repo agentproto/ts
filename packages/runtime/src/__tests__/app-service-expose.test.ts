@@ -220,6 +220,19 @@ describe("TunnelRegistry.ensureKeyed (stable identity)", () => {
     expect(reg2.list()).toHaveLength(1)
   })
 
+  it("a changed or dropped hostname request restarts in place with the new hostnames", async () => {
+    const rec = newRec()
+    const reg = makeRegistry(rec)
+    const key = appServiceTunnelKey(APP_ID, "miniapp")
+    const base = { key, provider: "cloudflare-provisioned", targetPort: 8788 }
+    const a = await reg.ensureKeyed({ ...base, hostname: "session-chat" })
+    const b = await reg.ensureKeyed({ ...base, hostname: "other-name" })
+    await reg.ensureKeyed(base)
+    expect(rec.starts.map(s => s.tunnel?.hostnames)).toEqual([["session-chat"], ["other-name"], []])
+    expect(b.id).toBe(a.id)
+    expect(reg.list()).toHaveLength(1)
+  })
+
   it("create refuses a key that is already registered", async () => {
     const reg = makeRegistry(newRec())
     await reg.ensureKeyed({ key: "k", provider: "cloudflare-provisioned", targetPort: 1 })

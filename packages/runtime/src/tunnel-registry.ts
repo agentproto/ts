@@ -124,7 +124,7 @@ export interface TunnelDescriptor {
    */
   url?: string
   /**
-   * Caller-chosen stable identity (AIP-73 `key`), set only through
+   * Caller-chosen stable identity (the provider contract's `key`), set only through
    * {@link TunnelRegistry.ensureKeyed}. When present it is the key handed to
    * stateful providers instead of `name-<id prefix>`, so a re-ensure or a
    * daemon boot reuses the SAME remote tunnel. At most one descriptor per key.
@@ -355,7 +355,7 @@ export class TunnelRegistry {
   }
 
   /**
-   * Idempotent create on a stable `key` (AIP-73 `create` semantics): returns
+   * Idempotent create on a stable `key` (the provider contract's `create` semantics): returns
    * the descriptor already registered under `key` when it is running with the
    * same target, access and hostname request; restarts it in place (same
    * descriptor, same provider key, so the same remote tunnel) when it is
@@ -420,7 +420,11 @@ export class TunnelRegistry {
         if (HOSTNAME_LIST_SLUGS.has(normalizeProviderSlug(provider))) desc.hostnames = [request]
         desc.hostnameRequest = request
       } else {
+        // The request was dropped: forget the old name too, or the restart
+        // would hand it to the provider again. The provider assigns one.
         delete desc.hostnameRequest
+        delete desc.hostname
+        delete desc.hostnames
       }
     }
     if (input.tunnelId) desc.tunnelId = input.tunnelId
