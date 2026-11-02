@@ -207,6 +207,17 @@ describe("registry.resumeOnBoot (per-row eager resume)", () => {
     reg.shutdown()
   })
 
+  it("skips a guard-reaped row at boot (never resumes the guard's idle teardown)", async () => {
+    writeSessions(persistPath, [{ id: "reaped", status: "killed", endedReason: "guard-reaped" }])
+    const resumer = makeRecordingResumer([])
+    const reg = createSessionsRegistry({ persistPath, resumeAgent: resumer })
+
+    expect(await reg.resumeOnBoot("reaped")).toEqual({ status: "skipped", reason: "retired" })
+    expect(resumer).not.toHaveBeenCalled()
+    expect(reg.get("reaped")?.status).toBe("killed")
+    reg.shutdown()
+  })
+
   it("skips a naturally-exited row without touching the adapter", async () => {
     writeSessions(persistPath, [{ id: "done", status: "exited", exitCode: 0 }])
     const resumer = makeRecordingResumer([])

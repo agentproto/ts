@@ -5601,9 +5601,10 @@ export interface SessionsRegistry {
    *  never violate — it refuses (returns false, no-op) a session that is not a
    *  live (`running`) agent-cli row (so a PTY/command/terminal or an
    *  already-terminal row is never touched). `idleMs` is stamped onto the
-   *  emitted `session:reaped` event for observability. Returns true iff a row
-   *  was actually reaped. */
-  reapIdle(id: string, idleMs?: number): boolean
+   *  emitted `session:reaped` event for observability. `endedReason` defaults
+   *  to `"idle-reaped"`; the host guard passes `"guard-reaped"` so its periodic
+   *  reaps are distinguishable. Returns true iff a row was actually reaped. */
+  reapIdle(id: string, idleMs?: number, endedReason?: SessionEndReason): boolean
   /** Flip a LIVE agent-cli row whose adapter OS process is gone to
    *  `status:"error"`/`endedReason:"crashed"` — the primitive the crash-detect
    *  sweep (`runCrashDetectPass`) drives on a periodic sweep. Unlike
@@ -14838,7 +14839,7 @@ export function createSessionsRegistry(opts?: {
       layerStewardOutcome(rt, input)
       return true
     },
-    reapIdle(id, idleMs = 0) {
+    reapIdle(id, idleMs = 0, endedReason: SessionEndReason = "idle-reaped") {
       const rt = sessions.get(id)
       if (!rt) return false
       // Only a LIVE agent-cli row is reapable. A PTY/command/terminal/browser
@@ -14872,8 +14873,9 @@ export function createSessionsRegistry(opts?: {
       // teardown reason that (a) surfaces "reaped while idle" in the UI and (b)
       // — critically — keeps this row OUT of the eager resume-on-boot pass,
       // which gates on `endedReason === "daemon-restart"`. A reaped row must
-      // never join a boot-time resume-storm of dead work.
-      rt.desc.endedReason = "idle-reaped"
+      // never join a boot-time resume-storm of dead work. The host guard passes
+      // `"guard-reaped"`; the idle reaper keeps the historical `"idle-reaped"`.
+      rt.desc.endedReason = endedReason
       if (rt.agentSession) {
         releaseOutOfTurnEvents(rt)
         delete rt.desc.backgroundTasks

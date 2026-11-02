@@ -6552,6 +6552,13 @@ export function buildSpawnSessionHttpArgs(
  *                                    session }. 400/409 + `error` code when the
  *                                    session can't be migrated; old session is
  *                                    untouched on failure
+ *   POST   /sessions/:id/reap     → the host guard's idle close: reaps a
+ *                                    running agent-cli row via
+ *                                    `registry.reapIdle`, tagging
+ *                                    `endedReason: "guard-reaped"` (never
+ *                                    `operator-stopped`); body { idleMs? };
+ *                                    returns {ok, sessionId}. 409 when not
+ *                                    reapable.
  *   POST   /sessions/:id/kill     → SIGTERM, returns {ok}
  *   POST   /sessions/:id/pin      → set/clear the list-visibility pin, body
  *                                    {pinned: boolean}; returns {ok, sessionId,
@@ -9396,7 +9403,7 @@ code { color: #9ad; }
   // either order technically works today, but ordering by specificity
   // keeps that from being a load-bearing accident).
   const idMatch = path.match(
-    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/kill|\/retire|\/pin|\/prompt-policy|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
+    /^\/sessions\/([^/]+)(\/events\/stream|\/stream|\/reap|\/kill|\/retire|\/pin|\/prompt-policy|\/archive|\/preview|\/export|\/conversation|\/events|\/wait|\/chat|\/alive)?$/,
   )
   if (!idMatch) return false
   const [, rawIdOrName, suffix] = idMatch
@@ -9821,6 +9828,29 @@ code { color: #9ad; }
       unsub()
       clearInterval(ping)
     })
+    return true
+  }
+
+  // Reap (HTTP-only) — the host guard's close path. Reuses
+  // `registry.reapIdle`: an agent-cli row that is running, idle and not busy
+  // is retired with `endedReason: "guard-reaped"`, its binding cleared so a
+  // later explicit prompt resumes it in place, and NO `operator-stopped`
+  // label (it is an automatic teardown, not an operator kill). Body:
+  // `{ idleMs?: number }` (stamped on the `session:reaped` event).
+  // 404 unknown session, 409 when the row is not currently reapable.
+  if (suffix === "/reap" && req.method === "POST") {
+    const body = await readJsonBody(req)
+    const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
+    if (b.idleMs !== undefined && (typeof b.idleMs !== "number" || !Number.isFinite(b.idleMs) || b.idleMs < 0)) {
+      json(400, { error: "invalid_body", message: "`idleMs` must be a non-negative number" })
+      return true
+    }
+    if (!registry.get(id)) {
+      json(404, { error: "session_not_found", message: `session "${rawIdOrName}" not found`, sessionId: rawIdOrName })
+      return true
+    }
+    const ok = registry.reapIdle(id, typeof b.idleMs === "number" ? b.idleMs : 0, "guard-reaped")
+    json(ok ? 200 : 409, { ok, sessionId: id })
     return true
   }
 
