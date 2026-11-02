@@ -61,6 +61,7 @@ import {
   type ForgeClient,
   parseGithubOwnerRepo,
   FileVerdictMemoStore,
+  FileBranchVerdictStore,
   listWorktreeStatuses,
   repoLabel,
   detectDefaultBranch,
@@ -708,6 +709,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     noisePaths,
     activeMinutes,
     expectedPlan,
+    reviewedPaths,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -759,6 +761,8 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       liveSessionCwds: protectedPaths,
       ...(noisePaths ? { noisePaths } : {}),
       ...(activeMinutes !== undefined ? { activeMinutes } : {}),
+      // Same store and repo key `branch_gc` reads its verdicts from.
+      ...(reviewedPaths?.length ? { reviewed: { paths: reviewedPaths, verdicts: new FileBranchVerdictStore() } } : {}),
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
@@ -1508,6 +1512,9 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
       break
     case "skipped-stale":
       detail = `skipped: stale plan (${outcome.reason})`
+      break
+    case "removed-keep-branch":
+      detail = "removed (reviewed), branch kept"
       break
     case "failed":
       detail = `failed: ${outcome.message}`

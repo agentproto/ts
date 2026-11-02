@@ -28,8 +28,13 @@ inputs:
     type: boolean
     description: >-
       With `applyMerged`: also reclaim `review`-class branches whose stored
-      verdict agreed (`branch_gc` includeReviewed true). branch_gc refuses an
-      approval below its line-coverage guard (default 95%). Default false.
+      verdict agreed (`branch_gc` includeReviewed true), and remove the
+      worktree (never the branch) of each reviewed held worktree whose verdict
+      agreed: worktree_gc re-checks it first (same tip and index, clean, idle,
+      no open PR, an agreeing stored verdict for the exact tip) and skips it
+      with the reason otherwise. That branch then goes through the same
+      branch_gc rung in the same run. branch_gc refuses an approval below its
+      line-coverage guard (default 95%). Default false.
     default: false
   reviewModelSmall:
     type: string
@@ -63,9 +68,13 @@ inputs:
     type: boolean
     description: >-
       Also review branches held only because they're checked out in an idle,
-      clean linked worktree with no open PR (tip at least 3 days old). The
-      report lists each verdict and the removal command when the reviewer
-      agreed; nothing is removed automatically.
+      clean linked worktree with no open PR (tip at least 3 days old). When
+      the reviewer agreed, only the worktree goes, never its branch: with
+      `applyMerged` and `applyReviewed` true, worktree_gc removes it after its
+      apply-time re-check and the report gives each outcome (removed, or
+      skipped with the reason); otherwise the report prints the safe manual
+      command `agentproto worktree rm <path> --keep-branch`. Either way the
+      branch is then judged by branch_gc's line-coverage guard.
     default: true
   notify:
     type: object
@@ -241,15 +250,32 @@ steps:
           repoRoot: $steps.branchGcPlan.plan.repoRoot
           sha: $item.sha
 
+  - id: reviewedWorktreePaths
+    kind: transform
+    name: Agreed held worktrees worktree_gc may remove (applyReviewed only)
+    description: >-
+      Entry-based - see entry.mjs's reviewedWorktreePaths. Empty unless
+      `applyMerged` and `applyReviewed` are both true.
+
   - id: worktreeGcApply
     kind: tool
     name: Apply worktree gc
+    description: >-
+      Applies the plan the review ran against (`expectedPlan`), re-checking
+      every entry. `reviewedPaths` is the reviewed tier: each held worktree
+      listed there is removed WORKTREE ONLY (`removed-keep-branch`) when it is
+      still unchanged, clean, idle, without an open PR, and the verdict store
+      agrees for its exact tip; otherwise `skipped-stale` with the reason.
+      Runs before branchGcApply, so the kept branch is judged by branch_gc's
+      line-coverage guard in the same run.
     tool: worktree_gc
     inputs:
       repoRoot: $input.repoRoot
       workspaceSlug: $input.workspaceSlug
       apply: $input.applyMerged
       salvageDirty: false
+      expectedPlan: $steps.worktreeGcPlan.plan
+      reviewedPaths: $steps.reviewedWorktreePaths
       wait: true
 
   - id: branchGcApply
@@ -409,7 +435,15 @@ itself. An opt-in `applyReviewed: true` (only meaningful together with
 reclaimed. `branch_gc` itself still enforces the deterministic line-coverage
 guard (default 95%): an approval below it is refused (`refused-guard`) and
 the branch stays. The report lists both the reclaimed reviewed branches and
-the approvals the guard refused. Default false — see the app README,
+the approvals the guard refused.
+
+The same opt-in covers reviewed held worktrees: `worktreeGcApply` removes
+each agreed one's worktree (never its branch) after re-checking it, so the
+branch reaches `branchGcApply` unheld and is judged by the same guard, with
+the same restore log. Without `applyReviewed` the report prints
+`agentproto worktree rm <path> --keep-branch` instead; a bare
+`agentproto worktree rm` would also delete the branch, outside the guard.
+Default false — see the app README,
 "Applying agreed verdicts".
 
 ## Enabling
