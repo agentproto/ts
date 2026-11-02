@@ -3945,6 +3945,9 @@ export async function startHttpServer(
                 : {}),
               ...(activeMinutes !== undefined ? { activeMinutes } : {}),
               ...(expectedPlan ? { expectedPlan } : {}),
+              ...("reviewedPaths" in obj && Array.isArray(obj.reviewedPaths)
+                ? { reviewedPaths: obj.reviewedPaths.filter((p): p is string => typeof p === "string") }
+                : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))

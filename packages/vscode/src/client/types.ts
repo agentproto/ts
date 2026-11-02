@@ -1455,6 +1455,7 @@ export interface WorktreeGcOutcomeView {
     | "aborted-reclassified"
     | "aborted-vanished"
     | "skipped-stale"
+    | "removed-keep-branch"
     | "failed"
   reclaimReason?: WorktreeGcReclaimReason
   salvageDir?: string

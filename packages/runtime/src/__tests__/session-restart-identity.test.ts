@@ -92,6 +92,49 @@ describe("restartAgentSession — immutable spawn-time flags survive a restart",
     expect(restarted.desc.restartPolicy).toEqual(RESTART_POLICY)
   })
 
+  it("carries the list pin (and its order slot) onto the restarted session", async () => {
+    // `pinned` is the only flag exempting a keepAlive row from the boot-resume
+    // idle cutoff (eager-resume.ts `staleKeepAlive`). A restart mints a NEW
+    // id, so before the fix it silently un-pinned a long-lived brain.
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "hermes",
+      keepAlive: true,
+    })
+    registry.setPinned(prev.id, true)
+    const pinOrder = registry.get(prev.id)!.pinnedOrder
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+    })
+
+    expect(restarted.desc.pinned).toBe(true)
+    expect(restarted.desc.pinnedOrder).toBe(pinOrder)
+  })
+
+  it("leaves the restarted session unpinned when the prior session was never pinned", async () => {
+    const { resolver } = makeResolver()
+    const registry = createSessionsRegistry({ persist: false })
+    const prev = registry.spawnAgent({
+      workspaceSlug: "default",
+      cwd: "/tmp",
+      agentSession: fakeAgentSession(),
+      adapterSlug: "hermes",
+    })
+
+    const restarted = await restartAgentSession(registry, resolver, prev, {
+      forceAgentResume: true,
+      loadDefaultsConfig: NOOP_DEFAULTS,
+    })
+
+    expect(restarted.desc.pinned).toBeUndefined()
+  })
+
   it("omits the flags on the fresh descriptor when the prior session never had them (no accidental opt-in)", async () => {
     const { resolver } = makeResolver()
     const registry = createSessionsRegistry({ persist: false })
