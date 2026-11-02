@@ -20,7 +20,7 @@ import { DEFAULT_ROTATION_LIST_ID, getModelListSource, isInModelList } from "./m
 import { checkModelPolicy, type ModelPolicy } from "./model-policy.js"
 
 /** Turn-failure classes `turnRetry.on` can opt into. */
-export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"] as const
+export const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall", "usage-limit"] as const
 export type TurnRetryClass = (typeof TURN_RETRY_CLASSES)[number]
 
 /** What a matching failure does. `retry` (the default) re-prompts the same
@@ -37,7 +37,13 @@ export interface TurnRetryPolicy {
    *  - `no-output-stall` — the stall watchdog flagged a turn that produced
    *    nothing since its prompt (`NO_OUTPUT_STALL_TURN_ERROR`, the opencode
    *    silent-429 loop). That turn is still running, so the retry interrupts
-   *    it before re-prompting. */
+   *    it before re-prompting;
+   *  - `usage-limit` — a provider usage cap ("Free usage limit reached",
+   *    "usage limit exceeded"). Opt-in only (never in the default set): a cap
+   *    does not recover with backoff, so there is NO same-config retry. The
+   *    session moves straight to `rotate` / `fallback` (or, with
+   *    `action: "migrate"`, a fresh box = a new IP, the fix for a per-IP cap)
+   *    and gives up when none of those is available. */
   on: TurnRetryClass[]
   /** What a matching failure does: `retry` re-prompts the same live session
    *  after backoff; `migrate` moves a sandbox session to a fresh box (new IP)
@@ -68,7 +74,8 @@ export interface TurnRetryPolicy {
    *  naming a different `profileRef` is skipped. Absent ⇒ never rotate. */
   rotate?: TurnRetryRotateTarget[]
   /** Classes that rotate (must be a subset of what `on` retries). Default
-   *  `rate-limit` + `no-output-stall`; add `upstream-5xx` to rotate on those too. */
+   *  `rate-limit` + `no-output-stall` (+ `usage-limit` when `on` lists it); add
+   *  `upstream-5xx` to rotate on those too. */
   rotateOn?: TurnRetryClass[]
   /** How long a rate-limited model is skipped, daemon-wide, when the error
    *  carries no retry-after hint (ms). Default {@link TURN_ROTATE_DEFAULTS}. */
@@ -242,7 +249,14 @@ export function resolveTurnRetryPolicy(input: TurnRetryPolicyInput): TurnRetryPo
     ...(input.rotate?.length
       ? {
           rotate: input.rotate.map(t => ({ model: t.model, ...(t.profileRef ? { profileRef: t.profileRef } : {}) })),
-          rotateOn: [...new Set(input.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn)],
+          rotateOn: [
+            ...new Set(
+              input.rotateOn ??
+                (input.on.includes("usage-limit")
+                  ? [...TURN_ROTATE_DEFAULTS.rotateOn, "usage-limit" as const]
+                  : TURN_ROTATE_DEFAULTS.rotateOn),
+            ),
+          ],
         }
       : {}),
     ...(input.cooldownMs !== undefined ? { cooldownMs: input.cooldownMs } : {}),
@@ -260,7 +274,8 @@ export function resolveTurnRetryPolicy(input: TurnRetryPolicyInput): TurnRetryPo
 
 /** Tolerant parser for the HTTP body / CLI: accepts the object, a
  *  JSON-stringified object, or a shorthand string — a comma list of classes
- *  (`"rate-limit,upstream-5xx"`), `"all"` for every class, or `"off"` for an
+ *  (`"rate-limit,upstream-5xx"`), `"all"` for every transient class (not
+ *  `usage-limit`), or `"off"` for an
  *  explicit opt-out (a policy that matches nothing). Returns `undefined` for
  *  anything else that does not validate (never a partial policy). */
 export function parseTurnRetryPolicy(raw: unknown): TurnRetryPolicy | undefined {
@@ -274,7 +289,8 @@ export function parseTurnRetryPolicy(raw: unknown): TurnRetryPolicy | undefined 
         return undefined
       }
     } else if (trimmed === "all") {
-      value = { on: [...TURN_RETRY_CLASSES] }
+      // The transient classes only: `usage-limit` stays an explicit opt-in.
+      value = { on: [...TURN_RETRY_DEFAULT_ON] }
     } else if (trimmed === "off") {
       value = { on: [] }
     } else {

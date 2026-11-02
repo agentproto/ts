@@ -983,6 +983,37 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     h.controller.dispose()
   })
 
+  it("usage-limit with action migrate moves to a fresh box (new IP) without a backoff retry", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go")
+    await until(() => h.phases().includes("migrated"), "usage-limit migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrated"])
+    expect(h.events[1]).toMatchObject({ errorClass: "usage-limit", migratedTo: "s2" })
+    expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2"])
+    expect(h.row.turnRetryAttempts).toBeUndefined()
+    h.controller.dispose()
+  })
+
+  it("usage-limit whose migration fails gives up instead of re-prompting the capped box", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("usage limit exceeded")
+    await until(() => h.phases().includes("skipped"), "give up after failed migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "skipped"])
+    expect(h.enqueued).toHaveLength(0)
+    expect(h.row.turnRetryAttempts).toBeUndefined()
+    h.controller.dispose()
+  })
+
   it("falls back to normal retry when migrateSession is not wired", async () => {
     const h = migrateHarness({
       migrateSession: undefined,

@@ -422,7 +422,8 @@ sessions start flags:
                                   supervisors; "off" disables it (explicit
                                   opt-out). spec: 'all', 'off', or a comma
                                   list of classes
-                                  (rate-limit,upstream-5xx,no-output-stall),
+                                  (rate-limit,upstream-5xx,no-output-stall,
+                                  and opt-in usage-limit),
                                   or a JSON object '{"on":["rate-limit"],
                                   "maxRetries":3,"baseDelayMs":5000,"factor":2,
                                   "maxDelayMs":60000}'. "action":"migrate"
@@ -725,7 +726,9 @@ async function runListStats(
   return 0
 }
 
-const TURN_RETRY_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+const TURN_RETRY_ALL_CLASSES = ["rate-limit", "upstream-5xx", "no-output-stall"]
+/** `usage-limit` is accepted but opt-in: it is not part of `all`. */
+const TURN_RETRY_CLASSES = [...TURN_RETRY_ALL_CLASSES, "usage-limit"]
 const TURN_RETRY_ACTIONS = ["retry", "migrate"]
 
 /** Bounds the DAEMON's schema (`turnRetryInputSchema` in
@@ -750,7 +753,7 @@ export function parseTurnRetryFlag(raw: string): Record<string, unknown> | strin
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "expected a JSON object"
     obj = parsed as Record<string, unknown>
   } else if (trimmed === "all") {
-    obj = { on: [...TURN_RETRY_CLASSES] }
+    obj = { on: [...TURN_RETRY_ALL_CLASSES] }
   } else if (trimmed === "off") {
     // An explicit opt-out, the runtime's empty-`on` shape: a disabled policy
     // (empty `on`) and `null` are equivalent at spawn time.

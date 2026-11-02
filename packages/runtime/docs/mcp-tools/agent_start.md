@@ -537,6 +537,18 @@ in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
   example opencode retrying a 429 internally and silently. That turn is still
   running, so the retry interrupts it before re-prompting. Needs the daemon's
   stall watchdog to be on (`turnStallAfterMs`).
+- `usage-limit` (opt-in, never in the default set or in `"all"`): a provider
+  usage cap ("Free usage limit reached", "usage limit exceeded"). A cap does
+  not recover with backoff, so there is NO same-config retry. The session goes
+  straight to `rotate` (when configured), then the `fallback` chain; with
+  `"action": "migrate"` on a sandbox session it first moves to a fresh box,
+  because a new box is a new IP and OpenCode's free tier is capped per IP.
+  With none of those available it gives up (`skipped`), as before. The capped
+  model joins the daemon-wide cooldown map, `rotateOn` includes it by default
+  once `on` lists it, and each divert books one `turnRetryAttempts`. On a
+  sandbox session the model overlay of `fallback` uses the restart transition
+  (the box has no live model switch), which re-attaches the same box. Without
+  the opt-in a usage cap still walks the `fallback` chain, as it did before.
 
 Never retried, whatever `on` says:
 
@@ -544,8 +556,9 @@ Never retried, whatever `on` says:
 - a killed, exited or errored session. That includes the `maxCostUsd` kill. A
   dead process is `restartPolicy`'s job;
 - a session with a failed governance policy, such as a tripped `costBudget`;
-- auth and billing errors (401/402/403, invalid key, insufficient quota) and
-  provider usage caps ("usage limit exceeded");
+- auth and billing errors (401/402/403, invalid key, insufficient quota) and,
+  unless `usage-limit` is listed in `on`, provider usage caps ("usage limit
+  exceeded");
 - a turn that already made a tool call outside a small read-only allowlist
   (read, grep, glob, ls, find, search, webfetch, websearch, todo, think).
   The continuation could repeat a write or an exec. Set
