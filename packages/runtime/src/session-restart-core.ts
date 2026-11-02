@@ -111,11 +111,11 @@ import {
 } from "./session-spawn.js"
 import {
   formatPlacementAttempts,
-  rungProviderLabel,
   walkPlacementLadder,
   type PlacementAttempt,
   type PlacementRung,
 } from "./placement-ladder.js"
+import { resolveTurnRetryPolicy, type TurnRetryInput } from "./turn-retry-policy.js"
 import { sessionTokenModeOf } from "./identity-defaults.js"
 import { preCompactCommandFor } from "./native-hooks-defaults.js"
 import { revokeSessionTokens } from "./session-credentials.js"
@@ -2321,6 +2321,11 @@ async function restartAgentSessionOnce(
     // A session without a ladder boots on its one recorded provider.
     const bootModelFor = (rung?: PlacementRung): string | undefined =>
       reconciled.model !== undefined ? effModel : (rung?.model ?? effModel)
+    // A ladder rung states its own preflight (the recorded ladder already has
+    // inherited axes filled in); falling back to `prev.preflight` there would
+    // leak the previous rung's probes onto a rung that declared none.
+    const bootPreflightFor = (rung?: PlacementRung): readonly string[] | undefined =>
+      rung ? rung.preflight : prev.preflight
     const bootOn = (
       sandbox: PlacementRung["sandbox"],
       rung?: PlacementRung,
@@ -2348,7 +2353,7 @@ async function restartAgentSessionOnce(
       ...(effRoute?.gateway ? { route: effRoute } : {}),
       ...(effEffort ? { effort: effEffort } : {}),
       ...(prev.label ? { label: prev.label } : {}),
-      ...((rung?.preflight ?? prev.preflight)?.length ? { preflight: rung?.preflight ?? prev.preflight } : {}),
+      ...(bootPreflightFor(rung)?.length ? { preflight: bootPreflightFor(rung) } : {}),
       ...(authSpec ? { auth: sandboxAuthForBox(authSpec, authEcho), authSpec } : {}),
       // The saved conversation store is extracted into the box before the
       // adapter starts, and its id is the box `agent_start`'s resume target.
@@ -2395,14 +2400,17 @@ async function restartAgentSessionOnce(
       if (!walk.ok) {
         throw new SessionRestartError(
           "sandbox_box_start_failed",
-          `restartAgentSession: sandbox "${prev.sandboxId}" is gone and no rung of the placement ladder ` +
-            `could start a fresh box for workspace "${slug}": ${formatPlacementAttempts(walk.attempts)}: ${walk.failure.message}`,
+          `restartAgentSession: sandbox "${prev.sandboxId}" is gone and ` +
+            (walk.exhausted
+              ? "no rung of the placement ladder "
+              : `the placement ladder stopped on ${walk.failure.code}, so it `) +
+            `could not start a fresh box for workspace "${slug}": ${formatPlacementAttempts(walk.attempts)}: ${walk.failure.message}`,
           { action: { kind: "fix-config", detail: walk.failure.message } },
         )
       }
       booted = walk.value
       placement = { rung: walk.rung, attempts: walk.attempts }
-      bootProvider = bootRung ? rungProviderLabel(bootRung) : providerSlug
+      bootProvider = booted.provider
     } else {
       booted = await bootOn(providerSlug)
     }
@@ -2482,6 +2490,7 @@ async function restartAgentSessionOnce(
       ...(booted.sandboxPorts ? { sandboxPorts: booted.sandboxPorts } : {}),
       ...(bootModelFor(bootRung) !== effModel ? { model: bootModelFor(bootRung) } : {}),
       ...(bootRung ? { preflight: bootRung.preflight ?? [] } : {}),
+      ...(bootRung?.turnRetry ? { turnRetry: bootRung.turnRetry } : {}),
       ...(placement && ladder ? { placement: { ...placement, ladder: [...ladder] } } : {}),
     })
     for (const notice of notices) registry.recordNotice(restartedSessionId, notice)
@@ -2515,6 +2524,8 @@ async function restartAgentSessionOnce(
       model?: string
       /** The placement rung's preflight ids (absent: carry the prior's). */
       preflight?: string[]
+      /** The placement rung's turnRetry (absent: carry the prior's). */
+      turnRetry?: TurnRetryInput
       /** Where a ladder re-placement landed (absent: carry the prior's). */
       placement?: { rung: number; ladder: PlacementRung[]; attempts: PlacementAttempt[] }
     },
@@ -2568,7 +2579,7 @@ async function restartAgentSessionOnce(
       ...(prev.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       ...(prev.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
       ...(prev.restartPolicy ? { restartPolicy: prev.restartPolicy } : {}),
-      ...(prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
+      ...(box.turnRetry ? { turnRetry: resolveTurnRetryPolicy(box.turnRetry) } : prev.turnRetry ? { turnRetry: prev.turnRetry } : {}),
       ...(prev.modelPolicy ? { modelPolicy: prev.modelPolicy } : {}),
       ...(authEcho?.fingerprint
         ? {

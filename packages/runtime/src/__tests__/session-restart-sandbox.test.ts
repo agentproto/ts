@@ -36,6 +36,7 @@ import {
 } from "../sandbox-adapter-store.js"
 import { clearParentRelayGrants, relayTokenForSession, resolveParentRelayGrant } from "../parent-relay.js"
 import { readSandboxLedger, recordSandboxBoot } from "../sandbox-ledger.js"
+import { defaultPreflightRegistry } from "../sandbox-preflight.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -222,6 +223,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     rejectResumeIds?: boolean
     sandboxConfig?: Record<string, unknown>
     parentSessionId?: (registry: SessionsRegistry) => string
+    preflight?: string[]
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -243,6 +245,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       sandboxId: "sbx_prev_1",
       sandboxTeardown: "pause",
       ...(opts.sandboxConfig ? { sandboxConfig: opts.sandboxConfig } : {}),
+      ...(opts.preflight ? { preflight: opts.preflight } : {}),
       ...(opts.deliveryTarget ? { sandboxDeliveryTarget: opts.deliveryTarget } : {}),
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId(registry), depth: 1 } : {}),
     })
@@ -1021,6 +1024,41 @@ describe("restartAgentSession on a sandboxed session", () => {
         })
         expect(result.desc.placement?.ladder).toEqual(ladder)
         expect(registry.get(result.desc.id)?.placement?.rung).toBe(1)
+      })
+
+      it("does not leak the placing rung's preflight onto a rung that declared none, and applies the rung's turnRetry", async () => {
+        const probe = vi.fn(async () => ({ verdict: "ok" as const, detail: "fine" }))
+        defaultPreflightRegistry.register({ id: "test-leak", description: "records runs", defaultTimeoutMs: 1000, run: probe })
+        try {
+          wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+          const { resolver, providerResolver } = await setup({
+            deliveryTarget: target,
+            workspaceSlug: "agentproto",
+            preflight: ["test-leak"],
+          })
+          prev = registry.recordPlacement(prev.id, {
+            rung: 0,
+            ladder: [
+              { sandbox: "fake", preflight: ["test-leak"] },
+              { sandbox: "fake2", turnRetry: { on: ["rate-limit"] } },
+            ],
+            attempts: [],
+          })!
+          const result = await restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: ladderResolver(
+              providerResolver,
+              { count: 0 },
+              { count: 0 },
+              Object.assign(new Error("fleet full"), { code: "sandbox_capacity" }),
+            ),
+          })
+          expect(result.desc.placement?.rung).toBe(1)
+          expect(probe).not.toHaveBeenCalled()
+          expect(result.desc.preflight ?? []).toEqual([])
+          expect(result.desc.turnRetry?.on).toEqual(["rate-limit"])
+        } finally {
+          defaultPreflightRegistry.register({ id: "test-leak", description: "removed", defaultTimeoutMs: 1, run: async () => ({ verdict: "unknown", detail: "removed" }) })
+        }
       })
 
       it("fails loud, listing every attempt, when no rung can start a fresh box", async () => {

@@ -1087,7 +1087,12 @@ When every rung fails the spawn fails with `sandbox_placement_exhausted`
 
 `session_migrate` and a fresh-box `session_restart` re-place from rung 1 of
 the recorded ladder (a migrate with an explicit `sandbox` leaves the ladder),
-and carry `preflight` and `placement` onto the new session.
+and carry `preflight` and `placement` onto the new session. A rung's `sandbox`,
+`model`, `preflight` and `turnRetry` are replayed on both. A rung's `access` is
+replayed by `session_migrate` only: a restart keeps the session's own
+credentials rather than re-resolving them per rung. A restart whose ladder
+stops on a non-placement failure reports `sandbox_box_start_failed` and names
+the underlying code in the message.
 
 ## agent
 
