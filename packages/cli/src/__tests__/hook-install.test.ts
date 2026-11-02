@@ -6,6 +6,7 @@ import { desktopMcpUrl, mergeDesktopSettings, runHookInstall } from "../commands
 import { runHook } from "../commands/hook.js"
 
 const inboxEntry = { hooks: [{ type: "command", command: "agentproto hook inbox" }] }
+const prStampEntry = { matcher: "Bash", hooks: [{ type: "command", command: "agentproto hook pr-stamp" }] }
 
 describe("mergeDesktopSettings", () => {
   it("adds the session env and both inbox hooks to an empty file", () => {
@@ -14,7 +15,7 @@ describe("mergeDesktopSettings", () => {
     expect(sessionId).toBe("claude-desktop")
     expect(settings).toEqual({
       env: { AGENTPROTO_SESSION_ID: "claude-desktop" },
-      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry] },
+      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
     })
   })
 
@@ -36,7 +37,7 @@ describe("mergeDesktopSettings", () => {
     expect(settings).toMatchObject({
       model: "opus",
       env: { FOO: "1", AGENTPROTO_SESSION_ID: "claude-desktop" },
-      hooks: { PostToolUse: [other, inboxEntry], Stop: [other], UserPromptSubmit: [inboxEntry] },
+      hooks: { PostToolUse: [other, inboxEntry, prStampEntry], Stop: [other], UserPromptSubmit: [inboxEntry] },
     })
   })
 
