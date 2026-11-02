@@ -499,24 +499,19 @@ describe("startAppServiceProcess: AGENTPROTO_PUBLIC_URL (AIP-53 expose)", () => 
     else process.env.AGENTPROTO_PUBLIC_URL = saved
   })
 
-  it("passes the exposure origin and keeps it on every restart (the tunnel is reused)", () => {
-    const { fx, start } = startFixture({ env: { AGENTPROTO_PUBLIC_URL: "https://session-chat.example.test" } })
-    const res = start()
-    expect(res.ok).toBe(true)
-    fx.exit(0, 1)
-    fx.queue[0]!.fire()
-    expect(fx.spawned).toHaveLength(2)
-    expect(fx.spawnEnvs.map(e => e.AGENTPROTO_PUBLIC_URL)).toEqual([
+  it("an exposed service gets its own origin on every restart; any other never inherits the daemon's", () => {
+    process.env.AGENTPROTO_PUBLIC_URL = "https://daemon-leak.example.test"
+    const exposed = startFixture({ env: { AGENTPROTO_PUBLIC_URL: "https://session-chat.example.test" } })
+    expect(exposed.start().ok).toBe(true)
+    exposed.fx.exit(0, 1)
+    exposed.fx.queue[0]!.fire()
+    expect(exposed.fx.spawnEnvs.map(e => e.AGENTPROTO_PUBLIC_URL)).toEqual([
       "https://session-chat.example.test",
       "https://session-chat.example.test",
     ])
-  })
 
-  it("never lets a service inherit the daemon's own AGENTPROTO_PUBLIC_URL", () => {
-    process.env.AGENTPROTO_PUBLIC_URL = "https://daemon-leak.example.test"
-    const { fx, start } = startFixture()
-    const res = start()
-    expect(res.ok).toBe(true)
-    expect(fx.spawnEnvs[0]).not.toHaveProperty("AGENTPROTO_PUBLIC_URL")
+    const plain = startFixture()
+    expect(plain.start().ok).toBe(true)
+    expect(plain.fx.spawnEnvs[0]).not.toHaveProperty("AGENTPROTO_PUBLIC_URL")
   })
 })

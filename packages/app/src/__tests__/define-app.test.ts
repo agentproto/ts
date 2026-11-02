@@ -374,7 +374,7 @@ describe("defineApp — services (production hosting surface)", () => {
     expect(Object.isFrozen(app.services![0]!.expose)).toBe(true)
     expect(() =>
       defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "a", expose: {} }] }),
-    ).toThrow(/invalid services declaration — services\[0\]\.expose requires a port/)
+    ).toThrow(/invalid services declaration . services\[0\]\.expose requires a port/)
     expect(() =>
       defineApp({
         agents: [agent("solo", [])],

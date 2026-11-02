@@ -540,7 +540,7 @@ describe("loadAppHandle — services (production hosting surface)", () => {
         matter.stringify(parsed.content, { ...parsed.data, services: [{ name: "web", entry: "x", expose: { auth: "guard" } }] }),
         "utf8",
       )
-      await expect(loadAppHandle(d)).rejects.toThrow(/invalid services declaration — services\[0\]\.expose requires a port/)
+      await expect(loadAppHandle(d)).rejects.toThrow(/invalid services declaration . services\[0\]\.expose requires a port/)
     } finally {
       await rm(d, { recursive: true, force: true })
     }
