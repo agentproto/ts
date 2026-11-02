@@ -4529,13 +4529,19 @@ export async function startHttpServer(
         // snapshot that blocks the event loop), and never a session
         // principal (a valid session token, or a claim naming a session the
         // daemon spawned), same rule as config_set's operator-only keys.
+        // The snapshot takes the bearer alone once a token is configured: a
+        // loopback proxy that drops Origin must not unlock it.
         if (
           opts.heapDiagnostics &&
           ((path === "/debug/heap" && req.method === "GET") ||
             (path === "/debug/heap-snapshot" && req.method === "POST"))
         ) {
           const bearerOk = !!opts.token && req.headers.authorization === `Bearer ${opts.token}`
-          if (!bearerOk && !(isLoopback(req) && req.headers.origin === undefined)) {
+          const localOk =
+            isLoopback(req) &&
+            req.headers.origin === undefined &&
+            !(path === "/debug/heap-snapshot" && opts.token)
+          if (!bearerOk && !localOk) {
             res.writeHead(401, { "content-type": "application/json" })
             res.end(JSON.stringify({ error: "unauthorized", message: "the daemon bearer (or a local, non-browser call) is required" }))
             return

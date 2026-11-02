@@ -14,13 +14,13 @@
  *    owner.
  *  - an on-demand heap snapshot (`writeHeapSnapshotGuarded`) for the
  *    operator-only `POST /debug/heap-snapshot` route. It refuses when free
- *    memory cannot hold it and writes under `~/.agentproto/heap-snapshots/`.
+ *    memory (capped by the cgroup v2 limit, if any) cannot hold it and writes under `~/.agentproto/heap-snapshots/`.
  *    `v8.writeHeapSnapshot` is synchronous: it blocks the event loop for its
  *    whole duration (seconds per GB of heap), which also means two snapshots
  *    can never overlap.
  */
 
-import { mkdirSync } from "node:fs"
+import { mkdirSync, readFileSync } from "node:fs"
 import { freemem, homedir } from "node:os"
 import { join } from "node:path"
 import { constants as perfConstants, PerformanceObserver } from "node:perf_hooks"
@@ -31,6 +31,10 @@ export const DEFAULT_HEAP_LOG_INTERVAL_MS = 5 * 60_000
 
 /** Env override for the cadence, in ms. `0` turns the line off. */
 export const HEAP_LOG_INTERVAL_ENV = "AGENTPROTO_HEAP_LOG_INTERVAL_MS"
+
+/** Largest delay `setInterval` honours: Node turns anything above it into
+ *  1 ms (with a `TimeoutOverflowWarning`), a hot loop for the `[heap]` line. */
+export const MAX_HEAP_LOG_INTERVAL_MS = 2 ** 31 - 1
 
 /** Free memory a snapshot needs on top of the live heap: writing one costs
  *  roughly the heap again in native memory, plus headroom for the daemon. */
@@ -77,7 +81,7 @@ export function heapLogIntervalFromEnv(env: NodeJS.ProcessEnv = process.env): nu
   const raw = env[HEAP_LOG_INTERVAL_ENV]
   if (raw === undefined || raw.trim() === "") return DEFAULT_HEAP_LOG_INTERVAL_MS
   const n = Number(raw)
-  return Number.isFinite(n) ? n : DEFAULT_HEAP_LOG_INTERVAL_MS
+  return Number.isFinite(n) ? Math.min(n, MAX_HEAP_LOG_INTERVAL_MS) : DEFAULT_HEAP_LOG_INTERVAL_MS
 }
 
 function defaultObserveGc(onMajorGc: () => void): () => void {
@@ -197,9 +201,44 @@ export function defaultHeapSnapshotDir(): string {
   return join(homedir(), ".agentproto", "heap-snapshots")
 }
 
+/** Where cgroup v2 exposes this process's memory controller. */
+export const DEFAULT_CGROUP_DIR = "/sys/fs/cgroup"
+
+function readCgroupBytes(path: string): number | undefined {
+  try {
+    const n = Number(readFileSync(path, "utf8").trim())
+    return Number.isFinite(n) ? n : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Memory this process can still use: `os.freemem()`, capped by the cgroup v2
+ * room (`memory.max - memory.current`) when a limit is set. A container
+ * capped well below the host would otherwise see the host's free memory and
+ * approve a snapshot that gets it OOM-killed. No cgroup files, or
+ * `memory.max` = `max`: host free memory alone.
+ */
+export function availableMemoryBytes(
+  opts: { cgroupDir?: string; freeMemory?: () => number } = {},
+): number {
+  const free = (opts.freeMemory ?? freemem)()
+  const dir = opts.cgroupDir ?? DEFAULT_CGROUP_DIR
+  const max = readCgroupBytes(join(dir, "memory.max"))
+  const current = readCgroupBytes(join(dir, "memory.current"))
+  if (max === undefined || current === undefined) return free
+  return Math.min(free, Math.max(0, max - current))
+}
+
 export interface HeapSnapshotDeps {
   dir?: string
+  /** Overrides the whole available-memory read (cgroup included). */
   freeMemory?: () => number
+  /** Host free memory fed to `availableMemoryBytes` (default `os.freemem`). */
+  osFreeMemory?: () => number
+  /** cgroup v2 directory read by `availableMemoryBytes`. */
+  cgroupDir?: string
   memoryUsage?: () => NodeJS.MemoryUsage
   write?: (path: string) => string
   now?: () => Date
@@ -207,11 +246,17 @@ export interface HeapSnapshotDeps {
 }
 
 /**
- * Write a heap snapshot of THIS process, unless free memory cannot hold it
- * (`heapUsed + headroom`). Synchronous: see `HEAP_SNAPSHOT_WARNING`.
+ * Write a heap snapshot of THIS process, unless available memory (host free
+ * memory, capped by the cgroup limit) cannot hold it (`heapUsed + headroom`).
+ * Synchronous: see `HEAP_SNAPSHOT_WARNING`.
  */
 export function writeHeapSnapshotGuarded(deps: HeapSnapshotDeps = {}): HeapSnapshotResult {
-  const freeBytes = (deps.freeMemory ?? freemem)()
+  const freeBytes = deps.freeMemory
+    ? deps.freeMemory()
+    : availableMemoryBytes({
+        ...(deps.cgroupDir !== undefined ? { cgroupDir: deps.cgroupDir } : {}),
+        ...(deps.osFreeMemory ? { freeMemory: deps.osFreeMemory } : {}),
+      })
   const heapUsed = (deps.memoryUsage ?? (() => process.memoryUsage()))().heapUsed
   const requiredBytes = heapUsed + (deps.headroomBytes ?? HEAP_SNAPSHOT_HEADROOM_BYTES)
   if (freeBytes < requiredBytes) {

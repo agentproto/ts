@@ -87,6 +87,19 @@ describe("heap diagnostics routes", () => {
     expect(withBearer.status).toBe(200)
   })
 
+  it("requires the bearer for a snapshot when a token is configured, even locally", async () => {
+    const snapshot = vi.fn((): HeapSnapshotResult => ({ ok: false, error: "snapshot_failed", message: "x" }))
+    const url = await serve(snapshot, "tok")
+    const local = await fetch(`${url}/debug/heap-snapshot`, { method: "POST" })
+    expect(local.status).toBe(401)
+    expect(snapshot).not.toHaveBeenCalled()
+    const report = await fetch(`${url}/debug/heap`)
+    expect(report.status).toBe(200)
+    const withBearer = await fetch(`${url}/debug/heap-snapshot`, { method: "POST", headers: { authorization: "Bearer tok" } })
+    expect(withBearer.status).toBe(500)
+    expect(snapshot).toHaveBeenCalledTimes(1)
+  })
+
   it("refuses a session principal", async () => {
     const snapshot = vi.fn((): HeapSnapshotResult => ({ ok: false, error: "snapshot_failed", message: "x" }))
     const url = await serve(snapshot)

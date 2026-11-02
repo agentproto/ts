@@ -224,10 +224,12 @@ taken some time apart.
 a 200 MB heap, seconds per GB beyond that): no request, session event or timer
 runs meanwhile, and the file is about the size of the heap. It refuses with
 `507 insufficient_memory` when free memory (`os.freemem()`, which on macOS
-leaves out reclaimable inactive pages, so it errs low) is below `heapUsed`
-plus 256 MB.
+leaves out reclaimable inactive pages, so it errs low; capped under a cgroup
+v2 memory limit by `memory.max - memory.current` from `/sys/fs/cgroup`) is
+below `heapUsed` plus 256 MB.
 
 Both `/debug/*` routes are operator-only: they need the daemon bearer, or a
 loopback call without an `Origin` header (no browser page may trigger one),
-and they answer `403 operator_only` to a session principal (a valid session
+except that once the daemon has a bearer token the snapshot route takes the
+bearer alone; and they answer `403 operator_only` to a session principal (a valid session
 token, or a caller claim naming a session the daemon spawned).

@@ -353,12 +353,12 @@ async function* readFrom(
   }
 }
 
-/** Test hook: drop every cached index. */
 /** Entries in the per-path seq index cache (bounded by `INDEX_CACHE_MAX`). */
 export function eventsIndexCacheSize(): number {
   return cache.size
 }
 
+/** Test hook: drop every cached index. */
 export function clearEventsIndexCache(): void {
   cache.clear()
 }

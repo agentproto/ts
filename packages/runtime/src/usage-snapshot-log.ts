@@ -17,8 +17,9 @@
  * `usage_snapshot` is skipped before any parse.
  *
  * "Absence is not an error", same convention as `readCommandLogEntry` /
- * `readToolCallRecords`: a missing/unreadable file returns `[]`, and a single
- * malformed line is skipped rather than aborting the read.
+ * `readToolCallRecords`: a missing/unreadable file returns `[]`, a read that
+ * fails mid-stream returns the records parsed so far, and a single malformed
+ * line is skipped rather than aborting the read.
  */
 
 import { open } from "node:fs/promises"
@@ -48,7 +49,8 @@ export async function readUsageSnapshots(
       if (record) out.push(record)
     }
   } catch {
-    return []
+    // A read that fails mid-stream keeps what was already parsed.
+    return out
   } finally {
     lines.close()
     await handle.close().catch(() => {})

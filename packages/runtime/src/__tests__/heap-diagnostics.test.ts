@@ -2,11 +2,12 @@
  * `heap-diagnostics.ts`: the periodic `[heap]` report and the guarded
  * on-demand heap snapshot (E99).
  */
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  availableMemoryBytes,
   DEFAULT_HEAP_LOG_INTERVAL_MS,
   formatHeapLine,
   heapLogIntervalFromEnv,
@@ -105,6 +106,39 @@ describe("heapLogIntervalFromEnv", () => {
     expect(heapLogIntervalFromEnv({ AGENTPROTO_HEAP_LOG_INTERVAL_MS: "0" })).toBe(0)
     expect(heapLogIntervalFromEnv({ AGENTPROTO_HEAP_LOG_INTERVAL_MS: "soon" })).toBe(DEFAULT_HEAP_LOG_INTERVAL_MS)
   })
+
+  it("never returns a delay setInterval would overflow into 1ms", () => {
+    const max = 2 ** 31 - 1
+    expect(heapLogIntervalFromEnv({ AGENTPROTO_HEAP_LOG_INTERVAL_MS: String(max) })).toBe(max)
+    expect(heapLogIntervalFromEnv({ AGENTPROTO_HEAP_LOG_INTERVAL_MS: String(max + 1) })).toBeLessThanOrEqual(max)
+    expect(heapLogIntervalFromEnv({ AGENTPROTO_HEAP_LOG_INTERVAL_MS: "1e15" })).toBeLessThanOrEqual(max)
+  })
+})
+
+describe("availableMemoryBytes", () => {
+  async function cgroup(files: Record<string, string>): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "heap-cgroup-test-"))
+    dirs.push(dir)
+    for (const [name, body] of Object.entries(files)) await writeFile(join(dir, name), body)
+    return dir
+  }
+
+  it("caps free memory at the cgroup v2 limit minus current usage", async () => {
+    const dir = await cgroup({ "memory.max": `${1024 * MB}\n`, "memory.current": `${900 * MB}\n` })
+    expect(availableMemoryBytes({ cgroupDir: dir, freeMemory: () => 8192 * MB })).toBe(124 * MB)
+  })
+
+  it("keeps os free memory when it is lower than the cgroup room", async () => {
+    const dir = await cgroup({ "memory.max": `${4096 * MB}\n`, "memory.current": `${100 * MB}\n` })
+    expect(availableMemoryBytes({ cgroupDir: dir, freeMemory: () => 512 * MB })).toBe(512 * MB)
+  })
+
+  it("falls back to os free memory with no limit or no cgroup files", async () => {
+    const unlimited = await cgroup({ "memory.max": "max\n", "memory.current": `${900 * MB}\n` })
+    expect(availableMemoryBytes({ cgroupDir: unlimited, freeMemory: () => 2048 * MB })).toBe(2048 * MB)
+    const empty = await cgroup({})
+    expect(availableMemoryBytes({ cgroupDir: empty, freeMemory: () => 2048 * MB })).toBe(2048 * MB)
+  })
 })
 
 describe("writeHeapSnapshotGuarded", () => {
@@ -117,6 +151,23 @@ describe("writeHeapSnapshotGuarded", () => {
       write,
     })
     expect(r).toMatchObject({ ok: false, error: "insufficient_memory", requiredBytes: 1056 * MB, freeBytes: 900 * MB })
+    expect(write).not.toHaveBeenCalled()
+  })
+
+  it("refuses when the cgroup limit, not host free memory, cannot hold the snapshot", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "heap-cgroup-test-"))
+    dirs.push(dir)
+    await writeFile(join(dir, "memory.max"), `${1024 * MB}\n`)
+    await writeFile(join(dir, "memory.current"), `${900 * MB}\n`)
+    const write = vi.fn((p: string) => p)
+    const r = writeHeapSnapshotGuarded({
+      cgroupDir: dir,
+      osFreeMemory: () => 8192 * MB,
+      memoryUsage: () => mem(10 * MB),
+      headroomBytes: 256 * MB,
+      write,
+    })
+    expect(r).toMatchObject({ ok: false, error: "insufficient_memory", freeBytes: 124 * MB })
     expect(write).not.toHaveBeenCalled()
   })
 
