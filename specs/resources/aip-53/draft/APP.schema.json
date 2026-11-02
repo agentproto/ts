@@ -376,8 +376,33 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 65535,
-            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. Bookkeeping only: the host records it and does not inject it into the service's environment."
+            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. Bookkeeping only: the host records it and does not inject it into the service's environment. An `expose`d service's tunnel targets it."
+          },
+          "expose": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "auth": {
+                "enum": [
+                  "guard",
+                  "service"
+                ],
+                "default": "guard",
+                "description": "Who authenticates a request that reaches the public URL. `guard`: the host's access guard sits in front of the tunnel. `service`: no guard, the URL is public and the service authenticates every request itself (for example a Telegram Mini App validating `initData`)."
+              },
+              "hostname": {
+                "type": "string",
+                "pattern": "^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$",
+                "description": "Hostname request: a DNS label or a full name, lowercase. Passed as the primary AIP-73 `hostnames` entry; the provider may assign another name."
+              }
+            },
+            "description": "Ask the host for a public URL that reaches `port`, through one AIP-73 tunnel per service, keyed `app.<app>.<service>.<hash>` (AIP-53 § Tunnel key). The host picks the provider and passes the public origin to the process as `AGENTPROTO_PUBLIC_URL`. Requires `port`. See AIP-53 § Exposure."
           }
+        },
+        "dependentRequired": {
+          "expose": [
+            "port"
+          ]
         },
         "oneOf": [
           {
