@@ -287,6 +287,13 @@
       "created": 1779840000,
       "object": "model",
       "owned_by": "xai"
+    },
+    {
+      "id": "grok-imagine-video-1.5-lite",
+      "aliases": [],
+      "created": 1787702400,
+      "object": "model",
+      "owned_by": "xai"
     }
   ],
   "object": "list"

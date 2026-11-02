@@ -493,3 +493,12 @@ for that.
 
 ### llm:openai
 - Removed: gpt-4-turbo, o1, o1-pro, o3-mini, o3-mini-high, o4-mini, o4-mini-high
+
+## 2026-11-02
+
+### llm:openrouter
+- Added: z-ai/glm-5.3-flashx-legal
+- Removed: nousresearch/hermes-3-llama-3.1-405b, nousresearch/hermes-3-llama-3.1-70b
+
+### llm:huggingface
+- Added: CohereLabs/c4ai-command-r7b-arabic-02-2025
