@@ -171,6 +171,12 @@ export function selectReplicatePrice(page) {
       title: tier.title,
     }
   }
+  // A page WITH billing tiers but no metric we can express (for example
+  // "video_output_count", billed per video) must not fall back to the
+  // hardware rate: that is the machine cost, not the billed price. Report no
+  // price instead of inventing a per-second one.
+  const tiers = page.billingConfig?.current_tiers
+  if (Array.isArray(tiers) && tiers.length > 0) return null
   if (page.hardwarePrice && page.hardwarePrice.unit) {
     return {
       unit: page.hardwarePrice.unit,

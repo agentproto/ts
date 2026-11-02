@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, it, expect } from "vitest"
+import { REPLICATE_IMAGE_PRICING } from "@agentproto/model-catalog/image"
 import { imageReplicate } from "../image-replicate.js"
 import type { GeneratorContext, CatalogSource } from "../../types.js"
 
@@ -281,5 +282,62 @@ describe("image:replicate generator", () => {
     expect(idCount).toBeGreaterThanOrEqual(1)
     // Verify the curated model was included
     expect(source).toContain("flux-kontext-pro")
+  })
+})
+
+describe("image:replicate pricing source", () => {
+  function payloadWith(owner: string, name: string): GeneratorContext {
+    return {
+      refresh: false,
+      async fetchSource(): Promise<unknown> {
+        return {
+          results: [
+            {
+              owner,
+              name,
+              description: "pricing source test",
+              visibility: "public",
+              run_count: 1,
+              cover_image_url: null,
+              latest_version: {
+                id: "v1",
+                created_at: "2024-01-01T00:00:00Z",
+                openapi_schema: { input: { type: "object", properties: {} }, output: { type: "string" } },
+              },
+            },
+          ],
+          next: null,
+          previous: null,
+        }
+      },
+    }
+  }
+
+  it("uses the scraped REPLICATE_IMAGE_PRICING value over the hand-written table", async () => {
+    const key = "replicate:black-forest-labs/flux-kontext-pro"
+    const saved = REPLICATE_IMAGE_PRICING[key]
+    REPLICATE_IMAGE_PRICING[key] = {
+      unit: "per_image",
+      priceUsd: 0.123,
+      source: "replicate",
+      fetchedAt: "2026-01-01",
+    }
+    try {
+      const result = await imageReplicate.generate(payloadWith("black-forest-labs", "flux-kontext-pro"))
+      const source = Object.values(result)[0]!
+      expect(source).toContain("costPerImage: 0.123")
+      expect(source).toContain("costTier: \"high\"")
+      expect(source).not.toContain("fallback: hand-written PRICING")
+    } finally {
+      if (saved === undefined) delete REPLICATE_IMAGE_PRICING[key]
+      else REPLICATE_IMAGE_PRICING[key] = saved
+    }
+  })
+
+  it("falls back to the hand-written value, marked as such, when no scraped price exists", async () => {
+    const result = await imageReplicate.generate(payloadWith("unknown-owner", "flux-kontext-pro"))
+    const source = Object.values(result)[0]!
+    expect(source).toContain("// fallback: hand-written PRICING (no scraped Replicate price)")
+    expect(source).toContain("costPerImage: 0.04")
   })
 })

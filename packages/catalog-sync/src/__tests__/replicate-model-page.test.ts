@@ -87,3 +87,31 @@ describe("parseReplicateModelPage - page shape changes fail loudly", () => {
     )
   })
 })
+
+describe("selectReplicatePrice - unexpressible unit", () => {
+  it("returns null rather than inventing a hardware per-second price for a per-video tier", () => {
+    const html = `<script type="application/json">${JSON.stringify({
+      model: { owner: "acme", name: "per-video" },
+      billingConfig: {
+        current_tiers: [
+          {
+            criteria: [],
+            prices: [
+              {
+                metric: "video_output_count",
+                price: "$0.50",
+                title: "per output video",
+                type: "per-unit",
+              },
+            ],
+          },
+        ],
+      },
+      price: "$0.001525 per second",
+    })}</script>`
+    const page = parseReplicateModelPage(html)
+    expect(page.tierPrices).toEqual([])
+    expect(page.hardwarePrice).toMatchObject({ unit: "per_second" })
+    expect(selectReplicatePrice(page)).toBeNull()
+  })
+})
