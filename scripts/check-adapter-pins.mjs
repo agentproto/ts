@@ -41,6 +41,23 @@ export function parseRangeFloor(range) {
   return match ? match[1] : null
 }
 
+function comparePrerelease(left, right) {
+  const a = left.split(".")
+  const b = right.split(".")
+  const length = Math.min(a.length, b.length)
+  for (let index = 0; index < length; index++) {
+    if (a[index] === b[index]) continue
+    const aNumeric = /^\d+$/.test(a[index])
+    const bNumeric = /^\d+$/.test(b[index])
+    if (aNumeric && bNumeric) return Number(a[index]) < Number(b[index]) ? -1 : 1
+    if (aNumeric) return -1
+    if (bNumeric) return 1
+    return a[index] < b[index] ? -1 : 1
+  }
+  if (a.length === b.length) return 0
+  return a.length < b.length ? -1 : 1
+}
+
 export function compareSemver(left, right) {
   const a = SEMVER_RE.exec(left)
   const b = SEMVER_RE.exec(right)
@@ -52,7 +69,7 @@ export function compareSemver(left, right) {
   if (a[4] === b[4]) return 0
   if (!a[4]) return 1
   if (!b[4]) return -1
-  return a[4] < b[4] ? -1 : 1
+  return comparePrerelease(a[4], b[4])
 }
 
 export function classifyDrift(pinned, latest) {
@@ -104,8 +121,45 @@ function extractBalanced(source, start, open, close) {
   return null
 }
 
+function maskCommentsAndStrings(source) {
+  const chars = source.split("")
+  let quote = null
+  let escaped = false
+  for (let i = 0; i < chars.length; i++) {
+    const char = chars[i]
+    const next = chars[i + 1]
+    if (quote) {
+      if (char !== "\n") chars[i] = " "
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === "/" && next === "/") {
+      const end = source.indexOf("\n", i + 2)
+      const stop = end === -1 ? chars.length : end
+      for (let j = i; j < stop; j++) chars[j] = " "
+      i = stop - 1
+      continue
+    }
+    if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2)
+      const stop = end === -1 ? chars.length : end + 2
+      for (let j = i; j < stop; j++) if (chars[j] !== "\n") chars[j] = " "
+      i = stop - 1
+      continue
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char
+      chars[i] = " "
+    }
+  }
+  return chars.join("")
+}
+
 function extractAfter(source, key, open, close) {
-  const match = new RegExp(`\\b${key}\\s*:\\s*\\${open}`).exec(source)
+  const masked = maskCommentsAndStrings(source)
+  const match = new RegExp(`\\b${key}\\s*:\\s*\\${open}`).exec(masked)
   if (!match) return null
   const start = match.index + match[0].length - 1
   return extractBalanced(source, start, open, close)

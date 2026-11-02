@@ -35,6 +35,7 @@ test("compares semver including prerelease ordering", () => {
   assert.equal(compareSemver("2.0.0", "1.9.9"), 1)
   assert.equal(compareSemver("1.2.3-beta.1", "1.2.3"), -1)
   assert.equal(compareSemver("1.2.3-beta.2", "1.2.3-beta.1"), 1)
+  assert.equal(compareSemver("1.2.3-beta.10", "1.2.3-beta.2"), 1)
 })
 
 test("classifies drift as none, ahead, patch, minor or major", () => {
@@ -89,6 +90,7 @@ test("collects fixture adapters and skips non-npm and local-only pins", () => {
   const { pins, skipped } = collectPins(FIXTURES)
   assert.deepEqual(pins, [
     { adapter: "ahead", package: "ahead-cli", pinned: "9.9.9" },
+    { adapter: "commented", package: "commented-cli", pinned: "4.5.6" },
     { adapter: "exact", package: "@scope/wrapper", pinned: "1.2.3" },
     { adapter: "final", package: "final-cli", pinned: "5.6.7" },
     { adapter: "ranged", package: "ranged-cli", pinned: "1.4.0" },
@@ -98,10 +100,22 @@ test("collects fixture adapters and skips non-npm and local-only pins", () => {
   assert.deepEqual(skipped, ["local", "non-npm"])
 })
 
+test("ignores a commented-out install block", () => {
+  const pins = parseAdapterSource(`
+    export const commented = defineHarness({
+      // install: [{ method: "npm", package: "old-cli@0.1.0" }],
+      install: [{ method: "npm", package: "real-cli@4.5.6", global: true }],
+      version_check: { cmd: "npm view real-cli version", range: "=4.5.6" },
+    })
+  `)
+  assert.deepEqual(pins, [{ package: "real-cli", pinned: "4.5.6" }])
+})
+
 test("buildRows reports ahead and none from injected registry results", async () => {
   const { pins } = collectPins(FIXTURES)
   const latest = {
     "ahead-cli": "1.0.0",
+    "commented-cli": "4.5.6",
     "@scope/wrapper": "1.2.3",
     "final-cli": "5.6.7",
     "ranged-cli": "1.4.0",
