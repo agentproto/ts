@@ -13,3 +13,6 @@ export {
   generateVideoModelTable,
 } from "./catalog.js"
 export type { VideoModelDefinition } from "./catalog.js"
+
+export { OPENROUTER_VIDEO_PRICING } from "./openrouter-pricing.generated.js"
+export { REPLICATE_VIDEO_PRICING } from "./replicate-pricing.generated.js"

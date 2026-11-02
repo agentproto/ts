@@ -28,6 +28,10 @@ export { voiceElevenlabs } from "./generators/voice-elevenlabs.js"
 export { voiceMinimax } from "./generators/voice-minimax.js"
 export { imageReplicate } from "./generators/image-replicate.js"
 export {
+  mediaOpenRouterImage,
+  mediaOpenRouterVideo,
+} from "./generators/media-openrouter.js"
+export {
   reviewedRefresh,
   refreshSources,
 } from "./refresh-workflow.js"
@@ -55,6 +59,15 @@ export {
   todayIso,
 } from "./added-at.js"
 export type { AddedAtLedger } from "./added-at.js"
+export {
+  fetchedAtLedgerAbsPath,
+  fetchedAtLedgerRelPath,
+  hashJson,
+  readFetchedAtLedger,
+  resolveFetchedAt,
+  serializeFetchedAtLedger,
+} from "./fetched-at.mjs"
+export type { FetchedAtEntry, FetchedAtLedger } from "./fetched-at.mjs"
 export {
   appendChangelog,
   CATALOG_CHANGELOG_HEADER,

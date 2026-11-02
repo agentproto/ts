@@ -169,3 +169,9 @@ export function computeCenticredits(args: {
   const floor = pricingRegistry.getFloor(args.category, args.appId)
   return Math.max(floor, Math.ceil((args.baseCostUsd * markup) / CC_USD_RATE))
 }
+
+export type {
+  MediaPriceUnit,
+  MediaPricing,
+  MediaPricingCatalog,
+} from "./media.js"

@@ -1,0 +1,94 @@
+{
+  "replicate:agentik/custom-simone_infographic_1": {
+    "hash": "9b41fb8e6907c8fce83c78dc212501f99086bb456e174ec68adaa1bcbb87ed71",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:black-forest-labs/flux-1.1-pro": {
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:black-forest-labs/flux-1.1-pro-ultra": {
+    "hash": "187fa37182308b2fbdbdc7f66dc702cb2a189ebfc108f4371f31ab653e20fd07",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:black-forest-labs/flux-kontext-max": {
+    "hash": "6ac2b24c595b0df79180194cd89a5adc925fa53f4b7d76a5c3e749c25ef9b74e",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:black-forest-labs/flux-kontext-pro": {
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:black-forest-labs/flux-schnell": {
+    "hash": "d9a69bcf245307f32e35eaa9fbb75211ba27eae0c60f6fbe3b0b74c353114730",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:bytedance/dreamactor-m2.0": {
+    "hash": "f7eb4577c7dc9ab17e25577122a310dcfee5d80310980110b96891d6894fd913",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:bytedance/seedream-4": {
+    "hash": "e4b666eda37fcfb7a80de19e1a954d5b419dd4fa6d6ce0189f00084c1b1f1af1",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:cjwbw/rembg": {
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:fofr/pulid-base": {
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:fofr/sticker-maker": {
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:google/nano-banana": {
+    "hash": "cd2deaed8ab1bdbd991989a07767c8db3e6b16481adf4c73f9a07ed74be1dd98",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:ideogram-ai/ideogram-v3-turbo": {
+    "hash": "e4b666eda37fcfb7a80de19e1a954d5b419dd4fa6d6ce0189f00084c1b1f1af1",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:kwaivgi/kling-v2.5-turbo-pro": {
+    "hash": "d509baebfed3efc65a4a3452d5f87c78cbf06cf5b988fd165f33484af1c3c307",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:minimax/image-01": {
+    "hash": "c0707f28592259dcf2af1cda902733ea8841a98302f0ab923c03a86a6280b149",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:nvidia/sana": {
+    "hash": "9b41fb8e6907c8fce83c78dc212501f99086bb456e174ec68adaa1bcbb87ed71",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:openai/sora-2": {
+    "hash": "6d50441d22a0108b26e497057d02219abcc74c8a3402951b0f08810f4e0f24df",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:pixverse/lipsync": {
+    "hash": "d01e24ed06f77738b5058bf39cb4067f24be98a4d86728235eb5f00558b7d29d",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:recraft-ai/recraft-v3": {
+    "hash": "5f7bb736681c82688b5024531ee5bc34429a5452d0daaf2ecb955b28c18e49f4",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:runwayml/gen-4.5": {
+    "hash": "11766d0298359035c48c187638e06ce22be2711e533589702b36de91624b92c5",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:stability-ai/sdxl": {
+    "hash": "69584c7214e3f7519366f78a2b5730cc83ec43224cddda3afcf5fe4df252ac18",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:stability-ai/stable-diffusion-3": {
+    "hash": "0141ace854a41e9975b19e2eb7ccf6d717bbb2a2d53e14d0844ddae9183e4344",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:xai/grok-imagine-video": {
+    "hash": "f7eb4577c7dc9ab17e25577122a310dcfee5d80310980110b96891d6894fd913",
+    "fetchedAt": "2026-11-02"
+  }
+}
