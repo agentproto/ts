@@ -6340,6 +6340,11 @@ export function buildSpawnSessionHttpArgs(
   // classes); an invalid value is dropped, never half-applied. Hoisted for the
   // same TS2590 reason as `inferenceField`.
   const turnRetryParsed = b.turnRetry !== undefined ? parseTurnRetryPolicy(b.turnRetry) : undefined
+  // Preflight probe ids: the HTTP twin of `agent_start.preflight`. An array of
+  // non-empty strings (or a JSON-stringified one); anything else is dropped.
+  const preflightIds = b.preflight !== undefined ? parsePreflightField(b.preflight) : undefined
+  const preflightField: Pick<SpawnAgentSessionInput, "preflight"> =
+    preflightIds !== undefined ? { preflight: preflightIds } : {}
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
   const modelPolicyParsed =
@@ -6582,6 +6587,7 @@ export function buildSpawnSessionHttpArgs(
           return parsed !== undefined ? { sandbox: parsed } : {}
         })()
       : {}),
+    ...preflightField,
     // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
     // `appServe` field. Accepts an object or a JSON-stringified one; requires
     // `dir` (and an integer `port` when given).
@@ -6736,6 +6742,9 @@ function spawnFailureStatus(code: string): number {
     return 409
   }
   if (code === "delegation_denied") return 403
+  // The box booted but cannot do what the spawn needs from where it sits: not
+  // a caller mistake, and a different placement may work.
+  if (code === "sandbox_preflight_failed") return 502
   if (code === "auth_profile_denied") return 403
   if (code === "stdio_mount_denied") return 403
   if (code === "identity_unverified" || code === "identity_mismatch") return 403
@@ -6750,6 +6759,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_not_found" ||
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
+    code === "sandbox_preflight_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
@@ -7088,6 +7098,21 @@ function parseSandboxField(raw: unknown): string | SandboxSpecInput | undefined 
   const parsed = sandboxSpecWithReuseSchema.safeParse(candidate)
   if (!parsed.success) return undefined
   return parsed.data as SandboxSpecInput
+}
+
+/** Parse the `preflight` body field: an array of probe ids, or its JSON string. */
+function parsePreflightField(raw: unknown): string[] | undefined {
+  let value = raw
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value)
+    } catch {
+      return undefined
+    }
+  }
+  if (!Array.isArray(value)) return undefined
+  const ids = value.filter((v): v is string => typeof v === "string" && v.length > 0)
+  return ids.length > 0 ? ids : undefined
 }
 
 /** Parse the `appServe` body field (WP3) — `{ dir, port? }`, tolerant of a

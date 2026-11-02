@@ -991,6 +991,29 @@ wins when both are set; `0` disables the timer AND the turn-end hook even
 when `on` includes `"turn-end"`, the legacy off-switch), `timeoutMs`
 (per-checkpoint wall-clock budget).
 
+## preflight
+
+Probe ids run against the booted `sandbox` box BEFORE the agent starts, in
+order (e.g. `["model-answers"]`). Requires `sandbox`; ignored otherwise.
+Each probe answers `ok`, `ko` or `unknown`:
+
+- `model-answers`: runs a one-line prompt through the session's harness
+  inside the box (opencode: `opencode run -m <model> "reply ok"`) with a 90 s
+  hard timeout. A usage cap, rate limit, 5xx or auth refusal is `ko`, with the
+  same error class a live turn would get. A timeout, a missing binary, an
+  adapter with no known one-line command, or an unclassified failure is
+  `unknown`.
+
+`ko` destroys the box (a reused box is paused instead, a box other sessions
+are attached to is left alone) and fails the spawn with
+`sandbox_preflight_failed`: `probe`, `errorClass`, `probeDetail`, `provider`,
+`sandboxId`, `egressIp` when the provider brokered one, and the `outcomes` of
+every probe that ran. `unknown` never blocks the spawn; it is reported in the
+spawn `warnings`. An id no probe is registered under is refused up front with
+`sandbox_preflight_invalid`, before any box boots. Why: OpenCode's free tier is
+capped per source IP, so a box on an exhausted egress address only finds out
+mid-run.
+
 ## agent
 
 The ONE agent reference for this spawn: an AIP-42 agent id

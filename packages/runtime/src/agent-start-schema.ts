@@ -526,6 +526,11 @@ export const agentStartInputShape = {
   sandboxCheckpoint: jsonTolerant(sandboxCheckpointOverrideSchema)
     .optional()
     .describe(`Per-spawn sandbox checkpoint override: false disables, or an object. ${help("sandboxCheckpoint")}`),
+  preflight: jsonTolerant(z.array(z.string().min(1)))
+    .optional()
+    .describe(
+      `Sandbox preflight probe ids run on the booted box before the agent starts (e.g. ["model-answers"]); a failing probe destroys the box and fails the spawn with sandbox_preflight_failed. Requires \`sandbox\`. ${help("preflight")}`
+    ),
   resumeFrom: jsonTolerant(
     opaque(
       z

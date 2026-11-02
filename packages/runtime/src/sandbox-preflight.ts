@@ -1,0 +1,267 @@
+/**
+ * Sandbox preflight probes: cheap checks that run against a freshly booted
+ * box BEFORE the agent starts, so a placement that cannot work is discovered
+ * in seconds instead of mid-run.
+ *
+ * Motivating failure: OpenCode's free tier is capped per SOURCE IP, and fleet
+ * boxes can share one egress IP, so a box booted on an exhausted address
+ * answers its first model call with "Free usage limit reached" and the run
+ * dies. Asking the box to answer one line first turns that into a typed
+ * spawn failure (`sandbox_preflight_failed`) a caller can act on.
+ *
+ * A probe is an `id` plus a `run(ctx)` that reaches the box through the same
+ * exec seam `sandbox_exec` uses (`BootedSandbox.exec`). It answers one of:
+ *   - `ok`      the box passes this check;
+ *   - `ko`      the box demonstrably cannot do the thing (carries the
+ *               {@link TurnErrorClass} from `classifyTurnError`, so a probe and
+ *               a live turn speak the same classes);
+ *   - `unknown` the probe could not decide (timeout, missing binary, provider
+ *               without exec, unclassified failure). NEVER treated as `ko`:
+ *               a probe that cannot run must not veto a placement.
+ *
+ * Probes live in a registry keyed by id, so a new criterion is an addition,
+ * not an edit. {@link runSandboxPreflight} runs a list of ids in order and
+ * stops at the first `ko`; the spawn path (`bootSandboxAgentSession`) tears
+ * the box down on that and fails with {@link preflightFailedResult}. The
+ * outcome list and the failure details are plain data on purpose: a placement
+ * ladder can run the same probes, read the same `outcomes`, and move to the
+ * next rung on `sandbox_preflight_failed` without reshaping any of this.
+ */
+
+import type { SandboxExecOpts, SandboxExecResult } from "@agentproto/sandbox"
+import { classifyTurnError, type TurnErrorClass } from "./turn-retry.js"
+
+export type PreflightVerdict = "ok" | "ko" | "unknown"
+
+/** What a probe reports about one box. */
+export interface PreflightResult {
+  verdict: PreflightVerdict
+  /** Set on `ko`: the class `classifyTurnError` gave the failure text. */
+  errorClass?: TurnErrorClass
+  /** One human-readable line (bounded); never a secret. */
+  detail: string
+  durationMs: number
+}
+
+/** A probe's result tagged with the probe that produced it. */
+export interface PreflightOutcome extends PreflightResult {
+  probe: string
+}
+
+/** What a probe may touch. Everything is optional-by-capability except `exec`. */
+export interface PreflightContext {
+  /** Run one command in the box: `BootedSandbox.exec`, i.e. what `sandbox_exec` calls. */
+  exec: (opts: SandboxExecOpts) => Promise<SandboxExecResult>
+  /** The adapter slug the session will run (`opencode`, `claude-code`, ...). */
+  adapter: string
+  /** The model the session will use, when the spawn named one. */
+  model?: string
+  /** A directory that exists in the box (the provider's home), when known. */
+  cwd?: string
+  /** Public source address the box egresses from, when the provider brokers one. */
+  egressIp?: string
+  /** Wall-clock budget for this probe; the runner enforces it too. */
+  timeoutMs: number
+}
+
+export interface PreflightProbe {
+  id: string
+  description: string
+  /** Hard budget in ms when the caller does not override it. */
+  defaultTimeoutMs: number
+  run(ctx: PreflightContext): Promise<Omit<PreflightResult, "durationMs">>
+}
+
+export interface PreflightRegistry {
+  register(probe: PreflightProbe): void
+  get(id: string): PreflightProbe | undefined
+  list(): PreflightProbe[]
+}
+
+export function createPreflightRegistry(probes: readonly PreflightProbe[] = []): PreflightRegistry {
+  const byId = new Map<string, PreflightProbe>()
+  for (const probe of probes) byId.set(probe.id, probe)
+  return {
+    register(probe) {
+      byId.set(probe.id, probe)
+    },
+    get: id => byId.get(id),
+    list: () => [...byId.values()],
+  }
+}
+
+export const MODEL_ANSWERS_PROBE_ID = "model-answers"
+/** Default budget for `model-answers`: a cold harness start plus one model round trip. */
+export const MODEL_ANSWERS_TIMEOUT_MS = 90_000
+const MODEL_ANSWERS_PROMPT = "reply ok"
+const DETAIL_MAX = 300
+/** Model ids reach a shell command line: anything outside this set is not probed. */
+const SAFE_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]*$/
+
+const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`
+
+const clip = (text: string): string => {
+  const flat = text.replace(/\s+/g, " ").trim()
+  return flat.length > DETAIL_MAX ? `${flat.slice(0, DETAIL_MAX)}...` : flat
+}
+
+/**
+ * One-line prompt command per adapter, run INSIDE the box: the free models of
+ * a harness only answer from within that harness. Adding a harness is adding
+ * a row; an adapter without a row yields `unknown`, never `ko`.
+ */
+const ONE_LINE_PROMPT_COMMANDS: Record<string, (model: string | undefined) => string> = {
+  opencode: model =>
+    `opencode run ${model ? `-m ${shellQuote(model)} ` : ""}${shellQuote(MODEL_ANSWERS_PROMPT)} < /dev/null`,
+}
+
+/**
+ * Does the model, as reached from THIS box (its egress IP included), answer a
+ * one-line prompt? Failure text goes through `classifyTurnError`; only a
+ * classified failure is `ko` (usage cap, rate limit, 5xx, auth). Everything
+ * else that goes wrong is `unknown`.
+ */
+export const modelAnswersProbe: PreflightProbe = {
+  id: MODEL_ANSWERS_PROBE_ID,
+  description: "The session's model answers a one-line prompt through its harness from inside the box.",
+  defaultTimeoutMs: MODEL_ANSWERS_TIMEOUT_MS,
+  async run(ctx) {
+    const build = ONE_LINE_PROMPT_COMMANDS[ctx.adapter]
+    if (!build) {
+      return { verdict: "unknown", detail: `no one-line prompt command known for adapter "${ctx.adapter}"` }
+    }
+    if (ctx.model !== undefined && !SAFE_MODEL_RE.test(ctx.model)) {
+      return { verdict: "unknown", detail: `model id "${clip(ctx.model)}" is not probeable` }
+    }
+    const res = await ctx.exec({
+      command: build(ctx.model),
+      ...(ctx.cwd !== undefined ? { cwd: ctx.cwd } : {}),
+      timeoutMs: ctx.timeoutMs,
+    })
+    const text = `${res.stderr}\n${res.stdout}`
+    // Scan on a zero exit too: a harness can print the provider's refusal and still exit 0.
+    const errorClass = classifyTurnError(text)
+    if (errorClass !== "other") {
+      return { verdict: "ko", errorClass, detail: clip(text) }
+    }
+    if (res.exitCode === 0 && res.stdout.trim() !== "") {
+      return { verdict: "ok", detail: clip(res.stdout) }
+    }
+    if (res.exitCode === 127) {
+      return { verdict: "unknown", detail: `"${ctx.adapter}" is not installed in the box` }
+    }
+    return {
+      verdict: "unknown",
+      detail: `exit ${res.exitCode} with no recognizable provider error: ${clip(text) || "no output"}`,
+    }
+  },
+}
+
+/** The daemon-wide registry: built-in probes, extendable with `register`. */
+export const defaultPreflightRegistry: PreflightRegistry = createPreflightRegistry([modelAnswersProbe])
+
+/** Ids in `ids` that no probe is registered under. */
+export function unknownPreflightProbes(
+  ids: readonly string[],
+  registry: PreflightRegistry = defaultPreflightRegistry,
+): string[] {
+  return ids.filter(id => registry.get(id) === undefined)
+}
+
+/** Run one probe under its hard timeout. A throw or a timeout is `unknown`. */
+export async function runPreflightProbe(
+  probe: PreflightProbe,
+  ctx: Omit<PreflightContext, "timeoutMs">,
+  timeoutMs: number = probe.defaultTimeoutMs,
+): Promise<PreflightOutcome> {
+  const startedAt = Date.now()
+  const finish = (r: Omit<PreflightResult, "durationMs">): PreflightOutcome => ({
+    probe: probe.id,
+    ...r,
+    durationMs: Date.now() - startedAt,
+  })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timedOut = new Promise<"timeout">(resolve => {
+    timer = setTimeout(() => resolve("timeout"), timeoutMs)
+  })
+  try {
+    const settled = await Promise.race([probe.run({ ...ctx, timeoutMs }), timedOut])
+    if (settled === "timeout") return finish({ verdict: "unknown", detail: `timed out after ${timeoutMs}ms` })
+    return finish(settled)
+  } catch (err) {
+    return finish({ verdict: "unknown", detail: `probe failed to run: ${clip(err instanceof Error ? err.message : String(err))}` })
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export interface PreflightRun {
+  /** False when some probe said `ko`. */
+  ok: boolean
+  /** One entry per probe that ran, in order. Probes after a `ko` do not run. */
+  outcomes: PreflightOutcome[]
+  /** The `ko` outcome that stopped the run. */
+  failed?: PreflightOutcome
+}
+
+export interface RunSandboxPreflightOptions {
+  registry?: PreflightRegistry
+  /** Overrides every probe's own default budget. */
+  timeoutMs?: number
+}
+
+/** Run probes by id, in order, stopping at the first `ko`. Unknown ids are `unknown` outcomes. */
+export async function runSandboxPreflight(
+  ids: readonly string[],
+  ctx: Omit<PreflightContext, "timeoutMs">,
+  opts: RunSandboxPreflightOptions = {},
+): Promise<PreflightRun> {
+  const registry = opts.registry ?? defaultPreflightRegistry
+  const outcomes: PreflightOutcome[] = []
+  for (const id of ids) {
+    const probe = registry.get(id)
+    const outcome: PreflightOutcome = probe
+      ? await runPreflightProbe(probe, ctx, opts.timeoutMs)
+      : { probe: id, verdict: "unknown", detail: "no probe registered under this id", durationMs: 0 }
+    outcomes.push(outcome)
+    if (outcome.verdict === "ko") return { ok: false, outcomes, failed: outcome }
+  }
+  return { ok: true, outcomes }
+}
+
+/** Machine-readable payload of `sandbox_preflight_failed` (flat: it is spread into the tool/HTTP error body). */
+export interface SandboxPreflightFailedDetails extends Record<string, unknown> {
+  probe: string
+  errorClass?: TurnErrorClass
+  probeDetail: string
+  /** The box's public egress address, when the provider brokered one. */
+  egressIp?: string
+  provider: string
+  sandboxId: string
+  outcomes: PreflightOutcome[]
+}
+
+/** The typed spawn failure for a run that ended in `ko`. */
+export function preflightFailedResult(
+  run: PreflightRun & { failed: PreflightOutcome },
+  box: { provider: string; sandboxId: string; egressIp?: string },
+): { ok: false; code: "sandbox_preflight_failed"; message: string; details: SandboxPreflightFailedDetails } {
+  const { failed } = run
+  const where = box.egressIp ? ` (egress ${box.egressIp})` : ""
+  return {
+    ok: false,
+    code: "sandbox_preflight_failed",
+    message:
+      `agent_start: sandbox preflight "${failed.probe}" failed on ${box.provider} box ${box.sandboxId}${where}` +
+      `${failed.errorClass ? ` [${failed.errorClass}]` : ""}: ${failed.detail}`,
+    details: {
+      probe: failed.probe,
+      ...(failed.errorClass !== undefined ? { errorClass: failed.errorClass } : {}),
+      probeDetail: failed.detail,
+      ...(box.egressIp !== undefined ? { egressIp: box.egressIp } : {}),
+      provider: box.provider,
+      sandboxId: box.sandboxId,
+      outcomes: run.outcomes,
+    },
+  }
+}
