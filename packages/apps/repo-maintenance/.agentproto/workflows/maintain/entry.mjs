@@ -305,8 +305,9 @@ function heldWorktreeOf(e, heldWorktrees) {
 /** One entry per reviewed held worktree (from the verify plan's stored
  *  verdicts): the verdict, the PR state (worktree_gc's integration) and the
  *  cherry summary (when branch_gc exposes it). {@link verdictLine} turns it
- *  into the report line - with the command that removes the worktree when
- *  the reviewer agreed nothing of value is lost. Removal stays a human step. */
+ *  into the report line. When the reviewer agreed, the worktree goes (never
+ *  its branch): by `worktreeGcApply`'s reviewed tier under `applyReviewed`,
+ *  else by the printed `--keep-branch` command. */
 export function heldWorktreeVerdicts(branchGcVerifyResult, worktreeGcPlanResult) {
   const held = reviewableWorktrees(worktreeGcPlanResult)
   const byPath = new Map()
@@ -324,6 +325,40 @@ export function heldWorktreeVerdicts(branchGcVerifyResult, worktreeGcPlanResult)
     })
   }
   return [...byPath.values()]
+}
+
+/** Paths `worktreeGcApply` may remove as reviewed (`reviewedPaths`): only
+ *  with `applyMerged` and `applyReviewed`, and only held worktrees whose
+ *  stored verdict agreed and that have no open PR. worktree_gc re-checks every
+ *  one at apply time (unchanged tip and index, clean, idle, no open PR, an
+ *  agreeing verdict for the exact tip in the store) and removes the worktree
+ *  only, keeping the branch: `branchGcApply` runs after it, so the branch is
+ *  judged by branch_gc's reviewed rung and line-coverage guard in this run. */
+export function reviewedWorktreePaths(b) {
+  if (b.input?.applyMerged !== true || b.input?.applyReviewed !== true) return []
+  if (b.input?.reviewHeldWorktrees === false) return []
+  return heldWorktreeVerdicts(b.steps?.branchGcVerify, b.steps?.worktreeGcPlan)
+    .filter(v => v.agree === true && v.pr?.state !== "open")
+    .map(v => v.path)
+}
+
+/** What `worktreeGcApply` did to a reviewed held worktree, for its report line. */
+function reviewedRemovalAction(outcome) {
+  if (!outcome) return "not removed: worktree_gc reported no outcome for it"
+  switch (outcome.result) {
+    case "removed-keep-branch":
+      return "worktree removed, branch kept for branch_gc's line-coverage guard"
+    case "skipped-stale":
+      return `not removed (skipped-stale): ${outcome.reason ?? "changed since the plan"}`
+    case "held":
+      return `not removed: held${outcome.holdReason ? ` (${outcome.holdReason})` : ""}`
+    case "aborted-vanished":
+      return "not removed: the worktree was already gone"
+    case "failed":
+      return `not removed: failed - ${outcome.message ?? "unknown error"}`
+    default:
+      return `not removed: ${outcome.result}`
+  }
 }
 
 /** `branch_gc_verdict_get` answers by tip sha, from the `verdictRecords` step
@@ -350,15 +385,24 @@ export function verdictReason(record) {
 }
 
 /** The ONE report line for a verdict `v` (`{ name, triage, pr, cherry, path?, agree }`):
- *  branch, PR state, cherry summary, the reviewer's reason, then the action. */
-export function verdictLine(v, record) {
+ *  branch, PR state, cherry summary, the reviewer's reason, then the action.
+ *  For an agreed held worktree the action is `opts.outcome` (the
+ *  worktreeGcApply outcome) when the run applied reviewed removals
+ *  (`opts.applied`), else the command that removes the worktree and KEEPS the
+ *  branch: deleting the branch is branch_gc's call, behind its guard. */
+export function verdictLine(v, record, opts = {}) {
   const head =
     `- \`${v.name}\` - ${v.triage} - PR: ${formatPrState(v.pr).replace(/ PR #(\d+)/, " #$1")}` +
     ` - cherry: ${cherryShort(v.cherry)} - reason: ${verdictReason(record)}`
   if (!v.path) return head
   // An open PR is live work: never offer its worktree for removal.
   if (v.pr?.state === "open") return `${head} - keep (open PR, ${v.path})`
-  return v.agree === true ? `${head} - nothing of value lost: \`agentproto worktree rm ${v.path}\`` : `${head} - keep (${v.path})`
+  if (v.agree !== true) return `${head} - keep (${v.path})`
+  if (opts.applied) return `${head} - ${reviewedRemovalAction(opts.outcome)} (${v.path})`
+  return (
+    `${head} - nothing of value lost: \`agentproto worktree rm ${v.path} --keep-branch\`` +
+    " (keeps the branch; branch_gc's line-coverage guard then decides it)"
+  )
 }
 
 /** Tips whose stored verdict the report needs the record of (for the reason):
@@ -831,8 +875,18 @@ export function buildReport(b) {
   if (heldVerdicts.length > 0) {
     lines.push("")
     lines.push(`## Held worktrees reviewed (${heldVerdicts.length})`)
-    lines.push("Idle, clean worktrees whose branch isn't provably merged — gc holds them; the reviewer's verdict says whether they can go. Removal is manual.")
-    for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) lines.push(verdictLine(v, records.get(v.sha)))
+    lines.push(
+      "Idle, clean worktrees whose branch isn't provably merged — gc holds them; the reviewer's verdict says whether they can go. " +
+        (applyReviewed
+          ? "`applyReviewed` is true: worktree_gc re-checked each agreed one (same tip, clean, idle, no open PR, agreeing stored verdict) and removed the worktree only; the branch is left to branch_gc's line-coverage guard."
+          : "Removal is manual and removes the worktree only (`--keep-branch`); the branch is left to branch_gc's line-coverage guard. `applyReviewed: true` (with `applyMerged: true`) removes them in-run."),
+    )
+    const wtApplyByPath = new Map(
+      (Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes : []).map(o => [o.path, o]),
+    )
+    for (const v of heldVerdicts.slice(0, REPORT_LIST_CAP)) {
+      lines.push(verdictLine(v, records.get(v.sha), { applied: applyReviewed, outcome: wtApplyByPath.get(v.path) }))
+    }
     if (heldVerdicts.length > REPORT_LIST_CAP) lines.push(moreLine("", heldVerdicts.length, "the run output's `verdictRecords`"))
   }
   lines.push("")
@@ -947,12 +1001,12 @@ export default {
     repoRoot: { type: "string", description: "Absolute path to the git repo. Wins over `workspaceSlug`." },
     workspaceSlug: { type: "string", description: "Workspace slug. The active workspace when both are omitted." },
     applyMerged: { type: "boolean", description: "Execute branch_gc/worktree_gc (reclaim-class only) after review. Default false.", default: false },
-    applyReviewed: { type: "boolean", description: "With `applyMerged`: also reclaim `review`-class branches whose stored verdict agreed (`branch_gc` includeReviewed true). branch_gc refuses an approval below its line-coverage guard (default 95%). Default false.", default: false },
+    applyReviewed: { type: "boolean", description: "With `applyMerged`: also reclaim `review`-class branches whose stored verdict agreed (`branch_gc` includeReviewed true), and remove the worktree (keeping the branch) of each reviewed held worktree whose verdict agreed, re-checked by worktree_gc first; that branch then goes through the same branch_gc rung. branch_gc refuses an approval below its line-coverage guard (default 95%). Default false.", default: false },
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     reviewPreset: { type: "string", description: "Model role preset for this run (opus, sonnet, haiku, go-free, free-sonnet — see `model_roles`). Default: the daemon's `modelRolePreset`, else the built-in roles. `reviewModelSmall`/`reviewModelLarge` still win." },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are never re-reviewed, so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
-    reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). The report lists each verdict and the removal command when the reviewer agreed; nothing is removed automatically. Default true.`, default: true },
+    reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). When the reviewer agreed, the worktree (never its branch) goes: with \`applyMerged\` + \`applyReviewed\`, worktree_gc removes it after re-checking it (same tip, clean, idle, no open PR, agreeing stored verdict) and the report gives each outcome; otherwise the report prints \`agentproto worktree rm <path> --keep-branch\`. Either way the branch is then judged by branch_gc's line-coverage guard. Default true.`, default: true },
     notify: {
       type: "object",
       description:
@@ -1142,6 +1196,11 @@ export default {
       ],
     },
     {
+      id: "reviewedWorktreePaths",
+      kind: "transform",
+      compute: b => reviewedWorktreePaths(b),
+    },
+    {
       id: "worktreeGcApply",
       kind: "tool",
       tool: "worktree_gc",
@@ -1154,6 +1213,10 @@ export default {
         // re-checks each entry (branch, HEAD, git index, live sessions) and
         // skips with a reason whatever changed while the reviewers worked.
         expectedPlan: "$steps.worktreeGcPlan.plan",
+        // Reviewed tier (empty unless applyMerged + applyReviewed): agreed held
+        // worktrees, removed worktree-only after worktree_gc's own re-check.
+        // Runs before branchGcApply, which then sees the branch unheld.
+        reviewedPaths: "$steps.reviewedWorktreePaths",
         // Same as worktreeGcPlan: block for the real outcomes, or an apply
         // would run unreported in the background after the workflow ends.
         wait: true,

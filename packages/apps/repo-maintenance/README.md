@@ -48,7 +48,13 @@ The `maintain` workflow, one run:
    `applyReviewed: true` (only meaningful together with `applyMerged: true`)
    it also reclaims `review`-class branches whose stored verdict agreed for
    the same tip — subject to `branch_gc`'s deterministic line-coverage guard
-   (default 95%), which refuses an approval below the threshold. Without
+   (default 95%), which refuses an approval below the threshold, and passes
+   `worktree_gc` the reviewed held worktrees whose verdict agreed
+   (`reviewedPaths`): each is removed worktree only, branch kept, after an
+   apply-time re-check (same tip and index, clean, idle, no open PR, agreeing
+   stored verdict), so `branch_gc` then judges that branch behind the same
+   guard. Without `applyReviewed` the report prints
+   `agentproto worktree rm <path> --keep-branch` for them instead. Without
    `applyMerged` the checkpoint apply is another dry-run plan.
 5. Reports a markdown summary, and (only when `notify` is set AND there's a
    reclaimable ref or a review candidate) sends it through the daemon's
