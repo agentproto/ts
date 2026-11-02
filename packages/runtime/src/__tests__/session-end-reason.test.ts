@@ -120,6 +120,7 @@ describe("isKnownSessionEndReason", () => {
     expect(isKnownSessionEndReason("cost-cap-exceeded")).toBe(true)
     expect(isKnownSessionEndReason("context-hard-stop")).toBe(true)
     expect(isKnownSessionEndReason("provider-limit")).toBe(true)
+    expect(isKnownSessionEndReason("guard-reaped")).toBe(true)
   })
 
   it("rejects an unknown / future value and undefined", () => {
@@ -497,6 +498,46 @@ describe("POST /sessions/:id/kill — reason body", () => {
       const body = (await res.json()) as { ok: boolean; sessionId: string }
       expect(body.ok).toBe(true)
       expect(registry.get(desc.id)?.outcome?.termination.reason).toBe("operator-completed")
+    })
+  })
+
+  it("POST /sessions/:id/reap → endedReason: 'guard-reaped' (never operator-stopped)", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: instantAgentSession(),
+        adapterSlug: "fake",
+      })
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}/reap`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idleMs: 2_400_000 }),
+      })
+      expect(res.status).toBe(200)
+      expect((await res.json()) as { ok: boolean }).toMatchObject({ ok: true })
+      const after = registry.get(desc.id)
+      expect(after?.status).toBe("killed")
+      expect(after?.endedReason).toBe("guard-reaped")
+    })
+  })
+
+  it("POST /sessions/:id/reap refuses a busy session with 409", async () => {
+    await withServer(async (port, registry) => {
+      const desc = registry.spawnAgent({
+        workspaceSlug: "default",
+        cwd: "/tmp",
+        agentSession: instantAgentSession(),
+        adapterSlug: "fake",
+      })
+      registry.get(desc.id)!.busy = true
+      const res = await fetch(`http://127.0.0.1:${port}/sessions/${desc.id}/reap`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ idleMs: 2_400_000 }),
+      })
+      expect(res.status).toBe(409)
+      expect(registry.get(desc.id)?.status).toBe("running")
     })
   })
 
