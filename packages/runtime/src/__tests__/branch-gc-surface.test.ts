@@ -37,7 +37,7 @@ import type {
   BranchGcOperatorApprover,
 } from "../branch-gc.js"
 import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "../session-credentials.js"
-import { summarizeBranchGcApply, withBranchGcApplySummary } from "../branch-gc.js"
+import { compactBranchGcEntry, summarizeBranchGcApply, withBranchGcApplySummary, type BranchGcPlanEntryView } from "../branch-gc.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 
 function freePort(): Promise<number> {
@@ -1197,5 +1197,30 @@ describe("summarizeBranchGcApply", () => {
     expect(withSummary.status).toBe("ok")
     expect(withSummary.applySummary?.restoreLog).toBe("/r.json")
     expect(input).not.toHaveProperty("applySummary")
+  })
+})
+
+describe("compactBranchGcEntry", () => {
+  it("keeps headPr (the PR for the branch name) in the compact row, and leaves it out when unset", () => {
+    const row = {
+      kind: "local",
+      name: "wt/x",
+      ref: "refs/heads/wt/x",
+      sha: "a".repeat(40),
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      ageDays: 10,
+      class: "review",
+    } as BranchGcPlanEntryView
+    expect(compactBranchGcEntry({ ...row, headPr: { state: "closed-unmerged", number: 2189 } }).headPr).toEqual({
+      state: "closed-unmerged",
+      number: 2189,
+    })
+    expect("headPr" in compactBranchGcEntry(row)).toBe(false)
   })
 })

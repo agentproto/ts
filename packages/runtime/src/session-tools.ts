@@ -4916,7 +4916,7 @@ export function registerSessionTools(
       "The finished reply is COMPACT by default: the summary (ref counts per " +
       "kind plus `distinct` branch-name counts), the plan metadata and one " +
       "page of entries (name, kind, sha, class, status, reclaimReason / " +
-      "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard " +
+      "mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard / headPr " +
       "when set), default 100 rows with `page.nextCursor`; pass it back as " +
       "`cursor` to read the next page of the SAME run (no re-run; the cursor " +
       "keeps the `section`, `classes`, `limit` and `full` it was created with). An " +
