@@ -1,0 +1,10 @@
+{
+  "replicate:black-forest-labs/flux-schnell": {
+    "hash": "a5e0231d1d07faff6d28ba3415006bea8db82930b60e41552ed90155edbef0f7",
+    "fetchedAt": "2026-11-02"
+  },
+  "replicate:cjwbw/rembg": {
+    "hash": "733289d257e61a8b89530064377dcb5a97a5cbb9902832fa62b2e326d27e680e",
+    "fetchedAt": "2026-11-02"
+  }
+}

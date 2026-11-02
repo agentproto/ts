@@ -6,40 +6,40 @@
  * one of them was automated:
  *
  *   1. `@agentproto/catalog-sync generate` (packages/catalog-sync/src/generators/)
- *      — snapshot-backed, deterministic, run weekly by
+ *      - snapshot-backed, deterministic, run weekly by
  *      `.github/workflows/catalog-sync.yml`.
- *   2. The `sync-*.mjs` scripts here — live vendor/passthrough fetches that
+ *   2. The `sync-*.mjs` scripts here - live vendor/passthrough fetches that
  *      write the per-vendor `*-pricing.generated.ts` files. Nothing ran these.
  *      They were hand-invoked, so the native vendor lists silently went stale
  *      between whenever a human last remembered: `openai-pricing.generated.ts`
  *      sat at its 2026-08-31 sync and topped out at `gpt-5.6-*` while
  *      OpenRouter had been carrying the whole `gpt-6-{luna,sol,astra}` family
- *      for weeks — data the repo's own committed OpenRouter snapshot already
+ *      for weeks - data the repo's own committed OpenRouter snapshot already
  *      contained.
  *
  * So this is the (2) entrypoint the weekly workflow calls, alongside the (1)
  * one it already called. Scripts are DISCOVERED by glob, not listed: adding
  * `sync-<vendor>.mjs` wires it into the weekly run with no edit here, which is
- * the whole point — a list is one more thing to forget to update.
+ * the whole point - a list is one more thing to forget to update.
  *
  * EXIT-CODE CONTRACT (the reason this isn't a shell one-liner):
- *   0 — synced.
- *   2 — skipped on purpose. `sync-mistral.mjs` / `sync-xai.mjs` exit 2 when
+ *   0 - synced.
+ *   2 - skipped on purpose. `sync-mistral.mjs` / `sync-xai.mjs` exit 2 when
  *       their API key is absent, mirroring how `catalog-sync generate` reuses a
  *       committed snapshot when a secret is missing. A missing optional secret
  *       must NOT redden the weekly job.
- *   anything else — a real failure (vendor API broke, output shape changed).
+ *   anything else - a real failure (vendor API broke, output shape changed).
  *
  * We exit non-zero only for that third case, and only after running every
  * script: one dead vendor API shouldn't cost the diff from the other six.
  *
  * CATALOG-CHANGELOG. `catalog-sync generate` logs its own id adds/removes to
  * packages/model-catalog/CATALOG-CHANGELOG.md, but these native lists never
- * did — claude-sonnet-5-5 showed up under llm:openrouter and
+ * did - claude-sonnet-5-5 showed up under llm:openrouter and
  * llm:context-windows while its native llm:anthropic entry went unlogged.
  * So we diff each `sync-<vendor>.mjs` output's top-level ids before/after
  * (same key shape and format as packages/catalog-sync/src/changelog.ts) and
- * append `### llm:<vendor>` subsections — into today's section when the
+ * append `### <modality>:<vendor>` subsections - into today's section when the
  * generate step already opened one, else under a new `## <date>` header.
  */
 
@@ -47,14 +47,20 @@ import { spawnSync } from "node:child_process"
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import {
+  changelogHeading,
+  modalityOf,
+  outputPathOf,
+  vendorOf,
+} from "../../packages/catalog-sync/src/modality-output.mjs"
+
 const DIR = import.meta.dirname
 const SKIP_EXIT_CODE = 2
-const LLM_DIR = resolve(DIR, "../../packages/model-catalog/src/llm")
+const MODEL_CATALOG_SRC_DIR = resolve(DIR, "../../packages/model-catalog/src")
 const CHANGELOG_PATH = resolve(DIR, "../../packages/model-catalog/CATALOG-CHANGELOG.md")
 const RECORD_KEY_RE = /^ {2}"([^"]+)":\s*\{/gm
 
-const vendorOf = script => script.slice("sync-".length, -".mjs".length)
-const outputOf = script => resolve(LLM_DIR, `${vendorOf(script)}-pricing.generated.ts`)
+const outputOf = script => outputPathOf(script, MODEL_CATALOG_SRC_DIR)
 
 function readIds(path) {
   if (!existsSync(path)) return new Set()
@@ -69,13 +75,13 @@ function appendChangelog(entries) {
   const lastHeader = [...existing.matchAll(/^## (\S+)$/gm)].at(-1)?.[1]
   const lines = lastHeader === date ? [] : [`## ${date}`, ""]
   for (const e of nonEmpty) {
-    lines.push(`### llm:${e.vendor}`)
+    lines.push(changelogHeading(e.modality, e.vendor))
     if (e.added.length > 0) lines.push(`- Added: ${e.added.join(", ")}`)
     if (e.removed.length > 0) lines.push(`- Removed: ${e.removed.join(", ")}`)
     lines.push("")
   }
   writeFileSync(CHANGELOG_PATH, `${existing}\n${lines.join("\n").replace(/\n+$/, "\n")}`, "utf-8")
-  console.log(`  changelog: ${nonEmpty.map(e => `llm:${e.vendor}`).join(", ")}`)
+  console.log(`  changelog: ${nonEmpty.map(e => `${e.modality}:${e.vendor}`).join(", ")}`)
 }
 
 const scripts = readdirSync(DIR)
@@ -102,7 +108,7 @@ for (const script of scripts) {
     env: process.env,
   })
 
-  // A signal kill reports `status: null` — treat it as a failure, never as a
+  // A signal kill reports `status: null` - treat it as a failure, never as a
   // pass, or a SIGKILLed script would read as "synced".
   const code = result.status ?? 1
 
@@ -117,6 +123,7 @@ for (const script of scripts) {
   }
   const after = readIds(outputOf(script))
   idDiffs.push({
+    modality: modalityOf(script),
     vendor: vendorOf(script),
     added: [...after].filter(id => !before.has(id)).sort(),
     removed: [...before].filter(id => !after.has(id)).sort(),
