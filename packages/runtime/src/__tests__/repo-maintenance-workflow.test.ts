@@ -734,16 +734,18 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const queue = report.slice(report.indexOf("## Human decision queue"))
     expect(queue).toContain("(30)")
     expect(queue).not.toContain("more")
-    const listed = [...queue.matchAll(/^- `(wt\/guarded-\d+)` .* — (\d+)% line coverage/gm)]
+    const listed = [...queue.matchAll(/^- `(wt\/guarded-\d+)` .* - (\d+)% line coverage/gm)]
     expect(listed).toHaveLength(30)
     const listedPcts = listed.map(m => Number(m[2]))
     expect(listedPcts).toEqual([...pcts].sort((a, b) => a - b))
-    // How to act on it: one ready-to-run CLI command per queued tip, in queue
-    // order; the operator types only their name. No JSON template to fill in.
-    const commands = [...queue.matchAll(/^agentproto branch gc approve ([0-9a-f]{40}) --by <your name> --repo \/repo {2}# (\S+)$/gm)]
-    expect(commands).toHaveLength(30)
-    expect(commands.map(m => m[2])).toEqual(listed.map(m => m[1]))
-    for (const m of commands) expect(refused.find(r => r.name === m[2])?.sha).toBe(m[1])
+    // How to act on it: ONE ready-to-run CLI command covering every queued
+    // tip, a sha per line in queue order and the flags last; the operator
+    // types only their name. No JSON template to fill in.
+    expect(queue.match(/^agentproto branch gc approve /gm)).toHaveLength(1)
+    expect(queue).toContain("agentproto branch gc approve \\\n")
+    const shaLines = [...queue.matchAll(/^ {2}([0-9a-f]{40}) \\$/gm)].map(m => m[1])
+    expect(shaLines).toEqual(listed.map(m => refused.find(r => r.name === m[1])?.sha))
+    expect(queue).toContain(`  ${shaLines.at(-1)} \\\n  --by <your name> --repo /repo\n`)
     expect(queue).not.toContain('"operator"')
     expect(queue).not.toContain("no CLI command")
   })
@@ -790,9 +792,118 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(report).toContain("## Human decision queue — reviewer agreed, refused by line guard (3)")
     const queue = report.slice(report.indexOf("## Human decision queue"))
     expect(queue.match(/^- `fix\/ci-failures`/gm)).toHaveLength(1)
-    expect(queue).toContain(`- \`fix/ci-failures\` (${"c2df0084".padEnd(40, "0")}) [local, remote] — 40% line coverage`)
-    expect(queue).toContain("- `wt/only-local` (" + "2".repeat(40) + ") [local] — 40% line coverage")
-    expect(queue.match(/^agentproto branch gc approve /gm)).toHaveLength(3)
+    expect(queue).toContain(`- \`fix/ci-failures\` (${"c2df0084".padEnd(40, "0")}) [local, remote] - 40% line coverage`)
+    expect(queue).toContain("- `wt/only-local` (" + "2".repeat(40) + ") [local] - 40% line coverage")
+    // One batch command, one sha line per tip (twins share one).
+    expect(queue.match(/^agentproto branch gc approve /gm)).toHaveLength(1)
+    expect(queue.match(/^ {2}[0-9a-f]{40} \\$/gm)).toHaveLength(3)
+  })
+
+  it("gives every decision queue row its verdict, PR state (by head branch name) and reason, and says mode apply when worktree_gc applied", async () => {
+    // SHA_E: reviewed in an EARLIER run (agreeing verdict, not a candidate
+    // now), refused by the guard in this one.
+    const SHA_E = "e".repeat(40)
+    const plan = (withVerdicts: boolean) => {
+      const p = branchGcPlanFixture(withVerdicts, withVerdicts ? { triage: "superseded", agree: true } : undefined)
+      const headPrs: Record<string, unknown> = {
+        "wt/small-residual": { state: "merged", number: 2092 },
+        "wt/large-residual": { state: "closed-unmerged", number: 2189 },
+      }
+      const entries: Array<Record<string, unknown>> = p.plan.entries.map(e =>
+        headPrs[e.name] ? { ...e, headPr: headPrs[e.name] } : e,
+      )
+      entries.push({
+        kind: "local",
+        name: "wt/old-review",
+        ref: "refs/heads/wt/old-review",
+        sha: SHA_E,
+        date: "2025-12-01T00:00:00Z",
+        author: "e",
+        subject: "old",
+        ageDays: 60,
+        class: "review",
+        status: "unmerged",
+        history: "current",
+        ahead: 1,
+        behind: 0,
+        headPr: { state: "none" },
+        verdict: { triage: "obsolete", agree: true, reviewer: "repo-maintenance-reviewer" },
+      })
+      return { ...p, plan: { ...p.plan, entries } }
+    }
+    const reasons: Record<string, unknown> = {
+      [SHA_A]: { triage: { verdict: "obsolete", reason: "squash-merged as #2092" } },
+      [SHA_B]: { triage: { verdict: "superseded", reason: "replaced by #2201" }, gate: { agree: true, reason: "closed-unmerged #2189, work redone in #2201" } },
+      [SHA_E]: { triage: { verdict: "obsolete", reason: "experiment abandoned" } },
+    }
+    const verdictGets: string[] = []
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") {
+        return fakeWorktreeGc(inputs, [
+          { path: "/repo/_wt/a", branch: "wt/a", result: "reclaimed" },
+          { path: "/repo/_wt/d", branch: "wt/d", result: "held" },
+          { path: "/repo/_wt/x", branch: "wt/x", result: "held" },
+        ])
+      }
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        if (branchGcCallCount === 3) {
+          return mcpResult({
+            mode: "apply",
+            outcomes: [
+              { kind: "local", name: "wt/large-residual", sha: SHA_B, result: "refused-guard", guard: "line coverage 40% of 50 added lines (< 95%)" },
+              { kind: "local", name: "wt/old-review", sha: SHA_E, result: "refused-guard", guard: "line coverage 70% of 10 added lines (< 95%)" },
+            ],
+            restoreLog: null,
+          })
+        }
+        return mcpResult(plan(branchGcCallCount >= 2))
+      }
+      if (name === "branch_gc_verdict_get") {
+        verdictGets.push(String(inputs.sha))
+        const record = reasons[String(inputs.sha)]
+        return mcpResult({ sha: inputs.sha, found: !!record, missing: !record, ...(record ? { record } : {}) })
+      }
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+    })
+    const report = (output as { report: string }).report
+    // The plan step is a dry run, but the run applied: the header says so.
+    expect(report).toContain("- mode: `apply` - 4 worktree(s) classified by the plan, 3 apply outcome(s): reclaimed=1 held=2")
+    expect(report).not.toContain("mode: `plan`")
+    // Verdict reasons: the PR found by head branch name, never `unknown`.
+    expect(report).toContain("- `wt/small-residual` - obsolete - PR: merged #2092 (by branch name) - cherry:")
+    expect(report).toContain("- `wt/large-residual` - superseded - PR: closed-unmerged #2189 - cherry:")
+    expect(report).not.toContain("PR: unknown")
+    // The earlier-run tip's record was looked up too, for its queue row.
+    expect(verdictGets).toContain(SHA_E)
+    const queue = report.slice(report.indexOf("## Human decision queue"))
+    expect(queue).toContain(
+      `- \`wt/large-residual\` (${SHA_B}) [local] - 40% line coverage (line coverage 40% of 50 added lines (< 95%))` +
+        " - verdict: superseded - PR: closed-unmerged #2189 - reason: closed-unmerged #2189, work redone in #2201",
+    )
+    expect(queue).toContain(
+      `- \`wt/old-review\` (${SHA_E}) [local] - 70% line coverage (line coverage 70% of 10 added lines (< 95%))` +
+        " - verdict: obsolete - PR: none - reason: experiment abandoned",
+    )
+    // One batch approval, lowest coverage first, flags last.
+    expect(queue).toContain(
+      ["```sh", "agentproto branch gc approve \\", `  ${SHA_B} \\`, `  ${SHA_E} \\`, "  --by <your name> --repo /repo", "```"].join("\n"),
+    )
+    expect(queue).toContain("`--dry-run`")
   })
 
   it("asks branch_gc for its full reply on every call (the plan entries feed the review queue, the apply output is reported)", async () => {
@@ -1816,6 +1927,25 @@ describe("repo-maintenance maintain workflow - reviewer evidence (pure functions
       { mode: "plan", plan: [] },
     ) as { queue: Array<Record<string, unknown>> }
     expect(queue[0]).toMatchObject({ prState: "unknown", prNumber: null, prSummary: "unknown", cherry: null, cherrySummary: "unavailable" })
+  })
+
+  it("buildReviewQueue reads a plain branch's PR state from branch_gc's headPr (by head branch name)", async () => {
+    const { buildReviewQueue } = await load()
+    const { queue } = buildReviewQueue(
+      branchPlan([
+        { ...base, name: "merged-by-name", ref: "refs/heads/merged-by-name", sha: sha("4"), class: "review", headPr: { state: "merged", number: 2092 } },
+        { ...base, name: "closed", ref: "refs/heads/closed", sha: sha("5"), class: "review", headPr: { state: "closed-unmerged", number: 2189 }, ageDays: 11 },
+        { ...base, name: "no-pr", ref: "refs/heads/no-pr", sha: sha("6"), class: "review", headPr: { state: "none" }, ageDays: 12 },
+        { ...base, name: "exact", ref: "refs/heads/exact", sha: sha("7"), class: "review", mergedPr: 5, headPr: { state: "merged", number: 9 }, ageDays: 13 },
+      ]),
+      { mode: "plan", plan: [] },
+    ) as { queue: Array<Record<string, unknown>> }
+    const byName = new Map(queue.map(c => [c.name, c]))
+    expect(byName.get("merged-by-name")).toMatchObject({ prState: "merged", prNumber: 2092, prSummary: "merged PR #2092 (by branch name)" })
+    expect(byName.get("closed")).toMatchObject({ prState: "closed-unmerged", prNumber: 2189, prSummary: "closed-unmerged PR #2189" })
+    expect(byName.get("no-pr")).toMatchObject({ prState: "none", prNumber: null, prSummary: "none" })
+    // An exact-head merged PR outranks the by-name answer.
+    expect(byName.get("exact")).toMatchObject({ prState: "merged", prNumber: 5, prSummary: "merged PR #5" })
   })
 
   it("buildReviewQueue uses the PR number a branch_gc entry does expose (forgePr / mergedPr) without claiming a state", async () => {
