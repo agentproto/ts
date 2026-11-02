@@ -417,14 +417,27 @@ reviewer still cannot stash, checkout or commit in the shared repo.
 ## Reviewer evidence
 
 Each candidate carries the PR state (`open`, `merged`, `closed-unmerged`,
-`none`, or `unknown` for a plain branch the plans say nothing about) with its
-PR number, and the `git cherry` summary (commits with no patch-equivalent on
-base). For a worktree-held branch the PR state comes from the matching
-`worktree_gc` entry (`partial` is read as merged with extra commits); the
-cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
+`none`, or `unknown` when the forge gave no answer) with its PR number, and
+the `git cherry` summary (commits with no patch-equivalent on base). For a
+worktree-held branch the PR state comes from the matching `worktree_gc` entry
+(`partial` is read as merged with extra commits). For any other branch it is
+the merged PR whose head is the tip (`mergedPr`) when there is one, else
+branch_gc's `headPr`: the PR found for the branch NAME in the forge's bulk
+open, merged and closed-unmerged lists (no per-branch call). A `merged` PR
+found by name is printed `merged #N (by branch name)`: a PR from that name
+merged, not necessarily this tip. `none` needs all three lists; a list the
+forge could not serve leaves the state `unknown`. The cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
 and is `unavailable` when branch_gc does not expose it. The report prints one
 line per verdict: branch, PR state, cherry summary and the reviewer's one-line
-reason (stored `gate.reason`, else `triage.reason`).
+reason (stored `gate.reason`, else `triage.reason`). Each "Human decision
+queue" row carries the same evidence: the tip's names and sha, line coverage
+and the guard's refusal, the stored verdict (`superseded`, `obsolete`, ...),
+the PR state and the reviewer's reason, so approving needs no
+cross-referencing. Under the rows the report prints ONE `agentproto branch gc
+approve` command listing every queued sha on its own line with the flags
+last, so deleting the line of a tip you do not approve keeps it valid. The
+"Worktrees" header says `mode: apply` with the apply outcome tally when
+`worktree_gc` applied, else `mode: plan`.
 
 ## Applying agreed verdicts
 

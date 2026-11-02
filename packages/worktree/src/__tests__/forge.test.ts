@@ -83,6 +83,21 @@ describe("RestForgeClient (GITHUB_TOKEN REST fallback)", () => {
     ])
   })
 
+  it("splits the closed PR list into merged and closed-unmerged", async () => {
+    const urls: string[] = []
+    const fetchFn = async (url: string | URL | Request): Promise<Response> => {
+      urls.push(String(url))
+      return jsonResponse(200, [
+        { number: 1, state: "closed", merged_at: "2026-01-01T00:00:00.000Z", head: { ref: "feat/merged", sha: "abc" } },
+        { number: 2, state: "closed", merged_at: null, head: { ref: "feat/abandoned", sha: "def" } },
+      ])
+    }
+    const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn as typeof fetch)
+    expect((await client.listMergedPullRequests()).map((pr) => pr.number)).toEqual([1])
+    expect((await client.listClosedUnmergedPullRequests()).map((pr) => pr.number)).toEqual([2])
+    for (const u of urls) expect(u).toContain("/pulls?state=closed&")
+  })
+
   it("treats a 404 on commits/:sha/pulls as a legitimate empty result, not an error", async () => {
     const fetchFn = async (): Promise<Response> => new Response("not found", { status: 404 })
     const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn)
@@ -197,8 +212,9 @@ describe("GhCliForgeClient: independent of cwd-based host detection", () => {
     await client.pullRequestsForBranch("feat/x")
     await client.listOpenPullRequests()
     await client.listMergedPullRequests()
+    await client.listClosedUnmergedPullRequests()
     const prLists = calls.filter((c) => c.cmd === "gh" && c.args[0] === "pr")
-    expect(prLists).toHaveLength(3)
+    expect(prLists).toHaveLength(4)
     for (const c of prLists) {
       const i = c.args.indexOf("-R")
       expect(c.args[i + 1]).toBe("agentik-studio/agentik-studio")

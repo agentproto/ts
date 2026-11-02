@@ -241,6 +241,20 @@ export interface BranchRef {
   remote?: string
 }
 
+/**
+ * The forge's PR for a branch, looked up by HEAD BRANCH NAME in the bulk PR
+ * lists (no per-branch call): its open PR, else its newest merged PR, else its
+ * newest PR closed without merging, else `none`. By name only, so a `merged`
+ * here says a PR from this branch name merged, not that this tip landed (an
+ * exact-head match is `mergedPr` instead). Absent when a list it needed was
+ * unavailable: no answer is never reported as `none`.
+ */
+export interface BranchHeadPr {
+  state: "open" | "merged" | "closed-unmerged" | "none"
+  /** The PR number; absent for `none`. */
+  number?: number
+}
+
 /** Summary of a stored verdict for this exact tip, when one exists. */
 export interface BranchVerdictSummary {
   triage: BranchTriageVerdict
@@ -263,6 +277,8 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   mergedPrMatch?: MergedPrMatch
   /** Set when the status is `forge-mirror`: the PR whose `refs/pull/<N>/head` IS this tip. */
   forgePr?: number
+  /** Set for unmerged local and remote refs: see {@link BranchHeadPr}. */
+  headPr?: BranchHeadPr
   /** Set for unmerged local and orphan refs. */
   pushed?: BranchPushState
   verdict?: BranchVerdictSummary
@@ -916,23 +932,65 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
  * "no merged PRs", and the ladder still classifies every ref on its own.
  */
 interface MergedPrIndex {
+  /** The merged list was read: an absent name means no merged PR. */
+  available: boolean
   shas: Map<string, number>
   names: Map<string, { number: number; headRefOid: string }>
+  /** Head ref name → its NEWEST merged PR number (`headPr`). */
+  newestByName: Map<string, number>
 }
 
 async function mergedPrIndex(forge: ForgeClient | undefined): Promise<MergedPrIndex> {
-  if (!forge?.listMergedPullRequests) return { shas: new Map(), names: new Map() }
+  const none = (): MergedPrIndex => ({ available: false, shas: new Map(), names: new Map(), newestByName: new Map() })
+  if (!forge?.listMergedPullRequests) return none()
   try {
     const shas = new Map<string, number>()
     const names = new Map<string, { number: number; headRefOid: string }>()
+    const newestByName = new Map<string, number>()
     for (const pr of await forge.listMergedPullRequests()) {
       shas.set(pr.headRefOid, pr.number)
       names.set(pr.headRefName, { number: pr.number, headRefOid: pr.headRefOid })
+      newestByName.set(pr.headRefName, Math.max(pr.number, newestByName.get(pr.headRefName) ?? 0))
     }
-    return { shas, names }
+    return { available: true, shas, names, newestByName }
   } catch {
-    return { shas: new Map(), names: new Map() }
+    return none()
   }
+}
+
+interface ClosedUnmergedPrHeads {
+  available: boolean
+  /** Head ref name → its NEWEST PR closed without merging. */
+  names: Map<string, number>
+}
+
+/** PRs closed without merging, by head ref name, for `headPr`. Never throws:
+ *  a failure or a forge without the bulk list just leaves `headPr` unknown. */
+async function closedUnmergedPrHeads(forge: ForgeClient | undefined): Promise<ClosedUnmergedPrHeads> {
+  if (!forge?.listClosedUnmergedPullRequests) return { available: false, names: new Map() }
+  try {
+    const names = new Map<string, number>()
+    for (const pr of await forge.listClosedUnmergedPullRequests()) {
+      if (pr.merged) continue
+      names.set(pr.headRefName, Math.max(pr.number, names.get(pr.headRefName) ?? 0))
+    }
+    return { available: true, names }
+  } catch {
+    return { available: false, names: new Map() }
+  }
+}
+
+/** {@link BranchHeadPr} for branch `name` from the bulk lists. A hit in any
+ *  list is an answer; `none` needs all three lists to have been read. */
+function headPrOf(name: string, env: ClassifyEnv): BranchHeadPr | undefined {
+  const open = env.prs.heads.get(name)
+  if (open !== undefined) return { state: "open", number: open }
+  const merged = env.mergedPrNewestByName.get(name)
+  if (merged !== undefined) return { state: "merged", number: merged }
+  const closed = env.closedUnmergedPrs.names.get(name)
+  if (closed !== undefined) return { state: "closed-unmerged", number: closed }
+  if (env.prs.available && env.mergedPrsAvailable && env.closedUnmergedPrs.available) return { state: "none" }
+  return undefined
 }
 
 interface ForgePrHeads {
@@ -1322,6 +1380,11 @@ interface ClassifyEnv {
   forgePrHeads: ForgePrHeads
   /** Merged PR head ref name → { number, headRefOid } (checkpoint supersession when the work branch is gone — the snapshot's parent must equal `headRefOid`). */
   mergedPrNames: Map<string, { number: number; headRefOid: string }>
+  /** Merged PR head ref name → its newest PR number, and whether the merged list was read (`headPr`). */
+  mergedPrNewestByName: Map<string, number>
+  mergedPrsAvailable: boolean
+  /** PRs closed without merging, by head ref name (`headPr`). */
+  closedUnmergedPrs: ClosedUnmergedPrHeads
   /** Work-branch name → its local/remote refs, for classifying checkpoint branches against their work branch. */
   workBranchRefs: Map<string, BranchRef[]>
   remoteShas: Set<string>
@@ -1432,6 +1495,10 @@ async function classifyRef(b: BranchRef, env: ClassifyEnv): Promise<BranchGcPlan
     const pushed = await pushStateOf(b, env)
     if (pushed) entry.pushed = pushed
     await stampVerdict(entry, b.sha, env)
+    if (b.kind !== "orphan") {
+      const headPr = headPrOf(b.name, env)
+      if (headPr) entry.headPr = headPr
+    }
   }
   const hold = holdFor(b, env)
   if (hold) {
@@ -1483,11 +1550,12 @@ async function snapshot(input: {
   if (remote && input.fetch !== false) {
     fetched = (await git(input.repoRoot, ["fetch", "--prune", "--quiet", remote])).exitCode === 0
   }
-  const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs, forgePrHeads] = await Promise.all([
+  const [{ refs, otherRemoteRefs }, worktrees, prs, mergedPrs, closedUnmergedPrs, forgePrHeads] = await Promise.all([
     listBranchRefs(input.repoRoot, remote, remotes),
     worktreeBranches(input.repoRoot),
     openPrHeads(input.forge),
     mergedPrIndex(input.forge),
+    closedUnmergedPrHeads(input.forge),
     forgePrHeadsOf(input.repoRoot, remote),
   ])
   const baseSha = (await gitOk(input.repoRoot, ["rev-parse", "--verify", `${input.base}^{commit}`])).trim()
@@ -1537,6 +1605,9 @@ async function snapshot(input: {
       mergedPrCommits: () => (mergedPrCommitsP ??= buildMergedPrCommits(ctx, mergedPrs.shas)),
       prMatches: new Map(),
       mergedPrNames: mergedPrs.names,
+      mergedPrNewestByName: mergedPrs.newestByName,
+      mergedPrsAvailable: mergedPrs.available,
+      closedUnmergedPrs,
       forgePrHeads,
       workBranchRefs,
       remoteShas: new Set(remoteRefs.map((r) => r.sha)),

@@ -64,6 +64,8 @@ export interface BranchGcPlanEntryView {
   /** How a `pr-merged` tip matched `mergedPr`: its exact head, an ancestor of that head, or patch-equivalent commits. */
   mergedPrMatch?: "head" | "ancestor" | "patch"
   forgePr?: number
+  /** The forge's PR for this branch NAME (open, else newest merged, else newest closed unmerged, else `none`); absent when the forge could not answer. */
+  headPr?: { state: "open" | "merged" | "closed-unmerged" | "none"; number?: number }
   holdReason?: BranchGcHoldReason
   holdDetail?: string
   pushed?: string

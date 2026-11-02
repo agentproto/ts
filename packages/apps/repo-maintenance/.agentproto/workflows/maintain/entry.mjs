@@ -125,7 +125,9 @@ const REVIEW_PROMPT =
   "was abandoned or superseded, but not proof - still account for the residual files and cite what you " +
   "checked. An open PR is live work: never agree to delete it (record triage in-progress or unclear, no " +
   "gate.agree). A merged PR marked partial landed, but the branch carries commits made after it: judge " +
-  "those extra commits. PR state none or unknown means no PR was found or the forge was not consulted - " +
+  "those extra commits. A merged PR marked by branch name merged from this branch's name, but its head is " +
+  "not this tip: check what this tip carries beyond it (the work may have been squash-merged). " +
+  "PR state none or unknown means no PR was found or the forge was not consulted - " +
   "do not infer one. git cherry counts commits with no patch-equivalent on base (a `+` line of `git cherry " +
   "<base> <tip>`); when it says unavailable, run that read-only command yourself. " +
   "Keep triage.reason (and gate.reason) to ONE line: the maintain report prints it verbatim next to the PR state." +
@@ -250,13 +252,15 @@ export function normalizePrState(integration) {
 }
 
 /** `closed-unmerged PR #9`, `merged PR #6 (partial: +2 commit(s) made after it)`,
- *  `none`, or `unknown` (+ ` (PR #n)` when only a number is known). */
+ *  `merged PR #6 (by branch name)`, `none`, or `unknown` (+ ` (PR #n)` when
+ *  only a number is known). */
 export function formatPrState(pr) {
   const state = pr?.state ?? "unknown"
   if (state === "none" || (state === "unknown" && pr?.number == null)) return state
   if (state === "unknown") return `unknown (PR #${pr.number})`
   const partial = pr.partial ? ` (partial: ${typeof pr.aheadBy === "number" ? `+${pr.aheadBy} ` : ""}commit(s) made after it)` : ""
-  return `${state} PR #${pr.number}${partial}`
+  const byName = pr.byName && state === "merged" ? " (by branch name)" : ""
+  return `${state} PR #${pr.number}${partial}${byName}`
 }
 
 /** `git cherry <base> <tip>` summary - `{ total, unmatched }` where `unmatched`
@@ -280,17 +284,26 @@ function worktreeEntryOf(worktreeGcPlanResult, path) {
   return entries.find(w => w?.path === path)
 }
 
-/** The PR evidence for a branch_gc entry: from the matching worktree_gc entry
- *  when the branch is worktree-held (`heldPath`), else only what the branch_gc
- *  entry itself exposes (`mergedPr`, `forgePr` carry a number but not a PR
- *  state). Anything else is `unknown` - never invented. */
-function prEvidenceOf(e, heldPath, worktreeGcPlanResult) {
+/** The PR evidence for a branch_gc entry, best source first: the matching
+ *  worktree_gc entry when the branch is worktree-held (`heldPath`); a merged
+ *  PR whose head IS the tip (`mergedPr`); the PR branch_gc found for the
+ *  branch NAME in the forge's bulk lists (`headPr`: open, merged,
+ *  closed-unmerged or none; a `merged` one is flagged `byName`, since it
+ *  proves a PR from that name merged, not that this tip landed). Without any
+ *  of those it is `unknown` (with `forgePr`'s number when set), never
+ *  invented. */
+export function prEvidenceOf(e, heldPath, worktreeGcPlanResult) {
   if (heldPath) {
     const w = worktreeEntryOf(worktreeGcPlanResult, heldPath)
     if (w?.integration) return normalizePrState(w.integration)
   }
-  const number = typeof e?.mergedPr === "number" ? e.mergedPr : typeof e?.forgePr === "number" ? e.forgePr : null
-  return { state: e?.mergedPr != null ? "merged" : "unknown", number }
+  if (typeof e?.mergedPr === "number") return { state: "merged", number: e.mergedPr }
+  const h = e?.headPr
+  if (h?.state === "none") return { state: "none", number: null }
+  if ((h?.state === "open" || h?.state === "merged" || h?.state === "closed-unmerged") && typeof h.number === "number") {
+    return { state: h.state, number: h.number, ...(h.state === "merged" ? { byName: true } : {}) }
+  }
+  return { state: "unknown", number: typeof e?.forgePr === "number" ? e.forgePr : null }
 }
 
 /** The worktree path a branch_gc entry is held by, when that hold is the only
@@ -406,7 +419,10 @@ export function verdictLine(v, record, opts = {}) {
 }
 
 /** Tips whose stored verdict the report needs the record of (for the reason):
- *  every review candidate's tips plus the held-worktree verdicts shown. */
+ *  every review candidate's tips, the held-worktree verdicts shown and, when
+ *  the run applies reviewed verdicts, every tip whose stored verdict agreed
+ *  (any of them, reviewed this run or earlier, can land in the human decision
+ *  queue when the line guard refuses it). */
 export function verdictLookupTips(b) {
   const shas = new Set()
   for (const c of b.steps?.reviewCandidates ?? []) {
@@ -414,6 +430,11 @@ export function verdictLookupTips(b) {
   }
   if (b.input?.reviewHeldWorktrees !== false) {
     for (const v of heldWorktreeVerdicts(b.steps?.branchGcVerify, b.steps?.worktreeGcPlan)) shas.add(v.sha)
+  }
+  if (b.input?.applyMerged === true && b.input?.applyReviewed === true) {
+    for (const e of b.steps?.branchGcVerify?.plan?.entries ?? []) {
+      if (e?.verdict?.agree === true && typeof e.sha === "string") shas.add(e.sha)
+    }
   }
   return [...shas].map(sha => ({ sha }))
 }
@@ -593,23 +614,55 @@ function shellArg(s) {
 }
 
 /** The report's operator-approval instructions for the decision queue
- *  `tips` (`[{ sha, names }]`, see {@link groupOutcomesBySha}): one
- *  `agentproto branch gc approve` command per tip. The CLI copies the stored
- *  verdict itself, so the operator supplies only their name. */
+ *  `tips` (`[{ sha, names }]`, see {@link groupOutcomesBySha}): ONE
+ *  `agentproto branch gc approve` command covering every tip (the CLI takes
+ *  many and judges each on its own), one sha per line and the flags last, so
+ *  a human can delete the line of a tip they do not approve. The CLI copies the stored verdict itself, so
+ *  the operator supplies only their name. */
 export function operatorApprovalHowTo(tips, repoRoot) {
   const repo = repoRoot ? ` --repo ${shellArg(repoRoot)}` : ""
   return [
-    "To approve one, record an operator approval for that exact tip from your own shell (an agent " +
-      "session is refused). The command copies the stored verdict, refuses when it did not agree or the " +
-      "branch moved since, and `--by` must differ from the reviewer. Add `--dry-run` to see what it records, " +
+    "To approve them, record an operator approval for those exact tips from your own shell (an agent " +
+      "session is refused). The command copies each stored verdict, refuses a tip whose verdict did not " +
+      "agree or whose branch moved since (the others still go through), and `--by` must differ from the " +
+      "reviewer. Delete the line of any tip you do not approve. Add `--dry-run` to see what it records, " +
       "`--note <why>` to say why:",
     "",
     "```sh",
-    ...tips.map(t => `agentproto branch gc approve ${t.sha} --by <your name>${repo}  # ${t.names.join(", ")}`),
+    // Flags last: deleting any sha line leaves a valid command.
+    "agentproto branch gc approve \\",
+    ...tips.map(t => `  ${t.sha} \\`),
+    `  --by <your name>${repo}`,
     "```",
     "",
     "The next run with `applyMerged: true` and `applyReviewed: true` then deletes them and writes a restore log.",
   ]
+}
+
+/** One human decision queue row for tip group `g` (`{ sha, names, kinds,
+ *  outcome }`): its names and sha, line coverage and the guard's refusal,
+ *  then what the human needs to decide without cross-referencing: the
+ *  stored verdict, the PR evidence and the reviewer's one-line reason. */
+export function decisionQueueLine(g, pct, evidence, record) {
+  const triage = record?.triage?.verdict ?? evidence?.triage ?? "unknown"
+  return (
+    `- ${tipLabel(g)} - ${pct !== null ? `${pct}%` : "unknown"} line coverage (${g.outcome.guard})` +
+    ` - verdict: ${triage} - PR: ${formatPrState(evidence?.pr).replace(/ PR #(\d+)/, " #$1")}` +
+    ` - reason: ${verdictReason(record)}`
+  )
+}
+
+/** The decision-queue evidence of tip `sha` from the verify plan: its stored
+ *  verdict's triage and its PR evidence ({@link prEvidenceOf}, through the
+ *  worktree_gc entry when the branch was held by a reviewable worktree). */
+function tipEvidenceOf(sha, branchGcVerifyResult, worktreeGcPlanResult) {
+  const entries = (branchGcVerifyResult?.plan?.entries ?? []).filter(e => e?.sha === sha)
+  if (entries.length === 0) return { triage: null, pr: { state: "unknown", number: null } }
+  const held = reviewableWorktrees(worktreeGcPlanResult)
+  // A local ref and its remote twin share the tip: take the best PR answer.
+  const prs = entries.map(e => prEvidenceOf(e, heldWorktreeOf(e, held), worktreeGcPlanResult))
+  const pr = prs.find(p => p.state !== "unknown") ?? prs[0]
+  return { triage: entries.find(e => e.verdict)?.verdict?.triage ?? null, pr }
 }
 
 /** `branch_gc` apply outcomes grouped by tip sha, first-seen order: a local
@@ -797,7 +850,17 @@ export function buildReport(b) {
   lines.push("")
   lines.push("## Worktrees")
   const wt = summarizeWorktreePlan(wtPlan)
-  lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` — ${wt.total} worktree(s) classified`)
+  // The plan step is always a dry run; the header names the apply when one ran.
+  const wtApplied = applyMerged && (worktreeGcApply?.mode === "apply" || Array.isArray(worktreeGcApply?.outcomes))
+  if (wtApplied) {
+    const wtOutcomes = Array.isArray(worktreeGcApply?.outcomes) ? worktreeGcApply.outcomes : []
+    lines.push(
+      `- mode: \`apply\` - ${wt.total} worktree(s) classified by the plan, ${wtOutcomes.length} apply outcome(s)` +
+        (wtOutcomes.length > 0 ? `: ${formatTally(tally(wtOutcomes.map(o => o.result)))}` : ""),
+    )
+  } else {
+    lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` - ${wt.total} worktree(s) classified`)
+  }
   lines.push(`- reclaim=${wt.byClass.reclaim} salvage=${wt.byClass.salvage} hold=${wt.byClass.hold}`)
   lines.push("")
   lines.push("## Branches")
@@ -961,7 +1024,7 @@ export function buildReport(b) {
       .map(g => ({ g, pct: lineCoveragePctOfGuard(g.outcome.guard) }))
       .sort((a, b) => (a.pct ?? Number.POSITIVE_INFINITY) - (b.pct ?? Number.POSITIVE_INFINITY))
     for (const { g, pct } of queue) {
-      lines.push(`- ${tipLabel(g)} — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${g.outcome.guard}`)
+      lines.push(decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)))
     }
     lines.push("")
     lines.push(...operatorApprovalHowTo(queue.map(q => q.g), plan?.repoRoot))

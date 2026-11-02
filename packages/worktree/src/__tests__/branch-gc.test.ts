@@ -94,6 +94,7 @@ class FakeForge implements ForgeClient {
   constructor(
     private readonly open: ForgePullRequestRef[] = [],
     private readonly merged: ForgePullRequestRef[] = [],
+    private readonly closedUnmerged: ForgePullRequestRef[] = [],
   ) {}
   async pullRequestsForBranch(): Promise<ForgePullRequestRef[]> {
     return []
@@ -108,6 +109,9 @@ class FakeForge implements ForgeClient {
   async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
     return this.merged
   }
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return this.closedUnmerged
+  }
 }
 
 function openPr(number: number, headRefName: string): ForgePullRequestRef {
@@ -116,6 +120,10 @@ function openPr(number: number, headRefName: string): ForgePullRequestRef {
 
 function mergedPr(number: number, headRefName: string, headRefOid: string): ForgePullRequestRef {
   return { number, state: "closed", merged: true, mergedAt: "2026-01-01T00:00:00Z", headRefName, headRefOid }
+}
+
+function closedPr(number: number, headRefName: string): ForgePullRequestRef {
+  return { number, state: "closed", merged: false, mergedAt: null, headRefName, headRefOid: "0".repeat(40) }
 }
 
 function plan(repo: string, extra: Partial<PlanBranchGcInput> = {}): Promise<BranchGcPlan> {
@@ -272,6 +280,62 @@ describe("branch gc — reclaim ladder", () => {
     await branchWith(repo, "feat/fresh-work", { "n.ts": "n\n" })
     const e = entry(await plan(repo, { minAgeDays: 3 }), "feat/fresh-work")
     expect(e).toMatchObject({ status: "unmerged", class: "hold", holdReason: "young" })
+  })
+})
+
+// ── PR by head branch name (headPr) ─────────────────────────────────────
+
+describe("branch gc - headPr (the forge's PR for the branch name)", () => {
+  it("stamps open, newest merged, newest closed-unmerged, or none from the bulk lists", async () => {
+    const repo = await makeRepo()
+    const mergedHead = await branchWith(repo, "feat/merged-by-name", { "a.txt": "a\n" })
+    await branchWith(repo, "feat/closed", { "b.txt": "b\n" })
+    await branchWith(repo, "feat/open", { "c.txt": "c\n" })
+    await branchWith(repo, "feat/no-pr", { "d.txt": "d\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    // The branch grew past its merged PR's head: unmerged, review, but the PR
+    // that merged from this name is still the evidence a human needs.
+    await execGit(repo, ["checkout", "-q", "feat/merged-by-name"])
+    await commitFiles(repo, { "after.txt": "after\n" }, "post-merge work")
+    await execGit(repo, ["checkout", "-q", "main"])
+    const forge = new FakeForge(
+      [openPr(30, "feat/open")],
+      [mergedPr(20, "feat/merged-by-name", mergedHead), mergedPr(21, "feat/merged-by-name", mergedHead)],
+      [closedPr(7, "feat/closed"), closedPr(12, "feat/closed"), closedPr(40, "feat/merged-by-name")],
+    )
+    const p = await plan(repo, { forge })
+    expect(entry(p, "feat/merged-by-name")).toMatchObject({ status: "unmerged", class: "review", headPr: { state: "merged", number: 21 } })
+    expect(entry(p, "feat/merged-by-name").mergedPr).toBeUndefined()
+    expect(entry(p, "feat/closed")).toMatchObject({ class: "review", headPr: { state: "closed-unmerged", number: 12 } })
+    expect(entry(p, "feat/open")).toMatchObject({ class: "hold", holdReason: "open-pr", headPr: { state: "open", number: 30 } })
+    expect(entry(p, "feat/no-pr").headPr).toEqual({ state: "none" })
+  })
+
+  it("leaves headPr unset (unknown) when a list it needs is unavailable, never claims none", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/no-pr", { "d.txt": "d\n" })
+    await branchWith(repo, "feat/closed", { "b.txt": "b\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    // No closed-unmerged list: a hit in the other lists still answers, a miss does not.
+    const legacy: ForgeClient = {
+      pullRequestsForBranch: async () => [],
+      pullRequestsForCommit: async () => [],
+      ensurePullHeadFetched: async () => {},
+      listOpenPullRequests: async () => [],
+      listMergedPullRequests: async () => [],
+    }
+    const p = await plan(repo, { forge: legacy })
+    expect(entry(p, "feat/no-pr").headPr).toBeUndefined()
+    // A failing closed list is the same: no answer, not `none`.
+    const failing = new FakeForge()
+    failing.listClosedUnmergedPullRequests = async () => {
+      throw new Error("offline")
+    }
+    expect(entry(await plan(repo, { forge: failing }), "feat/no-pr").headPr).toBeUndefined()
+    expect(entry(await plan(repo, { forge: new FakeForge([], [], [closedPr(3, "feat/closed")]) }), "feat/closed").headPr).toEqual({
+      state: "closed-unmerged",
+      number: 3,
+    })
   })
 })
 

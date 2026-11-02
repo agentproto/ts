@@ -84,6 +84,13 @@ export interface ForgeClient {
    * those callers, never as "no merged PRs".
    */
   listMergedPullRequests?(): Promise<ForgePullRequestRef[]>
+  /**
+   * Every PR/MR closed WITHOUT merging, in one round-trip: with the open and
+   * merged lists it answers "what PR did this head branch have" for every
+   * branch at once (`branch-gc.ts`'s `headPr`). Optional like the other bulk
+   * lists; a client without it leaves that answer unknown, never `none`.
+   */
+  listClosedUnmergedPullRequests?(): Promise<ForgePullRequestRef[]>
 }
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
@@ -102,6 +109,9 @@ export class UnreachableForgeClient implements ForgeClient {
     throw new ForgeUnavailableError(this.reason)
   }
   async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
     throw new ForgeUnavailableError(this.reason)
   }
 }
@@ -138,6 +148,10 @@ export function withUnavailableNotice(client: ForgeClient, notify: (message: str
   if (client.listMergedPullRequests) {
     const list = client.listMergedPullRequests.bind(client)
     wrapped.listMergedPullRequests = () => guard(list)
+  }
+  if (client.listClosedUnmergedPullRequests) {
+    const list = client.listClosedUnmergedPullRequests.bind(client)
+    wrapped.listClosedUnmergedPullRequests = () => guard(list)
   }
   return wrapped
 }
@@ -300,6 +314,15 @@ export class GhCliForgeClient implements ForgeClient {
     return this.parseOutput(stdout, ghPrListSchema, args).map(normalizeGhPrListItem)
   }
 
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    // `--state closed` also lists merged PRs: keep the ones that never merged.
+    const args = ["pr", "list", "--state", "closed", "--limit", "1000", "--json", "number,state,headRefName,headRefOid,mergedAt"]
+    const stdout = await this.run(args)
+    return this.parseOutput(stdout, ghPrListSchema, args)
+      .map(normalizeGhPrListItem)
+      .filter((pr) => !pr.merged)
+  }
+
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
     const check = await execArgv("git", ["-C", this.repoRoot, "cat-file", "-e", `${oid}^{commit}`], this.repoRoot)
     if (check.exitCode === 0) return
@@ -439,7 +462,8 @@ export class RestForgeClient implements ForgeClient {
     return all
   }
 
-  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+  /** Every closed PR (merged or not), up to 10 pages of 100. */
+  private async listClosedPullRequests(): Promise<ForgePullRequestRef[]> {
     const all: ForgePullRequestRef[] = []
     for (let page = 1; page <= 10; page++) {
       const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls?state=closed&per_page=100&page=${page}`)
@@ -450,7 +474,15 @@ export class RestForgeClient implements ForgeClient {
       all.push(...batch)
       if (batch.length < 100) break
     }
-    return all.filter((pr) => pr.merged)
+    return all
+  }
+
+  async listMergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return (await this.listClosedPullRequests()).filter((pr) => pr.merged)
+  }
+
+  async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    return (await this.listClosedPullRequests()).filter((pr) => !pr.merged)
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
