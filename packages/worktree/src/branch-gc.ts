@@ -2292,3 +2292,120 @@ export async function recordBranchVerdict(input: {
   await input.store.set(record)
   return record
 }
+
+// ── operator approval ────────────────────────────────────────────────
+
+const FULL_SHA_RE = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/
+
+/** Why `approveBranchVerdict` refused. */
+export type BranchApprovalRefusal =
+  | "no-ref"
+  | "ambiguous"
+  | "no-verdict"
+  | "not-agreed"
+  | "tip-moved"
+  | "by-is-reviewer"
+
+export type BranchApprovalResult =
+  | {
+      ok: true
+      /** `would-record` on a dry run; `already-approved` leaves the stored operator block untouched. */
+      status: "recorded" | "would-record" | "already-approved"
+      target: string
+      name: string
+      sha: string
+      /** The refs (`refs/heads/x`, `refs/remotes/origin/x`) currently at `sha` under `name`. */
+      refs: string[]
+      /** The verdict recorded (or that would be): the stored one plus `operator`. */
+      verdict: BranchVerdict
+      record?: BranchVerdictRecord
+    }
+  | { ok: false; refusal: BranchApprovalRefusal; target: string; message: string }
+
+/** Every local, base-remote and orphan ref named `name` (remote refs drop
+ *  their `<remote>/` prefix, the way `branch gc` names them), with its tip. */
+async function refsNamed(repoRoot: string, name: string): Promise<Array<{ ref: string; sha: string }>> {
+  const out = await gitOk(repoRoot, ["for-each-ref", "--format=%(refname)%09%(objectname)", "refs/heads", "refs/remotes"])
+  const hits: Array<{ ref: string; sha: string }> = []
+  for (const line of out.split("\n")) {
+    const [ref = "", sha = ""] = line.split("\t")
+    if (!ref) continue
+    const matches =
+      ref === `refs/heads/${name}` ||
+      ref === `refs/remotes/${name}` ||
+      (ref.startsWith("refs/remotes/") && ref.slice("refs/remotes/".length).replace(/^[^/]+\//, "") === name)
+    if (matches) hits.push({ ref, sha })
+  }
+  return hits
+}
+
+/**
+ * Record a human operator approval for one stored verdict, copying it so the
+ * operator names only the tip (`target`: a full sha, or a branch name whose
+ * current tip has a verdict) and themselves. Refuses — never records — when
+ * the target resolves to no ref, when no verdict is stored for the tip, when
+ * the stored gate did not agree, when no ref named in the verdict still points
+ * at that sha, or when `by` is the reviewer. This only stores the approval;
+ * the next `branch gc --include-reviewed --apply` is what deletes.
+ *
+ * It carries no trust check of its own: the caller is the operator boundary.
+ */
+export async function approveBranchVerdict(input: {
+  repoRoot: string
+  repoName: string
+  target: string
+  by: string
+  note?: string
+  dryRun?: boolean
+  store: BranchVerdictStore
+  now?: () => string
+}): Promise<BranchApprovalResult> {
+  const target = input.target.trim()
+  const refuse = (refusal: BranchApprovalRefusal, message: string): BranchApprovalResult => ({ ok: false, refusal, target, message })
+  let record: BranchVerdictRecord | null
+  if (FULL_SHA_RE.test(target)) {
+    record = await input.store.get(input.repoName, target)
+    if (!record) return refuse("no-verdict", `no stored verdict for ${target}`)
+  } else {
+    const refs = await refsNamed(input.repoRoot, target)
+    if (refs.length === 0) return refuse("no-ref", `no branch named "${target}" (pass the full tip sha instead)`)
+    const found = new Map<string, BranchVerdictRecord>()
+    for (const sha of new Set(refs.map((r) => r.sha))) {
+      const r = await input.store.get(input.repoName, sha)
+      if (r) found.set(sha, r)
+    }
+    if (found.size === 0) {
+      const tips = [...new Set(refs.map((r) => r.sha.slice(0, 10)))].join(", ")
+      return refuse("no-verdict", `no stored verdict for the current tip of "${target}" (${tips})`)
+    }
+    if (found.size > 1) {
+      return refuse("ambiguous", `"${target}" has refs at ${found.size} reviewed tips (${[...found.keys()].join(", ")}): pass the sha`)
+    }
+    record = [...found.values()][0] as BranchVerdictRecord
+  }
+  if (record.gate?.agree !== true) {
+    return refuse("not-agreed", `the stored verdict for ${record.sha} has no agreeing gate (gate.agree is ${record.gate ? String(record.gate.agree) : "absent"})`)
+  }
+  const atTip = (await refsNamed(input.repoRoot, record.name)).filter((r) => r.sha === record.sha)
+  if (atTip.length === 0) {
+    return refuse("tip-moved", `no ref named "${record.name}" points at ${record.sha} any more: the verdict is for an old tip`)
+  }
+  const by = input.by.trim()
+  if (by.toLowerCase() === record.reviewer.trim().toLowerCase()) {
+    return refuse("by-is-reviewer", `--by must name someone other than the reviewer ("${record.reviewer}")`)
+  }
+  const { repo: _repo, recordedAt: _at, operator: prior, ...stored } = record
+  const note = input.note?.trim()
+  const verdict: BranchVerdict = { ...stored, operator: { by, ...(note ? { note } : {}) } }
+  const base = { ok: true as const, target, name: record.name, sha: record.sha, refs: atTip.map((r) => r.ref) }
+  if (prior) return { ...base, status: "already-approved", verdict: { ...stored, operator: prior }, record }
+  if (input.dryRun) return { ...base, status: "would-record", verdict }
+  const recorded = await recordBranchVerdict({
+    repoRoot: input.repoRoot,
+    repoName: input.repoName,
+    verdict,
+    store: input.store,
+    ...(input.now ? { now: input.now } : {}),
+  })
+  return { ...base, status: "recorded", verdict, record: recorded }
+}

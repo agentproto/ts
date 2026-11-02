@@ -4772,6 +4772,17 @@ export function registerSessionTools(
             "right before it is touched: an entry that changed since is " +
             "skipped as `skipped-stale` with the reason. Omit to plan and apply in one call."
         ),
+      reviewedPaths: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Reviewed tier, with `apply: true`: `hold`-class worktrees at these paths are " +
+            "removed WORKTREE ONLY (`removed-keep-branch`, the branch is kept for " +
+            "`branch_gc`'s reviewed rung and line-coverage guard) when, re-checked right " +
+            "before the removal, they are unchanged since the plan, clean, idle, with no " +
+            "open PR, and the branch verdict store holds an agreeing verdict for the exact " +
+            "tip. Otherwise `skipped-stale` with the reason."
+        ),
       wait: mcpBool
         .optional()
         .describe(
@@ -4832,6 +4843,7 @@ export function registerSessionTools(
             ...(input.noisePaths ? { noisePaths: input.noisePaths } : {}),
             ...(typeof input.activeMinutes === "number" ? { activeMinutes: input.activeMinutes } : {}),
             ...(expectedPlan ? { expectedPlan } : {}),
+            ...(input.reviewedPaths?.length ? { reviewedPaths: input.reviewedPaths } : {}),
           })
         )
         if (input.wait === false) {

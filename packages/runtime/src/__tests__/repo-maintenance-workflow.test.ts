@@ -264,6 +264,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "gaps:transform",
       "verdictLookupTips:transform",
       "verdictRecords:map",
+      "reviewedWorktreePaths:transform",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
@@ -737,14 +738,61 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(listed).toHaveLength(30)
     const listedPcts = listed.map(m => Number(m[2]))
     expect(listedPcts).toEqual([...pcts].sort((a, b) => a - b))
-    // How to act on it: the MCP verb with a concrete operator block for the
-    // first queued tip, and the honest note that no CLI command exists.
-    const first = refused[pcts.indexOf(Math.min(...pcts))]!
-    expect(queue).toContain("branch_gc_verdict")
-    expect(queue).toContain(`"sha": "${first.sha}"`)
-    expect(queue).toContain(`"name": "${first.name}"`)
-    expect(queue).toContain('"operator"')
-    expect(queue).toContain("no CLI command")
+    // How to act on it: one ready-to-run CLI command per queued tip, in queue
+    // order; the operator types only their name. No JSON template to fill in.
+    const commands = [...queue.matchAll(/^agentproto branch gc approve ([0-9a-f]{40}) --by <your name> --repo \/repo {2}# (\S+)$/gm)]
+    expect(commands).toHaveLength(30)
+    expect(commands.map(m => m[2])).toEqual(listed.map(m => m[1]))
+    for (const m of commands) expect(refused.find(r => r.name === m[2])?.sha).toBe(m[1])
+    expect(queue).not.toContain('"operator"')
+    expect(queue).not.toContain("no CLI command")
+  })
+
+  it("counts and lists the decision queue and the reclaimed list once per tip sha, with the ref kinds on one line", async () => {
+    const twin = (name: string, sha: string, extra: Record<string, unknown>) => [
+      { kind: "local", name, sha, ...extra },
+      { kind: "remote", name, sha, ...extra },
+    ]
+    const guard = { result: "refused-guard", guard: "line coverage 40% of 50 added lines (< 95%)" }
+    const outcomes = [
+      ...twin("fix/ci-failures", "c2df0084".padEnd(40, "0"), guard),
+      ...twin("wt/vscode-activity-panel", "1".repeat(40), { ...guard, guard: "line coverage 70% of 50 added lines (< 95%)" }),
+      { kind: "local", name: "wt/only-local", sha: "2".repeat(40), ...guard },
+      ...twin("perf/agent-start-compact-descriptor", "3".repeat(40), { result: "deleted", reclaimReason: "reviewed" }),
+    ]
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        if (branchGcCallCount === 3) return mcpResult({ mode: "apply", outcomes, restoreLog: null })
+        return mcpResult(branchGcPlanFixture(true))
+      }
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+    })
+    const report = (output as { report: string }).report
+    expect(report).toContain("reviewed: 1 reclaimed (includeReviewed true), 3 refused by the line-coverage guard")
+    expect(report).toContain("reclaimed (1): `perf/agent-start-compact-descriptor` [local, remote]")
+    expect(report).toContain("## Human decision queue — reviewer agreed, refused by line guard (3)")
+    const queue = report.slice(report.indexOf("## Human decision queue"))
+    expect(queue.match(/^- `fix\/ci-failures`/gm)).toHaveLength(1)
+    expect(queue).toContain(`- \`fix/ci-failures\` (${"c2df0084".padEnd(40, "0")}) [local, remote] — 40% line coverage`)
+    expect(queue).toContain("- `wt/only-local` (" + "2".repeat(40) + ") [local] — 40% line coverage")
+    expect(queue.match(/^agentproto branch gc approve /gm)).toHaveLength(3)
   })
 
   it("asks branch_gc for its full reply on every call (the plan entries feed the review queue, the apply output is reported)", async () => {
@@ -1531,14 +1579,26 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
 
   async function run(
     input: Record<string, unknown>,
-    opts: { integration?: Record<string, unknown>; idleExtra?: Record<string, unknown>; record?: Record<string, unknown> } = {},
+    opts: {
+      integration?: Record<string, unknown>
+      idleExtra?: Record<string, unknown>
+      record?: Record<string, unknown>
+      wtOutcomes?: Array<Record<string, unknown>>
+    } = {},
   ) {
     let branchGcCalls = 0
+    const wtApplyCalls: Array<Record<string, unknown>> = []
+    const callOrder: string[] = []
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       if (name === "worktree_gc") {
         if (inputs.wait !== true) return mcpResult({ jobId: "wgc_test", status: "running" })
-        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreePlan(opts.integration))
+        if (inputs.expectedPlan) {
+          wtApplyCalls.push(inputs)
+          callOrder.push("worktreeGcApply")
+        }
+        return mcpResult(inputs.apply ? { mode: "apply", outcomes: opts.wtOutcomes ?? [] } : worktreePlan(opts.integration))
       }
+      if (name === "branch_gc" && inputs.scopes) callOrder.push("branchGcApply")
       if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2, opts.idleExtra))
       if (name === "branch_gc_verdict_get") {
         return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha, ...opts.record } })
@@ -1555,7 +1615,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
     const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...input } })
-    return { spawns, sends, report: (output as { report: string }).report }
+    return { spawns, sends, wtApplyCalls, callOrder, report: (output as { report: string }).report }
   }
 
   it("reviews only the idle, clean, no-PR, old-enough worktree branch, telling the reviewer why it was held", async () => {
@@ -1569,12 +1629,41 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     for (const sha of [SHA_LIVE, SHA_DIRTY, SHA_YOUNG, SHA_PR]) expect(prompt).not.toContain(sha)
   })
 
-  it("reports the verdict with the removal command when the reviewer agreed — and removes nothing itself", async () => {
-    const { report } = await run({})
+  it("reports the verdict with a removal command that KEEPS the branch when the reviewer agreed — and removes nothing itself", async () => {
+    const { report, wtApplyCalls } = await run({})
     expect(report).toContain("## Held worktrees reviewed (1)")
     expect(report).toContain("- `idle` - obsolete - PR: none")
-    expect(report).toContain("nothing of value lost: `agentproto worktree rm /wt/idle`")
+    expect(report).toContain("nothing of value lost: `agentproto worktree rm /wt/idle --keep-branch`")
+    expect(report).toContain("branch_gc's line-coverage guard then decides it")
+    // A bare `worktree rm` deletes the branch too, outside branch_gc's guard: never printed.
+    expect(report).not.toMatch(/`agentproto worktree rm \/wt\/idle`/)
     expect(report).toContain("dry run only, nothing was deleted")
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual([])
+  })
+
+  it("applyMerged alone never hands worktree_gc a reviewed path", async () => {
+    const { wtApplyCalls, report } = await run({ applyMerged: true })
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual([])
+    expect(report).toContain("`agentproto worktree rm /wt/idle --keep-branch`")
+  })
+
+  it("applyMerged + applyReviewed: worktree_gc gets only the agreed held worktree, BEFORE branch_gc applies, and the report gives its outcome", async () => {
+    const { wtApplyCalls, callOrder, report } = await run(
+      { applyMerged: true, applyReviewed: true },
+      { wtOutcomes: [{ path: "/wt/idle", branch: "idle", result: "removed-keep-branch" }] },
+    )
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual(["/wt/idle"])
+    expect(callOrder).toEqual(["worktreeGcApply", "branchGcApply"])
+    expect(report).toContain("worktree removed, branch kept for branch_gc's line-coverage guard (/wt/idle)")
+    expect(report).not.toContain("agentproto worktree rm")
+  })
+
+  it("applyReviewed reports a worktree worktree_gc refused at apply time, with its reason", async () => {
+    const { report } = await run(
+      { applyMerged: true, applyReviewed: true },
+      { wtOutcomes: [{ path: "/wt/idle", branch: "idle", result: "skipped-stale", reason: "HEAD moved since the plan (111111111 -> 222222222)" }] },
+    )
+    expect(report).toContain("not removed (skipped-stale): HEAD moved since the plan (111111111 -> 222222222) (/wt/idle)")
   })
 
   describe("reviewer evidence: PR state + git cherry", () => {
@@ -1605,7 +1694,8 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       const lines = report.split("\n").filter(l => l.includes("`idle`") && l.includes("reason:"))
       expect(lines).toEqual([
         "- `idle` - obsolete - PR: closed-unmerged #9 - cherry: 2/5 not patch-equivalent on base - " +
-          "reason: all hunks re-landed in #12 - nothing of value lost: `agentproto worktree rm /wt/idle`",
+          "reason: all hunks re-landed in #12 - nothing of value lost: `agentproto worktree rm /wt/idle --keep-branch`" +
+          " (keeps the branch; branch_gc's line-coverage guard then decides it)",
       ])
       expect(report).not.toContain("second line is dropped")
     })
