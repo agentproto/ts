@@ -91,6 +91,20 @@
  * (`verifiedPrRefusal` says which condition failed). On by default;
  * `requireOperatorBelowGuard` turns it off. Never for checkpoint refs.
  *
+ * DEP-BUMP PASS. Automated dependency-bump branches fail the line guard by
+ * construction: their only added lines are version specs, a lockfile and a
+ * changeset, and base moves those same specs on by the time anyone looks.
+ * When `verified-pr` refuses, a tip with an agreeing `obsolete` or
+ * `superseded` verdict still reclaims (`verdictGuard: "passed by dep-bump
+ * ..."`, `depBump` on the entry, the apply outcome and the restore log) when
+ * `depBumpCheck` proves, from git objects only, that every line it adds is
+ * regenerable or already superseded on base: `pnpm-lock.yaml`, a
+ * `.changeset/*.md`, or a `package.json` change that is only dependency
+ * entries base declares at an equal or higher lower bound, or a `version`
+ * base already reached. Anything else keeps the refusal (`depBumpRefusal`
+ * names the first unexplained line). Same switch, same exclusions as
+ * `verified-pr`.
+ *
  * One ref family is classified against something other than base: a SANDBOX
  * CHECKPOINT branch (remote kind, name `agentproto-checkpoint/<work>` — the
  * force-pushed snapshot of a sandbox box's uncommitted work). Its tip is a
@@ -112,6 +126,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
+import semver from "semver"
 import { z } from "zod"
 import { execArgv, type ExecResult } from "./exec.js"
 import type { ForgeClient, ForgePullRequestFacts } from "./forge.js"
@@ -307,6 +322,22 @@ export interface VerifiedPrProof {
   files: VerifiedPrFile[]
 }
 
+/** What the `dep-bump` pass checked before it let a guard-refused verdict reclaim. */
+export interface DepBumpProof {
+  /** Dependency entries (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `pnpm.overrides`) the tip changed, each declared on base at an equal or higher lower bound (or gone from every base package). */
+  dependencies: number
+  /** `version` fields the tip changed that base already reached. */
+  versions: number
+  /** Lines added to `pnpm-lock.yaml` files (regenerable). */
+  lockfileLines: number
+  /** Lines added to `.changeset/*.md` files (consumed at release). */
+  changesetLines: number
+  /** The `package.json` files checked. */
+  packageFiles: string[]
+  /** Of those, the ones whose package base no longer has anywhere (no base `package.json` with that `name`). */
+  goneOnBase?: string[]
+}
+
 export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   ageDays: number
   class: BranchGcClass
@@ -337,6 +368,10 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   verifiedPr?: VerifiedPrProof
   /** Set when the guard refused and the `verified-pr` pass did too: the condition that failed. */
   verifiedPrRefusal?: string
+  /** Set when the `dep-bump` pass reclaimed a guard-refused verdict. */
+  depBump?: DepBumpProof
+  /** Set when the guard, `verified-pr` and the `dep-bump` pass all refused: the first line `dep-bump` could not explain. */
+  depBumpRefusal?: string
 }
 
 export interface BranchGcPlan {
@@ -355,7 +390,7 @@ export interface BranchGcPlan {
   includeReviewed: boolean
   /** An agreeing verdict only reclaims when the tip's line coverage is at least this (percent). */
   minLineCoverage: number
-  /** true = no `verified-pr` pass: below the line guard only an operator approval reclaims. Absent on an older plan (= false). */
+  /** true = no `verified-pr` or `dep-bump` pass: below the line guard only an operator approval reclaims. Absent on an older plan (= false). */
   requireOperatorBelowGuard?: boolean
   /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut: unavailable = no shortcut. */
   forgeMirrorCheck: { available: boolean; reason?: string }
@@ -1393,12 +1428,302 @@ async function verifiedPrCheck(entry: BranchGcPlanEntry, record: BranchVerdictRe
   return { ok: true, proof: { prs: merged.map((f) => f.number), files } }
 }
 
+const PNPM_LOCK_RE = /(^|\/)pnpm-lock\.yaml$/
+const PACKAGE_JSON_RE = /(^|\/)package\.json$/
+const DEP_SECTIONS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"] as const
+const DEP_BUMP_VERDICTS: ReadonlySet<string> = new Set(["obsolete", "superseded"])
+
+type DepBumpResult = { ok: true; proof: DepBumpProof } | { ok: false; reason: string }
+type Json = null | boolean | number | string | Json[] | { [k: string]: Json }
+const isObject = (v: unknown): v is Record<string, Json> => typeof v === "object" && v !== null && !Array.isArray(v)
+
+/** Every `package.json` of base: package names, dependency names, `pnpm.overrides` keys. */
+interface BasePackages {
+  names: Set<string>
+  dependencies: Set<string>
+  overrides: Set<string>
+}
+
+const basePackagesCache = new WeakMap<ClassifyEnv, Promise<BasePackages>>()
+
+/** {@link BasePackages} of base, read once per snapshot. An unreadable or unparseable file counts as declaring everything, so nothing is "gone". */
+function basePackagesOf(env: ClassifyEnv): Promise<BasePackages> {
+  let pending = basePackagesCache.get(env)
+  if (!pending) {
+    pending = (async () => {
+      const idx = await env.ctx.index()
+      const out: BasePackages = { names: new Set(), dependencies: new Set(), overrides: new Set() }
+      const blobs = [...idx.byPath].filter(([path]) => PACKAGE_JSON_RE.test(path)).map(([, blob]) => blob)
+      const parsed = await pool(blobs, 4, (blob) => jsonOfBlob(env.ctx.repoRoot, blob))
+      for (const pkg of parsed) {
+        if (!isObject(pkg)) throw new Error("unreadable package.json on base")
+        if (typeof pkg.name === "string") out.names.add(pkg.name)
+        for (const section of DEP_SECTIONS) if (isObject(pkg[section])) for (const d of Object.keys(pkg[section])) out.dependencies.add(d)
+        const overrides = isObject(pkg.pnpm) ? pkg.pnpm.overrides : undefined
+        if (isObject(overrides)) for (const k of Object.keys(overrides)) out.overrides.add(k)
+      }
+      return out
+    })()
+    basePackagesCache.set(env, pending)
+  }
+  return pending
+}
+
+/** The parsed JSON of a blob (`<rev>:<path>` or a blob sha), `undefined` when it does not exist or does not parse. */
+async function jsonOfBlob(repoRoot: string, spec: string): Promise<Json | undefined> {
+  const res = await git(repoRoot, ["cat-file", "blob", spec])
+  if (res.exitCode !== 0) return undefined
+  try {
+    return JSON.parse(res.stdout) as Json
+  } catch {
+    return undefined
+  }
+}
+
+/** The lower bound of a semver range, or `null` when `spec` is not a plain registry range (`workspace:`, `catalog:`, `npm:`, git, url, file, tag). */
+export function rangeLowerBound(spec: unknown): semver.SemVer | null {
+  if (typeof spec !== "string" || spec.includes(":") || spec.includes("/")) return null
+  try {
+    return semver.validRange(spec) ? semver.minVersion(spec) : null
+  } catch {
+    return null
+  }
+}
+
+/** Every leaf path where `a` and `b` differ, recursing through objects (a missing side counts as an empty object). */
+function changedLeaves(a: Json | undefined, b: Json | undefined, path: string[] = []): string[][] {
+  if ((isObject(a) || a === undefined) && (isObject(b) || b === undefined) && (isObject(a) || isObject(b))) {
+    const keys = new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])
+    return [...keys].flatMap((k) => changedLeaves((a as Record<string, Json> | undefined)?.[k], (b as Record<string, Json> | undefined)?.[k], [...path, k]))
+  }
+  return JSON.stringify(a) === JSON.stringify(b) ? [] : [path]
+}
+
+function at(v: Json | undefined, path: readonly string[]): Json | undefined {
+  let cur = v
+  for (const k of path) cur = isObject(cur) ? cur[k] : undefined
+  return cur
+}
+
+/** The first added line of `file` (merge-base..tip) not verbatim in base's file at the same path, for a refusal message. */
+async function firstUncoveredLine(env: ClassifyEnv, entry: BranchGcPlanEntry, file: string): Promise<string | undefined> {
+  const known = entry.lineCoverage?.missing.find((m) => m.file === file)
+  if (known) return known.line
+  const d = await git(env.ctx.repoRoot, ["--literal-pathspecs", "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv", entry.mergeBase as string, entry.sha, "--", file])
+  if (d.exitCode !== 0) return undefined
+  const blob = (await env.ctx.index()).byPath.get(file)
+  const base = blob ? new Set((await git(env.ctx.repoRoot, ["cat-file", "blob", blob])).stdout.split("\n").map((l) => l.trim())) : new Set<string>()
+  const lines = d.stdout.split("\n")
+  const first = lines.findIndex((l) => l.startsWith("@@"))
+  if (first < 0) return undefined
+  for (const l of lines.slice(first)) {
+    if (!l.startsWith("+")) continue
+    const line = l.slice(1).trim()
+    if (line.length >= LINE_MIN_LENGTH && !base.has(line)) return line.slice(0, 120)
+  }
+  return undefined
+}
+
+/** The first non-blank line the tip deletes from `file` (merge-base..tip) that base's file at the same path still has, trimmed and cut to 120 chars. */
+async function firstDeletedLineOnBase(env: ClassifyEnv, entry: BranchGcPlanEntry, file: string): Promise<string | undefined> {
+  const blob = (await env.ctx.index()).byPath.get(file)
+  if (!blob) return undefined
+  const d = await git(env.ctx.repoRoot, ["--literal-pathspecs", "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv", entry.mergeBase as string, entry.sha, "--", file])
+  // Fail closed: a diff we cannot read proves nothing.
+  if (d.exitCode !== 0) return `(diff of ${file} failed)`
+  const shown = await git(env.ctx.repoRoot, ["cat-file", "blob", blob])
+  if (shown.exitCode !== 0) return `(base blob of ${file} unreadable)`
+  const base = new Set(shown.stdout.split("\n").map((l) => l.trim()))
+  const lines = d.stdout.split("\n")
+  const first = lines.findIndex((l) => l.startsWith("@@"))
+  if (first < 0) return undefined
+  for (const l of lines.slice(first)) {
+    if (!l.startsWith("-")) continue
+    const line = l.slice(1).trim()
+    if (line && base.has(line)) return line.slice(0, 120)
+  }
+  return undefined
+}
+
+/**
+ * Why one `package.json` change of the tip is not a proven dependency bump,
+ * or `null` when every key it changed (merge-base → tip) is explained:
+ *   - the tip's value equals base's at the same key (it landed);
+ *   - a dependency entry (`DEP_SECTIONS`, or `pnpm.overrides`) whose base
+ *     spec (same key; for a dependency, any of base's dependency sections of
+ *     the same file) has a lower bound >= the tip's, both plain semver
+ *     ranges (`rangeLowerBound`);
+ *   - a dependency (not an override) base dropped from this file AND from
+ *     every other base `package.json`;
+ *   - a `version` base already reached (`semver.gte`).
+ * A dependency the tip removes but base still has, an override base lacks,
+ * or any other key is not proven. A file base no longer has at that path is
+ * explained as a whole only when no base `package.json` carries the tip's
+ * package `name` (the package is gone, not moved); otherwise not proven.
+ */
+async function packageJsonRefusal(
+  env: ClassifyEnv,
+  entry: BranchGcPlanEntry,
+  file: string,
+  counts: { dependencies: number; versions: number; goneOnBase: string[] },
+): Promise<string | null> {
+  const repoRoot = env.ctx.repoRoot
+  const tip = await jsonOfBlob(repoRoot, `${entry.sha}:${file}`)
+  if (!isObject(tip)) return `${file}: not a JSON object on the tip`
+  const fork = await jsonOfBlob(repoRoot, `${entry.mergeBase as string}:${file}`)
+  if (fork !== undefined && !isObject(fork)) return `${file}: not a JSON object at the merge base`
+  const baseBlob = (await env.ctx.index()).byPath.get(file)
+  if (!baseBlob) {
+    let pkgs: BasePackages
+    try {
+      pkgs = await basePackagesOf(env)
+    } catch {
+      return `${file}: gone on base, and base's package.json files could not all be read`
+    }
+    if (typeof tip.name !== "string" || !tip.name) return `${file}: gone on base, and the tip's package has no name to look for`
+    if (pkgs.names.has(tip.name)) return `${file}: gone on base, but base still has package ${tip.name} elsewhere`
+    counts.goneOnBase.push(file)
+    return null
+  }
+  const base = await jsonOfBlob(repoRoot, baseBlob)
+  if (!isObject(base)) return `${file}: not a JSON object on base`
+  for (const path of changedLeaves(fork, tip)) {
+    const key = path.join(".")
+    const tipValue = at(tip, path)
+    const baseValue = at(base, path)
+    if (JSON.stringify(tipValue) === JSON.stringify(baseValue)) {
+      if (path.length === 2 && (DEP_SECTIONS as readonly string[]).includes(path[0] as string)) counts.dependencies++
+      continue
+    }
+    const isDep = path.length === 2 && (DEP_SECTIONS as readonly string[]).includes(path[0] as string)
+    const isOverride = path.length === 3 && path[0] === "pnpm" && path[1] === "overrides"
+    if (isDep || isOverride) {
+      const name = path[path.length - 1] as string
+      if (tipValue === undefined) return `${file}: ${key} removed on the tip, base still declares ${JSON.stringify(baseValue ?? "it")}`
+      const tipMin = rangeLowerBound(tipValue)
+      if (!tipMin) return `${file}: ${key} ${JSON.stringify(tipValue)} is not a plain semver range`
+      let baseSpec: Json | undefined = baseValue
+      if (baseSpec === undefined && isDep) baseSpec = DEP_SECTIONS.map((s) => at(base, [s, name])).find((v) => v !== undefined)
+      if (baseSpec === undefined) {
+        if (isOverride) return `${file}: ${key} ${JSON.stringify(tipValue)}, base has no such override`
+        let pkgs: BasePackages
+        try {
+          pkgs = await basePackagesOf(env)
+        } catch {
+          return `${file}: ${key} ${JSON.stringify(tipValue)} dropped on base, and base's package.json files could not all be read`
+        }
+        if (pkgs.dependencies.has(name)) return `${file}: ${key} ${JSON.stringify(tipValue)} dropped here on base, but another base package still depends on ${name}`
+        counts.dependencies++
+        continue
+      }
+      const baseMin = rangeLowerBound(baseSpec)
+      if (!baseMin) return `${file}: ${key} ${JSON.stringify(tipValue)}, base ${JSON.stringify(baseSpec)} is not a plain semver range`
+      if (semver.lt(baseMin, tipMin)) return `${file}: ${key} ${JSON.stringify(tipValue)}, base has older ${JSON.stringify(baseSpec)}`
+      counts.dependencies++
+      continue
+    }
+    if (key === "version") {
+      const t = typeof tipValue === "string" ? semver.valid(tipValue) : null
+      const b = typeof baseValue === "string" ? semver.valid(baseValue) : null
+      if (!t || !b) return `${file}: version ${JSON.stringify(tipValue)} vs base ${JSON.stringify(baseValue)} is not comparable`
+      if (semver.lt(b, t)) return `${file}: version ${JSON.stringify(tipValue)}, base is still ${JSON.stringify(baseValue)}`
+      counts.versions++
+      continue
+    }
+    return `${file}: ${key} changed to ${JSON.stringify(tipValue)?.slice(0, 80) ?? "nothing"} (not a dependency entry)`
+  }
+  return null
+}
+
+/**
+ * The `dep-bump` pass: may a verdict the line guard (and `verified-pr`)
+ * refused reclaim anyway? Deterministic, git objects only, every condition
+ * must hold:
+ *   1. triage AND gate say `obsolete` or `superseded`, and the gate agreed;
+ *   2. every file the tip changes (merge-base → tip) is explained:
+ *      a `pnpm-lock.yaml` (regenerable), a `.changeset/*.md`, a
+ *      `package.json` whose every changed key `packageJsonRefusal` accepts,
+ *      or a file whose added lines the line guard found in base already and
+ *      that deletes no non-blank line base's file at the same path still
+ *      has (so a deletion-only file never passes vacuously). A lockfile or
+ *      binary the line guard does not read (`LINE_SKIP_RE`, other than
+ *      `pnpm-lock.yaml`) must be identical to base's.
+ * The refusal reason names the first unexplained line. Residual limit,
+ * accepted by design: line matching is per file and order-free, so an added
+ * line counts as "in base" when base has that text anywhere in the same
+ * path, and a deleted line counts as "gone from base" when base has it
+ * nowhere in that path.
+ */
+async function depBumpCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecord, env: ClassifyEnv): Promise<DepBumpResult> {
+  const refuse = (reason: string): DepBumpResult => ({ ok: false, reason })
+  const gate = record.gate
+  if (!DEP_BUMP_VERDICTS.has(record.triage.verdict) || !gate || !DEP_BUMP_VERDICTS.has(gate.verdict)) {
+    return refuse(`verdict is ${record.triage.verdict}${gate && gate.verdict !== record.triage.verdict ? ` (gate ${gate.verdict})` : ""}, not obsolete or superseded`)
+  }
+  if (gate.agree !== true) return refuse("gate did not agree")
+  const missingFiles = entry.lineCoverage?.missingFiles
+  if (!missingFiles || !entry.mergeBase) return refuse("no per-file line coverage to explain")
+  const uncovered = new Set(missingFiles)
+  const numstat = await git(env.ctx.repoRoot, ["diff", "--numstat", "-z", "--no-renames", entry.mergeBase, entry.sha])
+  if (numstat.exitCode !== 0) return refuse("could not list the tip's changed files")
+  const idx = await env.ctx.index()
+  const counts = { dependencies: 0, versions: 0, goneOnBase: [] as string[] }
+  let lockfileLines = 0
+  let changesetLines = 0
+  const packageFiles: string[] = []
+  for (const row of numstat.stdout.split("\0")) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(row)
+    if (!m) continue
+    const file = m[3] as string
+    const sameAsBase = async (): Promise<boolean> =>
+      (await git(env.ctx.repoRoot, ["rev-parse", "--verify", "--quiet", `${entry.sha}:${file}`])).stdout.trim() === idx.byPath.get(file)
+    if (m[1] === "-") {
+      if (!(await sameAsBase())) return refuse(`${file}: binary, not proven`)
+      continue
+    }
+    const added = Number(m[1])
+    const deleted = Number(m[2])
+    if (added === 0 && deleted === 0) continue
+    if (PNPM_LOCK_RE.test(file)) lockfileLines += added
+    else if (CHANGESET_RE.test(file)) changesetLines += added
+    else if (PACKAGE_JSON_RE.test(file)) {
+      packageFiles.push(file)
+      const why = await packageJsonRefusal(env, entry, file, counts)
+      if (why) return refuse(why)
+    } else if (LINE_SKIP_RE.test(file)) {
+      if (!(await sameAsBase())) return refuse(`${file}: not line-checked (lockfile or binary), not proven`)
+    } else {
+      if (added > 0 && uncovered.has(file)) {
+        const line = await firstUncoveredLine(env, entry, file)
+        return refuse(`${file}: ${line ? JSON.stringify(line) : "an added line"} is not a dependency, lockfile or changeset line`)
+      }
+      // A deletion of work base still carries is a change too: never proven here.
+      if (deleted > 0) {
+        const line = await firstDeletedLineOnBase(env, entry, file)
+        if (line !== undefined) return refuse(`${file}: deletes ${JSON.stringify(line)}, which base still has`)
+      }
+    }
+  }
+  return {
+    ok: true,
+    proof: {
+      dependencies: counts.dependencies,
+      versions: counts.versions,
+      lockfileLines,
+      changesetLines,
+      packageFiles,
+      ...(counts.goneOnBase.length ? { goneOnBase: counts.goneOnBase } : {}),
+    },
+  }
+}
+
 /**
  * Resolve an unmerged entry that reached the review rung: `includeReviewed`
  * plus an agreeing verdict reclaims it (`reviewed`) unless the deterministic
  * line-coverage guard refuses it (operator approval bypasses the guard and is
  * recorded in `verdictGuard`; so does a passing `verified-pr` check, recorded
- * in `verifiedPr`). Otherwise the entry stays `review`.
+ * in `verifiedPr`, or, when that refuses, a passing `dep-bump` check,
+ * recorded in `depBump`). Otherwise the entry stays `review`.
  *
  * `requireCoverage` makes a missing `lineCoverage` fail closed: checkpoint
  * refs may be the only copy of rescued work, so an agreeing verdict alone must
@@ -1432,14 +1757,25 @@ async function applyReviewedDecision(
       // The deterministic second proof: a superseded verdict whose cited PR
       // the forge confirms merged, with every uncovered file explained.
       const check = opts.requireCoverage || env.requireOperatorBelowGuard || !record ? null : await verifiedPrCheck(entry, record, env)
-      if (!check?.ok) {
-        entry.verdictGuard = guard
-        if (check) entry.verifiedPrRefusal = check.reason
-        entry.class = "review"
-        return
+      if (check?.ok) {
+        entry.verdictGuard = `passed by verified-pr ${check.proof.prs.map((n) => `#${n}`).join(", ")}: ${guard}`
+        entry.verifiedPr = check.proof
+      } else {
+        // Then the dependency-bump proof: every added line is a lockfile,
+        // changeset or dependency spec base already declares at least as new.
+        const bump = check && record ? await depBumpCheck(entry, record, env) : null
+        if (!bump?.ok) {
+          entry.verdictGuard = guard
+          if (check) entry.verifiedPrRefusal = check.reason
+          if (bump) entry.depBumpRefusal = bump.reason
+          entry.class = "review"
+          return
+        }
+        const p = bump.proof
+        entry.verdictGuard =
+          `passed by dep-bump (${p.dependencies} dependency, ${p.versions} version, ${p.lockfileLines} lockfile, ${p.changesetLines} changeset line(s)): ${guard}`
+        entry.depBump = p
       }
-      entry.verdictGuard = `passed by verified-pr ${check.proof.prs.map((n) => `#${n}`).join(", ")}: ${guard}`
-      entry.verifiedPr = check.proof
     }
   }
   entry.class = "reclaim"
@@ -1613,7 +1949,7 @@ interface ClassifyEnv {
   minAgeDays: number
   includeReviewed: boolean
   minLineCoverage: number
-  /** true = no `verified-pr` pass below the line guard. */
+  /** true = no `verified-pr` or `dep-bump` pass below the line guard. */
   requireOperatorBelowGuard: boolean
   /** The forge the `verified-pr` pass asks for PR facts; absent = that pass refuses. */
   forge?: ForgeClient
@@ -1867,7 +2203,7 @@ export interface PlanBranchGcInput {
   includeReviewed?: boolean
   /** `includeReviewed` refuses an agreeing verdict when the tip's line coverage is below this percent. Default 95. */
   minLineCoverage?: number
-  /** Turn the `verified-pr` pass off: below `minLineCoverage` only an operator approval reclaims. Default false. */
+  /** Turn the `verified-pr` and `dep-bump` passes off: below `minLineCoverage` only an operator approval reclaims. Default false. */
   requireOperatorBelowGuard?: boolean
   /** Explicit anchor for a re-rooted base. Omitted → auto-detected. */
   anchor?: string
@@ -2090,14 +2426,23 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
 // ── apply ────────────────────────────────────────────────────────────
 
 export type BranchGcApplyOutcome =
-  /** `guard: "verified-pr"` + `verifiedPr`: a guard-refused verdict the `verified-pr` pass reclaimed. */
-  | { kind: BranchRefKind; name: string; sha: string; result: "deleted"; reclaimReason: BranchGcReclaimReason; guard?: "verified-pr"; verifiedPr?: VerifiedPrProof }
+  /** `guard: "verified-pr"` + `verifiedPr` (or `"dep-bump"` + `depBump`): a guard-refused verdict that pass reclaimed. */
+  | {
+      kind: BranchRefKind
+      name: string
+      sha: string
+      result: "deleted"
+      reclaimReason: BranchGcReclaimReason
+      guard?: "verified-pr" | "dep-bump"
+      verifiedPr?: VerifiedPrProof
+      depBump?: DepBumpProof
+    }
   | { kind: BranchRefKind; name: string; sha: string; result: "held"; holdReason?: BranchGcHoldReason }
   /** `review` class: never touched by apply — the review/approval path decides these. */
   | { kind: BranchRefKind; name: string; sha: string; result: "skipped-review" }
   /** `review` class whose agreeing verdict was refused by a deterministic guard (`verdictGuard`, e.g. line coverage). */
-  /** `verifiedPrRefusal`: why the `verified-pr` pass did not reclaim it either (absent when that pass is off). */
-  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string; verifiedPrRefusal?: string }
+  /** `verifiedPrRefusal` / `depBumpRefusal`: why the `verified-pr` and `dep-bump` passes did not reclaim it either (absent when they are off). */
+  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string; verifiedPrRefusal?: string; depBumpRefusal?: string }
   /** The ref now points somewhere else than the plan saw — never delete what wasn't classified. */
   | { kind: BranchRefKind; name: string; sha: string; result: "aborted-moved"; currentSha: string }
   /** The ref no longer exists. */
@@ -2140,9 +2485,10 @@ export interface BranchGcRestoreEntry {
   command: string
   /** Set once the delete ran. */
   deleted?: boolean
-  /** Set when the `verified-pr` pass reclaimed this ref past the line guard. */
-  guard?: "verified-pr"
+  /** Set when the `verified-pr` (or `dep-bump`) pass reclaimed this ref past the line guard. */
+  guard?: "verified-pr" | "dep-bump"
   verifiedPr?: VerifiedPrProof
+  depBump?: DepBumpProof
 }
 
 export interface BranchGcRestoreLog {
@@ -2174,8 +2520,15 @@ function restoreEntry(repoRoot: string, e: BranchGcPlanEntry, baseRemote: string
     ...(e.remote ? { remote: e.remote } : {}),
     argv,
     command: ["git", "-C", repoRoot, ...argv].map(shellQuote).join(" "),
-    ...(e.verifiedPr ? { guard: "verified-pr" as const, verifiedPr: e.verifiedPr } : {}),
+    ...passedGuardOf(e),
   }
+}
+
+/** The `guard` + proof fields of an entry a second pass reclaimed past the line guard. */
+function passedGuardOf(e: BranchGcPlanEntry): Pick<BranchGcRestoreEntry, "guard" | "verifiedPr" | "depBump"> {
+  if (e.verifiedPr) return { guard: "verified-pr", verifiedPr: e.verifiedPr }
+  if (e.depBump) return { guard: "dep-bump", depBump: e.depBump }
+  return {}
 }
 
 let atomicWriteSeq = 0
@@ -2232,7 +2585,13 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
     if (e.class === "review") {
       outcomes.push(
         e.verdictGuard
-          ? { ...id, result: "refused-guard", guard: e.verdictGuard, ...(e.verifiedPrRefusal ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}) }
+          ? {
+              ...id,
+              result: "refused-guard",
+              guard: e.verdictGuard,
+              ...(e.verifiedPrRefusal ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
+              ...(e.depBumpRefusal ? { depBumpRefusal: e.depBumpRefusal } : {}),
+            }
           : { ...id, result: "skipped-review" },
       )
       continue
@@ -2345,7 +2704,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
         ...id,
         result: "deleted",
         reclaimReason: e.reclaimReason as BranchGcReclaimReason,
-        ...(e.verifiedPr ? { guard: "verified-pr" as const, verifiedPr: e.verifiedPr } : {}),
+        ...passedGuardOf(e),
       })
     }
     else outcomes.push({ ...id, result: "failed", message: r && !r.ok ? r.message : "not attempted" })

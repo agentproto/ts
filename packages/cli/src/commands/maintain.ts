@@ -52,10 +52,13 @@ Usage:
                    branch_gc refuses approvals below its line-coverage guard
                    (default 95%) and reports them, unless its verified-pr
                    pass proves them (a cited PR merged into base explains
-                   every uncovered file). Ignored without --apply-merged.
+                   every uncovered file) or its dep-bump pass does (every
+                   added line is a lockfile, changeset or dependency spec
+                   base already has at least as new). Ignored without
+                   --apply-merged.
   --require-operator-below-guard
-                   Turn the verified-pr pass off: below the guard only an
-                   operator approval reclaims.
+                   Turn the verified-pr and dep-bump passes off: below the
+                   guard only an operator approval reclaims.
   --review-preset <name>
                    Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.
                    Default: the daemon's modelRolePreset (switch it with

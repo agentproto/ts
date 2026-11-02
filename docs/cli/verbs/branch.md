@@ -93,7 +93,7 @@ missed, and only when the work branch is merged.
 | `--min-age-days N` | `3` | Unmerged refs younger than this are held. |
 | `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). An agreeing verdict under `--min-line-coverage` is refused unless the [verified-pr pass](#verified-pr-pass) proves it, or it carries an `operator` block (see below), which bypasses the guard and is shown as `bypassed by operator <by>`. |
 | `--min-line-coverage PCT` | `95` | The line-coverage guard: the share of a tip's added lines that must already be in base. |
-| `--require-operator-below-guard` | `false` | Turn the verified-pr pass off: below the guard only an operator approval reclaims. |
+| `--require-operator-below-guard` | `false` | Turn the verified-pr and [dep-bump](#dep-bump-pass) passes off: below the guard only an operator approval reclaims. |
 | `--anchor <sha>` | auto | Old-history twin of a re-rooted base's root. It's auto-detected when base has a single root and some tips share no history with it. |
 | `--apply` | `false` | Execute the plan for `--scopes`. |
 | `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog }` with `--apply`) as JSON. |
@@ -143,6 +143,64 @@ is not enough, and [`gc restore`](#gc-restore) undoes any deletion.
 `--require-operator-below-guard` (`requireOperatorBelowGuard`
 on `branch_gc` / `POST /branches/gc`) turns it off; apply keeps the plan's
 setting.
+
+#### Dep-bump pass
+
+Automated dependency-bump branches (`wt/dep-bump-*`) fail the line guard by
+construction: their only added lines are version specs, a lockfile and a
+changeset, and base has moved those specs on by the time the branch is
+reviewed. When the verified-pr pass refuses, a guard-refused verdict still
+reclaims when this check holds. It reads git objects only: the tip's file
+against base's file at the same path, with the merge base saying what the
+branch changed. Nothing comes from the reviewer's text.
+
+1. the verdict's triage and gate both say `obsolete` or `superseded`, and the
+   gate agreed;
+2. every file the branch changes is explained:
+   - `pnpm-lock.yaml` (regenerable) or a `.changeset/*.md` (consumed at
+     release);
+   - a `package.json` whose every changed key is either equal to base's, or:
+     - a dependency entry (`dependencies`, `devDependencies`,
+       `peerDependencies`, `optionalDependencies`, `pnpm.overrides`) whose
+       spec on base (same key; for a dependency, any dependency section of
+       the same file) has a lower bound (`semver.minVersion`) greater than
+       or equal to the branch's. Both must be plain semver ranges:
+       `workspace:`, `catalog:`, `npm:`, git, url, file specs and dist-tags
+       are not proven;
+     - a dependency base dropped from this file, only when no other base
+       `package.json` depends on it either (an override base lacks is not
+       proven, and neither is a dependency the branch removes but base still
+       has);
+     - a `version` field base already reached (`semver.gte`);
+   - a `package.json` base no longer has at that path is explained as a
+     whole only when no base `package.json` carries the branch's package
+     `name` (the package is gone, not moved);
+   - any other file only when the line guard found all its added lines in
+     base already AND the branch deletes no non-blank line that base's file
+     at the same path still has (a file with only deletions does not pass
+     vacuously; the refusal names the first such line). A lockfile or binary
+     the line guard does not read (other than `pnpm-lock.yaml`) must be
+     identical to base's.
+
+Any other line (a source line, a script, a `package.json` key outside those)
+keeps the refusal. A pass is recorded as `verdictGuard: "passed by dep-bump
+(<n> dependency, <n> version, <n> lockfile, <n> changeset line(s)): <guard>"`
+and `depBump: { dependencies, versions, lockfileLines, changesetLines,
+packageFiles, goneOnBase? }` on the plan entry, and as `guard: "dep-bump"` +
+`depBump` on the apply outcome and the restore log entry. A refusal sets
+`depBumpRefusal` on the entry and the `refused-guard` outcome, naming the
+first unexplained line, for example
+`packages/a/package.json: dependencies.lodash "^4.17.21", base has older
+"~4.17.15"`. Checkpoint refs never take this pass, and
+`--require-operator-below-guard` turns it off with the verified-pr pass.
+
+Residual limit, accepted by design: outside `package.json` (compared key by
+key), line matching is per file and order-free. An added line counts as in
+base when base has that text anywhere in the same path, and a deleted line
+counts as gone from base when base has it nowhere in that path, so a change
+that only moves or duplicates lines within one file is not seen. A
+dependency-bump branch does not touch such files, so in practice any source
+change refuses; [`gc restore`](#gc-restore) undoes any deletion.
 
 ### `gc restore`
 

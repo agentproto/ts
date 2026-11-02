@@ -774,6 +774,16 @@ export function verifiedPrWhy(proof) {
   return parts.length > 0 ? `uncovered files: ${parts.join(", ")}` : "no uncovered file"
 }
 
+/** What a `dep-bump` proof checked, as one short clause:
+ *  `3 dependency, 1 version, 12 lockfile, 5 changeset line(s) in package.json, packages/a/package.json`. */
+export function depBumpWhy(proof) {
+  const files = Array.isArray(proof?.packageFiles) ? proof.packageFiles : []
+  return (
+    `${proof?.dependencies ?? 0} dependency, ${proof?.versions ?? 0} version, ${proof?.lockfileLines ?? 0} lockfile, ` +
+    `${proof?.changesetLines ?? 0} changeset line(s)${files.length > 0 ? ` in ${files.join(", ")}` : ""}`
+  )
+}
+
 /** The coverage percentage in a `branch_gc` `verdictGuard` string
  *  (`"line coverage 80% of 50 added lines (< 95%)"`), or null when absent. */
 export function lineCoveragePctOfGuard(guard) {
@@ -916,6 +926,8 @@ export function buildReport(b) {
   const reclaimedReviewed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.reclaimReason === "reviewed"))
   // Reclaimed past the line guard by the deterministic verified-pr pass: no human needed.
   const autoPassed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "verified-pr"))
+  // ... or by the dep-bump pass: only lockfile, changeset and dependency lines base already has at least as new.
+  const autoPassedDepBump = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "dep-bump"))
   const verifiedPrOn = b.input?.requireOperatorBelowGuard !== true
   const refusedByGuard = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "refused-guard"))
 
@@ -1062,7 +1074,8 @@ export function buildReport(b) {
     if (applyReviewed) {
       lines.push(
         `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true` +
-          `${autoPassed.length > 0 ? `; ${autoPassed.length} of them past the line guard by verified-pr` : ""}), ` +
+          `${autoPassed.length > 0 ? `; ${autoPassed.length} of them past the line guard by verified-pr` : ""}` +
+          `${autoPassedDepBump.length > 0 ? `; ${autoPassedDepBump.length} past the line guard by dep-bump` : ""}), ` +
           `${refusedByGuard.length} refused by the line-coverage guard`,
       )
     } else {
@@ -1115,13 +1128,23 @@ export function buildReport(b) {
       lines.push(`- ${tipLabel(g)} - PR ${prs} - ${verifiedPrWhy(proof)}`)
     }
   }
+  if (applyReviewed && autoPassedDepBump.length > 0) {
+    lines.push("")
+    lines.push(`## Auto-passed by dep-bump (${autoPassedDepBump.length})`)
+    lines.push(
+      "Below the line guard, but reclaimed without a human: every added line is in pnpm-lock.yaml or a .changeset/*.md, " +
+        "or is a package.json dependency spec (or version) base already declares at an equal or higher lower bound. " +
+        "Restorable from the restore log above.",
+    )
+    for (const g of autoPassedDepBump) lines.push(`- ${tipLabel(g)} - ${depBumpWhy(g.outcome.depBump)}`)
+  }
   if (applyReviewed && refusedByGuard.length > 0) {
     lines.push("")
     lines.push(`## Human decision queue — reviewer agreed, refused by line guard (${refusedByGuard.length})`)
     lines.push(
       "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
         "`branch_gc` refused it deterministically because line coverage was below the guard" +
-        (verifiedPrOn ? " and the verified-pr pass could not prove it either (each row says why)" : "") +
+        (verifiedPrOn ? " and neither the verified-pr nor the dep-bump pass could prove it (each row says why)" : "") +
         "; " +
         "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
     )
@@ -1133,7 +1156,8 @@ export function buildReport(b) {
     for (const { g, pct } of queue) {
       lines.push(
         decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)) +
-          (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : ""),
+          (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : "") +
+          (g.outcome.depBumpRefusal ? ` - dep-bump refused: ${g.outcome.depBumpRefusal}` : ""),
       )
     }
     lines.push("")

@@ -26,6 +26,7 @@ import {
   BranchVerdictError,
   CHECKPOINT_BRANCH_PREFIX,
   citedPrsOf,
+  rangeLowerBound,
   type BranchGcPlan,
   type BranchGcPlanEntry,
   type PlanBranchGcInput,
@@ -1539,8 +1540,9 @@ describe("branch gc — line-coverage guard", () => {
     expect(e.verdictGuard).toBe("line coverage 0% of 2 added lines (< 95%)")
 
     const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
-    // The verified-pr pass ran too, and says why it could not pass it either.
+    // The verified-pr and dep-bump passes ran too, and say why they could not pass it either.
     expect(e.verifiedPrRefusal).toBe("no PR cited (landedIn, or #N in gate.reason/evidence)")
+    expect(e.depBumpRefusal).toMatch(/^src\/a\.ts: ".*" is not a dependency, lockfile or changeset line$/)
     expect(outcomes).toContainEqual({
       kind: "local",
       name: "feat/lost",
@@ -1548,6 +1550,7 @@ describe("branch gc — line-coverage guard", () => {
       result: "refused-guard",
       guard: e.verdictGuard,
       verifiedPrRefusal: e.verifiedPrRefusal,
+      depBumpRefusal: e.depBumpRefusal,
     })
     expect(restoreLog).toBeNull()
     expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
@@ -1947,6 +1950,158 @@ describe("branch gc: verified-pr guard pass", () => {
     await expect(
       recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: { ...v, landedIn: [{ pr: 0 }] } }),
     ).rejects.toThrow(BranchVerdictError)
+  })
+})
+
+describe("branch gc: dep-bump guard pass", () => {
+  const pkg = (o: Record<string, unknown>): string => JSON.stringify(o, null, 2) + "\n"
+  const lock = (zod: string): string => `lockfileVersion: '9.0'\n\nimporters:\n  packages/a:\n    dependencies:\n      zod:\n        specifier: ${zod}\n        version: ${zod.slice(1)}\n`
+  const NAME = "wt/dep-bump-2026-w31-a"
+
+  /**
+   * An automated weekly bump: `packages/a` bumps zod and lodash and its own
+   * version, the root bumps typescript, the lockfile and a changeset follow.
+   * Then base moves on: `baseDeps` are base's specs for `packages/a` (newer
+   * by default), base releases `@x/a` 1.1.0 and bumps typescript further.
+   * `extra` adds files to the branch commit.
+   */
+  async function depBumpBranch(opts: {
+    branchDeps?: Record<string, string>
+    baseDeps?: Record<string, string>
+    extra?: Record<string, string>
+    verdict?: "obsolete" | "superseded"
+  } = {}) {
+    const repo = await makeRepo()
+    await commitFiles(
+      repo,
+      {
+        "package.json": pkg({ name: "root", private: true, devDependencies: { typescript: "^5.4.0" } }),
+        "packages/a/package.json": pkg({ name: "@x/a", version: "1.0.0", dependencies: { zod: "^3.22.0", lodash: "^4.17.20" } }),
+        "pnpm-lock.yaml": lock("^3.22.0"),
+        "src/index.ts": "export const answer = 42\nexport const keep = 'still on base'\n",
+      },
+      "seed",
+    )
+    const tip = await branchWith(repo, NAME, {
+      "package.json": pkg({ name: "root", private: true, devDependencies: { typescript: "^5.5.4" } }),
+      "packages/a/package.json": pkg({ name: "@x/a", version: "1.0.1", dependencies: opts.branchDeps ?? { zod: "^3.23.8", lodash: "^4.17.21" } }),
+      "pnpm-lock.yaml": lock("^3.23.8"),
+      ".changeset/weekly-dep-bump.md": "---\n'@x/a': patch\n---\n\nWeekly dependency bump: zod, lodash, typescript.\n",
+      ...opts.extra,
+    })
+    await commitFiles(
+      repo,
+      {
+        "package.json": pkg({ name: "root", private: true, devDependencies: { typescript: "^5.6.2" } }),
+        "packages/a/package.json": pkg({ name: "@x/a", version: "1.1.0", dependencies: opts.baseDeps ?? { zod: "^3.24.1", lodash: "^4.17.21" } }),
+        "pnpm-lock.yaml": lock("^3.24.1"),
+      },
+      "chore: release and newer deps",
+    )
+    const verdicts = new InMemoryBranchVerdictStore()
+    const v = opts.verdict ?? "obsolete"
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: NAME,
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: v, confidence: 0.9, reason: "base already has newer versions" },
+        gate: { agree: true, verdict: v, reason: "every bumped dependency is newer on base", evidence: ["packages/a/package.json"] },
+      },
+    })
+    return { repo, tip, verdicts }
+  }
+
+  it("reclaims a dependency bump whose base declares newer versions, and records the proof in the outcome and the restore log", async () => {
+    const { repo, tip, verdicts } = await depBumpBranch()
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, NAME)
+    expect(e.lineCoverage?.pct).toBeLessThan(95)
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.verdictGuard).toMatch(/^passed by dep-bump \(3 dependency, 1 version, \d+ lockfile, 5 changeset line\(s\)\): line coverage /)
+    expect(e.depBump).toEqual({
+      dependencies: 3,
+      versions: 1,
+      lockfileLines: expect.any(Number),
+      changesetLines: 5,
+      packageFiles: ["package.json", "packages/a/package.json"],
+    })
+    expect(e.depBump?.lockfileLines).toBeGreaterThan(0)
+    expect(e.depBumpRefusal).toBeUndefined()
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    expect(outcomes).toContainEqual({ kind: "local", name: NAME, sha: tip, result: "deleted", reclaimReason: "reviewed", guard: "dep-bump", depBump: e.depBump })
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toContainEqual(expect.objectContaining({ name: NAME, sha: tip, deleted: true, guard: "dep-bump", depBump: e.depBump }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(false)
+  })
+
+  it("keeps the tip when base has an OLDER version of one dependency, naming it", async () => {
+    const { repo, tip, verdicts } = await depBumpBranch({ baseDeps: { zod: "^3.24.1", lodash: "~4.17.15" } })
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBump).toBeUndefined()
+    expect(e.depBumpRefusal).toBe('packages/a/package.json: dependencies.lodash "^4.17.21", base has older "~4.17.15"')
+    const { outcomes } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
+    expect(outcomes).toContainEqual(expect.objectContaining({ sha: tip, result: "refused-guard", depBumpRefusal: e.depBumpRefusal }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(true)
+  })
+
+  it("keeps the tip when it also adds a single source line, naming that line", async () => {
+    const { repo, verdicts } = await depBumpBranch({ extra: { "src/index.ts": "export const answer = 42\nexport const sneaky = 'not a dependency'\n" } })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBumpRefusal).toBe(`src/index.ts: "export const sneaky = 'not a dependency'" is not a dependency, lockfile or changeset line`)
+  })
+
+  it("keeps the tip when it only deletes a source line base still has, naming that line", async () => {
+    const { repo, tip, verdicts } = await depBumpBranch({ extra: { "src/index.ts": "export const answer = 42\n" } })
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBump).toBeUndefined()
+    expect(e.depBumpRefusal).toBe(`src/index.ts: deletes "export const keep = 'still on base'", which base still has`)
+    const { outcomes } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
+    expect(outcomes).toContainEqual(expect.objectContaining({ sha: tip, result: "refused-guard", depBumpRefusal: e.depBumpRefusal }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(true)
+  })
+
+  it("keeps the tip when a dependency moves to a workspace: spec", async () => {
+    const { repo, verdicts } = await depBumpBranch({ branchDeps: { zod: "workspace:^", lodash: "^4.17.21" } })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBumpRefusal).toBe('packages/a/package.json: dependencies.zod "workspace:^" is not a plain semver range')
+  })
+
+  it("keeps the tip when the package.json changes a key outside the dependency sections", async () => {
+    const { repo, verdicts } = await depBumpBranch({
+      extra: { "packages/a/package.json": pkg({ name: "@x/a", version: "1.0.1", scripts: { postinstall: "curl evil" }, dependencies: { zod: "^3.23.8", lodash: "^4.17.21" } }) },
+    })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBumpRefusal).toBe('packages/a/package.json: scripts.postinstall changed to "curl evil" (not a dependency entry)')
+  })
+
+  it("is off with requireOperatorBelowGuard, like verified-pr", async () => {
+    const { repo, verdicts } = await depBumpBranch({ verdict: "superseded" })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true, requireOperatorBelowGuard: true }), NAME)
+    expect(e.class).toBe("review")
+    expect(e.depBump).toBeUndefined()
+    expect(e.depBumpRefusal).toBeUndefined()
+  })
+
+  it("rangeLowerBound reads plain semver ranges only", () => {
+    expect(rangeLowerBound("^3.23.8")?.version).toBe("3.23.8")
+    expect(rangeLowerBound(">=1.2.0 <2")?.version).toBe("1.2.0")
+    expect(rangeLowerBound("~4.17")?.version).toBe("4.17.0")
+    for (const spec of ["workspace:^", "catalog:", "npm:zod@^3", "github:a/b", "https://x.y/z.tgz", "latest", 3]) {
+      expect(rangeLowerBound(spec)).toBeNull()
+    }
   })
 })
 

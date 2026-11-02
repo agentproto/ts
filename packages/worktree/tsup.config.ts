@@ -20,6 +20,7 @@ export default createTsupConfig({
     "@agentproto/tool",
     "@agentproto/workflow-runtime",
     "@modelcontextprotocol/sdk",
+    "semver",
     "zod",
     "node:child_process",
     "node:fs",

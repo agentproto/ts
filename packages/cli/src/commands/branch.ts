@@ -97,7 +97,12 @@ Usage:
                 a .changeset/*.md, or is a path base deleted or moved after that PR
                 merged. No forge,
                 or any unexplained file, keeps the refusal (with the reason).
-                --require-operator-below-guard turns that pass off.
+                Then the dep-bump pass reclaims an obsolete or superseded verdict
+                when every added line is pnpm-lock.yaml, a .changeset/*.md, or a
+                package.json dependency spec (or version) base already declares
+                at an equal or higher lower bound; any other line keeps the
+                refusal, naming it.
+                --require-operator-below-guard turns both passes off.
   gc approve    Record a human operator approval that lets --include-reviewed reclaim a
                 tip the line-coverage guard refused. Copies the stored verdict for each
                 <sha> (or the current tip of <branch>) and adds { by, note }. Refused when
@@ -413,7 +418,8 @@ function entryAction(e: BranchGcPlanEntry): string {
   return (
     `review${c ? ` (${c.unique}u ${c.evolved}e ${c.deletes}d)` : ""}${lc ? ` ${lc.pct}% of ${lc.added} lines in base` : ""}` +
     `${e.pushed ? ` ${e.pushed}` : ""}${e.verdictGuard ? ` — verdict refused: ${e.verdictGuard}` : ""}` +
-    `${e.verifiedPrRefusal ? ` (verified-pr: ${e.verifiedPrRefusal})` : ""}`
+    `${e.verifiedPrRefusal ? ` (verified-pr: ${e.verifiedPrRefusal})` : ""}` +
+    `${e.depBumpRefusal ? ` (dep-bump: ${e.depBumpRefusal})` : ""}`
   )
 }
 
@@ -449,12 +455,18 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
     if (o.result === "held" || o.result === "skipped-review") continue
     let detail: string = o.result
     if (o.result === "deleted") {
-      detail = `deleted (${o.reclaimReason}${o.verifiedPr ? `, verified-pr ${o.verifiedPr.prs.map((n) => `#${n}`).join(", ")}` : ""})`
+      detail =
+        `deleted (${o.reclaimReason}${o.verifiedPr ? `, verified-pr ${o.verifiedPr.prs.map((n) => `#${n}`).join(", ")}` : ""}` +
+        `${o.depBump ? `, dep-bump ${o.depBump.dependencies} dependency line(s)` : ""})`
     }
     else if (o.result === "aborted-moved") detail = `aborted: tip moved to ${o.currentSha.slice(0, 10)} since the plan`
     else if (o.result === "aborted-reclassified") detail = `aborted: reclassified ${o.from} → ${o.to}${o.holdReason ? ` (${o.holdReason})` : ""}`
     else if (o.result === "failed") detail = `failed: ${o.message}`
-    else if (o.result === "refused-guard") detail = `verdict refused: ${o.guard}${o.verifiedPrRefusal ? ` (verified-pr: ${o.verifiedPrRefusal})` : ""}`
+    else if (o.result === "refused-guard") {
+      detail =
+        `verdict refused: ${o.guard}${o.verifiedPrRefusal ? ` (verified-pr: ${o.verifiedPrRefusal})` : ""}` +
+        `${o.depBumpRefusal ? ` (dep-bump: ${o.depBumpRefusal})` : ""}`
+    }
     process.stdout.write(`${o.kind.padEnd(6)}  ${o.name.padEnd(48)}  ${detail}\n`)
   }
   const deleted = outcomes.filter((o) => o.result === "deleted").length
