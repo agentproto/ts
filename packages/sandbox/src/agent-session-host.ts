@@ -300,6 +300,78 @@ export interface SandboxBootOpts {
    * through its normal failed-boot path instead of adopting the session.
    */
   signal?: AbortSignal
+  /**
+   * Egress-address health the caller knows about. A provider that picks a pool
+   * address itself (`egressIp: "auto"`) consults it and avoids an address that
+   * is cooling down for the model, throwing {@link SandboxEgressAllCoolingError}
+   * when none is left. Providers without an address pool ignore it.
+   */
+  egressHealth?: SandboxEgressHealthView
+}
+
+/** A cooldown on one egress address for the session's model. */
+export interface SandboxEgressCooldown {
+  /** Epoch ms the cooldown ends. */
+  until: number
+  /** Why the address is cooling (`usage-limit`, `rate-limit`, ...). */
+  errorClass: string
+}
+
+/** Read-only view of the egress health ledger, scoped to one model. */
+export interface SandboxEgressHealthView {
+  /** The model the session will run; cooldowns are per (address, model). */
+  model: string
+  /** The active cooldown for `publicIp` and `model`, or undefined when healthy. */
+  cooling(publicIp: string): SandboxEgressCooldown | undefined
+}
+
+/** One address-pool slot as a provider reports it. */
+export interface SandboxEgressSlot {
+  /** Pool slot id, the value `egressIp` selects explicitly (`a`..`f`). */
+  id: string
+  /** Public address traffic from this slot leaves from. */
+  publicIp: string
+  /** Boxes currently using the slot, when reported. */
+  computers?: number
+}
+
+/** One slot that was skipped because its address is cooling down. */
+export interface SandboxEgressCoolingSlot {
+  slot: string
+  publicIp: string
+  until: string
+  errorClass: string
+}
+
+/**
+ * Thrown by a provider's boot when `egressIp: "auto"` found every pool slot
+ * cooling down for the model. Nothing was booted. A placement ladder treats it
+ * as "advance without booting"; match it with
+ * {@link isSandboxEgressAllCoolingError} or its stable `code`.
+ */
+export class SandboxEgressAllCoolingError extends Error {
+  readonly code = "sandbox_egress_all_cooling"
+  readonly model: string
+  readonly slots: readonly SandboxEgressCoolingSlot[]
+
+  constructor(model: string, slots: readonly SandboxEgressCoolingSlot[]) {
+    super(
+      `every egress slot is cooling down for model "${model}" (` +
+        `${slots.map(s => `${s.slot} ${s.publicIp} until ${s.until} [${s.errorClass}]`).join("; ")}); no box was booted`,
+    )
+    this.name = "SandboxEgressAllCoolingError"
+    this.model = model
+    this.slots = slots
+  }
+}
+
+/** Structural check (name + code, so it works across package boundaries and with mocks). */
+export function isSandboxEgressAllCoolingError(err: unknown): err is SandboxEgressAllCoolingError {
+  return (
+    err instanceof Error &&
+    err.name === "SandboxEgressAllCoolingError" &&
+    (err as { code?: unknown }).code === "sandbox_egress_all_cooling"
+  )
 }
 
 /** Thrown by a provider's boot/connect when the caller cancelled a spawn
@@ -490,6 +562,12 @@ export interface SandboxProvider {
    */
   connectForExec?(sandboxId: string, spec: SandboxSpec, opts: SandboxBootOpts): Promise<BootedSandbox>
   /**
+   * The provider's egress address pool, when it brokers one: each slot's id,
+   * public address and load. Optional: providers without an address pool omit
+   * it. Read-only, no box is booted.
+   */
+  egressPool?(spec: SandboxSpec): Promise<SandboxEgressSlot[]>
+  /**
    * Liveness probe against the PROVIDER (not the box's daemon): answers
    * whether the sandbox id still exists at all — the signal a box death
    * needs, distinct from a session dying. Polling the provider's control
@@ -569,6 +647,8 @@ export interface CreateSandboxAgentSessionHostOpts {
   /** Abort a boot whose session was killed mid-provision; see
    *  `SandboxBootOpts.signal`. */
   signal?: AbortSignal
+  /** Egress health forwarded to the provider; see `SandboxBootOpts.egressHealth`. */
+  egressHealth?: SandboxEgressHealthView
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -661,6 +741,7 @@ export async function createSandboxAgentSessionHost(
       env,
       ...(opts.log ? { log: opts.log } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
+      ...(opts.egressHealth ? { egressHealth: opts.egressHealth } : {}),
     })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)

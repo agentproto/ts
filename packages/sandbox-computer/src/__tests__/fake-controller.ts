@@ -14,6 +14,7 @@ import {
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
+  egressPoolResponseSchema,
   errorResponseSchema,
   execRequestSchema,
   execResponseSchema,
@@ -78,6 +79,12 @@ export interface FakeControllerOptions {
   execOutcome?: (argv: string[], body: { timeoutSec: number }) => { exitCode: number; stdout: string; stderr: string } | undefined
   /** `egressIp` reported on create and GET. Omitted from responses when undefined. */
   egressIp?: { id: string; publicIp: string } | null
+  /** Slots served by `GET /v1/egress-pool`. A create that names a slot id
+   *  reports that slot as its `egressIp`. Unset: the route answers 400
+   *  `egress-pool-disabled`. */
+  egressPool?: Array<{ id: string; sourceIp: string; publicIp: string; computers: number }>
+  /** Slot ids whose explicit create is refused with `409 egress-slot-dedicated`. */
+  dedicatedSlots?: string[]
   /** `egressIp` reported by GET for a computer created by resume (models a
    *  resumed row that carries a different address than the suspended one). */
   egressIpAfterResume?: { id: string; publicIp: string } | null
@@ -307,6 +314,11 @@ export class FakeController {
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
       assertContract(createComputerRequestSchema, parsed)
+      if (typeof parsed.egressIp === "string" && this.options.dedicatedSlots?.includes(parsed.egressIp)) {
+        const refusal = { error: "egress-slot-dedicated" }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 409, refusal)
+      }
       if (this.options.createDelayMs !== undefined) {
         await new Promise((resolve) => setTimeout(resolve, this.options.createDelayMs))
         // The client aborted while waiting: do not provision a box nobody
@@ -320,12 +332,14 @@ export class FakeController {
       this.states.set(id, state)
       this.registeredSecrets.set(id, Object.values((parsed.env ?? {}) as Record<string, string>))
       this.maxSessions.set(id, typeof parsed.maxSessions === "number" ? parsed.maxSessions : 1)
+      const namedSlot = this.options.egressPool?.find(slot => slot.id === parsed.egressIp)
+      const reportedEgressIp = namedSlot ? { id: namedSlot.id, publicIp: namedSlot.publicIp } : this.options.egressIp
       const responseBody = {
         id,
         template: parsed.template,
         state,
         ports: this.options.publishedPorts ?? [],
-        ...(this.options.egressIp !== undefined ? { egressIp: this.options.egressIp } : {}),
+        ...(reportedEgressIp !== undefined ? { egressIp: reportedEgressIp } : {}),
       }
       assertContract(createComputerResponseSchema, responseBody)
       if (idempotencyKey !== undefined) this.createdByIdempotencyKey.set(idempotencyKey, responseBody)
@@ -385,6 +399,16 @@ export class FakeController {
       }
       assertContract(usageResponseSchema, responseBody)
       return reply(res, 200, responseBody)
+    }
+
+    if (url.pathname === "/v1/egress-pool" && req.method === "GET") {
+      if (this.options.egressPool === undefined) {
+        const refusal = { error: "egress-pool-disabled" }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 400, refusal)
+      }
+      assertContract(egressPoolResponseSchema, this.options.egressPool)
+      return reply(res, 200, this.options.egressPool)
     }
 
     if (url.pathname === "/v1/capacity" && req.method === "GET") {

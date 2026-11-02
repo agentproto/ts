@@ -74,6 +74,8 @@ Usage:
   agentproto sandbox exec <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
+  agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>]
+                                   [--adapter <slug>] [--json]
 
 list   Show the sandbox ledger — every box the daemon booted, reconnected
        to, paused, or stopped, with its current state and idle-expiry.
@@ -200,6 +202,23 @@ exec   Runs ONE command inside a sandbox, through the running daemon
   produced one — no daemon, bad input, provider/profile error — exit 125 with
   the reason on stderr; usage errors exit 2.
 
+egress-health
+       Shows the provider's egress address pool (slot, public IP, boxes in
+       use) and the active per-IP model cooldowns, through the running daemon
+       (\`GET /sandboxes/egress-health\`). A free-tier model cap is enforced
+       per source IP; a slot cooling down for a model is skipped when a box
+       boots with \`egressIp: auto\`. Cooldowns are set by a failed preflight
+       or a usage/rate-limit turn on a box, and expire on their own.
+
+  --provider <slug>      Sandbox provider (default: computer).
+  --model <id>           Narrow the cooldowns to one model.
+  --probe <model>        RE-PROBE: boots ONE BOX PER SLOT, runs the
+                         \`model-answers\` preflight for <model> from each
+                         address, and clears or sets that address's cooldown.
+                         Run on demand only; there is no automatic schedule.
+  --adapter <slug>       Adapter the probe runs (default: opencode).
+  --json                 Print the daemon's response as JSON.
+
 Credentials: provider API keys (e.g. BOX_API_KEY, E2B_API_KEY) must be set
 in this process's environment — same as \`agent_start.sandbox\` uses.
 
@@ -252,6 +271,8 @@ export interface SandboxExecCliDeps {
   discover?: () => Promise<DaemonDiscoveryReport>
   /** Defaults to a Node-http POST (no response timeout: an exec can run for hours). */
   post?: (url: string, body: unknown, token?: string) => Promise<{ status: number; body: unknown }>
+  /** Defaults to a Node-http GET (used by `egress-health`). */
+  get?: (url: string, token?: string) => Promise<{ status: number; body: unknown }>
 }
 
 export async function runSandbox(
@@ -271,13 +292,14 @@ export async function runSandbox(
   if (sub === "gc") return runGc(args.slice(1), gcDeps)
   if (sub === "checkpoint-gc") return runCheckpointGc(args.slice(1))
   if (sub === "exec") return runExec(args.slice(1), execDeps)
+  if (sub === "egress-health") return runEgressHealth(args.slice(1), execDeps)
 
   if (!sub) {
     process.stdout.write(USAGE)
     return 0
   }
   process.stderr.write(
-    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc, exec\n`,
+    `agentproto sandbox: unknown subcommand "${sub}"\n` + `  Known: list, attach, rm, gc, checkpoint-gc, exec, egress-health\n`,
   )
   return 2
 }
@@ -1315,4 +1337,155 @@ async function runExec(args: readonly string[], deps: SandboxExecCliDeps = {}): 
       ? `${payload.code ? `[${payload.code}] ` : ""}${payload.message}`
       : `HTTP ${res.status}: ${typeof res.body === "string" ? res.body.slice(0, 500) : JSON.stringify(res.body).slice(0, 500)}`
   return infra(reason)
+}
+
+function defaultGet(url: string, token?: string): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url)
+    const lib = u.protocol === "https:" ? https : http
+    const req = lib.request(u, { method: "GET", headers: token ? { authorization: `Bearer ${token}` } : {} }, res => {
+      let raw = ""
+      res.setEncoding("utf8")
+      res.on("data", c => (raw += c))
+      res.on("end", () => {
+        let parsed: unknown = raw
+        try {
+          parsed = JSON.parse(raw)
+        } catch {
+          // non-JSON error body, surfaced verbatim below
+        }
+        resolve({ status: res.statusCode ?? 0, body: parsed })
+      })
+    })
+    req.on("error", reject)
+    req.end()
+  })
+}
+
+interface EgressCooldownView {
+  publicIp: string
+  model: string
+  errorClass: string
+  until: string
+  remainingMs: number
+}
+
+const formatRemaining = (ms: number): string => {
+  const minutes = Math.ceil(ms / 60_000)
+  return minutes >= 60 ? `${Math.floor(minutes / 60)}h${String(minutes % 60).padStart(2, "0")}m` : `${minutes}m`
+}
+
+/** `agentproto sandbox egress-health`: the egress pool with its active cooldowns, plus an on-demand `--probe`. */
+async function runEgressHealth(args: readonly string[], deps: SandboxExecCliDeps = {}): Promise<number> {
+  const usage = (message: string): number => {
+    process.stderr.write(
+      `agentproto sandbox egress-health: ${message}\n` +
+        "  Usage: agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>] [--adapter <slug>] [--json]\n",
+    )
+    return 2
+  }
+  let parsed
+  try {
+    parsed = parseArgs({
+      args: [...args],
+      allowPositionals: false,
+      strict: true,
+      options: {
+        provider: { type: "string" },
+        model: { type: "string" },
+        probe: { type: "string" },
+        adapter: { type: "string" },
+        json: { type: "boolean" },
+      },
+    })
+  } catch (err) {
+    return usage(err instanceof Error ? err.message : String(err))
+  }
+  const { values } = parsed
+  if (values.probe !== undefined && values.probe === "") return usage("--probe expects a model id.")
+  if (values.adapter !== undefined && values.probe === undefined) return usage("--adapter only applies with --probe.")
+  if (values.probe !== undefined && values.model !== undefined) return usage("--model and --probe are exclusive; --probe names the model.")
+
+  const infra = (message: string): number => {
+    process.stderr.write(`agentproto sandbox egress-health: ${message}\n`)
+    return SANDBOX_EXEC_INFRA_EXIT
+  }
+  const report = await (deps.discover ?? discoverDaemon)()
+  if (!report.found) {
+    return infra("no live daemon found (start one with `agentproto serve`, or set AGENTPROTO_DAEMON_URL).")
+  }
+  const base = `${report.found.url}/sandboxes/egress-health`
+  let res: { status: number; body: unknown }
+  try {
+    if (values.probe !== undefined) {
+      res = await (deps.post ?? defaultPost)(
+        `${base}/probe`,
+        {
+          model: values.probe,
+          ...(values.provider !== undefined ? { provider: values.provider } : {}),
+          ...(values.adapter !== undefined ? { adapter: values.adapter } : {}),
+        },
+        report.found.token,
+      )
+    } else {
+      const query = new URLSearchParams()
+      if (values.provider !== undefined) query.set("provider", values.provider)
+      if (values.model !== undefined) query.set("model", values.model)
+      const qs = query.toString()
+      res = await (deps.get ?? defaultGet)(qs ? `${base}?${qs}` : base, report.found.token)
+    }
+  } catch (err) {
+    return infra(`could not reach the daemon at ${report.found.url} - ${err instanceof Error ? err.message : String(err)}`)
+  }
+
+  if (values.json) process.stdout.write(JSON.stringify(res.body, null, 2) + "\n")
+  const payload = (res.body ?? {}) as {
+    ok?: boolean
+    code?: string
+    message?: string
+    provider?: string
+    model?: string
+    slots?: Array<{ slot: string; publicIp: string; computers?: number; cooling: EgressCooldownView[] }>
+    cooldowns?: EgressCooldownView[]
+    results?: Array<{ slot: string; publicIp?: string; verdict: string; detail: string; cleared?: number }>
+  }
+  if (res.status !== 200 || payload.ok !== true) {
+    if (values.json) return SANDBOX_EXEC_INFRA_EXIT
+    if (res.status === 401 || res.status === 403) {
+      return infra(`the daemon rejected the request (HTTP ${res.status}) - check AGENTPROTO_DAEMON_TOKEN.`)
+    }
+    return infra(
+      typeof payload.message === "string"
+        ? `${payload.code ? `[${payload.code}] ` : ""}${payload.message}`
+        : `HTTP ${res.status}: ${JSON.stringify(res.body).slice(0, 500)}`,
+    )
+  }
+  if (values.json) {
+    return payload.results?.some(r => r.verdict === "ko" || r.verdict === "error") ? 1 : 0
+  }
+
+  if (payload.results) {
+    process.stdout.write(`egress probe: ${payload.model} via ${payload.provider} (one box per slot)\n`)
+    for (const r of payload.results) {
+      const cleared = r.cleared ? ` (cleared ${r.cleared})` : ""
+      process.stdout.write(`  ${r.slot.padEnd(6)} ${(r.publicIp ?? "-").padEnd(16)} ${r.verdict.toUpperCase().padEnd(8)} ${r.detail}${cleared}\n`)
+    }
+    return payload.results.some(r => r.verdict === "ko" || r.verdict === "error") ? 1 : 0
+  }
+
+  const slots = payload.slots ?? []
+  process.stdout.write(`egress pool: ${payload.provider}${payload.model ? ` (model ${payload.model})` : ""}\n`)
+  if (slots.length === 0) process.stdout.write("  (no slots)\n")
+  for (const slot of slots) {
+    const used = slot.computers !== undefined ? ` ${slot.computers} box${slot.computers === 1 ? "" : "es"}` : ""
+    process.stdout.write(`  ${slot.slot.padEnd(6)} ${slot.publicIp.padEnd(16)}${used}\n`)
+    for (const c of slot.cooling) {
+      process.stdout.write(`         cooling ${c.model} [${c.errorClass}] ${formatRemaining(c.remainingMs)} left (until ${c.until})\n`)
+    }
+  }
+  const orphaned = (payload.cooldowns ?? []).filter(c => !slots.some(s => s.publicIp === c.publicIp))
+  for (const c of orphaned) {
+    process.stdout.write(`  (not in pool) ${c.publicIp} cooling ${c.model} [${c.errorClass}] ${formatRemaining(c.remainingMs)} left\n`)
+  }
+  return 0
 }

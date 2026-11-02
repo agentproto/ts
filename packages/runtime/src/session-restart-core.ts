@@ -2429,6 +2429,7 @@ async function restartAgentSessionOnce(
       provider: booted.provider,
       sandboxTeardown: booted.sandboxTeardown,
       ...(booted.pauseAfterIdleMs !== undefined ? { pauseAfterIdleMs: booted.pauseAfterIdleMs } : {}),
+      ...(booted.egressIp ? { egressIp: booted.egressIp } : {}),
       cwd: booted.cwd,
       ...(booted.sandboxConfig ? { sandboxConfig: booted.sandboxConfig } : {}),
       ...(booted.resumeVia ? { resumeVia: "resumed via ACP" as const } : {}),
@@ -2449,6 +2450,8 @@ async function restartAgentSessionOnce(
       provider: string
       sandboxTeardown: "kill" | "pause"
       pauseAfterIdleMs?: number
+      /** Egress address of the box, stamped on the descriptor. */
+      egressIp?: { slot: string; publicIp: string }
       /** The box-side cwd when it moved (a fresh box's checkout). */
       cwd?: string
       /** The box daemon's own `resumeVia` — set only when ITS adapter
@@ -2526,6 +2529,7 @@ async function restartAgentSessionOnce(
       remote: true,
       sandboxId: box.sandboxId,
       sandboxProvider: box.provider,
+      ...(box.egressIp ? { sandboxEgressIp: box.egressIp.publicIp, sandboxEgressSlot: box.egressIp.slot } : {}),
       ...(box.sandboxConfig ? { sandboxConfig: box.sandboxConfig } : {}),
       sandboxTeardown: box.sandboxTeardown,
       ...(box.pauseAfterIdleMs !== undefined ? { sandboxPauseAfterIdleMs: box.pauseAfterIdleMs } : {}),

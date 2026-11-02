@@ -9,7 +9,8 @@
  */
 
 export { computerSandboxProvider, DEFAULT_PORT, DEFAULT_TEMPLATE, DEFAULT_TENANT_ID } from "./provider.js"
-export { boxUrl, buildHealthCommand, buildServeCommand, buildWaitHealthyCommand, bashArgv, resolveAlias, shQuote } from "./provider.js"
+export { pickEgressSlot } from "./provider.js"
+export { boxUrl,buildHealthCommand, buildServeCommand, buildWaitHealthyCommand, bashArgv, resolveAlias, shQuote } from "./provider.js"
 export { ComputerApiError, ComputerControllerClient, redactSecret } from "./client.js"
 export type { ComputerClientConfig, CreateComputerInput } from "./client.js"
 export { ComputerSandboxError, isCapacityRefusal, isComputerSandboxError } from "./errors.js"
