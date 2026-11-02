@@ -2035,3 +2035,166 @@ describe("repo-maintenance maintain workflow - reviewer evidence (pure functions
     expect(queue[0]).toMatchObject({ prState: "unknown", prNumber: 77, prSummary: "unknown (PR #77)" })
   })
 })
+
+describe("repo-maintenance maintain workflow - one-time re-review of uncited superseded verdicts", () => {
+  const sha = (c: string) => c.repeat(40)
+  const SHA_FRESH = sha("1")
+  const SHA_UNCITED = sha("2")
+  const UNCITED = {
+    triage: "superseded",
+    agree: true,
+    reviewer: "repo-maintenance-reviewer",
+    gateVerdict: "superseded",
+    citedPrs: [] as number[],
+  }
+
+  function reviewEntry(over: Record<string, unknown>) {
+    return {
+      kind: "local",
+      date: "2026-01-01T00:00:00Z",
+      author: "a",
+      subject: "s",
+      ageDays: 10,
+      class: "review",
+      status: "unmerged",
+      history: "current",
+      ahead: 1,
+      behind: 0,
+      residualFiles: ["a.txt"],
+      residualFileCount: 1,
+      lineCoverage: { added: 10, inBase: 5, pct: 50, missing: [], missingFiles: ["a.txt"] },
+      ...over,
+    }
+  }
+
+  function planOf(entries: Array<Record<string, unknown>>) {
+    return {
+      mode: "plan",
+      plan: { repoRoot: "/repo", repoName: "repo", base: "origin/main", baseSha: sha("c"), scopes: ["local"], minLineCoverage: 95, entries },
+      summary: { byClass: { local: { reclaim: 0, review: entries.length, hold: 0 } }, byStatus: {} },
+    }
+  }
+
+  type Queue = { queue: Array<Record<string, unknown>>; alreadyReviewed: number; rereviewQueued: number }
+  async function buildQueue(plan: unknown, opts?: Record<string, unknown>): Promise<Queue> {
+    const entry = (await import(join(dirname(WORKFLOW_PATH), "entry.mjs"))) as {
+      buildReviewQueue: (p: unknown, w: unknown, o?: Record<string, unknown>) => Queue
+    }
+    return entry.buildReviewQueue(plan, undefined, opts)
+  }
+
+  it("queues an agreed superseded verdict that cites no PR under the guard, after every unreviewed tip; nothing else with a verdict", async () => {
+    const plan = planOf([
+      reviewEntry({ name: "uncited", ref: "refs/heads/uncited", sha: SHA_UNCITED, ageDays: 1, verdict: UNCITED }),
+      reviewEntry({ name: "fresh", ref: "refs/heads/fresh", sha: SHA_FRESH, ageDays: 30 }),
+      // Each of these misses one condition.
+      reviewEntry({ name: "cited", ref: "refs/heads/cited", sha: sha("3"), verdict: { ...UNCITED, citedPrs: [12] } }),
+      reviewEntry({ name: "rereviewed", ref: "refs/heads/rereviewed", sha: sha("4"), verdict: { ...UNCITED, revision: 1 } }),
+      reviewEntry({ name: "covered", ref: "refs/heads/covered", sha: sha("5"), verdict: UNCITED, lineCoverage: { added: 10, inBase: 10, pct: 100, missing: [] } }),
+      reviewEntry({ name: "approved", ref: "refs/heads/approved", sha: sha("6"), verdict: { ...UNCITED, operator: { by: "human" } } }),
+      reviewEntry({ name: "obsolete", ref: "refs/heads/obsolete", sha: sha("7"), verdict: { ...UNCITED, triage: "obsolete", gateVerdict: "obsolete" } }),
+      reviewEntry({ name: "gate-only", ref: "refs/heads/gate-only", sha: sha("8"), verdict: { ...UNCITED, gateVerdict: "obsolete" } }),
+      reviewEntry({ name: "disagreed", ref: "refs/heads/disagreed", sha: sha("9"), verdict: { ...UNCITED, agree: false } }),
+      // An older engine reports no citedPrs: never guess.
+      reviewEntry({ name: "old-engine", ref: "refs/heads/old-engine", sha: sha("a"), verdict: { triage: "superseded", agree: true, reviewer: "r" } }),
+    ])
+    const { queue, rereviewQueued, alreadyReviewed } = await buildQueue(plan)
+    // The unreviewed tip goes first even though the re-review tip is newer.
+    expect(queue.map(c => c.name)).toEqual(["fresh", "uncited"])
+    expect(queue[0]!.rereview).toBeUndefined()
+    expect(queue[1]!.rereview).toMatch(/cites no PR/)
+    expect(queue[1]!.allTips).toEqual([{ sha: SHA_UNCITED, refs: ["refs/heads/uncited"] }])
+    expect(rereviewQueued).toBe(1)
+    expect(alreadyReviewed).toBe(8)
+
+    expect((await buildQueue(plan, { rereviewUncited: false })).queue.map(c => c.name)).toEqual(["fresh"])
+  })
+
+  it("a name with an unreviewed tip is reviewed for that tip only; its re-review waits", async () => {
+    const { queue, rereviewQueued } = await buildQueue(planOf([
+      reviewEntry({ name: "foo", ref: "refs/heads/foo", sha: SHA_UNCITED, verdict: UNCITED }),
+      reviewEntry({ kind: "remote", remote: "origin", name: "foo", ref: "refs/remotes/origin/foo", sha: SHA_FRESH }),
+    ]))
+    expect(queue).toHaveLength(1)
+    expect(queue[0]!.sha).toBe(SHA_FRESH)
+    expect(queue[0]!.rereview).toBeUndefined()
+    expect(rereviewQueued).toBe(0)
+  })
+
+  async function run(opts: { input?: Record<string, unknown>; rerecorded: boolean }) {
+    const firstPlan = planOf([
+      reviewEntry({ name: "fresh", ref: "refs/heads/fresh", sha: SHA_FRESH }),
+      reviewEntry({ name: "uncited", ref: "refs/heads/uncited", sha: SHA_UNCITED, verdict: UNCITED }),
+    ])
+    // After review: both tips carry a verdict; the re-review replaced the old one only when `rerecorded`.
+    const rerecordedVerdict = opts.rerecorded ? { ...UNCITED, citedPrs: [42], revision: 1 } : UNCITED
+    const verifyPlan = planOf([
+      reviewEntry({ name: "fresh", ref: "refs/heads/fresh", sha: SHA_FRESH, verdict: { triage: "obsolete", agree: true, reviewer: "r", citedPrs: [] } }),
+      reviewEntry({ name: "uncited", ref: "refs/heads/uncited", sha: SHA_UNCITED, verdict: rerecordedVerdict }),
+    ])
+    let branchGcCalls = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") return mcpResult(++branchGcCalls === 1 ? firstPlan : verifyPlan)
+      if (name === "branch_gc_verdict_get") {
+        // The old record of the uncited tip is in the store from the start.
+        const record =
+          inputs.sha === SHA_UNCITED
+            ? { sha: inputs.sha, ...(opts.rerecorded ? { revision: 1, landedIn: [{ pr: 42 }] } : {}) }
+            : { sha: inputs.sha }
+        return mcpResult({ sha: inputs.sha, found: true, missing: false, record })
+      }
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const { host, spawns, sends } = recordingAgentHost()
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...opts.input } })
+    return { spawns, sends, output: output as { report: string; gaps: Array<{ name: string; sha: string }> } }
+  }
+
+  const reviewPromptOf = (sends: Array<{ prompt: string }>, s: string) => sends.find(x => x.prompt.startsWith("Review the") && x.prompt.includes(`(tip ${s})`))?.prompt
+
+  it("re-reviews the uncited tip with a prompt that says why, and the report counts it", async () => {
+    const { sends, output } = await run({ rerecorded: true })
+    const rereview = reviewPromptOf(sends, SHA_UNCITED)!
+    expect(rereview).toContain("This is a RE-REVIEW.")
+    expect(rereview).toContain("Find the merged PR that landed this work and cite it: pass landedIn")
+    expect(rereview).toContain("change the verdict")
+    expect(reviewPromptOf(sends, SHA_FRESH)).not.toContain("RE-REVIEW")
+    expect(sends.some(s => s.prompt.startsWith("You did not call branch_gc_verdict"))).toBe(false)
+    expect(output.gaps).toEqual([])
+    expect(output.report).toContain("queue: 1 unreviewed tip(s) then 1 re-review(s), newest first — 2 picked for this run")
+    expect(output.report).toContain("- re-reviewed 1 of 1 tip(s) whose stored superseded verdict agreed but cites no PR, under the 95% line guard")
+    expect(output.report).toContain("cite it in `landedIn` or change the verdict")
+  })
+
+  it("a re-review that recorded nothing new is missing: nudged, retried, then a gap (the old verdict does not count)", async () => {
+    const { sends, spawns, output } = await run({ rerecorded: false })
+    expect(sends.filter(s => s.prompt.startsWith("You did not call branch_gc_verdict"))).toHaveLength(1)
+    expect(spawns.filter(s => s.stepId === "reviewRetryLarge")).toHaveLength(1)
+    expect(output.gaps).toEqual([{ name: "uncited", sha: SHA_UNCITED, refs: ["refs/heads/uncited"] }])
+  })
+
+  it("re-reviews count against maxReviews after the unreviewed tips", async () => {
+    const { sends, output } = await run({ rerecorded: true, input: { maxReviews: 1 } })
+    expect(reviewPromptOf(sends, SHA_FRESH)).toBeDefined()
+    expect(reviewPromptOf(sends, SHA_UNCITED)).toBeUndefined()
+    expect(output.report).toContain("- re-reviewed 0 of 1 tip(s)")
+    expect(output.report).toContain("not reviewed this run (1)")
+  })
+
+  it("rereviewUncited:false and requireOperatorBelowGuard:true turn re-reviews off", async () => {
+    for (const input of [{ rereviewUncited: false }, { requireOperatorBelowGuard: true }]) {
+      const { sends, output } = await run({ rerecorded: true, input })
+      expect(reviewPromptOf(sends, SHA_UNCITED)).toBeUndefined()
+      expect(output.report).not.toContain("re-review")
+    }
+  })
+})
