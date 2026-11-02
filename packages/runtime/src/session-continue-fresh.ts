@@ -32,7 +32,12 @@ import {
   type SpawnAgentSessionInput,
   type SpawnAgentSessionResult,
 } from "./session-spawn.js"
-import { CALLER_SESSION_ID_HEADER, type SessionDescriptor, type SessionsRegistry } from "./sessions.js"
+import {
+  CALLER_SESSION_ID_HEADER,
+  carrySessionPin,
+  type SessionDescriptor,
+  type SessionsRegistry,
+} from "./sessions.js"
 import { handoverLineage } from "./lineage-handover.js"
 import { SESSION_TOKEN_HEADER } from "./session-credentials.js"
 
@@ -458,6 +463,12 @@ async function continueAgentSessionFreshOnce(
   if (prev.operatorLabel) registry.setOperatorLabel(fresh.id, prev.operatorLabel)
   if (prev.operator) registry.setOperator(fresh.id, prev.operator, prev.operatorDigest)
   if (prev.toolDenyGrants) registry.setToolDenyGrants(fresh.id, prev.toolDenyGrants)
+  // `pinned` (and its `pinnedOrder` slot) survives a continuation exactly like
+  // `keepAlive` above: it is the only flag exempting a keepAlive row from the
+  // boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`), so dropping
+  // it here silently un-pins a long-lived brain at every continue-fresh. The
+  // retired source keeps its own pin, same as it keeps `keepAlive`.
+  carrySessionPin(registry, prev, fresh.id)
   // The spawn just wrote ITS OWN binding (the default agent for its depth, or
   // whatever the request named). Put the source's frozen binding back on top
   // so a continuation cannot widen its grant by re-spawning itself (AIP-46

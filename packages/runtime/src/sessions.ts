@@ -6530,6 +6530,26 @@ export function computePinnedOrder(
   return order
 }
 
+/** Carry a session's list pin onto its SUCCESSOR — the shared rule behind
+ *  every succession path that already copies `keepAlive` (`continue-fresh`,
+ *  both restart spawn paths). `pinned` is the only flag that exempts a
+ *  keepAlive row from the boot-resume idle cutoff
+ *  (`eager-resume.ts` `staleKeepAlive`), so a succession that drops it
+ *  silently un-pins a long-lived brain. The retired predecessor KEEPS its
+ *  own pin, exactly as it keeps `keepAlive`, and the successor inherits the
+ *  same `pinnedOrder` slot (a legacy pin with no order stays unordered and
+ *  sorts by `startedAt`, same as its predecessor). No-op for an unpinned
+ *  source, so an accidental opt-in is impossible. */
+export function carrySessionPin(
+  registry: Pick<SessionsRegistry, "setPinned">,
+  from: Pick<SessionDescriptor, "pinned" | "pinnedOrder">,
+  toId: string,
+): void {
+  if (from.pinned !== true) return
+  const to = registry.setPinned(toId, true)
+  if (from.pinnedOrder !== undefined) to.pinnedOrder = from.pinnedOrder
+}
+
 /** The descriptor fields for a REMOTE parent (host relay), plus the side
  *  effect that keeps the relay TOKEN out of the descriptor entirely: the
  *  token is a secret, so it goes into an in-memory map keyed by the session
