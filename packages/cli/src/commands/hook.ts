@@ -273,7 +273,8 @@ export async function runHook(args: readonly string[], deps: HookDeps = {}): Pro
 
 /**
  * The session whose inbox `hook inbox` reads, first valid candidate winning:
- * `--session`; else `AGENTPROTO_SESSION_ID` when it starts with `sess_` (a
+ * `--session` (an explicit but invalid value reads nothing, never falls
+ * through); else `AGENTPROTO_SESSION_ID` when it starts with `sess_` (a
  * daemon-spawned session); else `cc:` + the payload's `session_id` (each
  * Claude Desktop chat has its own); else `AGENTPROTO_SESSION_ID` as a legacy
  * fallback when the payload has no usable session id.
@@ -284,9 +285,11 @@ export function resolveInboxSessionId(
   env: Record<string, string | undefined>,
   payload: { session_id?: unknown } = {},
 ): string | undefined {
+  if (values.session !== undefined) {
+    return values.session && SESSION_ID_RE.test(values.session) ? values.session : undefined
+  }
   const envSessionId = env.AGENTPROTO_SESSION_ID
   const candidates = [
-    values.session,
     envSessionId?.startsWith("sess_") ? envSessionId : undefined,
     typeof payload.session_id === "string" ? `cc:${payload.session_id}` : undefined,
     envSessionId,

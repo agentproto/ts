@@ -95,6 +95,16 @@ describe("resolveInboxSessionId", () => {
     expect(resolveInboxSessionId({ session: "a/b" }, {}, {})).toBeUndefined()
     expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses env" }, {})).toBeUndefined()
   })
+
+  it("never falls through an explicit but invalid --session", () => {
+    expect(
+      resolveInboxSessionId(
+        { session: "a/b" },
+        { AGENTPROTO_SESSION_ID: "sess_daemon" },
+        { session_id: "claude-conv-1" },
+      ),
+    ).toBeUndefined()
+  })
 })
 
 describe("hook inbox takes its session id from the payload and the daemon's variable", () => {
