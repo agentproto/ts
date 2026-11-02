@@ -259,6 +259,7 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
       .optional(),
     traceRedactor: z.string().optional(),
     agentPromptInterrupt: z.boolean().optional(),
+    apps: z.object({ exposeProvider: z.string().min(1).optional() }).passthrough().optional(),
     messaging: z
       .object({
         allowSiblings: z.boolean().optional(),
@@ -1392,6 +1393,17 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Langfuse tracing default",
     help: "Default per-session Langfuse tracing opt-in when agent_start omits `trace`.",
     default: false,
+  },
+  {
+    path: "defaults.apps.exposeProvider",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "App service expose provider",
+    help:
+      "Tunnel provider slug for an app service that declares `expose` (AIP-53). Unset: " +
+      "cloudflare-provisioned when registered, else cloudflare-managed, else cloudflare-quick (not stable).",
   },
   {
     path: "defaults.traceRedactor",

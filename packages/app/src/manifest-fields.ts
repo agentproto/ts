@@ -12,6 +12,7 @@ import type {
   AppRequirement,
   AppRequirements,
   AppService,
+  AppServiceExpose,
   AppSetupCheck,
   AppSetupOption,
   AppSetupPersist,
@@ -128,6 +129,35 @@ function appRequirementList(v: unknown, key: string, fail: Fail): readonly AppRe
 const SERVICE_NAME_RE = /^[a-z][a-z0-9-]*$/
 // Verbatim `services[].cwd` pattern from AIP-53 APP.schema.json: relative, no `..` segment.
 const SERVICE_CWD_RE = /^(?!\/)(?!(?:.*\/)?\.\.(?:\/|$)).*\S/
+// Verbatim `services[].expose.hostname` pattern from AIP-53 APP.schema.json:
+// a lowercase DNS label or FQDN.
+const SERVICE_HOSTNAME_RE = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
+
+/** Validate one `services[i].expose` object (AIP-53 Exposure). Closed
+ *  object: only `auth` (`guard` | `service`) and `hostname`. */
+function serviceExpose(v: unknown, path: string): AppServiceExpose {
+  if (!isRecord(v)) {
+    throw new Error(`'${path}' must be an object { auth?, hostname? }.`)
+  }
+  const extra = Object.keys(v).filter(k => k !== "auth" && k !== "hostname")
+  if (extra.length > 0) {
+    throw new Error(`'${path}.${extra[0]}' is not a supported expose field (expected auth, hostname).`)
+  }
+  const auth = v.auth
+  if (auth !== undefined && auth !== "guard" && auth !== "service") {
+    throw new Error(`'${path}.auth' must be 'guard' or 'service', got ${JSON.stringify(auth)}.`)
+  }
+  const hostname = v.hostname
+  if (hostname !== undefined && (typeof hostname !== "string" || !SERVICE_HOSTNAME_RE.test(hostname))) {
+    throw new Error(
+      `'${path}.hostname' must be a lowercase DNS label or full hostname, got ${JSON.stringify(hostname)}.`,
+    )
+  }
+  return {
+    ...(auth !== undefined ? { auth } : {}),
+    ...(hostname !== undefined ? { hostname: hostname as string } : {}),
+  }
+}
 
 /**
  * Parse + validate the AIP-53 `services` array (production hosting surface).
@@ -156,10 +186,11 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
       throw new Error(`'${path}' must be an object { name, entry, port? }.`)
     }
     const extra = Object.keys(entry).filter(
-      k => k !== "name" && k !== "entry" && k !== "command" && k !== "args" && k !== "cwd" && k !== "port",
+      k =>
+        k !== "name" && k !== "entry" && k !== "command" && k !== "args" && k !== "cwd" && k !== "port" && k !== "expose",
     )
     if (extra.length > 0) {
-      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port).`)
+      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port, expose).`)
     }
     const name = entry.name
     if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
@@ -217,6 +248,13 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
         throw new Error(`'${path}.port' must be an integer between 1 and 65535.`)
       }
     }
+    let expose: AppServiceExpose | undefined
+    if (entry.expose !== undefined) {
+      if (port === undefined) {
+        throw new Error(`${path}.expose requires a port`)
+      }
+      expose = serviceExpose(entry.expose, `${path}.expose`)
+    }
     return hasCommand
       ? {
           name,
@@ -224,12 +262,14 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
           ...(args !== undefined ? { args } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
+          ...(expose !== undefined ? { expose } : {}),
         }
       : {
           name,
           entry: command as string,
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
+          ...(expose !== undefined ? { expose } : {}),
         }
   })
 }

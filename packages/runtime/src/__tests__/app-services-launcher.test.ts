@@ -27,6 +27,7 @@ import { createSessionsRegistry } from "../sessions.js"
 import { readProcessStartTicks } from "../app-service-process.js"
 import { createAppServiceStore, type AppServiceOwner, type SpawnServiceOwner } from "../app-services.js"
 import type { AgentAdapterResolver } from "../http-server.js"
+import type { AppServiceExposer, AppServiceExposure } from "../app-service-expose.js"
 
 const APP_ID = "@test/service-app"
 
@@ -70,6 +71,7 @@ async function setup(opts: {
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
   startSession?: ReturnType<typeof fakeStartSession>
   workspacesConfigPath?: string
+  serviceExposer?: AppServiceExposer
 } = {}) {
   const registry = createSessionsRegistry({ persist: false })
   const startSession = opts.startSession ?? fakeStartSession()
@@ -90,6 +92,7 @@ async function setup(opts: {
     ...(opts.workspacesConfigPath ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
+    ...(opts.serviceExposer ? { serviceExposer: opts.serviceExposer } : {}),
   })
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -222,6 +225,121 @@ describe("service-owner launcher via app_install", () => {
       expect.objectContaining({ appId: APP_ID, name: "web", sessionId: "owner_sess_web", pid: 555 }),
     )
     expect(serviceStore.listForApp(APP_ID)).toEqual([])
+  })
+})
+
+describe("services[].expose via app_install / app_status / app_uninstall (AIP-53)", () => {
+  let dir: string
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "app-services-expose-"))
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  function memoryExposer(fail = false) {
+    const tunnels = new Map<string, AppServiceExposure>()
+    const removed: string[] = []
+    const exposer: AppServiceExposer = {
+      async ensure(appId, service) {
+        if (fail) return { name: service.name, auth: service.expose.auth ?? "guard", stable: true, state: "error", error: "402 payment required" }
+        const key = `app:${appId}:${service.name}`
+        const x = tunnels.get(key) ?? {
+          name: service.name,
+          auth: service.expose.auth ?? "guard",
+          stable: true,
+          state: "active" as const,
+          publicUrl: "https://session-chat.example.test",
+          tunnelId: `tun_${tunnels.size + 1}`,
+        }
+        tunnels.set(key, x)
+        return x
+      },
+      status: (appId, service) => tunnels.get(`app:${appId}:${service.name}`),
+      list: appId => [...tunnels.keys()].filter(k => k.startsWith(`app:${appId}:`)).map(k => k.split(":").pop()!),
+      async remove(appId, name) {
+        removed.push(name)
+        tunnels.delete(`app:${appId}:${name}`)
+      },
+    }
+    return { exposer, tunnels, removed }
+  }
+
+  const exposed = [
+    { name: "miniapp", command: "node", args: ["dist/miniapp.js"], port: 8788, expose: { auth: "service", hostname: "session-chat" } },
+  ]
+
+  it("reports the exposure in the install result and app_status, injects the origin, and deletes the tunnel on uninstall", async () => {
+    await buildServiceApp(dir, exposed)
+    const { exposer, tunnels, removed } = memoryExposer()
+    const spawnServiceOwner = vi.fn(async (_input: Parameters<SpawnServiceOwner>[0]) => ({
+      ok: true as const,
+      sessionId: "owner_sess_miniapp",
+    }))
+    const { client } = await setup({
+      spawnServiceOwner,
+      killServiceOwner: vi.fn(),
+      serviceExposer: exposer,
+      workspacesConfigPath: join(dir, "workspaces.json"),
+    })
+
+    const installed = parseToolJson(await client.callTool({ name: "app_install", arguments: { dir } }))
+    expect(installed.appId).toBe(APP_ID)
+    expect(installed.services.exposures).toEqual([
+      {
+        name: "miniapp",
+        auth: "service",
+        stable: true,
+        state: "active",
+        publicUrl: "https://session-chat.example.test",
+        tunnelId: "tun_1",
+      },
+    ])
+    expect(spawnServiceOwner.mock.calls[0]![0].env).toEqual({
+      AGENTPROTO_PUBLIC_URL: "https://session-chat.example.test",
+    })
+
+    // A reinstall keeps the same tunnel.
+    await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(tunnels.size).toBe(1)
+
+    const ran = parseToolJson(await client.callTool({ name: "app_run", arguments: { appId: APP_ID } }))
+    const status = parseToolJson(await client.callTool({ name: "app_status", arguments: { appRunId: ran.appRunId } }))
+    expect(status.services.exposures).toEqual([expect.objectContaining({ name: "miniapp", tunnelId: "tun_1", state: "active" })])
+    await client.callTool({ name: "app_stop", arguments: { appRunId: ran.appRunId } })
+
+    expect(isError(await client.callTool({ name: "app_uninstall", arguments: { appId: APP_ID } }))).toBe(false)
+    expect(removed).toEqual(["miniapp"])
+    expect(tunnels.size).toBe(0)
+  })
+
+  it("a failed tunnel never fails the install and the service starts without AGENTPROTO_PUBLIC_URL", async () => {
+    await buildServiceApp(dir, exposed)
+    const { exposer } = memoryExposer(true)
+    const spawnServiceOwner = vi.fn(async (_input: Parameters<SpawnServiceOwner>[0]) => ({
+      ok: true as const,
+      sessionId: "owner_sess_miniapp",
+    }))
+    const { client } = await setup({
+      spawnServiceOwner,
+      serviceExposer: exposer,
+      workspacesConfigPath: join(dir, "workspaces.json"),
+    })
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(false)
+    expect(parseToolJson(res).services.exposures).toEqual([
+      expect.objectContaining({ name: "miniapp", state: "error", error: "402 payment required" }),
+    ])
+    expect(spawnServiceOwner).toHaveBeenCalledTimes(1)
+    expect(spawnServiceOwner.mock.calls[0]![0].env).toBeUndefined()
+  })
+
+  it("rejects expose without a port at install", async () => {
+    await buildServiceApp(dir, [{ name: "miniapp", command: "node", expose: {} }])
+    const { client } = await setup({ workspacesConfigPath: join(dir, "workspaces.json") })
+    const res = await client.callTool({ name: "app_install", arguments: { dir } })
+    expect(isError(res)).toBe(true)
+    expect(JSON.stringify(res)).toMatch(/invalid services declaration.*services\[0\]\.expose requires a port/)
   })
 })
 

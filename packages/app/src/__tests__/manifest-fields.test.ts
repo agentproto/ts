@@ -133,4 +133,45 @@ describe("parseServiceList", () => {
       expect(parseServiceList([{ name: "web", entry: "x", cwd: "sub/dir" }]).errors).toEqual([])
     })
   })
+
+  describe("expose (AIP-53 Exposure)", () => {
+    it("accepts expose with auth and hostname, and expose: {}", () => {
+      expect(
+        parseServiceList([
+          { name: "miniapp", command: "node", port: 8788, expose: { auth: "service", hostname: "session-chat" } },
+          { name: "web", entry: "x", port: 80, expose: {} },
+          { name: "fq", entry: "x", port: 81, expose: { hostname: "app.example.com", auth: "guard" } },
+        ]),
+      ).toEqual({
+        services: [
+          { name: "miniapp", command: "node", port: 8788, expose: { auth: "service", hostname: "session-chat" } },
+          { name: "web", entry: "x", port: 80, expose: {} },
+          { name: "fq", entry: "x", port: 81, expose: { auth: "guard", hostname: "app.example.com" } },
+        ],
+        errors: [],
+      })
+    })
+
+    it("rejects expose without a port", () => {
+      const { errors } = parseServiceList([{ name: "a", entry: "x" }, { name: "b", entry: "x", expose: {} }])
+      expect(errors).toEqual(["services[1].expose requires a port"])
+    })
+
+    it("rejects an unknown expose key, a bad auth and a bad hostname", () => {
+      expect(parseServiceList([{ name: "a", entry: "x", port: 1, expose: { provider: "ngrok" } }]).errors[0]).toContain(
+        "'services[0].expose.provider'",
+      )
+      expect(parseServiceList([{ name: "a", entry: "x", port: 1, expose: { auth: "none" } }]).errors[0]).toContain(
+        "'services[0].expose.auth'",
+      )
+      for (const hostname of ["Session-Chat", "-bad", "a..b", "", "a_b", 42]) {
+        expect(parseServiceList([{ name: "a", entry: "x", port: 1, expose: { hostname } }]).errors[0]).toContain(
+          "'services[0].expose.hostname'",
+        )
+      }
+      expect(parseServiceList([{ name: "a", entry: "x", port: 1, expose: "yes" }]).errors[0]).toContain(
+        "'services[0].expose'",
+      )
+    })
+  })
 })

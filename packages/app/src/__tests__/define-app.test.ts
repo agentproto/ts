@@ -365,6 +365,25 @@ describe("defineApp — category", () => {
 })
 
 describe("defineApp — services (production hosting surface)", () => {
+  it("carries services[].expose frozen, and rejects expose without a port", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      services: [{ name: "miniapp", command: "node", port: 8788, expose: { auth: "service", hostname: "session-chat" } }],
+    })
+    expect(app.services![0]!.expose).toEqual({ auth: "service", hostname: "session-chat" })
+    expect(Object.isFrozen(app.services![0]!.expose)).toBe(true)
+    expect(() =>
+      defineApp({ agents: [agent("solo", [])], services: [{ name: "api", entry: "a", expose: {} }] }),
+    ).toThrow(/invalid services declaration — services\[0\]\.expose requires a port/)
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        // @ts-expect-error -- closed enum
+        services: [{ name: "api", entry: "a", port: 1, expose: { auth: "open" } }],
+      }),
+    ).toThrow(/invalid services declaration.*services\[0\]\.expose\.auth/)
+  })
+
   it("carries services through to the handle, frozen", () => {
     const app = defineApp({
       agents: [agent("solo", [])],
