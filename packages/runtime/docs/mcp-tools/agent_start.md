@@ -546,9 +546,13 @@ in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
   With none of those available it gives up (`skipped`), as before. The capped
   model joins the daemon-wide cooldown map, `rotateOn` includes it by default
   once `on` lists it, and each divert books one `turnRetryAttempts`. On a
-  sandbox session the model overlay of `fallback` uses the restart transition
-  (the box has no live model switch), which re-attaches the same box. Without
-  the opt-in a usage cap still walks the `fallback` chain, as it did before.
+  sandbox session both `rotate` and the model overlay of `fallback` use the
+  restart transition (the box has no live model switch), which re-attaches the
+  same box with the new model. An opted-in usage cap obeys the tool-call rule
+  below like every other class: after a side-effecting tool call it is not
+  continued, by rotate or fallback, unless `retryAfterToolCalls` is true.
+  Without the opt-in a usage cap still walks the `fallback` chain, as it did
+  before.
 
 Never retried, whatever `on` says:
 
@@ -592,8 +596,11 @@ A non-sandbox session, a spent cap, or a migration that cannot run (no
 orchestrator, no work branch, a refused spawn) all fall back to the normal
 retry above, with a `[turn-retry] no migration: …` /
 `[turn-retry] did not migrate …` notice; a failed migration leaves the old
-session untouched. Once `maxRetries` is spent as well there is nothing left
-to fall back to: the daemon reports `exhausted` and gives up. The transitions
+session untouched. For `usage-limit` the fallback is not a re-prompt of the
+same capped box: it rotates or walks the `fallback` chain instead. Once
+`maxRetries` is spent as well there is nothing left to fall back to: the
+daemon walks the `fallback` chain when one is configured (a usage cap needs no
+retry budget for that), then reports `exhausted` and gives up. The transitions
 land as `migrated` (with `migratedTo`) and `migrate-failed` (with
 `skipReason`) events.
 

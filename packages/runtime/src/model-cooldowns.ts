@@ -18,7 +18,7 @@ export interface ModelCooldownEntry {
   /** ISO time the cooldown ends. */
   until: string
   remainingMs: number
-  /** Why it was recorded (`rate-limit` / `no-output-stall`). */
+  /** Why it was recorded (`rate-limit` / `no-output-stall` / `usage-limit`). */
   reason: string
   /** The session whose failure recorded it. */
   sessionId?: string

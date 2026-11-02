@@ -1122,8 +1122,9 @@ export interface SessionTurnRetryEvent {
   type: "session:turn-retry"
   sessionId: string
   phase: "scheduled" | "rotated" | "sent" | "cancelled" | "exhausted" | "skipped" | "migrated" | "migrate-failed"
-  /** The failure class (`rate-limit`, `upstream-5xx`, `no-output-stall`, or
-   *  a never-retried class such as `auth` / `usage-limit` / `other`). */
+  /** The failure class: `rate-limit`, `upstream-5xx`, `no-output-stall`,
+   *  `usage-limit` (opt-in; diverted to rotate / fallback / migrate rather
+   *  than retried, and otherwise skipped), or `auth` / `other` (skipped). */
   errorClass: string
   /** 1-based number of this retry (`scheduled`/`sent`), or attempts already
    *  spent (`exhausted`). */

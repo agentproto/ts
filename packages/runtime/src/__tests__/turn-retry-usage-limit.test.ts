@@ -181,6 +181,31 @@ describe("usage-limit turnRetry class: policy and decision", () => {
     })
     expect(decideTurnRetry(row(["rate-limit"]), trigger)).toMatchObject({ action: "skip", errorClass: "usage-limit" })
   })
+
+  it("holds an opted-in usage cap to the side-effecting tool-call gate", () => {
+    const row = (extra: Parameters<typeof resolveTurnRetryPolicy>[0] extends infer T ? Partial<T> : never = {}) =>
+      ({
+        id: "s1",
+        kind: "agent-cli",
+        status: "running",
+        turnRetry: resolveTurnRetryPolicy({ on: ["usage-limit"], ...FAST, ...extra }),
+      }) as SessionDescriptor
+    const after = (toolCalls: string[]) =>
+      ({ kind: "turn-end", reason: "error", error: CI_USAGE_LIMIT, toolCalls }) as const
+
+    expect(decideTurnRetry(row(), after(["bash"]))).toMatchObject({
+      action: "skip",
+      errorClass: "usage-limit",
+      toolCallsBlocked: true,
+    })
+    expect(decideTurnRetry(row(), after(["read", "grep"]))).toMatchObject({ action: "divert" })
+    expect(decideTurnRetry(row({ retryAfterToolCalls: true }), after(["bash"]))).toMatchObject({ action: "divert" })
+    // Without the opt-in the skip is the plain cap skip, which keeps the AIP-46 fallback walk.
+    const optedOut = { ...row(), turnRetry: resolveTurnRetryPolicy({ on: ["rate-limit"], ...FAST }) } as SessionDescriptor
+    const plain = decideTurnRetry(optedOut, after(["bash"]))
+    expect(plain).toMatchObject({ action: "skip", errorClass: "usage-limit" })
+    expect(plain).not.toHaveProperty("toolCallsBlocked")
+  })
 })
 
 describe("usage-limit turnRetry class: controller", () => {
@@ -255,5 +280,92 @@ describe("usage-limit turnRetry class: controller", () => {
     expect(h.fallbackEvents[0]).toMatchObject({ transition: "restart", to: { model: FREE_B } })
     expect(h.restarts).toEqual([{ id: desc.id, overrides: { model: FREE_B } }])
     h.done()
+  })
+
+  it("on a sandbox session rotate uses the restart transition instead of giving up", async () => {
+    const h = harness({
+      scripts: [fail(CI_USAGE_LIMIT), ok],
+      remote: true,
+      restart: true,
+      turnRetry: { on: ["usage-limit"], rotate: [{ model: FREE_B }], ...FAST },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.prompts.length === 2 && h.registry.get(desc.id)?.busy === false, "box rotation")
+
+    expect(h.restarts).toEqual([{ id: desc.id, overrides: { model: FREE_B } }])
+    expect(h.phases()).toEqual(["rotated", "sent"])
+    expect(h.events[0]).toMatchObject({ errorClass: "usage-limit", fromModel: FREE_A, toModel: FREE_B })
+    expect(h.fallbackEvents).toHaveLength(0)
+    h.done()
+  })
+
+  it("on a sandbox session without a restart hook rotate still falls through to the fallback chain", async () => {
+    const h = harness({
+      scripts: [fail(CI_USAGE_LIMIT), ok],
+      remote: true,
+      turnRetry: { on: ["usage-limit"], rotate: [{ model: FREE_B }], ...FAST },
+    })
+    const desc = h.spawn()
+    await h.registry.sendPrompt(desc.id, "go")
+    await until(() => h.phases().includes("skipped"), "give up")
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    expect(h.prompts).toHaveLength(1)
+    expect(h.phases()).toEqual(["skipped"])
+    h.done()
+  })
+
+  describe("after a side-effecting tool call", () => {
+    const writeThenCap = (toolName: string): AgentStreamEvent[] => [
+      { kind: "tool-call", toolCallId: "t1", toolName, arguments: {} } as AgentStreamEvent,
+      ...fail(CI_USAGE_LIMIT),
+    ]
+
+    it("does not rotate or fall back, and sends no continuation", async () => {
+      const h = harness({
+        scripts: [writeThenCap("bash"), ok],
+        turnRetry: { on: ["usage-limit"], rotate: [{ model: FREE_B }], fallback: [{ model: FREE_C }], ...FAST },
+      })
+      const desc = h.spawn()
+      await h.registry.sendPrompt(desc.id, "go")
+      await until(() => h.phases().includes("skipped"), "tool-call gate skip")
+      await new Promise(resolve => setTimeout(resolve, 30))
+
+      expect(h.prompts).toHaveLength(1)
+      expect(h.trace).toEqual(["prompt@initial"])
+      expect(h.phases()).toEqual(["skipped"])
+      expect(h.fallbackEvents).toHaveLength(0)
+      expect(h.registry.get(desc.id)?.model).toBe(FREE_A)
+      expect(h.notices.join("\n")).toContain("retryAfterToolCalls")
+      h.done()
+    })
+
+    it("a read-only tool call does not trip the gate", async () => {
+      const h = harness({
+        scripts: [writeThenCap("read"), ok],
+        turnRetry: { on: ["usage-limit"], rotate: [{ model: FREE_B }], ...FAST },
+      })
+      const desc = h.spawn()
+      await h.registry.sendPrompt(desc.id, "go")
+      await until(() => h.prompts.length === 2 && h.registry.get(desc.id)?.busy === false, "rotated continuation")
+
+      expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
+      h.done()
+    })
+
+    it("retryAfterToolCalls opts the session back in", async () => {
+      const h = harness({
+        scripts: [writeThenCap("bash"), ok],
+        turnRetry: { on: ["usage-limit"], rotate: [{ model: FREE_B }], retryAfterToolCalls: true, ...FAST },
+      })
+      const desc = h.spawn()
+      await h.registry.sendPrompt(desc.id, "go")
+      await until(() => h.prompts.length === 2 && h.registry.get(desc.id)?.busy === false, "rotated continuation")
+
+      expect(h.phases()).toEqual(["rotated", "sent"])
+      expect(h.registry.get(desc.id)?.model).toBe(FREE_B)
+      h.done()
+    })
   })
 })
