@@ -36,6 +36,7 @@ import { dirname, join } from "node:path"
 import { parseServiceList, type AppService } from "@agentproto/app"
 
 import {
+  APP_SERVICE_PUBLIC_URL_ENV,
   exposureEnv,
   isExposedService,
   type AppServiceExposer,
@@ -88,6 +89,10 @@ export interface AppServiceOwner {
   startTicks?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
+  /** The `AGENTPROTO_PUBLIC_URL` origin the live process was spawned with
+   *  (AIP-53 Exposure rule 3). Unset: spawned without one. A kept owner
+   *  whose origin is no longer the current one is respawned. */
+  publicUrl?: string
   startedAt: string
 }
 
@@ -345,8 +350,19 @@ export async function ensureAppServiceOwners(
     const errors: Array<{ name: string; error: string }> = []
     const removed: string[] = []
 
-    // AIP-53 Exposure rule 3: tunnel before process. Ensured for kept owners
-    // too (idempotent on the key: same tunnel back, restarted if it is down).
+    // AIP-53 Exposure rule 3: tunnel before process. A running process
+    // started with another origin than the current one (`expose` added, or
+    // a provider that handed out a new URL) is restarted with the new env.
+    // Only judged when an exposer is wired; a tunnel in error keeps the
+    // process as is (a transient failure must not take a working service
+    // down).
+    const originIsStale = (owner: AppServiceOwner, exposure: AppServiceExposure | undefined): boolean => {
+      if (deps.exposer === undefined) return false
+      if (exposure?.state === "error") return false
+      return owner.publicUrl !== exposure?.publicUrl
+    }
+    // Tunnels are ensured for kept owners too (idempotent on the key: same
+    // tunnel back, restarted if it is down).
     const exposures: AppServiceExposure[] = []
     const exposureByName = new Map<string, AppServiceExposure>()
     if (deps.exposer !== undefined) {
@@ -360,7 +376,7 @@ export async function ensureAppServiceOwners(
 
     for (const service of deps.services) {
       const prev = byName.get(service.name)
-      if (prev !== undefined && deps.isOwnerAlive(prev)) {
+      if (prev !== undefined && deps.isOwnerAlive(prev) && !originIsStale(prev, exposureByName.get(service.name))) {
         kept.push(prev)
         continue
       }
@@ -386,6 +402,7 @@ export async function ensureAppServiceOwners(
         ...(res.pid !== undefined ? { pid: res.pid } : {}),
         ...(res.startTicks !== undefined ? { startTicks: res.startTicks } : {}),
         ...(service.port !== undefined ? { port: service.port } : {}),
+        ...(env[APP_SERVICE_PUBLIC_URL_ENV] !== undefined ? { publicUrl: env[APP_SERVICE_PUBLIC_URL_ENV] } : {}),
         startedAt: now().toISOString(),
       }
       deps.store.upsert(owner)

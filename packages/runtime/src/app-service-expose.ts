@@ -12,7 +12,7 @@
  *         hostname: session-chat  # optional request
  *
  * One tunnel per exposed service, through the daemon's {@link TunnelRegistry},
- * keyed `app:<appId>:<name>` (`ensureKeyed`), so a reinstall or a daemon boot
+ * keyed `app.<a>.<s>.<h>` (`appServiceTunnelKey`, `ensureKeyed`), so a reinstall or a daemon boot
  * gets the SAME tunnel back and the provisioned provider PUTs the same key.
  * The provider is HOST config (`defaults.apps.exposeProvider`), never the
  * app's. The tunnel is ensured BEFORE the process spawns and its bare origin
@@ -23,6 +23,8 @@
  * Out of scope here: AIP-53 Exposure rule 8 (a service running inside an
  * AIP-36 sandbox, connector-token handoff).
  */
+
+import { createHash } from "node:crypto"
 
 import type { AppService, AppServiceExpose } from "@agentproto/app"
 
@@ -46,9 +48,24 @@ export function isExposedService(service: AppService): service is ExposedAppServ
   return service.expose !== undefined && service.port !== undefined
 }
 
-/** The AIP-73 tunnel key of one exposed service (AIP-53 Exposure rule 2). */
+/**
+ * The AIP-73 tunnel key of one exposed service (AIP-53 Exposure rule 2,
+ * "Tunnel key"): `app.<a>.<s>.<h>`. `<a>` is the app id lowercased, every run
+ * outside `[a-z0-9-]` replaced by `-`, edge `-` trimmed, cut to 24; `<s>` the
+ * service name cut to 24; `<h>` the first 8 hex of sha256(`<appId>:<name>`)
+ * over the ORIGINAL id. Always matches the provisioner key alphabet
+ * `^[a-z0-9][a-z0-9._-]{0,62}$`. Derived exactly so another host of the same
+ * user finds the same tunnel.
+ */
 export function appServiceTunnelKey(appId: string, name: string): string {
-  return `app:${appId}:${name}`
+  const a = appId
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24)
+  const s = name.slice(0, 24)
+  const h = createHash("sha256").update(`${appId}:${name}`, "utf8").digest("hex").slice(0, 8)
+  return `app.${a}.${s}.${h}`
 }
 
 /** Per-service exposure report (AIP-53 Exposure rule 6). */
@@ -185,7 +202,10 @@ export function createTunnelRegistryExposer(opts: {
   configuredProvider?: () => Promise<string | undefined>
 }): AppServiceExposer {
   const { registry, readCreds } = opts
-  const prefix = (appId: string) => `app:${appId}:`
+  /** The app's keyed tunnels, found by the owner stamped on the descriptor
+   *  (the derived key is lossy and cannot be parsed back). */
+  const owned = (appId: string): TunnelDescriptor[] =>
+    registry.list().filter(d => d.key !== undefined && d.owner?.appId === appId)
   return {
     async ensure(appId, service) {
       const key = appServiceTunnelKey(appId, service.name)
@@ -203,6 +223,7 @@ export function createTunnelRegistryExposer(opts: {
         const named = await resolveRegisteredTunnelConfig(provider, readCreds)
         const desc = await registry.ensureKeyed({
           key,
+          owner: { appId, service: service.name },
           provider,
           targetHost: "127.0.0.1",
           targetPort: service.port,
@@ -230,16 +251,15 @@ export function createTunnelRegistryExposer(opts: {
       return desc !== undefined ? exposureOf(service, desc) : undefined
     },
     list(appId) {
-      const p = prefix(appId)
-      return registry
-        .list()
-        .map(d => d.key)
-        .filter((k): k is string => k !== undefined && k.startsWith(p) && !k.slice(p.length).includes(":"))
-        .map(k => k.slice(p.length))
+      return [...new Set(owned(appId).map(d => d.owner!.service))]
     },
     async remove(appId, name) {
-      const desc = registry.findByKey(appServiceTunnelKey(appId, name))
-      if (desc !== undefined) await registry.delete(desc.id)
+      const key = appServiceTunnelKey(appId, name)
+      for (const desc of owned(appId)) {
+        if (desc.owner!.service === name || desc.key === key) await registry.delete(desc.id)
+      }
+      const stray = registry.findByKey(key)
+      if (stray !== undefined) await registry.delete(stray.id)
     },
   }
 }

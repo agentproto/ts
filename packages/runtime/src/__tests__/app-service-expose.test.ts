@@ -133,12 +133,36 @@ describe("selectExposeProvider (host config, never the app's)", () => {
   })
 })
 
+describe("appServiceTunnelKey (AIP-53 Tunnel key)", () => {
+  const PROVISIONER_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/
+
+  it("derives the spec's exact key", () => {
+    expect(appServiceTunnelKey("@agentik/pygmalion", "telegram-miniapp")).toBe(
+      "app.agentik-pygmalion.telegram-miniapp.f29069fe",
+    )
+  })
+
+  it("always matches the provisioner key alphabet, and keeps apart ids that reduce alike", () => {
+    const long = `a${"b-".repeat(29)}c` // 60 chars, a valid kebab name
+    expect(long).toHaveLength(60)
+    const ids = ["@agentik/pygmalion", "@Scope/My_App.V2", "---", "@@//", "UPPER/Case/Path/With/Many/Segments/And/More", "x"]
+    for (const id of ids) {
+      for (const name of ["web", "telegram-miniapp", long]) {
+        const key = appServiceTunnelKey(id, name)
+        expect(key, `${id} + ${name}`).toMatch(PROVISIONER_KEY_RE)
+        expect(appServiceTunnelKey(id, name)).toBe(key) // deterministic
+      }
+    }
+    expect(appServiceTunnelKey("@a/b", "web")).not.toBe(appServiceTunnelKey("a-b", "web"))
+  })
+})
+
 describe("TunnelRegistry.ensureKeyed (stable identity)", () => {
   it("hands the provider the caller's key and returns the same tunnel on re-ensure", async () => {
     const rec = newRec()
     const reg = makeRegistry(rec)
     const key = appServiceTunnelKey(APP_ID, "miniapp")
-    expect(key).toBe("app:@test/expose-app:miniapp")
+    expect(key).toMatch(/^app\.test-expose-app\.miniapp\.[0-9a-f]{8}$/)
     const a = await reg.ensureKeyed({ key, provider: "cloudflare-provisioned", targetPort: 8788, public: true })
     expect(rec.starts).toHaveLength(1)
     expect(rec.starts[0]!.tunnel?.key).toBe(key)
@@ -292,6 +316,34 @@ describe("createTunnelRegistryExposer", () => {
     expect(reg.list()).toHaveLength(1)
   })
 
+  it("hands the provider the derived key and finds a tunnel by owner for a service no longer declared", async () => {
+    const rec = newRec()
+    const reg = makeRegistry(rec)
+    const exposer = createTunnelRegistryExposer({ registry: reg, readCreds: provisioned })
+    const appId = "@agentik/pygmalion"
+    await exposer.ensure(appId, { ...miniapp, name: "telegram-miniapp" })
+    await exposer.ensure(appId, { name: "web", entry: "x", port: 4000, expose: {} })
+    expect(rec.starts[0]!.tunnel?.key).toBe("app.agentik-pygmalion.telegram-miniapp.f29069fe")
+    expect(exposer.list(appId).sort()).toEqual(["telegram-miniapp", "web"])
+    expect(exposer.list("@agentik/other")).toEqual([])
+
+    // The manifest dropped `telegram-miniapp`: the launcher only knows the
+    // name from list(), and remove() still finds the tunnel.
+    const store = createAppServiceStore({ persist: false })
+    const result = await ensureAppServiceOwners({
+      store,
+      appId,
+      services: [{ name: "web", entry: "x", port: 4000, expose: {} }],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true, sessionId: "s" }),
+      killOwner: () => {},
+      exposer,
+    })
+    expect(result.unexposed).toEqual(["telegram-miniapp"])
+    expect(rec.destroys.map(d => d.key)).toEqual(["app.agentik-pygmalion.telegram-miniapp.f29069fe"])
+    expect(exposer.list(appId)).toEqual(["web"])
+  })
+
   it("remove stops the connector and deletes the tunnel remotely", async () => {
     const rec = newRec()
     const reg = makeRegistry(rec)
@@ -306,8 +358,8 @@ describe("createTunnelRegistryExposer", () => {
 })
 
 /** In-memory exposer: records the call order against spawns. */
-function fakeExposer(opts: { fail?: Set<string>; log?: string[] } = {}) {
-  const tunnels = new Map<string, AppServiceExposure>()
+function fakeExposer(opts: { fail?: Set<string>; log?: string[]; origin?: (name: string) => string } = {}) {
+  const tunnels = new Map<string, AppServiceExposure & { appId: string }>()
   const log = opts.log ?? []
   let created = 0
   const exposer: AppServiceExposer & { created: () => number } = {
@@ -319,24 +371,27 @@ function fakeExposer(opts: { fail?: Set<string>; log?: string[] } = {}) {
         return { name: service.name, auth: service.expose.auth ?? "guard", stable: true, state: "error", error: "provider down" }
       }
       const prev = tunnels.get(key)
-      if (prev) return prev
+      if (prev) {
+        const { appId: _a, ...x } = prev
+        return opts.origin ? { ...x, publicUrl: opts.origin(service.name) } : x
+      }
       created += 1
       const x: AppServiceExposure = {
         name: service.name,
         auth: service.expose.auth ?? "guard",
         stable: true,
         state: "active",
-        publicUrl: `https://${service.name}.example.test`,
+        publicUrl: opts.origin?.(service.name) ?? `https://${service.name}.example.test`,
         tunnelId: `t-${created}`,
       }
-      tunnels.set(key, x)
+      tunnels.set(key, { ...x, appId })
       return x
     },
     status(appId, service) {
       return tunnels.get(appServiceTunnelKey(appId, service.name))
     },
     list(appId) {
-      return [...tunnels.keys()].filter(k => k.startsWith(`app:${appId}:`)).map(k => k.slice(`app:${appId}:`.length))
+      return [...tunnels.values()].filter(t => t.appId === appId).map(t => t.name)
     },
     async remove(appId, name) {
       log.push(`remove ${name}`)
@@ -436,6 +491,55 @@ describe("ensureAppServiceOwners with expose", () => {
     expect(result.unexposed?.sort()).toEqual(["miniapp", "other"])
     expect(result.removed).toEqual(["other"])
     expect(exposer.list(APP_ID)).toEqual([])
+  })
+
+  it("respawns a running owner when its origin is no longer current, keeps it when unchanged", async () => {
+    const store = createAppServiceStore({ persist: false })
+    let n = 0
+    const spawn = vi.fn(async (_s: AppService, _extra?: { env?: Record<string, string> }) => ({
+      ok: true as const,
+      sessionId: `s${++n}`,
+    }))
+    const killOwner = vi.fn()
+    const { expose: _e, ...plain } = miniapp
+    let origin = "https://first.example.test"
+    const exposer = fakeExposer({ origin: () => origin })
+    const base = { store, appId: APP_ID, isOwnerAlive: () => true, spawn, killOwner, exposer }
+
+    // Running without expose.
+    await ensureAppServiceOwners({ ...base, services: [plain] })
+    expect(spawn).toHaveBeenCalledTimes(1)
+
+    // `expose` added to the running service: restarted with the env.
+    const added = await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    expect(killOwner).toHaveBeenCalledTimes(1)
+    expect(spawn).toHaveBeenCalledTimes(2)
+    expect(spawn.mock.calls[1]![1]).toEqual({ env: { [APP_SERVICE_PUBLIC_URL_ENV]: "https://first.example.test" } })
+    expect(added.spawned.map(o => o.publicUrl)).toEqual(["https://first.example.test"])
+
+    // Same origin: kept.
+    const same = await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    expect(same.kept.map(o => o.name)).toEqual(["miniapp"])
+    expect(spawn).toHaveBeenCalledTimes(2)
+
+    // The provider handed out a new URL: restarted again.
+    origin = "https://second.example.test"
+    await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    expect(spawn).toHaveBeenCalledTimes(3)
+    expect(spawn.mock.calls[2]![1]).toEqual({ env: { [APP_SERVICE_PUBLIC_URL_ENV]: "https://second.example.test" } })
+  })
+
+  it("a tunnel in error does not restart a running owner", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const spawn = vi.fn(async () => ({ ok: true as const, sessionId: "s1" }))
+    const fail = new Set<string>()
+    const exposer = fakeExposer({ fail })
+    const base = { store, appId: APP_ID, isOwnerAlive: () => true, spawn, killOwner: () => {}, exposer }
+    await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    fail.add("miniapp")
+    const r = await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    expect(r.kept.map(o => o.name)).toEqual(["miniapp"])
+    expect(spawn).toHaveBeenCalledTimes(1)
   })
 
   it("uninstall (removeAppServiceOwners) deletes every tunnel of the app", async () => {

@@ -130,6 +130,9 @@ export interface TunnelDescriptor {
    * daemon boot reuses the SAME remote tunnel. At most one descriptor per key.
    */
   key?: string
+  /** Keyed tunnels only: who the tunnel belongs to, so its owner finds it
+   *  again without parsing the (derived, lossy) key. */
+  owner?: TunnelOwner
   /** Keyed tunnels only: the hostname the caller requested (normalized), kept
    *  apart from `hostname` because a provider may assign another name. */
   hostnameRequest?: string
@@ -137,6 +140,12 @@ export interface TunnelDescriptor {
    *  logged) since skipping the guard is the one choice here with real
    *  blast radius if picked by habit instead of intent. */
   warning?: string
+}
+
+/** The app service a keyed tunnel was created for (AIP-53 `expose`). */
+export interface TunnelOwner {
+  appId: string
+  service: string
 }
 
 interface TunnelEntry {
@@ -189,6 +198,8 @@ export interface CreateTunnelInput {
   /** Stable identity, see {@link TunnelDescriptor.key}. Use `ensureKeyed`;
    *  `create` refuses a key that is already registered. */
   key?: string
+  /** Keyed tunnels only, see {@link TunnelDescriptor.owner}. */
+  owner?: TunnelOwner
 }
 
 export interface TunnelRegistryOptions {
@@ -321,7 +332,11 @@ export class TunnelRegistry {
       ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
       ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
       ...(input.key !== undefined
-        ? { key: input.key, ...(input.hostname ? { hostnameRequest: normalizeHostname(input.hostname) } : {}) }
+        ? {
+            key: input.key,
+            ...(input.owner ? { owner: { ...input.owner } } : {}),
+            ...(input.hostname ? { hostnameRequest: normalizeHostname(input.hostname) } : {}),
+          }
         : {}),
       access: input.public ? "public" : "private",
       ...(input.public
@@ -411,6 +426,7 @@ export class TunnelRegistry {
     if (input.tunnelId) desc.tunnelId = input.tunnelId
     if (input.credentialsFile) desc.credentialsFile = input.credentialsFile
     if (input.label) desc.label = input.label
+    if (input.owner) desc.owner = { ...input.owner }
     desc.publicUrl = ""
     delete desc.url
     this.schedulePersist()

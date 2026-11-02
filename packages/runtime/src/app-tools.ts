@@ -66,7 +66,7 @@ import {
   type SpawnServiceOwner,
   type SpawnServiceOwnerResult,
 } from "./app-services.js"
-import { isExposedService, type AppServiceExposer, type AppServiceExposure } from "./app-service-expose.js"
+import { APP_SERVICE_PUBLIC_URL_ENV, isExposedService, type AppServiceExposer, type AppServiceExposure } from "./app-service-expose.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -1947,6 +1947,10 @@ export function buildAppServiceEnsurer(
           ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
           ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
           ...(input.service.port !== undefined ? { port: input.service.port } : {}),
+          // A restart keeps the env, so the record keeps the origin with it.
+          ...(input.env?.[APP_SERVICE_PUBLIC_URL_ENV] !== undefined
+            ? { publicUrl: input.env[APP_SERVICE_PUBLIC_URL_ENV] }
+            : {}),
           startedAt: new Date().toISOString(),
         })
       },
