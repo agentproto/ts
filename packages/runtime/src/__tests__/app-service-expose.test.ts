@@ -503,7 +503,8 @@ describe("ensureAppServiceOwners with expose", () => {
     const killOwner = vi.fn()
     const { expose: _e, ...plain } = miniapp
     let origin = "https://first.example.test"
-    const exposer = fakeExposer({ origin: () => origin })
+    const fail = new Set<string>()
+    const exposer = fakeExposer({ origin: () => origin, fail })
     const base = { store, appId: APP_ID, isOwnerAlive: () => true, spawn, killOwner, exposer }
 
     // Running without expose.
@@ -527,19 +528,12 @@ describe("ensureAppServiceOwners with expose", () => {
     await ensureAppServiceOwners({ ...base, services: [miniapp] })
     expect(spawn).toHaveBeenCalledTimes(3)
     expect(spawn.mock.calls[2]![1]).toEqual({ env: { [APP_SERVICE_PUBLIC_URL_ENV]: "https://second.example.test" } })
-  })
 
-  it("a tunnel in error does not restart a running owner", async () => {
-    const store = createAppServiceStore({ persist: false })
-    const spawn = vi.fn(async () => ({ ok: true as const, sessionId: "s1" }))
-    const fail = new Set<string>()
-    const exposer = fakeExposer({ fail })
-    const base = { store, appId: APP_ID, isOwnerAlive: () => true, spawn, killOwner: () => {}, exposer }
-    await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    // A tunnel in error leaves the running process alone (transient failure).
     fail.add("miniapp")
-    const r = await ensureAppServiceOwners({ ...base, services: [miniapp] })
-    expect(r.kept.map(o => o.name)).toEqual(["miniapp"])
-    expect(spawn).toHaveBeenCalledTimes(1)
+    const failed = await ensureAppServiceOwners({ ...base, services: [miniapp] })
+    expect(failed.kept.map(o => o.name)).toEqual(["miniapp"])
+    expect(spawn).toHaveBeenCalledTimes(3)
   })
 
   it("uninstall (removeAppServiceOwners) deletes every tunnel of the app", async () => {
