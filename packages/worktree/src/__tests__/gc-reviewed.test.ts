@@ -137,6 +137,30 @@ describe("applyGc reviewed tier", () => {
     expect(await worktreeListed(repo, wtPath)).toBe(true)
   })
 
+  it("refuses when the index changed since the plan (a git command ran in the worktree)", async () => {
+    const { repo, wtPath, verdicts, input, plan } = await setup()
+    const touched = new Date(Date.now() - 30 * 60 * 1000)
+    const index = (await execGit(wtPath, ["rev-parse", "--path-format=absolute", "--git-path", "index"])).stdout.trim()
+    await utimes(index, touched, touched)
+    const outcome = (await applyGc(plan, { ...input, activeMinutes: 0, reviewed: { paths: [wtPath], verdicts } })).find(
+      (o) => o.path === wtPath,
+    ) as GcApplyOutcome & { reason: string }
+    expect(outcome.result).toBe("skipped-stale")
+    expect(outcome.reason).toMatch(/index changed/)
+    expect(await worktreeListed(repo, wtPath)).toBe(true)
+  })
+
+  it("refuses an entry the plan held for its own reason (recent activity, live session cwd)", async () => {
+    const { repo, wtPath, verdicts, input, plan } = await setup()
+    const heldPlan = plan.map((e) => (e.path === wtPath ? { ...e, holdReason: "recent-activity" as const } : e))
+    const outcome = (await applyGc(heldPlan, { ...input, reviewed: { paths: [wtPath], verdicts } })).find(
+      (o) => o.path === wtPath,
+    ) as GcApplyOutcome & { reason: string }
+    expect(outcome.result).toBe("skipped-stale")
+    expect(outcome.reason).toMatch(/held at plan time \(recent-activity\)/)
+    expect(await worktreeListed(repo, wtPath)).toBe(true)
+  })
+
   it("refuses when the tree got dirty since the plan", async () => {
     const { repo, wtPath, verdicts, input, plan } = await setup()
     await writeFile(join(wtPath, "wip.txt"), "uncommitted\n")

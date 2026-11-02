@@ -1537,7 +1537,11 @@ function printGcOutcomes(outcomes: readonly GcApplyOutcome[], json: boolean): vo
   const salvaged = outcomes.filter((o) => o.result === "salvaged").length
   const failed = outcomes.filter((o) => o.result === "failed").length
   const stale = outcomes.filter((o) => o.result === "skipped-stale").length
+  const reviewed = outcomes.filter((o) => o.result === "removed-keep-branch").length
   process.stdout.write(
-    `\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed` + (stale > 0 ? `, ${stale} skipped (stale plan)` : "") + ".\n",
+    `\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed` +
+      (reviewed > 0 ? `, ${reviewed} removed as reviewed (branch kept)` : "") +
+      (stale > 0 ? `, ${stale} skipped (stale plan)` : "") +
+      ".\n",
   )
 }
