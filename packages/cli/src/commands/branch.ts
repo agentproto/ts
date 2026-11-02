@@ -624,7 +624,8 @@ export async function runBranchGcRestore(
     const count = (r: string): number => result.outcomes.filter((o) => o.result === r).length
     process.stdout.write(
       `\n${count(values["dry-run"] ? "would-restore" : "restored")} ${values["dry-run"] ? "would be restored" : "restored"}, ` +
-        `${count("already-present")} already present, ${count("refused-conflict")} refused (conflict), ` +
+        `${count("already-present")} already present, ${count("contained")} contained in another restored tip, ` +
+        `${count("refused-conflict")} refused (conflict), ` +
         `${count("missing-commit") + count("invalid-entry") + count("failed")} failed.\n`,
     )
   }

@@ -2390,8 +2390,24 @@ export interface BranchGcRestoreOutcome {
    * name exists at ANOTHER sha (never overwritten); `missing-commit` the sha
    * is no longer in the object database; `invalid-entry` the log entry is not
    * one `applyBranchGc` writes (nothing run); `failed` git refused.
+   * Entries of one batch that map to the same target (with `localOnly`, a
+   * `remote` and a `local` entry of the same name) are resolved up front, so
+   * a dry run reports what the real run does whatever the log order: the
+   * same sha twice restores once, the next is `already-present`; when one
+   * sha is an ancestor of the others, only the descendant is restored and
+   * each ancestor is `contained` (nothing run, its commits are kept by the
+   * descendant, named in `message`); diverged shas are all
+   * `refused-conflict`, naming each other, until `--sha` picks one.
    */
-  result: "restored" | "would-restore" | "already-present" | "refused-conflict" | "missing-commit" | "invalid-entry" | "failed"
+  result:
+    | "restored"
+    | "would-restore"
+    | "already-present"
+    | "contained"
+    | "refused-conflict"
+    | "missing-commit"
+    | "invalid-entry"
+    | "failed"
   /** The git command run (or that would be), as a shell line. */
   command?: string
   message?: string
@@ -2458,6 +2474,43 @@ async function restorePlanOf(
 }
 
 /**
+ * The targets more than one entry of a restore batch maps to with different
+ * shas, decided from content, never from log order: `winner` is the sha that
+ * descends from every other one (each other entry is contained in it), or
+ * `diverged` when there is no such sha (or an ancestry check cannot run).
+ */
+async function resolveBatchTargets(
+  repoRoot: string,
+  entries: readonly BranchGcRestoreEntry[],
+  plans: ReadonlyArray<Awaited<ReturnType<typeof restorePlanOf>>>,
+): Promise<Map<string, { entries: BranchGcRestoreEntry[]; winner: string; diverged: boolean }>> {
+  const byTarget = new Map<string, BranchGcRestoreEntry[]>()
+  for (const [i, plan] of plans.entries()) {
+    if (typeof plan === "string") continue
+    const list = byTarget.get(plan.target) ?? []
+    list.push(entries[i] as BranchGcRestoreEntry)
+    byTarget.set(plan.target, list)
+  }
+  const out = new Map<string, { entries: BranchGcRestoreEntry[]; winner: string; diverged: boolean }>()
+  const isAncestor = async (a: string, b: string): Promise<boolean> =>
+    (await git(repoRoot, ["merge-base", "--is-ancestor", a, b])).exitCode === 0
+  for (const [target, list] of byTarget) {
+    const shas = [...new Set(list.map((x) => x.sha))]
+    if (shas.length < 2) continue
+    let winner: string | undefined
+    for (const candidate of shas) {
+      const others = shas.filter((x) => x !== candidate)
+      if ((await Promise.all(others.map((x) => isAncestor(x, candidate)))).every(Boolean)) {
+        winner = candidate
+        break
+      }
+    }
+    out.set(target, { entries: list, winner: winner ?? "", diverged: winner === undefined })
+  }
+  return out
+}
+
+/**
  * Re-create the refs a `branch gc --apply` deleted, from its restore log:
  * a `local` ref with `git branch`, a `remote` ref by pushing the sha back to
  * its remote (or, `localOnly`, as a local branch of the same name), an
@@ -2465,7 +2518,9 @@ async function restorePlanOf(
  * head). Every command is rebuilt from the entry's validated fields, never
  * run from its stored `argv`, and the log's repo must be the caller's
  * `repoRoot`. A ref that exists at ANOTHER sha is never overwritten
- * (`refused-conflict`); one already at the sha is `already-present`. Then,
+ * (`refused-conflict`); one already at the sha is `already-present`.
+ * Entries that share a target are resolved before anything runs (see
+ * `BranchGcRestoreOutcome.result`), so the dry run matches the real run. Then,
  * unless `revokeApproval` is false, the operator approval of each restored
  * tip's stored verdict is dropped so the next run re-judges it.
  */
@@ -2494,15 +2549,24 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
   const remotes = await configuredRemotes(repoRoot)
   const outcomes: BranchGcRestoreOutcome[] = []
   const restoredShas = new Set<string>()
+  const selected = log.entries.filter((x) => matches(shaOf(x)))
+  const plans = await Promise.all(selected.map((e) => restorePlanOf(repoRoot, e, remotes, input.localOnly === true)))
+  const batch = await resolveBatchTargets(repoRoot, selected, plans)
+  /** Targets this batch already restored (or would, in a dry run): target -> sha. */
+  const planned = new Map<string, string>()
 
-  for (const e of log.entries.filter((x) => matches(shaOf(x)))) {
+  for (const [i, e] of selected.entries()) {
     const id = { kind: e.kind, name: e.name, sha: e.sha }
-    const plan = await restorePlanOf(repoRoot, e, remotes, input.localOnly === true)
+    const plan = plans[i] as Awaited<ReturnType<typeof restorePlanOf>>
     if (typeof plan === "string") {
       outcomes.push({ ...id, target: String(e.ref), result: "invalid-entry", message: plan })
       continue
     }
     const { target, argv } = plan
+    if (planned.get(target) === e.sha) {
+      outcomes.push({ ...id, target, result: "already-present", message: `an earlier entry of this batch restores ${target} to it` })
+      continue
+    }
     let current: string | null
     if (plan.remote) {
       const ls = await git(repoRoot, ["ls-remote", plan.remote, `refs/heads/${e.name}`], { GIT_TERMINAL_PROMPT: "0" })
@@ -2520,8 +2584,24 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
       restoredShas.add(e.sha)
       continue
     }
+    const collision = batch.get(target)
+    // The descendant is restored (or will be, or was by an earlier run): its ancestor needs nothing.
+    if (collision && !collision.diverged && collision.winner !== e.sha && (current === null || current === collision.winner)) {
+      outcomes.push({ ...id, target, result: "contained", message: `contained in ${collision.winner.slice(0, 12)}, restored to ${target} instead` })
+      continue
+    }
     if (current !== null) {
       outcomes.push({ ...id, target, result: "refused-conflict", message: `${target} exists at ${current.slice(0, 12)}, not ${e.sha.slice(0, 12)}` })
+      continue
+    }
+    if (collision?.diverged) {
+      const others = collision.entries.filter((x) => x.sha !== e.sha).map((x) => `${x.kind} ${x.name} ${x.sha.slice(0, 12)}`)
+      outcomes.push({
+        ...id,
+        target,
+        result: "refused-conflict",
+        message: `${target} is also restored by ${others.join(", ")} (diverged): pick one with --sha`,
+      })
       continue
     }
     if (argv[0] !== "fetch" && (await git(repoRoot, ["cat-file", "-e", `${e.sha}^{commit}`])).exitCode !== 0) {
@@ -2530,6 +2610,7 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
     }
     if (input.dryRun) {
       outcomes.push({ ...id, target, result: "would-restore", command })
+      planned.set(target, e.sha)
       continue
     }
     const res = await git(repoRoot, argv, argv[0] === "fetch" ? { GIT_TERMINAL_PROMPT: "0" } : undefined)
@@ -2549,6 +2630,7 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
     // Keep the tracking ref in step with the branch just pushed back.
     if (plan.remote) await git(repoRoot, ["update-ref", e.ref, e.sha])
     outcomes.push({ ...id, target, result: "restored", command })
+    planned.set(target, e.sha)
     restoredShas.add(e.sha)
   }
 
