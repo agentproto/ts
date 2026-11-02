@@ -100,8 +100,20 @@ const SAFE_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:@/+-]*$/
 
 const shellQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'`
 
+/** Credential-shaped text in box output: bearer headers, `key=value` secrets, vendor-prefixed keys, long opaque tokens. */
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]"],
+  [/\b([A-Za-z0-9_-]*(?:api[_-]?key|token|secret|passw(?:or)?d|authorization|credential)[A-Za-z0-9_-]*)(\s*[=:]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]"],
+  [/\b(?:sk|pk|rk|ghp|gho|ghs|github_pat|xox[abprs]|AKIA)[-_]?[A-Za-z0-9_-]{12,}/g, "[redacted]"],
+  [/\b[A-Za-z0-9_-]{40,}\b/g, "[redacted]"],
+]
+
+/** Box output leaves the daemon in an error body: scrub credential-shaped text first. */
+export const redactProbeText = (text: string): string =>
+  SECRET_PATTERNS.reduce((out, [re, to]) => out.replace(re, to), text)
+
 const clip = (text: string): string => {
-  const flat = text.replace(/\s+/g, " ").trim()
+  const flat = redactProbeText(text.replace(/\s+/g, " ").trim())
   return flat.length > DETAIL_MAX ? `${flat.slice(0, DETAIL_MAX)}...` : flat
 }
 
@@ -139,12 +151,17 @@ export const modelAnswersProbe: PreflightProbe = {
       timeoutMs: ctx.timeoutMs,
     })
     const text = `${res.stderr}\n${res.stdout}`
-    // Scan on a zero exit too: a harness can print the provider's refusal and still exit 0.
+    const answered = res.exitCode === 0 && res.stdout.trim() !== ""
     const errorClass = classifyTurnError(text)
-    if (errorClass !== "other") {
+    // A harness can print the provider's refusal and still exit 0, so a
+    // zero-exit answer is checked for a usage cap. Any broader class (auth,
+    // rate limit, 5xx) matched in an answer's prose is the model talking, not
+    // the provider failing: only a non-zero exit or an empty answer is held
+    // to the full classification.
+    if (errorClass !== "other" && (!answered || errorClass === "usage-limit")) {
       return { verdict: "ko", errorClass, detail: clip(text) }
     }
-    if (res.exitCode === 0 && res.stdout.trim() !== "") {
+    if (answered) {
       return { verdict: "ok", detail: clip(res.stdout) }
     }
     if (res.exitCode === 127) {
@@ -184,13 +201,23 @@ export async function runPreflightProbe(
   const timedOut = new Promise<"timeout">(resolve => {
     timer = setTimeout(() => resolve("timeout"), timeoutMs)
   })
+  // The probe reaches the box through this wrapper only: every command is
+  // clamped to the probe's budget (the box kills it then), and once
+  // the probe is over, a late call from a leaked run is refused instead of
+  // reaching a box the spawn path is about to stop or reuse.
+  let over = false
+  const exec: PreflightContext["exec"] = opts => {
+    if (over) return Promise.reject(new Error("preflight probe is over, exec refused"))
+    return ctx.exec({ ...opts, timeoutMs: Math.min(opts.timeoutMs ?? timeoutMs, timeoutMs) })
+  }
   try {
-    const settled = await Promise.race([probe.run({ ...ctx, timeoutMs }), timedOut])
+    const settled = await Promise.race([probe.run({ ...ctx, exec, timeoutMs }), timedOut])
     if (settled === "timeout") return finish({ verdict: "unknown", detail: `timed out after ${timeoutMs}ms` })
     return finish(settled)
   } catch (err) {
     return finish({ verdict: "unknown", detail: `probe failed to run: ${clip(err instanceof Error ? err.message : String(err))}` })
   } finally {
+    over = true
     if (timer) clearTimeout(timer)
   }
 }
@@ -218,7 +245,7 @@ export async function runSandboxPreflight(
 ): Promise<PreflightRun> {
   const registry = opts.registry ?? defaultPreflightRegistry
   const outcomes: PreflightOutcome[] = []
-  for (const id of ids) {
+  for (const id of new Set(ids)) {
     const probe = registry.get(id)
     const outcome: PreflightOutcome = probe
       ? await runPreflightProbe(probe, ctx, opts.timeoutMs)

@@ -1000,9 +1000,21 @@ Each probe answers `ok`, `ko` or `unknown`:
 - `model-answers`: runs a one-line prompt through the session's harness
   inside the box (opencode: `opencode run -m <model> "reply ok"`) with a 90 s
   hard timeout. A usage cap, rate limit, 5xx or auth refusal is `ko`, with the
-  same error class a live turn would get. A timeout, a missing binary, an
+  same error class a live turn would get. On a zero exit with an answer, only
+  a usage cap printed in the output counts (an answer that merely mentions
+  "unauthorized" or "rate limit" is `ok`). A timeout, a missing binary, an
   adapter with no known one-line command, or an unclassified failure is
   `unknown`.
+
+The probe runs before the box's credentials arrive (they reach the box through
+its own `agent_start`, not its environment), so a spawn that carries `auth` is
+not probed: it is skipped with a warning rather than judged unauthenticated.
+Credentials already in the box environment (`env.passthrough`) are visible to
+it. Duplicate ids run once. Each probe command is bounded by the probe's
+budget, and once a probe is over (timeout included) the box refuses further
+commands from it. Box output in `probeDetail` and `warnings` is redacted of
+bearer tokens, `key=value` secrets and long opaque strings before it leaves
+the daemon.
 
 `ko` destroys the box (a reused box is paused instead, a box other sessions
 are attached to is left alone) and fails the spawn with

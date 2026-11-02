@@ -7662,6 +7662,14 @@ export async function bootSandboxAgentSession(opts: {
       bootWarnings.push(
         `agent_start: preflight ${preflightIds.join(", ")} skipped, provider "${actualProvider}" cannot run commands in the box`,
       )
+    } else if (opts.auth) {
+      // The box's credentials reach it through its own `agent_start` (`host.start`),
+      // never through its environment, so a probe run now would call the model
+      // unauthenticated: a spurious cap or auth failure would veto a healthy
+      // placement. An explicit credential means the probe cannot speak for the spawn.
+      bootWarnings.push(
+        `agent_start: preflight ${preflightIds.join(", ")} skipped, the spawn carries credentials a probe cannot present`,
+      )
     } else {
       const run = await runSandboxPreflight(
         preflightIds,

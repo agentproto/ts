@@ -224,6 +224,23 @@ describe("agent_start sandbox preflight", () => {
     expect(res.warnings?.some(w => w.includes('preflight "model-answers" inconclusive'))).toBe(true)
   })
 
+  it("a credentialed spawn skips the probe: it cannot present the credential, so it must not veto", async () => {
+    execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+      sandbox: "fake",
+      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
+      preflight: ["model-answers"],
+    })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(execCalls).toHaveLength(0)
+    expect(stopSpy).not.toHaveBeenCalled()
+    expect(receivedStarts).toHaveLength(1)
+    expect(res.warnings?.some(w => w.includes("preflight model-answers skipped") && w.includes("credentials"))).toBe(true)
+  })
+
   it("an unregistered probe id is rejected before any box boots", async () => {
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "fake-cli",

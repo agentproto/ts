@@ -79,6 +79,41 @@ describe("model-answers probe", () => {
     expect(out).toMatchObject({ verdict: "ko", errorClass: "usage-limit" })
   })
 
+  it("ok: an answer that merely mentions an error word is the model talking, not a failure", async () => {
+    for (const stdout of [
+      "A 401 Unauthorized response means the credentials were rejected.",
+      "Rate limit exceeded is HTTP 429, and permission denied is a filesystem error.",
+    ]) {
+      const out = await runPreflightProbe(modelAnswersProbe, ctxWith(async () => result({ exitCode: 0, stdout })))
+      expect(out.verdict).toBe("ok")
+    }
+  })
+
+  it("a non-zero exit with the same words is still a failure", async () => {
+    const out = await runPreflightProbe(
+      modelAnswersProbe,
+      ctxWith(async () => result({ exitCode: 1, stdout: "", stderr: "401 Unauthorized" })),
+    )
+    expect(out).toMatchObject({ verdict: "ko", errorClass: "auth" })
+  })
+
+  it("redacts credential-shaped text from the detail", async () => {
+    const out = await runPreflightProbe(
+      modelAnswersProbe,
+      ctxWith(async () =>
+        result({
+          exitCode: 1,
+          stdout: "",
+          stderr:
+            "429 Too Many Requests Authorization: Bearer abcdef1234567890abcdef OPENAI_API_KEY=sk-live1234567890abcdefgh token: hunter2hunter2",
+        }),
+      ),
+    )
+    expect(out).toMatchObject({ verdict: "ko", errorClass: "rate-limit" })
+    expect(out.detail).not.toMatch(/abcdef1234567890|sk-live|hunter2/)
+    expect(out.detail).toContain("[redacted]")
+  })
+
   it("ko carries the class of other provider failures (rate limit)", async () => {
     const out = await runPreflightProbe(
       modelAnswersProbe,
@@ -193,6 +228,40 @@ describe("runSandboxPreflight", () => {
     const run = await runSandboxPreflight(["nope"], ctxWith(async () => result()), { registry: createPreflightRegistry() })
     expect(run.ok).toBe(true)
     expect(run.outcomes[0]).toMatchObject({ probe: "nope", verdict: "unknown" })
+  })
+
+  it("runs a duplicated id once", async () => {
+    const a = probe("a", "ok")
+    const run = await runSandboxPreflight(["a", "a"], ctxWith(async () => result()), {
+      registry: createPreflightRegistry([a]),
+    })
+    expect(a.run).toHaveBeenCalledTimes(1)
+    expect(run.outcomes).toHaveLength(1)
+  })
+
+  it("clamps a probe's exec to its budget and refuses exec once the probe is over", async () => {
+    const seen: Array<number | undefined> = []
+    let leaked: PreflightContext["exec"] | undefined
+    const slow: PreflightProbe = {
+      id: "slow",
+      description: "slow",
+      defaultTimeoutMs: 30,
+      async run(ctx) {
+        leaked = ctx.exec
+        await ctx.exec({ command: "x", timeoutMs: 600_000 })
+        await ctx.exec({ command: "y" })
+        return new Promise(() => {})
+      },
+    }
+    const exec = async (o: SandboxExecOpts) => {
+      seen.push(o.timeoutMs)
+      return result()
+    }
+    const out = await runPreflightProbe(slow, ctxWith(exec))
+    expect(out.verdict).toBe("unknown")
+    expect(seen).toEqual([30, 30])
+    await expect(leaked!({ command: "late" })).rejects.toThrow(/probe is over/)
+    expect(seen).toHaveLength(2)
   })
 
   it("the timeoutMs option overrides the probe's own budget", async () => {
