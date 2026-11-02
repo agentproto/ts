@@ -9,13 +9,18 @@ const inboxEntry = { hooks: [{ type: "command", command: "agentproto hook inbox"
 const prStampEntry = { matcher: "Bash", hooks: [{ type: "command", command: "agentproto hook pr-stamp" }] }
 
 describe("mergeDesktopSettings", () => {
-  it("adds the session env and both inbox hooks to an empty file", () => {
+  it("adds the session env and the four inbox hooks to an empty file", () => {
     const { settings, sessionId, changed } = mergeDesktopSettings({})
     expect(changed).toBe(true)
     expect(sessionId).toBe("claude-desktop")
     expect(settings).toEqual({
       env: { AGENTPROTO_SESSION_ID: "claude-desktop" },
-      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
+      hooks: {
+        UserPromptSubmit: [inboxEntry],
+        PostToolUse: [inboxEntry, prStampEntry],
+        SessionStart: [inboxEntry],
+        Stop: [inboxEntry],
+      },
     })
   })
 
@@ -37,8 +42,20 @@ describe("mergeDesktopSettings", () => {
     expect(settings).toMatchObject({
       model: "opus",
       env: { FOO: "1", AGENTPROTO_SESSION_ID: "claude-desktop" },
-      hooks: { PostToolUse: [other, inboxEntry, prStampEntry], Stop: [other], UserPromptSubmit: [inboxEntry] },
+      hooks: { PostToolUse: [other, inboxEntry, prStampEntry], Stop: [other, inboxEntry], SessionStart: [inboxEntry], UserPromptSubmit: [inboxEntry] },
     })
+  })
+
+  it("adds only the missing Stop and SessionStart entries to a file that has the older two", () => {
+    const old = {
+      env: { AGENTPROTO_SESSION_ID: "mine" },
+      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
+    }
+    const { settings, changed } = mergeDesktopSettings(old)
+    expect(changed).toBe(true)
+    expect(settings).toMatchObject({ hooks: { SessionStart: [inboxEntry], Stop: [inboxEntry] } })
+    expect((settings.hooks as Record<string, unknown[]>).PostToolUse).toHaveLength(2)
+    expect(mergeDesktopSettings(settings).changed).toBe(false)
   })
 
   it("keeps an existing session id unless one is given", () => {
@@ -87,6 +104,8 @@ describe("hook install --host claude-desktop", () => {
     expect(JSON.parse(first)).toMatchObject({ model: "opus", env: { AGENTPROTO_SESSION_ID: "desk-1" } })
     expect(out).toContain("Updated")
     expect(out).toContain('claude mcp add --transport http --scope user agentproto-desktop "http://127.0.0.1:18790/mcp?callerSessionId=desk-1&host=claude-desktop"')
+
+    expect(JSON.parse(first).hooks).toMatchObject({ SessionStart: [inboxEntry], Stop: [inboxEntry] })
 
     out = ""
     expect(await run([])).toBe(0)

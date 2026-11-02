@@ -3,8 +3,9 @@
  * [--settings <path>] [--port <n>] [--dry-run]`
  *
  * Merges what a Claude Desktop (Claude Code) session needs to receive daemon
- * events into its settings file: `env.AGENTPROTO_SESSION_ID` and three hooks:
- * the two `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse) and the
+ * events into its settings file: `env.AGENTPROTO_SESSION_ID` and the hooks:
+ * the four `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse,
+ * SessionStart, Stop) and the
  * `agentproto hook pr-stamp` PostToolUse hook (matcher Bash). Idempotent:
  * a second run changes nothing, and keys it does not own are left untouched.
  * It also prints the MCP URL that registers the session with the daemon; the
@@ -20,7 +21,7 @@ import { PR_STAMP_HOOK_COMMAND } from "./hook-pr-stamp.js"
 export const DESKTOP_HOST = "claude-desktop"
 export const DEFAULT_DESKTOP_SESSION_ID = "claude-desktop"
 export const INBOX_HOOK_COMMAND = "agentproto hook inbox"
-export const INBOX_HOOK_EVENTS = ["UserPromptSubmit", "PostToolUse"] as const
+export const INBOX_HOOK_EVENTS = ["UserPromptSubmit", "PostToolUse", "SessionStart", "Stop"] as const
 const DEFAULT_PORT = 18790
 const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
 

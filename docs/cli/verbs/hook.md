@@ -14,7 +14,8 @@ Claude Code hook commands: `inbox` and `pre-compact`, plus `install` to wire
 
 ## `hook inbox`
 
-Meant to run as a Claude Code `UserPromptSubmit` or `PostToolUse` hook. It
+Meant to run as a Claude Code `UserPromptSubmit`, `PostToolUse`,
+`SessionStart` or `Stop` hook. It
 reads the session's unread AIP-46 inbox from the daemon
 (`GET /sessions/:id/inbox`), prints the oldest items as `additionalContext`
 in the hook JSON protocol, then acks exactly the items it printed
@@ -30,8 +31,24 @@ containing the closing tag has it neutralised, and each item is truncated at
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--session <id>` | `$AGENTPROTO_SESSION_ID` | Session whose inbox to read. The payload's `session_id` and `$CLAUDE_CODE_SESSION_ID` are the harness's own and are ignored. |
-| `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse`). |
+| `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse` \| `SessionStart` \| `Stop`). Any other name is treated as `UserPromptSubmit`. |
 | `--max <n>` | `20` | Maximum items per invocation (capped at 20), oldest first. |
+
+`SessionStart` prints the same block and the same
+`hookSpecificOutput.additionalContext` shape as `UserPromptSubmit`, once per
+chat start, resume, clear or compaction.
+
+`Stop` is different: it cannot add context after the turn, it can only keep the
+turn going. It prints
+`{"decision":"block","reason":"<the same inbox block>"}` (the model continues
+with `reason` as its input) only when an unread item with urgency `steer` (the
+must-wake class) is among the items it would print **and** the payload's
+`stop_hook_active` is not `true`. Otherwise it prints nothing and acks nothing:
+`fyi` and `next-turn` items wait for the next prompt, tool call or start, and a
+turn that was already continued by a Stop hook is never continued twice. When
+it blocks it acks every item it put in `reason`, so an ignored block is gone.
+At most one extra turn per natural turn end; it cannot reach a session that has
+been idle for an hour.
 
 The command never fails the hook: with no daemon, an unknown session, an
 empty inbox or any error it prints nothing and exits `0`.
@@ -56,8 +73,9 @@ authenticated request.
 
 A Claude Desktop session is an `external` session: the daemon cannot start a
 turn in it, so every event (sentinel, `session_follow`, workflow) is parked in
-its inbox and shown the next time the user submits a prompt or a tool call
-finishes. Three things have to line up:
+its inbox and shown the next time the user submits a prompt, a tool call
+finishes or a chat starts (a `steer` item also keeps a turn that is ending
+going, through the `Stop` hook). Three things have to line up:
 
 1. **The MCP URL registers the session.** Connect the app to
    `http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop`
@@ -73,8 +91,8 @@ finishes. Three things have to line up:
 2. **`AGENTPROTO_SESSION_ID` must equal that `<id>`.** `hook inbox` reads the
    inbox of the session named by this variable, never the harness's own
    `session_id`, so a mismatch reads an empty inbox and prints nothing.
-3. **Two hooks run `agentproto hook inbox`**, on `UserPromptSubmit` and
-   `PostToolUse`. `agentproto` must be on the PATH of the app.
+3. **Four hooks run `agentproto hook inbox`**, on `UserPromptSubmit`,
+   `PostToolUse`, `SessionStart` and `Stop`. `agentproto` must be on the PATH of the app.
 
 The settings file the app reads (`~/.claude/settings.json`, or
 `$CLAUDE_CONFIG_DIR/settings.json`) then contains:
@@ -88,6 +106,12 @@ The settings file the app reads (`~/.claude/settings.json`, or
     ],
     "PostToolUse": [
       { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
     ]
   }
 }
@@ -99,7 +123,9 @@ instead to give that project its own id.
 
 ### `hook install --host claude-desktop`
 
-Writes the block above for you. It merges into the existing file (other keys,
+Writes the block above for you (including `SessionStart` and `Stop`; a file
+installed by an older version gains just those two entries on the next run).
+It merges into the existing file (other keys,
 other hooks and other env vars are kept), is idempotent (a second run changes
 nothing), and refuses to touch a file it cannot parse.
 
