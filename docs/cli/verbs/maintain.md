@@ -45,10 +45,14 @@ One run:
    verdict agreed for the same tip is reclaimed too. `branch_gc` still
    enforces its deterministic line-coverage guard (default 95%): an approval
    below it is refused (`refused-guard`) and listed in the report's "Human
-   decision queue" with its coverage percentage. That queue is never
-   capped: every refused tip is listed once (a branch and its remote twin
-   share one line, with the ref kinds), lowest coverage first, followed by
-   one `agentproto branch gc approve <sha> --by <your name>` command per tip
+   decision queue". That queue is never capped: every refused tip is listed
+   once (a branch and its remote twin share one line, with the ref kinds and
+   the sha), lowest coverage first, each row with its line coverage, stored
+   verdict, PR state (by head branch name from the forge's bulk PR lists,
+   `unknown` only when the forge gave no answer) and the reviewer's one-line
+   reason. Below the rows is ONE `agentproto branch gc approve <sha>...
+   --by <your name>` command covering every queued tip, one sha per line
+   with the flags last, so deleting a line drops that tip
    (see [`branch gc approve`](./branch.md#gc-approve)). Other lists in the report stop at 20 names and say where the
    full list is in the run output. Without `--apply-reviewed`,
    a `review`-class branch is never reclaimed.
