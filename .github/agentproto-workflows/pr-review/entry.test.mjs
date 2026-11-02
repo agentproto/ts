@@ -589,13 +589,36 @@ test('agentic-review.json: computer rungs ask for a distinct egress IP and the r
   assert.deepEqual(reviewConfig.reviewerPlacement.ladder[2].sandbox, sandbox)
 })
 
-test('agentic-review.json: reviewerTurnRetry answers usage and rate limits with the FLASH fallback', () => {
-  assert.deepEqual(reviewConfig.reviewerTurnRetry, {
-    on: ['usage-limit', 'rate-limit'],
-    fallback: [{ model: FLASH }],
-  })
+const TRANSIENT = ['rate-limit', 'upstream-5xx', 'no-output-stall']
+const FREE_ROTATION = [
+  { model: 'opencode/mimo-v2.6-flash-free' },
+  { model: 'opencode/deepseek-v4.1-flash-free' },
+  { model: 'opencode/glm-5.3-flash-free' },
+]
+const FULL_RETRY = {
+  on: [...TRANSIENT, 'usage-limit'],
+  maxRetries: 6,
+  rotate: FREE_ROTATION,
+  rotateOn: TRANSIENT,
+  fallback: [{ model: FLASH }],
+}
+const { fallback: _paid, ...RETRY_NO_FALLBACK } = FULL_RETRY
+
+test('agentic-review.json: reviewerTurnRetry keeps the box defaults and adds usage-limit with the FLASH fallback', () => {
+  assert.deepEqual(reviewConfig.reviewerTurnRetry, FULL_RETRY)
+  for (const cls of TRANSIENT) assert.equal(reviewConfig.reviewerTurnRetry.on.includes(cls), true, `${cls} kept`)
+  assert.equal(reviewConfig.reviewerTurnRetry.maxRetries, 6)
   assert.equal(reviewConfig.agentPresets['claude-cloud'].reviewerPlacement, null)
   assert.equal(reviewConfig.agentPresets['claude-cloud'].reviewerTurnRetry, null)
+})
+
+test('agentic-review.json: every opencode preset with a ladder also keeps the transient classes and the FLASH fallback', () => {
+  for (const [name] of ladderPresets) {
+    const tr = mergedPreset(name).reviewerTurnRetry
+    for (const cls of [...TRANSIENT, 'usage-limit']) assert.equal(tr.on.includes(cls), true, `${name}: ${cls}`)
+    assert.deepEqual(tr.fallback, [{ model: FLASH }], name)
+    assert.equal(tr.maxRetries, 6, name)
+  }
 })
 
 test('ladder without a fleet URL: only the e2b rung survives, byte for byte the old e2b spec', () => {
@@ -640,7 +663,7 @@ test('ladder with a fleet URL but no allowlist entry: the paid rung and the paid
     const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
     assert.deepEqual(ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
     for (const rung of ladder) assert.deepEqual(rung.sandbox.env.passthrough, ['OPENCODE_API_KEY', 'GITHUB_TOKEN'])
-    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), { on: ['usage-limit', 'rate-limit'] })
+    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), RETRY_NO_FALLBACK)
     assert.equal(process.env.OPENCODE_CONFIG_CONTENT, undefined)
   })
 })
@@ -649,7 +672,7 @@ test('the paid rung also needs the Go key, an allowlisted id alone is not enough
   withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_ALLOWED_METERED_MODELS: FLASH }, () => {
     const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
     assert.deepEqual(ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
-    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), { on: ['usage-limit', 'rate-limit'] })
+    assert.deepEqual(reviewerTurnRetryFor(reviewConfig, 'review'), RETRY_NO_FALLBACK)
   })
 })
 
@@ -697,7 +720,7 @@ test('an opencode-go model is never routed on a non-opencode adapter', () => {
   withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
     const claude = { ...reviewConfig, reviewerAdapter: 'claude-sdk' }
     assert.deepEqual(reviewerPlacementFor(claude, 'review').ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
-    assert.deepEqual(reviewerTurnRetryFor(claude, 'review'), { on: ['usage-limit', 'rate-limit'] })
+    assert.deepEqual(reviewerTurnRetryFor(claude, 'review'), RETRY_NO_FALLBACK)
   })
 })
 
@@ -742,10 +765,7 @@ test('step: a ladder config sets placement + turnRetry, no sandbox, cwd /home/us
       step.placement(b).ladder.map(r => r.sandbox.provider),
       ['computer', 'e2b', 'computer'],
     )
-    assert.deepEqual(step.turnRetry(b), {
-      on: ['usage-limit', 'rate-limit'],
-      fallback: [{ model: FLASH }],
-    })
+    assert.deepEqual(step.turnRetry(b), FULL_RETRY)
     assert.equal(step.cwd(b), '/home/user')
     const text = step.prompt(b)
     assert.match(text, /Phase 0: Workspace bootstrap/)

@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import workflow, {
   buildReviewSummary,
   fixerModelFor,
@@ -11,6 +12,7 @@ import workflow, {
   stageDiagram,
   supervisedReviewStep,
 } from './entry.mjs'
+import { reviewerTurnRetryFor } from '../lib/sandbox-agent.mjs'
 import { stageDiagram as sharedDiagram } from '../../../scripts/lib/review-run-summary.mjs'
 
 // ── the supervised loop is a REAL multi-step graph ──────────────────────────
@@ -217,4 +219,93 @@ test('the stage diagram names the fix + re-review loop and its bound', () => {
   assert.match(stageDiagram(3), /3 fix round/)
   assert.equal(stageDiagram(3), sharedDiagram(3))
   assert.equal(stageDiagram(0), sharedDiagram(0))
+})
+
+// ── turn-retry fallback on the host sessions ────────────────────────────────
+// The supervised review, the fixer and the trailing review are HOST sessions
+// (no placement ladder). They must still get the same reviewerTurnRetry policy
+// the box path uses, through the same lib helper. These fail on a workflow whose
+// agent steps declare no `turnRetry`.
+
+const FLASH = 'opencode-go/deepseek-v4.1-flash'
+const reviewConfig = JSON.parse(readFileSync(new URL('../../agentic-review.json', import.meta.url), 'utf8'))
+const ENV_KEYS = ['OPENCODE_GO_API_KEY', 'AGENT_ALLOWED_METERED_MODELS', 'OPENCODE_CONFIG_CONTENT', 'COMPUTER_CONTROLLER_URL']
+const withEnv = (vars, fn) => {
+  const saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]))
+  for (const k of ENV_KEYS) delete process.env[k]
+  Object.assign(process.env, vars)
+  try {
+    return fn()
+  } finally {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k]
+      else process.env[k] = saved[k]
+    }
+  }
+}
+const GO_ENV = { OPENCODE_GO_API_KEY: 'go-key', AGENT_ALLOWED_METERED_MODELS: FLASH }
+const TRANSIENT = ['rate-limit', 'upstream-5xx', 'no-output-stall']
+const hostSteps = [
+  ['review', loop.steps.find((s) => s.id === 'review')],
+  ['fix', loop.steps.find((s) => s.id === 'fix')],
+  ['final review', workflow.steps.find((s) => s.id === 'review')],
+]
+const bindings = (input) => ({ input: { prNumber: 7, ...input } })
+
+test('every agent step of the supervised workflow declares a turnRetry selector', () => {
+  for (const [name, st] of hostSteps) assert.equal(typeof st.turnRetry, 'function', name)
+})
+
+test('host steps get the one policy from agentic-review.json, via the shared helper', () => {
+  withEnv(GO_ENV, () => {
+    const b = bindings({ reviewConfig })
+    for (const [name, st] of hostSteps) {
+      const policy = st.turnRetry(b)
+      assert.deepEqual(policy, reviewerTurnRetryFor(reviewConfig, name === 'fix' ? 'fix' : 'review'), name)
+      assert.deepEqual(policy, reviewConfig.reviewerTurnRetry, name)
+      assert.deepEqual(policy.fallback, [{ model: FLASH }], name)
+      assert.equal(policy.on.includes('usage-limit'), true, name)
+    }
+  })
+})
+
+test('the policy is a superset of the box default: transient classes, maxRetries and free rotation survive', () => {
+  withEnv(GO_ENV, () => {
+    const policy = loop.steps.find((s) => s.id === 'review').turnRetry(bindings({ reviewConfig }))
+    for (const cls of TRANSIENT) assert.equal(policy.on.includes(cls), true, cls)
+    assert.equal(policy.maxRetries, 6)
+    assert.deepEqual(policy.rotateOn, TRANSIENT)
+    assert.equal(policy.rotate.length, 3)
+  })
+})
+
+test('without the allowlist entry or the Go key the paid fallback is dropped, the rest stays', () => {
+  for (const env of [{ OPENCODE_GO_API_KEY: 'go-key' }, { AGENT_ALLOWED_METERED_MODELS: FLASH }, {}]) {
+    withEnv(env, () => {
+      const policy = loop.steps.find((s) => s.id === 'fix').turnRetry(bindings({ reviewConfig }))
+      assert.equal(policy.fallback, undefined, JSON.stringify(env))
+      for (const cls of TRANSIENT) assert.equal(policy.on.includes(cls), true)
+    })
+  }
+})
+
+test('with the Go key and allowlist, the inline opencode config wires OPENCODE_GO_API_KEY by name only', () => {
+  withEnv(GO_ENV, () => {
+    loop.steps.find((s) => s.id === 'review').turnRetry(bindings({ reviewConfig }))
+    const cfg = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT)
+    assert.equal(cfg.provider['opencode-go'].options.apiKey, '{env:OPENCODE_GO_API_KEY}')
+    assert.equal(process.env.OPENCODE_CONFIG_CONTENT.includes('go-key'), false)
+  })
+})
+
+test('a config with no reviewerTurnRetry, or a claude-cloud opt-out, yields no policy', () => {
+  assert.equal(loop.steps.find((s) => s.id === 'review').turnRetry(bindings({})), undefined)
+  const claude = { ...reviewConfig, ...reviewConfig.agentPresets['claude-cloud'] }
+  withEnv(GO_ENV, () => {
+    for (const [, st] of hostSteps) assert.equal(st.turnRetry(bindings({ reviewConfig: claude })), null)
+  })
+})
+
+test('host steps carry no placement ladder (that is the box lanes only)', () => {
+  for (const [name, st] of hostSteps) assert.equal(st.placement, undefined, name)
 })

@@ -81,6 +81,8 @@ export type {
   AgentStepRetry,
   AgentRefResolution,
   AgentSandboxRef,
+  AgentPlacementRef,
+  AgentTurnRetryRef,
   AgentSessionHost,
   ArtifactStep,
   ArtifactEntry,

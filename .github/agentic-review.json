@@ -170,7 +170,21 @@
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
-      ]
+      ],
+      "reviewerTurnRetry": {
+        "on": [
+          "rate-limit",
+          "upstream-5xx",
+          "no-output-stall",
+          "usage-limit"
+        ],
+        "maxRetries": 6,
+        "fallback": [
+          {
+            "model": "opencode-go/deepseek-v4.1-flash"
+          }
+        ]
+      }
     },
     "claude-cloud": {
       "cloud": "anthropic",
@@ -340,7 +354,21 @@
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
-      ]
+      ],
+      "reviewerTurnRetry": {
+        "on": [
+          "rate-limit",
+          "upstream-5xx",
+          "no-output-stall",
+          "usage-limit"
+        ],
+        "maxRetries": 6,
+        "fallback": [
+          {
+            "model": "opencode-go/deepseek-v4.1-flash"
+          }
+        ]
+      }
     },
     "opencode-go-deepseek-flash": {
       "reviewerAdapter": "opencode",
@@ -530,8 +558,27 @@
   ],
   "reviewerTurnRetry": {
     "on": [
-      "usage-limit",
-      "rate-limit"
+      "rate-limit",
+      "upstream-5xx",
+      "no-output-stall",
+      "usage-limit"
+    ],
+    "maxRetries": 6,
+    "rotate": [
+      {
+        "model": "opencode/mimo-v2.6-flash-free"
+      },
+      {
+        "model": "opencode/deepseek-v4.1-flash-free"
+      },
+      {
+        "model": "opencode/glm-5.3-flash-free"
+      }
+    ],
+    "rotateOn": [
+      "rate-limit",
+      "upstream-5xx",
+      "no-output-stall"
     ],
     "fallback": [
       {
