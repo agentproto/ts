@@ -49,11 +49,27 @@
  * session untouched and falls back to a normal retry as well — or reports
  * exhaustion and gives up, when the retry budget is already spent too.
  *
+ * Usage cap (`usage-limit`, opt-in via `turnRetry.on`): a provider usage cap
+ * (OpenCode's free tier is capped per source IP) does not recover with
+ * backoff, so there is no same-config retry. The session goes straight to
+ * `rotate`, then `fallback`; with `action: "migrate"` on a sandbox session it
+ * first moves to a fresh box (a new IP is the fix for a per-IP cap). On a
+ * sandbox session `rotate` and the model overlay of `fallback` both use the
+ * restart transition (the box has no live model switch). With none of those
+ * available it gives up, exactly as a session that never opted in. An opted-in
+ * usage cap is held to the same tool-call gate as every other class: a turn
+ * that already made a side-effecting call is not continued unless
+ * `retryAfterToolCalls`. Without the opt-in a usage cap still walks the
+ * `fallback` chain, as before.
+ * The capped model is recorded in the same daemon-wide cooldown map a
+ * rate-limited one is.
+ *
  * NEVER retries: an interrupted turn (user Stop, `interrupt:true` prompt), a
  * killed / exited / errored session (kill, `maxCostUsd` cost-cap kill — the
  * process-death path belongs to `restartPolicy`), a session with a failed
  * governance policy (the windowed `costBudget` trips one), an auth/billing
- * error (401/402/403), a provider usage cap, or a turn that already made a
+ * error (401/402/403), a provider usage cap unless `usage-limit` is opted
+ * into (and then never on the same config), or a turn that already made a
  * tool call outside the read-only allowlist (unless `retryAfterToolCalls`).
  *
  * Pending retries are in-memory timers: a daemon restart drops them (and the
@@ -88,8 +104,8 @@ export const NO_OUTPUT_STALL_MARKER = "no output since prompt — provider retry
 /** Transcript provenance of the continuation prompt. */
 export const TURN_RETRY_PROMPT_SOURCE = "daemon:turn-retry"
 
-/** Classes a turn error can fall into. The first three are retryable (when
- *  listed in `turnRetry.on`); the rest never are. */
+/** Classes a turn error can fall into. The retryable ones (`TurnRetryClass`)
+ *  act only when listed in `turnRetry.on`; `auth` and `other` never do. */
 export type TurnErrorClass = TurnRetryClass | "auth" | "usage-limit" | "other"
 
 const MAX_ERROR_ECHO = 300
@@ -212,9 +228,21 @@ export type TurnRetryTrigger =
 
 export type TurnRetryDecision =
   | { action: "ignore" }
-  | { action: "skip"; errorClass: TurnErrorClass; skipReason: string; error?: string }
+  | {
+      action: "skip"
+      errorClass: TurnErrorClass
+      skipReason: string
+      error?: string
+      /** The turn already made a possibly side-effecting tool call and
+       *  `retryAfterToolCalls` is off: nothing may continue it, not even the
+       *  AIP-46 fallback walk a skipped usage cap or auth failure takes. */
+      toolCallsBlocked?: true
+    }
   | { action: "exhausted"; errorClass: TurnErrorClass; attempts: number; error?: string }
   | { action: "retry"; errorClass: TurnRetryClass; attempt: number; delayMs: number; error?: string }
+  /** A failure that no same-config retry can fix (`usage-limit`): skip the
+   *  backoff and move straight to migrate / rotate / fallback. */
+  | { action: "divert"; errorClass: TurnRetryClass; attempt: number; error?: string }
 
 function echo(message: string | undefined): string | undefined {
   if (!message) return undefined
@@ -252,20 +280,31 @@ export function decideTurnRetry(
   if (trigger.kind === "turn-end" && trigger.interrupted) return skip("turn was interrupted")
   if (opts.halted) return skip("a governance policy failed for this session")
   if (errorClass === "auth") return skip("auth/billing error — retrying cannot fix it")
-  if (errorClass === "usage-limit") return skip("provider usage cap — resets on its own schedule")
+  if (errorClass === "usage-limit" && !policy.on.includes("usage-limit")) {
+    return skip("provider usage cap, resets on its own schedule")
+  }
   if (errorClass === "other") return skip("not a transient provider error")
   if (!policy.on.includes(errorClass)) return skip(`class "${errorClass}" not in turnRetry.on`)
+  // Every opted-in class is gated, a usage cap included: a rotate or fallback
+  // continuation re-sends "continue" on a session whose last turn may already
+  // have written or executed something.
   if (trigger.kind === "turn-end" && !policy.retryAfterToolCalls) {
     const unsafe = (trigger.toolCalls ?? []).filter(n => !isReadOnlyToolName(n))
     if (unsafe.length > 0) {
-      return skip(
-        `turn already made ${unsafe.length} possibly side-effecting tool call(s) ` +
+      return {
+        action: "skip",
+        errorClass,
+        skipReason:
+          `turn already made ${unsafe.length} possibly side-effecting tool call(s) ` +
           `(${unsafe.slice(0, 3).map(n => n || "unnamed").join(", ")}) — set retryAfterToolCalls to allow`,
-      )
+        error,
+        toolCallsBlocked: true,
+      }
     }
   }
   const attempts = desc.turnRetryAttempts ?? 0
   if (attempts >= policy.maxRetries) return { action: "exhausted", errorClass, attempts, error }
+  if (errorClass === "usage-limit") return { action: "divert", errorClass, attempt: attempts + 1, error }
   // A 503 / capacity refusal can name its delay too ("retry shortly (after 8 s)").
   const retryAfterMs =
     errorClass === "rate-limit" || errorClass === "upstream-5xx" ? extractRetryAfterMs(message) : undefined
@@ -429,7 +468,8 @@ export interface TurnRetryFallbackEffective extends SessionFallbackConfig {
   routeGateway?: string
 }
 
-/** Apply a restart transition for a fallback step (same session id). */
+/** Apply a restart transition for a fallback step. The returned descriptor is
+ *  the restarted session, which carries a NEW session id. */
 export type FallbackRestartFn = (
   prev: SessionDescriptor,
   overrides: { model?: string; access?: { profileRef: string } },
@@ -585,26 +625,39 @@ export function createTurnRetryController(opts: {
   }
 
   /** Switch the session to the first eligible `turnRetry.rotate` target, if
-   *  the policy rotates for this class. Never throws: any failure to rotate
-   *  leaves the model unchanged and the retry proceeds on the same model. */
-  const rotateIfConfigured = async (desc: SessionDescriptor, p: PendingRetry): Promise<void> => {
+   *  the policy rotates for this class. Resolves an object when the model was
+   *  switched (`restarted` is set when that took a restart, which mints a NEW
+   *  session: the continuation belongs to it), false otherwise. Never throws:
+   *  any failure to rotate leaves the model unchanged and the caller proceeds
+   *  on the same model (a usage-limit caller moves on to the fallback chain
+   *  instead). */
+  const rotateIfConfigured = async (
+    desc: SessionDescriptor,
+    p: PendingRetry,
+    rotateOpts: { allowRestart?: boolean } = {},
+  ): Promise<false | { restarted?: SessionDescriptor }> => {
     const policy = desc.turnRetry
-    if (!policy?.rotate?.length) return
+    if (!policy?.rotate?.length) return false
     if (!(policy.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn).includes(p.errorClass as TurnRetryClass)) {
-      return
+      return false
     }
     const id = desc.id
     const from = desc.model
-    const same = (why: string): void => {
+    const same = (why: string): false => {
       registry.recordNotice(
         id,
-        `[turn-retry] no rotation target available (${why}) — retrying ${from ?? "the same model"} after backoff`,
+        `[turn-retry] no rotation target available (${why}), ` +
+          (p.errorClass === "usage-limit"
+            ? "trying the fallback chain"
+            : `retrying ${from ?? "the same model"} after backoff`),
       )
+      return false
     }
     if (!registry.setModel) return same("this registry cannot switch models")
     const rejected: string[] = []
     let interrupted = false
     for (const target of policy.rotate) {
+      let restarted: SessionDescriptor | undefined
       const why =
         rotationTargetRejection(desc, target, cooldowns, now()) ?? (await opts.checkRotationTarget?.(desc, target))
       if (why) {
@@ -619,8 +672,19 @@ export function createTurnRetryController(opts: {
         }
         const res = await registry.setModel(id, target.model)
         if (!res.applied) {
-          rejected.push(`${target.model}: switch not applied${res.reason ? ` (${res.reason})` : ""}`)
-          continue
+          // Only a diverted usage cap has no better move than a restart: a
+          // rate limit rotates live or retries the same model after backoff.
+          const restartable =
+            rotateOpts.allowRestart === true &&
+            opts.restartSession !== undefined &&
+            (res.reason === "requires-restart" || (res.reason === "not-supported" && isSandboxSession(desc)))
+          if (!restartable) {
+            rejected.push(`${target.model}: switch not applied${res.reason ? ` (${res.reason})` : ""}`)
+            continue
+          }
+          // A sandbox proxy has no live model switch: re-attach the box and
+          // re-spawn the adapter on the new model, as a new session.
+          restarted = await opts.restartSession!(desc, { model: target.model })
         }
       } catch (err) {
         rejected.push(`${target.model}: ${err instanceof Error ? err.message : String(err)}`)
@@ -637,11 +701,12 @@ export function createTurnRetryController(opts: {
       registry.recordNotice(
         id,
         `[turn-retry] rotating model ${from ?? "?"} → ${target.model} (${p.errorClass})` +
+          (restarted && restarted.id !== id ? `; continuing as session ${restarted.id}` : "") +
           (rejected.length ? `; skipped ${rejected.join("; ")}` : ""),
       )
-      return
+      return restarted ? { restarted } : {}
     }
-    same(rejected.join("; ") || "none listed")
+    return same(rejected.join("; ") || "none listed")
   }
 
   const configOf = (desc: SessionDescriptor): TurnRetryFallbackEffective => ({
@@ -821,7 +886,13 @@ export function createTurnRetryController(opts: {
           if (res.applied) {
             transition = "live"
             targetDesc = registry.get(id) ?? desc
-          } else if (res.reason === "requires-restart") {
+          } else if (
+            res.reason === "requires-restart" ||
+            // A sandbox session's proxy has no live model switch (the registry
+            // answers `not-supported`): the restart transition re-attaches the
+            // box and re-spawns the adapter on the new model, as a new session.
+            (res.reason === "not-supported" && isSandboxSession(desc))
+          ) {
             if (!opts.restartSession) {
               rejected.push(`fallback[${step}]: model needs a restart and restart is not configured`)
               continue
@@ -942,6 +1013,66 @@ export function createTurnRetryController(opts: {
   }
 
   /**
+   * A failure no same-config retry can fix (`usage-limit`): skip the backoff,
+   * book the attempt, then rotate to the next model, else walk the fallback
+   * chain, else give up exactly like a session that never opted in. The booked
+   * attempt is rolled back when nothing could be applied, so a give-up leaves
+   * no counter behind. Never throws.
+   */
+  const divertUsageLimit = async (desc: SessionDescriptor, p: PendingRetry): Promise<void> => {
+    const id = desc.id
+    const prevAttempts = desc.turnRetryAttempts
+    const prevLastTurnRetryAt = desc.lastTurnRetryAt
+    const rollback = (): void => {
+      registry.patchTurnRetry(id, {
+        turnRetryAttempts: prevAttempts ?? null,
+        lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+      })
+    }
+    const nowIso = new Date(now()).toISOString()
+    registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
+    try {
+      const rotated = await rotateIfConfigured(desc, p, { allowRestart: true })
+      if (rotated) {
+        const next = rotated.restarted
+        if (next && next.id !== id) {
+          // A restart minted a new session and closed this one: the attempt is
+          // booked on, and the continuation sent to, the session that is alive.
+          const nextId = next.id
+          registry.patchTurnRetry(nextId, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
+          sendContinuation(nextId, next, p, p.attempt, {
+            rollback: () =>
+              registry.patchTurnRetry(nextId, {
+                turnRetryAttempts: prevAttempts ?? null,
+                lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+              }),
+          })
+        } else {
+          sendContinuation(id, desc, p, p.attempt, { rollback })
+        }
+        return
+      }
+    } catch (err) {
+      log(`[turn-retry] ${id}: rotation failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    try {
+      if (await applyFallback(desc, p)) return
+    } catch (err) {
+      log(`[turn-retry] ${id}: fallback failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
+    rollback()
+    const skipReason = "provider usage cap, no rotate or fallback target available (resets on its own schedule)"
+    emit(desc, {
+      phase: "skipped",
+      errorClass: p.errorClass,
+      attempt: prevAttempts ?? 0,
+      skipReason,
+      ...(p.error ? { error: p.error } : {}),
+    })
+    registry.recordNotice(id, `[turn-retry] not retrying: ${skipReason}`)
+  }
+
+  /**
    * `turnRetry.action: "migrate"` — move the sandbox session to a fresh box
    * (new IP) through the injected orchestration, then re-prompt "continue" on
    * the MIGRATED session. Any failure (no orchestrator wired, a session that
@@ -979,20 +1110,43 @@ export function createTurnRetryController(opts: {
           id,
           `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — the retry budget is spent`,
         )
-        emit(desc, {
-          phase: "exhausted",
-          errorClass: p.errorClass,
-          attempt: spentAttempts,
-          ...(p.error ? { error: p.error } : {}),
-        })
-        registry.recordNotice(
-          id,
-          turnRetryGaveUpNotice({
-            attempts: spentAttempts,
+        const giveUp = (): void => {
+          emit(desc, {
+            phase: "exhausted",
             errorClass: p.errorClass,
-            migrations,
-          }),
-        )
+            attempt: spentAttempts,
+            ...(p.error ? { error: p.error } : {}),
+          })
+          registry.recordNotice(
+            id,
+            turnRetryGaveUpNotice({
+              attempts: spentAttempts,
+              errorClass: p.errorClass,
+              migrations,
+            }),
+          )
+        }
+        // Like the plain `exhausted` decision, a usage cap still walks the
+        // fallback chain before giving up: it needs no retry budget.
+        if (p.errorClass === "usage-limit" && desc.turnRetry?.fallback?.length) {
+          void applyFallback(desc, { ...p, mode: "retry", attempt: spentAttempts }).then(
+            applied => {
+              if (!applied) giveUp()
+            },
+            err => {
+              log(`[turn-retry] ${id}: fallback failed: ${err instanceof Error ? err.message : String(err)}`)
+              giveUp()
+            },
+          )
+          return
+        }
+        giveUp()
+        return
+      }
+      if (p.errorClass === "usage-limit") {
+        // Re-prompting the same capped box cannot help: rotate / fall back instead.
+        registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}), rotating or falling back instead`)
+        void divertUsageLimit(desc, { ...p, mode: "retry", attempt: spentAttempts + 1 })
         return
       }
       registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — retrying on the current box`)
@@ -1115,7 +1269,13 @@ export function createTurnRetryController(opts: {
   /** Record a rate-limit / silent-stall against the model in the daemon-wide
    *  cooldown map, so rotation (in every session) skips it for a while. */
   const noteThrottle = (desc: SessionDescriptor, trigger: TurnRetryTrigger, errorClass: TurnErrorClass): void => {
-    if (errorClass !== "rate-limit" && errorClass !== "no-output-stall") return
+    // A usage cap is recorded only for a session that opted into the class, so
+    // a default policy's cooldown behaviour is unchanged.
+    const tracked =
+      errorClass === "rate-limit" ||
+      errorClass === "no-output-stall" ||
+      (errorClass === "usage-limit" && desc.turnRetry?.on.includes("usage-limit") === true)
+    if (!tracked) return
     if (trigger.kind === "turn-end" && trigger.interrupted) return
     if (!desc.model) return
     const message = trigger.kind === "stall" ? NO_OUTPUT_STALL_MARKER : (trigger.error ?? desc.lastTurnErrorMessage)
@@ -1135,13 +1295,24 @@ export function createTurnRetryController(opts: {
     // `turnRetry.action: "migrate"` composes on top of the plain decision: a
     // retry-eligible failure on a sandbox session migrates the session to a
     // fresh box instead, and every other case falls back to the normal path.
-    const plan =
-      decision.action === "retry"
-        ? decideTurnRetryAction(decision, desc.turnRetry, desc, {
-            attempts: desc.turnRetryAttempts ?? 0,
-            migrations: desc.turnMigrations ?? 0,
-          })
-        : decision
+    const counters = { attempts: desc.turnRetryAttempts ?? 0, migrations: desc.turnMigrations ?? 0 }
+    let plan: TurnRetryActionDecision | Exclude<TurnRetryDecision, { action: "retry" }>
+    if (decision.action === "retry") {
+      plan = decideTurnRetryAction(decision, desc.turnRetry, desc, counters)
+    } else if (decision.action === "divert" && desc.turnRetry.action === "migrate") {
+      // A new box is a new IP: the one move that fixes a per-IP usage cap. Only
+      // the migrate outcome is taken; any other (not a sandbox session, cap
+      // spent) leaves the plain divert to rotate / fall back.
+      const moved = decideTurnRetryAction(
+        { action: "retry", errorClass: decision.errorClass, attempt: decision.attempt, delayMs: 0, error: decision.error },
+        desc.turnRetry,
+        desc,
+        counters,
+      )
+      plan = moved.action === "migrate" ? moved : decision
+    } else {
+      plan = decision
+    }
     // The base backoff stays the schedule for a migration too (the action
     // decision deliberately carries no delay of its own).
     const baseDelayMs = decision.action === "retry" ? decision.delayMs : 0
@@ -1165,6 +1336,7 @@ export function createTurnRetryController(opts: {
         // sessions never reach this branch.
         const canFallBack =
           (plan.errorClass === "auth" || plan.errorClass === "usage-limit") &&
+          !plan.toolCallsBlocked &&
           (desc.turnRetry?.fallback?.length ?? 0) > 0 &&
           desc.status === "running" &&
           !(trigger.kind === "turn-end" && trigger.interrupted) &&
@@ -1190,6 +1362,15 @@ export function createTurnRetryController(opts: {
             finishSkip()
           },
         )
+        return
+      }
+      case "divert": {
+        void divertUsageLimit(desc, {
+          kind: trigger.kind,
+          errorClass: plan.errorClass,
+          attempt: plan.attempt,
+          ...(plan.error ? { error: plan.error } : {}),
+        })
         return
       }
       case "exhausted":

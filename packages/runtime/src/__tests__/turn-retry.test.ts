@@ -875,6 +875,7 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     row?: Partial<SessionDescriptor>
     turnRetry?: Parameters<typeof resolveTurnRetryPolicy>[0]
     setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>
+    restartSession?: (prev: SessionDescriptor, overrides: { model?: string }) => Promise<SessionDescriptor>
   }) {
     const sessionEvents = createSessionEventBus()
     const events: SessionTurnRetryEvent[] = []
@@ -938,6 +939,7 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
       registry,
       sessionEvents,
       migrateSession: opts.migrateSession,
+      ...(opts.restartSession ? { restartSession: opts.restartSession } : {}),
       log: () => {},
       setTimer: opts.setTimer ?? (fn => setTimeout(fn, 0)),
     })
@@ -980,6 +982,37 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     expect(h.enqueued[0]?.sessionId).toBe("s2")
     // Migration counter booked on old session
     expect(h.row.turnMigrations).toBe(1)
+    h.controller.dispose()
+  })
+
+  it("usage-limit with action migrate moves to a fresh box (new IP) without a backoff retry", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => makeMigrationResult("s2"),
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go")
+    await until(() => h.phases().includes("migrated"), "usage-limit migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrated"])
+    expect(h.events[1]).toMatchObject({ errorClass: "usage-limit", migratedTo: "s2" })
+    expect(h.enqueued.map(e => e.sessionId)).toEqual(["s2"])
+    expect(h.row.turnRetryAttempts).toBeUndefined()
+    h.controller.dispose()
+  })
+
+  it("usage-limit whose migration fails gives up instead of re-prompting the capped box", async () => {
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      turnRetry: { on: ["usage-limit"], action: "migrate", maxMigrations: 2, ...FAST },
+    })
+    h.turnEnd("usage limit exceeded")
+    await until(() => h.phases().includes("skipped"), "give up after failed migration")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed", "skipped"])
+    expect(h.enqueued).toHaveLength(0)
+    expect(h.row.turnRetryAttempts).toBeUndefined()
     h.controller.dispose()
   })
 
@@ -1138,6 +1171,44 @@ describe("turn retry — migrate action (wired with fake migrateSession)", () =>
     expect(h.notices).toContain(
       "[turn-retry] gave up after 1 consecutive retries and 1 migration (rate-limit) — leaving the session idle",
     )
+    h.controller.dispose()
+  })
+
+  it("usage-limit whose migration fails with the retry budget spent still walks the fallback chain", async () => {
+    let land: (() => void) | undefined
+    const restarts: Array<{ model?: string }> = []
+    const h = migrateHarness({
+      migrateSession: async () => {
+        throw new Error("box boot failed")
+      },
+      restartSession: async (prev, overrides) => {
+        restarts.push(overrides)
+        return prev
+      },
+      turnRetry: {
+        on: ["usage-limit"],
+        action: "migrate",
+        maxMigrations: 2,
+        maxRetries: 1,
+        fallback: [{ model: "opencode/big-pickle" }],
+        ...FAST,
+      },
+      setTimer: fn => {
+        land = fn
+        return 0 as unknown as ReturnType<typeof setTimeout>
+      },
+    })
+    h.turnEnd("Free usage limit reached. Free models work in OpenCode (https://opencode.ai)")
+    expect(h.phases()).toEqual(["scheduled"])
+
+    h.row.turnRetryAttempts = 1
+    land!()
+    await until(() => h.enqueued.length === 1, "fallback continuation")
+
+    expect(h.phases()).toEqual(["scheduled", "migrate-failed"])
+    expect(restarts).toEqual([{ model: "opencode/big-pickle" }])
+    expect(h.notices.join("\n")).toContain("the retry budget is spent")
+    expect(h.notices.join("\n")).not.toContain("leaving the session idle")
     h.controller.dispose()
   })
 })
