@@ -208,6 +208,13 @@ export async function stampFooterOnPr(input: {
    *  returned string refuses that call and fails the stamp (best-effort:
    *  the PR is still recorded, it just loses its footer). */
   authorizeArgs?: (args: readonly string[]) => string | undefined
+  /** Refuse to stamp unless an `Agentproto-Session:` trailer on the PR's
+   *  commits or checkpoint tip names `session`. The reconciler's branch lane
+   *  sets it for a sandboxed session: sharing the PR's head branch only
+   *  shows the box CHECKED IT OUT (a sandboxed reviewer does), not that it
+   *  wrote it (agentproto/ts#2447 credited the CI reviewer as the opener).
+   *  Only read when `authors` is not passed. */
+  requireTrailerAuthorship?: boolean
 }): Promise<StampOutcome> {
   try {
     const run = input.run ?? defaultGhRunner
@@ -247,6 +254,9 @@ export async function stampFooterOnPr(input: {
       const refPrefix = checkpointRefPrefixForSession(input.session, input.checkpointRefPrefix)
       for (const id of await checkpointTrailerIds(stampRun, input.prUrl, input.cwd, headBranch, refPrefix)) {
         trailerIds.add(id)
+      }
+      if (input.requireTrailerAuthorship && !trailerIds.has(input.session.id)) {
+        return { stamped: false, reason: "no Agentproto-Session trailer names this session on the PR branch" }
       }
       // ARCHIVED sessions are authors too: `list()` drops them by default,
       // while `get()` still resolves them, so the registry side asks for

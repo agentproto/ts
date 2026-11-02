@@ -348,7 +348,13 @@ import {
   type WorktreeStatusLister,
 } from "./worktree-status.js"
 import { livingSessionCwds, parseExpectedPlan, type WorktreeGcRunner } from "./worktree-gc.js"
-import { withBranchGcApplySummary, type BranchGcKind, type BranchGcRunner, type BranchGcVerdictRecorder } from "./branch-gc.js"
+import {
+  withBranchGcApplySummary,
+  type BranchGcKind,
+  type BranchGcOperatorApprover,
+  type BranchGcRunner,
+  type BranchGcVerdictRecorder,
+} from "./branch-gc.js"
 import type {
   CatalogModelsQuery,
   CatalogModelsResponse,
@@ -1309,6 +1315,10 @@ export interface RuntimeHttpServerOptions {
   /** Optional — mirrors `RegisterSessionToolsOptions.recordBranchGcVerdict`.
    *  When wired, enables `POST /branches/gc/verdict` + `branch_gc_verdict`. */
   recordBranchGcVerdict?: BranchGcVerdictRecorder
+  /** Optional — when wired, enables `POST /branches/gc/approve`, the
+   *  operator approval behind `agentproto branch gc approve`. Operator only:
+   *  the route demands the per-boot bearer and refuses any session identity. */
+  approveBranchGcVerdict?: BranchGcOperatorApprover
   /** Optional — when wired, exposes /tunnels/* routes for creating and
    *  managing public tunnels for local ports. Without it the routes 404. */
   tunnels?: TunnelRegistry
@@ -3697,7 +3707,9 @@ export async function startHttpServer(
               const result = await brain.getProvider().query({ query: q, topK })
               const hits = result.hits.map(hit => mapHit(hit, workspace))
               res.writeHead(200, { "content-type": "application/json" })
-              res.end(JSON.stringify({ workspace, hits }))
+              // `partial`: the brain's index is still being built (or capped),
+              // so documents not indexed yet cannot appear.
+              res.end(JSON.stringify({ workspace, hits, ...(result.partial ? { partial: true } : {}) }))
             } catch (err) {
               res.writeHead(500, { "content-type": "application/json" })
               res.end(
@@ -3721,16 +3733,20 @@ export async function startHttpServer(
             slugs = [DEFAULT_BUCKET]
           }
 
-          // One brain at a time, never `Promise.all`: a cold query rebuilds
-          // that brain's whole in-process index, and building every brain at
-          // once stacks their peaks (E96: a federated cold query needed the sum
-          // of all brains' heaps).
+          // One brain at a time, never `Promise.all`: on the in-memory
+          // fallback a cold query builds that brain's whole in-process index,
+          // and building every brain at once stacks their peaks (E96: a
+          // federated cold query needed the sum of all brains' heaps). A brain
+          // answering from an incomplete index is listed in
+          // `workspacesPartial`.
           const workspacesErrored: string[] = []
+          const workspacesPartial: string[] = []
           const perBrain: Array<Array<ReturnType<typeof mapHit>>> = []
           for (const slug of slugs) {
             try {
               const brain = opts.brains!.getBrain(slug)
               const result = await brain.getProvider().query({ query: q, topK })
+              if (result.partial) workspacesPartial.push(slug)
               perBrain.push(result.hits.map(hit => mapHit(hit, slug)))
             } catch {
               workspacesErrored.push(slug)
@@ -3747,6 +3763,7 @@ export async function startHttpServer(
               workspace: "all",
               hits,
               ...(workspacesErrored.length > 0 ? { workspacesErrored } : {}),
+              ...(workspacesPartial.length > 0 ? { partial: true, workspacesPartial } : {}),
             }),
           )
           return
@@ -3928,6 +3945,9 @@ export async function startHttpServer(
                 : {}),
               ...(activeMinutes !== undefined ? { activeMinutes } : {}),
               ...(expectedPlan ? { expectedPlan } : {}),
+              ...("reviewedPaths" in obj && Array.isArray(obj.reviewedPaths)
+                ? { reviewedPaths: obj.reviewedPaths.filter((p): p is string => typeof p === "string") }
+                : {}),
             })
             res.writeHead(200, { "content-type": "application/json" })
             res.end(JSON.stringify(result))
@@ -4057,6 +4077,91 @@ export async function startHttpServer(
             res.writeHead(400, { "content-type": "application/json" })
             res.end(
               JSON.stringify({ error: "invalid_branch_verdict", message: err instanceof Error ? err.message : String(err) })
+            )
+          }
+          return
+        }
+
+        if (path === "/branches/gc/approve" && req.method === "POST") {
+          if (guardBrowserOrigin(req, res)) return
+          if (!opts.approveBranchGcVerdict) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "branch_gc_approve_not_configured",
+                message: "POST /branches/gc/approve is not enabled — the host must wire `approveBranchGcVerdict`.",
+              })
+            )
+            return
+          }
+          // The operator trust boundary for a guard override (the session
+          // refusal in `branch_gc_verdict` stays as it is). Two checks:
+          //  1. The per-boot bearer from runtime.json (mode 0600), in the
+          //     Authorization header ONLY: no loopback bypass, no allowlisted
+          //     Origin, no `?token=`, no embed token. That is what the CLI's
+          //     daemon client sends; a browser page cannot.
+          //  2. No session identity at all: a valid session token, or ANY
+          //     caller-session claim (query or header, trusted or not), is
+          //     refused. The CLI forwards `$AGENTPROTO_SESSION_ID` as that
+          //     header, so `agentproto branch gc approve` run from inside a
+          //     daemon-spawned session is refused here, not just by the CLI.
+          if (!opts.token || req.headers.authorization !== `Bearer ${opts.token}`) {
+            res.writeHead(401, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "operator_bearer_required",
+                message: `POST /branches/gc/approve requires \`Authorization: Bearer <token>\`. ${SESSIONS_TOKEN_HINT}`,
+              })
+            )
+            return
+          }
+          if (
+            credentialSessionOf(req) !== undefined ||
+            parseCallerSessionIdQuery(req.url ?? "") !== undefined ||
+            parseCallerSessionIdHeader(req) !== undefined
+          ) {
+            res.writeHead(403, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({
+                error: "operator_requires_operator_surface",
+                message: "operator approval must be recorded by the operator, not by a session",
+              })
+            )
+            return
+          }
+          const body = await readJsonBody(req)
+          const obj: Record<string, unknown> =
+            typeof body === "object" && body !== null ? (body as Record<string, unknown>) : {}
+          const target = typeof obj.target === "string" ? obj.target.trim() : ""
+          const by = typeof obj.by === "string" ? obj.by.trim() : ""
+          if (!target || !by) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "invalid_input", message: "`target` (sha or branch) and `by` are required" }))
+            return
+          }
+          const resolved = await resolveWorktreeQueryRoot({
+            repoRoot: typeof obj.repoRoot === "string" ? obj.repoRoot : undefined,
+            workspaceSlug: typeof obj.workspaceSlug === "string" ? obj.workspaceSlug : undefined,
+          })
+          if (!resolved.ok) {
+            res.writeHead(resolved.status, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: resolved.error }))
+            return
+          }
+          try {
+            const result = await opts.approveBranchGcVerdict({
+              repoRoot: resolved.repoRoot,
+              target,
+              by,
+              ...(typeof obj.note === "string" && obj.note.trim() ? { note: obj.note.trim() } : {}),
+              ...(obj.dryRun === true || obj.dryRun === "true" ? { dryRun: true } : {}),
+            })
+            res.writeHead(result.ok ? 200 : 409, { "content-type": "application/json" })
+            res.end(JSON.stringify(result))
+          } catch (err) {
+            res.writeHead(500, { "content-type": "application/json" })
+            res.end(
+              JSON.stringify({ error: "branch_gc_approve_failed", message: err instanceof Error ? err.message : String(err) })
             )
           }
           return

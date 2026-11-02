@@ -3,8 +3,9 @@
  * [--settings <path>] [--port <n>] [--dry-run]`
  *
  * Merges what a Claude Desktop (Claude Code) session needs to receive daemon
- * events into its settings file: `env.AGENTPROTO_SESSION_ID` and the two
- * `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse). Idempotent:
+ * events into its settings file: `env.AGENTPROTO_SESSION_ID` and three hooks:
+ * the two `agentproto hook inbox` hooks (UserPromptSubmit, PostToolUse) and the
+ * `agentproto hook pr-stamp` PostToolUse hook (matcher Bash). Idempotent:
  * a second run changes nothing, and keys it does not own are left untouched.
  * It also prints the MCP URL that registers the session with the daemon; the
  * URL is not stored in the settings file (Claude Code keeps MCP servers in
@@ -14,6 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { parseArgs } from "node:util"
+import { PR_STAMP_HOOK_COMMAND } from "./hook-pr-stamp.js"
 
 export const DESKTOP_HOST = "claude-desktop"
 export const DEFAULT_DESKTOP_SESSION_ID = "claude-desktop"
@@ -30,10 +32,10 @@ export function desktopMcpUrl(sessionId: string, port: number = DEFAULT_PORT): s
   return `http://127.0.0.1:${port}/mcp?callerSessionId=${encodeURIComponent(sessionId)}&host=${DESKTOP_HOST}`
 }
 
-function hasInboxHook(entries: unknown): boolean {
+function hasHookCommand(entries: unknown, command: string): boolean {
   if (!Array.isArray(entries)) return false
   return entries.some(
-    e => isObject(e) && Array.isArray(e.hooks) && e.hooks.some(h => isObject(h) && h.command === INBOX_HOOK_COMMAND),
+    e => isObject(e) && Array.isArray(e.hooks) && e.hooks.some(h => isObject(h) && h.command === command),
   )
 }
 
@@ -57,10 +59,16 @@ export function mergeDesktopSettings(
 
   const hooks: Json = isObject(settings.hooks) ? settings.hooks : {}
   for (const event of INBOX_HOOK_EVENTS) {
-    if (hasInboxHook(hooks[event])) continue
+    if (hasHookCommand(hooks[event], INBOX_HOOK_COMMAND)) continue
     const list = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : []
     list.push({ hooks: [{ type: "command", command: INBOX_HOOK_COMMAND }] })
     hooks[event] = list
+    changed = true
+  }
+  if (!hasHookCommand(hooks.PostToolUse, PR_STAMP_HOOK_COMMAND)) {
+    const list = Array.isArray(hooks.PostToolUse) ? (hooks.PostToolUse as unknown[]) : []
+    list.push({ matcher: "Bash", hooks: [{ type: "command", command: PR_STAMP_HOOK_COMMAND }] })
+    hooks.PostToolUse = list
     changed = true
   }
   if (changed) settings.hooks = hooks

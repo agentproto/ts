@@ -464,12 +464,12 @@ describe("agents", () => {
     const checks = await agentsStep.detect(
       createFakeContext({
         exec: npxExec({ codex: "0.157.0" }),
-        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/codex-acp@1.13.1") },
+        sources: { resolveAdapterHandle: npxHandle("@agentclientprotocol/codex-acp@2.5.0") },
       }),
     )
     expect(byId(checks, "agents.codex")).toMatchObject({
       status: "ok",
-      detail: "codex 0.157.0 · ACP bridge via npx (v1.13.1, fetched on first spawn)",
+      detail: "codex 0.157.0 · ACP bridge via npx (v2.5.0, fetched on first spawn)",
     })
   })
 

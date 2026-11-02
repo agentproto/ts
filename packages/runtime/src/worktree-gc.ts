@@ -134,6 +134,7 @@ export interface WorktreeGcOutcomeView {
     | "aborted-reclassified"
     | "aborted-vanished"
     | "skipped-stale"
+    | "removed-keep-branch"
     | "failed"
   /** Set only for a `reclaimed` outcome via the dep-bump exemption. */
   reclaimReason?: WorktreeGcReclaimReason
@@ -205,6 +206,16 @@ export interface WorktreeGcRunInput {
    * in one call.
    */
   expectedPlan?: WorktreeGcPlanEntryView[]
+  /**
+   * The reviewed tier, apply only: `hold`-class worktrees at these paths are
+   * removed WORKTREE ONLY (result `removed-keep-branch`, the branch is kept)
+   * when, re-checked at apply time, they are unchanged since the plan, clean,
+   * idle, with no open PR, and the branch verdict store holds an agreeing
+   * verdict for the exact tip. Any failed check leaves the worktree as
+   * `skipped-stale` with the reason. The branch is left for `branch_gc`'s
+   * reviewed rung and its line-coverage guard.
+   */
+  reviewedPaths?: string[]
 }
 
 /**

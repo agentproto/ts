@@ -153,8 +153,10 @@ export interface BrainConfig {
    */
   readonly knowledge?: KnowledgeConfig
   /**
-   * Ceiling on the files a `files` provider indexes in process; above it the
-   * provider refuses to build and queries fail with the reason. A
+   * Ceiling on the files a `files` provider indexes when it runs on the
+   * in-memory fallback index (no `node:sqlite` / FTS5, or `onDiskIndex: false`);
+   * above it that index holds the most recently modified files and query
+   * results are flagged `partial`. The on-disk index has no ceiling. A
    * `knowledge.json` entry's own `maxIndexDocs` wins. Absent → the adapter's
    * `DEFAULT_MAX_INDEX_DOCS`.
    */

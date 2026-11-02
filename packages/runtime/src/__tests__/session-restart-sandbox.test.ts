@@ -317,6 +317,22 @@ describe("restartAgentSession on a sandboxed session", () => {
     expect(result.desc.adapterSlug).toBe("fake-cli")
   })
 
+  it("carries the list pin (and its order slot) onto the restarted sandbox session", async () => {
+    // Same rule as the local spawn path: a restart mints a new id, so the
+    // `pinned` flag (the only boot-resume idle-cutoff exemption for a
+    // keepAlive row) must ride across explicitly or the brain un-pins.
+    const { resolver, providerResolver } = await setup()
+    registry.setPinned(prev.id, true)
+    const pinOrder = registry.get(prev.id)!.pinnedOrder
+
+    const result = await restartAgentSession(registry, resolver, prev, {
+      resolveSandboxProvider: providerResolver,
+    })
+
+    expect(result.desc.pinned).toBe(true)
+    expect(result.desc.pinnedOrder).toBe(pinOrder)
+  })
+
   it("registers the RESUMED session on the live box's ledger row (gc must not reap it)", async () => {
     const savedLedger = process.env.AGENTPROTO_SANDBOX_LEDGER
     const ledgerDir = await mkdtemp(join(tmpdir(), "agentproto-sbx-restart-ledger-"))

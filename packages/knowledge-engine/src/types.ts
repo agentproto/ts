@@ -112,6 +112,12 @@ export interface KnowledgeQueryResult<TMeta = Record<string, unknown>> {
   readonly engine: string
   /** The mode actually used (may differ from `KnowledgeQuery.mode`). */
   readonly modeUsed: KnowledgeQueryMode
+  /**
+   * True when the hits come from an incomplete index: a first build still
+   * running, or an index capped below the corpus size. The hits are real but
+   * documents not indexed yet cannot appear. Absent means complete.
+   */
+  readonly partial?: boolean
 }
 
 export interface ListSourcesFilter {

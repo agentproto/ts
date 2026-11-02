@@ -64,6 +64,7 @@ const fakeRegistry = {
   setPromptPolicy: vi.fn(),
   setOperator: vi.fn(),
   setToolDenyGrants: vi.fn(),
+  setPinned: vi.fn(),
 } as unknown as SpawnAgentSessionDeps["registry"]
 
 const wireMarkRetired = (): void => {
@@ -85,6 +86,7 @@ describe("continueAgentSessionFresh", () => {
     fakeRegistry.setPromptPolicy = vi.fn()
     fakeRegistry.setOperator = vi.fn()
     fakeRegistry.setToolDenyGrants = vi.fn()
+    fakeRegistry.setPinned = vi.fn(() => ({ id: "sess_new" }) as SessionDescriptor)
     wireMarkRetired()
   })
 
@@ -328,6 +330,43 @@ describe("continueAgentSessionFresh", () => {
       "sess_peer",
       "label:pygmalion-brain-persistent",
     ])
+  })
+
+  it("carries the source's pin onto the fresh session (the only boot-resume exemption)", async () => {
+    // `pinned` is what exempts a keepAlive row from the boot-resume idle
+    // cutoff (`eager-resume.ts` `staleKeepAlive`). Before the fix, a
+    // continue-fresh minted a new descriptor with no pin, so every
+    // continuation silently un-pinned a long-lived brain.
+    const prev = { ...makePrev(), pinned: true, pinnedOrder: 3 } as SessionDescriptor
+    const fresh = { id: "sess_new" } as SessionDescriptor
+    const setPinned = vi.fn(() => fresh)
+    fakeRegistry.setPinned = setPinned
+    vi.mocked(spawnAgentSession).mockResolvedValue({ ok: true, descriptor: fresh })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      prev,
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(setPinned).toHaveBeenCalledWith("sess_new", true)
+    // The pin ORDER rides along so the successor keeps the source's slot.
+    expect(fresh.pinnedOrder).toBe(3)
+  })
+
+  it("does not pin the fresh session when the source row was never pinned", async () => {
+    vi.mocked(spawnAgentSession).mockResolvedValue({
+      ok: true,
+      descriptor: { id: "sess_new" } as SessionDescriptor,
+    })
+
+    await continueAgentSessionFresh(
+      { registry: fakeRegistry, resolveAgentAdapter: fakeResolveAdapter },
+      makePrev(),
+      { baseDir: "/tmp/checkpoints" },
+    )
+
+    expect(fakeRegistry.setPinned).not.toHaveBeenCalled()
   })
 
   it("copies operator and operatorDigest from the source row onto the fresh session (AIP-46 operator binding, rule 5)", async () => {
