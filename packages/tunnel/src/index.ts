@@ -6,6 +6,9 @@
  * (usually on top of `TunnelClient`).
  */
 
+/** The AIP-73 spec this package implements. */
+export const SPEC_NAME = "tunnel/v1" as const
+
 export {
   DEFAULT_TUNNEL_TIMEOUT_MS,
   TunnelProviderError,
