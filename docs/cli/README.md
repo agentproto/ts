@@ -106,6 +106,7 @@ Pick whichever matches what you're trying to do:
 - [Sandboxes and rendezvous: boot-and-drive vs. attach](./guides/sandbox-rendezvous.md) — connection models, keeping a box reachable, and the cost tradeoffs
 - [Hand off from Claude Code to Codex](./guides/handoff.md) — checkpoint a session and continue its work on another harness, with `--dry-run`
 - [Harness upgrades](./guides/harness-upgrades.md) — keep the agent CLIs adapters spawn current: `harness outdated|check|upgrade`, the pinned-npx rule, range guard, rollback, and a weekly report cron
+- [Find out why your daemon looks big](./guides/daemon-memory.md): read the `[heap]` floor, `GET /debug/heap`, heap snapshots, and the boot-resume levers on live session count
 
 ### File reference
 
