@@ -492,3 +492,37 @@ export interface BranchGcVerdictLookupInput {
 /** Injected port: the stored verdict for this exact tip, or `null` — a read-only
  *  lookup, so a caller can check one tip without re-running a whole `branch_gc` plan. */
 export type BranchGcVerdictReader = (input: BranchGcVerdictLookupInput) => Promise<BranchGcVerdictRecordView | null>
+
+export interface BranchGcOperatorApprovalInput {
+  repoRoot: string
+  /** A full tip sha, or a branch name whose current tip has a stored verdict. */
+  target: string
+  /** The approving human. Must differ from the stored verdict's reviewer. */
+  by: string
+  note?: string
+  /** Check and report what would be recorded, without writing. */
+  dryRun?: boolean
+}
+
+export type BranchGcOperatorApprovalResult =
+  | {
+      ok: true
+      status: "recorded" | "would-record" | "already-approved"
+      target: string
+      name: string
+      sha: string
+      refs: string[]
+      verdict: Omit<BranchGcVerdictRecordView, "repo" | "recordedAt">
+      record?: BranchGcVerdictRecordView
+    }
+  | {
+      ok: false
+      refusal: "no-ref" | "ambiguous" | "no-verdict" | "not-agreed" | "tip-moved" | "by-is-reviewer"
+      target: string
+      message: string
+    }
+
+/** Injected port behind `POST /branches/gc/approve`: copy the stored verdict
+ *  for one tip and add the operator block. The route is the trust boundary;
+ *  this port only checks the verdict (stored, agreeing, current tip, `by`). */
+export type BranchGcOperatorApprover = (input: BranchGcOperatorApprovalInput) => Promise<BranchGcOperatorApprovalResult>

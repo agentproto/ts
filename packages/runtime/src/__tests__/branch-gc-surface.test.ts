@@ -33,7 +33,10 @@ import type {
   BranchGcVerdictRecorder,
   BranchGcVerdictReader,
   BranchGcPlanView,
+  BranchGcOperatorApprovalInput,
+  BranchGcOperatorApprover,
 } from "../branch-gc.js"
+import { mintSessionToken, revokeSessionTokens, SESSION_TOKEN_HEADER } from "../session-credentials.js"
 import { summarizeBranchGcApply, withBranchGcApplySummary } from "../branch-gc.js"
 import type { OrchestratorScope } from "../orchestrator-gateway.js"
 
@@ -260,6 +263,124 @@ describe("POST /branches/gc + /branches/gc/verdict — HTTP routes", () => {
       expect(((await res.json()) as { message: string }).message).toContain("operator MCP surface")
       expect(seen()).toBeUndefined()
     } finally {
+      await http.stop()
+    }
+  })
+})
+
+describe("POST /branches/gc/approve — the operator approval route", () => {
+  const TOKEN = "boot-token-123"
+  const SHA = "d".repeat(40)
+
+  function recordingApprover(): { approver: BranchGcOperatorApprover; seen: BranchGcOperatorApprovalInput[] } {
+    const seen: BranchGcOperatorApprovalInput[] = []
+    return {
+      seen,
+      approver: async input => {
+        seen.push(input)
+        if (input.target === "refuse-me") {
+          return { ok: false, refusal: "not-agreed", target: input.target, message: "no agreeing gate" }
+        }
+        return {
+          ok: true,
+          status: input.dryRun ? "would-record" : "recorded",
+          target: input.target,
+          name: "feat/x",
+          sha: SHA,
+          refs: ["refs/heads/feat/x"],
+          verdict: {
+            name: "feat/x",
+            sha: SHA,
+            reviewer: "test",
+            triage: { verdict: "obsolete", confidence: 0.9, reason: "dead" },
+            operator: { by: input.by },
+          },
+        }
+      },
+    }
+  }
+
+  async function start(opts: { approveBranchGcVerdict?: BranchGcOperatorApprover; token?: string } = {}) {
+    return startHttpServer({
+      port: await freePort(),
+      auth: { mode: "none" },
+      token: TOKEN,
+      mcpServerFactory,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      meta: { workspace: process.cwd(), registered: [] },
+      ...opts,
+    })
+  }
+  function post(http: RuntimeHttpServerHandle, body: unknown, headers: Record<string, string> = {}, query = ""): Promise<Response> {
+    return fetch(`http://127.0.0.1:${http.url.split(":").pop()}/branches/gc/approve${query}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    })
+  }
+  const BODY = { repoRoot: "/repo", target: SHA, by: "Jeremy", note: "superseded" }
+  const AUTH = { authorization: `Bearer ${TOKEN}` }
+
+  it("501 when no approver is wired", async () => {
+    const http = await start()
+    try {
+      expect((await post(http, BODY, AUTH)).status).toBe(501)
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("forwards target, by, note and dryRun with the per-boot bearer; a refusal is a 409 carrying its reason", async () => {
+    const { approver, seen } = recordingApprover()
+    const http = await start({ approveBranchGcVerdict: approver })
+    try {
+      const ok = await post(http, { ...BODY, dryRun: true }, AUTH)
+      expect(ok.status).toBe(200)
+      expect(await ok.json()).toMatchObject({ ok: true, status: "would-record", sha: SHA })
+      expect(seen).toEqual([{ repoRoot: "/repo", target: SHA, by: "Jeremy", note: "superseded", dryRun: true }])
+      const refused = await post(http, { ...BODY, target: "refuse-me" }, AUTH)
+      expect(refused.status).toBe(409)
+      expect(await refused.json()).toMatchObject({ ok: false, refusal: "not-agreed" })
+      expect((await post(http, { repoRoot: "/repo", target: SHA }, AUTH)).status).toBe(400)
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("demands the bearer in the header: no loopback bypass, no allowlisted Origin, no ?token=", async () => {
+    const { approver, seen } = recordingApprover()
+    const http = await start({ approveBranchGcVerdict: approver })
+    try {
+      // This request IS loopback, which every other loopback-trusting route waves through.
+      expect((await post(http, BODY)).status).toBe(401)
+      expect((await post(http, BODY, { authorization: "Bearer wrong" })).status).toBe(401)
+      expect((await post(http, BODY, { origin: "http://localhost:3000" })).status).toBe(401)
+      expect((await post(http, BODY, {}, `?token=${TOKEN}`)).status).toBe(401)
+      expect(seen).toEqual([])
+    } finally {
+      await http.stop()
+    }
+  })
+
+  it("refuses an approval that carries any session identity, even with the bearer", async () => {
+    const { approver, seen } = recordingApprover()
+    const http = await start({ approveBranchGcVerdict: approver })
+    const sessionToken = mintSessionToken("sess_reviewer")
+    try {
+      for (const [headers, query] of [
+        [{ ...AUTH, "x-agentproto-caller-session-id": "sess_reviewer" }, ""],
+        [{ ...AUTH, [SESSION_TOKEN_HEADER]: sessionToken }, ""],
+        [AUTH, "?callerSessionId=sess_reviewer"],
+      ] as const) {
+        const res = await post(http, BODY, headers, query)
+        expect(res.status).toBe(403)
+        expect(((await res.json()) as { error: string }).error).toBe("operator_requires_operator_surface")
+      }
+      expect(seen).toEqual([])
+    } finally {
+      revokeSessionTokens("sess_reviewer")
       await http.stop()
     }
   })

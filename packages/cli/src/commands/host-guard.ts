@@ -2,55 +2,64 @@
  * `agentproto host guard` — the deterministic periodic host watchdog.
  *
  * `host health` answers "is this host OK to spawn more agents?". `host guard`
- * acts on that answer, but only in one direction: it closes sessions that are
+ * acts on that answer, but only in one direction: it REAPS sessions that are
  * already idle (last turn finished, not keepAlive, not busy, not waiting on
- * anything) and leaves every live/working session alone. It never edits
- * keepAlive, never interrupts a turn, and never spawns anything until AFTER
- * its cleanup pass — a spawn on a full host is exactly the failure this
- * exists to avoid.
+ * anything) and leaves every live/working session alone. A reap is not a
+ * kill: the row stays lazy-resumable in place, and it is tagged
+ * `guard-reaped` rather than `operator-stopped`. It never edits keepAlive,
+ * never interrupts a turn, and never spawns anything until AFTER its cleanup
+ * pass — a spawn on a full host is exactly the failure this exists to avoid.
  *
  * Policy, in one table:
  *
- *   verdict  closes                                   escalates
+ *   verdict  reaps                                    escalates
  *   OK       nothing                                  no
  *   WARN     oldest idle sessions, just enough to     no
  *            fall back under the sessions WARN limit,
  *            else at most `warnMaxClose` (default 3)
  *   CRIT     same, more aggressively (`critMaxClose`,  yes, after cleanup,
  *            default 10, and enough to fall under       only if still CRIT
- *            the WARN sessions limit)
+ *            the WARN sessions limit), never below the
+ *            900 s CRIT idle floor
  *
  * A session is eligible only when ALL of these hold:
  *   - alive (`running` / `starting` — `starting` is excluded, no turn yet),
  *   - status `running` and `busy !== true` (last turn finished),
  *   - not `keepAlive`, not `pinned`,
  *   - not awaiting input/permission,
- *   - no background tasks, no queued prompts, no busy children,
+ *   - no background tasks, no queued prompts, no busy children, no live
+ *     child session at all (`child-alive`),
  *   - nobody is watching it (`watchers === 0`),
+ *   - no work in flight (`work-in-flight`): a dirty or unpushed worktree, a
+ *     git check that could not answer, or an active `fix-pr*|exec-*|diag-*|
+ *     fix-*` label younger than 2 h,
  *   - idle for at least `warnMinIdleSec` (WARN, default 300s) /
- *     `critMinIdleSec` (CRIT, default 60s),
+ *     `critMinIdleSec` (CRIT, default and floor 900s),
  *   - not an ancestor of a live session, not this guard's own session (or
  *     one of its ancestors), and not labelled `host-guard-escalation`.
  *
- * Everything above is a pure function of (health, sessions, now), so the
- * decision is reproducible and unit-tested. The I/O runner at the bottom
- * gathers the two inputs, appends one JSON line per run to the log, stops the
- * selected sessions through `POST /sessions/:id/kill` (the same route
- * `agentproto sessions stop --reason` calls), writes the CRIT marker that
+ * Everything above is a pure function of (health, sessions, now, the
+ * pre-fetched worktree states), so the decision is reproducible and
+ * unit-tested. The I/O runner at the bottom gathers the inputs, appends one
+ * JSON line per run to the log, REAPS the selected sessions through
+ * `POST /sessions/:id/reap` (never `/kill`, so the reason is `guard-reaped`,
+ * not `operator-stopped`), writes the CRIT marker that
  * `agentproto workflow start|run-file` consults, and escalates once.
  *
- * Just before each kill the session is re-fetched and re-validated
- * (`recheckGuardCandidate`), because the kill route does not check `busy`
- * and a turn may have started since the snapshot.
+ * Just before each reap the session is re-fetched and re-validated
+ * (`recheckGuardCandidate`), because a turn may have started since the
+ * snapshot. Git worktree inspection is bounded to 2 s per command; any
+ * failure keeps the session (never reap what we cannot prove clean).
  *
  * Exit status: 0 whenever the guard ran successfully (regardless of the
  * host verdict — read the verdict from the log/`--json`), 2 when the daemon
  * or health sample is unavailable, 64 on bad usage.
  */
+import { execFile } from "node:child_process"
 import { appendFile, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
-import { parseArgs } from "node:util"
+import { parseArgs, promisify } from "node:util"
 import type { SessionDescriptor } from "@agentproto/runtime"
 import { discoverDaemon, httpGetJson, httpPostJson, printNoDaemonError } from "./_daemon-helpers.js"
 import { gatherHealthInput } from "./host.js"
@@ -71,6 +80,24 @@ export const DEFAULT_GUARD_STATE_PATH = join(homedir(), ".agentproto", "host-gua
  *  tick without leaving the block armed after the guard stops running. */
 export const GUARD_STATE_TTL_MS = 25 * 60_000
 
+/** Absolute floor for the CRIT idle window (15 min). Even when
+ *  `--crit-min-idle` asks for less, a CRIT sweep never reaps a session whose
+ *  last turn is younger than this: a busy host is not a reason to interrupt
+ *  work that is merely between turns. */
+export const CRIT_MIN_IDLE_FLOOR_SEC = 900
+
+/** Labels whose sessions are treated as active work-in-flight while younger
+ *  than {@link ACTIVE_FIX_PROTECTION_MS}, even if the worktree looks clean. */
+export const ACTIVE_FIX_LABEL_RE = /^(?:fix-pr|exec-|diag-|fix-)/
+
+/** How long an active `fix-pr*|exec-*|diag-*|fix-*` session is protected from
+ *  the guard after its last observed activity (2 h). */
+export const ACTIVE_FIX_PROTECTION_MS = 2 * 60 * 60_000
+
+/** Per-command budget for the worktree `git` probes. A slow/broken git keeps
+ *  the session (we never reap what we cannot prove clean). */
+export const WORKTREE_GIT_TIMEOUT_MS = 2000
+
 export interface GuardPolicy {
   /** Max idle sessions to close on WARN when the sessions check is not the
    *  reason for the verdict. */
@@ -80,7 +107,8 @@ export interface GuardPolicy {
   critMaxClose: number
   /** Minimum idle time before a session is closable on WARN. */
   warnMinIdleSec: number
-  /** Minimum idle time before a session is closable on CRIT (more aggressive). */
+  /** Minimum idle time before a session is closable on CRIT. Never lower than
+   *  {@link CRIT_MIN_IDLE_FLOOR_SEC}, even via an override. */
   critMinIdleSec: number
 }
 
@@ -88,7 +116,22 @@ export const DEFAULT_GUARD_POLICY: GuardPolicy = {
   warnMaxClose: 3,
   critMaxClose: 10,
   warnMinIdleSec: 300,
-  critMinIdleSec: 60,
+  critMinIdleSec: CRIT_MIN_IDLE_FLOOR_SEC,
+}
+
+/** The git state of a session's worktree, pre-fetched by the runner so the
+ *  decision stays pure. `unknown` means git could not answer (timeout, no
+ *  upstream, not a repo) — treated as work-in-flight, i.e. keep the session. */
+export interface WorktreeState {
+  dirty: boolean
+  unpushed: boolean
+  unknown?: boolean
+}
+
+/** True when the row's label marks work that is still active within the
+ *  2-hour protection window. Pure. */
+export function isActiveFixLabel(label: string, idleMs: number): boolean {
+  return ACTIVE_FIX_LABEL_RE.test(label) && idleMs < ACTIVE_FIX_PROTECTION_MS
 }
 
 /** The subset of `SessionDescriptor` the decision reads. Structural so tests
@@ -114,6 +157,10 @@ export interface GuardSession {
   startedAt?: string
   lastActivityAt?: string
   parentSessionId?: string
+  /** Root of the session's linked worktree, when it has one. */
+  worktreePath?: string
+  /** Pre-fetched by the runner; ignored by pure callers that don't supply it. */
+  worktreeState?: WorktreeState
 }
 
 export type GuardSkipReason =
@@ -126,7 +173,9 @@ export type GuardSkipReason =
   | "background-tasks"
   | "queued-prompts"
   | "children-busy"
+  | "child-alive"
   | "watched"
+  | "work-in-flight"
   | "keep-alive"
   | "pinned"
   | "ancestor-of-live"
@@ -215,7 +264,9 @@ export function sessionLabel(s: GuardSession): string {
 }
 
 function resolvePolicy(over: Partial<GuardPolicy> | undefined): GuardPolicy {
-  return { ...DEFAULT_GUARD_POLICY, ...(over ?? {}) }
+  const merged = { ...DEFAULT_GUARD_POLICY, ...(over ?? {}) }
+  // The CRIT floor is absolute: a flag may raise it, never lower it.
+  return { ...merged, critMinIdleSec: Math.max(CRIT_MIN_IDLE_FLOOR_SEC, merged.critMinIdleSec) }
 }
 
 /** Ancestors (not the ids themselves) of every alive session plus every
@@ -249,6 +300,7 @@ function ineligibility(
     minIdleMs: number
     ancestors: ReadonlySet<string>
     protectedIds: ReadonlySet<string>
+    hasLiveChild: ReadonlySet<string>
   },
 ): GuardSkipReason | null {
   if (!isAliveSession(s)) return "not-alive"
@@ -260,7 +312,10 @@ function ineligibility(
   if ((s.pendingBgTasks ?? 0) > 0 || (s.backgroundTasks?.length ?? 0) > 0) return "background-tasks"
   if ((s.queuedPrompts ?? 0) > 0) return "queued-prompts"
   if ((s.childrenBusy ?? 0) > 0) return "children-busy"
+  if (opts.hasLiveChild.has(s.id)) return "child-alive"
   if ((s.watchers ?? 0) > 0) return "watched"
+  if (s.worktreeState?.dirty || s.worktreeState?.unpushed || s.worktreeState?.unknown) return "work-in-flight"
+  if (isActiveFixLabel(sessionLabel(s), idleMsOf(s, opts.nowMs))) return "work-in-flight"
   if (s.keepAlive === true || s.pinned === true) return s.keepAlive === true ? "keep-alive" : "pinned"
   if (opts.protectedIds.has(s.id)) return "self-or-ancestor"
   if (opts.ancestors.has(s.id)) return "ancestor-of-live"
@@ -281,6 +336,10 @@ export function selectGuardSessions(input: GuardSelectionInput): GuardSelection 
   const explicit = new Set(input.protectedSessionIds ?? [])
   const ancestors = protectedAncestors(sessions, explicit)
   const protectedIds = new Set(explicit)
+  const hasLiveChild = new Set<string>()
+  for (const s of sessions) {
+    if (isAliveSession(s) && s.parentSessionId) hasLiveChild.add(s.parentSessionId)
+  }
   const minIdleSec = verdict === "CRIT" ? policy.critMinIdleSec : policy.warnMinIdleSec
 
   const counts: GuardCounts = {
@@ -308,6 +367,7 @@ export function selectGuardSessions(input: GuardSelectionInput): GuardSelection 
       minIdleMs: minIdleSec * 1000,
       ancestors,
       protectedIds,
+      hasLiveChild,
     })
     if (reason) {
       skipped[reason] = (skipped[reason] ?? 0) + 1
@@ -404,12 +464,17 @@ export function recheckGuardCandidate(
   const session = fresh.find(s => s.id === id)
   if (!session) return "not-alive"
   const explicit = new Set(opts.protectedSessionIds ?? [])
+  const hasLiveChild = new Set<string>()
+  for (const s of fresh) {
+    if (isAliveSession(s) && s.parentSessionId) hasLiveChild.add(s.parentSessionId)
+  }
   const minIdleSec = opts.verdict === "CRIT" ? policy.critMinIdleSec : policy.warnMinIdleSec
   return ineligibility(session, {
     nowMs: opts.nowMs,
     minIdleMs: minIdleSec * 1000,
     ancestors: protectedAncestors(fresh, explicit),
     protectedIds: explicit,
+    hasLiveChild,
   })
 }
 
@@ -609,6 +674,48 @@ async function fetchSessions(url: string): Promise<SessionDescriptor[]> {
   return Array.isArray(body?.sessions) ? body.sessions : []
 }
 
+const execFileAsync = promisify(execFile)
+
+/** Inspect a session's worktree for uncommitted or unpushed work. Bounded by
+ *  `timeoutMs` per git command; ANY failure (timeout, no upstream, not a
+ *  repo) returns `unknown: true`, which the decision treats as work-in-flight
+ *  — we never reap what we cannot prove clean. */
+export async function inspectWorktree(
+  path: string,
+  timeoutMs: number = WORKTREE_GIT_TIMEOUT_MS,
+): Promise<WorktreeState> {
+  try {
+    const status = await execFileAsync("git", ["-C", path, "status", "--porcelain"], {
+      timeout: timeoutMs,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    const dirty = status.stdout.trim().length > 0
+    try {
+      const count = await execFileAsync("git", ["-C", path, "rev-list", "--count", "@{u}..HEAD"], {
+        timeout: timeoutMs,
+        maxBuffer: 1024 * 1024,
+      })
+      return { dirty, unpushed: Number(count.stdout.trim()) > 0 }
+    } catch {
+      return { dirty, unpushed: false, unknown: true }
+    }
+  } catch {
+    return { dirty: false, unpushed: false, unknown: true }
+  }
+}
+
+/** Pre-fetch worktree state onto the session rows the decision reads. Only
+ *  live agent-cli sessions inside a linked worktree need a git probe. */
+async function annotateWorktreeStates(sessions: readonly GuardSession[]): Promise<void> {
+  await Promise.all(
+    sessions.map(async s => {
+      if (!s.worktreePath || !isAliveSession(s)) return
+      if (s.kind !== undefined && s.kind !== "agent-cli") return
+      ;(s as GuardSession).worktreeState = await inspectWorktree(s.worktreePath)
+    }),
+  )
+}
+
 function summarizeRemaining(sessions: readonly GuardSession[]): {
   alive: number
   busy: number
@@ -631,10 +738,17 @@ function selfSessionIds(): string[] {
   return out
 }
 
-async function stopSession(url: string, token: string | undefined, id: string, reason: string): Promise<void> {
-  await httpPostJson(`${url}/sessions/${encodeURIComponent(id)}/kill`, {
-    outcome: { reason, by: "user" },
-  }, token)
+async function reapSession(
+  url: string,
+  token: string | undefined,
+  id: string,
+  idleSec: number,
+): Promise<void> {
+  await httpPostJson(
+    `${url}/sessions/${encodeURIComponent(id)}/reap`,
+    { idleMs: Math.round(idleSec * 1000) },
+    token,
+  )
 }
 
 function humanReport(report: {
@@ -732,6 +846,7 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
     })
     health = computeHostHealth(input, DEFAULT_HEALTH_THRESHOLDS)
     sessions = await fetchSessions(found.url)
+    await annotateWorktreeStates(sessions)
   } catch (err) {
     process.stderr.write(`agentproto host guard: ${errText(err)}\n`)
     return 2
@@ -749,14 +864,12 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
   const failed: { id: string; error: string }[] = []
   if (!flags.dryRun) {
     for (const candidate of selection.close) {
-      const reason =
-        `host-guard ${health.verdict}: ${health.reasons.join("; ") || "idle session cleanup"}; ` +
-        `session idle ${Math.round(candidate.idleSec / 60)} min, last turn finished`
       try {
-        // The kill route is unconditional, so re-validate against a fresh
-        // list right before each kill (a turn may have started since the
+        // Re-validate against a fresh list right before each reap (a turn may
+        // have started, or the worktree may have become dirty, since the
         // initial snapshot).
         const fresh = await fetchSessions(found.url)
+        await annotateWorktreeStates(fresh.filter(s => s.id === candidate.id))
         const changed = recheckGuardCandidate(candidate.id, fresh, {
           verdict: health.verdict,
           nowMs: Date.now(),
@@ -764,10 +877,10 @@ export async function runHostGuard(args: readonly string[]): Promise<number> {
           protectedSessionIds: selfSessionIds(),
         })
         if (changed) {
-          failed.push({ id: candidate.id, error: `skipped: session changed before kill (${changed})` })
+          failed.push({ id: candidate.id, error: `skipped: session changed before reap (${changed})` })
           continue
         }
-        await stopSession(found.url, found.token, candidate.id, reason)
+        await reapSession(found.url, found.token, candidate.id, candidate.idleSec)
         closed.push(candidate)
       } catch (err) {
         failed.push({ id: candidate.id, error: errText(err) })

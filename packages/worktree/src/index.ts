@@ -238,6 +238,7 @@ export {
   detectAnchor,
   branchVerdictSchema,
   recordBranchVerdict,
+  approveBranchVerdict,
   FileBranchVerdictStore,
   InMemoryBranchVerdictStore,
   BranchVerdictError,
@@ -270,6 +271,8 @@ export {
   type BranchVerdict,
   type BranchVerdictRecord,
   type BranchVerdictStore,
+  type BranchApprovalRefusal,
+  type BranchApprovalResult,
 } from "./branch-gc.js"
 export {
   SANDBOX_CHECKPOINT_PREFIX,

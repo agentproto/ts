@@ -51,6 +51,7 @@ describe("repo-maintenance app", () => {
       "gaps:transform",
       "verdictLookupTips:transform",
       "verdictRecords:map",
+      "reviewedWorktreePaths:transform",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
