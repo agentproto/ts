@@ -40,11 +40,11 @@ const fixed = (id: string, types: string[], level: 0 | 1 | 2 | 3 | undefined): C
 })
 
 describe("createClassifierRegistry", () => {
-  it("returns undefined from match when no classifier covers the type", () => {
+  it("an uncovered type falls back to the default rule", () => {
     const reg = createClassifierRegistry()
-    expect(reg.match(env("acme.widget.failed"))).toBeUndefined()
+    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 2, rule: "default" })
     reg.register(fixed("other", ["other.*"], 1))
-    expect(reg.match(env("acme.widget.failed"))).toBeUndefined()
+    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 2, rule: "default" })
   })
 
   it("an unclassified envelope is never dropped: default rule, level hint or 2", () => {
@@ -95,10 +95,10 @@ describe("createClassifierRegistry", () => {
   it("type globs are exact or trailing star; a bare star matches everything", () => {
     const reg = createClassifierRegistry()
     reg.register(fixed("exact", ["acme.widget.failed"], 3))
-    expect(reg.match(env("acme.widget.failed"))?.id).toBe("exact")
-    expect(reg.match(env("acme.widget.failed2"))).toBeUndefined()
+    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "exact" })
+    expect(reg.classify(env("acme.widget.failed2"), ctx)).toEqual({ level: 2, rule: "default" })
     reg.register(fixed("all", ["*"], 1))
-    expect(reg.match(env("anything.at.all"))?.id).toBe("all")
+    expect(reg.classify(env("anything.at.all"), ctx)).toEqual({ level: 1, rule: "all" })
   })
 
   it("registries are independent, not module-global", () => {

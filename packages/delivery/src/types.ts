@@ -64,8 +64,6 @@ export interface Classifier {
 export interface ClassifierRegistry {
   /** Registers a classifier; the same `id` replaces in place. Returns an unregister function. */
   register(c: Classifier): () => void
-  /** First registered classifier whose type globs cover the envelope, or undefined. */
-  match(env: Envelope): Classifier | undefined
   /** First non-declining match; no match is `{ level: levelHint ?? 2, rule: "default" }`. */
   classify(env: Envelope, ctx: ClassifyContext): { level: Level; rule: string }
   list(): readonly Classifier[]

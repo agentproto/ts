@@ -25,10 +25,6 @@ export function createClassifierRegistry(): ClassifierRegistry {
       }
     },
 
-    match(env: Envelope): Classifier | undefined {
-      return classifiers.find((c) => covers(c, env.type))
-    },
-
     classify(env: Envelope, ctx: ClassifyContext): { level: Level; rule: string } {
       for (const c of classifiers) {
         if (!covers(c, env.type)) continue
