@@ -1,0 +1,92 @@
+{
+  "name": "@agentproto/sdk",
+  "version": "0.1.0",
+  "description": "@agentproto/sdk - the umbrella entry point for the agentproto/ts monorepo. Re-exports the AIP-14 TOOL, AIP-30 DRIVER, AIP-42 AGENT and AIP-44 ACP authoring primitives from one package and adds a small `createAgent` glue layer so a first agent is a handful of lines. Subpath exports keep the ACP client/server and the runtime gateway tree-shakeable.",
+  "keywords": [
+    "agentproto",
+    "sdk",
+    "agent",
+    "tool",
+    "driver",
+    "acp",
+    "open-standard",
+    "agentic"
+  ],
+  "homepage": "https://agentproto.sh/docs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentproto/ts",
+    "directory": "packages/sdk"
+  },
+  "bugs": {
+    "url": "https://github.com/agentproto/ts/issues"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.mjs",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "default": "./dist/index.mjs"
+    },
+    "./acp": {
+      "types": "./dist/acp.d.ts",
+      "import": "./dist/acp.mjs",
+      "default": "./dist/acp.mjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.mjs",
+      "default": "./dist/server.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "tsup --watch",
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "peerDependencies": {
+    "@agentproto/acp": "^0.13.0",
+    "@agentproto/agent": "^0.6.0",
+    "@agentproto/driver": "^0.4.1",
+    "@agentproto/runtime": "^6.0.0",
+    "@agentproto/tool": "^0.6.1",
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@agentproto/acp": {
+      "optional": true
+    },
+    "@agentproto/runtime": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@agentproto/acp": "workspace:*",
+    "@agentproto/agent": "workspace:*",
+    "@agentproto/driver": "workspace:*",
+    "@agentproto/runtime": "workspace:*",
+    "@agentproto/tool": "workspace:*",
+    "@agentproto/tooling": "workspace:*",
+    "@types/node": "^25.9.9",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7",
+    "zod": "^4.6.7"
+  }
+}
