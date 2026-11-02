@@ -50,7 +50,8 @@ export const contextContinuityInputSchema = z.object({
       "Absolute token threshold for autocompact: an idle session whose " +
         "context reaches this many tokens is compacted automatically " +
         "(window-independent, unlike the percent thresholds below). " +
-        "Clamped to 600000 max; 0 disables. Default 150000.",
+        "Clamped to 600000 max; 0 disables. Unset = max(150000, " +
+        "warnAtPct% of the context window), e.g. 550000 on a 1M window.",
     ),
   warnAtPct: z.number().int().min(0).max(100).optional(),
   compactAtPct: z.number().int().min(0).max(100).optional(),

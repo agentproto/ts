@@ -232,6 +232,38 @@ describe("computeContextContinuityStatus", () => {
     expect(isContextContinuityHardStopped(status.contextPct, policy)).toBe(false)
   })
 
+  it("does not flag autocompact for 200k used on a 1M window (default threshold scales)", () => {
+    const status = computeContextContinuityStatus("sess_1m", policy, 1_000_000, 200_000)
+    expect(status.autoCompactAtTokens).toBe(550_000)
+    expect(status.autoCompactAboveThreshold).toBe(false)
+  })
+
+  it("flags autocompact at 55% of a 1M window", () => {
+    const status = computeContextContinuityStatus("sess_1m", policy, 1_000_000, 550_000)
+    expect(status.autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("keeps the 150k default on a 200k window", () => {
+    const below = computeContextContinuityStatus("sess_200k", policy, 200_000, 149_000)
+    expect(below.autoCompactAtTokens).toBe(150_000)
+    expect(below.autoCompactAboveThreshold).toBe(false)
+    expect(computeContextContinuityStatus("sess_200k", policy, 200_000, 150_000).autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("honours an explicit absolute threshold regardless of window size", () => {
+    const explicit = resolveContextContinuityPolicy(undefined, undefined, undefined, {
+      autoCompactAtTokens: 150_000,
+    })
+    const status = computeContextContinuityStatus("sess_1m", explicit, 1_000_000, 200_000)
+    expect(status.autoCompactAtTokens).toBe(150_000)
+    expect(status.autoCompactAboveThreshold).toBe(true)
+  })
+
+  it("keeps 0 (disabled) on a 1M window", () => {
+    const off = resolveContextContinuityPolicy(undefined, undefined, undefined, { autoCompactAtTokens: 0 })
+    expect(computeContextContinuityStatus("sess_1m", off, 1_000_000, 900_000).autoCompactAboveThreshold).toBe(false)
+  })
+
   it("takes no rail action when contextSize is entirely absent", () => {
     const status = computeContextContinuityStatus("sess_1", policy, undefined, 500)
     expect(status.nextAction).toBe("none")
