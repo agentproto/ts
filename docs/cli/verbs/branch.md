@@ -172,8 +172,16 @@ are resolved before anything runs, so `--dry-run` reports what the real run
 does whatever the log order: the same sha twice is restored once (the next is
 `already-present`); when one sha is an ancestor of the other, the descendant
 is restored and the ancestor is `contained` in it; diverged shas are both
-`refused-conflict`, each naming the other, until `--sha` picks one. Each line
-prints the git command it ran. The exit code is 1 when anything was refused or failed.
+`refused-conflict`, each naming the other, until `--sha` picks one. An
+ancestor is `contained` only when its descendant actually lands (`restored`,
+`already-present`, or `would-restore` in a dry run): if the descendant is
+refused or fails, the ancestor is `refused-conflict` or `failed` with a
+message naming the descendant and its result, since nothing then holds its
+commits. The pairing never overwrites a ref: when the ref already sits at the
+ancestor, the ancestor is `already-present` and the descendant is
+`refused-conflict` (the ref exists at another sha), so the ref stays at the
+ancestor until you move it yourself. Each line prints the git command it
+ran. The exit code is 1 when anything was refused or failed.
 
 Restoring also drops the operator approval from the stored verdict of every
 restored tip (the reviewer verdict stays): otherwise the next
