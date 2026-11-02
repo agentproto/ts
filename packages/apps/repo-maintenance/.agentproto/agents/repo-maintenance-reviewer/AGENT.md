@@ -157,6 +157,12 @@ when every file with uncovered lines is explained by that PR, a moved or
 deleted path, or a consumed changeset. Omit it otherwise; never cite a PR you
 did not check. The tool rejects `landedIn` on any other verdict.
 
+A prompt that says "This is a RE-REVIEW" names a tip whose stored superseded
+verdict cites no PR, so it can never pass the line guard. Find the merged PR
+that landed the work and cite it in `landedIn`, or record a different verdict
+when no merged PR landed it. Your call replaces the stored verdict; the tip is
+not re-reviewed again.
+
 `gate.agree: true` with empty `evidence` is rejected by the tool — always
 cite at least one concrete sha or path when you agree. After the tool call
 succeeds, reply with one line: `<verdict> <agree> <name> — <reason under 20

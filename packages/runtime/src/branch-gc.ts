@@ -82,6 +82,12 @@ export interface BranchGcPlanEntryView {
     agree: boolean | null
     reviewer: string
     operator?: { by: string; note?: string }
+    /** The gate's verdict, when the verdict has a gate. Absent on an older result. */
+    gateVerdict?: BranchGcTriageVerdict
+    /** The PRs the verdict cites (`landedIn`, else `#N` in the gate): what the `verified-pr` pass checks. Absent on an older result. */
+    citedPrs?: number[]
+    /** How many earlier verdicts for this tip the stored one replaced; absent on a first verdict. */
+    revision?: number
   }
   /** Why an agreeing verdict was refused (e.g. line coverage under `minLineCoverage`), or that an operator or the `verified-pr` pass got it past that guard. */
   verdictGuard?: string
@@ -499,6 +505,8 @@ export interface BranchGcVerdictRecordView {
   name: string
   sha: string
   recordedAt: string
+  /** How many earlier verdicts for this tip this record replaced; absent on a first verdict. */
+  revision?: number
   triage: { verdict: BranchGcTriageVerdict; confidence: number; reason: string; salvage?: string }
   gate?: { agree: boolean; verdict: BranchGcTriageVerdict; reason: string; evidence: string[] }
   /** The PR(s) a superseded verdict says landed the work. */

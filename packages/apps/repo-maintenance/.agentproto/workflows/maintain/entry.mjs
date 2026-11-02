@@ -145,6 +145,7 @@ const REVIEW_PROMPT =
   "not). The coverage above describes ONLY the primary tip {{item.sha}}. Inspect EVERY sha " +
   "(git log/show/diff/ls-tree, `git show <sha>:<path>` — they are all commits of this repo) " +
   "before deciding.{{/item.otherTips}}" +
+  "{{#item.rereview}}\n\nThis is a RE-REVIEW. {{item.rereview}}{{/item.rereview}}" +
   "\n\n{{item.reviewWorktree}} (your working directory) is a disposable detached worktree made " +
   "for this review alone and deleted afterwards. Read the branch through its sha (git log/show/" +
   "diff/ls-tree, `git show <sha>:<path>` for a file); never checkout, switch, stash, reset or " +
@@ -196,7 +197,9 @@ const VERDICT_NEEDS = (id, checkId) => ({
   kind: "transform",
   compute: b => {
     const answers = Array.isArray(b.steps[checkId]) ? b.steps[checkId] : []
-    const missingShas = answers.filter(r => r?.missing === true).map(r => r.sha)
+    // A re-review tip already HAS a stored verdict: it is missing until a
+    // new one replaced it (`revision` stamped by the store).
+    const missingShas = answers.filter(r => r?.missing === true || (b.item.rereview && !(r?.record?.revision > 0))).map(r => r.sha)
     b.item.verdictMissing = missingShas.length > 0
     b.item.missingShas = missingShas
     return { missing: missingShas.length > 0, missingShas }
@@ -443,6 +446,38 @@ export function verdictLookupTips(b) {
   return [...shas].map(sha => ({ sha }))
 }
 
+/** The line-coverage guard's default, mirrors `DEFAULT_MIN_LINE_COVERAGE`
+ *  (packages/worktree/src/branch-gc.ts) for a plan that does not say. */
+const DEFAULT_MIN_LINE_COVERAGE = 95
+
+/** What the reviewer of a re-review is told, after "This is a RE-REVIEW." */
+export const REREVIEW_UNCITED_WHY =
+  "This tip already has a stored verdict (superseded, gate agreed) that cites no PR: no landedIn, " +
+  "and no #N in gate.reason or gate.evidence. Its line coverage is under branch_gc's guard, so only " +
+  "the verified-pr pass can reclaim it, and that pass needs a cited PR the forge confirms merged. " +
+  "Find the merged PR that landed this work and cite it: pass landedIn: [{ pr, commit? }] and name " +
+  "`#<pr>` in gate.reason. If no merged PR landed it, change the verdict to what the evidence " +
+  "supports instead of repeating superseded. Your verdict replaces the stored one; this tip is " +
+  "re-reviewed only once."
+
+/** Does plan entry `e` carry a verdict the queue re-reviews once
+ *  (`rereviewUncited`)? Its stored verdict says superseded in triage AND gate,
+ *  the gate agreed, it cites no PR (`citedPrs`, computed by branch_gc's own
+ *  `citedPrsOf`), no operator approved it, it never replaced an earlier
+ *  verdict (`revision`, stamped by the store, so a re-review that again cites
+ *  nothing is not picked again), and its line coverage is under the plan's
+ *  guard (`lineCoverageGuard`: no coverage means no refusal). An entry from an
+ *  engine that does not report `citedPrs` never qualifies. */
+export function needsUncitedRereview(e, plan) {
+  const v = e?.verdict
+  if (!v || v.agree !== true || v.operator) return false
+  if (v.triage !== "superseded" || v.gateVerdict !== "superseded") return false
+  if (!Array.isArray(v.citedPrs) || v.citedPrs.length > 0) return false
+  if (typeof v.revision === "number" && v.revision > 0) return false
+  const min = typeof plan?.minLineCoverage === "number" ? plan.minLineCoverage : DEFAULT_MIN_LINE_COVERAGE
+  return typeof e.lineCoverage?.pct === "number" && e.lineCoverage.pct < min
+}
+
 /** One `review`-class branch_gc plan entry per BRANCH NAME — a local branch
  *  and its remote twin share one review instead of costing the reviewer two
  *  turns, whether they share a tip (grouped by sha, as before) or DIVERGED
@@ -462,18 +497,32 @@ export function verdictLookupTips(b) {
  *  tip under that name carries a verdict; a partially reviewed name stays
  *  queued with only its unreviewed tips. Returns the queue (oldest first,
  *  then the larger residual) plus how many names were skipped as already
- *  reviewed. */
+ *  reviewed.
+ *
+ *  `opts.rereviewUncited` (default true) also queues, once, every tip whose
+ *  stored verdict {@link needsUncitedRereview}: such an item carries
+ *  `rereview` (the reviewer's instructions) and only those tips. Unreviewed
+ *  tips keep priority: the queue is every unreviewed item first, then the
+ *  re-reviews (each part newest first), so `maxReviews` reaches a re-review
+ *  only once every unreviewed tip is picked. A name that still has an
+ *  unreviewed tip is reviewed for that tip alone; its re-review tips wait for
+ *  a later run. `rereviewQueued` counts the re-review items. */
 export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts = {}) {
   const plan = branchGcPlanResult?.plan
   const entries = Array.isArray(plan?.entries) ? plan.entries : []
   const heldWorktrees = opts.reviewHeldWorktrees === false ? new Map() : reviewableWorktrees(worktreeGcPlanResult)
   const reviewable = e => e.class === "review" || heldWorktreeOf(e, heldWorktrees) !== null
+  // Per tip sha: a local ref and its remote twin share one verdict.
+  const rereviewShas = new Set(
+    opts.rereviewUncited === false ? [] : entries.filter(e => reviewable(e) && needsUncitedRereview(e, plan)).map(e => e.sha),
+  )
   const bySha = new Map()
   const dates = new Map()
   for (const e of entries) {
     if (!reviewable(e)) continue
     dates.set(e.sha, e.date ?? "")
-    if (e.verdict) continue
+    const rereview = rereviewShas.has(e.sha)
+    if (e.verdict && !rereview) continue
     const seen = bySha.get(e.sha)
     if (seen) {
       seen.refs.push(e.ref)
@@ -516,6 +565,7 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       lineCoverage: e.lineCoverage ?? null,
       refs: [e.ref],
       ...(heldPath ? { worktree: heldPath } : {}),
+      ...(rereview ? { rereview: REREVIEW_UNCITED_WHY } : {}),
     })
   }
   // Merge candidates whose refs share one branch NAME: `foo` and `origin/foo`
@@ -528,7 +578,11 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
     else byName.set(c.name, [c])
   }
   const queue = []
-  for (const sibs of byName.values()) {
+  const rereviews = []
+  for (const all of byName.values()) {
+    // A name with an unreviewed tip is reviewed for those tips only.
+    const fresh = all.filter(c => !c.rereview)
+    const sibs = fresh.length > 0 ? fresh : all
     sibs.sort((a, b) => String(dates.get(b.sha) ?? "").localeCompare(String(dates.get(a.sha) ?? "")))
     const [primary, ...rest] = sibs
     // Every item carries `allTips` (the verdict-check map iterates it); a
@@ -539,13 +593,14 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
       primary.otherTips = rest.map(c => ({ sha: c.sha, refs: c.refs }))
       primary.refs = sibs.flatMap(c => c.refs)
     }
-    queue.push(primary)
+    ;(primary.rereview ? rereviews : queue).push(primary)
   }
-  queue.sort(
-    (a, b) =>
-      (a.ageDays ?? Number.POSITIVE_INFINITY) - (b.ageDays ?? Number.POSITIVE_INFINITY) ||
-      (b.residualFileCount ?? 0) - (a.residualFileCount ?? 0),
-  )
+  const newestFirst = (a, b) =>
+    (a.ageDays ?? Number.POSITIVE_INFINITY) - (b.ageDays ?? Number.POSITIVE_INFINITY) ||
+    (b.residualFileCount ?? 0) - (a.residualFileCount ?? 0)
+  queue.sort(newestFirst)
+  rereviews.sort(newestFirst)
+  queue.push(...rereviews)
   // A name is "already reviewed" only when EVERY review tip under it carries
   // a verdict — a name with one reviewed and one unreviewed tip is still
   // queued (with only the unreviewed tips).
@@ -554,7 +609,7 @@ export function buildReviewQueue(branchGcPlanResult, worktreeGcPlanResult, opts 
   for (const e of entries) {
     if (reviewable(e) && e.verdict && !pendingNames.has(e.name)) fullyReviewed.add(e.name)
   }
-  return { queue, alreadyReviewed: fullyReviewed.size }
+  return { queue, alreadyReviewed: fullyReviewed.size, rereviewQueued: rereviews.length }
 }
 
 /** `maxReviews` as a non-negative integer, else the default. */
@@ -775,20 +830,19 @@ function skippedShas(reviewCandidates, review) {
  *  tool needed. A branch-name item reviews SEVERAL tips (primary +
  *  `otherTips`), so one item can yield several gaps — one per still-missing
  *  tip. A candidate the review map never started (circuit open) is not a
- *  gap — it's reported as not reviewed. */
+ *  gap — it's reported as not reviewed. A re-review tip had a verdict before
+ *  the run: it is a gap until a new verdict replaced it (`revision`). */
 export function computeReviewGaps(reviewCandidates, branchGcVerifyResult, review) {
-  const afterEntries = branchGcVerifyResult?.plan?.entries
-  const verdictShas = new Set(
-    (Array.isArray(afterEntries) ? afterEntries : [])
-      .filter(e => e.verdict)
-      .map(e => e.sha),
-  )
+  const afterEntries = Array.isArray(branchGcVerifyResult?.plan?.entries) ? branchGcVerifyResult.plan.entries : []
+  const verdictShas = new Set(afterEntries.filter(e => e.verdict).map(e => e.sha))
+  const revisedShas = new Set(afterEntries.filter(e => e.verdict?.revision > 0).map(e => e.sha))
   const skipped = skippedShas(reviewCandidates, review)
   const gaps = []
   for (const c of reviewCandidates ?? []) {
     const refsBySha = new Map((c.allTips ?? [{ sha: c.sha }]).map(t => [t.sha, t.refs ?? c.refs]))
     for (const [sha, refs] of refsBySha) {
-      if (!verdictShas.has(sha) && !skipped.has(sha)) gaps.push({ name: c.name, sha, refs })
+      const recorded = c.rereview ? revisedShas.has(sha) : verdictShas.has(sha)
+      if (!recorded && !skipped.has(sha)) gaps.push({ name: c.name, sha, refs })
     }
   }
   return gaps
@@ -914,11 +968,23 @@ export function buildReport(b) {
   lines.push("")
   lines.push(`## Review (${reviewCandidates.length} candidate(s) this run)`)
   const backlog = reviewQueue.queue.length - reviewCandidates.length
+  const rereviewQueued = reviewQueue.rereviewQueued ?? 0
+  const rereviewed = reviewCandidates.filter(c => c.rereview)
   lines.push(
-    `- queue: ${reviewQueue.queue.length} unreviewed tip(s), newest first — ${reviewCandidates.length} picked for this run` +
+    `- queue: ${reviewQueue.queue.length - rereviewQueued} unreviewed tip(s)` +
+      (rereviewQueued > 0 ? ` then ${rereviewQueued} re-review(s)` : "") +
+      `, newest first — ${reviewCandidates.length} picked for this run` +
       (backlog > 0 ? `, not reviewed this run (${backlog}) — raise \`maxReviews\` or let the next run take them` : "") +
       (reviewQueue.alreadyReviewed > 0 ? `; ${reviewQueue.alreadyReviewed} tip(s) already carry a verdict from an earlier run` : ""),
   )
+  if (rereviewQueued > 0) {
+    lines.push(
+      `- re-reviewed ${rereviewed.length} of ${rereviewQueued} tip(s) whose stored superseded verdict agreed but cites no PR, ` +
+        `under the ${plan?.minLineCoverage ?? DEFAULT_MIN_LINE_COVERAGE}% line guard: only the verified-pr pass can reclaim them and it needs a cited merged PR, ` +
+        "so each reviewer was asked to cite it in `landedIn` or change the verdict (once per tip; unreviewed tips go first)" +
+        (rereviewed.length > 0 ? `: ${formatNameList(rereviewed.map(c => c.name))}` : ""),
+    )
+  }
   lines.push(
     `- reviewer agent turns: ${reviewOutcome.succeeded} ok, ${reviewOutcome.failed} failed` +
       (reviewOutcome.skipped > 0 ? `, ${reviewOutcome.skipped} not started` : ""),
@@ -1113,7 +1179,8 @@ export default {
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     reviewPreset: { type: "string", description: "Model role preset for this run (opus, sonnet, haiku, go-free, free-sonnet — see `model_roles`). Default: the daemon's `modelRolePreset`, else the built-in roles. `reviewModelSmall`/`reviewModelLarge` still win." },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
-    maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are never re-reviewed, so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
+    maxReviews: { type: "number", description: `Most review candidates to review this run — newest tip first, then the larger residual. The rest are reported as not reviewed this run; tips with a stored verdict are not reviewed again (except the one-time \`rereviewUncited\` re-reviews, which count against this cap and come after every unreviewed tip), so daily runs walk the backlog. Default ${DEFAULT_MAX_REVIEWS}.`, default: DEFAULT_MAX_REVIEWS },
+    rereviewUncited: { type: "boolean", description: "Re-review, once per tip, a tip whose stored verdict says superseded (triage and gate), agreed, cites no PR (no `landedIn`, no `#N` in gate.reason/evidence) and sits under branch_gc's line-coverage guard: the verified-pr pass cannot reclaim it without a cited PR. The reviewer is asked to find and cite the merged PR that landed the work, or change the verdict. Re-reviews count against `maxReviews` and are queued after every unreviewed tip (newest first). A tip whose stored verdict already replaced an earlier one (`revision` in the store) is never picked, so a re-review that again cites no PR is not repeated. Off when `requireOperatorBelowGuard` is true. Default true.", default: true },
     reviewHeldWorktrees: { type: "boolean", description: `Also review branches held only because they're checked out in an idle, clean linked worktree with no open PR (tip ≥ ${HELD_WORKTREE_MIN_AGE_DAYS}d old). When the reviewer agreed, the worktree (never its branch) goes: with \`applyMerged\` + \`applyReviewed\`, worktree_gc removes it after re-checking it (same tip, clean, idle, no open PR, agreeing stored verdict) and the report gives each outcome; otherwise the report prints \`agentproto worktree rm <path> --keep-branch\`. Either way the branch is then judged by branch_gc's line-coverage guard. Default true.`, default: true },
     notify: {
       type: "object",
@@ -1172,7 +1239,12 @@ export default {
     {
       id: "reviewQueue",
       kind: "transform",
-      compute: b => buildReviewQueue(b.steps.branchGcPlan, b.steps.worktreeGcPlan, { reviewHeldWorktrees: b.input?.reviewHeldWorktrees !== false }),
+      compute: b =>
+        buildReviewQueue(b.steps.branchGcPlan, b.steps.worktreeGcPlan, {
+          reviewHeldWorktrees: b.input?.reviewHeldWorktrees !== false,
+          // A cited PR only helps through the verified-pr pass: off with it.
+          rereviewUncited: b.input?.rereviewUncited !== false && b.input?.requireOperatorBelowGuard !== true,
+        }),
     },
     {
       id: "reviewCandidates",

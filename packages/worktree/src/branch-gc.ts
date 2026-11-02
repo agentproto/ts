@@ -280,6 +280,12 @@ export interface BranchVerdictSummary {
   reviewer: string
   /** Human operator approval that overrides the line-coverage guard, when present. */
   operator?: { by: string; note?: string }
+  /** The gate's verdict, when the verdict has a gate. */
+  gateVerdict?: BranchTriageVerdict
+  /** The PRs the verdict cites ({@link citedPrsOf}): what the `verified-pr` pass would check. */
+  citedPrs: number[]
+  /** The stored record's {@link BranchVerdictRecord.revision}, when it replaced an earlier verdict. */
+  revision?: number
 }
 
 /**
@@ -1252,6 +1258,9 @@ async function stampVerdict(entry: BranchGcPlanEntry, sha: string, env: Classify
     agree: stored.gate ? stored.gate.agree : null,
     reviewer: stored.reviewer,
     ...(stored.operator ? { operator: stored.operator } : {}),
+    ...(stored.gate ? { gateVerdict: stored.gate.verdict } : {}),
+    citedPrs: citedPrsOf(stored),
+    ...(stored.revision ? { revision: stored.revision } : {}),
   }
   return stored
 }
@@ -2756,6 +2765,13 @@ export type BranchVerdict = z.infer<typeof branchVerdictSchema>
 export interface BranchVerdictRecord extends BranchVerdict {
   repo: string
   recordedAt: string
+  /**
+   * How many earlier verdicts for this exact tip this record replaced,
+   * stamped by {@link recordBranchVerdict} (absent on a first verdict). A
+   * caller can tell a tip that was already re-reviewed from one that never
+   * was without trusting the reviewer to say so.
+   */
+  revision?: number
 }
 
 export interface BranchVerdictStore {
@@ -2769,7 +2785,10 @@ const verdictKey = (repo: string, sha: string): string => `${repo}\u0000${sha}`
 
 export const BRANCH_VERDICTS_PATH = (): string => resolve(homedir(), ".agentproto", "branch-gc-verdicts.json")
 
-const verdictRecordSchema = z.intersection(branchVerdictSchema, z.object({ repo: z.string(), recordedAt: z.string() }))
+const verdictRecordSchema = z.intersection(
+  branchVerdictSchema,
+  z.object({ repo: z.string(), recordedAt: z.string(), revision: z.number().int().positive().optional() }),
+)
 const verdictFileSchema = z.object({ entries: z.array(z.unknown()) })
 
 /**
@@ -2921,7 +2940,9 @@ export class BranchVerdictError extends Error {
 
 /**
  * Validate and store one verdict. Rejects a malformed verdict, an agreeing
- * gate with no evidence, and a sha that isn't a commit in this repo.
+ * gate with no evidence, and a sha that isn't a commit in this repo. A
+ * verdict replacing a stored one for the same tip gets `revision` one past
+ * the replaced record's.
  */
 export async function recordBranchVerdict(input: {
   repoRoot: string
@@ -2939,10 +2960,12 @@ export async function recordBranchVerdict(input: {
   if (exists.exitCode !== 0) {
     throw new BranchVerdictError(`invalid branch verdict: ${parsed.data.sha} is not a commit in ${input.repoRoot}`)
   }
+  const prior = await input.store.get(input.repoName, parsed.data.sha)
   const record: BranchVerdictRecord = {
     ...parsed.data,
     repo: input.repoName,
     recordedAt: (input.now ?? (() => new Date().toISOString()))(),
+    ...(prior ? { revision: (prior.revision ?? 0) + 1 } : {}),
   }
   await input.store.set(record)
   return record
@@ -3049,7 +3072,7 @@ export async function approveBranchVerdict(input: {
   if (by.toLowerCase() === record.reviewer.trim().toLowerCase()) {
     return refuse("by-is-reviewer", `--by must name someone other than the reviewer ("${record.reviewer}")`)
   }
-  const { repo: _repo, recordedAt: _at, operator: prior, ...stored } = record
+  const { repo: _repo, recordedAt: _at, revision: _revision, operator: prior, ...stored } = record
   const note = input.note?.trim()
   const verdict: BranchVerdict = { ...stored, operator: { by, ...(note ? { note } : {}) } }
   const base = { ok: true as const, target, name: record.name, sha: record.sha, refs: atTip.map((r) => r.ref) }

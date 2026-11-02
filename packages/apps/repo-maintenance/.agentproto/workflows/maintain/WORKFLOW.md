@@ -72,9 +72,24 @@ inputs:
     description: >-
       Most review candidates to review this run — newest tip first, then the
       larger residual. The rest are reported as not reviewed this run; tips
-      with a stored verdict are never re-reviewed, so daily runs walk the
-      backlog.
+      with a stored verdict are not reviewed again (except the one-time
+      `rereviewUncited` re-reviews, which count against this cap and come
+      after every unreviewed tip), so daily runs walk the backlog.
     default: 40
+  rereviewUncited:
+    type: boolean
+    description: >-
+      Re-review, once per tip, a tip whose stored verdict says superseded
+      (triage and gate), agreed, cites no PR (no `landedIn`, no `#N` in
+      gate.reason/evidence) and sits under branch_gc's line-coverage guard:
+      the verified-pr pass cannot reclaim it without a cited PR. The reviewer
+      is asked to find and cite the merged PR that landed the work, or change
+      the verdict. Re-reviews count against `maxReviews` and are queued after
+      every unreviewed tip (newest first). A tip whose stored verdict already
+      replaced an earlier one (`revision` in the store) is never picked, so a
+      re-review that again cites no PR is not repeated. Off when
+      `requireOperatorBelowGuard` is true.
+    default: true
   reviewHeldWorktrees:
     type: boolean
     description: >-
@@ -166,7 +181,9 @@ steps:
       branch and its remote twin review together even when their tips
       diverged — the newest tip is primary, the older ones ride along as
       otherTips), skips names whose every tip already carries a stored
-      verdict, and orders oldest first, then the larger residual.
+      verdict, and orders newest first, then the larger residual. With
+      `rereviewUncited` (default true) it then appends the one-time
+      re-reviews (see "Re-reviewing uncited superseded verdicts" below).
 
   - id: reviewCandidates
     kind: transform
@@ -471,6 +488,35 @@ base deleted or moved after that PR merged. The report lists those in "Auto-pass
 (branch, PR, why) and keeps only real refusals in the human decision queue,
 each with the reason the pass refused it. `requireOperatorBelowGuard: true`
 turns the pass off.
+
+## Re-reviewing uncited superseded verdicts
+
+Verdicts recorded before `landedIn` existed often cite no PR, so the
+verified-pr pass refuses them ("no PR cited") and, since a tip with a stored
+verdict is not reviewed again, they would sit in the decision queue forever.
+With `rereviewUncited` (default true) the review queue re-reviews such a tip
+ONCE: its stored verdict says `superseded` in triage and gate, the gate
+agreed, no operator approved it, it cites no PR (the plan entry's
+`verdict.citedPrs`, computed by branch_gc's own `citedPrsOf`), and its line
+coverage is under the plan's `minLineCoverage`. The prompt says why: find
+the merged PR that landed the work and cite it in `landedIn` (and `#<pr>` in
+gate.reason), or change the verdict when no such PR exists. The reviewer
+records through `branch_gc_verdict` as usual, which replaces the stored
+verdict.
+
+Once per tip: the verdict store stamps `revision` on a record that replaced
+an earlier verdict for the same tip, and a verdict with a `revision` is never
+picked, so a re-review that again cites no PR stays in the decision queue
+instead of being re-reviewed every run. The same `revision` is how the
+missing-verdict check (and `gaps`) tell a re-review that recorded nothing
+from one that did. Ordering is the simplest rule that never starves new
+work: every unreviewed tip first, then the re-reviews, both newest first,
+all under one `maxReviews`. A name that still has an unreviewed tip is
+reviewed for that tip only; its re-review waits for a later run. The Review
+section of the report says how many tips were re-reviewed, out of how many
+queued, and why. `requireOperatorBelowGuard: true` turns re-reviews off (a
+cited PR only helps through the verified-pr pass), and so does
+`rereviewUncited: false`.
 
 The same opt-in covers reviewed held worktrees: `worktreeGcApply` removes
 each agreed one's worktree (never its branch) after re-checking it, so the

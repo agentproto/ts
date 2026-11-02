@@ -858,6 +858,38 @@ describe("branch gc — verdict store", () => {
     expect(moved.verdict).toBeUndefined()
   })
 
+  it("stamps revision on a verdict that replaces one for the same tip, and the plan summary carries gate verdict, cited PRs and revision", async () => {
+    const repo = await makeRepo()
+    const tip = await branchWith(repo, "feat/rereview", { "rr.txt": "rr\n" })
+    const store = new InMemoryBranchVerdictStore()
+    const superseded = {
+      ...verdictFor("feat/rereview", tip, true),
+      triage: { verdict: "superseded", confidence: 0.9, reason: "landed upstream" },
+      gate: { agree: true, verdict: "superseded", reason: "base has it", evidence: ["abc123: base has it"] },
+    }
+    const first = await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: superseded })
+    expect(first.revision).toBeUndefined()
+    expect(entry(await plan(repo, { verdicts: store }), "feat/rereview").verdict).toEqual({
+      triage: "superseded",
+      agree: true,
+      reviewer: "test",
+      gateVerdict: "superseded",
+      citedPrs: [],
+    })
+
+    // The input cannot set the stamp; only the store's prior record does.
+    const second = await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store,
+      verdict: { ...superseded, landedIn: [{ pr: 7 }], revision: 9 },
+    })
+    expect(second.revision).toBe(1)
+    expect(entry(await plan(repo, { verdicts: store }), "feat/rereview").verdict).toMatchObject({ citedPrs: [7], revision: 1 })
+    const third = await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: superseded })
+    expect(third.revision).toBe(2)
+  })
+
   it("keeps every verdict when concurrent records race (G8)", async () => {
     const repo = await makeRepo()
     const path = join(await tmp("branch-gc-verdicts-"), "verdicts.json")
