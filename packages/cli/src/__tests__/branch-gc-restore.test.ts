@@ -92,6 +92,25 @@ describe("agentproto branch gc restore", () => {
     expect((await store.get(repoLabel(repo), sha))?.operator).toBeUndefined()
   })
 
+  it("--local-only: a local and a remote entry of one name restore the descendant once, and the summary counts it so", async () => {
+    const { repo, sha, base, logPath } = await deletedBranch()
+    git(repo, "remote", "add", "origin", join(repo, "no-such-remote"))
+    const more = git(repo, "commit-tree", `${sha}^{tree}`, "-p", sha, "-m", "more")
+    const local = { kind: "local", name: "feat/gone", ref: "refs/heads/feat/gone", sha, argv: ["branch", "feat/gone", sha] }
+    const remote = { kind: "remote", name: "feat/gone", ref: "refs/remotes/origin/feat/gone", remote: "origin", sha: more, argv: ["push", "origin", `${more}:refs/heads/feat/gone`] }
+    await writeFile(
+      logPath,
+      JSON.stringify({ schema: "branch-gc-restore/v1", repoRoot: repo, base: "main", baseSha: base, createdAt: "2026-11-02T00:00:00Z", entries: [local, remote] }),
+    )
+    const io = capture()
+    expect(await runBranchGcRestore([logPath, "--repo", repo, "--local-only", "--dry-run"])).toBe(0)
+    expect(io.out()).toContain(`contained: contained in ${more.slice(0, 12)}`)
+    expect(io.out()).toContain("1 would be restored, 0 already present, 1 contained in another restored tip, 0 refused (conflict), 0 failed.")
+    expect(await runBranchGcRestore([logPath, "--repo", repo, "--local-only"])).toBe(0)
+    expect(io.out()).toContain("1 restored, 0 already present, 1 contained in another restored tip, 0 refused (conflict), 0 failed.")
+    expect(git(repo, "rev-parse", "refs/heads/feat/gone")).toBe(more)
+  })
+
   it("the daemon port returns the structured result", async () => {
     const { repo, sha, logPath } = await deletedBranch()
     const res = await makeBranchGcRestorer(() => new InMemoryBranchVerdictStore())({ logPath, repoRoot: repo, shas: [sha], dryRun: true })

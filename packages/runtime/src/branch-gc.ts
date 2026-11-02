@@ -575,7 +575,15 @@ export interface BranchGcRestoreOutcomeView {
   name: string
   sha: string
   target: string
-  result: "restored" | "would-restore" | "already-present" | "refused-conflict" | "missing-commit" | "invalid-entry" | "failed"
+  result:
+    | "restored"
+    | "would-restore"
+    | "already-present"
+    | "contained"
+    | "refused-conflict"
+    | "missing-commit"
+    | "invalid-entry"
+    | "failed"
   command?: string
   message?: string
   approvalRevoked?: boolean

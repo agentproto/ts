@@ -2013,6 +2013,83 @@ describe("branch gc: restore from a restore log", () => {
     expect(await sha(repo, "feat/done")).toBe(other)
   })
 
+  /**
+   * A log where a `local` and a `remote` entry share the name `feat/twin`, so
+   * `--local-only` maps both to `refs/heads/feat/twin`. `remoteSha` is either
+   * the local sha, a descendant of it, or a sibling that diverged from it.
+   */
+  async function twinLog(relation: "same" | "descendant" | "diverged", order: "local-first" | "remote-first" = "local-first") {
+    const { repo, logPath } = await deletedTrio()
+    const log = await readBranchGcRestoreLog(logPath)
+    const base = await sha(repo, "main")
+    const commitOn = async (parent: string, msg: string): Promise<string> =>
+      (await execGit(repo, ["commit-tree", `${parent}^{tree}`, "-p", parent, "-m", msg])).stdout.trim()
+    const localSha = await commitOn(base, "twin local")
+    const remoteSha =
+      relation === "same" ? localSha : relation === "descendant" ? await commitOn(localSha, "twin more") : await commitOn(base, "twin other")
+    const local = { kind: "local", name: "feat/twin", ref: "refs/heads/feat/twin", sha: localSha, argv: ["branch", "feat/twin", localSha] }
+    const remote = {
+      kind: "remote",
+      name: "feat/twin",
+      ref: "refs/remotes/origin/feat/twin",
+      remote: "origin",
+      sha: remoteSha,
+      argv: ["push", "origin", `${remoteSha}:refs/heads/feat/twin`],
+    }
+    const twinPath = join(await tmp("branch-gc-state-"), "twin.json")
+    await writeFile(twinPath, JSON.stringify({ ...log, entries: order === "local-first" ? [local, remote] : [remote, local] }))
+    return { repo, logPath: twinPath, localSha, remoteSha }
+  }
+  const twinResults = (outcomes: { kind: string; target: string; result: string }[]) =>
+    outcomes.map((o) => `${o.kind}:${o.target}:${o.result}`)
+
+  it("--local-only: a local and a remote entry at the same sha restore once, the second is already-present (dry run too)", async () => {
+    const { repo, logPath, localSha } = await twinLog("same")
+    const expected = ["local:refs/heads/feat/twin:%", "remote:refs/heads/feat/twin:already-present"]
+    const dry = await restoreBranchGc({ logPath, localOnly: true, dryRun: true })
+    expect(twinResults(dry.outcomes)).toEqual(expected.map((x) => x.replace("%", "would-restore")))
+    expect(await refExists(repo, "refs/heads/feat/twin")).toBe(false)
+    const res = await restoreBranchGc({ logPath, localOnly: true })
+    expect(twinResults(res.outcomes)).toEqual(expected.map((x) => x.replace("%", "restored")))
+    expect(await sha(repo, "refs/heads/feat/twin")).toBe(localSha)
+  })
+
+  it.each(["local-first", "remote-first"] as const)(
+    "--local-only: when one twin descends from the other, the descendant is restored and the ancestor is contained (%s)",
+    async (order) => {
+      const { repo, logPath, localSha, remoteSha } = await twinLog("descendant", order)
+      const byKind = (outcomes: { kind: string; result: string; message?: string }[]) =>
+        Object.fromEntries(outcomes.map((o) => [o.kind, o]))
+      const dry = byKind((await restoreBranchGc({ logPath, localOnly: true, dryRun: true })).outcomes)
+      expect(dry.remote).toMatchObject({ result: "would-restore" })
+      expect(dry.local).toMatchObject({ result: "contained", message: expect.stringContaining(remoteSha.slice(0, 12)) })
+      expect(await refExists(repo, "refs/heads/feat/twin")).toBe(false)
+      const res = byKind((await restoreBranchGc({ logPath, localOnly: true })).outcomes)
+      expect(res.remote).toMatchObject({ result: "restored" })
+      expect(res.local).toMatchObject({ result: "contained" })
+      expect(await sha(repo, "refs/heads/feat/twin")).toBe(remoteSha)
+      expect(localSha).not.toBe(remoteSha)
+      const again = byKind((await restoreBranchGc({ logPath, localOnly: true })).outcomes)
+      expect(again.remote).toMatchObject({ result: "already-present" })
+      expect(again.local).toMatchObject({ result: "contained" })
+    },
+  )
+
+  it("--local-only: diverged twins are both refused, each naming the other, and nothing is restored (dry run too)", async () => {
+    const { repo, logPath, localSha, remoteSha } = await twinLog("diverged")
+    for (const dryRun of [true, false]) {
+      const res = await restoreBranchGc({ logPath, localOnly: true, dryRun })
+      expect(twinResults(res.outcomes)).toEqual(["local:refs/heads/feat/twin:refused-conflict", "remote:refs/heads/feat/twin:refused-conflict"])
+      expect(res.outcomes[0]?.message).toContain(`remote feat/twin ${remoteSha.slice(0, 12)}`)
+      expect(res.outcomes[1]?.message).toContain(`local feat/twin ${localSha.slice(0, 12)}`)
+      expect(await refExists(repo, "refs/heads/feat/twin")).toBe(false)
+    }
+    // Picking one with --sha restores it.
+    const picked = await restoreBranchGc({ logPath, localOnly: true, shas: [remoteSha] })
+    expect(twinResults(picked.outcomes)).toEqual(["remote:refs/heads/feat/twin:restored"])
+    expect(await sha(repo, "refs/heads/feat/twin")).toBe(remoteSha)
+  })
+
   it("drops the operator approval of every restored tip so the next run re-judges it, unless told to keep it", async () => {
     const { repo, shas, logPath } = await deletedTrio()
     const verdicts = new InMemoryBranchVerdictStore()

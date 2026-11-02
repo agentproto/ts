@@ -166,8 +166,14 @@ instead of pushing it.
 
 It never overwrites: a ref with that name at another sha is
 `refused-conflict`, one already at the sha is `already-present`, and a sha no
-longer in the object database is `missing-commit`. Each line prints the git
-command it ran. The exit code is 1 when anything was refused or failed.
+longer in the object database is `missing-commit`. Entries that land on the
+same target (with `--local-only`, a remote and a local entry of the same name)
+are resolved before anything runs, so `--dry-run` reports what the real run
+does whatever the log order: the same sha twice is restored once (the next is
+`already-present`); when one sha is an ancestor of the other, the descendant
+is restored and the ancestor is `contained` in it; diverged shas are both
+`refused-conflict`, each naming the other, until `--sha` picks one. Each line
+prints the git command it ran. The exit code is 1 when anything was refused or failed.
 
 Restoring also drops the operator approval from the stored verdict of every
 restored tip (the reviewer verdict stays): otherwise the next
