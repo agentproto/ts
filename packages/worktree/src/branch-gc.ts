@@ -2396,7 +2396,11 @@ export interface BranchGcRestoreOutcome {
    * same sha twice restores once, the next is `already-present`; when one
    * sha is an ancestor of the others, only the descendant is restored and
    * each ancestor is `contained` (nothing run, its commits are kept by the
-   * descendant, named in `message`); diverged shas are all
+   * descendant, named in `message`), but only once that descendant is
+   * actually `restored`, `already-present`, or (dry run) `would-restore`:
+   * when it is not, the ancestor is `refused-conflict` (descendant refused)
+   * or `failed` (any other result), naming the descendant and its result, as
+   * nothing then holds its commits; diverged shas are all
    * `refused-conflict`, naming each other, until `--sha` picks one.
    */
   result:
@@ -2554,6 +2558,8 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
   const batch = await resolveBatchTargets(repoRoot, selected, plans)
   /** Targets this batch already restored (or would, in a dry run): target -> sha. */
   const planned = new Map<string, string>()
+  /** Ancestors whose outcome waits on what happens to their descendant (it may come later in the log). */
+  const pendingContained: { outcome: BranchGcRestoreOutcome; winner: string }[] = []
 
   for (const [i, e] of selected.entries()) {
     const id = { kind: e.kind, name: e.name, sha: e.sha }
@@ -2585,9 +2591,11 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
       continue
     }
     const collision = batch.get(target)
-    // The descendant is restored (or will be, or was by an earlier run): its ancestor needs nothing.
+    // The descendant is restored (or will be, or was by an earlier run): its ancestor needs nothing, settled below.
     if (collision && !collision.diverged && collision.winner !== e.sha && (current === null || current === collision.winner)) {
-      outcomes.push({ ...id, target, result: "contained", message: `contained in ${collision.winner.slice(0, 12)}, restored to ${target} instead` })
+      const outcome: BranchGcRestoreOutcome = { ...id, target, result: "contained" }
+      outcomes.push(outcome)
+      pendingContained.push({ outcome, winner: collision.winner })
       continue
     }
     if (current !== null) {
@@ -2632,6 +2640,27 @@ export async function restoreBranchGc(input: RestoreBranchGcInput): Promise<Bran
     outcomes.push({ ...id, target, result: "restored", command })
     planned.set(target, e.sha)
     restoredShas.add(e.sha)
+  }
+
+  // An ancestor is `contained` only when its descendant really holds its commits.
+  const held = new Set<BranchGcRestoreOutcome["result"]>(["restored", "already-present", "would-restore"])
+  for (const { outcome, winner } of pendingContained) {
+    const w = winner.slice(0, 12)
+    const ofWinner = outcomes.filter((o) => o.sha === winner && o.target === outcome.target)
+    const won = ofWinner.find((o) => held.has(o.result))
+    if (won) {
+      outcome.message =
+        won.result === "already-present"
+          ? `contained in ${w}, already at ${outcome.target}`
+          : won.result === "would-restore"
+            ? `contained in ${w}, which would be restored to ${outcome.target} instead`
+            : `contained in ${w}, restored to ${outcome.target} instead`
+      continue
+    }
+    const lost = ofWinner[0]
+    const why = lost ? `${lost.result}${lost.message ? `: ${lost.message}` : ""}` : "not attempted"
+    outcome.result = lost?.result === "refused-conflict" ? "refused-conflict" : "failed"
+    outcome.message = `contained in ${w}, which ${input.dryRun ? "would not be" : "was not"} restored to ${outcome.target} (${why}): nothing holds this tip, restore it with --sha`
   }
 
   if (!input.dryRun && input.revokeApproval !== false && input.verdicts && restoredShas.size > 0) {

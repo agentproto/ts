@@ -2075,6 +2075,31 @@ describe("branch gc: restore from a restore log", () => {
     },
   )
 
+  it.each(["local-first", "remote-first"] as const)(
+    "--local-only: an ancestor is never contained when its descendant's restore fails (%s)",
+    async (order) => {
+      const { repo, logPath, localSha, remoteSha } = await twinLog("descendant", order)
+      // `refs/heads/feat/twin/sub` makes `refs/heads/feat/twin` impossible to create.
+      await execGit(repo, ["update-ref", "refs/heads/feat/twin/sub", localSha])
+      const byKind = (outcomes: { kind: string; result: string; message?: string }[]) =>
+        Object.fromEntries(outcomes.map((o) => [o.kind, o]))
+      const dry = byKind((await restoreBranchGc({ logPath, localOnly: true, dryRun: true })).outcomes)
+      expect(dry.remote).toMatchObject({ result: "would-restore" })
+      expect(dry.local).toMatchObject({
+        result: "contained",
+        message: `contained in ${remoteSha.slice(0, 12)}, which would be restored to refs/heads/feat/twin instead`,
+      })
+      const res = byKind((await restoreBranchGc({ logPath, localOnly: true })).outcomes)
+      expect(res.remote).toMatchObject({ result: "failed" })
+      expect(res.local?.result).not.toBe("contained")
+      expect(res.local).toMatchObject({
+        result: "failed",
+        message: expect.stringMatching(new RegExp(`^contained in ${remoteSha.slice(0, 12)}, which was not restored to refs/heads/feat/twin \\(failed: .*nothing holds this tip`)),
+      })
+      expect(await refExists(repo, "refs/heads/feat/twin")).toBe(false)
+    },
+  )
+
   it("--local-only: diverged twins are both refused, each naming the other, and nothing is restored (dry run too)", async () => {
     const { repo, logPath, localSha, remoteSha } = await twinLog("diverged")
     for (const dryRun of [true, false]) {
