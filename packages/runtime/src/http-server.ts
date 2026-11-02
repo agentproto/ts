@@ -1027,6 +1027,14 @@ export interface RuntimeHttpServerOptions {
   bind?: string
   auth?: AuthSource
   /**
+   * Heap diagnostics (E99), behind the operator-only `GET /debug/heap` and
+   * `POST /debug/heap-snapshot`. Absent ⇒ both routes 404.
+   */
+  heapDiagnostics?: {
+    report(): import("./heap-diagnostics.js").HeapReport
+    snapshot(): import("./heap-diagnostics.js").HeapSnapshotResult
+  }
+  /**
    * Per-request McpServer factory.
    *
    * The SDK's `StreamableHTTPServerTransport` is single-use — once a
@@ -4514,6 +4522,53 @@ export async function startHttpServer(
             return
           }
           res.writeHead(200, { "content-type": "application/json" })
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // Operator-only heap diagnostics (E99, heap-diagnostics.ts). Stricter
+        // than the session-token gate: the exact daemon bearer, or loopback
+        // with no Origin (no browser page, allowlisted or not, may trigger a
+        // snapshot that blocks the event loop), and never a session
+        // principal (a valid session token, or a claim naming a session the
+        // daemon spawned), same rule as config_set's operator-only keys.
+        // The snapshot takes the bearer alone once a token is configured: a
+        // loopback proxy that drops Origin must not unlock it.
+        if (
+          opts.heapDiagnostics &&
+          ((path === "/debug/heap" && req.method === "GET") ||
+            (path === "/debug/heap-snapshot" && req.method === "POST"))
+        ) {
+          const bearerOk = !!opts.token && req.headers.authorization === `Bearer ${opts.token}`
+          const localOk =
+            isLoopback(req) &&
+            req.headers.origin === undefined &&
+            !(path === "/debug/heap-snapshot" && opts.token)
+          if (!bearerOk && !localOk) {
+            res.writeHead(401, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "unauthorized", message: "the daemon bearer (or a local, non-browser call) is required" }))
+            return
+          }
+          const claimed = resolveCallerSessionId(req)
+          const sessionPrincipal =
+            credentialSessionOf(req) !== undefined ||
+            (claimed !== undefined && (() => {
+              const desc = opts.sessions?.get(claimed)
+              return desc !== undefined && desc.kind !== "external"
+            })())
+          if (sessionPrincipal) {
+            res.writeHead(403, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "operator_only", message: "heap diagnostics are reserved to the operator; this call came from a session" }))
+            return
+          }
+          if (path === "/debug/heap") {
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(opts.heapDiagnostics.report()))
+            return
+          }
+          const result = opts.heapDiagnostics.snapshot()
+          const status = result.ok ? 200 : result.error === "insufficient_memory" ? 507 : 500
+          res.writeHead(status, { "content-type": "application/json" })
           res.end(JSON.stringify(result))
           return
         }
