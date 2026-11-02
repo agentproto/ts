@@ -38,7 +38,7 @@ export interface TurnRetryPolicy {
    *    nothing since its prompt (`NO_OUTPUT_STALL_TURN_ERROR`, the opencode
    *    silent-429 loop). That turn is still running, so the retry interrupts
    *    it before re-prompting;
-   *  - `usage-limit` — a provider usage cap ("Free usage limit reached",
+   *  - `usage-limit`: a provider usage cap ("Free usage limit reached",
    *    "usage limit exceeded"). Opt-in only (never in the default set): a cap
    *    does not recover with backoff, so there is NO same-config retry. The
    *    session moves straight to `rotate` / `fallback` (or, with

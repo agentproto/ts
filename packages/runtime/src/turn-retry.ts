@@ -267,7 +267,7 @@ export function decideTurnRetry(
   if (opts.halted) return skip("a governance policy failed for this session")
   if (errorClass === "auth") return skip("auth/billing error — retrying cannot fix it")
   if (errorClass === "usage-limit" && !policy.on.includes("usage-limit")) {
-    return skip("provider usage cap — resets on its own schedule")
+    return skip("provider usage cap, resets on its own schedule")
   }
   if (errorClass === "other") return skip("not a transient provider error")
   if (!policy.on.includes(errorClass)) return skip(`class "${errorClass}" not in turnRetry.on`)
@@ -620,7 +620,7 @@ export function createTurnRetryController(opts: {
     const same = (why: string): boolean => {
       registry.recordNotice(
         id,
-        `[turn-retry] no rotation target available (${why}) — ` +
+        `[turn-retry] no rotation target available (${why}), ` +
           (p.errorClass === "usage-limit"
             ? "trying the fallback chain"
             : `retrying ${from ?? "the same model"} after backoff`),
@@ -1005,7 +1005,7 @@ export function createTurnRetryController(opts: {
       log(`[turn-retry] ${id}: fallback failed: ${err instanceof Error ? err.message : String(err)}`)
     }
     rollback()
-    const skipReason = "provider usage cap — no rotate or fallback target available (resets on its own schedule)"
+    const skipReason = "provider usage cap, no rotate or fallback target available (resets on its own schedule)"
     emit(desc, {
       phase: "skipped",
       errorClass: p.errorClass,
@@ -1072,7 +1072,7 @@ export function createTurnRetryController(opts: {
       }
       if (p.errorClass === "usage-limit") {
         // Re-prompting the same capped box cannot help: rotate / fall back instead.
-        registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}) — rotating or falling back instead`)
+        registry.recordNotice(id, `[turn-retry] did not migrate ${p.attempt}/${cap} (${why}), rotating or falling back instead`)
         void divertUsageLimit(desc, { ...p, mode: "retry", attempt: spentAttempts + 1 })
         return
       }

@@ -146,7 +146,7 @@ function harness(opts: {
   }
 }
 
-describe("usage-limit turnRetry class — policy and decision", () => {
+describe("usage-limit turnRetry class: policy and decision", () => {
   it("classifies the exact CI usage-cap string", () => {
     expect(classifyTurnError(CI_USAGE_LIMIT)).toBe("usage-limit")
   })
@@ -183,7 +183,7 @@ describe("usage-limit turnRetry class — policy and decision", () => {
   })
 })
 
-describe("usage-limit turnRetry class — controller", () => {
+describe("usage-limit turnRetry class: controller", () => {
   it("rotates to the next model with no backoff retry and cools the capped model down", async () => {
     const h = harness({
       scripts: [fail(CI_USAGE_LIMIT), ok],
