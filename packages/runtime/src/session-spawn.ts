@@ -313,6 +313,13 @@ import {
 } from "@agentproto/sandbox"
 import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sandbox-agent-session-proxy.js"
 import { projectRemoteUsage, type RemoteUsageSnapshot } from "./sandbox-usage.js"
+import {
+  defaultPreflightRegistry,
+  preflightFailedResult,
+  runSandboxPreflight,
+  unknownPreflightProbes,
+  type PreflightRegistry,
+} from "./sandbox-preflight.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -2048,6 +2055,12 @@ export interface SpawnAgentSessionInput {
    *  `defaults.sandbox.checkpoint`. Meaningful only for a `sandbox` spawn
    *  with a workspace-remote delivery target; ignored otherwise. */
   sandboxCheckpoint?: SandboxCheckpointConfig | false
+  /** Preflight probe ids (`sandbox-preflight.ts`) run against the booted box
+   *  BEFORE the agent starts, in order. A `ko` destroys the box and fails the
+   *  spawn with `sandbox_preflight_failed`; `unknown` never blocks. Only
+   *  meaningful with `sandbox`; an id with no registered probe is refused
+   *  (`sandbox_preflight_invalid`) before any box boots. */
+  preflight?: string[]
   /** INTERNAL (`session_migrate`, never an `agent_start` argument): which
    *  checkpoint snapshot the new box restores onto the work branch's
    *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
@@ -2242,6 +2255,8 @@ export type SpawnAgentSessionResult =
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
+        | "sandbox_preflight_failed"
+        | "sandbox_preflight_invalid"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -6162,6 +6177,7 @@ export async function spawnAgentSession(
         ...(accessProfileEcho ? { authProfileRef: accessProfileEcho.profileRef } : {}),
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(sandboxTarWorkspace
           ? {
               tarWorkspace: sandboxTarWorkspace,
@@ -6812,6 +6828,8 @@ export type SandboxBootResult =
         | "sandbox_app_serve_failed"
         | "sandbox_cwd_invalid"
         | "sandbox_workspace_setup_failed"
+        | "sandbox_preflight_failed"
+        | "sandbox_preflight_invalid"
         | "device_spawn_unreachable"
         | "device_offline"
       message: string
@@ -7217,8 +7235,30 @@ export async function bootSandboxAgentSession(opts: {
    *  torn down through the failed-boot path and reported as
    *  `sandbox_boot_cancelled` instead of registering a session. */
   signal?: AbortSignal
+  /** Preflight probe ids (`sandbox-preflight.ts`), run in order against the
+   *  booted box before anything else is set up in it. A `ko` tears the box
+   *  down and fails with `sandbox_preflight_failed`. */
+  preflight?: readonly string[]
+  /** Probe registry; defaults to the daemon-wide one. Test seam. */
+  preflightRegistry?: PreflightRegistry
+  /** Per-probe budget override, ms. Test seam. */
+  preflightTimeoutMs?: number
 }): Promise<SandboxBootResult> {
   const providerSlug = typeof opts.sandbox === "string" ? opts.sandbox : opts.sandbox.provider
+  const preflightIds = opts.preflight ?? []
+  const preflightRegistry = opts.preflightRegistry ?? defaultPreflightRegistry
+  const unknownProbes = unknownPreflightProbes(preflightIds, preflightRegistry)
+  if (unknownProbes.length > 0) {
+    return {
+      ok: false,
+      code: "sandbox_preflight_invalid",
+      message:
+        `agent_start: unknown preflight probe${unknownProbes.length > 1 ? "s" : ""} ` +
+        `${unknownProbes.map(id => `"${id}"`).join(", ")}; registered: ` +
+        preflightRegistry.list().map(p => p.id).join(", "),
+      details: { unknown: unknownProbes },
+    }
+  }
   if (!opts.resolveSandboxProvider) {
     return {
       ok: false,
@@ -7613,6 +7653,66 @@ export async function bootSandboxAgentSession(opts: {
   }
   const bootCancelled = (): boolean => opts.signal?.aborted === true
   if (bootCancelled()) return cancelBoot()
+
+  // Preflight: the box is up and healthy, nothing has been set up in it and no
+  // agent runs yet. Runs before the workspace checkout so a placement that
+  // cannot work is dropped in seconds, not after a clone.
+  if (preflightIds.length > 0) {
+    if (!host.exec) {
+      bootWarnings.push(
+        `agent_start: preflight ${preflightIds.join(", ")} skipped, provider "${actualProvider}" cannot run commands in the box`,
+      )
+    } else if (opts.auth) {
+      // The box's credentials reach it through its own `agent_start` (`host.start`),
+      // never through its environment, so a probe run now would call the model
+      // unauthenticated: a spurious cap or auth failure would veto a healthy
+      // placement. An explicit credential means the probe cannot speak for the spawn.
+      bootWarnings.push(
+        `agent_start: preflight ${preflightIds.join(", ")} skipped, the spawn carries credentials a probe cannot present`,
+      )
+    } else {
+      const run = await runSandboxPreflight(
+        preflightIds,
+        {
+          exec: host.exec,
+          adapter: opts.adapter,
+          ...(opts.model ? { model: opts.model } : {}),
+          ...(handle.defaultCwd ? { cwd: handle.defaultCwd } : {}),
+          ...(host.egressIp?.publicIp ? { egressIp: host.egressIp.publicIp } : {}),
+        },
+        { registry: preflightRegistry, ...(opts.preflightTimeoutMs !== undefined ? { timeoutMs: opts.preflightTimeoutMs } : {}) },
+      )
+      for (const o of run.outcomes) {
+        if (o.verdict === "unknown") bootWarnings.push(`agent_start: preflight "${o.probe}" inconclusive: ${o.detail}`)
+      }
+      if (run.failed) {
+        console.warn(
+          `[sandbox] boot: preflight "${run.failed.probe}" failed (${actualProvider} ${host.sandboxId}` +
+            `${host.egressIp?.publicIp ? `, egress ${host.egressIp.publicIp}` : ""}): ${run.failed.detail}`,
+        )
+        // Same teardown as a failed workspace setup: survivors keep a shared
+        // box, a reused box is paused so it stays reconnectable, a fresh one dies.
+        if (!(await detachOnBootFailure())) {
+          if (reuseSandboxId !== undefined && host.pause) {
+            await host.pause().catch(() => undefined)
+            recordSandboxState(host.sandboxId, "paused")
+          } else {
+            await host.stop().catch(() => undefined)
+            recordSandboxState(host.sandboxId, "stopped")
+          }
+        }
+        return preflightFailedResult(
+          { ...run, failed: run.failed },
+          {
+            provider: actualProvider,
+            sandboxId: host.sandboxId,
+            ...(host.egressIp?.publicIp ? { egressIp: host.egressIp.publicIp } : {}),
+          },
+        )
+      }
+      if (bootCancelled()) return cancelBoot()
+    }
+  }
 
   let deliveryTarget: SandboxDeliveryTarget | undefined
   const deliverySessionId = opts.sessionId
