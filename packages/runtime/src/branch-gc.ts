@@ -36,6 +36,16 @@ export interface BranchGcLineCoverageView {
 }
 
 /** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
+/** The `dep-bump` pass's proof, mirrors `DepBumpProof`. */
+export interface BranchGcDepBumpView {
+  dependencies: number
+  versions: number
+  lockfileLines: number
+  changesetLines: number
+  packageFiles: string[]
+  goneOnBase?: string[]
+}
+
 export interface BranchGcVerifiedPrView {
   prs: number[]
   files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base"; pr?: number }>
@@ -95,6 +105,10 @@ export interface BranchGcPlanEntryView {
   verifiedPr?: BranchGcVerifiedPrView
   /** Set when the guard refused and the `verified-pr` pass did too: the condition that failed. */
   verifiedPrRefusal?: string
+  /** Set when the `dep-bump` pass reclaimed a guard-refused verdict. */
+  depBump?: BranchGcDepBumpView
+  /** Set when the guard, `verified-pr` and `dep-bump` all refused: the first line `dep-bump` could not explain. */
+  depBumpRefusal?: string
 }
 
 export interface BranchGcPlanView {
@@ -155,12 +169,16 @@ export interface BranchGcOutcomeView {
   from?: BranchGcClass
   to?: BranchGcClass
   message?: string
-  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"` when that pass reclaimed it. */
+  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"` or `"dep-bump"` when that pass reclaimed it. */
   guard?: string
   /** `deleted` by the `verified-pr` pass: its proof. */
   verifiedPr?: BranchGcVerifiedPrView
   /** `refused-guard`: why the `verified-pr` pass refused too. */
   verifiedPrRefusal?: string
+  /** `deleted` by the `dep-bump` pass: its proof. */
+  depBump?: BranchGcDepBumpView
+  /** `refused-guard`: why the `dep-bump` pass refused too. */
+  depBumpRefusal?: string
 }
 
 /** Per-scope tally of apply outcomes. `skipped` = everything that was not
@@ -326,6 +344,7 @@ export interface BranchGcCompactEntry {
   verdictGuard?: string
   headPr?: BranchGcPlanEntryView["headPr"]
   verifiedPrRefusal?: string
+  depBumpRefusal?: string
 }
 
 export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
@@ -343,6 +362,7 @@ export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactE
     ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
     ...(e.headPr !== undefined ? { headPr: e.headPr } : {}),
     ...(e.verifiedPrRefusal !== undefined ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
+    ...(e.depBumpRefusal !== undefined ? { depBumpRefusal: e.depBumpRefusal } : {}),
   }
 }
 

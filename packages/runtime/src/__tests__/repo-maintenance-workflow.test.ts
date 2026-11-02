@@ -694,7 +694,8 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.report).not.toContain("documented seam")
   })
 
-  it("verified-pr: auto-passed tips get their own section, the queue keeps only refusals with why, and the opt-out reaches branch_gc", async () => {
+  it("verified-pr and dep-bump: auto-passed tips get their own sections, the queue keeps only refusals with why, and the opt-out reaches branch_gc", async () => {
+    const SHA_DEP = "d".repeat(40)
     const run = async (input: Record<string, unknown>) => {
       const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
       let branchGcCallCount = 0
@@ -731,6 +732,15 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
                   guard: "line coverage 40% of 50 added lines (< 95%)",
                   verifiedPrRefusal: "1 uncovered file(s) not explained by #949: src/new.ts",
                 },
+                {
+                  kind: "local",
+                  name: "wt/dep-bump-2026-w31-a",
+                  sha: SHA_DEP,
+                  result: "deleted",
+                  reclaimReason: "reviewed",
+                  guard: "dep-bump",
+                  depBump: { dependencies: 3, versions: 1, lockfileLines: 12, changesetLines: 5, packageFiles: ["package.json", "packages/a/package.json"] },
+                },
               ],
               restoreLog: "/tmp/restore.json",
             })
@@ -756,8 +766,14 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(on.calls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: true })
     // Unset = the pass is on (the tool only turns it off for `true`).
     expect(on.calls[2]!.inputs.requireOperatorBelowGuard).not.toBe(true)
-    expect(on.report).toContain("reviewed: 1 reclaimed (includeReviewed true; 1 of them past the line guard by verified-pr), 1 refused")
-    const auto = on.report.slice(on.report.indexOf("## Auto-passed by verified-pr (1)"), on.report.indexOf("## Human decision queue"))
+    expect(on.report).toContain(
+      "reviewed: 2 reclaimed (includeReviewed true; 1 of them past the line guard by verified-pr; 1 past the line guard by dep-bump), 1 refused",
+    )
+    const depBump = on.report.slice(on.report.indexOf("## Auto-passed by dep-bump (1)"), on.report.indexOf("## Human decision queue"))
+    expect(depBump).toContain(
+      "- `wt/dep-bump-2026-w31-a` (" + SHA_DEP + ") [local] - 3 dependency, 1 version, 12 lockfile, 5 changeset line(s) in package.json, packages/a/package.json",
+    )
+    const auto = on.report.slice(on.report.indexOf("## Auto-passed by verified-pr (1)"), on.report.indexOf("## Auto-passed by dep-bump"))
     expect(auto).toContain(
       "- `wt/small-residual` (" + SHA_A + ") [local] - PR #1101 - uncovered files: 1 touched by #1101, 1 changeset, 1 moved/deleted on base",
     )
