@@ -5,6 +5,7 @@
  *   gc            [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
  *                 [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
  *                 [--anchor <sha>] [--apply] [--json]
+ *   gc approve    <sha|branch>... --by <name> [--note <text>] [--repo <dir>] [--dry-run] [--json]
  *   review-queue  [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
  *
  * Thin shell over `@agentproto/worktree`'s `planBranchGc` / `applyBranchGc` —
@@ -12,7 +13,12 @@
  * logic lives in the engine; this resolves the repo, wires the same forge
  * `worktree gc` uses (for open-PR protection) plus the verdict store, and
  * renders the result. Also home of the daemon's injected ports behind
- * `branch_gc` / `branch_gc_verdict`.
+ * `branch_gc` / `branch_gc_verdict` / `POST /branches/gc/approve`.
+ *
+ * `gc approve` is the one subcommand that goes through the daemon: an
+ * operator approval overrides the line-coverage guard, so it is recorded over
+ * the operator boundary (`POST /branches/gc/approve`, per-boot bearer, no
+ * session identity), never by writing the verdict store directly.
  */
 import { parseArgs } from "node:util"
 import { resolve } from "node:path"
@@ -25,15 +31,24 @@ import {
   summarizeBranchGcPlan,
   branchReviewQueue,
   recordBranchVerdict,
+  approveBranchVerdict,
   FileBranchVerdictStore,
   type BranchRefKind,
   type BranchGcPlan,
   type BranchGcPlanEntry,
   type BranchGcApplyOutcome,
   type BranchGcSummary,
+  type BranchVerdictStore,
 } from "@agentproto/worktree"
-import type { BranchGcRunner, BranchGcVerdictReader, BranchGcVerdictRecorder } from "@agentproto/runtime"
+import type {
+  BranchGcOperatorApprovalResult,
+  BranchGcOperatorApprover,
+  BranchGcRunner,
+  BranchGcVerdictReader,
+  BranchGcVerdictRecorder,
+} from "@agentproto/runtime"
 import { repoRootOf } from "./worktree.js"
+import { discoverDaemon, printNoDaemonError, type DaemonDiscoveryReport } from "./_daemon-helpers.js"
 
 const USAGE = `agentproto branch — classify and clean up a repo's branches
 
@@ -41,6 +56,8 @@ Usage:
   agentproto branch gc           [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
                                  [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
                                  [--anchor <sha>] [--apply] [--json]
+  agentproto branch gc approve   <sha|branch>... --by <name> [--note <text>] [--repo <dir>]
+                                 [--dry-run] [--json]
   agentproto branch review-queue [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
   agentproto branch --help
 
@@ -67,6 +84,14 @@ Usage:
                 (branch_gc_verdict) agreed for the same tip sha — refused when less
                 than --min-line-coverage (default 95) percent of the tip's added lines
                 are already in base.
+  gc approve    Record a human operator approval that lets --include-reviewed reclaim a
+                tip the line-coverage guard refused. Copies the stored verdict for each
+                <sha> (or the current tip of <branch>) and adds { by, note }. Refused when
+                no verdict is stored, its gate did not agree, no ref named in it still
+                points at that sha, or --by is the reviewer. Goes through the running
+                daemon with the bearer from runtime.json; refused from an agent session.
+                --dry-run prints the verdict that would be recorded. Deletes nothing:
+                the next gc --include-reviewed --apply does.
   review-queue  Print the review candidates as JSON — one per unique tip, with base sha,
                 compare base, merge base, merged tree (or null), coverage and the files not
                 provably in base. Tips that already have a verdict are skipped unless --all.
@@ -78,6 +103,7 @@ export async function runBranch(args: readonly string[]): Promise<number> {
     process.stdout.write(USAGE)
     return 0
   }
+  if (sub === "gc" && args[1] === "approve") return runBranchGcApprove(args.slice(2))
   if (sub === "gc") return runBranchGcCommand(args.slice(1))
   if (sub === "review-queue") return runReviewQueue(args.slice(1))
   process.stderr.write(`agentproto branch: unknown subcommand "${sub}"\n  Known: gc | review-queue\n`)
@@ -226,6 +252,130 @@ async function runReviewQueue(args: readonly string[]): Promise<number> {
   return 0
 }
 
+/** The daemon call behind `gc approve`, injectable for tests. */
+export interface BranchGcApproveDeps {
+  discover?: () => Promise<DaemonDiscoveryReport>
+  post?: (url: string, body: unknown, headers: Record<string, string>) => Promise<{ status: number; body: unknown }>
+  env?: NodeJS.ProcessEnv
+}
+
+async function postJson(url: string, body: unknown, headers: Record<string, string>): Promise<{ status: number; body: unknown }> {
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) })
+  const raw = await res.text()
+  let parsed: unknown = raw
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    // Not JSON: keep the raw text for the error line.
+  }
+  return { status: res.status, body: parsed }
+}
+
+/** `agentproto branch gc approve <sha|branch>... --by <name>`. */
+export async function runBranchGcApprove(args: readonly string[], deps: BranchGcApproveDeps = {}): Promise<number> {
+  const verb = "agentproto branch gc approve"
+  let parsed: ReturnType<typeof parseApproveArgs>
+  try {
+    parsed = parseApproveArgs(args)
+  } catch (err) {
+    process.stderr.write(`${verb}: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
+  const { values, positionals } = parsed
+  const by = values.by?.trim()
+  if (positionals.length === 0 || !by) {
+    process.stderr.write(`${verb}: give at least one <sha|branch> and --by <name>.\n`)
+    return 2
+  }
+  const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
+  if (!repoRoot) {
+    process.stderr.write(`${verb}: not inside a git repository.\n`)
+    return 2
+  }
+  const report = await (deps.discover ?? discoverDaemon)()
+  if (!report.found) {
+    printNoDaemonError(report, verb)
+    return 1
+  }
+  if (!report.found.token) {
+    process.stderr.write(`${verb}: the daemon at ${report.found.url} has no bearer token on record (runtime.json); cannot prove operator.\n`)
+    return 1
+  }
+  const headers: Record<string, string> = { authorization: `Bearer ${report.found.token}` }
+  // Inside a daemon-spawned session this names the session, and the daemon
+  // refuses the approval: an agent cannot approve the guard it is held to.
+  const self = (deps.env ?? process.env).AGENTPROTO_SESSION_ID?.trim()
+  if (self) headers["x-agentproto-caller-session-id"] = self
+  const post = deps.post ?? postJson
+  const note = values.note?.trim()
+  const results: BranchGcOperatorApprovalResult[] = []
+  let failed = false
+  for (const target of positionals) {
+    let res: { status: number; body: unknown }
+    try {
+      res = await post(
+        `${report.found.url}/branches/gc/approve`,
+        { repoRoot, target, by, ...(note ? { note } : {}), ...(values["dry-run"] ? { dryRun: true } : {}) },
+        headers,
+      )
+    } catch (err) {
+      process.stderr.write(`${verb}: ${target}: ${err instanceof Error ? err.message : String(err)}\n`)
+      failed = true
+      continue
+    }
+    const body = res.body as Partial<BranchGcOperatorApprovalResult> & { error?: string; message?: string }
+    if (typeof body?.ok !== "boolean") {
+      // Not an approval result: an auth/identity/transport refusal, which applies to every target.
+      const why = typeof body === "object" && body !== null ? (body.message ?? body.error ?? JSON.stringify(body)) : String(res.body)
+      process.stderr.write(`${verb}: HTTP ${res.status}: ${why}\n`)
+      return 1
+    }
+    const result = body as BranchGcOperatorApprovalResult
+    results.push(result)
+    if (!result.ok) failed = true
+    if (values.json) continue
+    if (!result.ok) {
+      process.stderr.write(`refused   ${target}: ${result.message}\n`)
+      continue
+    }
+    const where = `${result.name} (${result.sha.slice(0, 10)})  refs: ${result.refs.map(refKindLabel).join(", ")}`
+    if (result.status === "already-approved") {
+      process.stdout.write(`already   ${where}  approved by ${result.verdict.operator?.by ?? "?"}\n`)
+    } else if (result.status === "would-record") {
+      process.stdout.write(`would approve  ${where}\n${JSON.stringify(result.verdict, null, 2)}\n`)
+    } else {
+      process.stdout.write(`approved  ${where}  by ${by}\n`)
+    }
+  }
+  if (values.json) process.stdout.write(JSON.stringify(results, null, 2) + "\n")
+  else if (!values["dry-run"] && results.some((r) => r.ok && r.status === "recorded")) {
+    process.stdout.write("\nThe next `agentproto branch gc --include-reviewed --apply --scopes ...` deletes the approved refs.\n")
+  }
+  return failed ? 1 : 0
+}
+
+function parseApproveArgs(args: readonly string[]) {
+  return parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      by: { type: "string" },
+      note: { type: "string" },
+      repo: { type: "string" },
+      "dry-run": { type: "boolean" },
+      json: { type: "boolean" },
+    },
+  })
+}
+
+/** `refs/heads/x` → `local`, `refs/remotes/origin/x` → `origin`. */
+function refKindLabel(ref: string): string {
+  if (ref.startsWith("refs/heads/")) return "local"
+  if (ref.startsWith("refs/remotes/")) return ref.slice("refs/remotes/".length).split("/")[0] ?? ref
+  return ref
+}
+
 function entryAction(e: BranchGcPlanEntry): string {
   if (e.class === "reclaim") return `reclaim (${e.reclaimReason})`
   if (e.class === "hold") return `hold (${e.holdReason}${e.holdDetail ? `: ${e.holdDetail}` : ""})`
@@ -327,5 +477,26 @@ export function makeBranchGcVerdictReader(): BranchGcVerdictReader {
     const repoRoot = repoRootOf(resolve(candidate))
     if (!repoRoot) throw new Error(`branch_gc_verdict_get: "${candidate}" is not inside a git repository.`)
     return new FileBranchVerdictStore().get(repoLabel(repoRoot), sha)
+  }
+}
+
+/** Concrete `BranchGcOperatorApprover` — the injected port behind `POST
+ *  /branches/gc/approve`. The route is the operator boundary; this copies
+ *  the stored verdict and adds the operator block (`approveBranchVerdict`). */
+export function makeBranchGcOperatorApprover(
+  storeFor: () => BranchVerdictStore = () => new FileBranchVerdictStore(),
+): BranchGcOperatorApprover {
+  return async ({ repoRoot: candidate, target, by, note, dryRun }) => {
+    const repoRoot = repoRootOf(resolve(candidate))
+    if (!repoRoot) throw new Error(`branch gc approve: "${candidate}" is not inside a git repository.`)
+    return approveBranchVerdict({
+      repoRoot,
+      repoName: repoLabel(repoRoot),
+      target,
+      by,
+      ...(note ? { note } : {}),
+      ...(dryRun ? { dryRun: true } : {}),
+      store: storeFor(),
+    })
   }
 }

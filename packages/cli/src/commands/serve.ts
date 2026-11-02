@@ -57,7 +57,12 @@ import {
   makeOpenPrResolver,
   makePrStateResolver,
 } from "./worktree.js"
-import { makeBranchGcRunner, makeBranchGcVerdictReader, makeBranchGcVerdictRecorder } from "./branch.js"
+import {
+  makeBranchGcOperatorApprover,
+  makeBranchGcRunner,
+  makeBranchGcVerdictReader,
+  makeBranchGcVerdictRecorder,
+} from "./branch.js"
 import { installDaemonLogTimestamps } from "./_log-timestamps.js"
 import { reconcileReactionsAtBoot } from "./serve-boot-reactions.js"
 import { systemPromptCapsFor } from "./system-prompt-caps.js"
@@ -963,6 +968,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
         runSandboxCheckpointGcSweep: makeSandboxCheckpointGcRunner(),
         recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
         readBranchGcVerdict: makeBranchGcVerdictReader(),
+        // Injected port behind `POST /branches/gc/approve` (`agentproto branch
+        // gc approve`): copies a stored verdict and adds the operator block.
+        approveBranchGcVerdict: makeBranchGcOperatorApprover(),
         // Injected port behind `sessions.ts`'s exit-time worktree auto-reclaim
         // (`SessionDescriptor.worktreeAutoProvisioned`): a policy-provisioned
         // (implicit) session's own worktree is reclaimed the moment it exits,

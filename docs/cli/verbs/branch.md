@@ -4,6 +4,8 @@
 agentproto branch gc           [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
                                [--min-age-days N] [--include-reviewed] [--anchor <sha>]
                                [--apply] [--json]
+agentproto branch gc approve   <sha|branch>... --by <name> [--note <text>] [--repo <dir>]
+                               [--dry-run] [--json]
 agentproto branch review-queue [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
 ```
 
@@ -11,8 +13,9 @@ Classify and clean up a repo's branches. It's the sibling of
 [`worktree gc`](./worktree.md#gc) and follows the same contract: a dry run by
 default, a classified plan, and an apply that re-checks every entry right
 before touching it. It runs locally over `@agentproto/worktree` and needs no
-daemon. The daemon exposes the same engine as the `branch_gc` /
-`branch_gc_verdict` MCP tools and as `POST /branches/gc[/verdict]`.
+daemon, except `gc approve`, which records through the running daemon (see
+[`gc approve`](#gc-approve)). The daemon exposes the same engine as the
+`branch_gc` / `branch_gc_verdict` MCP tools and as `POST /branches/gc[/verdict]`.
 
 The summary counts refs per kind (`byClass`, `byStatus`) and, in `distinct`,
 branch names across kinds: a local branch and its remote twin are one branch
@@ -97,6 +100,43 @@ aborted instead of deleted. The restore log
 (`~/.agentproto/branch-gc/<repo>/restore-<ts>.json`, with the sha and exact
 re-create command per ref) is written before the first delete.
 
+### `gc approve`
+
+```text
+agentproto branch gc approve <sha|branch>... --by <name> [--note <text>] [--repo <dir>] [--dry-run] [--json]
+```
+
+Records an operator approval (see [below](#operator-approval-bypassing-the-line-guard))
+without retyping the verdict: for each target it reads the stored verdict, copies
+it, and adds `operator: { by, note }`. A target is a full tip sha, or a branch
+name whose current tip has a stored verdict (pass the sha when its local and
+remote refs point at two different reviewed tips). It refuses, and records
+nothing, when:
+
+- no verdict is stored for that tip (`no-verdict`), or no branch has that name (`no-ref`);
+- the stored `gate.agree` is not `true` (`not-agreed`);
+- no ref named in the verdict still points at its sha (`tip-moved`): the review was of an older tip;
+- `--by` names the verdict's reviewer (`by-is-reviewer`, case-insensitive).
+
+A tip that already carries an operator block is reported as `already` and left
+as it is. `--dry-run` prints the verdict it would record. The exit code is 1
+when any target is refused. Approving deletes nothing; the next
+`gc --include-reviewed --apply` does.
+
+Unlike `gc`, this goes through the running daemon (`POST /branches/gc/approve`),
+because the approval is the operator trust boundary. That route accepts only
+`Authorization: Bearer <token>` with the per-boot token from `runtime.json`
+(no loopback bypass, no allowlisted `Origin`, no `?token=`), and refuses any
+request carrying a session identity: a session token, or a caller-session
+claim in the query or the `x-agentproto-caller-session-id` header. The CLI
+forwards `$AGENTPROTO_SESSION_ID` in that header, so running the command from
+inside an agent session is refused by the daemon. No MCP tool reaches the
+route.
+
+```bash
+agentproto branch gc approve 5f1c...e2 feat/lost --by jeremy --note "residual checked by hand"
+```
+
 ### `review-queue`
 
 Prints the `review` candidates as JSON, one per unique tip sha (a branch and
@@ -118,7 +158,10 @@ from another store.
 An agreeing verdict whose tip is under `--min-line-coverage` (default 95) is
 refused by `--include-reviewed`, leaving it in `review` with a `verdictGuard`
 reason. That refusal list is the human queue; to clear an entry, record an
-operator approval for the **same tip sha** with `branch_gc_verdict`:
+operator approval for the **same tip sha**. From a shell, run
+[`agentproto branch gc approve <sha> --by <name>`](#gc-approve), which copies the
+stored verdict for you. From the operator MCP surface, call `branch_gc_verdict`
+with the whole stored verdict plus the `operator` block:
 
 ```json
 {
@@ -132,8 +175,9 @@ operator approval for the **same tip sha** with `branch_gc_verdict`:
 ```
 
 `operator.by` is required; `note` is optional. The approval is stored with the
-verdict's `recordedAt` timestamp. It is accepted only through the operator MCP
-surface: `branch_gc_verdict` refuses an operator block when the daemon-verified
+verdict's `recordedAt` timestamp. It is accepted only from the operator: the
+bearer-only `POST /branches/gc/approve` behind `gc approve`, or the operator MCP
+surface. `branch_gc_verdict` refuses an operator block when the daemon-verified
 caller is an agent session (the `?callerSessionId=` identity or a scoped
 mount's owner), and `POST /branches/gc/verdict` refuses it outright because
 that loopback route carries no caller identity. `operator.by` must name someone

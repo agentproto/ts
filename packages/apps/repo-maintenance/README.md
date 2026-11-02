@@ -103,8 +103,13 @@ write lands with an atomic rename, so the parallelism-4 review fan-out cannot
 lose a verdict. Readers revalidate against the file's mtime/size, so a
 long-lived store also observes writes made elsewhere.
 
-The approval is accepted only through the operator MCP surface:
-`branch_gc_verdict` refuses an `operator` block when the daemon-verified caller
+The operator records one with `agentproto branch gc approve <sha> --by <name>`
+(the report prints that command for every queued tip): it copies the stored
+verdict, so nobody retypes it, and refuses a tip with no agreeing verdict or
+one that moved since the review. The approval is accepted only from the
+operator: that command's `POST /branches/gc/approve` demands the daemon's
+per-boot bearer and refuses any request carrying a session identity, and the
+operator MCP surface is the other way in. `branch_gc_verdict` refuses an `operator` block when the daemon-verified caller
 is an agent session (including a scoped mount's owner), `POST
 /branches/gc/verdict` refuses it because that route carries no caller identity,
 and `operator.by` must name someone other than the verdict's `reviewer`. The
