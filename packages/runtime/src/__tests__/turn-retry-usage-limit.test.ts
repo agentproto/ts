@@ -88,6 +88,7 @@ function harness(opts: {
   const notices: string[] = []
   const cooldowns = createModelCooldowns()
   const restarts: Array<{ id: string; overrides: { model?: string } }> = []
+  const restartedPrompts: string[][] = []
   const controller = createTurnRetryController({
     registry: {
       get: registry.get,
@@ -105,9 +106,21 @@ function harness(opts: {
     cooldowns,
     ...(opts.restart
       ? {
+          // The real hook (`restartAgentSession`) mints a NEW session id.
           restartSession: async (prev: SessionDescriptor, overrides: { model?: string }) => {
             restarts.push({ id: prev.id, overrides })
-            return prev
+            const next = scriptedSession([ok], trace, { liveSwitch: false })
+            restartedPrompts.push(next.prompts)
+            return registry.spawnAgent({
+              workspaceSlug: "default",
+              cwd: "/tmp",
+              agentSession: next.session,
+              adapterSlug: "fake",
+              model: overrides.model ?? prev.model,
+              remote: true,
+              sandboxId: "box_1",
+              turnRetry: prev.turnRetry,
+            })
           },
         }
       : {}),
@@ -137,6 +150,7 @@ function harness(opts: {
     trace,
     prompts,
     restarts,
+    restartedPrompts,
     spawn,
     phases: () => events.map(e => e.phase),
     done: () => {
@@ -291,10 +305,16 @@ describe("usage-limit turnRetry class: controller", () => {
     })
     const desc = h.spawn()
     await h.registry.sendPrompt(desc.id, "go")
-    await until(() => h.prompts.length === 2 && h.registry.get(desc.id)?.busy === false, "box rotation")
+    await until(() => h.restartedPrompts[0]?.length === 1 && h.phases().includes("sent"), "box rotation")
 
     expect(h.restarts).toEqual([{ id: desc.id, overrides: { model: FREE_B } }])
+    // The continuation goes to the restarted session, never back to the replaced one.
+    expect(h.prompts).toHaveLength(1)
+    expect(h.restartedPrompts[0]).toHaveLength(1)
+    const next = h.registry.list().find(d => d.id !== desc.id)
+    expect(next?.model).toBe(FREE_B)
     expect(h.phases()).toEqual(["rotated", "sent"])
+    expect(h.events[1]?.sessionId).toBe(next?.id)
     expect(h.events[0]).toMatchObject({ errorClass: "usage-limit", fromModel: FREE_A, toModel: FREE_B })
     expect(h.fallbackEvents).toHaveLength(0)
     h.done()

@@ -548,7 +548,8 @@ in-band error (`lastTurnErrorMessage`), or from the stall watchdog:
   once `on` lists it, and each divert books one `turnRetryAttempts`. On a
   sandbox session both `rotate` and the model overlay of `fallback` use the
   restart transition (the box has no live model switch), which re-attaches the
-  same box with the new model. An opted-in usage cap obeys the tool-call rule
+  box with the new model as a NEW session id; the retry attempt and the
+  continuation go to that new session. An opted-in usage cap obeys the tool-call rule
   below like every other class: after a side-effecting tool call it is not
   continued, by rotate or fallback, unless `retryAfterToolCalls` is true.
   Without the opt-in a usage cap still walks the `fallback` chain, as it did

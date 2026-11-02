@@ -468,7 +468,8 @@ export interface TurnRetryFallbackEffective extends SessionFallbackConfig {
   routeGateway?: string
 }
 
-/** Apply a restart transition for a fallback step (same session id). */
+/** Apply a restart transition for a fallback step. The returned descriptor is
+ *  the restarted session, which carries a NEW session id. */
 export type FallbackRestartFn = (
   prev: SessionDescriptor,
   overrides: { model?: string; access?: { profileRef: string } },
@@ -624,15 +625,17 @@ export function createTurnRetryController(opts: {
   }
 
   /** Switch the session to the first eligible `turnRetry.rotate` target, if
-   *  the policy rotates for this class. Resolves true when the model was
-   *  switched. Never throws: any failure to rotate leaves the model unchanged
-   *  and the caller proceeds on the same model (a usage-limit caller moves on
-   *  to the fallback chain instead). */
+   *  the policy rotates for this class. Resolves an object when the model was
+   *  switched (`restarted` is set when that took a restart, which mints a NEW
+   *  session: the continuation belongs to it), false otherwise. Never throws:
+   *  any failure to rotate leaves the model unchanged and the caller proceeds
+   *  on the same model (a usage-limit caller moves on to the fallback chain
+   *  instead). */
   const rotateIfConfigured = async (
     desc: SessionDescriptor,
     p: PendingRetry,
     rotateOpts: { allowRestart?: boolean } = {},
-  ): Promise<boolean> => {
+  ): Promise<false | { restarted?: SessionDescriptor }> => {
     const policy = desc.turnRetry
     if (!policy?.rotate?.length) return false
     if (!(policy.rotateOn ?? TURN_ROTATE_DEFAULTS.rotateOn).includes(p.errorClass as TurnRetryClass)) {
@@ -640,7 +643,7 @@ export function createTurnRetryController(opts: {
     }
     const id = desc.id
     const from = desc.model
-    const same = (why: string): boolean => {
+    const same = (why: string): false => {
       registry.recordNotice(
         id,
         `[turn-retry] no rotation target available (${why}), ` +
@@ -654,6 +657,7 @@ export function createTurnRetryController(opts: {
     const rejected: string[] = []
     let interrupted = false
     for (const target of policy.rotate) {
+      let restarted: SessionDescriptor | undefined
       const why =
         rotationTargetRejection(desc, target, cooldowns, now()) ?? (await opts.checkRotationTarget?.(desc, target))
       if (why) {
@@ -678,9 +682,9 @@ export function createTurnRetryController(opts: {
             rejected.push(`${target.model}: switch not applied${res.reason ? ` (${res.reason})` : ""}`)
             continue
           }
-          // A sandbox proxy has no live model switch: re-attach the same box
-          // and re-spawn the adapter on the new model (same session id).
-          await opts.restartSession!(desc, { model: target.model })
+          // A sandbox proxy has no live model switch: re-attach the box and
+          // re-spawn the adapter on the new model, as a new session.
+          restarted = await opts.restartSession!(desc, { model: target.model })
         }
       } catch (err) {
         rejected.push(`${target.model}: ${err instanceof Error ? err.message : String(err)}`)
@@ -697,9 +701,10 @@ export function createTurnRetryController(opts: {
       registry.recordNotice(
         id,
         `[turn-retry] rotating model ${from ?? "?"} → ${target.model} (${p.errorClass})` +
+          (restarted && restarted.id !== id ? `; continuing as session ${restarted.id}` : "") +
           (rejected.length ? `; skipped ${rejected.join("; ")}` : ""),
       )
-      return true
+      return restarted ? { restarted } : {}
     }
     return same(rejected.join("; ") || "none listed")
   }
@@ -885,7 +890,7 @@ export function createTurnRetryController(opts: {
             res.reason === "requires-restart" ||
             // A sandbox session's proxy has no live model switch (the registry
             // answers `not-supported`): the restart transition re-attaches the
-            // same box and re-spawns the adapter on the new model.
+            // box and re-spawns the adapter on the new model, as a new session.
             (res.reason === "not-supported" && isSandboxSession(desc))
           ) {
             if (!opts.restartSession) {
@@ -1024,10 +1029,27 @@ export function createTurnRetryController(opts: {
         lastTurnRetryAt: prevLastTurnRetryAt ?? null,
       })
     }
-    registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: new Date(now()).toISOString() })
+    const nowIso = new Date(now()).toISOString()
+    registry.patchTurnRetry(id, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
     try {
-      if (await rotateIfConfigured(desc, p, { allowRestart: true })) {
-        sendContinuation(id, desc, p, p.attempt, { rollback })
+      const rotated = await rotateIfConfigured(desc, p, { allowRestart: true })
+      if (rotated) {
+        const next = rotated.restarted
+        if (next && next.id !== id) {
+          // A restart minted a new session and closed this one: the attempt is
+          // booked on, and the continuation sent to, the session that is alive.
+          const nextId = next.id
+          registry.patchTurnRetry(nextId, { turnRetryAttempts: p.attempt, lastTurnRetryAt: nowIso })
+          sendContinuation(nextId, next, p, p.attempt, {
+            rollback: () =>
+              registry.patchTurnRetry(nextId, {
+                turnRetryAttempts: prevAttempts ?? null,
+                lastTurnRetryAt: prevLastTurnRetryAt ?? null,
+              }),
+          })
+        } else {
+          sendContinuation(id, desc, p, p.attempt, { rollback })
+        }
         return
       }
     } catch (err) {
