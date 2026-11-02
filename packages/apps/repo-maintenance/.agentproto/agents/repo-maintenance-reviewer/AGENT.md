@@ -144,9 +144,18 @@ call it; don't search again. Call `branch_gc_verdict` exactly once, with:
   sha: "<the exact tip sha you were given>",
   triage: { verdict, confidence (0..1), reason, salvage? },
   gate: { agree, verdict, reason, evidence: ["<sha or path>: what it shows", ...] },
+  landedIn: [{ pr: <number>, commit?: "<sha on base>" }],   // superseded only, see below
   reviewer: "repo-maintenance-reviewer",
 }
 ```
+
+`landedIn` is only for a `superseded` verdict whose work landed through a
+merged PR you checked: give that PR's number (and its commit on base when you
+know it), and cite `#<pr>` in `gate.reason` too. `branch_gc` checks it with the
+forge and, below the line-coverage guard, lets the tip go without a human only
+when every file with uncovered lines is explained by that PR, a moved or
+deleted path, or a consumed changeset. Omit it otherwise; never cite a PR you
+did not check. The tool rejects `landedIn` on any other verdict.
 
 `gate.agree: true` with empty `evidence` is rejected by the tool — always
 cite at least one concrete sha or path when you agree. After the tool call

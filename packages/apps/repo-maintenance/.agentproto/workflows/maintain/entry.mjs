@@ -130,7 +130,11 @@ const REVIEW_PROMPT =
   "PR state none or unknown means no PR was found or the forge was not consulted - " +
   "do not infer one. git cherry counts commits with no patch-equivalent on base (a `+` line of `git cherry " +
   "<base> <tip>`); when it says unavailable, run that read-only command yourself. " +
-  "Keep triage.reason (and gate.reason) to ONE line: the maintain report prints it verbatim next to the PR state." +
+  "Keep triage.reason (and gate.reason) to ONE line: the maintain report prints it verbatim next to the PR state. " +
+  "When your verdict is superseded because a merged PR landed this work, also pass landedIn: [{ pr, commit? }] " +
+  "(the PR number(s), and the commit on base when you know it) and cite `#<pr>` in gate.reason: `branch_gc`'s " +
+  "verified-pr pass checks that PR with the forge and lets the tip past the line guard when every file with " +
+  "uncovered lines is explained by it, a moved/deleted path, or a consumed changeset. Never cite a PR you did not check." +
   "{{#item.worktree}}\n\nThis branch is checked out in the linked worktree {{item.worktree}} — " +
   "idle (no live session), clean tree, no open PR — which is the only reason branch gc held it. " +
   "Your verdict decides whether that worktree (and the branch) can be removed: agree only when " +
@@ -700,6 +704,21 @@ function formatTipList(groups, cap = REPORT_LIST_CAP, where) {
   return groups.length > cap ? `${shown}, … and ${groups.length - cap} more${fullListAt(where)}` : shown
 }
 
+/** Why each file of a `verified-pr` proof did not block the pass, as one
+ *  short clause: `2 touched by #1101, 1 changeset, 1 moved/deleted on base`. */
+export function verifiedPrWhy(proof) {
+  const files = Array.isArray(proof?.files) ? proof.files : []
+  const parts = []
+  const byPr = new Map()
+  for (const f of files) if (f.why === "pr-touched") byPr.set(f.pr, (byPr.get(f.pr) ?? 0) + 1)
+  for (const [pr, n] of byPr) parts.push(`${n} touched by #${pr}`)
+  const changesets = files.filter(f => f.why === "changeset").length
+  if (changesets > 0) parts.push(`${changesets} changeset`)
+  const gone = files.filter(f => f.why === "gone-on-base").length
+  if (gone > 0) parts.push(`${gone} moved/deleted on base`)
+  return parts.length > 0 ? `uncovered files: ${parts.join(", ")}` : "no uncovered file"
+}
+
 /** The coverage percentage in a `branch_gc` `verdictGuard` string
  *  (`"line coverage 80% of 50 added lines (< 95%)"`), or null when absent. */
 export function lineCoveragePctOfGuard(guard) {
@@ -841,6 +860,9 @@ export function buildReport(b) {
   const applyOutcomes = Array.isArray(branchGcApply?.outcomes) ? branchGcApply.outcomes : []
   // Per distinct tip sha: a branch and its origin twin are one decision.
   const reclaimedReviewed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.reclaimReason === "reviewed"))
+  // Reclaimed past the line guard by the deterministic verified-pr pass: no human needed.
+  const autoPassed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "verified-pr"))
+  const verifiedPrOn = b.input?.requireOperatorBelowGuard !== true
   const refusedByGuard = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "refused-guard"))
 
   const lines = []
@@ -973,7 +995,8 @@ export function buildReport(b) {
     )
     if (applyReviewed) {
       lines.push(
-        `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true), ` +
+        `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true` +
+          `${autoPassed.length > 0 ? `; ${autoPassed.length} of them past the line guard by verified-pr` : ""}), ` +
           `${refusedByGuard.length} refused by the line-coverage guard`,
       )
     } else {
@@ -986,7 +1009,10 @@ export function buildReport(b) {
     lines.push(
       "`applyReviewed` is true — `branch_gc` applied with `includeReviewed: true`: a `review`-class " +
         "branch was reclaimed only when its stored verdict agreed AND the deterministic line-coverage " +
-        "guard (default 95%) did not refuse it.",
+        "guard (default 95%) did not refuse it" +
+        (verifiedPrOn
+          ? ", or the verified-pr pass proved it: a superseded verdict whose cited PR the forge confirms merged into base, with every uncovered file explained."
+          : ". `requireOperatorBelowGuard` is true: the verified-pr pass was off, so only an operator approval gets a tip past the guard."),
     )
     if (reclaimedReviewed.length > 0) {
       lines.push(
@@ -1010,12 +1036,27 @@ export function buildReport(b) {
         "`branch_gc` then enforces its line-coverage guard (default 95%) and refuses an approval below it.",
     )
   }
+  if (applyReviewed && autoPassed.length > 0) {
+    lines.push("")
+    lines.push(`## Auto-passed by verified-pr (${autoPassed.length})`)
+    lines.push(
+      "Below the line guard, but reclaimed without a human: the forge confirmed the cited PR merged into base " +
+        "and every file with uncovered lines is explained. Restorable from the restore log above.",
+    )
+    for (const g of autoPassed) {
+      const proof = g.outcome.verifiedPr
+      const prs = (proof?.prs ?? []).map(n => `#${n}`).join(", ") || "?"
+      lines.push(`- ${tipLabel(g)} - PR ${prs} - ${verifiedPrWhy(proof)}`)
+    }
+  }
   if (applyReviewed && refusedByGuard.length > 0) {
     lines.push("")
     lines.push(`## Human decision queue — reviewer agreed, refused by line guard (${refusedByGuard.length})`)
     lines.push(
       "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
-        "`branch_gc` refused it deterministically because line coverage was below the guard; " +
+        "`branch_gc` refused it deterministically because line coverage was below the guard" +
+        (verifiedPrOn ? " and the verified-pr pass could not prove it either (each row says why)" : "") +
+        "; " +
         "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
     )
     // The one list a human must decide on: never capped, lowest line
@@ -1024,7 +1065,10 @@ export function buildReport(b) {
       .map(g => ({ g, pct: lineCoveragePctOfGuard(g.outcome.guard) }))
       .sort((a, b) => (a.pct ?? Number.POSITIVE_INFINITY) - (b.pct ?? Number.POSITIVE_INFINITY))
     for (const { g, pct } of queue) {
-      lines.push(decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)))
+      lines.push(
+        decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)) +
+          (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : ""),
+      )
     }
     lines.push("")
     lines.push(...operatorApprovalHowTo(queue.map(q => q.g), plan?.repoRoot))
@@ -1065,6 +1109,7 @@ export default {
     workspaceSlug: { type: "string", description: "Workspace slug. The active workspace when both are omitted." },
     applyMerged: { type: "boolean", description: "Execute branch_gc/worktree_gc (reclaim-class only) after review. Default false.", default: false },
     applyReviewed: { type: "boolean", description: "With `applyMerged`: also reclaim `review`-class branches whose stored verdict agreed (`branch_gc` includeReviewed true), and remove the worktree (keeping the branch) of each reviewed held worktree whose verdict agreed, re-checked by worktree_gc first; that branch then goes through the same branch_gc rung. branch_gc refuses an approval below its line-coverage guard (default 95%). Default false.", default: false },
+    requireOperatorBelowGuard: { type: "boolean", description: "With `applyReviewed`: turn `branch_gc`'s verified-pr pass off, so a verdict under the line-coverage guard is only reclaimed after an operator approval. By default that pass reclaims a superseded verdict whose cited PR the forge confirms merged into base when every file with uncovered lines is touched by that PR, a consumed `.changeset/*.md`, or a path base deleted or moved after that PR merged. Default false.", default: false },
     reviewModelSmall: { type: "string", description: `Model for a review candidate with residualFileCount <= 3. Default: the \`${ROLE_REVIEW_SMALL}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
     reviewPreset: { type: "string", description: "Model role preset for this run (opus, sonnet, haiku, go-free, free-sonnet — see `model_roles`). Default: the daemon's `modelRolePreset`, else the built-in roles. `reviewModelSmall`/`reviewModelLarge` still win." },
     reviewModelLarge: { type: "string", description: `Model for a review candidate with residualFileCount > 3, and the retry reviewer. Default: the \`${ROLE_REVIEW_LARGE}\` model role (repo agentproto.json \`models\` > daemon config \`models\` > built-in).` },
@@ -1294,6 +1339,7 @@ export default {
         workspaceSlug: "$input.workspaceSlug",
         apply: "$input.applyMerged",
         includeReviewed: "$input.applyReviewed",
+        requireOperatorBelowGuard: "$input.requireOperatorBelowGuard",
         scopes: ["local", "remote", "orphan"],
         // The whole result: it is the run output's `branchGcApply`.
         full: true,
@@ -1461,6 +1507,7 @@ export default {
     verdictRecords: "$steps.verdictRecords",
     applyMerged: "$input.applyMerged",
     applyReviewed: "$input.applyReviewed",
+    requireOperatorBelowGuard: "$input.requireOperatorBelowGuard",
     branchGcApply: "$steps.branchGcApply",
     worktreeGcApply: "$steps.worktreeGcApply",
     checkpointGcApply: "$steps.checkpointGcApply",

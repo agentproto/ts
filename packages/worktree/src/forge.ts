@@ -36,6 +36,23 @@ export interface ForgePullRequestRef {
 }
 
 /**
+ * One PR/MR as the `verified-pr` guard pass of `branch-gc.ts` needs to see
+ * it: is it merged, into which branch, and which paths did it touch (a
+ * rename counts both its old and its new path).
+ */
+export interface ForgePullRequestFacts {
+  number: number
+  state: "open" | "closed"
+  merged: boolean
+  /** The branch the PR targets (`main`), without any remote prefix. */
+  baseRefName: string
+  /** The commit the merge produced on the base branch (the squash commit for a squash merge); `null` when unmerged. */
+  mergeCommitOid: string | null
+  /** Every path the PR touched. */
+  files: string[]
+}
+
+/**
  * Thrown by a `ForgeClient` method when the forge could not be reached or
  * queried at all (network failure, missing/unauthenticated CLI, non-2xx HTTP
  * response). Never thrown for a legitimate empty result (a branch/commit
@@ -91,6 +108,13 @@ export interface ForgeClient {
    * lists; a client without it leaves that answer unknown, never `none`.
    */
   listClosedUnmergedPullRequests?(): Promise<ForgePullRequestRef[]>
+  /**
+   * One PR/MR by number with the paths it touched, or `null` when the forge
+   * has no PR with that number. Optional so existing test doubles keep
+   * compiling; a client without it is treated by `branch-gc.ts` as "forge
+   * unavailable" for the `verified-pr` pass, which then refuses.
+   */
+  pullRequestFacts?(prNumber: number): Promise<ForgePullRequestFacts | null>
 }
 
 /** A client that always reports itself unreachable — the "no gh, no token" case. */
@@ -112,6 +136,9 @@ export class UnreachableForgeClient implements ForgeClient {
     throw new ForgeUnavailableError(this.reason)
   }
   async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
+    throw new ForgeUnavailableError(this.reason)
+  }
+  async pullRequestFacts(): Promise<ForgePullRequestFacts | null> {
     throw new ForgeUnavailableError(this.reason)
   }
 }
@@ -153,7 +180,50 @@ export function withUnavailableNotice(client: ForgeClient, notify: (message: str
     const list = client.listClosedUnmergedPullRequests.bind(client)
     wrapped.listClosedUnmergedPullRequests = () => guard(list)
   }
+  if (client.pullRequestFacts) {
+    const facts = client.pullRequestFacts.bind(client)
+    wrapped.pullRequestFacts = (n) => guard(() => facts(n))
+  }
   return wrapped
+}
+
+// ── PR facts (REST shape, read by both clients) ─────────────────────────
+
+const restPullFactsSchema = z.object({
+  number: z.number(),
+  state: z.string(),
+  merged_at: z.string().nullable(),
+  merge_commit_sha: z.string().nullable().optional(),
+  base: z.object({ ref: z.string() }),
+})
+const restPullFilesSchema = z.array(z.object({ filename: z.string(), previous_filename: z.string().optional() }))
+/** GitHub lists at most 3000 files per PR, 100 per page. */
+const PR_FILES_MAX_PAGES = 30
+
+function pullFactsOf(pr: z.infer<typeof restPullFactsSchema>, files: string[]): ForgePullRequestFacts {
+  return {
+    number: pr.number,
+    state: pr.state === "open" ? "open" : "closed",
+    merged: pr.merged_at !== null,
+    baseRefName: pr.base.ref,
+    mergeCommitOid: pr.merged_at !== null ? (pr.merge_commit_sha ?? null) : null,
+    files,
+  }
+}
+
+/** Page through `pulls/:n/files` with `page(p)` returning one page's raw JSON body. */
+async function collectPullFiles(page: (p: number) => Promise<unknown>, where: string): Promise<string[]> {
+  const files = new Set<string>()
+  for (let p = 1; p <= PR_FILES_MAX_PAGES; p++) {
+    const parsed = restPullFilesSchema.safeParse(await page(p))
+    if (!parsed.success) throw new ForgeUnavailableError(`${where} did not match the expected PR files shape`)
+    for (const f of parsed.data) {
+      files.add(f.filename)
+      if (f.previous_filename) files.add(f.previous_filename)
+    }
+    if (parsed.data.length < 100) break
+  }
+  return [...files]
 }
 
 // ── gh CLI implementation ───────────────────────────────────────────────
@@ -321,6 +391,32 @@ export class GhCliForgeClient implements ForgeClient {
     return this.parseOutput(stdout, ghPrListSchema, args)
       .map(normalizeGhPrListItem)
       .filter((pr) => !pr.merged)
+  }
+
+  async pullRequestFacts(prNumber: number): Promise<ForgePullRequestFacts | null> {
+    const args = ["api", `repos/{owner}/{repo}/pulls/${prNumber}`]
+    const result = await this.runRaw(args)
+    if (result.exitCode !== 0) {
+      if (/\(HTTP 404\)/.test(result.stderr) || /\(HTTP 404\)/.test(result.stdout)) return null
+      throw new ForgeUnavailableError(`gh ${args.join(" ")} failed (exit ${result.exitCode}): ${result.stderr.trim() || result.stdout.trim()}`)
+    }
+    const pr = restPullFactsSchema.safeParse(this.parseJson(result.stdout, args))
+    if (!pr.success) throw new ForgeUnavailableError(`gh ${args.join(" ")} output did not match the expected shape`)
+    const files = await collectPullFiles(async (p) => {
+      const pageArgs = ["api", `repos/{owner}/{repo}/pulls/${prNumber}/files?per_page=100&page=${p}`]
+      return this.parseJson(await this.run(pageArgs), pageArgs)
+    }, `gh api pulls/${prNumber}/files`)
+    return pullFactsOf(pr.data, files)
+  }
+
+  private parseJson(stdout: string, args: readonly string[]): unknown {
+    try {
+      return JSON.parse(stdout)
+    } catch (err) {
+      throw new ForgeUnavailableError(
+        `gh ${args.join(" ")} produced non-JSON output: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {
@@ -495,6 +591,20 @@ export class RestForgeClient implements ForgeClient {
 
   async listClosedUnmergedPullRequests(): Promise<ForgePullRequestRef[]> {
     return (await this.listClosedPullRequests()).filter((pr) => !pr.merged)
+  }
+
+  async pullRequestFacts(prNumber: number): Promise<ForgePullRequestFacts | null> {
+    const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber} failed: ${res.status} ${res.statusText}`)
+    const pr = restPullFactsSchema.safeParse(await res.json())
+    if (!pr.success) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber} did not match the expected PR shape`)
+    const files = await collectPullFiles(async (p) => {
+      const page = await this.get(`/repos/${this.owner}/${this.repo}/pulls/${prNumber}/files?per_page=100&page=${p}`)
+      if (!page.ok) throw new ForgeUnavailableError(`GitHub REST pulls/${prNumber}/files failed: ${page.status} ${page.statusText}`)
+      return page.json()
+    }, `GitHub REST pulls/${prNumber}/files`)
+    return pullFactsOf(pr.data, files)
   }
 
   async ensurePullHeadFetched(prNumber: number, oid: string): Promise<void> {

@@ -694,6 +694,84 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.report).not.toContain("documented seam")
   })
 
+  it("verified-pr: auto-passed tips get their own section, the queue keeps only refusals with why, and the opt-out reaches branch_gc", async () => {
+    const run = async (input: Record<string, unknown>) => {
+      const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
+      let branchGcCallCount = 0
+      const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+        calls.push({ name, inputs })
+        if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+        if (name === "branch_gc") {
+          branchGcCallCount++
+          if (branchGcCallCount === 3) {
+            return mcpResult({
+              mode: "apply",
+              outcomes: [
+                {
+                  kind: "local",
+                  name: "wt/small-residual",
+                  sha: SHA_A,
+                  result: "deleted",
+                  reclaimReason: "reviewed",
+                  guard: "verified-pr",
+                  verifiedPr: {
+                    prs: [1101],
+                    files: [
+                      { file: "src/b.ts", why: "pr-touched", pr: 1101 },
+                      { file: ".changeset/x.md", why: "changeset" },
+                      { file: "driver/agent-cli/run.ts", why: "gone-on-base" },
+                    ],
+                  },
+                },
+                {
+                  kind: "local",
+                  name: "wt/large-residual",
+                  sha: SHA_B,
+                  result: "refused-guard",
+                  guard: "line coverage 40% of 50 added lines (< 95%)",
+                  verifiedPrRefusal: "1 uncovered file(s) not explained by #949: src/new.ts",
+                },
+              ],
+              restoreLog: "/tmp/restore.json",
+            })
+          }
+          return mcpResult(branchGcPlanFixture(branchGcCallCount >= 2))
+        }
+        if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+        if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+        if (name === "model_roles") return modelRolesResult(inputs)
+        if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+        throw new Error(`unexpected tool '${name}'`)
+      })
+      const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+      const compiled = compileWorkflow(handle, {
+        ...createDaemonToolRegistry(handle, dispatchTool),
+        agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+      })
+      const { output } = await runWorkflow({ workflow: compiled, agents: fakeAgentHost(vi.fn(async () => "sess_x")), input })
+      return { calls: calls.filter(c => c.name === "branch_gc"), report: (output as { report: string }).report }
+    }
+
+    const on = await run({ repoRoot: "/repo", applyMerged: true, applyReviewed: true })
+    expect(on.calls[2]!.inputs).toMatchObject({ apply: true, includeReviewed: true })
+    // Unset = the pass is on (the tool only turns it off for `true`).
+    expect(on.calls[2]!.inputs.requireOperatorBelowGuard).not.toBe(true)
+    expect(on.report).toContain("reviewed: 1 reclaimed (includeReviewed true; 1 of them past the line guard by verified-pr), 1 refused")
+    const auto = on.report.slice(on.report.indexOf("## Auto-passed by verified-pr (1)"), on.report.indexOf("## Human decision queue"))
+    expect(auto).toContain(
+      "- `wt/small-residual` (" + SHA_A + ") [local] - PR #1101 - uncovered files: 1 touched by #1101, 1 changeset, 1 moved/deleted on base",
+    )
+    expect(auto).not.toContain("wt/large-residual")
+    const queue = on.report.slice(on.report.indexOf("## Human decision queue"))
+    expect(queue).toContain("(1)")
+    expect(queue).toContain("verified-pr refused: 1 uncovered file(s) not explained by #949: src/new.ts")
+    expect(queue).not.toContain("wt/small-residual")
+
+    const off = await run({ repoRoot: "/repo", applyMerged: true, applyReviewed: true, requireOperatorBelowGuard: true })
+    expect(off.calls[2]!.inputs).toMatchObject({ requireOperatorBelowGuard: true })
+    expect(off.report).toContain("`requireOperatorBelowGuard` is true")
+  })
+
   it("lists the WHOLE human decision queue, lowest line coverage first, with how to record an operator approval", async () => {
     // 30 refusals: over the 20-name cap every other list keeps.
     const pcts = Array.from({ length: 30 }, (_, i) => 90 - ((i * 7) % 60))

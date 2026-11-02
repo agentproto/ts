@@ -315,3 +315,79 @@ describe("withUnavailableNotice: no silent empty status", () => {
     expect(notices).toEqual([])
   })
 })
+
+describe("pullRequestFacts: one PR with every path it touched", () => {
+  const pr = { number: 12, state: "closed", merged_at: "2026-01-01T00:00:00Z", merge_commit_sha: "a".repeat(40), base: { ref: "main" } }
+  const page1 = Array.from({ length: 100 }, (_, i) => ({ filename: `src/f${i}.ts` }))
+  const page2 = [{ filename: "packages/harness/run.ts", previous_filename: "driver/agent-cli/run.ts" }, { filename: ".changeset/x.md" }]
+  const expected = {
+    number: 12,
+    state: "closed",
+    merged: true,
+    baseRefName: "main",
+    mergeCommitOid: "a".repeat(40),
+    files: [...page1.map((f) => f.filename), "packages/harness/run.ts", "driver/agent-cli/run.ts", ".changeset/x.md"],
+  }
+
+  describe("RestForgeClient", () => {
+    const client = (routes: (url: string) => Response) => new RestForgeClient("o", "r", "/repo", "tok", async (url) => routes(String(url)))
+
+    it("pages the files (100 per page) and counts both names of a rename", async () => {
+      const seen: string[] = []
+      const c = client((url) => {
+        seen.push(url)
+        if (url.endsWith("/pulls/12")) return jsonResponse(200, pr)
+        if (url.includes("/pulls/12/files") && url.endsWith("page=1")) return jsonResponse(200, page1)
+        if (url.includes("/pulls/12/files") && url.endsWith("page=2")) return jsonResponse(200, page2)
+        return new Response("unexpected", { status: 500 })
+      })
+      expect(await c.pullRequestFacts(12)).toEqual(expected)
+      expect(seen).toHaveLength(3)
+    })
+
+    it("404 is no such PR; unmerged has no merge commit; other failures and bad shapes are unavailable", async () => {
+      expect(await client(() => new Response("nf", { status: 404 })).pullRequestFacts(12)).toBeNull()
+      const open = client((url) => (url.endsWith("/pulls/12") ? jsonResponse(200, { ...pr, state: "open", merged_at: null }) : jsonResponse(200, [])))
+      expect(await open.pullRequestFacts(12)).toMatchObject({ state: "open", merged: false, mergeCommitOid: null, files: [] })
+      await expect(client(() => new Response("x", { status: 502 })).pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      await expect(client(() => jsonResponse(200, { nope: true })).pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      const badFiles = client((url) => (url.endsWith("/pulls/12") ? jsonResponse(200, pr) : jsonResponse(200, { not: "a list" })))
+      await expect(badFiles.pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+    })
+  })
+
+  describe("GhCliForgeClient", () => {
+    beforeEach(() => execArgvMock.mockReset())
+    function ghExec(api: (path: string) => ExecResult) {
+      return async (cmd: string, args: readonly string[]): Promise<ExecResult> => {
+        if (cmd === "git" && args.includes("get-url")) return ok("git@github.com:o/r.git\n")
+        if (cmd === "gh" && args[0] === "api") return api(String(args[1]))
+        return fail("unexpected")
+      }
+    }
+
+    it("reads the PR and pages its files through `gh api`, slug resolved from origin", async () => {
+      const paths: string[] = []
+      execArgvMock.mockImplementation(
+        ghExec((path) => {
+          paths.push(path)
+          if (path === "repos/o/r/pulls/12") return ok(JSON.stringify(pr))
+          if (path.endsWith("page=1")) return ok(JSON.stringify(page1))
+          if (path.endsWith("page=2")) return ok(JSON.stringify(page2))
+          return fail("unexpected")
+        }),
+      )
+      expect(await new GhCliForgeClient("/repo").pullRequestFacts(12)).toEqual(expected)
+      expect(paths).toEqual(["repos/o/r/pulls/12", "repos/o/r/pulls/12/files?per_page=100&page=1", "repos/o/r/pulls/12/files?per_page=100&page=2"])
+    })
+
+    it("HTTP 404 is no such PR; any other failure or non-JSON output is unavailable", async () => {
+      execArgvMock.mockImplementation(ghExec(() => fail("gh: Not Found (HTTP 404)")))
+      expect(await new GhCliForgeClient("/repo").pullRequestFacts(12)).toBeNull()
+      execArgvMock.mockImplementation(ghExec(() => fail("gh: Bad Gateway (HTTP 502)")))
+      await expect(new GhCliForgeClient("/repo").pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+      execArgvMock.mockImplementation(ghExec((path) => (path === "repos/o/r/pulls/12" ? ok(JSON.stringify(pr)) : ok("<html>"))))
+      await expect(new GhCliForgeClient("/repo").pullRequestFacts(12)).rejects.toBeInstanceOf(ForgeUnavailableError)
+    })
+  })
+})

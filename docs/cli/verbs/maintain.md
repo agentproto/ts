@@ -44,8 +44,14 @@ One run:
    with `includeReviewed: true`, so a `review`-class branch whose stored
    verdict agreed for the same tip is reclaimed too. `branch_gc` still
    enforces its deterministic line-coverage guard (default 95%): an approval
-   below it is refused (`refused-guard`) and listed in the report's "Human
-   decision queue". That queue is never capped: every refused tip is listed
+   below it is refused (`refused-guard`) unless the
+   [verified-pr pass](./branch.md#verified-pr-pass) proves it (a superseded
+   verdict whose cited PR the forge confirms merged into base, with every
+   uncovered file explained). Tips that pass are listed in "Auto-passed by
+   verified-pr" (branch, PR, why); `--require-operator-below-guard` turns the
+   pass off. The rest are listed in the report's "Human decision queue",
+   each row ending with the reason the pass refused it. That queue is never
+   capped: every refused tip is listed
    once (a branch and its remote twin share one line, with the ref kinds and
    the sha), lowest coverage first, each row with its line coverage, stored
    verdict, PR state (by head branch name from the forge's bulk PR lists,
@@ -74,7 +80,8 @@ branch.
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
 | `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
-| `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) and reports them; ignored without `--apply-merged`. |
+| `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
+| `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr pass off, so below the guard only an operator approval reclaims. |
 | `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
 | `--max-reviews <n>` | workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |

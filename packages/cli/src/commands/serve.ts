@@ -59,6 +59,7 @@ import {
 } from "./worktree.js"
 import {
   makeBranchGcOperatorApprover,
+  makeBranchGcRestorer,
   makeBranchGcRunner,
   makeBranchGcVerdictReader,
   makeBranchGcVerdictRecorder,
@@ -968,6 +969,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
         runSandboxCheckpointGcSweep: makeSandboxCheckpointGcRunner(),
         recordBranchGcVerdict: makeBranchGcVerdictRecorder(),
         readBranchGcVerdict: makeBranchGcVerdictReader(),
+        // Injected port behind `branch_gc_restore`: re-creates refs from a restore log.
+        restoreBranchGc: makeBranchGcRestorer(),
         // Injected port behind `POST /branches/gc/approve` (`agentproto branch
         // gc approve`): copies a stored verdict and adds the operator block.
         approveBranchGcVerdict: makeBranchGcOperatorApprover(),

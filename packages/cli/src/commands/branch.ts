@@ -4,8 +4,9 @@
  * Subcommands:
  *   gc            [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
  *                 [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
- *                 [--anchor <sha>] [--apply] [--json]
+ *                 [--require-operator-below-guard] [--anchor <sha>] [--apply] [--json]
  *   gc approve    <sha|branch>... --by <name> [--note <text>] [--repo <dir>] [--dry-run] [--json]
+ *   gc restore    <restore-log> [--repo <dir>] [--sha <sha>...] [--local-only] [--keep-approval] [--dry-run] [--json]
  *   review-queue  [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
  *
  * Thin shell over `@agentproto/worktree`'s `planBranchGc` / `applyBranchGc` —
@@ -32,6 +33,8 @@ import {
   branchReviewQueue,
   recordBranchVerdict,
   approveBranchVerdict,
+  restoreBranchGc,
+  readBranchGcRestoreLog,
   FileBranchVerdictStore,
   type BranchRefKind,
   type BranchGcPlan,
@@ -39,10 +42,12 @@ import {
   type BranchGcApplyOutcome,
   type BranchGcSummary,
   type BranchVerdictStore,
+  type BranchGcRestoreResult,
 } from "@agentproto/worktree"
 import type {
   BranchGcOperatorApprovalResult,
   BranchGcOperatorApprover,
+  BranchGcRestorer,
   BranchGcRunner,
   BranchGcVerdictReader,
   BranchGcVerdictRecorder,
@@ -55,9 +60,11 @@ const USAGE = `agentproto branch — classify and clean up a repo's branches
 Usage:
   agentproto branch gc           [--repo <dir>] [--base <ref>] [--scopes local,remote,orphan]
                                  [--min-age-days N] [--include-reviewed] [--min-line-coverage PCT]
-                                 [--anchor <sha>] [--apply] [--json]
+                                 [--require-operator-below-guard] [--anchor <sha>] [--apply] [--json]
   agentproto branch gc approve   <sha|branch>... --by <name> [--note <text>] [--repo <dir>]
                                  [--dry-run] [--json]
+  agentproto branch gc restore   <restore-log> [--repo <dir>] [--sha <sha>...] [--local-only]
+                                 [--keep-approval] [--dry-run] [--json]
   agentproto branch review-queue [--repo <dir>] [--base <ref>] [--min-age-days N] [--all]
   agentproto branch --help
 
@@ -83,7 +90,14 @@ Usage:
                 --include-reviewed also reclaims review refs whose stored verdict
                 (branch_gc_verdict) agreed for the same tip sha — refused when less
                 than --min-line-coverage (default 95) percent of the tip's added lines
-                are already in base.
+                are already in base. Below that guard the verified-pr pass still
+                reclaims a superseded verdict when the forge confirms a PR it cites
+                (landedIn, else #N in the gate's reason/evidence) merged into base,
+                and every file with uncovered added lines was touched by that PR, is
+                a .changeset/*.md, or is a path base deleted or moved after that PR
+                merged. No forge,
+                or any unexplained file, keeps the refusal (with the reason).
+                --require-operator-below-guard turns that pass off.
   gc approve    Record a human operator approval that lets --include-reviewed reclaim a
                 tip the line-coverage guard refused. Copies the stored verdict for each
                 <sha> (or the current tip of <branch>) and adds { by, note }. Refused when
@@ -92,6 +106,16 @@ Usage:
                 daemon with the bearer from runtime.json; refused from an agent session.
                 --dry-run prints the verdict that would be recorded. Deletes nothing:
                 the next gc --include-reviewed --apply does.
+  gc restore    Re-create the refs an apply deleted, from its restore log
+                (~/.agentproto/branch-gc/<repo>/restore-*.json), into --repo (default: the
+                repo of cwd), which must be the log's own repo. Commands are rebuilt from the
+                log's validated fields, never run from it: local refs with git branch,
+                remote refs pushed back to their remote (--local-only: re-created as a
+                local branch instead), orphan refs with update-ref. --sha (repeatable, full
+                or 7+ char prefix) restores only those tips. A ref that exists at another
+                sha is refused, never overwritten. Drops the operator approval of every
+                restored tip's stored verdict so the next gc --include-reviewed re-judges
+                it (--keep-approval keeps it). --dry-run prints what it would do.
   review-queue  Print the review candidates as JSON — one per unique tip, with base sha,
                 compare base, merge base, merged tree (or null), coverage and the files not
                 provably in base. Tips that already have a verdict are skipped unless --all.
@@ -104,6 +128,7 @@ export async function runBranch(args: readonly string[]): Promise<number> {
     return 0
   }
   if (sub === "gc" && args[1] === "approve") return runBranchGcApprove(args.slice(2))
+  if (sub === "gc" && args[1] === "restore") return runBranchGcRestore(args.slice(2))
   if (sub === "gc") return runBranchGcCommand(args.slice(1))
   if (sub === "review-queue") return runReviewQueue(args.slice(1))
   process.stderr.write(`agentproto branch: unknown subcommand "${sub}"\n  Known: gc | review-queue\n`)
@@ -142,6 +167,7 @@ async function planFor(repoRoot: string, opts: {
   minAgeDays?: number
   includeReviewed?: boolean
   minLineCoverage?: number
+  requireOperatorBelowGuard?: boolean
   anchor?: string
 }): Promise<BranchGcPlan> {
   const forge = await createForgeClient(repoRoot)
@@ -155,6 +181,7 @@ async function planFor(repoRoot: string, opts: {
     ...(opts.minAgeDays !== undefined ? { minAgeDays: opts.minAgeDays } : {}),
     ...(opts.includeReviewed ? { includeReviewed: true } : {}),
     ...(opts.minLineCoverage !== undefined ? { minLineCoverage: opts.minLineCoverage } : {}),
+    ...(opts.requireOperatorBelowGuard ? { requireOperatorBelowGuard: true } : {}),
     ...(opts.anchor ? { anchor: opts.anchor } : {}),
   })
 }
@@ -171,6 +198,7 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
       "min-age-days": { type: "string" },
       "include-reviewed": { type: "boolean" },
       "min-line-coverage": { type: "string" },
+      "require-operator-below-guard": { type: "boolean" },
       anchor: { type: "string" },
       apply: { type: "boolean" },
       json: { type: "boolean" },
@@ -202,6 +230,7 @@ async function runBranchGcCommand(args: readonly string[]): Promise<number> {
     ...(minAgeDays !== undefined ? { minAgeDays } : {}),
     includeReviewed: Boolean(values["include-reviewed"]),
     ...(minLineCoverage !== undefined ? { minLineCoverage } : {}),
+    ...(values["require-operator-below-guard"] ? { requireOperatorBelowGuard: true } : {}),
     ...(values.anchor ? { anchor: values.anchor } : {}),
   })
   const summary = summarizeBranchGcPlan(plan)
@@ -383,7 +412,8 @@ function entryAction(e: BranchGcPlanEntry): string {
   const lc = e.lineCoverage
   return (
     `review${c ? ` (${c.unique}u ${c.evolved}e ${c.deletes}d)` : ""}${lc ? ` ${lc.pct}% of ${lc.added} lines in base` : ""}` +
-    `${e.pushed ? ` ${e.pushed}` : ""}${e.verdictGuard ? ` — verdict refused: ${e.verdictGuard}` : ""}`
+    `${e.pushed ? ` ${e.pushed}` : ""}${e.verdictGuard ? ` — verdict refused: ${e.verdictGuard}` : ""}` +
+    `${e.verifiedPrRefusal ? ` (verified-pr: ${e.verifiedPrRefusal})` : ""}`
   )
 }
 
@@ -418,11 +448,13 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
   for (const o of outcomes) {
     if (o.result === "held" || o.result === "skipped-review") continue
     let detail: string = o.result
-    if (o.result === "deleted") detail = `deleted (${o.reclaimReason})`
+    if (o.result === "deleted") {
+      detail = `deleted (${o.reclaimReason}${o.verifiedPr ? `, verified-pr ${o.verifiedPr.prs.map((n) => `#${n}`).join(", ")}` : ""})`
+    }
     else if (o.result === "aborted-moved") detail = `aborted: tip moved to ${o.currentSha.slice(0, 10)} since the plan`
     else if (o.result === "aborted-reclassified") detail = `aborted: reclassified ${o.from} → ${o.to}${o.holdReason ? ` (${o.holdReason})` : ""}`
     else if (o.result === "failed") detail = `failed: ${o.message}`
-    else if (o.result === "refused-guard") detail = `verdict refused: ${o.guard}`
+    else if (o.result === "refused-guard") detail = `verdict refused: ${o.guard}${o.verifiedPrRefusal ? ` (verified-pr: ${o.verifiedPrRefusal})` : ""}`
     process.stdout.write(`${o.kind.padEnd(6)}  ${o.name.padEnd(48)}  ${detail}\n`)
   }
   const deleted = outcomes.filter((o) => o.result === "deleted").length
@@ -437,7 +469,7 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
  * boundary already enforces dry-run-by-default and scopes-on-apply).
  */
 export function makeBranchGcRunner(): BranchGcRunner {
-  return async ({ repoRoot: candidate, apply, base, scopes, minAgeDays, includeReviewed, minLineCoverage, anchor }) => {
+  return async ({ repoRoot: candidate, apply, base, scopes, minAgeDays, includeReviewed, minLineCoverage, requireOperatorBelowGuard, anchor }) => {
     const repoRoot = repoRootOf(resolve(candidate))
     if (!repoRoot) throw new Error(`branch_gc: "${candidate}" is not inside a git repository.`)
     const plan = await planFor(repoRoot, {
@@ -446,6 +478,7 @@ export function makeBranchGcRunner(): BranchGcRunner {
       ...(minAgeDays !== undefined ? { minAgeDays } : {}),
       includeReviewed,
       ...(minLineCoverage !== undefined ? { minLineCoverage } : {}),
+      ...(requireOperatorBelowGuard ? { requireOperatorBelowGuard: true } : {}),
       ...(anchor ? { anchor } : {}),
     })
     const summary = summarizeBranchGcPlan(plan)
@@ -499,4 +532,116 @@ export function makeBranchGcOperatorApprover(
       store: storeFor(),
     })
   }
+}
+
+/** The restore as the CLI and the daemon port run it: the real verdict store, keyed like `branch gc`. */
+async function restoreFromLog(opts: {
+  logPath: string
+  repoRoot: string
+  shas?: string[]
+  localOnly?: boolean
+  dryRun?: boolean
+  keepApproval?: boolean
+  storeFor?: () => BranchVerdictStore
+}): Promise<BranchGcRestoreResult> {
+  const log = await readBranchGcRestoreLog(resolve(opts.logPath))
+  return restoreBranchGc({
+    logPath: opts.logPath,
+    repoRoot: opts.repoRoot,
+    ...(opts.shas?.length ? { shas: opts.shas } : {}),
+    ...(opts.localOnly ? { localOnly: true } : {}),
+    ...(opts.dryRun ? { dryRun: true } : {}),
+    revokeApproval: !opts.keepApproval,
+    verdicts: (opts.storeFor ?? (() => new FileBranchVerdictStore()))(),
+    ...(typeof log?.repoRoot === "string" ? { repoName: repoLabel(log.repoRoot) } : {}),
+  })
+}
+
+/** `agentproto branch gc restore <restore-log>`. */
+export async function runBranchGcRestore(
+  args: readonly string[],
+  deps: { storeFor?: () => BranchVerdictStore } = {},
+): Promise<number> {
+  const verb = "agentproto branch gc restore"
+  let parsed
+  try {
+    parsed = parseArgs({
+      args: [...args],
+      allowPositionals: true,
+      strict: true,
+      options: {
+        sha: { type: "string", multiple: true },
+        repo: { type: "string" },
+        "local-only": { type: "boolean" },
+        "keep-approval": { type: "boolean" },
+        "dry-run": { type: "boolean" },
+        json: { type: "boolean" },
+      },
+    })
+  } catch (err) {
+    process.stderr.write(`${verb}: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 2
+  }
+  const { values, positionals } = parsed
+  if (positionals.length !== 1) {
+    process.stderr.write(`${verb}: give exactly one <restore-log> path.\n`)
+    return 2
+  }
+  const repoRoot = repoRootOf(resolve(values.repo ?? process.cwd()))
+  if (!repoRoot) {
+    process.stderr.write(`${verb}: not inside a git repository (pass --repo <dir>, the repo the log belongs to).\n`)
+    return 2
+  }
+  let result: BranchGcRestoreResult
+  try {
+    result = await restoreFromLog({
+      logPath: positionals[0] as string,
+      repoRoot,
+      ...(values.sha?.length ? { shas: values.sha } : {}),
+      ...(values["local-only"] ? { localOnly: true } : {}),
+      ...(values["dry-run"] ? { dryRun: true } : {}),
+      ...(values["keep-approval"] ? { keepApproval: true } : {}),
+      ...(deps.storeFor ? { storeFor: deps.storeFor } : {}),
+    })
+  } catch (err) {
+    process.stderr.write(`${verb}: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+  } else {
+    for (const o of result.outcomes) {
+      const detail =
+        o.result === "restored" || o.result === "would-restore"
+          ? `${o.result}  ${o.command ?? ""}`
+          : `${o.result}${o.message ? `: ${o.message}` : ""}`
+      process.stdout.write(
+        `${o.kind.padEnd(6)}  ${o.name.padEnd(48)}  ${o.sha.slice(0, 10)}  -> ${o.target}  ${detail}` +
+          `${o.approvalRevoked ? "  (operator approval dropped)" : ""}\n`,
+      )
+    }
+    for (const sel of result.unmatched) process.stderr.write(`no entry of the log matches --sha ${sel}\n`)
+    const count = (r: string): number => result.outcomes.filter((o) => o.result === r).length
+    process.stdout.write(
+      `\n${count(values["dry-run"] ? "would-restore" : "restored")} ${values["dry-run"] ? "would be restored" : "restored"}, ` +
+        `${count("already-present")} already present, ${count("refused-conflict")} refused (conflict), ` +
+        `${count("missing-commit") + count("invalid-entry") + count("failed")} failed.\n`,
+    )
+  }
+  const bad = result.outcomes.some((o) => ["refused-conflict", "missing-commit", "invalid-entry", "failed"].includes(o.result))
+  return bad || result.unmatched.length > 0 ? 1 : 0
+}
+
+/** Concrete `BranchGcRestorer`: the injected port behind `branch_gc_restore`. */
+export function makeBranchGcRestorer(storeFor?: () => BranchVerdictStore): BranchGcRestorer {
+  return ({ logPath, repoRoot, shas, localOnly, dryRun, keepApproval }) =>
+    restoreFromLog({
+      logPath,
+      repoRoot,
+      ...(shas?.length ? { shas } : {}),
+      ...(localOnly ? { localOnly: true } : {}),
+      ...(dryRun ? { dryRun: true } : {}),
+      ...(keepApproval ? { keepApproval: true } : {}),
+      ...(storeFor ? { storeFor } : {}),
+    })
 }

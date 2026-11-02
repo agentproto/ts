@@ -227,6 +227,7 @@ import {
   type BranchGcRunner,
   type BranchGcVerdictRecorder,
   type BranchGcVerdictReader,
+  type BranchGcRestorer,
 } from "./branch-gc.js"
 import {
   summarizeSandboxCheckpointGcApply,
@@ -821,6 +822,8 @@ export interface RegisterSessionToolsOptions {
   recordBranchGcVerdict?: BranchGcVerdictRecorder
   /** Optional verdict reader powering `branch_gc_verdict_get`. Same injection reason. */
   readBranchGcVerdict?: BranchGcVerdictReader
+  /** Optional restorer powering `branch_gc_restore`. Same injection reason. */
+  restoreBranchGc?: BranchGcRestorer
   /** Directory `branch_gc`'s background jobs write their finished result to
    *  (the file `branch_gc_status`'s `resultPath` points at). Defaults to
    *  `~/.agentproto/branch-gc/jobs`. Injectable so tests can point it at a
@@ -1469,6 +1472,7 @@ export function registerSessionTools(
     runSandboxCheckpointGcSweep,
     recordBranchGcVerdict,
     readBranchGcVerdict,
+    restoreBranchGc,
     listCatalogModels,
     loadDefaultsConfig,
     reviewRunner,
@@ -4942,8 +4946,11 @@ export function registerSessionTools(
       includeReviewed: mcpBool
         .optional()
         .describe(
-          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`) — unless its line coverage is under `minLineCoverage`, then it stays `review` with `verdictGuard` (apply reports `refused-guard`). Default false.",
+          "When true, a `review` ref whose stored verdict (branch_gc_verdict) has gate.agree=true for the SAME tip sha becomes `reclaim` (`reviewed`) — unless its line coverage is under `minLineCoverage`, then it stays `review` with `verdictGuard` (apply reports `refused-guard`). Below the guard, the `verified-pr` pass still reclaims a superseded verdict whose cited PR the forge confirms merged into base and that explains every uncovered file (`verifiedPr` on the entry and outcome; `verifiedPrRefusal` says why it did not). Default false.",
         ),
+      requireOperatorBelowGuard: mcpBool
+        .optional()
+        .describe("Turn the `verified-pr` pass off: below `minLineCoverage` only an operator approval reclaims. Default false."),
       minLineCoverage: mcpNumber
         .optional()
         .describe("Percent (0-100) of a tip's added lines that must already be in base for `includeReviewed` to honour an agreeing verdict. Default 95."),
@@ -5041,6 +5048,7 @@ export function registerSessionTools(
           ...(input.scopes?.length ? { scopes: input.scopes } : {}),
           ...(input.minAgeDays !== undefined ? { minAgeDays: input.minAgeDays } : {}),
           ...(input.minLineCoverage !== undefined ? { minLineCoverage: input.minLineCoverage } : {}),
+          ...(input.requireOperatorBelowGuard === true ? { requireOperatorBelowGuard: true } : {}),
           ...(input.anchor ? { anchor: input.anchor } : {}),
         }
         const { job, promise } = branchGcJobs.start(async () => withBranchGcApplySummary(await runBranchGc(runInput)))
@@ -5466,6 +5474,17 @@ export function registerSessionTools(
           evidence: z.array(z.string()).describe("Concrete shas/paths. Required non-empty when agree is true."),
         })
         .optional(),
+      landedIn: z
+        .array(
+          z.object({
+            pr: mcpNumber.describe("PR number that landed this tip's work."),
+            commit: z.string().optional().describe("The commit on base it landed as (hex sha, 7+ chars)."),
+          }),
+        )
+        .optional()
+        .describe(
+          "Superseded verdicts only: the merged PR(s) that landed this tip's work. `branch_gc`'s verified-pr pass checks them with the forge and lets the tip past the line-coverage guard when every uncovered file is explained.",
+        ),
       reviewer: z.string().describe("Who reviewed, e.g. `claude-sonnet reviewer`."),
       operator: z
         .object({
@@ -5566,6 +5585,56 @@ export function registerSessionTools(
       } catch (err) {
         return {
           content: [{ type: "text", text: `branch_gc_verdict_get failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        }
+      }
+    },
+  )
+
+  server.tool(
+    "branch_gc_restore",
+    "Re-create refs a `branch_gc` apply deleted, from its restore log " +
+      "(`restoreLog` of the apply, `~/.agentproto/branch-gc/<repo>/restore-*.json`) into " +
+      "the repo named by `repoRoot`/`workspaceSlug`, which must be the log's own repo. " +
+      "Commands are rebuilt from the log's validated fields, never run from it: " +
+      "local refs with `git branch`, remote refs pushed back to their remote " +
+      "(or, `localOnly`, as a local branch), orphan refs with update-ref. A ref " +
+      "that exists at another sha is refused, never overwritten. By default the " +
+      "operator approval of each restored tip's stored verdict is dropped, so the " +
+      "next `includeReviewed` run re-judges it instead of deleting it again.",
+    {
+      repoRoot: z.string().optional().describe("Absolute path to the git repo the log belongs to. Wins over `workspaceSlug`."),
+      workspaceSlug: z.string().optional().describe("Workspace slug. The active workspace when both are omitted."),
+      logPath: z.string().describe("Absolute path of the restore log."),
+      shas: z.array(z.string()).optional().describe("Only these tips (full sha or a 7+ char prefix). Default every entry."),
+      localOnly: mcpBool.optional().describe("Re-create remote-kind refs as local branches instead of pushing them back. Default false."),
+      dryRun: mcpBool.optional().describe("Report what would be re-created; touch nothing. Default false."),
+      keepApproval: mcpBool.optional().describe("Keep the operator approval on restored tips. Default false."),
+    },
+    async input => {
+      if (!restoreBranchGc) {
+        return {
+          content: [{ type: "text", text: "branch_gc_restore is not enabled: the host must wire `restoreBranchGc` in createGateway." }],
+          isError: true,
+        }
+      }
+      const resolved = await resolveWorktreeQueryRoot({ repoRoot: input.repoRoot, workspaceSlug: input.workspaceSlug })
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: resolved.error }) }], isError: true }
+      }
+      try {
+        const result = await restoreBranchGc({
+          logPath: input.logPath,
+          repoRoot: resolved.repoRoot,
+          ...(input.shas?.length ? { shas: input.shas } : {}),
+          ...(input.localOnly === true ? { localOnly: true } : {}),
+          ...(input.dryRun === true ? { dryRun: true } : {}),
+          ...(input.keepApproval === true ? { keepApproval: true } : {}),
+        })
+        return { content: [{ type: "text", text: JSON.stringify(result) }] }
+      } catch (err) {
+        return {
+          content: [{ type: "text", text: `branch_gc_restore failed: ${err instanceof Error ? err.message : String(err)}` }],
           isError: true,
         }
       }

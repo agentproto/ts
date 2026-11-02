@@ -16,6 +16,7 @@ import {
   branchReviewQueue,
   summarizeBranchGcPlan,
   readBranchGcRestoreLog,
+  restoreBranchGc,
   recordBranchVerdict,
   approveBranchVerdict,
   classifyTip,
@@ -24,11 +25,12 @@ import {
   FileBranchVerdictStore,
   BranchVerdictError,
   CHECKPOINT_BRANCH_PREFIX,
+  citedPrsOf,
   type BranchGcPlan,
   type BranchGcPlanEntry,
   type PlanBranchGcInput,
 } from "../branch-gc.js"
-import type { ForgeClient, ForgePullRequestRef } from "../forge.js"
+import { ForgeUnavailableError, type ForgeClient, type ForgePullRequestFacts, type ForgePullRequestRef } from "../forge.js"
 
 // Real git fixtures: dozens of spawns per test.
 vi.setConfig({ testTimeout: 60_000 })
@@ -1487,6 +1489,7 @@ describe("branch gc — line-coverage guard", () => {
         { file: "src/a.ts", line: "export function lostWork() { return 42 }" },
         { file: "src/a.ts", line: "export const alsoLost = 'value'" },
       ],
+      missingFiles: ["src/a.ts"],
     })
   })
 
@@ -1504,7 +1507,16 @@ describe("branch gc — line-coverage guard", () => {
     expect(e.verdictGuard).toBe("line coverage 0% of 2 added lines (< 95%)")
 
     const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
-    expect(outcomes).toContainEqual({ kind: "local", name: "feat/lost", sha: tip, result: "refused-guard", guard: e.verdictGuard })
+    // The verified-pr pass ran too, and says why it could not pass it either.
+    expect(e.verifiedPrRefusal).toBe("no PR cited (landedIn, or #N in gate.reason/evidence)")
+    expect(outcomes).toContainEqual({
+      kind: "local",
+      name: "feat/lost",
+      sha: tip,
+      result: "refused-guard",
+      guard: e.verdictGuard,
+      verifiedPrRefusal: e.verifiedPrRefusal,
+    })
     expect(restoreLog).toBeNull()
     expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
 
@@ -1671,5 +1683,356 @@ describe("approveBranchVerdict — operator approval copied from the stored verd
     expect(await approve(tip)).toMatchObject({ ok: false, refusal: "tip-moved" })
     expect(await approve("feat/guarded")).toMatchObject({ ok: false, refusal: "no-verdict" })
     expect((await store.get("fixture", tip))?.operator).toBeUndefined()
+  })
+})
+
+describe("branch gc: verified-pr guard pass", () => {
+  /** A forge that also answers `pullRequestFacts`: a number maps to its facts, `null` (not found) or an error to throw. */
+  class FactsForge extends FakeForge {
+    constructor(private readonly facts: Record<number, ForgePullRequestFacts | null | Error>) {
+      super()
+    }
+    async pullRequestFacts(n: number): Promise<ForgePullRequestFacts | null> {
+      const f = this.facts[n]
+      if (f instanceof Error) throw f
+      return f ?? null
+    }
+  }
+
+  const mergedFacts = (number: number, files: string[], mergeCommitOid: string | null, baseRefName = "main"): ForgePullRequestFacts => ({
+    number,
+    state: "closed",
+    merged: true,
+    baseRefName,
+    mergeCommitOid,
+    files,
+  })
+
+  const superseded = (name: string, tip: string, extra: Record<string, unknown> = {}) => ({
+    name,
+    sha: tip,
+    reviewer: "flash reviewer",
+    triage: { verdict: "superseded", confidence: 0.9, reason: "landed upstream" },
+    gate: {
+      agree: true,
+      verdict: "superseded",
+      reason: "Squash-merged as #1101 (0259d5f58); tip tree is identical bar unrelated base files",
+      evidence: ["git show 0259d5f58"],
+    },
+    ...extra,
+  })
+
+  /**
+   * The real-world false positive: the branch edits `src/agent/run.ts` and
+   * `src/b.ts` and adds a changeset; base lands the work as squash #1101
+   * (touching `src/b.ts`, reworded), consumes the changeset, then MOVES
+   * `src/agent/run.ts` to `packages/harness/run.ts` and evolves it. Every
+   * added line is missing from base's same path: line coverage 0%.
+   */
+  async function landedThenMovedBranch(repo: string, extra: Record<string, string> = {}): Promise<{ tip: string; squash: string }> {
+    await commitFiles(repo, { "src/agent/run.ts": "export const runner = 'v1'\n", "src/b.ts": "export const bee = 'v1'\n" }, "seed")
+    const tip = await branchWith(repo, "feat/landed-as-1101", {
+      "src/agent/run.ts": "export const runner = 'v1'\nexport function startRunner() { return 'started' }\n",
+      "src/b.ts": "export const bee = 'v1'\nexport function buzz() { return 'buzzing' }\n",
+      ".changeset/brave-bees-buzz.md": "---\n'@scope/pkg': patch\n---\n\nAdd the buzz helper and the runner.\n",
+      ...extra,
+    })
+    // Squash #1101: same work, reworded lines.
+    const squash = await commitFiles(
+      repo,
+      {
+        "src/agent/run.ts": "export const runner = 'v1'\nexport function startRunner(): string { return 'started!' }\n",
+        "src/b.ts": "export const bee = 'v1'\nexport function buzz(): string { return 'buzz' }\n",
+      },
+      "feat: buzz and runner (#1101)",
+    )
+    // Later on base: the runner moves to packages/harness and evolves.
+    await commitFiles(
+      repo,
+      { "src/agent/run.ts": null, "packages/harness/run.ts": "export function startRunner(): string { return 'harness' }\n" },
+      "refactor: move the runner to packages/harness (#1200)",
+    )
+    return { tip, squash }
+  }
+
+  async function setup(extra: Record<string, string> = {}, verdict: (tip: string) => unknown = (tip) => superseded("feat/landed-as-1101", tip)) {
+    const repo = await makeRepo()
+    const { tip, squash } = await landedThenMovedBranch(repo, extra)
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: verdict(tip) })
+    return { repo, tip, squash, verdicts }
+  }
+
+  it("passes a superseded verdict whose merged PR explains every uncovered file: PR-touched, moved on base, changeset", async () => {
+    const { repo, tip, squash, verdicts } = await setup()
+    const forge = new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts"], squash) })
+    const p = await plan(repo, { verdicts, includeReviewed: true, forge })
+    const e = entry(p, "feat/landed-as-1101")
+    expect(e.lineCoverage?.pct).toBe(0)
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.verdictGuard).toBe("passed by verified-pr #1101: line coverage 0% of 4 added lines (< 95%)")
+    expect(e.verifiedPrRefusal).toBeUndefined()
+    expect(e.verifiedPr).toEqual({
+      prs: [1101],
+      files: [
+        { file: ".changeset/brave-bees-buzz.md", why: "changeset" },
+        { file: "src/agent/run.ts", why: "gone-on-base", pr: 1101 },
+        { file: "src/b.ts", why: "pr-touched", pr: 1101 },
+      ],
+    })
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge, verdicts, stateDir })
+    expect(outcomes).toContainEqual({
+      kind: "local",
+      name: "feat/landed-as-1101",
+      sha: tip,
+      result: "deleted",
+      reclaimReason: "reviewed",
+      guard: "verified-pr",
+      verifiedPr: e.verifiedPr,
+    })
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toContainEqual(
+      expect.objectContaining({ name: "feat/landed-as-1101", sha: tip, deleted: true, guard: "verified-pr", verifiedPr: e.verifiedPr }),
+    )
+    expect(await refExists(repo, "refs/heads/feat/landed-as-1101")).toBe(false)
+  })
+
+  it("structured landedIn wins over #N in the reason, and old verdicts without it stay valid", async () => {
+    const { repo, squash, verdicts } = await setup({}, (tip) =>
+      superseded("feat/landed-as-1101", tip, { landedIn: [{ pr: 1101, commit: "0259d5f58" }] }),
+    )
+    const stored = (await verdicts.get("fixture", entry(await plan(repo), "feat/landed-as-1101").sha))!
+    expect(stored.landedIn).toEqual([{ pr: 1101, commit: "0259d5f58" }])
+    expect(citedPrsOf({ ...stored, gate: { ...stored.gate!, reason: "see #7 and #8" } })).toEqual([1101])
+    expect(citedPrsOf({ gate: { agree: true, verdict: "superseded", reason: "Landed as squash #949; reworked by #962", evidence: ["#949", "abc"] } })).toEqual([949, 962])
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true, forge: new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts"], squash) }) }), "feat/landed-as-1101")
+    expect(e.verifiedPr?.prs).toEqual([1101])
+  })
+
+  it("refuses when one uncovered file is unexplained, and says which", async () => {
+    const { repo, tip, squash, verdicts } = await setup({ "src/brand-new.ts": "export const neverLanded = 'only on this branch'\n" })
+    const forge = new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts"], squash) })
+    const p = await plan(repo, { verdicts, includeReviewed: true, forge })
+    const e = entry(p, "feat/landed-as-1101")
+    expect(e.class).toBe("review")
+    expect(e.verifiedPr).toBeUndefined()
+    expect(e.verdictGuard).toMatch(/^line coverage 0% /)
+    expect(e.verifiedPrRefusal).toBe("1 uncovered file(s) not explained by #1101: src/brand-new.ts")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge, verdicts, stateDir: await tmp("branch-gc-state-") })
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({ sha: tip, result: "refused-guard", verifiedPrRefusal: e.verifiedPrRefusal }),
+    )
+    expect(restoreLog).toBeNull()
+    expect(await refExists(repo, "refs/heads/feat/landed-as-1101")).toBe(true)
+  })
+
+  it("a path base dropped BEFORE the cited PR merged is not explained by it (nor is an unknown merge commit)", async () => {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "src/old.ts": "export const old = 'v1'\n", "src/b.ts": "export const bee = 'v1'\n" }, "seed")
+    const tip = await branchWith(repo, "feat/early-drop", {
+      "src/old.ts": "export const old = 'v1'\nexport const branchOnly = 'never landed'\n",
+      "src/b.ts": "export const bee = 'v1'\nexport function buzz() { return 'buzzing' }\n",
+    })
+    await commitFiles(repo, { "src/old.ts": null }, "base drops old.ts first")
+    const squash = await commitFiles(repo, { "src/b.ts": "export const bee = 'v1'\nexport function buzz(): string { return 'b' }\n" }, "feat: buzz (#1101)")
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict: superseded("feat/early-drop", tip) })
+    const judged = async (mergeCommitOid: string | null) =>
+      entry(await plan(repo, { verdicts, includeReviewed: true, forge: new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts"], mergeCommitOid) }) }), "feat/early-drop")
+    expect(await judged(squash)).toMatchObject({ class: "review", verifiedPrRefusal: "1 uncovered file(s) not explained by #1101: src/old.ts" })
+    expect(await judged(null)).toMatchObject({ class: "review", verifiedPrRefusal: "1 uncovered file(s) not explained by #1101: src/old.ts" })
+  })
+
+  it("refuses when the cited PR is closed unmerged, merged into another branch, or unknown", async () => {
+    const { repo, verdicts } = await setup()
+    const refusal = async (facts: ForgePullRequestFacts | null): Promise<BranchGcPlanEntry> =>
+      entry(await plan(repo, { verdicts, includeReviewed: true, forge: new FactsForge({ 1101: facts }) }), "feat/landed-as-1101")
+
+    const closed = await refusal({ number: 1101, state: "closed", merged: false, baseRefName: "main", mergeCommitOid: null, files: ["src/b.ts"] })
+    expect(closed).toMatchObject({ class: "review", verifiedPrRefusal: "no cited PR merged into main: #1101 closed unmerged" })
+    const elsewhere = await refusal(mergedFacts(1101, ["src/b.ts"], null, "release/1.x"))
+    expect(elsewhere).toMatchObject({ class: "review", verifiedPrRefusal: "no cited PR merged into main: #1101 merged into release/1.x, not main" })
+    expect(await refusal(null)).toMatchObject({ class: "review", verifiedPrRefusal: "no cited PR merged into main: #1101 not found" })
+  })
+
+  it("refuses when the forge is unavailable: no PR lookup at all, or a lookup that fails", async () => {
+    const { repo, verdicts } = await setup()
+    const noLookup = entry(await plan(repo, { verdicts, includeReviewed: true, forge: new FakeForge() }), "feat/landed-as-1101")
+    expect(noLookup).toMatchObject({ class: "review", verifiedPrRefusal: "forge unavailable: no PR lookup" })
+    const failing = entry(
+      await plan(repo, { verdicts, includeReviewed: true, forge: new FactsForge({ 1101: new ForgeUnavailableError("gh api failed (HTTP 502)") }) }),
+      "feat/landed-as-1101",
+    )
+    expect(failing).toMatchObject({ class: "review", verifiedPrRefusal: "forge unavailable: gh api failed (HTTP 502)" })
+  })
+
+  it("refuses an obsolete or salvage verdict even when it agrees and cites a merged PR", async () => {
+    for (const kind of ["obsolete", "salvage"] as const) {
+      const { repo, squash, verdicts } = await setup({}, (tip) => {
+        const v = superseded("feat/landed-as-1101", tip)
+        return { ...v, triage: { ...v.triage, verdict: kind }, gate: { ...v.gate, verdict: kind } }
+      })
+      const e = entry(
+        await plan(repo, { verdicts, includeReviewed: true, forge: new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts", "src/agent/run.ts"], squash) }) }),
+        "feat/landed-as-1101",
+      )
+      expect(e).toMatchObject({ class: "review", verifiedPrRefusal: `verdict is ${kind}, not superseded` })
+    }
+  })
+
+  it("requireOperatorBelowGuard turns the pass off, and apply keeps the plan's setting", async () => {
+    const { repo, squash, verdicts } = await setup()
+    const forge = new FactsForge({ 1101: mergedFacts(1101, ["src/b.ts"], squash) })
+    const p = await plan(repo, { verdicts, includeReviewed: true, forge, requireOperatorBelowGuard: true })
+    expect(p.requireOperatorBelowGuard).toBe(true)
+    const e = entry(p, "feat/landed-as-1101")
+    expect(e.class).toBe("review")
+    expect(e.verifiedPr).toBeUndefined()
+    expect(e.verifiedPrRefusal).toBeUndefined()
+    // A plan made with the pass on, applied as an opted-out plan: re-classified to review, never deleted.
+    const on = await plan(repo, { verdicts, includeReviewed: true, forge })
+    const { outcomes } = await applyBranchGc({ ...on, requireOperatorBelowGuard: true }, { scopes: ["local"], forge, verdicts })
+    expect(outcomes).toContainEqual(expect.objectContaining({ name: "feat/landed-as-1101", result: "aborted-reclassified", to: "review" }))
+    expect(await refExists(repo, "refs/heads/feat/landed-as-1101")).toBe(true)
+  })
+
+  it("the verdict schema keeps landedIn for superseded verdicts only", async () => {
+    const repo = await makeRepo()
+    const tip = await sha(repo, "HEAD")
+    const store = new InMemoryBranchVerdictStore()
+    const v = superseded("main", tip, { landedIn: [{ pr: 12 }] })
+    await expect(recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: v })).resolves.toMatchObject({ landedIn: [{ pr: 12 }] })
+    await expect(
+      recordBranchVerdict({
+        repoRoot: repo,
+        repoName: "fixture",
+        store,
+        verdict: { ...v, triage: { ...v.triage, verdict: "obsolete" }, gate: { ...v.gate, verdict: "obsolete" } },
+      }),
+    ).rejects.toThrow(/landedIn: landedIn is only for a superseded verdict/)
+    await expect(
+      recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: { ...v, landedIn: [{ pr: 0 }] } }),
+    ).rejects.toThrow(BranchVerdictError)
+  })
+})
+
+describe("branch gc: restore from a restore log", () => {
+  /** Merged local + remote-only + orphan refs, deleted by a real apply: returns the log and the shas they had. */
+  async function deletedTrio() {
+    const repo = await makeRepo()
+    const bare = await withOrigin(repo)
+    await branchWith(repo, "feat/done", { "d.txt": "d\n" })
+    await branchWith(repo, "feat/remote-done", { "r.txt": "r\n" })
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m", "feat/done"])
+    await execGit(repo, ["merge", "-q", "--no-ff", "-m", "m2", "feat/remote-done"])
+    await execGit(repo, ["push", "-q", "origin", "main", "feat/remote-done"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    await execGit(repo, ["branch", "-q", "-D", "feat/remote-done"])
+    const shas = { local: await sha(repo, "feat/done"), remote: await sha(repo, "refs/remotes/origin/feat/remote-done") }
+    await execGit(repo, ["update-ref", "refs/remotes/gone/done", shas.local])
+    const p = await plan(repo, { base: "origin/main" })
+    const stateDir = await tmp("branch-gc-state-")
+    const { restoreLog } = await applyBranchGc(p, { scopes: ["local", "remote", "orphan"], forge: new FakeForge(), stateDir })
+    expect(await refExists(bare, "refs/heads/feat/remote-done")).toBe(false)
+    return { repo, bare, shas, logPath: restoreLog as string }
+  }
+
+  it("dry run reports, then restores local (git branch), remote (pushed back) and orphan refs; a rerun is already-present", async () => {
+    const { repo, bare, shas, logPath } = await deletedTrio()
+    const dry = await restoreBranchGc({ logPath, dryRun: true })
+    expect(dry.outcomes.map((o) => `${o.kind}:${o.name}:${o.result}`).sort()).toEqual([
+      "local:feat/done:would-restore",
+      "orphan:gone/done:would-restore",
+      "remote:feat/remote-done:would-restore",
+    ])
+    expect(await refExists(repo, "refs/heads/feat/done")).toBe(false)
+
+    const res = await restoreBranchGc({ logPath })
+    expect(res.repoRoot).toBe(repo)
+    expect(res.outcomes.every((o) => o.result === "restored")).toBe(true)
+    expect(res.outcomes.find((o) => o.kind === "remote")).toMatchObject({ target: "origin:refs/heads/feat/remote-done" })
+    expect(await sha(repo, "refs/heads/feat/done")).toBe(shas.local)
+    expect(await sha(bare, "refs/heads/feat/remote-done")).toBe(shas.remote)
+    expect(await sha(repo, "refs/remotes/origin/feat/remote-done")).toBe(shas.remote)
+    expect(await sha(repo, "refs/remotes/gone/done")).toBe(shas.local)
+
+    const again = await restoreBranchGc({ logPath })
+    expect(again.outcomes.every((o) => o.result === "already-present")).toBe(true)
+  })
+
+  it("--sha selects entries, --local-only re-creates a remote ref as a local branch, unmatched selectors are reported", async () => {
+    const { repo, bare, shas, logPath } = await deletedTrio()
+    const res = await restoreBranchGc({ logPath, shas: [shas.remote.slice(0, 10), "abcdef1"], localOnly: true })
+    expect(res.unmatched).toEqual(["abcdef1"])
+    expect(res.outcomes).toEqual([
+      expect.objectContaining({ kind: "remote", name: "feat/remote-done", target: "refs/heads/feat/remote-done", result: "restored" }),
+    ])
+    expect(await sha(repo, "refs/heads/feat/remote-done")).toBe(shas.remote)
+    expect(await refExists(bare, "refs/heads/feat/remote-done")).toBe(false)
+    expect(await refExists(repo, "refs/heads/feat/done")).toBe(false)
+    await expect(restoreBranchGc({ logPath, shas: ["not-a-sha"] })).rejects.toThrow(/not a sha/)
+  })
+
+  it("never runs a crafted entry: argv comes from validated fields, a foreign repo or remote is refused", async () => {
+    const { repo, shas, logPath } = await deletedTrio()
+    const log = await readBranchGcRestoreLog(logPath)
+    const orphan = log.entries.find((e) => e.kind === "orphan")!
+    const local = log.entries.find((e) => e.kind === "local")!
+    const remote = log.entries.find((e) => e.kind === "remote")!
+    const marker = join(await tmp("pwned-"), "ran")
+    const crafted = {
+      ...log,
+      entries: [
+        { ...orphan, argv: ["fetch", "--upload-pack=touch " + marker, "+refs/pull/1/head:" + orphan.ref] },
+        { ...local, name: "feat/done", ref: "refs/heads/elsewhere" },
+        { ...remote, remote: "evil" },
+        { ...local, name: "--force", ref: "refs/heads/--force" },
+      ],
+    }
+    const craftedPath = join(await tmp("branch-gc-state-"), "crafted.json")
+    await writeFile(craftedPath, JSON.stringify(crafted))
+    const res = await restoreBranchGc({ logPath: craftedPath })
+    expect(res.outcomes.map((o) => o.result)).toEqual(["invalid-entry", "invalid-entry", "invalid-entry", "invalid-entry"])
+    expect(await stat(marker).then(() => true, () => false)).toBe(false)
+    expect(await refExists(repo, "refs/heads/feat/done")).toBe(false)
+    // The log must restore into the repo the caller named.
+    const other = await makeRepo()
+    await expect(restoreBranchGc({ logPath, repoRoot: other })).rejects.toThrow(/restores into/)
+    await expect(restoreBranchGc({ logPath, repoRoot: repo, shas: [shas.local] })).resolves.toMatchObject({ repoRoot: repo })
+  })
+
+  it("refuses a ref that exists at another sha and never overwrites it", async () => {
+    const { repo, shas, logPath } = await deletedTrio()
+    await execGit(repo, ["branch", "feat/done", "main~2"])
+    const other = await sha(repo, "feat/done")
+    expect(other).not.toBe(shas.local)
+    const res = await restoreBranchGc({ logPath, shas: [shas.local] })
+    expect(res.outcomes.find((o) => o.kind === "local")).toMatchObject({ result: "refused-conflict" })
+    expect(await sha(repo, "feat/done")).toBe(other)
+  })
+
+  it("drops the operator approval of every restored tip so the next run re-judges it, unless told to keep it", async () => {
+    const { repo, shas, logPath } = await deletedTrio()
+    const verdicts = new InMemoryBranchVerdictStore()
+    const verdict = {
+      name: "feat/done",
+      sha: shas.local,
+      reviewer: "flash reviewer",
+      triage: { verdict: "superseded", confidence: 0.9, reason: "landed" },
+      gate: { agree: true, verdict: "superseded", reason: "landed as #5", evidence: ["#5"] },
+      operator: { by: "jeremy" },
+    }
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: verdicts, verdict })
+    const kept = await restoreBranchGc({ logPath, shas: [shas.local], verdicts, repoName: "fixture", revokeApproval: false, dryRun: false })
+    expect(kept.outcomes.some((o) => o.approvalRevoked)).toBe(false)
+    expect((await verdicts.get("fixture", shas.local))?.operator).toEqual({ by: "jeremy" })
+
+    const res = await restoreBranchGc({ logPath, shas: [shas.local], verdicts, repoName: "fixture" })
+    expect(res.outcomes.filter((o) => o.sha === shas.local).every((o) => o.approvalRevoked === true)).toBe(true)
+    const after = await verdicts.get("fixture", shas.local)
+    expect(after?.operator).toBeUndefined()
+    expect(after).toMatchObject({ triage: { verdict: "superseded" }, gate: { agree: true } })
   })
 })
