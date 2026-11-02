@@ -17,6 +17,7 @@
     "cron",
     "harness-upgrades",
     "workflows",
-    "sentinels"
+    "sentinels",
+    "daemon-memory"
   ]
 }

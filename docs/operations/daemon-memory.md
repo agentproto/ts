@@ -179,8 +179,8 @@ swapping, those peaks still cost real pages. The OOM crashes in `daemon.log`
 (10-29 and 10-30) predate the on-disk brain index (#2432, #2452).
 
 The largest peak source found offline: `collectSessionSnapshots` (behind
-`usage_rollup` and `GET /usage/rollup`, which the config UI's wallets panel
-calls) read every agent-cli transcript at once through an unbounded
+`usage_rollup` and `GET /usage/rollup`, which the config UI's wallets panel,
+`agentproto usage` and the `agentproto daemon stop` summary call) read every agent-cli transcript at once through an unbounded
 `Promise.all`. Each read loaded a whole `events.jsonl` into one string and ran
 `JSON.parse` on every line. Measured on a branch daemon with 40 synthetic
 sessions (480 MB of transcripts): one rollup pushed `heapUsed` from about
@@ -191,34 +191,60 @@ sessions (480 MB of transcripts): one rollup pushed `heapUsed` from about
 
 ### The `[heap]` log line
 
-Every 5 minutes the daemon logs one line:
+Every 5 minutes the daemon logs one line (the first one 5 minutes after boot):
 
 ```
 [heap] heapUsed=640MB heapTotal=812MB rss=1100MB external=60MB arrayBuffers=11MB
-  afterMajorGc=602MB@2026-11-02T01:31:09.000Z majorGcs=41 handles=Timeout:38,TCPSocketWrap:12
-  sessions=total:930,live:14 policies=total:12 workflowRuns=total:40 eventsIndexCache=entries:64
-  hosts=hosts:325,pollers:19,... pairing=pairings:9,loops:18,...
+  afterMajorGc=602MB@2026-11-02T01:31:09.000Z majorGcs=41
+  handles=PipeWrap:43,TCPSocketWrap:38,ProcessWrap:20,Timeout:12,TCPServerWrap:3
+  sessions=total:930,live:14 policies=total:12 workflowRuns=total:40 eventsIndexCache=entries:2
+  hosts=hosts:325,pollers:1,inFlight:0,snapshots:1,snapshotOutputs:2,snapshotBytes:27964,cachedBodies:1,cachedBodyBytes:27619,handshakeFailures:1
+  pairing=pairings:9,revoked:6,offers:0,loops:18,channels:0,online:0,localDevices:0
 ```
 
-(one line in the log; wrapped here). `afterMajorGc` is `heapUsed` sampled right
-after the last mark-compact: the retained floor. Read it, not `heapUsed`.
+(one line in the log; wrapped here). The five memory fields and
+`afterMajorGc` are `process.memoryUsage()` values in MiB (1024 x 1024 bytes,
+rounded), printed with an `MB` suffix. `afterMajorGc` is `heapUsed` sampled
+right after the last mark-compact, with its time: the retained floor. Read it,
+not `heapUsed`. It reads `none` until the first major GC of the process.
+`majorGcs` counts major GCs since boot.
+
+`handles` groups `process.getActiveResourcesInfo()` by type, largest count
+first, so a leaked timer or socket shows up there. Every other field is one
+owner of long-lived state, `name=key:value,...`: `sessions` (rows including
+archived, and how many are `running` or `starting`), `policies` (completion
+policies), `workflowRuns`, `eventsIndexCache` (cached `events.jsonl`
+indexes), `hosts` (the host registry: hosts, pollers, in-flight forwards,
+snapshots with their output count and bytes, cached session bodies and bytes,
+handshake failures) and `pairing` (the pairing registry). `hosts` and
+`pairing` only appear when the daemon runs those registries. A probe that
+throws prints `<name>=error` instead of failing the line.
+
 A floor that climbs while every structure count stays flat points at a
 retainer nothing counts yet; take a snapshot. A count that climbs with the
-floor names the owner. `handles` groups `process.getActiveResourcesInfo()`, so
-a leaked timer or socket shows up there.
+floor names the owner.
 
-`AGENTPROTO_HEAP_LOG_INTERVAL_MS` sets the cadence in ms (`0` turns it off).
-The same report, as JSON, is served by `GET /debug/heap`.
+`AGENTPROTO_HEAP_LOG_INTERVAL_MS` sets the cadence in ms (`0` or a negative
+value turns the line off; an unparsable value keeps the default). The same
+report, as JSON, is served by `GET /debug/heap`; there the memory values are
+in bytes and `handles` is not sorted.
 
 ### On-demand heap snapshot
 
+The daemon always has a bearer token (a fresh one each boot, written to the
+`token` field of `<workspace>/.agentproto/runtime.json` and of
+`~/.agentproto/daemons/<port>.json`, both mode 0600), so this route needs it.
+The default port is `18790` (`agentproto serve --port`):
+
 ```sh
-curl -X POST http://127.0.0.1:<port>/debug/heap-snapshot
+curl -X POST http://127.0.0.1:18790/debug/heap-snapshot \
+  -H "Authorization: Bearer $(jq -r .token ~/.agentproto/daemons/18790.json)"
 ```
 
-Writes `~/.agentproto/heap-snapshots/heap-<iso>-<pid>.heapsnapshot` and returns
-its path. Open it in Chrome DevTools (Memory tab) and compare two snapshots
-taken some time apart.
+Writes `~/.agentproto/heap-snapshots/heap-<time>-<pid>.heapsnapshot` (`<time>`
+is the ISO time with `:` and `.` replaced by `-`) and answers JSON with
+`path`, `heapUsed`, `freeBytes`, `durationMs` and a `warning`. Open it in
+Chrome DevTools (Memory tab) and compare two snapshots taken some time apart.
 
 **It blocks the daemon's event loop** until the file is written (about 2 s for
 a 200 MB heap, seconds per GB beyond that): no request, session event or timer
@@ -226,10 +252,17 @@ runs meanwhile, and the file is about the size of the heap. It refuses with
 `507 insufficient_memory` when free memory (`os.freemem()`, which on macOS
 leaves out reclaimable inactive pages, so it errs low; capped under a cgroup
 v2 memory limit by `memory.max - memory.current` from `/sys/fs/cgroup`) is
-below `heapUsed` plus 256 MB.
+below `heapUsed` plus 256 MiB. A write that fails answers
+`500 snapshot_failed`.
 
-Both `/debug/*` routes are operator-only: they need the daemon bearer, or a
-loopback call without an `Origin` header (no browser page may trigger one),
-except that once the daemon has a bearer token the snapshot route takes the
-bearer alone; and they answer `403 operator_only` to a session principal (a valid session
-token, or a caller claim naming a session the daemon spawned).
+Who may call the two `/debug/*` routes:
+
+- `GET /debug/heap`: the daemon bearer, or a loopback call without an
+  `Origin` header (so no browser page can).
+- `POST /debug/heap-snapshot`: the daemon bearer only. Loopback without
+  `Origin` is not enough, so a local proxy that drops `Origin` cannot unlock
+  it.
+- Anyone else gets `401 unauthorized`.
+- A session principal gets `403 operator_only` on both, even with the bearer:
+  a valid session token, or a caller claim naming a session the daemon
+  spawned.
