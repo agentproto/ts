@@ -341,19 +341,25 @@ export function createOpencodeSubaccountProvider(deps: OpencodeConsoleDeps = {})
       const all = [...orgs]
       const current = (deps.now ?? Date.now)()
       const { accounts } = await readAllOpencodeConsoleAccounts(deps)
-      for (const row of accounts) {
-        if (row.id === account.id || !row.access_token || isExpired(row, current)) continue
-        try {
-          const body = await consoleGet(accountFromRow(row), "/api/orgs", deps)
-          for (const o of Array.isArray(body) ? body : []) {
-            const id = (o as { id?: unknown })?.id
-            if (typeof id !== "string" || seen.has(id)) continue
-            seen.add(id)
-            const name = (o as { name?: unknown }).name
-            all.push({ id, name: typeof name === "string" ? name : id })
-          }
-        } catch {
-          // skipped: resolve() reports it if a pin needs this login
+      // Fetched in parallel (each has its own timeout); merged in stored order.
+      const others = accounts.filter(
+        row => row.id !== account.id && row.access_token && !isExpired(row, current),
+      )
+      const bodies = await Promise.all(
+        others.map(row =>
+          consoleGet(accountFromRow(row), "/api/orgs", deps).catch(() => {
+            // skipped: resolve() reports it if a pin needs this login
+            return []
+          }),
+        ),
+      )
+      for (const body of bodies) {
+        for (const o of Array.isArray(body) ? body : []) {
+          const id = (o as { id?: unknown })?.id
+          if (typeof id !== "string" || seen.has(id)) continue
+          seen.add(id)
+          const name = (o as { name?: unknown }).name
+          all.push({ id, name: typeof name === "string" ? name : id })
         }
       }
       return {
