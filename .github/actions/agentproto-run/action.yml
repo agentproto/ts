@@ -198,6 +198,16 @@ inputs:
       hard ceiling bounds it. Defaults to 15.
     required: false
     default: '15'
+  supervisor:
+    description: >
+      Spawn an idle supervising session BEFORE the run and pass its id as the
+      run's `supervisorSessionId`, so every step session the run spawns records
+      that id as its `parentSessionId` (reviewer/fixer read as CHILDREN of one
+      supervisor instead of anonymous depth-0 roots). The supervisor does no
+      model work and is killed when the run ends. Empty/unset ⇒ unchanged root
+      behaviour.
+    required: false
+    default: ''
 
 outputs:
   run-id:
@@ -212,6 +222,23 @@ outputs:
       sandboxId, parentSessionId, model, costUsd, tokensIn, tokensOut, source).
       Empty [] when no agent session ran. Feeds delivery-specific footer stamps.
     value: ${{ steps.run.outputs.provenance }}
+  summary-title:
+    description: >
+      One-line title for the run's check run, built from the executed stages
+      (e.g. "Agentic review: approved"). Derived only from typed step outputs
+      and the terminal status - never from prose.
+    value: ${{ steps.run.outputs.summary-title }}
+  summary-verdict:
+    description: >
+      Folded verdict of the run: approved | changes_requested | failed |
+      incomplete. A missing review verdict is never read as approval.
+    value: ${{ steps.run.outputs.summary-verdict }}
+  summary:
+    description: >
+      Markdown summary of the executed review/fix stages - stage diagram, one
+      row per step with its verdict, and the final verdict. Also appended to
+      the job's step summary.
+    value: ${{ steps.run.outputs.summary }}
   artifacts:
     description: >
       JSON array of the GitHub artifacts (PR / review / comment) the agent
@@ -306,6 +333,7 @@ runs:
         RUN_CWD: ${{ inputs.cwd }}
         TIMEOUT_MINUTES: ${{ inputs.timeout-minutes }}
         IDLE_TIMEOUT_MINUTES: ${{ inputs.idle-timeout-minutes }}
+        SUPERVISOR: ${{ inputs.supervisor }}
         PORT: '18790'
         ACTION_PATH: ${{ github.action_path }}
         CLI_SOURCE: ${{ inputs.cli-source }}

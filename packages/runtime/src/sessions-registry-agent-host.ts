@@ -206,6 +206,16 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       /** Imported-skills registry reader for session-skill delivery
        *  (test seam). Omitted ⇒ `~/.agentproto/imported-skills.json`. */
       loadImportedSkills?: () => Promise<ImportedSkillsConfig>
+      /**
+       * Session this run's step sessions nest under - the supervising session
+       * a caller supplied to `workflow_run_file`/`workflow_start`
+       * (`supervisorSessionId`). Recorded as each step session's
+       * `parentSessionId` so the reviewer/fixer read as CHILDREN of one
+       * supervisor in the sessions tree instead of anonymous depth-0 roots.
+       * Descriptor-only lineage: it never moves the gating depth or a role
+       * guard. Omitted ⇒ unchanged (a root spawn).
+       */
+      parentSessionId?: string
     },
   ) {}
 
@@ -301,6 +311,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
           sandbox,
           label: this.stepLabel(adapter, opts),
           origin: "workflow",
+          ...(this.opts?.parentSessionId !== undefined
+            ? { parentSessionId: this.opts.parentSessionId }
+            : {}),
           ...(opts.options !== undefined ? { options: opts.options } : {}),
           // AIP-15 P2 harness pinning: model/effort/role/skills all map onto
           // `spawnAgentSession`'s own top-level fields, which already resolve
@@ -564,6 +577,9 @@ export class SessionsRegistryAgentHost implements AgentSessionHost {
       adapterConfigDir: adapterConfigDirFor(stepSessionId),
       label: this.stepLabel(adapter, opts),
       origin: "workflow",
+      ...(this.opts?.parentSessionId !== undefined
+        ? { parentSessionId: this.opts.parentSessionId }
+        : {}),
       ...(this.opts?.run || boundary
         ? {
             meta: {
