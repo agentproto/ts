@@ -1111,8 +1111,9 @@ export async function runServe(args: readonly string[]): Promise<number> {
   // lone-session policy survives the restart. Gated on the daemon actually
   // serving each row's workspace (§5 cross-process bullet): two daemons on
   // different ports share the `~/.agentproto/workspaces/*` buckets, so each
-  // must only resume rows whose home bucket matches the one IT serves — else
-  // both would race to resume the same sessions out of a shared bucket. No-op
+  // must leave rows in a bucket ANOTHER live daemon serves — else both would
+  // race the same sessions. A bucket no live peer serves is ours (see
+  // `makeIsServed`). No-op
   // (enabled:false) unless daemon.resumeSessionsOnBoot is set. Best-effort:
   // a failure here must never gate the daemon being up.
   let bootBuckets:
@@ -1146,10 +1147,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
       resolveBucketSlug(findWorkspaceByPath(wsConfig, workspacePath)?.slug, registeredSlugs),
     )
     const reattached = await gateway.reattachSandboxSessionsOnBoot({
-      isServed: desc => {
-        const bucket = resolveBucketSlug(desc.workspaceSlug, registeredSlugs)
-        return bucket === servedBucket || !otherLiveBuckets.has(bucket)
-      },
+      isServed: makeIsServed({ registeredSlugs, servedBucket, otherLiveBuckets }),
     })
     if (reattached.candidates > 0) {
       const notes = [
@@ -1186,11 +1184,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
   )
 
   if (bootBuckets !== undefined) try {
-    const { registeredSlugs, servedBucket } = bootBuckets
-    const eager = await gateway.resumeSessionsOnBoot({
-      isServed: desc =>
-        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
-    })
+    // Same cross-process gate as the re-attach pass: the served bucket, or a
+    // bucket no other live daemon serves (a stranded app bucket belongs to us).
+    const isServed = makeIsServed(bootBuckets)
+    const eager = await gateway.resumeSessionsOnBoot({ isServed })
     if (eager.enabled && eager.candidates > 0) {
       process.stderr.write(
         `${color.dim}eager-resumed ${eager.resumed}/${eager.candidates} session(s)` +
@@ -1202,11 +1199,8 @@ export async function runServe(args: readonly string[]): Promise<number> {
     // AFTER the eager pass above, so a row whose eager resume failed carries
     // its failed attempt and is skipped instead of lazily retried — and, like
     // it, after the supervisor was re-armed, so a re-armed policy sees the
-    // continue turn end. Same cross-process gate.
-    const cont = await gateway.continueInterruptedOnBoot({
-      isServed: desc =>
-        resolveBucketSlug(desc.workspaceSlug, registeredSlugs) === servedBucket,
-    })
+    // continue turn end. Same cross-process gate as the eager pass above.
+    const cont = await gateway.continueInterruptedOnBoot({ isServed })
     if (cont.enabled && cont.eligible > 0) {
       process.stderr.write(
         `${color.dim}continued ${cont.sent}/${cont.eligible} interrupted session(s)` +
@@ -1653,6 +1647,28 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       resolve()
     })
   })
+}
+
+/**
+ * The boot passes' cross-process gate. A row is served by THIS daemon when its
+ * workspace bucket is the served one OR when no OTHER live daemon serves that
+ * bucket. `otherLiveBuckets` comes from `bucketsServedByOtherLiveDaemons`, so a
+ * bucket a live peer serves is left untouched while a stranded app bucket
+ * (nobody else will ever claim it) is ours.
+ *
+ * The same `findWorkspaceByPath → resolveBucketSlug` rule must produce both
+ * `servedBucket` and the mapper handed to `bucketsServedByOtherLiveDaemons`,
+ * otherwise a row could be "rescued" from a daemon that actually serves it.
+ */
+export function makeIsServed(opts: {
+  registeredSlugs: ReadonlySet<string>
+  servedBucket: string
+  otherLiveBuckets: ReadonlySet<string> | undefined
+}): (desc: { workspaceSlug?: string }) => boolean {
+  return desc => {
+    const bucket = resolveBucketSlug(desc.workspaceSlug, opts.registeredSlugs)
+    return bucket === opts.servedBucket || !opts.otherLiveBuckets?.has(bucket)
+  }
 }
 
 /**
