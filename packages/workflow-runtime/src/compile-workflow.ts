@@ -705,7 +705,7 @@ function compileOutputSchema(schema: unknown, stepId: string): OutputSchemaLike 
 
 /**
  * Compile a declarative `kind:"agent"` manifest step — `{ agent: { ref },
- * prompt, adapter?, sessionRef?, sandbox?, placement?, turnRetry?, cacheable?, policy?, outputSchema?,
+ * prompt, adapter?, sessionRef?, sandbox?, cacheable?, policy?, outputSchema?,
  * maxRetries?, retry? }` — into a real {@link AgentStep}. `prompt` runs through the
  * same `$input`/`$steps.<id>` ref grammar as a `tool` step's `inputs`.
  * `agent.ref` resolves via `opts.agentRefs` — unresolvable (no map, or an id
@@ -786,7 +786,7 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     // sandbox step (the box spawns its own adapter, and the host path has no
     // prompt to prefix at spawn time) falls back to the prompt prefix.
     if (resolved.systemPrompt !== undefined) {
-      if (adapter === resolved.adapter && step.sandbox === undefined && step.placement === undefined) {
+      if (adapter === resolved.adapter && step.sandbox === undefined) {
         if (harness?.systemPrompt === undefined) {
           harness = { ...(harness ?? {}), systemPrompt: resolved.systemPrompt }
         }
@@ -855,8 +855,6 @@ function compileAgentStep(step: any, id: string, ctx: Ctx): AgentStep {
     ...(step.access !== undefined ? { access: step.access } : {}),
     ...(step.route !== undefined ? { route: step.route } : {}),
     ...(step.sandbox !== undefined ? { sandbox: step.sandbox } : {}),
-    ...(step.placement !== undefined ? { placement: step.placement } : {}),
-    ...(step.turnRetry !== undefined ? { turnRetry: step.turnRetry } : {}),
     ...(step.cacheable ? { cacheable: true } : {}),
     ...(options !== undefined ? { options } : {}),
     policy: step.policy,
