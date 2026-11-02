@@ -859,7 +859,7 @@ export function buildReport(b) {
         (wtOutcomes.length > 0 ? `: ${formatTally(tally(wtOutcomes.map(o => o.result)))}` : ""),
     )
   } else {
-    lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` - ${wt.total} worktree(s) classified`)
+    lines.push(`- mode: \`${wtPlan?.mode ?? "plan"}\` — ${wt.total} worktree(s) classified`)
   }
   lines.push(`- reclaim=${wt.byClass.reclaim} salvage=${wt.byClass.salvage} hold=${wt.byClass.hold}`)
   lines.push("")
