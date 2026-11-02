@@ -82,7 +82,8 @@ reclaimed. This is safe because `branch_gc` re-classifies every ref
 immediately before touching it and enforces `lineCoverageGuard`: an agreeing
 verdict under the minimum line coverage (95% by default) is refused
 (`refused-guard`) and stays a `review` branch. The report lists those as a
-separate "Human decision queue" with their coverage percentage — the
+separate "Human decision queue": one row per tip with its sha, coverage
+percentage, stored verdict, PR state and the reviewer's one-line reason - the
 reviewer's `gate.agree` remains its honest safety judgement, not a statement
 that the guard's policy threshold should be applied by the reviewer. The
 default is false; the weekly routine template enables it, while daily never
@@ -109,8 +110,9 @@ write lands with an atomic rename, so the parallelism-4 review fan-out cannot
 lose a verdict. Readers revalidate against the file's mtime/size, so a
 long-lived store also observes writes made elsewhere.
 
-The operator records one with `agentproto branch gc approve <sha> --by <name>`
-(the report prints that command for every queued tip): it copies the stored
+The operator records them with `agentproto branch gc approve <sha>... --by <name>`
+(the report prints one such command listing every queued tip, a sha per line,
+so a tip the operator does not approve is one deleted line): it copies the stored
 verdict, so nobody retypes it, and refuses a tip with no agreeing verdict or
 one that moved since the review. The approval is accepted only from the
 operator: that command's `POST /branches/gc/approve` demands the daemon's
