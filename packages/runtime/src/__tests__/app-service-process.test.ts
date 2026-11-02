@@ -60,6 +60,7 @@ function startFixture(opts?: {
   policy?: Partial<typeof DEFAULT_APP_SERVICE_RESTART_POLICY>
   logFile?: string
   dir?: string
+  env?: Record<string, string>
 }): { fx: Fixture; start: () => ReturnType<typeof startAppServiceProcess> } {
   const registry = createSessionsRegistry({ persist: false })
   const fx: Fixture = {
@@ -80,6 +81,7 @@ function startFixture(opts?: {
       service: opts?.service ?? { name: "web", command: "node", args: ["server.js"] },
       ...(opts?.policy ? { restart: opts.policy } : {}),
       ...(opts?.logFile !== undefined ? { logFile: opts.logFile } : {}),
+      ...(opts?.env !== undefined ? { env: opts.env } : {}),
       spawnChild: (_spec, o) => {
         void _spec
         const pid = 10_000 + fx.spawned.length
@@ -487,5 +489,29 @@ describe("cleanupLegacyServicePidFile (pre-managed-process upgrade)", () => {
     expect(result.reason).toContain("does not match")
     expect(existsSync(file)).toBe(true)
     expect(() => process.kill(child!.pid!, 0)).not.toThrow()
+  })
+})
+
+describe("startAppServiceProcess: AGENTPROTO_PUBLIC_URL (AIP-53 expose)", () => {
+  const saved = process.env.AGENTPROTO_PUBLIC_URL
+  afterEach(() => {
+    if (saved === undefined) delete process.env.AGENTPROTO_PUBLIC_URL
+    else process.env.AGENTPROTO_PUBLIC_URL = saved
+  })
+
+  it("an exposed service gets its own origin on every restart; any other never inherits the daemon's", () => {
+    process.env.AGENTPROTO_PUBLIC_URL = "https://daemon-leak.example.test"
+    const exposed = startFixture({ env: { AGENTPROTO_PUBLIC_URL: "https://session-chat.example.test" } })
+    expect(exposed.start().ok).toBe(true)
+    exposed.fx.exit(0, 1)
+    exposed.fx.queue[0]!.fire()
+    expect(exposed.fx.spawnEnvs.map(e => e.AGENTPROTO_PUBLIC_URL)).toEqual([
+      "https://session-chat.example.test",
+      "https://session-chat.example.test",
+    ])
+
+    const plain = startFixture()
+    expect(plain.start().ok).toBe(true)
+    expect(plain.fx.spawnEnvs[0]).not.toHaveProperty("AGENTPROTO_PUBLIC_URL")
   })
 })

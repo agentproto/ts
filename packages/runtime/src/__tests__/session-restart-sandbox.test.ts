@@ -36,6 +36,7 @@ import {
 } from "../sandbox-adapter-store.js"
 import { clearParentRelayGrants, relayTokenForSession, resolveParentRelayGrant } from "../parent-relay.js"
 import { readSandboxLedger, recordSandboxBoot } from "../sandbox-ledger.js"
+import { defaultPreflightRegistry } from "../sandbox-preflight.js"
 
 const wsConfigState = vi.hoisted(() => ({
   value: { version: 1, workspaces: [] } as import("../workspaces-config.js").WorkspacesConfig,
@@ -222,6 +223,7 @@ describe("restartAgentSession on a sandboxed session", () => {
     rejectResumeIds?: boolean
     sandboxConfig?: Record<string, unknown>
     parentSessionId?: (registry: SessionsRegistry) => string
+    preflight?: string[]
   } = {}): Promise<{
     resolver: AgentAdapterResolver
     providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>
@@ -243,6 +245,7 @@ describe("restartAgentSession on a sandboxed session", () => {
       sandboxId: "sbx_prev_1",
       sandboxTeardown: "pause",
       ...(opts.sandboxConfig ? { sandboxConfig: opts.sandboxConfig } : {}),
+      ...(opts.preflight ? { preflight: opts.preflight } : {}),
       ...(opts.deliveryTarget ? { sandboxDeliveryTarget: opts.deliveryTarget } : {}),
       ...(opts.parentSessionId ? { parentSessionId: opts.parentSessionId(registry), depth: 1 } : {}),
     })
@@ -957,6 +960,138 @@ describe("restartAgentSession on a sandboxed session", () => {
       // The dead box's row is closed: nothing is shared with the new one.
       expect(prevClosed).toBe(true)
       expect(registry.get(prev.id)?.status).not.toBe("running")
+    })
+
+    describe("a ladder-placed session", () => {
+      const ladder = [{ sandbox: "fake" }, { sandbox: "fake2", model: "rung-two-model" }]
+
+      /** "fake" (rung 1) cannot boot; "fake2" (rung 2) is the working fake. */
+      function ladderResolver(
+        providerResolver: (slug: string) => Promise<SandboxProviderHandle | null>,
+        boots: { count: number },
+        rungOneBoots: { count: number },
+        rungOneError: Error | undefined,
+        rungTwoError?: Error,
+      ): (slug: string) => Promise<SandboxProviderHandle | null> {
+        const good = goneBoxResolver(providerResolver, [], boots)
+        return async slug => {
+          const handle = await good("fake")
+          if (!handle) return null
+          if (slug === "fake2") {
+            return rungTwoError
+              ? { ...handle, slug, provider: { connect: handle.provider.connect, boot: async () => { throw rungTwoError } } }
+              : { ...handle, slug }
+          }
+          if (!rungOneError) return handle
+          return {
+            ...handle,
+            provider: {
+              connect: handle.provider.connect,
+              boot: async () => {
+                rungOneBoots.count++
+                throw rungOneError
+              },
+            },
+          }
+        }
+      }
+
+      it("re-places from rung 1: a full first rung is skipped and the session lands on rung 2", async () => {
+        wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+        const { resolver, providerResolver } = await setup({ deliveryTarget: target, workspaceSlug: "agentproto" })
+        prev = registry.recordPlacement(prev.id, { rung: 0, ladder, attempts: [] })!
+        const boots = { count: 0 }
+        const rungOneBoots = { count: 0 }
+
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: ladderResolver(
+            providerResolver,
+            boots,
+            rungOneBoots,
+            Object.assign(new Error("fleet full"), { code: "sandbox_capacity" }),
+          ),
+        })
+
+        expect(rungOneBoots.count).toBe(1)
+        expect(boots.count).toBe(1)
+        expect(result.desc.model).toBe("rung-two-model")
+        expect(result.desc.placement).toMatchObject({
+          rung: 1,
+          attempts: [
+            { rung: 0, provider: "fake", outcome: "failed", errorClass: "sandbox_capacity" },
+            { rung: 1, provider: "fake2", outcome: "ok" },
+          ],
+        })
+        expect(result.desc.placement?.ladder).toEqual(ladder)
+        expect(registry.get(result.desc.id)?.placement?.rung).toBe(1)
+      })
+
+      it("does not leak the placing rung's preflight onto a rung that declared none, and applies the rung's turnRetry", async () => {
+        const probe = vi.fn(async () => ({ verdict: "ok" as const, detail: "fine" }))
+        defaultPreflightRegistry.register({ id: "test-leak", description: "records runs", defaultTimeoutMs: 1000, run: probe })
+        try {
+          wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+          const { resolver, providerResolver } = await setup({
+            deliveryTarget: target,
+            workspaceSlug: "agentproto",
+            preflight: ["test-leak"],
+          })
+          prev = registry.recordPlacement(prev.id, {
+            rung: 0,
+            ladder: [
+              { sandbox: "fake", preflight: ["test-leak"] },
+              { sandbox: "fake2", turnRetry: { on: ["rate-limit"] } },
+            ],
+            attempts: [],
+          })!
+          const result = await restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: ladderResolver(
+              providerResolver,
+              { count: 0 },
+              { count: 0 },
+              Object.assign(new Error("fleet full"), { code: "sandbox_capacity" }),
+            ),
+          })
+          expect(result.desc.placement?.rung).toBe(1)
+          expect(probe).not.toHaveBeenCalled()
+          expect(result.desc.preflight ?? []).toEqual([])
+          expect(result.desc.turnRetry?.on).toEqual(["rate-limit"])
+        } finally {
+          defaultPreflightRegistry.register({ id: "test-leak", description: "removed", defaultTimeoutMs: 1, run: async () => ({ verdict: "unknown", detail: "removed" }) })
+        }
+      })
+
+      it("fails loud, listing every attempt, when no rung can start a fresh box", async () => {
+        wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+        const { resolver, providerResolver } = await setup({ deliveryTarget: target, workspaceSlug: "agentproto" })
+        prev = registry.recordPlacement(prev.id, { rung: 0, ladder, attempts: [] })!
+
+        const failure = await restartFailure(
+          restartAgentSession(registry, resolver, prev, {
+            resolveSandboxProvider: ladderResolver(
+              providerResolver,
+              { count: 0 },
+              { count: 0 },
+              Object.assign(new Error("fleet full"), { code: "sandbox_capacity" }),
+              Object.assign(new Error("refused"), { code: "sandbox_overflow_refused" }),
+            ),
+          }),
+        )
+        expectRestartCode(failure, "sandbox_box_start_failed")
+        expect(failure.message).toContain("sandbox_capacity")
+        expect(failure.message).toContain("sandbox_overflow_refused")
+      })
+
+      it("a session without a ladder still boots on its one recorded provider", async () => {
+        wsConfigState.value = { version: 1, workspaces: [remoteWorkspace] }
+        const { resolver, providerResolver } = await setup({ deliveryTarget: target, workspaceSlug: "agentproto" })
+        const boots = { count: 0 }
+        const result = await restartAgentSession(registry, resolver, prev, {
+          resolveSandboxProvider: goneBoxResolver(providerResolver, [], boots),
+        })
+        expect(boots.count).toBe(1)
+        expect(result.desc.placement).toBeUndefined()
+      })
     })
 
     it("re-passes the parent relay on a fresh-box restart: the new box's session gets a fresh remote parent", async () => {

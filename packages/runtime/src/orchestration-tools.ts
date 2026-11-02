@@ -1144,7 +1144,16 @@ export function registerOrchestrationTools(
         cacheKey: z.string().optional().describe("Enable journal caching for this run. On a re-invocation with the same cacheKey, cacheable steps whose inputs are unchanged replay their cached output instead of re-spawning."),
         appId: z.string().optional().describe("App provenance — the installed app this run belongs to. Omit to let the runner resolve it from the app registry when the workflow id is owned by exactly one installed app."),
         appRunId: z.string().optional().describe("The app_run this run belongs to, when started through an app."),
-        item: z.string().optional().describe("Optional ledger item — stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
+        item: z.string().optional().describe("Optional ledger item - stamped as `item` on every app-ledger event this run appends, scoping them to one sub-key inside each stage."),
+        supervisorSessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Supervising session every spawned step session nests under " +
+              "(`parentSessionId`). Descriptor-only lineage: it never relaxes a " +
+              "depth/role guard. Omit for anonymous root step sessions.",
+          ),
       },
       async input => {
         const run = await workflowRunner.start({ ...input, ...(callerSessionId ? { callerSessionId } : {}) })
@@ -1166,6 +1175,15 @@ export function registerOrchestrationTools(
         cwd: z.string().optional().describe("Working directory for spawned sessions."),
         workspaceSlug: z.string().optional().describe("Workspace slug passed to each spawned session."),
         cacheKey: z.string().optional().describe("Enable journal caching for this run. Cacheable steps replay unchanged outputs on re-invocation with the same key."),
+        supervisorSessionId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe(
+            "Supervising session every spawned step session nests under " +
+              "(`parentSessionId`) - the parent of the reviewer/fixer children. " +
+              "Descriptor-only lineage; omit for anonymous root step sessions.",
+          ),
       },
       async input => {
         try {

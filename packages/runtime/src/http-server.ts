@@ -325,6 +325,7 @@ import {
 import type { WorktreeField, WorktreeProvisioner } from "./worktree-isolation.js"
 import { tryParseJson } from "./json-tolerant.js"
 import { parseTurnRetryPolicy } from "./turn-retry-policy.js"
+import { MAX_PLACEMENT_RUNGS, placementInputSchema } from "./placement-ladder.js"
 import { modelPolicyInputSchema, normalizeModelPolicy } from "./model-policy.js"
 import type { ModelCooldownEntry } from "./model-cooldowns.js"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
@@ -335,6 +336,7 @@ import {
 } from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
+import { probeEgressSlots, readEgressHealth, sandboxEgressProbeInputSchema } from "./egress-health-report.js"
 import {
   execSandboxCommand,
   sandboxExecChoicesFromInput,
@@ -1024,6 +1026,14 @@ export interface RuntimeHttpServerOptions {
   port: number
   bind?: string
   auth?: AuthSource
+  /**
+   * Heap diagnostics (E99), behind the operator-only `GET /debug/heap` and
+   * `POST /debug/heap-snapshot`. Absent ⇒ both routes 404.
+   */
+  heapDiagnostics?: {
+    report(): import("./heap-diagnostics.js").HeapReport
+    snapshot(): import("./heap-diagnostics.js").HeapSnapshotResult
+  }
   /**
    * Per-request McpServer factory.
    *
@@ -4516,6 +4526,53 @@ export async function startHttpServer(
           return
         }
 
+        // Operator-only heap diagnostics (E99, heap-diagnostics.ts). Stricter
+        // than the session-token gate: the exact daemon bearer, or loopback
+        // with no Origin (no browser page, allowlisted or not, may trigger a
+        // snapshot that blocks the event loop), and never a session
+        // principal (a valid session token, or a claim naming a session the
+        // daemon spawned), same rule as config_set's operator-only keys.
+        // The snapshot takes the bearer alone once a token is configured: a
+        // loopback proxy that drops Origin must not unlock it.
+        if (
+          opts.heapDiagnostics &&
+          ((path === "/debug/heap" && req.method === "GET") ||
+            (path === "/debug/heap-snapshot" && req.method === "POST"))
+        ) {
+          const bearerOk = !!opts.token && req.headers.authorization === `Bearer ${opts.token}`
+          const localOk =
+            isLoopback(req) &&
+            req.headers.origin === undefined &&
+            !(path === "/debug/heap-snapshot" && opts.token)
+          if (!bearerOk && !localOk) {
+            res.writeHead(401, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "unauthorized", message: "the daemon bearer (or a local, non-browser call) is required" }))
+            return
+          }
+          const claimed = resolveCallerSessionId(req)
+          const sessionPrincipal =
+            credentialSessionOf(req) !== undefined ||
+            (claimed !== undefined && (() => {
+              const desc = opts.sessions?.get(claimed)
+              return desc !== undefined && desc.kind !== "external"
+            })())
+          if (sessionPrincipal) {
+            res.writeHead(403, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "operator_only", message: "heap diagnostics are reserved to the operator; this call came from a session" }))
+            return
+          }
+          if (path === "/debug/heap") {
+            res.writeHead(200, { "content-type": "application/json" })
+            res.end(JSON.stringify(opts.heapDiagnostics.report()))
+            return
+          }
+          const result = opts.heapDiagnostics.snapshot()
+          const status = result.ok ? 200 : result.error === "insufficient_memory" ? 507 : 500
+          res.writeHead(status, { "content-type": "application/json" })
+          res.end(JSON.stringify(result))
+          return
+        }
+
         // Hot-reload `providers.json` into the daemon's own env after
         // `agentproto auth provider set`. A restart would pick the key up
         // too, but it would also kill every live session — this mutates
@@ -6348,6 +6405,14 @@ export function buildSpawnSessionHttpArgs(
     preflightIds !== undefined ? { preflight: preflightIds } : {}
   const turnRetryField: Pick<SpawnAgentSessionInput, "turnRetry"> =
     turnRetryParsed !== undefined ? { turnRetry: turnRetryParsed } : {}
+  // Placement ladder: the HTTP twin of `agent_start.placement`. A malformed or
+  // sandbox-conflicting value is refused up front by `invalidSpawnHttpField`.
+  const placementParsed =
+    b.placement !== undefined && b.placement !== null
+      ? parseWithJsonTolerance(placementInputSchema, b.placement)
+      : undefined
+  const placementField: Pick<SpawnAgentSessionInput, "placement"> =
+    placementParsed !== undefined ? { placement: placementParsed } : {}
   const modelPolicyParsed =
     b.modelPolicy !== undefined ? normalizeModelPolicy(parseWithJsonTolerance(modelPolicyInputSchema, b.modelPolicy)) : undefined
   const modelPolicyField: Pick<SpawnAgentSessionInput, "modelPolicy"> =
@@ -6589,6 +6654,7 @@ export function buildSpawnSessionHttpArgs(
         })()
       : {}),
     ...preflightField,
+    ...placementField,
     // WP3 in-box app serve — the HTTP twin of the MCP `agent_start` tool's
     // `appServe` field. Accepts an object or a JSON-stringified one; requires
     // `dir` (and an integer `port` when given).
@@ -6745,7 +6811,9 @@ function spawnFailureStatus(code: string): number {
   if (code === "delegation_denied") return 403
   // The box booted but cannot do what the spawn needs from where it sits: not
   // a caller mistake, and a different placement may work.
-  if (code === "sandbox_preflight_failed") return 502
+  if (code === "sandbox_preflight_failed" || code === "sandbox_placement_exhausted") return 502
+  // Every egress address is cooling down for the model: nothing to boot right now.
+  if (code === "sandbox_egress_all_cooling") return 503
   if (code === "auth_profile_denied") return 403
   if (code === "stdio_mount_denied") return 403
   if (code === "identity_unverified" || code === "identity_mismatch") return 403
@@ -6761,6 +6829,7 @@ function spawnFailureStatus(code: string): number {
     code === "access_profile_ineligible" ||
     code === "sandbox_cwd_invalid" ||
     code === "sandbox_preflight_invalid" ||
+    code === "placement_invalid" ||
     code === "device_spawn_unreachable" ||
     code === "device_offline" ||
     code === "cloud_spawn_refused" ||
@@ -7155,6 +7224,22 @@ function invalidSpawnHttpField(
       message: `commandSandbox must be one of "off", "workspace", "strict" (got ${JSON.stringify(b.commandSandbox)}).`,
     }
   }
+  if (b.placement !== undefined && b.placement !== null) {
+    if (parseWithJsonTolerance(placementInputSchema, b.placement) === undefined) {
+      return {
+        error: "placement_invalid",
+        message:
+          "placement must be { ladder: [{ sandbox, model?, access?, preflight?, turnRetry? }, ...] } with 1 to " +
+          `${MAX_PLACEMENT_RUNGS} rungs; unknown keys are rejected.`,
+      }
+    }
+    if (b.sandbox !== undefined && b.sandbox !== null && b.sandbox !== "") {
+      return {
+        error: "placement_invalid",
+        message: "placement and sandbox are mutually exclusive; put the sandbox on a ladder rung.",
+      }
+    }
+  }
   if (
     b.modelPolicy !== undefined &&
     b.modelPolicy !== null &&
@@ -7277,6 +7362,46 @@ async function handleSandboxes(
       ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
     })
     json(result.ok ? 200 : 422, result)
+    return true
+  }
+  // GET /sandboxes/egress-health[?provider&model] - the egress pool with the
+  // per-IP model cooldowns; read-only, boots nothing.
+  if (path === "/sandboxes/egress-health") {
+    if (_req.method !== "GET") return false
+    const query = new URL(_req.url ?? "/", "http://localhost").searchParams
+    const provider = query.get("provider") || undefined
+    const model = query.get("model") || undefined
+    const report = await readEgressHealth(
+      { ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
+    return true
+  }
+  // POST /sandboxes/egress-health/probe - boots one box per pool slot and
+  // re-probes the model from each address (token-gated by the caller).
+  if (path === "/sandboxes/egress-health/probe") {
+    if (_req.method !== "POST") return false
+    const parsed = sandboxEgressProbeInputSchema.safeParse(await readJsonBody(_req))
+    if (!parsed.success) {
+      json(400, {
+        ok: false,
+        code: "egress_probe_invalid_input",
+        message: `sandbox egress-health: invalid request body - ${parsed.error.issues
+          .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      })
+      return true
+    }
+    const report = await probeEgressSlots(
+      {
+        model: parsed.data.model,
+        ...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
+        ...(parsed.data.adapter ? { adapter: parsed.data.adapter } : {}),
+      },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
     return true
   }
   const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)

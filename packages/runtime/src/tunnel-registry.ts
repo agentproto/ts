@@ -123,10 +123,29 @@ export interface TunnelDescriptor {
    * `publicUrl` alone, when you need something a browser can open.
    */
   url?: string
+  /**
+   * Caller-chosen stable identity (the provider contract's `key`), set only through
+   * {@link TunnelRegistry.ensureKeyed}. When present it is the key handed to
+   * stateful providers instead of `name-<id prefix>`, so a re-ensure or a
+   * daemon boot reuses the SAME remote tunnel. At most one descriptor per key.
+   */
+  key?: string
+  /** Keyed tunnels only: who the tunnel belongs to, so its owner finds it
+   *  again without parsing the (derived, lossy) key. */
+  owner?: TunnelOwner
+  /** Keyed tunnels only: the hostname the caller requested (normalized), kept
+   *  apart from `hostname` because a provider may assign another name. */
+  hostnameRequest?: string
   /** Set only for `access: "public"` — surfaced back to the caller (and
    *  logged) since skipping the guard is the one choice here with real
    *  blast radius if picked by habit instead of intent. */
   warning?: string
+}
+
+/** The app service a keyed tunnel was created for (AIP-53 `expose`). */
+export interface TunnelOwner {
+  appId: string
+  service: string
 }
 
 interface TunnelEntry {
@@ -176,6 +195,11 @@ export interface CreateTunnelInput {
    *  `parseTtlMs`). Ignored when `public` is set — a public tunnel has no
    *  guard and so no expiry of its own. */
   ttl?: string
+  /** Stable identity, see {@link TunnelDescriptor.key}. Use `ensureKeyed`;
+   *  `create` refuses a key that is already registered. */
+  key?: string
+  /** Keyed tunnels only, see {@link TunnelDescriptor.owner}. */
+  owner?: TunnelOwner
 }
 
 export interface TunnelRegistryOptions {
@@ -224,6 +248,9 @@ export class TunnelRegistry {
   private readonly gatewayGuard: TunnelRegistryOptions["gatewayGuard"]
   private persistTimer: ReturnType<typeof setTimeout> | null = null
   private closed = false
+  /** Per-key in-flight chain for `ensureKeyed`: two concurrent ensures of the
+   *  same key must never both miss and create two tunnels. */
+  private readonly keyLocks = new Map<string, Promise<unknown>>()
 
   constructor(opts: TunnelRegistryOptions = {}) {
     this.persistPath = opts.persistPath ?? TUNNELS_FILE_PATH()
@@ -273,6 +300,10 @@ export class TunnelRegistry {
       targetPort: input.targetPort,
     })
 
+    if (input.key !== undefined && this.findEntryByKey(input.key)) {
+      throw new Error(`tunnel key "${input.key}" is already registered (use ensureKeyed)`)
+    }
+
     if (input.name) {
       const conflict = this.findByIdOrName(input.name)
       if (conflict && (conflict.status === "starting" || conflict.status === "active")) {
@@ -300,6 +331,13 @@ export class TunnelRegistry {
         : {}),
       ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
       ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
+      ...(input.key !== undefined
+        ? {
+            key: input.key,
+            ...(input.owner ? { owner: { ...input.owner } } : {}),
+            ...(input.hostname ? { hostnameRequest: normalizeHostname(input.hostname) } : {}),
+          }
+        : {}),
       access: input.public ? "public" : "private",
       ...(input.public
         ? { warning: PUBLIC_ACCESS_WARNING }
@@ -314,6 +352,97 @@ export class TunnelRegistry {
 
     await this.startEntry(entry)
     return { ...desc }
+  }
+
+  /**
+   * Idempotent create on a stable `key` (the provider contract's `create` semantics): returns
+   * the descriptor already registered under `key` when it is running with the
+   * same target, access and hostname request; restarts it in place (same
+   * descriptor, same provider key, so the same remote tunnel) when it is
+   * stopped, errored or its config changed; and only creates a new one when
+   * no descriptor holds the key. A provider change deletes the old tunnel
+   * first. Never leaves two descriptors with one key. Not autostart: the
+   * owner of the key re-ensures it on boot.
+   */
+  async ensureKeyed(input: CreateTunnelInput & { key: string }): Promise<TunnelDescriptor> {
+    const prev = this.keyLocks.get(input.key) ?? Promise.resolve()
+    const run = prev.then(
+      () => this.ensureKeyedNow(input),
+      () => this.ensureKeyedNow(input),
+    )
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.keyLocks.set(input.key, tail)
+    void tail.then(() => {
+      if (this.keyLocks.get(input.key) === tail) this.keyLocks.delete(input.key)
+    })
+    return run
+  }
+
+  private async ensureKeyedNow(input: CreateTunnelInput & { key: string }): Promise<TunnelDescriptor> {
+    const { autostart: _autostart, ...rest } = input
+    const entry = this.findEntryByKey(input.key)
+    if (!entry) return this.create(rest)
+    const desc = entry.desc
+    const provider = input.provider ?? "quick"
+    if (normalizeProviderSlug(desc.provider) !== normalizeProviderSlug(provider)) {
+      await this.delete(desc.id)
+      return this.create(rest)
+    }
+    const access = input.public ? "public" : "private"
+    const targetHost = input.targetHost ?? "127.0.0.1"
+    const request = input.hostname ? normalizeHostname(input.hostname) : undefined
+    const live = desc.status === "active" || desc.status === "starting"
+    const changed =
+      desc.targetPort !== input.targetPort ||
+      desc.targetHost !== targetHost ||
+      (desc.access ?? "private") !== access ||
+      desc.hostnameRequest !== request
+    if (live && !changed) return { ...desc }
+    if (live) await this.stop(desc.id)
+
+    desc.targetPort = input.targetPort
+    desc.targetHost = targetHost
+    desc.access = access
+    if (input.public) {
+      desc.warning = PUBLIC_ACCESS_WARNING
+      delete desc.ttl
+      delete desc.expiresAt
+    } else {
+      desc.ttl = input.ttl ?? desc.ttl ?? "24h"
+      delete desc.warning
+    }
+    if (request !== desc.hostnameRequest) {
+      if (request !== undefined) {
+        desc.hostname = request
+        if (HOSTNAME_LIST_SLUGS.has(normalizeProviderSlug(provider))) desc.hostnames = [request]
+        desc.hostnameRequest = request
+      } else {
+        // The request was dropped: forget the old name too, or the restart
+        // would hand it to the provider again. The provider assigns one.
+        delete desc.hostnameRequest
+        delete desc.hostname
+        delete desc.hostnames
+      }
+    }
+    if (input.tunnelId) desc.tunnelId = input.tunnelId
+    if (input.credentialsFile) desc.credentialsFile = input.credentialsFile
+    if (input.label) desc.label = input.label
+    if (input.owner) desc.owner = { ...input.owner }
+    desc.publicUrl = ""
+    delete desc.url
+    this.schedulePersist()
+    entry.provider = await this.pickProviderForTest(desc.provider, desc)
+    await this.startEntry(entry)
+    return { ...desc }
+  }
+
+  /** The descriptor registered under a stable `key`, if any. */
+  findByKey(key: string): TunnelDescriptor | undefined {
+    const entry = this.findEntryByKey(key)
+    return entry ? { ...entry.desc } : undefined
   }
 
   /**
@@ -769,6 +898,13 @@ export class TunnelRegistry {
     return built
   }
 
+  private findEntryByKey(key: string): TunnelEntry | undefined {
+    for (const entry of this.tunnels.values()) {
+      if (entry.desc.key === key) return entry
+    }
+    return undefined
+  }
+
   private findEntryByIdOrName(idOrName: string): TunnelEntry | undefined {
     const byId = this.tunnels.get(idOrName)
     if (byId) return byId
@@ -799,8 +935,12 @@ export class TunnelRegistry {
         const { url: _url, ...rest } = e.desc
         return rest
       })
-      // Newest first, capped to HISTORY_CAP.
-      const sliced = all.slice(-HISTORY_CAP)
+      // Newest first, capped to HISTORY_CAP. A keyed tunnel is live state its
+      // owner re-ensures on boot, never history: it is always kept, or the
+      // next ensure would create a second remote tunnel for the same key.
+      const unkeyed = all.filter(d => d.key === undefined)
+      const kept = new Set(unkeyed.slice(-HISTORY_CAP))
+      const sliced = all.filter(d => d.key !== undefined || kept.has(d))
       const payload: PersistedTunnels = {
         savedAt: new Date().toISOString(),
         tunnels: sliced,
@@ -876,11 +1016,12 @@ function hostnamesOf(desc: TunnelDescriptor): string[] {
 /**
  * Identity handed to stateful providers. The key must be stable across
  * restarts AND unique per descriptor (two descriptors may share a name
- * over time), hence `name-<id prefix>` rather than the bare name.
+ * over time), hence `name-<id prefix>` rather than the bare name. A keyed
+ * descriptor (`ensureKeyed`) uses its caller-chosen key verbatim.
  */
 function identityOf(desc: TunnelDescriptor): TunnelIdentity {
   return {
-    key: desc.name ? `${desc.name}-${desc.id.slice(0, 8)}` : desc.id,
+    key: desc.key ?? (desc.name ? `${desc.name}-${desc.id.slice(0, 8)}` : desc.id),
     hostnames: hostnamesOf(desc),
     ...(desc.tunnelId ? { tunnelId: desc.tunnelId } : {}),
   }

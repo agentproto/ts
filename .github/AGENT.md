@@ -14,11 +14,21 @@ key. Two entry surfaces share one core.
 2. `changeset-check` — fast check that a changeset exists.
 3. `hygiene-check` — fast check that no root-level scratch docs (`PLAN.md`,
    `BRIEF.md`, `MERGE-CONFLICT-BRIEF*.md`) or AI-attribution trailers rode in.
-4. `pr-review` — agent reads the diff, writes an accurate changeset, posts a
-   structured review (`APPROVE` / `REQUEST_CHANGES` / `COMMENT`).
-5. `pr-fix` — if the review requested changes, the agent applies them and pushes
-   to the PR branch. Bounded by `maxFixIterations`, then escalates to a human.
-   Runs on the same free OpenCode Zen model through
+4. `pr-review` - ONE supervised run
+   (`.github/agentproto-workflows/pr-review-supervised/WORKFLOW.md`): the
+   reviewer posts a structured review, then (only on `request_changes`) a
+   fixer applies the findings to the working tree and the reviewer re-reviews,
+   bounded by `maxFixIterations`. Reviewer and fixer are children of the
+   supervisor session the runner passes in. The job commits and pushes the
+   fixer's working tree (`fixDelivery: "commit"`) once the build gate is green,
+   and posts a check run titled with the final verdict whose summary lists
+   every review/fix stage. The single-shot
+   `.github/agentproto-workflows/pr-review/WORKFLOW.md` remains the fallback
+   tier if the supervised run cannot post.
+5. `pr-fix` - the cross-run fallback: if the supervised loop could not run (or
+   was exhausted) and the live review still says `CHANGES_REQUESTED`, this job
+   applies the fixes and pushes them. Same `maxFixIterations` budget and
+   escalation; free OpenCode Zen model through
    `.github/agentproto-workflows/review-fix/WORKFLOW.md`, on the CI checkout.
 
 ### Automatic (on issue open) — `.github/workflows/issue-triage.yml`

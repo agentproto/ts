@@ -727,10 +727,11 @@ the path of the full transcript and a reminder that `transcript_search` /
 `transcript_read` exist, so the session can look up anything the summary
 dropped: on the compact command itself for a harness whose command takes an
 argument (claude-code), otherwise as a one-line note riding along with the
-next prompt the session receives (never a turn of its own). It is
-window-independent: the percent ladder never fires on a 1M-token window (558k
-of 1M is "55% full", the warn band), so a long session grew without ever
-compacting. Default 150000, clamped to 600000 max, `0` disables. The
+next prompt the session receives (never a turn of its own). An
+explicit value is absolute and window-independent. Unset, the threshold is
+`max(150000, warnAtPct% of the context window)`: 150000 on a 200k window,
+550000 on a 1M window, so a large window never compacts at 15%. Clamped to
+600000 max, `0` disables. The
 continuity mode does not gate it (like the hard-stop floor, it is a safety
 guard, not a nudge).
 
@@ -1046,6 +1047,54 @@ spawn `warnings`. An id no probe is registered under is refused up front with
 `sandbox_preflight_invalid`, before any box boots. Why: OpenCode's free tier is
 capped per source IP, so a box on an exhausted egress address only finds out
 mid-run.
+
+## placement
+
+An ordered fallback ladder of sandboxes: `{ ladder: Rung[] }` with 1 to 8
+rungs, each `{ sandbox, model?, access?, preflight?, turnRetry? }` (`access`
+is `{ profileRef?, profileRefs? }`). The spawn tries rung 1; when that rung
+cannot place the box it moves to rung 2, and so on. Use it for "e2b first, then
+a device, then local", or "this model on that box, a cheaper model elsewhere".
+An axis a rung omits inherits the spawn's own top-level value (`model`,
+`access`, `preflight`, `turnRetry`), so the ladder only states what differs.
+
+`placement` replaces the top-level `sandbox`: passing both is refused with
+`placement_invalid` (HTTP 400), as is an empty or malformed ladder, more than
+8 rungs, or a rung whose `sandbox` carries `reuse` (a rung boots a fresh box).
+
+A rung is skipped only when the box could not be placed, all before the agent
+started: a failed preflight (`sandbox_preflight_failed`), a capacity or
+overflow refusal from the provider (`sandbox_overflow_refused`, or the
+provider's own typed `sandbox_*` code, kept as `errorClass`), an exhausted
+egress pool (`sandbox_egress_pool_exhausted`), every egress address cooling
+down for the model (`sandbox_egress_all_cooling`, nothing is booted), a provider that is not set up,
+an offline device, or any other boot failure (`sandbox_boot_failed`,
+`sandbox_proxy_failed`, `sandbox_workspace_setup_failed`,
+`sandbox_app_serve_failed`). Any other failure (a bad `cwd`, an unknown
+preflight probe, a policy refusal, a cancelled boot) would fail the same way on
+every rung, so it ends the walk with its own code and the `attempts` so far.
+Matching is on typed codes, never on provider message text.
+
+Once a rung has started the agent the ladder is finished: a failure after that
+point never moves the session to another rung. That is `turnRetry`'s job.
+
+The descriptor records `placement: { rung, ladder, attempts }`: `rung` is the
+0-based rung the session runs on, `ladder` the requested ladder (with inherited
+axes filled in), and `attempts` one entry per rung tried: `{ rung, provider,
+model?, outcome: "ok" | "failed", errorClass?, egressIp?, durationMs }`. A
+spawn that skipped rungs also returns a warning naming them.
+
+When every rung fails the spawn fails with `sandbox_placement_exhausted`
+(HTTP 502); the message and `details.attempts` list every attempt in order.
+
+`session_migrate` and a fresh-box `session_restart` re-place from rung 1 of
+the recorded ladder (a migrate with an explicit `sandbox` leaves the ladder),
+and carry `preflight` and `placement` onto the new session. A rung's `sandbox`,
+`model`, `preflight` and `turnRetry` are replayed on both. A rung's `access` is
+replayed by `session_migrate` only: a restart keeps the session's own
+credentials rather than re-resolving them per rung. A restart whose ladder
+stops on a non-placement failure reports `sandbox_box_start_failed` and names
+the underlying code in the message.
 
 ## agent
 

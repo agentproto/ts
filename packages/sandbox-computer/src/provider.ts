@@ -43,6 +43,9 @@ import { randomUUID } from "node:crypto"
 import type {
   BootedSandbox,
   SandboxBootOpts,
+  SandboxEgressCoolingSlot,
+  SandboxEgressHealthView,
+  SandboxEgressSlot,
   SandboxExecOpts,
   SandboxExecResult,
   SandboxProbeResult,
@@ -52,7 +55,7 @@ import type {
   SandboxBox,
   SandboxUsageWindow,
 } from "@agentproto/sandbox"
-import { SandboxBoxGoneError, SandboxBootCancelledError } from "@agentproto/sandbox"
+import { SandboxBoxGoneError, SandboxBootCancelledError, SandboxEgressAllCoolingError } from "@agentproto/sandbox"
 import {
   ComputerApiError,
   ComputerControllerClient,
@@ -919,6 +922,22 @@ export const computerSandboxProvider: SandboxProvider = {
     return booted
   },
 
+  /** The controller's egress address pool (`GET /v1/egress-pool`): slot ids,
+   *  public addresses and load. Read-only, boots nothing. */
+  async egressPool(spec: SandboxSpec): Promise<SandboxEgressSlot[]> {
+    const base = readComputerConfig(spec)
+    const client = new ComputerControllerClient(resolveClientConfig(spec, base))
+    try {
+      return (await client.getEgressPool()).map(entry => ({
+        id: entry.id,
+        publicIp: entry.publicIp,
+        computers: entry.computers,
+      }))
+    } catch (err) {
+      throw await mapControllerError(err, client)
+    }
+  },
+
   /** Liveness against the controller — one cheap GET, no box contact.
    *  404 ⇒ `{alive:false}`; anything else propagates ("check failed",
    *  never "box died"). Uses the spec config captured at boot/connect,
@@ -1060,6 +1079,66 @@ function countSessions(sessions: number | readonly unknown[]): number {
   return typeof sessions === "number" ? sessions : sessions.length
 }
 
+/** Pool-slot choice for `egressIp: "auto"` once the caller knows which
+ *  addresses are cooling down for the model: every healthy slot, least loaded
+ *  first (ties by id), or the cooling slots when none is healthy. The
+ *  controller's own `auto` cannot exclude an address, so the client names a
+ *  slot explicitly. */
+export function pickEgressSlot(
+  pool: readonly SandboxEgressSlot[],
+  health: SandboxEgressHealthView,
+): { candidates: string[]; cooling: SandboxEgressCoolingSlot[] } {
+  const candidates: SandboxEgressSlot[] = []
+  const cooling: SandboxEgressCoolingSlot[] = []
+  for (const slot of pool) {
+    const cooldown = health.cooling(slot.publicIp)
+    if (cooldown === undefined) {
+      candidates.push(slot)
+    } else {
+      cooling.push({
+        slot: slot.id,
+        publicIp: slot.publicIp,
+        until: new Date(cooldown.until).toISOString(),
+        errorClass: cooldown.errorClass,
+      })
+    }
+  }
+  candidates.sort((a, b) => (a.computers ?? 0) - (b.computers ?? 0) || a.id.localeCompare(b.id))
+  return { candidates: candidates.map(slot => slot.id), cooling }
+}
+
+/** Slot ids to try, in order, when `auto` should avoid cooling addresses.
+ *  `undefined` leaves the selection to the controller (no health view, not
+ *  `auto`, or the pool cannot be read: the controller then answers with its
+ *  own typed error). Throws when the pool is known and every slot is cooling. */
+async function planEgressSlots(
+  client: ComputerControllerClient,
+  config: ComputerSandboxConfig,
+  opts: SandboxBootOpts,
+  bootLog: (line: string) => void,
+): Promise<string[] | undefined> {
+  const health = opts.egressHealth
+  if (config.egressIp !== "auto" || health === undefined) return undefined
+  let pool: SandboxEgressSlot[]
+  try {
+    pool = (await client.getEgressPool()).map(entry => ({
+      id: entry.id,
+      publicIp: entry.publicIp,
+      computers: entry.computers,
+    }))
+  } catch (err) {
+    bootLog(`egress pool unreadable (${err instanceof Error ? err.message : String(err)}); leaving slot choice to the controller`)
+    return undefined
+  }
+  if (pool.length === 0) return undefined
+  const { candidates, cooling } = pickEgressSlot(pool, health)
+  if (candidates.length === 0) throw new SandboxEgressAllCoolingError(health.model, cooling)
+  if (cooling.length > 0) {
+    bootLog(`egress slots cooling for ${health.model}: ${cooling.map(c => `${c.slot} (${c.publicIp})`).join(", ")}`)
+  }
+  return candidates
+}
+
 async function bootOnClient(
   client: ComputerControllerClient,
   spec: SandboxSpec,
@@ -1127,7 +1206,12 @@ async function bootOnClient(
   )
   // One key for every attempt of this boot: a retry after a fleet-capacity
   // refusal (or a replay of a create that did land) gets the same box back.
-  const idempotencyKey = `boot-${randomUUID()}`
+  const bootKey = `boot-${randomUUID()}`
+  const slotPlan = await planEgressSlots(client, config, opts, bootLog)
+  let slotIndex = 0
+  // A different slot is a different create body, so it gets its own key.
+  const currentIdempotencyKey = (): string =>
+    slotPlan !== undefined && slotIndex > 0 ? `${bootKey}-${slotPlan[slotIndex]}` : bootKey
   const fleetCapacityWaitMs = Math.max(0, config.fleetCapacityWaitMs ?? DEFAULT_FLEET_CAPACITY_WAIT_MS)
   const fleetCapacityRetryMs = Math.max(0, config.fleetCapacityRetryMs ?? DEFAULT_FLEET_CAPACITY_RETRY_MS)
   const fleetWaitStartedAt = Date.now()
@@ -1147,10 +1231,14 @@ async function bootOnClient(
             ...(config.ttlSeconds !== undefined ? { ttl: config.ttlSeconds } : {}),
             ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
             ...(config.egress ? { egress: { allow: config.egress } } : {}),
-            ...(config.egressIp !== undefined && config.egressIp !== "shared" ? { egressIp: config.egressIp } : {}),
+            ...(slotPlan !== undefined
+              ? { egressIp: slotPlan[slotIndex] as string }
+              : config.egressIp !== undefined && config.egressIp !== "shared"
+                ? { egressIp: config.egressIp }
+                : {}),
             env: createEnv,
           },
-          { signal: createAbort.signal, idempotencyKey },
+          { signal: createAbort.signal, idempotencyKey: currentIdempotencyKey() },
         ),
       { onTimeout: () => createAbort.abort() },
     )
@@ -1161,6 +1249,18 @@ async function bootOnClient(
         created = await attemptCreate()
         break
       } catch (err) {
+        // A slot the controller refuses to hand out (pinned to a dedicated
+        // box, or full) is skipped for the next healthy one.
+        if (
+          slotPlan !== undefined &&
+          err instanceof ComputerApiError &&
+          (err.code === "egress-slot-dedicated" || err.code === "egress-pool-exhausted") &&
+          slotIndex + 1 < slotPlan.length
+        ) {
+          bootLog(`egress slot ${slotPlan[slotIndex]} refused (${err.code}); trying ${slotPlan[slotIndex + 1]}`)
+          slotIndex++
+          continue
+        }
         if (!(err instanceof ComputerApiError) || err.code !== "fleet-capacity") throw err
         const waited = Date.now() - fleetWaitStartedAt
         const left = fleetCapacityWaitMs - waited

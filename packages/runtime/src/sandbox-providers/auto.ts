@@ -831,6 +831,13 @@ export function createAutoSandboxProviderHandle(
         ? connected
         : capBootedLifetime(connected, e2bDeadline, now)
     },
+
+    /** The computer leg's egress address pool; `auto` has none of its own. */
+    async egressPool(spec: SandboxSpec) {
+      const computer = await resolve("computer")
+      if (!computer.provider.egressPool) return []
+      return computer.provider.egressPool(specFor(spec, "computer", readAutoConfig(spec)))
+    },
   }
 
   return {

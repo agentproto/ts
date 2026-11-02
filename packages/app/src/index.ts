@@ -83,6 +83,7 @@ export type {
   AppDataDefinition,
   AppDevDefinition,
   AppService,
+  AppServiceExpose,
   AppSetupStep,
   AppSetupStepBase,
   AppSetupCmdStep,

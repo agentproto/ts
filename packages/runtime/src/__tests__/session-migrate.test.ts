@@ -248,6 +248,44 @@ describe("migrateSandboxSession", () => {
     expect(input.turnRetry).toMatchObject({ on: ["rate-limit", "upstream-5xx"], action: "migrate", maxMigrations: 3 })
   })
 
+  it("re-places a ladder-placed session from rung 1 and drops the top-level sandbox and preflight", async () => {
+    const ladder = [
+      { sandbox: "e2b", model: "m1", preflight: ["model-answers"] },
+      { sandbox: "local", model: "m2" },
+    ]
+    prevRow = makePrev({
+      preflight: ["model-answers"],
+      placement: { rung: 1, ladder, attempts: [] },
+    })
+    await migrateSandboxSession(deps(), prevRow, { baseDir })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.placement).toEqual({ ladder })
+    expect(input.sandbox).toBeUndefined()
+    expect(input.preflight).toBeUndefined()
+  })
+
+  it("forwards the recorded preflight onto a plain sandbox migration", async () => {
+    prevRow = makePrev({ preflight: ["model-answers"] })
+    await migrateSandboxSession(deps(), prevRow, { baseDir })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.sandbox).toBe("e2b")
+    expect(input.preflight).toEqual(["model-answers"])
+    expect(input.placement).toBeUndefined()
+  })
+
+  it("an explicit target sandbox leaves the ladder", async () => {
+    prevRow = makePrev({
+      placement: { rung: 0, ladder: [{ sandbox: "e2b" }, { sandbox: "local" }], attempts: [] },
+    })
+    await migrateSandboxSession(deps(), prevRow, { baseDir, sandbox: "daytona" })
+
+    const [, input] = vi.mocked(spawnAgentSession).mock.calls[0]!
+    expect(input.sandbox).toBe("daytona")
+    expect(input.placement).toBeUndefined()
+  })
+
   it("falls back to the recorded checkpoint when the old box is dead", async () => {
     finalCheckpoint.mockRejectedValue(new Error("sandbox gone"))
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})

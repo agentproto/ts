@@ -519,6 +519,33 @@ describe("loadAppHandle — services (production hosting surface)", () => {
     }
   })
 
+  it("round-trips services[].expose through emit -> loadAppHandle, and rejects a bad one at load", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-expose-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        services: [
+          { name: "miniapp", command: "node", args: ["dist/miniapp.js"], port: 8788, expose: { auth: "service", hostname: "session-chat" } },
+          { name: "web", entry: "node web.js", port: 4321, expose: {} },
+        ],
+      }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.services).toEqual([
+        { name: "miniapp", command: "node", args: ["dist/miniapp.js"], port: 8788, expose: { auth: "service", hostname: "session-chat" } },
+        { name: "web", entry: "node web.js", port: 4321, expose: {} },
+      ])
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, { ...parsed.data, services: [{ name: "web", entry: "x", expose: { auth: "guard" } }] }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(/invalid services declaration . services\[0\]\.expose requires a port/)
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
   it("rejects two services with the same name as a load error", async () => {
     const d = await mkdtemp(join(tmpdir(), "app-kit-load-dupservices-"))
     try {

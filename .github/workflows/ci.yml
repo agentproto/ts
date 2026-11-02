@@ -375,7 +375,7 @@ jobs:
       # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
       # file entirely (it lives outside packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts
@@ -838,6 +838,7 @@ jobs:
     permissions:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
+      checks: write         # post the supervised stage summary as a check run
       statuses: write       # post explicit commit-status on HEAD after push
       actions: read         # "Wait for Build + test" polls this run's jobs
     steps:
@@ -1340,7 +1341,12 @@ jobs:
           langfuse-secret-key: ${{ secrets.LANGFUSE_SECRET_KEY }}
           langfuse-base-url: ${{ secrets.LANGFUSE_BASE_URL }}
           langfuse-project: ${{ secrets.LANGFUSE_PROJECT }}
-          workflow-path: .github/agentproto-workflows/pr-review/WORKFLOW.md
+          # ONE supervised run: review -> (changes requested) fix -> re-review,
+          # bounded by maxFixIterations. The `supervisor` input spawns the
+          # parent session the reviewer/fixer nest under. The fallback tiers
+          # below keep the single-shot workflow as a safe fallback.
+          workflow-path: .github/agentproto-workflows/pr-review-supervised/WORKFLOW.md
+          supervisor: 'true'
           cli-source: ${{ steps.cliver.outputs.cli-source }}
           cli-version: ${{ steps.cliver.outputs.cli-version }}
           workflow-input: |
@@ -2036,6 +2042,46 @@ jobs:
             echo "- changeset commit: $([ "$build_ok" = "true" ] && echo pushed || echo withheld)"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The supervised loop's fixer writes the WORKING TREE only
+      # (`fixDelivery: "commit"` - agents never commit/push). The calling job
+      # owns delivery: once this run's build gate is green (same rule as the
+      # changeset below), commit and push the fixer's edits so the next CI run
+      # reviews the pushed commit. The message deliberately matches the
+      # historical `auto-fix from review` counter, so pr-fix's iteration budget
+      # still sees these commits. Changesets are excluded here and handled by
+      # the dedicated step below.
+      - name: Commit supervised review fixes
+        id: fixes
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.buildwait.outputs.build_ok == 'true' &&
+          steps.reviewer-agentproto.outputs.status == 'done'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          bash scripts/configure-bot-git.sh
+          # Only a run that reached `done` can reach this step (see the `if:`):
+          # a timed-out or crashed fixer can leave PARTIAL edits in the tree, and
+          # those must never be committed and pushed as a fix.
+          git add -A -- . ':(exclude).changeset/**'
+          if git diff --cached --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "No supervised fixes to commit."
+            exit 0
+          fi
+          ITER=$(git log --oneline --grep="auto-fix from review" \
+            "origin/${{ github.base_ref }}..HEAD" | wc -l | tr -d ' ')
+          NEXT=$((ITER + 1))
+          git -c user.name="agentproto-bot" \
+              -c user.email="agentproto-bot@users.noreply.github.com" \
+              commit -m "chore: auto-fix from review (iter $NEXT)"
+          git push
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+
       - name: Commit changeset (if written by reviewer)
         # Only push the changeset once THIS run's build is success or
         # skipped (buildwait.build_ok) — a red build must not get a
@@ -2109,6 +2155,45 @@ jobs:
             echo "committed=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # The supervised run's stages must be VISIBLE: a check run with a real
+      # title + summary listing every review/fix step and its verdict (the
+      # driver also appends the same markdown to this job's step summary).
+      # Informational only - the merge gate is still the "Agentic review"
+      # commit status below, so a failure to post this never reds the review.
+      - name: Post supervised review summary check run
+        if: |
+          steps.prstate.outputs.skip != 'true' &&
+          steps.bypass.outputs.skip != 'true' &&
+          steps.reviewer-agentproto.outputs.status == 'done'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SUMMARY_TITLE: ${{ steps.reviewer-agentproto.outputs.summary-title }}
+          SUMMARY: ${{ steps.reviewer-agentproto.outputs.summary }}
+          VERDICT: ${{ steps.reviewer-agentproto.outputs.summary-verdict }}
+        run: |
+          # Target the REMOTE head: local HEAD may have advanced by a commit
+          # whose push failed, and a check run on a SHA that exists nowhere on
+          # the remote fails silently.
+          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid -q .headRefOid 2>/dev/null || true)
+          [ -n "$SHA" ] || SHA=$(git rev-parse HEAD)
+          case "$VERDICT" in
+            approved) CONCLUSION=success ;;
+            changes_requested|failed) CONCLUSION=failure ;;
+            *) CONCLUSION=neutral ;;
+          esac
+          TITLE=${SUMMARY_TITLE:-"Agentic review: $VERDICT"}
+          gh api "repos/${{ github.repository }}/check-runs" \
+            -f name="Agentic review (supervised)" \
+            -f head_sha="$SHA" \
+            -f status=completed \
+            -f conclusion="$CONCLUSION" \
+            -f "output[title]=$TITLE" \
+            -f "output[summary]=$SUMMARY" \
+            > /dev/null
+          echo "Posted 'Agentic review (supervised)' = $CONCLUSION ($TITLE)"
+
       # Sweep the reviewer's per-PR scratch branch. The sandbox bootstrap fetches
       # the PR head into a LOCAL branch named `pr-<N>`
       # (.github/agentproto-workflows/lib/sandbox-agent.mjs) — the CI paths push
@@ -2162,6 +2247,7 @@ jobs:
           # job's own "Commit changeset" step could move the branch head).
           REVIEWED_SHA: ${{ steps.headsha.outputs.sha }}
           CHANGESET_COMMITTED: ${{ steps.changeset.outputs.committed }}
+          FIXES_COMMITTED: ${{ steps.fixes.outputs.committed }}
         run: |
           # Re-resolve the head LIVE, same reasoning as the postcheck steps
           # above — a review's commit_id is stamped against the PR's head at
@@ -2198,13 +2284,15 @@ jobs:
           echo "Reviews posted against live head $SHA: $COUNT"
           REVIEWED="$SHA"
           if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
-            && [ "$CHANGESET_COMMITTED" = "true" ] \
+            && { [ "$CHANGESET_COMMITTED" = "true" ] || [ "$FIXES_COMMITTED" = "true" ]; } \
             && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$SHA" ]; then
-            # This job pushed the reviewer's changeset commit AFTER the review
-            # was posted (PR #1105: review at :12, changeset commit at :25), so
-            # the live head moved past the commit the reviewer saw. The review
-            # legitimately sits on that reviewed commit — count it there. The
-            # next run's bypass step applies the same parent-commit rule.
+            # This job pushed a commit AFTER the review was posted (PR #1105: a
+            # changeset at :12, its commit at :25), so the live head moved past
+            # the commit the reviewer saw. THE SAME applies to the supervised
+            # loop's fix commit: the re-review judged the fixer's working tree,
+            # which this job then committed - the verdict sits on the reviewed
+            # commit, so count it there. The next run's bypass step applies the
+            # same parent-commit rule.
             COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
             echo "Head moved by this job's changeset commit — reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
             REVIEWED="$REVIEWED_SHA"

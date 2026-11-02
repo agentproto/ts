@@ -66,6 +66,7 @@ import {
   type SpawnServiceOwner,
   type SpawnServiceOwnerResult,
 } from "./app-services.js"
+import { APP_SERVICE_PUBLIC_URL_ENV, isExposedService, type AppServiceExposer, type AppServiceExposure } from "./app-service-expose.js"
 import type { SessionsRegistry } from "./sessions.js"
 import type { AgentAdapterResolver } from "./http-server.js"
 import type { WorkflowRunner } from "./workflow-runner.js"
@@ -1230,6 +1231,9 @@ export interface RegisterAppToolsOptions {
    *  `killServiceProcess(pid)` (process group) + `registry.kill(sessionId)`;
    *  tests inject a spy. */
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+  /** AIP-53 `services[].expose` tunnels (the daemon's TunnelRegistry, see
+   *  `createTunnelRegistryExposer`). Omitted: `expose` publishes nothing. */
+  serviceExposer?: AppServiceExposer
   /** Root for remote-installed apps (`<appsDir>/<slug>`, `app_install {url|file}`).
    *  Defaults to `apps/` next to `persistPath` (the daemon state dir). */
   appsDir?: string
@@ -1425,7 +1429,10 @@ export async function performInstall(
   listRegisteredToolIds: () => Promise<string[]>,
   resolveAgentAdapter?: AgentAdapterResolver,
   opts?: PerformInstallOptions,
-): Promise<{ ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>> } | { ok: false; error: string }> {
+): Promise<
+  | { ok: true; record: Awaited<ReturnType<typeof appRegistry.upsertApp>>; services?: AppServiceInstallReport }
+  | { ok: false; error: string }
+> {
   // `loadAppHandle` reads `ui.path` eagerly and throws when it's missing —
   // exactly the case a declared `ui.build` exists to recover from. Peek the
   // frontmatter first (no html read) and build BEFORE the real load, so a
@@ -1649,9 +1656,12 @@ export async function performInstall(
   // Runs AFTER the record + workspace exist; idempotent and best-effort — a
   // service that fails to spawn is reported, never fails the install. An app
   // without `services` skips this entirely (byte-for-byte unchanged).
+  let services: AppServiceInstallReport | undefined
   if (parsedServices.services.length > 0 && opts?.ensureServices) {
     try {
-      await opts.ensureServices({ app: record, dir, services: parsedServices.services })
+      services = serviceInstallReport(
+        await opts.ensureServices({ app: record, dir, services: parsedServices.services }),
+      )
     } catch (err) {
       console.warn(
         `[app-services] could not launch service owners for "${record.appId}": ` +
@@ -1660,7 +1670,28 @@ export async function performInstall(
     }
   }
 
-  return { ok: true, record }
+  return { ok: true, record, ...(services !== undefined ? { services } : {}) }
+}
+
+/** What an install reports about the app's services: spawn failures and,
+ *  per exposed service, its public URL / auth / stability / tunnel state
+ *  (AIP-53 host rule 2 and Exposure rules 4 and 6). */
+export interface AppServiceInstallReport {
+  errors?: Array<{ name: string; error: string }>
+  exposures?: AppServiceExposure[]
+}
+
+function serviceInstallReport(result: EnsureAppServiceOwnersResult): AppServiceInstallReport | undefined {
+  const report: AppServiceInstallReport = {
+    ...(result.errors.length > 0 ? { errors: result.errors } : {}),
+    ...(result.exposures !== undefined && result.exposures.length > 0 ? { exposures: result.exposures } : {}),
+  }
+  return Object.keys(report).length > 0 ? report : undefined
+}
+
+/** `app_install`'s payload: the record, plus the service report when any. */
+function installPayload(result: { record: object; services?: AppServiceInstallReport }): object {
+  return result.services !== undefined ? { ...result.record, services: result.services } : result.record
 }
 
 /**
@@ -1818,6 +1849,8 @@ export interface AppServiceEnsurerDeps {
   workspacesConfigPath?: string
   spawnServiceOwner?: SpawnServiceOwner
   killServiceOwner?: (owner: AppServiceOwner) => void | Promise<void>
+  /** AIP-53 `services[].expose` tunnels. Omitted: nothing is published. */
+  exposer?: AppServiceExposer
 }
 
 /**
@@ -1886,6 +1919,7 @@ export function buildAppServiceEnsurer(
     dir: string
     service: AppService
     workspaceSlug?: string
+    env?: Record<string, string>
     stateDir: string
   }): Promise<SpawnServiceOwnerResult> => {
     // Upgrade path: reap a service child orphaned by the previous
@@ -1902,6 +1936,7 @@ export function buildAppServiceEnsurer(
       dir: input.dir,
       service: input.service,
       ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+      ...(input.env !== undefined ? { env: input.env } : {}),
       logFile: appServiceLogPath(input.stateDir, input.service.name),
       onRespawn: (_attempt, info) => {
         deps.serviceStore.upsert({
@@ -1912,6 +1947,10 @@ export function buildAppServiceEnsurer(
           ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
           ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
           ...(input.service.port !== undefined ? { port: input.service.port } : {}),
+          // A restart keeps the env, so the record keeps the origin with it.
+          ...(input.env?.[APP_SERVICE_PUBLIC_URL_ENV] !== undefined
+            ? { publicUrl: input.env[APP_SERVICE_PUBLIC_URL_ENV] }
+            : {}),
           startedAt: new Date().toISOString(),
         })
       },
@@ -1936,12 +1975,13 @@ export function buildAppServiceEnsurer(
     const stateDir = app.stateDir ?? app.dataDir ?? dir
     const spawnOwner: SpawnServiceOwner =
       deps.spawnServiceOwner ?? (input => defaultSpawnServiceOwner({ ...input, stateDir }))
-    const spawn = (service: AppService): Promise<SpawnServiceOwnerResult> =>
+    const spawn = (service: AppService, extra?: { env?: Record<string, string> }): Promise<SpawnServiceOwnerResult> =>
       spawnOwner({
         appId: app.appId,
         dir,
         service,
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
+        ...(extra?.env !== undefined ? { env: extra.env } : {}),
       })
     const killOwner = createServiceOwnerKiller(deps.registry, deps.killServiceOwner)
     const result =
@@ -1952,6 +1992,7 @@ export function buildAppServiceEnsurer(
             services,
             spawn,
             killOwner,
+            ...(deps.exposer !== undefined ? { exposer: deps.exposer } : {}),
           })
         : await ensureAppServiceOwners({
             store: deps.serviceStore,
@@ -1967,9 +2008,15 @@ export function buildAppServiceEnsurer(
             },
             spawn,
             killOwner,
+            ...(deps.exposer !== undefined ? { exposer: deps.exposer } : {}),
           })
     for (const e of result.errors) {
       console.warn(`[app-services] service "${app.appId}:${e.name}" not started: ${e.error}`)
+    }
+    for (const x of result.exposures ?? []) {
+      if (x.state === "error") {
+        console.warn(`[app-services] service "${app.appId}:${x.name}" has no public URL: ${x.error ?? "tunnel failed"}`)
+      }
     }
     return result
   }
@@ -2019,6 +2066,9 @@ export async function reensureInstalledAppServicesOnBoot(
       const result = await ensureServices({ app, dir: app.dir, services, force: true })
       spawned += result.spawned.length
       for (const e of result.errors) errors.push(`${app.appId}:${e.name}: ${e.error}`)
+      for (const x of result.exposures ?? []) {
+        if (x.state === "error") errors.push(`${app.appId}:${x.name}: tunnel: ${x.error ?? "failed"}`)
+      }
     } catch (err) {
       errors.push(`${app.appId}: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -2084,6 +2134,7 @@ export function registerAppTools(
     ...(opts.workspacesConfigPath !== undefined ? { workspacesConfigPath: opts.workspacesConfigPath } : {}),
     ...(opts.spawnServiceOwner ? { spawnServiceOwner: opts.spawnServiceOwner } : {}),
     ...(opts.killServiceOwner ? { killServiceOwner: opts.killServiceOwner } : {}),
+    ...(opts.serviceExposer ? { exposer: opts.serviceExposer } : {}),
   })
 
   interface RemoteCatalogEntryRef {
@@ -2265,7 +2316,7 @@ export function registerAppTools(
           ensureServices,
         })
         if (!result.ok) return errorResult(`app_install: ${result.error}`)
-        return textResult(result.record)
+        return textResult(installPayload(result))
       }
       if ("url" in input && isAgentappUrl(input.url)) {
         if (input.ref !== undefined || input.subdir !== undefined || input.sha !== undefined) {
@@ -2298,7 +2349,7 @@ export function registerAppTools(
         input.catalogUrl,
       )
       if (!result.ok) return errorResult(`app_install: ${result.error}`)
-      return textResult(result.record)
+      return textResult(installPayload(result))
     },
   )
 
@@ -2989,6 +3040,28 @@ export function registerAppTools(
       if (app && (await appStateLedgerExists(app))) {
         state = { snapshot: await appStateSnapshot(app) }
       }
+      // AIP-53 Exposure rule 6: per exposed service, its public origin, auth,
+      // stability and tunnel state.
+      const exposures: AppServiceExposure[] = []
+      if (app && opts.serviceExposer) {
+        let declared: readonly AppService[] = []
+        try {
+          declared = parseAppServices((await readAppRefs(app.dir)).services).services
+        } catch {
+          declared = []
+        }
+        for (const service of declared) {
+          if (!isExposedService(service)) continue
+          exposures.push(
+            opts.serviceExposer.status(app.appId, service) ?? {
+              name: service.name,
+              auth: service.expose.auth ?? "guard",
+              stable: false,
+              state: "stopped",
+            },
+          )
+        }
+      }
       return textResult({
         appRunId: run.appRunId,
         appId: run.appId,
@@ -3009,6 +3082,7 @@ export function registerAppTools(
         workflowRuns,
         ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
+        ...(exposures.length > 0 ? { services: { exposures } } : {}),
         ...(app && !existsSync(app.dir) ? { dirMissing: true } : {}),
       })
     },
@@ -3349,6 +3423,7 @@ export function registerAppTools(
         store: serviceStore,
         appId: removed.appId,
         killOwner: createServiceOwnerKiller(registry, opts.killServiceOwner),
+        ...(opts.serviceExposer ? { exposer: opts.serviceExposer } : {}),
       })
       await unregisterAppWorkspace(removed.appId, opts.workspacesConfigPath)
       return textResult({ appId: removed.appId, ...(killedServices.length > 0 ? { services: killedServices } : {}) })

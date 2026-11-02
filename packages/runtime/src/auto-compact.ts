@@ -54,7 +54,8 @@
  *     receives, never as a turn of its own.
  */
 
-/** Default absolute threshold: 150k tokens of context. */
+/** Default absolute threshold: 150k tokens of context. On a window larger
+ *  than 200k it is a FLOOR, not the value: see {@link resolveAutoCompactTokens}. */
 export const AUTO_COMPACT_DEFAULT_TOKENS = 150_000
 /** Hard ceiling for the threshold: a session never autocompacts above it.
  *  Sized for a 1M-token window: stays below the default continue-fresh (75%)
@@ -62,6 +63,31 @@ export const AUTO_COMPACT_DEFAULT_TOKENS = 150_000
 export const AUTO_COMPACT_MAX_TOKENS = 600_000
 /** Floor for a non-zero threshold (below this the threshold is noise). */
 export const AUTO_COMPACT_MIN_TOKENS = 1_000
+
+/** Share of the window (as a percent) below which the DEFAULT threshold never
+ *  compacts, when the policy sets no `warnAtPct` of its own. */
+const AUTO_COMPACT_DEFAULT_WINDOW_PCT = 55
+
+/**
+ * Effective threshold for a session. An explicitly configured value is only
+ * clamped. When none is configured (the default), the threshold scales with
+ * the window: `max(150k, warnAtPct% of contextSize)`, clamped to
+ * {@link AUTO_COMPACT_MAX_TOKENS}. A 200k window keeps 150k; a 1M window
+ * gets 550k instead of compacting at 15%.
+ */
+export function resolveAutoCompactTokens(
+  configured: number | undefined | null,
+  contextSize: number | undefined,
+  warnAtPct: number = AUTO_COMPACT_DEFAULT_WINDOW_PCT,
+): number {
+  if (configured !== undefined && configured !== null) return clampAutoCompactTokens(configured)
+  if (contextSize === undefined || !Number.isFinite(contextSize) || contextSize <= 0) {
+    return AUTO_COMPACT_DEFAULT_TOKENS
+  }
+  return clampAutoCompactTokens(
+    Math.max(AUTO_COMPACT_DEFAULT_TOKENS, Math.floor((contextSize * warnAtPct) / 100)),
+  )
+}
 
 /**
  * Clamp a user-supplied absolute threshold.

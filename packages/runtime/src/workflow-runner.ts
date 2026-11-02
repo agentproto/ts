@@ -132,6 +132,13 @@ export interface WorkflowRunner {
     item?: string
     /** Session to notify (inbox item) on success / failure / approval. */
     callerSessionId?: string
+    /**
+     * Supervising session every step session nests under. Recorded as each
+     * spawned step session's `parentSessionId`, so a review/fix run reads as
+     * ONE supervisor with children instead of a set of anonymous depth-0
+     * roots. Descriptor-only lineage - it never relaxes a depth/role guard.
+     */
+    supervisorSessionId?: string
   }): Promise<WorkflowRun>
 
   startFromFile(input: {
@@ -146,6 +153,8 @@ export interface WorkflowRunner {
     item?: string
     /** Session to notify (inbox item) on success / failure / approval. */
     callerSessionId?: string
+    /** Supervising session step sessions nest under - see `start`'s doc. */
+    supervisorSessionId?: string
   }): Promise<WorkflowRun>
 
   /** The run record. A run that is no longer resident (older terminal runs)
@@ -2434,6 +2443,12 @@ export function createWorkflowRunner(opts: {
   // `executeRunWorkflow` call below).
   const sessionToRun = new Map<string, { runId: string; stepId: string; host: SessionsRegistryAgentHost }>()
 
+  // runId → the supervising session the caller named at start time (AIP-58
+  // `supervisorSessionId`). Threaded into each run's agent host so its step
+  // sessions nest under that parent; also carried onto `retry()` so a
+  // retried run keeps the same supervisor instead of orphaning its children.
+  const supervisorByRun = new Map<string, string>()
+
   // ── Reload re-registration (WP-S restart safety) ────────────────────
   //
   // A run parked at "awaiting-approval" survives the restart as a slim
@@ -2661,6 +2676,7 @@ export function createWorkflowRunner(opts: {
         ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      if (input.supervisorSessionId !== undefined) supervisorByRun.set(runId, input.supervisorSessionId)
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -2691,6 +2707,9 @@ export function createWorkflowRunner(opts: {
           cwd: input.cwd,
           notifyUrl: input.notifyUrl,
           run: { runId, workflowId: input.workflowId },
+          ...(input.supervisorSessionId !== undefined
+            ? { parentSessionId: input.supervisorSessionId }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -2847,6 +2866,7 @@ export function createWorkflowRunner(opts: {
         ...(workspaceSlug !== undefined ? { workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      if (args.supervisorSessionId !== undefined) supervisorByRun.set(runId, args.supervisorSessionId)
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -2862,6 +2882,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug,
           cwd,
           run: { runId, workflowId: handle.id },
+          ...(args.supervisorSessionId !== undefined
+            ? { parentSessionId: args.supervisorSessionId }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })
@@ -3263,6 +3286,10 @@ export function createWorkflowRunner(opts: {
         ...(orig.workspaceSlug !== undefined ? { workspaceSlug: orig.workspaceSlug } : {}),
       }
       runs.set(runId, state)
+      {
+        const supervisor = supervisorByRun.get(originalRunId)
+        if (supervisor !== undefined) supervisorByRun.set(runId, supervisor)
+      }
       attachBounds(state)
       const persist = (): void => markDirty(state)
       persist()
@@ -3283,6 +3310,9 @@ export function createWorkflowRunner(opts: {
           workspaceSlug: orig.workspaceSlug,
           cwd: orig.cwd,
           run: { runId, workflowId: orig.workflowId },
+          ...(supervisorByRun.get(originalRunId) !== undefined
+            ? { parentSessionId: supervisorByRun.get(originalRunId)! }
+            : {}),
           onEscalate: createOnEscalate(state, persist),
           onSessionLabeled: (stepId, sessionId) => {
             sessionToRun.set(sessionId, { runId, stepId, host: agents })

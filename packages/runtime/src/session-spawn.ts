@@ -303,6 +303,7 @@ import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
   isSandboxBootCancelledError,
+  isSandboxEgressAllCoolingError,
   isSandboxBoxGoneError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
@@ -320,6 +321,19 @@ import {
   unknownPreflightProbes,
   type PreflightRegistry,
 } from "./sandbox-preflight.js"
+import { egressHealthLedger, isEgressHealthErrorClass } from "./egress-health.js"
+import {
+  bootErrorClass,
+  formatPlacementAttempts,
+  placementInputSchema,
+  placementRungProblem,
+  resolveLadder,
+  rungOverrides,
+  rungProviderLabel,
+  walkPlacementLadder,
+  type PlacementInput,
+  type SessionPlacement,
+} from "./placement-ladder.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -2061,6 +2075,15 @@ export interface SpawnAgentSessionInput {
    *  meaningful with `sandbox`; an id with no registered probe is refused
    *  (`sandbox_preflight_invalid`) before any box boots. */
   preflight?: string[]
+  /** Ordered placement ladder: rung 1 is tried first and the spawn moves down
+   *  the list when a rung cannot place the box (failed preflight, capacity or
+   *  overflow refusal, egress pool exhausted, any boot failure before the
+   *  agent started). Each rung is a `sandbox` plus optional `model` / `access`
+   *  / `preflight` / `turnRetry` overrides; omitted axes inherit this input's
+   *  own. Mutually exclusive with a top-level `sandbox` (`placement_invalid`).
+   *  Once the agent started the ladder never moves the session: that is
+   *  `turnRetry`'s job. The attempts land on the descriptor's `placement`. */
+  placement?: PlacementInput
   /** INTERNAL (`session_migrate`, never an `agent_start` argument): which
    *  checkpoint snapshot the new box restores onto the work branch's
    *  checkout. Default `"any"` — see `CheckpointRestoreSnapshot`. */
@@ -2257,6 +2280,9 @@ export type SpawnAgentSessionResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_egress_all_cooling"
+        | "placement_invalid"
+        | "sandbox_placement_exhausted"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -2432,6 +2458,97 @@ function spawnAdmissionOutcome(admission: SpawnAdmission): "allow" | "reuse" | "
 }
 
 export async function spawnAgentSession(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+): Promise<SpawnAgentSessionResult> {
+  if (input.placement === undefined) return spawnAgentSessionOnce(deps, input)
+  return spawnWithPlacementLadder(deps, input, input.placement)
+}
+
+/** Try each rung of `placement.ladder` as an ordinary single-box spawn. The
+ *  walk stops at the first rung that returns a session, so it can never move a
+ *  session whose agent already started; see `placement-ladder.ts` for what
+ *  counts as "this rung cannot place the box". */
+async function spawnWithPlacementLadder(
+  deps: SpawnAgentSessionDeps,
+  input: SpawnAgentSessionInput,
+  placement: PlacementInput,
+): Promise<SpawnAgentSessionResult> {
+  const invalid = (message: string): SpawnAgentSessionResult => ({ ok: false, code: "placement_invalid", message })
+  if (input.sandbox !== undefined) {
+    return invalid(
+      "agent_start: `placement` and `sandbox` are mutually exclusive; put the sandbox on a ladder rung " +
+        "(placement.ladder[].sandbox) or drop `placement`.",
+    )
+  }
+  const parsed = placementInputSchema.safeParse(placement)
+  if (!parsed.success) {
+    return invalid(`agent_start: invalid placement: ${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`)
+  }
+  const { placement: _stripped, ...inherited } = input
+  const ladder = resolveLadder(parsed.data.ladder, {
+    ...(inherited.model !== undefined ? { model: inherited.model } : {}),
+    ...(inherited.access !== undefined ? { access: inherited.access } : {}),
+    ...(inherited.preflight !== undefined ? { preflight: inherited.preflight } : {}),
+    ...(inherited.turnRetry !== undefined ? { turnRetry: inherited.turnRetry } : {}),
+  })
+  for (const [index, rung] of ladder.entries()) {
+    const problem = placementRungProblem(rung, index)
+    if (problem) return invalid(`agent_start: ${problem}`)
+  }
+  const walk = await walkPlacementLadder(
+    ladder,
+    async (rung, index) => {
+      const result = await spawnAgentSessionOnce(deps, { ...inherited, ...rungOverrides(rung) })
+      if (result.ok) return { ok: true, value: result }
+      if (ladder.length > 1) {
+        console.warn(
+          `[placement] rung ${index + 1}/${ladder.length} (${rungProviderLabel(rung)}) cannot place the box: ` +
+            `${result.code}${typeof result.details?.errorClass === "string" ? ` [${result.details.errorClass}]` : ""}`,
+        )
+      }
+      return { ok: false, code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) }
+    },
+  )
+  if (!walk.ok) {
+    if (walk.exhausted) {
+      return {
+        ok: false,
+        code: "sandbox_placement_exhausted",
+        message:
+          `agent_start: no placement rung could start the session (${formatPlacementAttempts(walk.attempts)}). ` +
+          `Last failure: ${walk.failure.message}`,
+        details: { attempts: walk.attempts },
+      }
+    }
+    return {
+      ok: false,
+      code: walk.failure.code as Extract<SpawnAgentSessionResult, { ok: false }>["code"],
+      message: walk.failure.message,
+      details: { ...walk.failure.details, attempts: walk.attempts },
+    }
+  }
+  const result = walk.value
+  if (result.ok && result.deduped) return result
+  const record: SessionPlacement = { rung: walk.rung, ladder, attempts: walk.attempts }
+  const descriptor = deps.registry.recordPlacement(result.descriptor.id, record) ?? result.descriptor
+  const skipped = walk.attempts.filter(a => a.outcome === "failed")
+  return {
+    ...result,
+    descriptor,
+    ...(skipped.length > 0
+      ? {
+          warnings: [
+            ...(result.warnings ?? []),
+            `agent_start: placement rung ${walk.rung + 1}/${ladder.length} (${rungProviderLabel(ladder[walk.rung]!)}) ` +
+              `after ${skipped.length} skipped (${formatPlacementAttempts(skipped)})`,
+          ],
+        }
+      : {}),
+  }
+}
+
+async function spawnAgentSessionOnce(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
 ): Promise<SpawnAgentSessionResult> {
@@ -6058,6 +6175,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxEgressIp: { slot: string; publicIp: string } | undefined
     let sandboxProviderChoice: SandboxProviderChoice | undefined
     let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
@@ -6258,6 +6376,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxEgressIp = booted.egressIp
       sandboxProviderChoice = booted.choice
       sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
@@ -6486,6 +6605,7 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxEgressIp ? { sandboxEgressIp: sandboxEgressIp.publicIp, sandboxEgressSlot: sandboxEgressIp.slot } : {}),
       ...(sandboxProviderChoice ? { sandboxProviderChoice } : {}),
       ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
@@ -6495,6 +6615,7 @@ export async function spawnAgentSession(
       ...(sandboxDeliveryTarget && input.sandboxCheckpoint !== undefined
         ? { sandboxCheckpointOverride: input.sandboxCheckpoint }
         : {}),
+      ...(sandboxId && input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
       ...(sandboxPorts ? { sandboxPorts } : {}),
       ...(appServe ? { appServe } : {}),
       ...(commandSandbox ? { commandSandbox } : {}),
@@ -6799,6 +6920,11 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** The egress address the box leaves from (pool slot id + public IP),
+       *  when the provider brokers one. Stamped onto the descriptor so a
+       *  throttled turn on this box can cool the address down in the egress
+       *  health ledger. */
+      egressIp?: { slot: string; publicIp: string }
       /** Spawn-time explanations (derived remote, tar mode, …) the caller
        *  records on the new session. */
       notices?: string[]
@@ -6830,6 +6956,7 @@ export type SandboxBootResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_egress_all_cooling"
         | "device_spawn_unreachable"
         | "device_offline"
       message: string
@@ -7506,8 +7633,21 @@ export async function bootSandboxAgentSession(opts: {
       // `daemon.log` instead of silent until it fails.
       log: (line: string) => console.warn(line),
       ...(opts.signal ? { signal: opts.signal } : {}),
+      // An `egressIp: "auto"` computer box picks a pool slot whose address is
+      // not cooling down for this model; other providers ignore it.
+      ...(opts.model ? { egressHealth: egressHealthLedger.view(opts.model) } : {}),
     })
   } catch (err) {
+    // Every pool address is cooling down for this model: nothing was booted,
+    // so a placement ladder can advance without paying for a box.
+    if (isSandboxEgressAllCoolingError(err)) {
+      return {
+        ok: false,
+        code: "sandbox_egress_all_cooling",
+        message: `agent_start: ${err.message}`,
+        details: { model: err.model, slots: err.slots },
+      }
+    }
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
     // `createSandboxAgentSessionHost`: it raises `SandboxHostBootFailedError`
     // only once `connect()`/`boot()` has already SUCCEEDED (the box exists,
@@ -7592,6 +7732,10 @@ export async function bootSandboxAgentSession(opts: {
           message:
             `agent_start: sandbox boot failed (provider "${providerSlug}") — ` +
             `${err instanceof Error ? err.message : String(err)}`,
+          // The provider's own typed code (capacity, overflow refused, egress
+          // pool exhausted, ...), so a placement ladder records why a rung was
+          // skipped without matching the message.
+          ...(bootErrorClass(err) ? { details: { errorClass: bootErrorClass(err) } } : {}),
         }
   }
 
@@ -7684,6 +7828,20 @@ export async function bootSandboxAgentSession(opts: {
       )
       for (const o of run.outcomes) {
         if (o.verdict === "unknown") bootWarnings.push(`agent_start: preflight "${o.probe}" inconclusive: ${o.detail}`)
+      }
+      if (
+        run.failed &&
+        host.egressIp?.publicIp &&
+        opts.model &&
+        isEgressHealthErrorClass(run.failed.errorClass)
+      ) {
+        egressHealthLedger.mark({
+          publicIp: host.egressIp.publicIp,
+          model: opts.model,
+          errorClass: run.failed.errorClass,
+          slot: host.egressIp.id,
+          source: `preflight:${run.failed.probe}`,
+        })
       }
       if (run.failed) {
         console.warn(
@@ -8153,6 +8311,7 @@ export async function bootSandboxAgentSession(opts: {
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.
     ...(host.device ? { deviceFingerprint: host.device.fingerprint } : {}),
+    ...(host.egressIp?.publicIp ? { egressIp: { slot: host.egressIp.id, publicIp: host.egressIp.publicIp } } : {}),
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     ...(appServe ? { appServe } : {}),
     // The proxy flattens the box's stream to text (documented limitation),

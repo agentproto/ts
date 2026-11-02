@@ -953,6 +953,9 @@ export function registerAgentTools(
         result.code === "auth_profile_denied" ||
         result.code === "stdio_mount_denied" ||
         result.code === "sandbox_preflight_failed" ||
+        result.code === "sandbox_egress_all_cooling" ||
+        result.code === "sandbox_placement_exhausted" ||
+        result.code === "placement_invalid" ||
         result.code === "identity_unverified" ||
         result.code === "identity_mismatch"
           ? JSON.stringify(

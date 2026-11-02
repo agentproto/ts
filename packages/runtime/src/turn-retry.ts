@@ -87,6 +87,7 @@ import type {
 import type { MigrateSandboxSessionResult } from "./session-migrate.js"
 import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
+import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger } from "./egress-health.js"
 import { getModelListSource } from "./model-list-store.js"
 import { checkModelPolicy } from "./model-policy.js"
 import {
@@ -545,6 +546,10 @@ export function createTurnRetryController(opts: {
   now?: () => number
   /** Daemon-wide model cooldowns. Defaults to a private map (tests/standalone). */
   cooldowns?: ModelCooldowns
+  /** Per-egress-IP model cooldowns. A rate/usage limit on a box session whose
+   *  descriptor knows its egress address cools that address down here too.
+   *  Defaults to the daemon-wide on-disk ledger. */
+  egressHealth?: EgressHealthLedger
   /** Extra async eligibility gate for rotation targets (adapter/route + profile allow-list). */
   checkRotationTarget?: RotationTargetCheck
   /** Box-migration orchestration for `turnRetry.action: "migrate"`. Absent ⇒ a
@@ -570,6 +575,7 @@ export function createTurnRetryController(opts: {
   const { registry, sessionEvents } = opts
   const now = opts.now ?? Date.now
   const cooldowns = opts.cooldowns ?? createModelCooldowns(now)
+  const egressHealth = opts.egressHealth ?? egressHealthLedger
   const setTimer =
     opts.setTimer ??
     ((fn: () => void, ms: number) => {
@@ -1287,8 +1293,29 @@ export function createTurnRetryController(opts: {
     })
   }
 
+  /** A box session's rate/usage limit is a fact about that box's egress address,
+   *  whatever its own retry policy opted into: cool the address down for the
+   *  model so the next boot avoids it. Runs for a session with no policy too. */
+  const noteEgressThrottle = (desc: SessionDescriptor, trigger: TurnRetryTrigger): void => {
+    if (!desc.sandboxEgressIp || !desc.model) return
+    if (trigger.kind !== "turn-end" || trigger.reason !== "error" || trigger.interrupted) return
+    const message = trigger.error ?? desc.lastTurnErrorMessage
+    const errorClass = classifyTurnError(message)
+    if (!isEgressHealthErrorClass(errorClass)) return
+    const retryAfter = errorClass === "rate-limit" ? extractRetryAfterMs(message) : undefined
+    egressHealth.mark({
+      publicIp: desc.sandboxEgressIp,
+      model: desc.model,
+      errorClass,
+      ...(retryAfter !== undefined && retryAfter > 0 ? { durationMs: retryAfter } : {}),
+      ...(desc.sandboxEgressSlot ? { slot: desc.sandboxEgressSlot } : {}),
+      source: desc.id,
+    })
+  }
+
   const handle = (id: string, trigger: TurnRetryTrigger): void => {
     const desc = registry.get(id)
+    if (desc) noteEgressThrottle(desc, trigger)
     if (!desc?.turnRetry) return
     const decision = decideTurnRetry(desc, trigger, { halted: halted.has(id) })
     if (decision.action !== "ignore") noteThrottle(desc, trigger, decision.errorClass)
@@ -1480,6 +1507,15 @@ export function createTurnRetryController(opts: {
   const unsubs = [
     sessionEvents.on("session:turn-end", ev => {
       const desc = registry.get(ev.sessionId)
+      if (desc && !desc.turnRetry && ev.reason === "error") {
+        // No retry policy to run, but the failure still says something about the box's egress address.
+        noteEgressThrottle(desc, {
+          kind: "turn-end",
+          reason: ev.reason,
+          ...(ev.error !== undefined ? { error: ev.error } : {}),
+          ...(ev.interrupted ? { interrupted: true } : {}),
+        })
+      }
       if (!desc?.turnRetry) return
       // Any turn-end supersedes a pending retry for this row (a stall that
       // finally errored on its own, a user prompt that ran meanwhile).

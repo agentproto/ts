@@ -16,6 +16,8 @@
  */
 
 import { createLivenessTickGuard } from "./liveness-tick-guard.js"
+import { heapLogIntervalFromEnv, startHeapMonitor, writeHeapSnapshotGuarded } from "./heap-diagnostics.js"
+import { eventsIndexCacheSize } from "./events-jsonl-reader.js"
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdtempSync } from "node:fs"
@@ -698,6 +700,28 @@ export {
   type SandboxConnectionDescriptor,
 } from "./sandbox-attach.js"
 export {
+  DEFAULT_EGRESS_COOLDOWN_MS,
+  MAX_EGRESS_COOLDOWN_MS,
+  createEgressHealthLedger,
+  egressHealthLedger,
+  egressHealthPath,
+  isEgressHealthErrorClass,
+  type EgressCooldownEntry,
+  type EgressHealthErrorClass,
+  type EgressHealthLedger,
+  type MarkEgressCooldownInput,
+} from "./egress-health.js"
+export {
+  DEFAULT_EGRESS_HEALTH_PROVIDER,
+  probeEgressSlots,
+  readEgressHealth,
+  registerSandboxEgressHealthTool,
+  type EgressHealthReport,
+  type EgressHealthSlotView,
+  type EgressProbeReport,
+  type EgressProbeSlotResult,
+} from "./egress-health-report.js"
+export {
   SANDBOX_EXEC_STREAM_MAX_CHARS,
   SANDBOX_EXEC_MAX_COMMAND_BYTES,
   SANDBOX_EXEC_MAX_ENV_BYTES,
@@ -1118,6 +1142,7 @@ import { registerToolHelpTool } from "./tool-help-mcp.js"
 import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { registerAppTunnelTools } from "./app-tunnel-tools.js"
+import { createTunnelRegistryExposer } from "./app-service-expose.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -1138,6 +1163,7 @@ import {
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
 import { registerSandboxExecTool } from "./sandbox-exec.js"
+import { registerSandboxEgressHealthTool } from "./egress-health-report.js"
 import type { WorktreeProvisioner, WorktreeAutoReclaimer, SandboxCheckpointReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
@@ -2429,6 +2455,14 @@ export async function createGateway(
       // restoreOnBoot already logs per-tunnel failures via onLog.
     })
   }
+  // AIP-53 `services[].expose`: one keyed tunnel per exposed app service on
+  // this same registry. Keyed tunnels are not autostart: the services boot
+  // pass (reensureAppServicesOnBoot) re-ensures them, so boot never doubles.
+  const appServiceExposer = createTunnelRegistryExposer({
+    registry: tunnels,
+    readCreds: slug => tunnelCredsStore.read(slug),
+    configuredProvider: async () => (await loadConfig()).defaults?.apps?.exposeProvider,
+  })
 
   // Public origin GitHub calls back into for the `webhook` sentinel provider:
   // AGENTPROTO_PUBLIC_URL, else an active tunnel to this daemon's port
@@ -4499,6 +4533,7 @@ export async function createGateway(
       daemonMcpUrl,
       resolveModelRole: resolveModelRoleId,
       persist,
+      serviceExposer: appServiceExposer,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -4744,6 +4779,11 @@ export async function createGateway(
     registerSandboxExecTool(server, {
       resolveSandboxProvider: resolveSandboxProviderResolved,
     })
+    // `sandbox egress-health` - the provider's egress address pool with the
+    // per-IP model cooldowns (read-only; the re-probe is CLI/HTTP only).
+    registerSandboxEgressHealthTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
+    })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters
     // (list_eval_reporters + setup_eval_reporter). Credentials live 0600 under
     // ~/.agentproto and are never exposed by the list tool.
@@ -4916,10 +4956,32 @@ export async function createGateway(
       : undefined
   permissionTelegram?.start()
 
+  // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
+  // 0 = off) with heapUsed/rss, the floor after the last major GC, live
+  // handles, and the sizes of the long-lived structures below; the same
+  // report backs the operator-only GET /debug/heap.
+  const heapMonitor = startHeapMonitor({
+    intervalMs: heapLogIntervalFromEnv(),
+    probes: {
+      sessions: () => {
+        const all = sessions.list({ includeArchived: true })
+        let live = 0
+        for (const d of all) if (d.status === "running" || d.status === "starting") live++
+        return { total: all.length, live }
+      },
+      policies: () => ({ total: supervisor.list().length }),
+      workflowRuns: () => ({ total: workflowRunner?.list().length ?? 0 }),
+      eventsIndexCache: () => ({ entries: eventsIndexCacheSize() }),
+      ...(opts.hostRegistry?.memoryStats ? { hosts: () => opts.hostRegistry!.memoryStats!() } : {}),
+      ...(opts.pairingRegistry?.memoryStats ? { pairing: () => opts.pairingRegistry!.memoryStats!() } : {}),
+    },
+  })
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
     mcpObservations,
+    heapDiagnostics: { report: () => heapMonitor.report(), snapshot: () => writeHeapSnapshotGuarded() },
     // Auth is read on every request via this getter. `opts.auth`
     // (when provided) is the startup default and represents the
     // operator's intent — bearer-only deployments stay bearer-only
@@ -5546,6 +5608,7 @@ export async function createGateway(
           ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
         }),
         registry: sessions,
+        exposer: appServiceExposer,
         ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
         ...(daemonMcpUrl !== undefined ? { daemonMcpUrl } : {}),
       })
@@ -5587,6 +5650,7 @@ export async function createGateway(
       if (wiringSweepTimer) clearInterval(wiringSweepTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
+      heapMonitor.stop()
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
       turnRetryController.dispose()
