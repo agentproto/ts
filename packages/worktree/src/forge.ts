@@ -462,8 +462,20 @@ export class RestForgeClient implements ForgeClient {
     return all
   }
 
-  /** Every closed PR (merged or not), up to 10 pages of 100. */
-  private async listClosedPullRequests(): Promise<ForgePullRequestRef[]> {
+  private closedInFlight: Promise<ForgePullRequestRef[]> | undefined
+
+  /** Every closed PR (merged or not), up to 10 pages of 100. The merged and
+   *  closed-unmerged lists are both cut from it and branch_gc asks for them
+   *  together, so concurrent callers share ONE in-flight read (dropped once it
+   *  settles: a later plan sees fresh data). */
+  private listClosedPullRequests(): Promise<ForgePullRequestRef[]> {
+    this.closedInFlight ??= this.fetchClosedPullRequests().finally(() => {
+      this.closedInFlight = undefined
+    })
+    return this.closedInFlight
+  }
+
+  private async fetchClosedPullRequests(): Promise<ForgePullRequestRef[]> {
     const all: ForgePullRequestRef[] = []
     for (let page = 1; page <= 10; page++) {
       const res = await this.get(`/repos/${this.owner}/${this.repo}/pulls?state=closed&per_page=100&page=${page}`)

@@ -247,7 +247,7 @@ export interface BranchRef {
  * newest PR closed without merging, else `none`. By name only, so a `merged`
  * here says a PR from this branch name merged, not that this tip landed (an
  * exact-head match is `mergedPr` instead). Absent when a list it needed was
- * unavailable: no answer is never reported as `none`.
+ * unavailable or hit the 1000-PR cap: no answer is never reported as `none`.
  */
 export interface BranchHeadPr {
   state: "open" | "merged" | "closed-unmerged" | "none"
@@ -903,7 +903,14 @@ interface OpenPrHeads {
   available: boolean
   reason?: string
   heads: Map<string, number>
+  /** The list came back under {@link FORGE_LIST_CAP}: a name missing from it has no open PR. */
+  complete?: boolean
 }
+
+/** Both forge clients stop a bulk PR list at 1000 PRs (`gh pr list --limit
+ *  1000`, 10 REST pages of 100). A list that long may be cut off, so a name
+ *  missing from it proves nothing: `headPr` then says unknown, never `none`. */
+const FORGE_LIST_CAP = 1000
 
 async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads> {
   if (!forge) return { available: false, reason: "no forge client", heads: new Map() }
@@ -914,7 +921,7 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
     const prs = await forge.listOpenPullRequests()
     const heads = new Map<string, number>()
     for (const pr of prs) if (pr.state === "open") heads.set(pr.headRefName, pr.number)
-    return { available: true, heads }
+    return { available: true, heads, complete: prs.length < FORGE_LIST_CAP }
   } catch (err) {
     const reason = (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "forge error"
     return { available: false, reason, heads: new Map() }
@@ -932,7 +939,7 @@ async function openPrHeads(forge: ForgeClient | undefined): Promise<OpenPrHeads>
  * "no merged PRs", and the ladder still classifies every ref on its own.
  */
 interface MergedPrIndex {
-  /** The merged list was read: an absent name means no merged PR. */
+  /** The merged list was read, and came back under {@link FORGE_LIST_CAP}: an absent name means no merged PR. */
   available: boolean
   shas: Map<string, number>
   names: Map<string, { number: number; headRefOid: string }>
@@ -947,12 +954,13 @@ async function mergedPrIndex(forge: ForgeClient | undefined): Promise<MergedPrIn
     const shas = new Map<string, number>()
     const names = new Map<string, { number: number; headRefOid: string }>()
     const newestByName = new Map<string, number>()
-    for (const pr of await forge.listMergedPullRequests()) {
+    const merged = await forge.listMergedPullRequests()
+    for (const pr of merged) {
       shas.set(pr.headRefOid, pr.number)
       names.set(pr.headRefName, { number: pr.number, headRefOid: pr.headRefOid })
       newestByName.set(pr.headRefName, Math.max(pr.number, newestByName.get(pr.headRefName) ?? 0))
     }
-    return { available: true, shas, names, newestByName }
+    return { available: merged.length < FORGE_LIST_CAP, shas, names, newestByName }
   } catch {
     return none()
   }
@@ -970,18 +978,21 @@ async function closedUnmergedPrHeads(forge: ForgeClient | undefined): Promise<Cl
   if (!forge?.listClosedUnmergedPullRequests) return { available: false, names: new Map() }
   try {
     const names = new Map<string, number>()
-    for (const pr of await forge.listClosedUnmergedPullRequests()) {
+    const closed = await forge.listClosedUnmergedPullRequests()
+    for (const pr of closed) {
       if (pr.merged) continue
       names.set(pr.headRefName, Math.max(pr.number, names.get(pr.headRefName) ?? 0))
     }
-    return { available: true, names }
+    // Hits still answer; only a cut-off list stops a miss meaning `none`.
+    return { available: closed.length < FORGE_LIST_CAP, names }
   } catch {
     return { available: false, names: new Map() }
   }
 }
 
 /** {@link BranchHeadPr} for branch `name` from the bulk lists. A hit in any
- *  list is an answer; `none` needs all three lists to have been read. */
+ *  list is an answer; `none` needs all three lists read in full (each under
+ *  {@link FORGE_LIST_CAP}). */
 function headPrOf(name: string, env: ClassifyEnv): BranchHeadPr | undefined {
   const open = env.prs.heads.get(name)
   if (open !== undefined) return { state: "open", number: open }
@@ -989,7 +1000,7 @@ function headPrOf(name: string, env: ClassifyEnv): BranchHeadPr | undefined {
   if (merged !== undefined) return { state: "merged", number: merged }
   const closed = env.closedUnmergedPrs.names.get(name)
   if (closed !== undefined) return { state: "closed-unmerged", number: closed }
-  if (env.prs.available && env.mergedPrsAvailable && env.closedUnmergedPrs.available) return { state: "none" }
+  if (env.prs.complete === true && env.mergedPrsAvailable && env.closedUnmergedPrs.available) return { state: "none" }
   return undefined
 }
 

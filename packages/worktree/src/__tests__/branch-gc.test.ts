@@ -337,6 +337,23 @@ describe("branch gc - headPr (the forge's PR for the branch name)", () => {
       number: 3,
     })
   })
+
+  it("never claims none from a list cut off at the 1000-PR cap, but still answers a hit in it", async () => {
+    const repo = await makeRepo()
+    await branchWith(repo, "feat/no-pr", { "d.txt": "d\n" })
+    await branchWith(repo, "feat/closed", { "b.txt": "b\n" })
+    await commitFiles(repo, { "later.txt": "x\n" }, "later work")
+    const full = Array.from({ length: 999 }, (_, i) => closedPr(i + 1, `other/${i}`))
+    const capped = [...full, closedPr(5000, "feat/closed")]
+    const p = await plan(repo, { forge: new FakeForge([], [], capped) })
+    expect(entry(p, "feat/no-pr").headPr).toBeUndefined()
+    expect(entry(p, "feat/closed").headPr).toEqual({ state: "closed-unmerged", number: 5000 })
+    // One PR short of the cap is a complete list: a miss is `none`.
+    expect(entry(await plan(repo, { forge: new FakeForge([], [], full) }), "feat/no-pr").headPr).toEqual({ state: "none" })
+    // The open list counts too.
+    const openCapped = Array.from({ length: 1000 }, (_, i) => openPr(i + 1, `open/${i}`))
+    expect(entry(await plan(repo, { forge: new FakeForge(openCapped) }), "feat/no-pr").headPr).toBeUndefined()
+  })
 })
 
 // ── merged-PR head shortcut ──────────────────────────────────────────────

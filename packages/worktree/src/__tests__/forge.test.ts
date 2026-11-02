@@ -98,6 +98,25 @@ describe("RestForgeClient (GITHUB_TOKEN REST fallback)", () => {
     for (const u of urls) expect(u).toContain("/pulls?state=closed&")
   })
 
+  it("serves concurrent merged and closed-unmerged reads from ONE closed-list fetch", async () => {
+    let fetches = 0
+    const fetchFn = async (): Promise<Response> => {
+      fetches++
+      return jsonResponse(200, [
+        { number: 1, state: "closed", merged_at: "2026-01-01T00:00:00.000Z", head: { ref: "feat/merged", sha: "abc" } },
+        { number: 2, state: "closed", merged_at: null, head: { ref: "feat/abandoned", sha: "def" } },
+      ])
+    }
+    const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn as typeof fetch)
+    const [merged, closed] = await Promise.all([client.listMergedPullRequests(), client.listClosedUnmergedPullRequests()])
+    expect(merged.map((pr) => pr.number)).toEqual([1])
+    expect(closed.map((pr) => pr.number)).toEqual([2])
+    expect(fetches).toBe(1)
+    // Settled: the next plan reads fresh data.
+    await client.listMergedPullRequests()
+    expect(fetches).toBe(2)
+  })
+
   it("treats a 404 on commits/:sha/pulls as a legitimate empty result, not an error", async () => {
     const fetchFn = async (): Promise<Response> => new Response("not found", { status: 404 })
     const client = new RestForgeClient("agentproto", "ts", "/repo", "tok", fetchFn)

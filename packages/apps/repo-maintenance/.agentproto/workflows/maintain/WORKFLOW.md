@@ -425,8 +425,9 @@ the merged PR whose head is the tip (`mergedPr`) when there is one, else
 branch_gc's `headPr`: the PR found for the branch NAME in the forge's bulk
 open, merged and closed-unmerged lists (no per-branch call). A `merged` PR
 found by name is printed `merged #N (by branch name)`: a PR from that name
-merged, not necessarily this tip. `none` needs all three lists; a list the
-forge could not serve leaves the state `unknown`. The cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
+merged, not necessarily this tip. `none` needs all three lists read in full;
+a list the forge could not serve, or one that hit the 1000-PR cap (and may be
+cut off), leaves a branch it does not list `unknown`. The cherry summary is read from the branch_gc entry's `cherry: { total, unmatched }`
 and is `unavailable` when branch_gc does not expose it. The report prints one
 line per verdict: branch, PR state, cherry summary and the reviewer's one-line
 reason (stored `gate.reason`, else `triage.reason`). Each "Human decision

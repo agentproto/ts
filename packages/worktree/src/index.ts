@@ -254,6 +254,7 @@ export {
   type TipClassification,
   type BranchRef,
   type BranchVerdictSummary,
+  type BranchHeadPr,
   type BranchGcPlanEntry,
   type BranchGcPlan,
   type BranchGcSummary,

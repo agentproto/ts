@@ -300,6 +300,7 @@ export interface BranchGcCompactEntry {
   holdReason?: BranchGcHoldReason
   lineCoverage?: { pct: number }
   verdictGuard?: string
+  headPr?: BranchGcPlanEntryView["headPr"]
 }
 
 export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
@@ -315,6 +316,7 @@ export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactE
     ...(e.holdReason !== undefined ? { holdReason: e.holdReason } : {}),
     ...(e.lineCoverage !== undefined ? { lineCoverage: { pct: e.lineCoverage.pct } } : {}),
     ...(e.verdictGuard !== undefined ? { verdictGuard: e.verdictGuard } : {}),
+    ...(e.headPr !== undefined ? { headPr: e.headPr } : {}),
   }
 }
 
