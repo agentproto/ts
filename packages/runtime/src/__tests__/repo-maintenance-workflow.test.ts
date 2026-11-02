@@ -737,14 +737,61 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(listed).toHaveLength(30)
     const listedPcts = listed.map(m => Number(m[2]))
     expect(listedPcts).toEqual([...pcts].sort((a, b) => a - b))
-    // How to act on it: the MCP verb with a concrete operator block for the
-    // first queued tip, and the honest note that no CLI command exists.
-    const first = refused[pcts.indexOf(Math.min(...pcts))]!
-    expect(queue).toContain("branch_gc_verdict")
-    expect(queue).toContain(`"sha": "${first.sha}"`)
-    expect(queue).toContain(`"name": "${first.name}"`)
-    expect(queue).toContain('"operator"')
-    expect(queue).toContain("no CLI command")
+    // How to act on it: one ready-to-run CLI command per queued tip, in queue
+    // order; the operator types only their name. No JSON template to fill in.
+    const commands = [...queue.matchAll(/^agentproto branch gc approve ([0-9a-f]{40}) --by <your name> --repo \/repo {2}# (\S+)$/gm)]
+    expect(commands).toHaveLength(30)
+    expect(commands.map(m => m[2])).toEqual(listed.map(m => m[1]))
+    for (const m of commands) expect(refused.find(r => r.name === m[2])?.sha).toBe(m[1])
+    expect(queue).not.toContain('"operator"')
+    expect(queue).not.toContain("no CLI command")
+  })
+
+  it("counts and lists the decision queue and the reclaimed list once per tip sha, with the ref kinds on one line", async () => {
+    const twin = (name: string, sha: string, extra: Record<string, unknown>) => [
+      { kind: "local", name, sha, ...extra },
+      { kind: "remote", name, sha, ...extra },
+    ]
+    const guard = { result: "refused-guard", guard: "line coverage 40% of 50 added lines (< 95%)" }
+    const outcomes = [
+      ...twin("fix/ci-failures", "c2df0084".padEnd(40, "0"), guard),
+      ...twin("wt/vscode-activity-panel", "1".repeat(40), { ...guard, guard: "line coverage 70% of 50 added lines (< 95%)" }),
+      { kind: "local", name: "wt/only-local", sha: "2".repeat(40), ...guard },
+      ...twin("perf/agent-start-compact-descriptor", "3".repeat(40), { result: "deleted", reclaimReason: "reviewed" }),
+    ]
+    let branchGcCallCount = 0
+    const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
+      if (name === "worktree_gc") return fakeWorktreeGc(inputs)
+      if (name === "branch_gc") {
+        branchGcCallCount++
+        if (branchGcCallCount === 3) return mcpResult({ mode: "apply", outcomes, restoreLog: null })
+        return mcpResult(branchGcPlanFixture(true))
+      }
+      if (name === "branch_gc_verdict_get") return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha } })
+      if (name === "branch_gc_review_worktree") return reviewWorktreeResult(inputs)
+      if (name === "model_roles") return modelRolesResult(inputs)
+      if (name === "sandbox_checkpoint_gc") return fakeCheckpointGc(inputs)
+      throw new Error(`unexpected tool '${name}'`)
+    })
+    const handle = await loadWorkflowHandle(WORKFLOW_PATH)
+    const compiled = compileWorkflow(handle, {
+      ...createDaemonToolRegistry(handle, dispatchTool),
+      agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
+    })
+    const { output } = await runWorkflow({
+      workflow: compiled,
+      agents: fakeAgentHost(vi.fn(async () => "sess_x")),
+      input: { repoRoot: "/repo", applyMerged: true, applyReviewed: true },
+    })
+    const report = (output as { report: string }).report
+    expect(report).toContain("reviewed: 1 reclaimed (includeReviewed true), 3 refused by the line-coverage guard")
+    expect(report).toContain("reclaimed (1): `perf/agent-start-compact-descriptor` [local, remote]")
+    expect(report).toContain("## Human decision queue — reviewer agreed, refused by line guard (3)")
+    const queue = report.slice(report.indexOf("## Human decision queue"))
+    expect(queue.match(/^- `fix\/ci-failures`/gm)).toHaveLength(1)
+    expect(queue).toContain(`- \`fix/ci-failures\` (${"c2df0084".padEnd(40, "0")}) [local, remote] — 40% line coverage`)
+    expect(queue).toContain("- `wt/only-local` (" + "2".repeat(40) + ") [local] — 40% line coverage")
+    expect(queue.match(/^agentproto branch gc approve /gm)).toHaveLength(3)
   })
 
   it("asks branch_gc for its full reply on every call (the plan entries feed the review queue, the apply output is reported)", async () => {

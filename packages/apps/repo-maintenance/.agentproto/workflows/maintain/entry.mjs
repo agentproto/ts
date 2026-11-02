@@ -542,35 +542,65 @@ function refsWithStatus(summary, status) {
   return Object.values(summary?.byStatus ?? {}).reduce((n, byKind) => n + (byKind?.[status] ?? 0), 0)
 }
 
-/** The report's operator-approval instructions for a guard refusal `o`
- *  (`{ name, sha }`): the operator re-records the tip's verdict with an
- *  `operator` block, which only the operator MCP surface accepts. `record` is
- *  the stored verdict when this run read it, so the example is the real call;
- *  otherwise its reviewer fields are placeholders. */
-export function operatorApprovalHowTo(o, repoRoot, record) {
-  const stored = record?.triage && record?.gate ? record : null
-  const example = {
-    repoRoot: repoRoot ?? "<repo root>",
-    name: o.name,
-    sha: o.sha,
-    reviewer: stored?.reviewer ?? "<stored reviewer>",
-    triage: stored?.triage ?? { verdict: "<stored>", confidence: "<stored>", reason: "<stored>" },
-    gate: stored?.gate ?? { agree: true, verdict: "<stored>", reason: "<stored>", evidence: ["<stored>"] },
-    operator: { by: "<your name>", note: "<why deleting it loses nothing>" },
-  }
+/** `s` single-quoted for a POSIX shell when it is not a plain word. */
+function shellArg(s) {
+  const str = String(s)
+  return /^[A-Za-z0-9_./:@%+=-]+$/.test(str) ? str : `'${str.replace(/'/g, `'\\''`)}'`
+}
+
+/** The report's operator-approval instructions for the decision queue
+ *  `tips` (`[{ sha, names }]`, see {@link groupOutcomesBySha}): one
+ *  `agentproto branch gc approve` command per tip. The CLI copies the stored
+ *  verdict itself, so the operator supplies only their name. */
+export function operatorApprovalHowTo(tips, repoRoot) {
+  const repo = repoRoot ? ` --repo ${shellArg(repoRoot)}` : ""
   return [
-    "To approve one, record an operator approval for that exact tip: call the `branch_gc_verdict` MCP tool " +
-      "from the operator surface (an agent session's call is refused) with the stored verdict " +
-      "(`branch_gc_verdict_get` with the same `sha` returns it) plus an `operator` block. `operator.by` must " +
-      "differ from the reviewer. For the first branch above:",
+    "To approve one, record an operator approval for that exact tip from your own shell (an agent " +
+      "session is refused). The command copies the stored verdict, refuses when it did not agree or the " +
+      "branch moved since, and `--by` must differ from the reviewer. Add `--dry-run` to see what it records, " +
+      "`--note <why>` to say why:",
     "",
-    "```json",
-    JSON.stringify(example, null, 2),
+    "```sh",
+    ...tips.map(t => `agentproto branch gc approve ${t.sha} --by <your name>${repo}  # ${t.names.join(", ")}`),
     "```",
     "",
-    "The next run with `applyMerged: true` and `applyReviewed: true` then deletes it and writes a restore log. " +
-      "There is no CLI command for this yet: `agentproto branch gc` only plans and applies.",
+    "The next run with `applyMerged: true` and `applyReviewed: true` then deletes them and writes a restore log.",
   ]
+}
+
+/** `branch_gc` apply outcomes grouped by tip sha, first-seen order: a local
+ *  branch and its origin twin are ONE tip with two refs, so the report counts
+ *  and lists it once (the same unit as `summary.distinct`).
+ *  `[{ sha, names, kinds, outcome }]`, `outcome` being the first ref's. */
+export function groupOutcomesBySha(outcomes) {
+  const bySha = new Map()
+  for (const o of outcomes) {
+    const key = o.sha ?? `${o.kind}:${o.name}`
+    let g = bySha.get(key)
+    if (!g) {
+      g = { sha: o.sha, names: [], kinds: [], outcome: o }
+      bySha.set(key, g)
+    }
+    if (!g.names.includes(o.name)) g.names.push(o.name)
+    if (o.kind && !g.kinds.includes(o.kind)) g.kinds.push(o.kind)
+  }
+  return [...bySha.values()]
+}
+
+/** A tip's names and ref kinds: `` `name` [local, remote] ``. */
+function tipNames(g) {
+  return `${g.names.map(n => `\`${n}\``).join(", ")}${g.kinds.length > 0 ? ` [${g.kinds.join(", ")}]` : ""}`
+}
+
+/** One tip on one line: `` `name` (sha) [local, remote] ``. */
+function tipLabel(g) {
+  return `${g.names.map(n => `\`${n}\``).join(", ")} (${g.sha})${g.kinds.length > 0 ? ` [${g.kinds.join(", ")}]` : ""}`
+}
+
+/** {@link formatNameList} for tip groups: one item per tip, kinds inline. */
+function formatTipList(groups, cap = REPORT_LIST_CAP, where) {
+  const shown = groups.slice(0, cap).map(tipNames).join(", ")
+  return groups.length > cap ? `${shown}, … and ${groups.length - cap} more${fullListAt(where)}` : shown
 }
 
 /** The coverage percentage in a `branch_gc` `verdictGuard` string
@@ -712,8 +742,9 @@ export function buildReport(b) {
   const branchGcApply = b.steps.branchGcApply
   const worktreeGcApply = b.steps.worktreeGcApply
   const applyOutcomes = Array.isArray(branchGcApply?.outcomes) ? branchGcApply.outcomes : []
-  const reclaimedReviewed = applyOutcomes.filter(o => o.result === "deleted" && o.reclaimReason === "reviewed")
-  const refusedByGuard = applyOutcomes.filter(o => o.result === "refused-guard")
+  // Per distinct tip sha: a branch and its origin twin are one decision.
+  const reclaimedReviewed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.reclaimReason === "reviewed"))
+  const refusedByGuard = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "refused-guard"))
 
   const lines = []
   lines.push(`# Repo maintenance — ${plan?.repoName ?? plan?.repoRoot ?? "unknown repo"}`)
@@ -842,7 +873,7 @@ export function buildReport(b) {
     )
     if (reclaimedReviewed.length > 0) {
       lines.push(
-        `- reclaimed (${reclaimedReviewed.length}): ${formatNameList(reclaimedReviewed.map(o => o.name), REPORT_LIST_CAP, "the run output's `branchGcApply.outcomes`")}`,
+        `- reclaimed (${reclaimedReviewed.length}): ${formatTipList(reclaimedReviewed, REPORT_LIST_CAP, "the run output's `branchGcApply.outcomes`")}`,
       )
     } else {
       lines.push("- reclaimed: none")
@@ -873,13 +904,13 @@ export function buildReport(b) {
     // The one list a human must decide on: never capped, lowest line
     // coverage (most unmerged work) first, unknown coverage last.
     const queue = refusedByGuard
-      .map(o => ({ o, pct: lineCoveragePctOfGuard(o.guard) }))
+      .map(g => ({ g, pct: lineCoveragePctOfGuard(g.outcome.guard) }))
       .sort((a, b) => (a.pct ?? Number.POSITIVE_INFINITY) - (b.pct ?? Number.POSITIVE_INFINITY))
-    for (const { o, pct } of queue) {
-      lines.push(`- \`${o.name}\` (${o.sha}) — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${o.guard}`)
+    for (const { g, pct } of queue) {
+      lines.push(`- ${tipLabel(g)} — ${pct !== null ? `${pct}%` : "unknown"} line coverage — ${g.outcome.guard}`)
     }
     lines.push("")
-    lines.push(...operatorApprovalHowTo(queue[0].o, plan?.repoRoot, records.get(queue[0].o.sha)))
+    lines.push(...operatorApprovalHowTo(queue.map(q => q.g), plan?.repoRoot))
   }
   return lines.join("\n")
 }

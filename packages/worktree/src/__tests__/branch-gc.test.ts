@@ -17,6 +17,7 @@ import {
   summarizeBranchGcPlan,
   readBranchGcRestoreLog,
   recordBranchVerdict,
+  approveBranchVerdict,
   classifyTip,
   createLadderContext,
   InMemoryBranchVerdictStore,
@@ -1518,5 +1519,76 @@ describe("branch gc — line-coverage guard", () => {
     const c = q.candidates.find((x) => x.sha === tip)
     expect(c?.refs.sort()).toEqual(["refs/heads/feat/lost", "refs/remotes/gone/lost"])
     expect(c?.lineCoverage).toMatchObject({ added: 2, inBase: 0, pct: 0 })
+  })
+})
+
+describe("approveBranchVerdict — operator approval copied from the stored verdict", () => {
+  const verdict = (name: string, tip: string, agree: boolean) => ({
+    name,
+    sha: tip,
+    reviewer: "claude reviewer",
+    triage: { verdict: "obsolete" as const, confidence: 0.9, reason: "dead experiment" },
+    gate: { agree, verdict: "obsolete" as const, reason: "nothing unique", evidence: ["abc123: base has it"] },
+  })
+
+  async function setup(agree = true) {
+    const repo = await makeRepo()
+    await withOrigin(repo)
+    const tip = await branchWith(repo, "feat/guarded", { "g.txt": "g\n" })
+    await execGit(repo, ["push", "-q", "origin", "feat/guarded"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    const store = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: verdict("feat/guarded", tip, agree) })
+    return { repo, tip, store }
+  }
+
+  it("copies the stored verdict and adds only { by, note }, by sha or by branch name", async () => {
+    const { repo, tip, store } = await setup()
+    const res = await approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store, target: "feat/guarded", by: "Jeremy", note: "superseded by #12" })
+    expect(res).toMatchObject({ ok: true, status: "recorded", name: "feat/guarded", sha: tip })
+    if (!res.ok) throw new Error("unreachable")
+    // A local branch and its origin twin at the same tip are both reported.
+    expect(res.refs.sort()).toEqual(["refs/heads/feat/guarded", "refs/remotes/origin/feat/guarded"])
+    const stored = await store.get("fixture", tip)
+    expect(stored).toMatchObject({ ...verdict("feat/guarded", tip, true), operator: { by: "Jeremy", note: "superseded by #12" } })
+    // A second approval leaves the first one alone.
+    const again = await approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store, target: tip, by: "Someone" })
+    expect(again).toMatchObject({ ok: true, status: "already-approved" })
+    expect((await store.get("fixture", tip))?.operator?.by).toBe("Jeremy")
+  })
+
+  it("--dry-run reports the verdict it would record and writes nothing", async () => {
+    const { repo, tip, store } = await setup()
+    const res = await approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store, target: tip, by: "Jeremy", dryRun: true })
+    expect(res).toMatchObject({ ok: true, status: "would-record", verdict: { sha: tip, operator: { by: "Jeremy" } } })
+    expect((await store.get("fixture", tip))?.operator).toBeUndefined()
+  })
+
+  it("refuses with no stored verdict, a non-agreeing gate, a moved tip, or --by equal to the reviewer", async () => {
+    const { repo, tip, store } = await setup()
+    const approve = (target: string, by = "Jeremy", s = store) => approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store: s, target, by })
+
+    expect(await approve("f".repeat(40))).toMatchObject({ ok: false, refusal: "no-verdict" })
+    expect(await approve("no/such-branch")).toMatchObject({ ok: false, refusal: "no-ref" })
+    // Case-insensitive, like the schema's own check.
+    expect(await approve(tip, "  CLAUDE reviewer ")).toMatchObject({ ok: false, refusal: "by-is-reviewer" })
+
+    const disagreeing = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: disagreeing, verdict: verdict("feat/guarded", tip, false) })
+    expect(await approve(tip, "Jeremy", disagreeing)).toMatchObject({ ok: false, refusal: "not-agreed" })
+    const triageOnly = new InMemoryBranchVerdictStore()
+    const { gate: _g, ...noGate } = verdict("feat/guarded", tip, true)
+    await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store: triageOnly, verdict: noGate })
+    expect(await approve(tip, "Jeremy", triageOnly)).toMatchObject({ ok: false, refusal: "not-agreed" })
+
+    // The branch moves on (local and origin): the verdict is for an old tip.
+    await execGit(repo, ["checkout", "-q", "feat/guarded"])
+    await commitFiles(repo, { "more.txt": "more\n" }, "more work")
+    await execGit(repo, ["push", "-q", "origin", "feat/guarded"])
+    await execGit(repo, ["fetch", "-q", "origin"])
+    await execGit(repo, ["checkout", "-q", "main"])
+    expect(await approve(tip)).toMatchObject({ ok: false, refusal: "tip-moved" })
+    expect(await approve("feat/guarded")).toMatchObject({ ok: false, refusal: "no-verdict" })
+    expect((await store.get("fixture", tip))?.operator).toBeUndefined()
   })
 })
