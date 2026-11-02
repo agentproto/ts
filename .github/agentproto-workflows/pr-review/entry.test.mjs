@@ -538,7 +538,7 @@ test('non-auto providers do not get a join provider default (join gating unchang
   })
 })
 
-test('agentic-review.json: every reviewerSandbox is the auto spec with the same lifecycle and a safe overflow', () => {
+test('agentic-review.json: every reviewerSandbox is plain e2b with the same lifecycle (fleet shares one egress IP, see #2472)', () => {
   const sandboxes = [
     reviewConfig.reviewerSandbox,
     ...Object.values(reviewConfig.agentPresets ?? {})
@@ -547,16 +547,9 @@ test('agentic-review.json: every reviewerSandbox is the auto spec with the same 
   ]
   assert.ok(sandboxes.length >= 6)
   for (const sb of sandboxes) {
-    assert.equal(sb.provider, 'auto')
+    assert.equal(sb.provider, 'e2b')
     assert.deepEqual(sb.lifecycle, { destroy_on: 'workspace-close' })
-    assert.equal(sb.config.computer.template, 'agentproto-workstation')
-    assert.equal(sb.config.computer.fleetCapacityWaitMs, 240000)
-    assert.equal(sb.config.overflow.enabled, true)
-    assert.equal(sb.config.overflow.allowSecrets, true)
-    for (const name of ['maxBoxesPerDay', 'maxEurPerDay', 'maxEurPerBox']) {
-      assert.ok(sb.config.overflow[name] > 0, name)
-    }
-    assert.ok(sb.config.computer.egress.length > 0)
+    assert.equal(sb.config, undefined)
     assert.deepEqual(sb, reviewConfig.reviewerSandbox)
   }
 })
@@ -574,12 +567,12 @@ test('agentic-review.json: without a fleet URL every lane resolves to the legacy
   })
 })
 
-test('agentic-review.json: the 4 min fleet wait reaches the auto spec of every lane when a fleet URL is set', () => {
+test('agentic-review.json: a fleet URL does not move any lane off e2b until the per-IP fallback lands', () => {
   withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example' }, () => {
     for (const cfg of [reviewConfig, ...Object.values(reviewConfig.agentPresets ?? {}).filter(p => p.reviewerSandbox)]) {
       const spec = sandboxRefFor({ ...reviewConfig, ...cfg }, 'review')
-      assert.equal(spec.provider, 'auto')
-      assert.equal(spec.config.computer.fleetCapacityWaitMs, 240000)
+      assert.equal(spec.provider, 'e2b')
+      assert.equal(spec.config?.computer, undefined)
     }
   })
 })
