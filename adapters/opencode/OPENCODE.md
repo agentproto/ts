@@ -219,7 +219,7 @@ token is stored. The provider lives in this adapter (`src/subaccounts.ts`) and i
 registered by the CLI at start-up.
 
 ```bash
-agentproto auth subaccounts list opencode-console                    # list orgs of the logged-in console account
+agentproto auth subaccounts list opencode-console                    # list the orgs of every stored console login (expired or failing non-active logins are skipped)
 agentproto auth subaccounts list opencode-console --create --prefix opencode   # -> opencode-<org-name> profiles
 agentproto auth profile create opencode-ws01 --endpoint opencode-go \
   --method api-key --source opencode-console --subaccount org:<orgId>

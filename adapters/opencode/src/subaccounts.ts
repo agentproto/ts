@@ -335,9 +335,36 @@ export function createOpencodeSubaccountProvider(deps: OpencodeConsoleDeps = {})
     migrateLegacySource: parseLegacyOpencodeConsoleSource,
     async list() {
       const { account, orgs } = await listOpencodeConsoleOrgs(deps)
+      // The orgs of the other stored logins are listed too, so a pin can be
+      // created for them; a login that cannot list is left out, not fatal.
+      const seen = new Set(orgs.map(o => o.id))
+      const all = [...orgs]
+      const current = (deps.now ?? Date.now)()
+      const { accounts } = await readAllOpencodeConsoleAccounts(deps)
+      // Fetched in parallel (each has its own timeout); merged in stored order.
+      const others = accounts.filter(
+        row => row.id !== account.id && row.access_token && !isExpired(row, current),
+      )
+      const bodies = await Promise.all(
+        others.map(row =>
+          consoleGet(accountFromRow(row), "/api/orgs", deps).catch(() => {
+            // skipped: resolve() reports it if a pin needs this login
+            return []
+          }),
+        ),
+      )
+      for (const body of bodies) {
+        for (const o of Array.isArray(body) ? body : []) {
+          const id = (o as { id?: unknown })?.id
+          if (typeof id !== "string" || seen.has(id)) continue
+          seen.add(id)
+          const name = (o as { name?: unknown }).name
+          all.push({ id, name: typeof name === "string" ? name : id })
+        }
+      }
       return {
         account: { id: account.id, ...(account.email ? { label: account.email } : {}) },
-        subaccounts: orgs.map(o => ({ kind: OPENCODE_CONSOLE_ORG_KIND, id: o.id, name: o.name })),
+        subaccounts: all.map(o => ({ kind: OPENCODE_CONSOLE_ORG_KIND, id: o.id, name: o.name })),
       }
     },
     async resolve(profile) {

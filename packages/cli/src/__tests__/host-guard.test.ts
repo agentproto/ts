@@ -4,7 +4,8 @@
  * CRIT marker that gates heavyweight workflow launches.
  */
 
-import { mkdtemp, rm } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest"
@@ -12,6 +13,7 @@ import {
   DEFAULT_GUARD_POLICY,
   GUARD_STATE_TTL_MS,
   heavyWorkflowBlockReason,
+  inspectWorktree,
   readGuardState,
   recheckGuardCandidate,
   runHostGuard,
@@ -25,10 +27,11 @@ import type { HealthVerdict } from "../commands/host-health.js"
 const io = vi.hoisted(() => ({
   verdict: "OK" as "OK" | "WARN" | "CRIT",
   sessions: [] as unknown[],
-  /** Called before each kill so a test can mutate the live list. */
-  onBeforeKill: undefined as undefined | ((id: string) => void),
+  /** Called before each reap so a test can mutate the live list. */
+  onBeforeReap: undefined as undefined | ((id: string) => void),
+  reaps: [] as string[],
   kills: [] as string[],
-  killFails: new Set<string>(),
+  reapFails: new Set<string>(),
 }))
 
 vi.mock("../commands/_daemon-helpers.js", () => ({
@@ -36,14 +39,18 @@ vi.mock("../commands/_daemon-helpers.js", () => ({
   printNoDaemonError: () => undefined,
   httpGetJson: async () => ({ sessions: io.sessions }),
   httpPostJson: async (url: string) => {
-    const m = /\/sessions\/([^/]+)\/kill$/.exec(url)
+    const m = /\/sessions\/([^/]+)\/(reap|kill)$/.exec(url)
     if (!m) return {}
     const id = decodeURIComponent(m[1] as string)
-    io.onBeforeKill?.(id)
-    if (io.killFails.has(id)) throw new Error("HTTP 500")
-    io.kills.push(id)
+    if (m[2] === "kill") {
+      io.kills.push(id)
+      return {}
+    }
+    io.onBeforeReap?.(id)
+    if (io.reapFails.has(id)) throw new Error("HTTP 500")
+    io.reaps.push(id)
     io.sessions = (io.sessions as { id: string }[]).map(s =>
-      s.id === id ? { ...s, status: "killed", alive: false } : s,
+      s.id === id ? { ...s, status: "killed", alive: false, endedReason: "guard-reaped" } : s,
     )
     return {}
   },
@@ -159,13 +166,28 @@ describe("selectGuardSessions — verdict decisions", () => {
     expect(b.projectedAlive).toBe(29)
   })
 
-  it("uses a shorter idle window on CRIT than on WARN", () => {
-    const s = session({ lastActivityAt: at(2) }) // idle 2 min
+  it("applies the absolute 900 s CRIT floor, even when --crit-min-idle asks for less", () => {
+    // 10 min idle: past the WARN window (300 s) but under the CRIT floor.
+    const s = session({ lastActivityAt: at(10) })
     const warn = selectGuardSessions({ health: health("WARN"), sessions: [s], nowMs: NOW })
     const crit = selectGuardSessions({ health: health("CRIT"), sessions: [s], nowMs: NOW })
-    expect(warn.close).toEqual([])
-    expect(warn.skipped["too-recent"]).toBe(1)
-    expect(crit.close).toHaveLength(1)
+    const forced = selectGuardSessions({
+      health: health("CRIT"),
+      sessions: [s],
+      nowMs: NOW,
+      policy: { critMinIdleSec: 60 },
+    })
+    expect(warn.close).toHaveLength(1)
+    expect(crit.close).toEqual([])
+    expect(crit.skipped["too-recent"]).toBe(1)
+    expect(forced.close).toEqual([])
+    expect(forced.skipped["too-recent"]).toBe(1)
+  })
+
+  it("a 40 min idle, clean session is eligible on CRIT", () => {
+    const s = session({ lastActivityAt: at(40) })
+    const crit = selectGuardSessions({ health: health("CRIT"), sessions: [s], nowMs: NOW })
+    expect(ids(crit.close)).toEqual([s.id])
   })
 })
 
@@ -224,12 +246,44 @@ describe("selectGuardSessions — safety refusals", () => {
     expect(out.skipped["not-agent"]).toBe(1)
   })
 
-  it("never closes an ancestor of a live session (would orphan the tree)", () => {
+  it("never closes a parent with a live child (child-alive)", () => {
     const parent = session({ id: "parent", lastActivityAt: at(600) })
     const child = session({ id: "child", parentSessionId: "parent", busy: true })
     const out = sel([parent, child])
     expect(out.close).toEqual([])
+    expect(out.skipped["child-alive"]).toBe(1)
+  })
+
+  it("never closes an ancestor of a live session (would orphan the tree)", () => {
+    // An intermediate row already died; the live grandchild still makes the
+    // root an ancestor that must not be reaped.
+    const root = session({ id: "root", lastActivityAt: at(600) })
+    const gone = session({ id: "gone", parentSessionId: "root", status: "exited", alive: false })
+    const child = session({ id: "child", parentSessionId: "gone", busy: true })
+    const out = sel([root, gone, child])
+    expect(out.close).toEqual([])
     expect(out.skipped["ancestor-of-live"]).toBe(1)
+    expect(out.skipped["not-alive"]).toBe(1)
+  })
+
+  it("never closes a dirty or unpushed worktree (work-in-flight)", () => {
+    const dirty = session({ id: "dirty", lastActivityAt: at(600), worktreeState: { dirty: true, unpushed: false } })
+    const unpushed = session({ id: "unpushed", lastActivityAt: at(600), worktreeState: { dirty: false, unpushed: true } })
+    const unknown = session({ id: "unknown", lastActivityAt: at(600), worktreeState: { dirty: false, unpushed: false, unknown: true } })
+    const clean = session({ id: "clean", lastActivityAt: at(600), worktreeState: { dirty: false, unpushed: false } })
+    const out = sel([dirty, unpushed, unknown, clean])
+    expect(ids(out.close)).toEqual([clean.id])
+    expect(out.skipped["work-in-flight"]).toBe(3)
+  })
+
+  it("never closes an active fix/exec/diag session younger than 2 h (work-in-flight)", () => {
+    const fixPr = session({ id: "fix-pr", label: "fix-pr-2445", lastActivityAt: at(112 / 60) })
+    const exec = session({ id: "exec", label: "exec-argv", lastActivityAt: at(90) })
+    const diag = session({ id: "diag", label: "diag-host", lastActivityAt: at(30) })
+    const stale = session({ id: "stale", label: "fix-pr-1", lastActivityAt: at(150) })
+    const out = sel([fixPr, exec, diag, stale])
+    expect(ids(out.close)).toEqual([stale.id])
+    expect(out.skipped["work-in-flight"]).toBe(3)
   })
 
   it("never closes the guard's own session or its ancestors", () => {
@@ -243,7 +297,7 @@ describe("selectGuardSessions — safety refusals", () => {
     })
     expect(out.close).toEqual([])
     expect(out.skipped["self-or-ancestor"]).toBe(1)
-    expect(out.skipped["ancestor-of-live"]).toBe(1)
+    expect(out.skipped["child-alive"]).toBe(1)
   })
 
   it("never closes the escalation session", () => {
@@ -304,6 +358,32 @@ describe("selectGuardSessions — unknown idle time", () => {
   })
 })
 
+describe("inspectWorktree", () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "host-guard-git-"))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it("flags a dirty worktree", async () => {
+    execFileSync("git", ["init", "-q"], { cwd: dir })
+    await writeFile(join(dir, "work.txt"), "in progress\n")
+    const state = await inspectWorktree(dir)
+    expect(state.dirty).toBe(true)
+    // No upstream on a fresh repo → conservative "cannot prove clean".
+    expect(state.unknown).toBe(true)
+  })
+
+  it("keeps the session when git cannot answer", async () => {
+    const state = await inspectWorktree(join(dir, "does-not-exist"))
+    expect(state.unknown).toBe(true)
+  })
+})
+
 describe("recheckGuardCandidate", () => {
   const opts = { verdict: "CRIT" as HealthVerdict, nowMs: NOW }
 
@@ -329,7 +409,7 @@ describe("recheckGuardCandidate", () => {
   it("refuses a session that became an ancestor of a live session", () => {
     const parent = session({ id: "p" })
     const child = session({ id: "c", parentSessionId: "p" })
-    expect(recheckGuardCandidate("p", [parent, child], opts)).toBe("ancestor-of-live")
+    expect(recheckGuardCandidate("p", [parent, child], opts)).toBe("child-alive")
   })
 })
 
@@ -343,9 +423,10 @@ describe("runHostGuard — I/O runner", () => {
     statePath = join(dir, "state.json")
     io.verdict = "OK"
     io.sessions = []
-    io.onBeforeKill = undefined
+    io.onBeforeReap = undefined
+    io.reaps = []
     io.kills = []
-    io.killFails = new Set()
+    io.reapFails = new Set()
     out = ""
     vi.spyOn(process.stdout, "write").mockImplementation(((chunk: string | Uint8Array) => {
       out += String(chunk)
@@ -377,53 +458,87 @@ describe("runHostGuard — I/O runner", () => {
   it("OK: closes nothing and leaves no marker", async () => {
     io.sessions = [idleRow("a")]
     expect(await run()).toBe(0)
-    expect(io.kills).toEqual([])
+    expect(io.reaps).toEqual([])
     expect(await readGuardState(statePath)).toBeNull()
   })
 
-  it("WARN: closes oldest idle sessions via the kill route", async () => {
+  it("WARN: reaps oldest idle sessions via the reap route, never kill", async () => {
     io.verdict = "WARN"
     io.sessions = [
       idleRow("new", { lastActivityAt: new Date(Date.now() - 10 * MIN).toISOString() }),
       idleRow("old"),
     ]
     await run()
-    expect(io.kills).toEqual(["old", "new"])
+    expect(io.reaps).toEqual(["old", "new"])
+    expect(io.kills).toEqual([])
   })
 
-  it("dry-run: decides but kills nothing and writes no marker", async () => {
+  it("reaps a clean session idle 40 min on CRIT (guard-reaped, not operator-stopped)", async () => {
+    io.verdict = "CRIT"
+    io.sessions = [idleRow("clean", { lastActivityAt: new Date(Date.now() - 40 * MIN).toISOString() })]
+    await run()
+    expect(io.reaps).toEqual(["clean"])
+    expect(io.kills).toEqual([])
+  })
+
+  it("spares an active fix-pr session at 112 s (work-in-flight)", async () => {
+    io.verdict = "CRIT"
+    io.sessions = [
+      idleRow("fix", {
+        label: "fix-pr-2445",
+        lastActivityAt: new Date(Date.now() - 112 * 1000).toISOString(),
+      }),
+    ]
+    await run()
+    expect(io.reaps).toEqual([])
+    const report = JSON.parse(out)
+    expect(report.selection.skipped["work-in-flight"]).toBe(1)
+  })
+
+  it("spares a session whose worktree is dirty (work-in-flight)", async () => {
+    io.verdict = "CRIT"
+    io.sessions = [
+      idleRow("dirty", { worktreeState: { dirty: true, unpushed: false } }),
+      idleRow("clean"),
+    ]
+    await run()
+    expect(io.reaps).toEqual(["clean"])
+    expect(JSON.parse(out).selection.skipped["work-in-flight"]).toBe(1)
+  })
+
+  it("dry-run: decides but reaps nothing and writes no marker", async () => {
     io.verdict = "CRIT"
     io.sessions = [idleRow("a")]
     await run(["--dry-run"])
-    expect(io.kills).toEqual([])
+    expect(io.reaps).toEqual([])
     expect(await readGuardState(statePath)).toBeNull()
     expect(JSON.parse(out).selection.close).toHaveLength(1)
   })
 
-  it("never kills a session that became busy between snapshot and kill", async () => {
+  it("never reaps a session that became busy between snapshot and reap", async () => {
     io.verdict = "WARN"
     io.sessions = [idleRow("a"), idleRow("b", { lastActivityAt: new Date(Date.now() - 200 * MIN).toISOString() })]
     // Right after the first re-validation passes, "b" is not yet touched; flip
-    // "b" to busy before its own re-check by mutating when "a" is killed.
-    io.onBeforeKill = id => {
+    // "b" to busy before its own re-check by mutating when "a" is reaped.
+    io.onBeforeReap = id => {
       if (id === "a") {
         io.sessions = (io.sessions as GuardSession[]).map(s => (s.id === "b" ? { ...s, busy: true } : s))
       }
     }
     await run()
-    expect(io.kills).toEqual(["a"])
+    expect(io.reaps).toEqual(["a"])
     const report = JSON.parse(out)
     expect(report.closed.map((c: { id: string }) => c.id)).toEqual(["a"])
     expect(report.failed[0].id).toBe("b")
     expect(report.failed[0].error).toContain("busy")
   })
 
-  it("records a failed kill and keeps going", async () => {
+  it("records a failed reap and keeps going", async () => {
     io.verdict = "WARN"
     io.sessions = [idleRow("a"), idleRow("b", { lastActivityAt: new Date(Date.now() - 200 * MIN).toISOString() })]
-    io.killFails.add("b")
+    io.reapFails.add("b")
     await run()
-    expect(io.kills).toEqual(["a"])
+    expect(io.reaps).toEqual(["a"])
     const report = JSON.parse(out)
     expect(report.failed.map((f: { id: string }) => f.id)).toEqual(["b"])
   })
@@ -432,7 +547,7 @@ describe("runHostGuard — I/O runner", () => {
     io.verdict = "CRIT"
     io.sessions = [idleRow("a"), idleRow("b", { busy: true })]
     await run()
-    expect(io.kills).toEqual(["a"])
+    expect(io.reaps).toEqual(["a"])
     const state = await readGuardState(statePath)
     expect(state?.verdict).toBe("CRIT")
     expect(state?.closed.map(c => c.id)).toEqual(["a"])

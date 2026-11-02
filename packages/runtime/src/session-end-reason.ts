@@ -20,6 +20,12 @@ export const SESSION_END_REASONS = [
   // Pre-existing automatic daemon-lifecycle reasons (unchanged).
   "daemon-restart",
   "idle-reaped",
+  // The host guard reaped an idle session through `POST /sessions/:id/reap`
+  // (never the operator `/kill` route). Distinct from `idle-reaped` so the
+  // UI/log can tell a periodic-watchdog retirement from the daemon's own
+  // idle reaper; like `idle-reaped` it leaves the row lazy-resumable and is
+  // excluded from eager resume-on-boot (which gates on `daemon-restart`).
+  "guard-reaped",
   "crashed",
   // Operator-issued kill (HTTP /sessions/:id/kill, agent_kill MCP tool).
   // `operator-stopped` is also the default when the operator's kill omitted
@@ -144,10 +150,13 @@ export function tagLimitErrorWithWallet(
   return `${message} [wallet: profile "${accessProfile.profileRef}"${label}${scope}]`
 }
 
-/** End reasons that mean a human/steward closed the session on purpose (or
- *  that it was superseded by a living replacement) — no AUTOMATED path
- *  (sentinel, follow, cron) may revive such a row. An explicit
- *  `session_restart` / human prompt still may. */
+/** End reasons that mean the session was closed on purpose (or that it was
+ *  superseded by a living replacement) — no AUTOMATED path (sentinel, follow,
+ *  cron) may revive such a row. An explicit `session_restart` / human prompt
+ *  still may. `guard-reaped` belongs here: the guard retires an idle row and
+ *  a later explicit prompt can resume it in place, but nothing should wake it
+ *  automatically (least of all the boot pass, which already gates on
+ *  `daemon-restart`). */
 export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "operator-completed",
   "operator-stopped",
@@ -155,4 +164,6 @@ export const DELIBERATE_END_REASONS: ReadonlySet<string> = new Set([
   "steward-abandoned",
   // Superseded by a fresh-id restart continuation while still alive.
   "restarted",
+  // The host guard's periodic reap (`POST /sessions/:id/reap`).
+  "guard-reaped",
 ])

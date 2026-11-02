@@ -51,7 +51,7 @@
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path"
 import { readFile, readdir, realpath, rm, stat } from "node:fs/promises"
 import { runTool } from "@agentproto/driver"
-import { classifyTipAgainstBase } from "./branch-gc.js"
+import { classifyTipAgainstBase, type BranchVerdictStore } from "./branch-gc.js"
 import { execArgv, execGit } from "./exec.js"
 import { cleanupWorktreeTool } from "./tools/index.js"
 import { worktreeProvider } from "./provider/index.js"
@@ -66,6 +66,7 @@ import {
   DEFAULT_STATUS_CONCURRENCY,
   listGitWorktrees,
   computeWorktreeStatus,
+  livenessSessionCount,
   RECENT_WRITE_HOLD_WINDOW_MS,
   type GitWorktreeRef,
   type IntegrationState,
@@ -1150,6 +1151,16 @@ export interface ApplyGcOptions {
    * apply time are harmless, and the sweep never blocks on the deletes.
    */
   worktreesRoot?: string
+  /**
+   * The reviewed tier: `hold`-class plan entries at `paths` are removed
+   * WORKTREE ONLY (the branch is kept) when, re-checked at apply time, the
+   * worktree is unchanged since the plan, clean, idle, has no open PR, and
+   * the branch verdict store holds an agreeing verdict (`gate.agree`) for its
+   * exact tip. Nothing about the branch is decided here: it is left for
+   * `branch gc`'s reviewed rung and its line-coverage guard. Any check that
+   * fails leaves the worktree untouched as `skipped-stale` with the reason.
+   */
+  reviewed?: { paths: readonly string[]; verdicts: BranchVerdictStore }
 }
 
 export type GcApplyOutcome =
@@ -1168,6 +1179,8 @@ export type GcApplyOutcome =
    * about a different state. Left untouched; `reason` says which check fired.
    */
   | { path: string; branch: string | null; result: "skipped-stale"; reason: string }
+  /** Reviewed tier (`ApplyGcOptions.reviewed`): the worktree was removed, its branch kept for `branch gc` to judge. */
+  | { path: string; branch: string | null; result: "removed-keep-branch" }
   /** git itself (or the salvage snapshot) refused — the TOCTOU backstop actually firing, or a real I/O failure. */
   | { path: string; branch: string | null; result: "failed"; message: string }
 
@@ -1340,6 +1353,9 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   if (entry.prunable) {
     return reclaimPrunable(entry, options)
   }
+  if (entry.class === "hold" && options.reviewed?.paths.includes(entry.path)) {
+    return removeReviewedHold(entry, options, options.reviewed.verdicts)
+  }
   if (entry.class === "hold") {
     // Already held by the plan — nothing to re-check (a hold never removes
     // anything), but carry the plan's reason through to the outcome so a
@@ -1427,6 +1443,66 @@ async function applyOne(entry: GcPlanEntry, options: ApplyGcOptions): Promise<Gc
   // `options.salvageDirty` true (both earlier guards above already returned
   // for "hold" and for "salvage" without the flag).
   return salvageOne(options, fresh)
+}
+
+/**
+ * The reviewed tier (`ApplyGcOptions.reviewed`): remove a held worktree whose
+ * branch a reviewer agreed carries nothing of value, keeping the branch. Every
+ * fact the decision rests on is re-read here, immediately before the removal,
+ * never taken from the plan: the worktree ref (branch, HEAD, index), its tree,
+ * liveness and PR state, and the stored verdict for the tip as it is NOW.
+ */
+async function removeReviewedHold(entry: GcPlanEntry, options: ApplyGcOptions, verdicts: BranchVerdictStore): Promise<GcApplyOutcome> {
+  const skip = (reason: string, branch: string | null = entry.branch): GcApplyOutcome => ({
+    path: entry.path,
+    branch,
+    result: "skipped-stale",
+    reason,
+  })
+  if (entry.holdReason) return skip(`held at plan time (${entry.holdReason})`)
+  if (!entry.branch) return skip("detached HEAD: no branch for branch gc to judge")
+  const nowMs = options.nowMs ?? Date.now()
+  // Index mtime before the status read, as in `applyOne`.
+  const indexActivity = await readIndexActivity(options.repoRoot, entry.path, options.activeMinutes, nowMs)
+  const fresh = await findWorktree(options.repoRoot, entry.path)
+  if (!fresh) return { path: entry.path, branch: entry.branch, result: "aborted-vanished" }
+  const stale = staleSincePlan(entry, fresh, indexActivity.mtimeMs)
+  if (stale) return skip(stale, fresh.branch)
+  const status = await computeWorktreeStatus({
+    repoRoot: options.repoRoot,
+    repoName: options.repoName,
+    worktree: fresh,
+    forge: options.forge,
+    memo: options.memo,
+    defaultBranchRef: options.defaultBranchRef,
+    sessionsPath: options.sessionsPath,
+    now: options.now,
+    ...resolveGcNoise(options.noisePaths),
+    ...(options.liveSessionCwds ? { liveSessionCwds: options.liveSessionCwds } : {}),
+  })
+  if (status.tree.state !== "clean") return skip(`tree is ${status.tree.state}`, fresh.branch)
+  if (status.liveness.state !== "idle" || livenessSessionCount(status.liveness) > 0) {
+    return skip(`not idle (liveness ${status.liveness.state})`, fresh.branch)
+  }
+  if (status.integration.state === "open") return skip(`open PR #${status.integration.pr}`, fresh.branch)
+  if (indexActivity.active) return skip("recent activity in the worktree", fresh.branch)
+  const verdict = await verdicts.get(options.repoName, fresh.head)
+  if (!verdict) return skip(`no stored verdict for tip ${fresh.head.slice(0, 9)}`, fresh.branch)
+  if (verdict.gate?.agree !== true) return skip(`stored verdict for tip ${fresh.head.slice(0, 9)} does not agree`, fresh.branch)
+  try {
+    if (status.tree.noise?.length) await discardNoise(options.repoRoot, fresh.path, status.tree.noise)
+    await runTool({
+      tool: cleanupWorktreeTool,
+      candidates,
+      // Worktree only, never `deleteBranch`: the branch is judged by `branch gc`
+      // (reviewed rung + line-coverage guard + restore log), not by this path.
+      // No discard flags: a tree that got dirty since the re-check makes git refuse.
+      input: { repoRoot: options.repoRoot, cwd: fresh.path, deleteBranch: false },
+    })
+  } catch (err) {
+    return { path: fresh.path, branch: fresh.branch, result: "failed", message: err instanceof Error ? err.message : String(err) }
+  }
+  return { path: fresh.path, branch: fresh.branch, result: "removed-keep-branch" }
 }
 
 /**
