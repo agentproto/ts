@@ -57,26 +57,47 @@ describe("buildInboxHookOutput", () => {
 })
 
 describe("resolveInboxSessionId", () => {
-  it("lets --session win over the environment", () => {
-    expect(resolveInboxSessionId({ session: "ses_flag" }, { AGENTPROTO_SESSION_ID: "ses_env" })).toBe("ses_flag")
+  it("lets --session win over the environment and the payload", () => {
+    expect(
+      resolveInboxSessionId(
+        { session: "ses_flag" },
+        { AGENTPROTO_SESSION_ID: "ses_env" },
+        { session_id: "claude-conv-1" },
+      ),
+    ).toBe("ses_flag")
   })
 
-  it("uses AGENTPROTO_SESSION_ID when there is no --session", () => {
-    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses_env" })).toBe("ses_env")
+  it("uses a daemon AGENTPROTO_SESSION_ID when there is no --session", () => {
+    expect(
+      resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "sess_daemon" }, { session_id: "claude-conv-1" }),
+    ).toBe("sess_daemon")
+  })
+
+  it("uses the payload id as cc:<session_id> when there is no daemon id", () => {
+    expect(resolveInboxSessionId({}, {}, { session_id: "claude-conv-1" })).toBe("cc:claude-conv-1")
+  })
+
+  it("falls back to a non-daemon AGENTPROTO_SESSION_ID when the payload has no session id", () => {
+    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses_env" }, {})).toBe("ses_env")
+  })
+
+  it("ignores an invalid payload session id and falls back to the environment", () => {
+    expect(
+      resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses_env" }, { session_id: "bad id/one" }),
+    ).toBe("ses_env")
   })
 
   it("ignores CLAUDE_CODE_SESSION_ID, which is the harness's own id", () => {
-    expect(resolveInboxSessionId({}, { CLAUDE_CODE_SESSION_ID: "claude-conv-1" })).toBeUndefined()
+    expect(resolveInboxSessionId({}, { CLAUDE_CODE_SESSION_ID: "claude-conv-1" }, {})).toBeUndefined()
   })
 
   it("rejects an id with a disallowed character", () => {
-    expect(resolveInboxSessionId({ session: "a/b" }, {})).toBeUndefined()
-    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses env" })).toBeUndefined()
+    expect(resolveInboxSessionId({ session: "a/b" }, {}, {})).toBeUndefined()
+    expect(resolveInboxSessionId({}, { AGENTPROTO_SESSION_ID: "ses env" }, {})).toBeUndefined()
   })
 })
 
-describe("hook inbox reads the daemon session id from the daemon's own variable", () => {
-  const payload = JSON.stringify({ session_id: "claude-conv-1", hook_event_name: "UserPromptSubmit" })
+describe("hook inbox takes its session id from the payload and the daemon's variable", () => {
   const inbox = { inbox: [item(1)] }
 
   beforeEach(() => {
@@ -87,28 +108,63 @@ describe("hook inbox reads the daemon session id from the daemon's own variable"
     vi.spyOn(process.stdout, "write").mockImplementation(() => true)
   })
 
-  const run = (env: Record<string, string | undefined>, args: string[] = ["inbox"]) =>
-    runHook(args, { readStdin: async () => payload, env })
+  const run = (
+    env: Record<string, string | undefined>,
+    payload: Record<string, unknown> = { session_id: "claude-conv-1", hook_event_name: "UserPromptSubmit" },
+    args: string[] = ["inbox"],
+  ) => runHook(args, { readStdin: async () => JSON.stringify(payload), env })
 
-  it("reads /sessions/<AGENTPROTO_SESSION_ID>/inbox", async () => {
-    await run({ AGENTPROTO_SESSION_ID: "sess_daemon" })
+  it("routes each Claude chat to its own cc:<session_id> inbox and acks there", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "aaaa-1" })
+    await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "bbbb-2" })
+    expect(httpGetJson).toHaveBeenNthCalledWith(1, "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+    expect(httpGetJson).toHaveBeenNthCalledWith(2, "http://127.0.0.1:1/sessions/cc%3Abbbb-2/inbox")
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox/ack",
+      { ids: ["msg_1"] },
+      "t",
+    )
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:1/sessions/cc%3Abbbb-2/inbox/ack",
+      { ids: ["msg_1"] },
+      "t",
+    )
+  })
+
+  it("keeps a daemon-spawned AGENTPROTO_SESSION_ID over the payload id", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "sess_daemon" }, { session_id: "claude-conv-2" })
     expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_daemon/inbox")
   })
 
-  it("ignores the payload's session_id and CLAUDE_CODE_SESSION_ID: it reads nothing without the daemon id", async () => {
-    expect(await run({ CLAUDE_CODE_SESSION_ID: "claude-conv-2" })).toBe(0)
+  it("falls back to a non-daemon AGENTPROTO_SESSION_ID when the payload has no session_id", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, {})
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/claude-desktop/inbox")
+  })
+
+  it("ignores an invalid payload session_id and falls back to the environment", async () => {
+    await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "bad id/one" })
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/claude-desktop/inbox")
+  })
+
+  it("reads cc:<payload session_id> when there is no daemon id", async () => {
+    await run({}, { session_id: "claude-conv-1" })
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aclaude-conv-1/inbox")
+  })
+
+  it("ignores CLAUDE_CODE_SESSION_ID alone: it reads nothing without a daemon id or payload id", async () => {
+    expect(await run({ CLAUDE_CODE_SESSION_ID: "claude-conv-2" }, {})).toBe(0)
     expect(httpGetJson).not.toHaveBeenCalled()
     expect(httpPostJson).not.toHaveBeenCalled()
   })
 
-  it("keeps the daemon id even when the payload and CLAUDE_CODE_SESSION_ID name another session", async () => {
-    await run({ AGENTPROTO_SESSION_ID: "sess_daemon", CLAUDE_CODE_SESSION_ID: "claude-conv-2" })
-    expect(httpGetJson).toHaveBeenCalledTimes(1)
-    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_daemon/inbox")
-  })
-
-  it("--session wins over the environment", async () => {
-    await run({ AGENTPROTO_SESSION_ID: "sess_daemon" }, ["inbox", "--session", "sess_flag"])
+  it("--session wins over the environment and the payload", async () => {
+    await run(
+      { AGENTPROTO_SESSION_ID: "sess_daemon" },
+      { session_id: "claude-conv-2" },
+      ["inbox", "--session", "sess_flag"],
+    )
     expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_flag/inbox")
   })
 })

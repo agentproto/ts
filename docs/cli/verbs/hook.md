@@ -29,7 +29,7 @@ containing the closing tag has it neutralised, and each item is truncated at
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--session <id>` | `$AGENTPROTO_SESSION_ID` | Session whose inbox to read. The payload's `session_id` and `$CLAUDE_CODE_SESSION_ID` are the harness's own and are ignored. |
+| `--session <id>` | see below | Session whose inbox to read. First valid value wins: `--session`; `$AGENTPROTO_SESSION_ID` when it starts with `sess_`; `cc:` + the payload's `session_id`; then `$AGENTPROTO_SESSION_ID` when the payload has no session id. `$CLAUDE_CODE_SESSION_ID` is never read. |
 | `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse`). |
 | `--max <n>` | `20` | Maximum items per invocation (capped at 20), oldest first. |
 
@@ -70,9 +70,13 @@ finishes. Three things have to line up:
    claude mcp add --transport http --scope user agentproto-desktop \
      "http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop"
    ```
-2. **`AGENTPROTO_SESSION_ID` must equal that `<id>`.** `hook inbox` reads the
-   inbox of the session named by this variable, never the harness's own
-   `session_id`, so a mismatch reads an empty inbox and prints nothing.
+2. **The inbox id comes from the payload.** Each Claude Desktop chat carries
+   its own `session_id` in the hook payload, and `hook inbox` reads
+   `cc:<session_id>` for it. An `AGENTPROTO_SESSION_ID` starting with `sess_`
+   (a daemon-spawned session) still takes precedence; any other
+   `AGENTPROTO_SESSION_ID` is a legacy fallback used only when the payload
+   has no usable `session_id`. To pin a fixed custom id, pass
+   `--session <id>` in the hook command.
 3. **Two hooks run `agentproto hook inbox`**, on `UserPromptSubmit` and
    `PostToolUse`. `agentproto` must be on the PATH of the app.
 
@@ -93,9 +97,19 @@ The settings file the app reads (`~/.claude/settings.json`, or
 }
 ```
 
-One settings file means one session id: every Desktop conversation that reads
-it shares one inbox. Put the block in a project's `.claude/settings.local.json`
-instead to give that project its own id.
+One settings file no longer means one shared inbox: every Desktop conversation
+now reads its own `cc:<session_id>` inbox. The `AGENTPROTO_SESSION_ID` in that
+file is only a legacy fallback for payloads without a session id; pass
+`--session <id>` in the hook command to use a fixed custom id instead.
+
+### Migration
+
+Daemon-spawned sessions (`AGENTPROTO_SESSION_ID=sess_...`) are unchanged. A
+Desktop chat that still has the old global `AGENTPROTO_SESSION_ID` keeps
+working: it now reads its own `cc:<session_id>` inbox instead of the shared
+one. Items already queued on the old shared id stay there; read them with
+`inbox_list` on that id. A setup that wants a fixed custom id can pin it with
+`agentproto hook inbox --session <id>` in the hook command.
 
 ### `hook install --host claude-desktop`
 

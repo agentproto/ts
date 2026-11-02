@@ -40,9 +40,10 @@ It lists the session's unread daemon inbox items (oldest first, at most
 data, and acks the ones it emitted. It never fails the hook: on any error it
 prints nothing and exits 0.
 
-Session id: --session, else $AGENTPROTO_SESSION_ID (the daemon's id, set in the
-session's environment). The payload's \`session_id\` and $CLAUDE_CODE_SESSION_ID
-are the harness's own and are ignored. Event name: --event, else the payload's
+Session id, first valid wins: --session; else $AGENTPROTO_SESSION_ID when it
+starts with \`sess_\` (a daemon-spawned session); else \`cc:\` + the payload's
+\`session_id\`; else $AGENTPROTO_SESSION_ID when the payload has no session id.
+$CLAUDE_CODE_SESSION_ID is never read. Event name: --event, else the payload's
 \`hook_event_name\`, else UserPromptSubmit.
 
 Example settings.json entry:
@@ -271,17 +272,26 @@ export async function runHook(args: readonly string[], deps: HookDeps = {}): Pro
 }
 
 /**
- * The daemon session whose inbox `hook inbox` reads: `--session`, else
- * `AGENTPROTO_SESSION_ID`. The hook payload's `session_id` and
- * `CLAUDE_CODE_SESSION_ID` are the harness's own conversation id, never the
- * daemon's, so neither is read. Pure.
+ * The session whose inbox `hook inbox` reads, first valid candidate winning:
+ * `--session`; else `AGENTPROTO_SESSION_ID` when it starts with `sess_` (a
+ * daemon-spawned session); else `cc:` + the payload's `session_id` (each
+ * Claude Desktop chat has its own); else `AGENTPROTO_SESSION_ID` as a legacy
+ * fallback when the payload has no usable session id.
+ * `CLAUDE_CODE_SESSION_ID` is never read. Pure.
  */
 export function resolveInboxSessionId(
   values: { session?: string },
   env: Record<string, string | undefined>,
+  payload: { session_id?: unknown } = {},
 ): string | undefined {
-  const sessionId = values.session ?? env.AGENTPROTO_SESSION_ID
-  return sessionId && SESSION_ID_RE.test(sessionId) ? sessionId : undefined
+  const envSessionId = env.AGENTPROTO_SESSION_ID
+  const candidates = [
+    values.session,
+    envSessionId?.startsWith("sess_") ? envSessionId : undefined,
+    typeof payload.session_id === "string" ? `cc:${payload.session_id}` : undefined,
+    envSessionId,
+  ]
+  return candidates.find(candidate => candidate && SESSION_ID_RE.test(candidate))
 }
 
 async function runInbox(args: readonly string[], deps: HookDeps): Promise<number> {
@@ -301,7 +311,7 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
   } catch {
     /* no / malformed payload — fall back to env + defaults */
   }
-  const sessionId = resolveInboxSessionId(values, deps.env ?? process.env)
+  const sessionId = resolveInboxSessionId(values, deps.env ?? process.env, payload)
   if (!sessionId) return 0
 
   const rawEvent = values.event ?? (typeof payload.hook_event_name === "string" ? payload.hook_event_name : "UserPromptSubmit")
