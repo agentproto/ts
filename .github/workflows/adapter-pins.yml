@@ -31,6 +31,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Run checker tests
+        run: node --test scripts/check-adapter-pins.test.mjs
+
       - name: Check pins and build report
         id: pins
         run: |
@@ -39,7 +42,8 @@ jobs:
           const fs = require("fs");
           const data = JSON.parse(fs.readFileSync("/tmp/adapter-pins.json", "utf8"));
           const rows = data.rows || [];
-          const drifted = rows.filter((row) => row.drift !== "none" && row.drift !== "unknown");
+          const drifted = rows.filter((row) => ["patch", "minor", "major"].includes(row.drift));
+          const unknown = rows.filter((row) => row.drift === "unknown");
 
           let body = `# Adapter pin freshness\n\n`;
           body += `Run: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}\n\n`;
@@ -51,11 +55,16 @@ jobs:
           if (data.skipped && data.skipped.length > 0) {
             body += `\nAdapters without an npm pin: ${data.skipped.join(", ")}\n`;
           }
+          if (unknown.length > 0) {
+            body += `\nIndeterminate: the registry lookup failed for ${unknown.map((row) => `\`${row.package}\``).join(", ")}. A fresh result is not proven while these remain unknown, so an existing issue is left open.\n`;
+            console.log(`::warning::Adapter pin lookup failed for ${unknown.map((row) => row.package).join(", ")}; not treating the run as fresh.`);
+          }
           body += `\nThis workflow only reports drift. It does not edit adapter pins and does not merge.\n`;
 
           fs.writeFileSync("/tmp/adapter-pins.md", body);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `drifted=${drifted.length > 0}\n`);
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `count=${drifted.length}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `unknown=${unknown.length}\n`);
           NODE
 
       - name: Report to step summary
@@ -83,7 +92,7 @@ jobs:
           fi
 
       - name: Close tracking issue when all pins are fresh
-        if: steps.pins.outputs.drifted == 'false'
+        if: steps.pins.outputs.drifted == 'false' && steps.pins.outputs.unknown == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

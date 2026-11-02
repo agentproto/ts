@@ -31,6 +31,8 @@ test("classifies drift as none, patch, minor or major", () => {
   assert.equal(classifyDrift("1.2.3", "1.2.4"), "patch")
   assert.equal(classifyDrift("1.2.3", "1.3.0"), "minor")
   assert.equal(classifyDrift("1.2.3", "2.0.0"), "major")
+  assert.equal(classifyDrift("2.0.0", "1.9.9"), "none")
+  assert.equal(classifyDrift("1.2.3-beta.1", "1.2.3"), "patch")
   assert.equal(classifyDrift("1.2.3", null), "unknown")
 })
 
@@ -59,6 +61,7 @@ test("collects the fixture adapters and skips non-npm and local-only pins", () =
   assert.deepEqual(pins, [
     { adapter: "exact", package: "@scope/wrapper", pinned: "1.2.3" },
     { adapter: "ranged", package: "ranged-cli", pinned: "1.4.0" },
+    { adapter: "robust", package: "robust-cli", pinned: "2.3.4" },
   ])
   assert.deepEqual(skipped, ["local", "non-npm"])
 })

@@ -41,15 +41,87 @@ export function parseRangeFloor(range) {
   return match ? match[1] : null
 }
 
+export function compareSemver(left, right) {
+  const a = SEMVER_RE.exec(left)
+  const b = SEMVER_RE.exec(right)
+  if (!a || !b) return null
+  for (const index of [1, 2, 3]) {
+    const delta = Number(a[index]) - Number(b[index])
+    if (delta !== 0) return delta < 0 ? -1 : 1
+  }
+  if (a[4] === b[4]) return 0
+  if (!a[4]) return 1
+  if (!b[4]) return -1
+  return a[4] < b[4] ? -1 : 1
+}
+
 export function classifyDrift(pinned, latest) {
   if (!pinned || !latest) return "unknown"
+  const comparison = compareSemver(pinned, latest)
+  if (comparison === null) return "unknown"
+  if (comparison >= 0) return "none"
   const a = SEMVER_RE.exec(pinned)
   const b = SEMVER_RE.exec(latest)
-  if (!a || !b) return "unknown"
   if (Number(a[1]) !== Number(b[1])) return "major"
   if (Number(a[2]) !== Number(b[2])) return "minor"
-  if (Number(a[3]) !== Number(b[3])) return "patch"
-  return "none"
+  return "patch"
+}
+
+function extractBalanced(source, start, open, close) {
+  let depth = 0
+  let quote = null
+  let escaped = false
+  for (let i = start; i < source.length; i++) {
+    const char = source[i]
+    const next = source[i + 1]
+    if (quote) {
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === quote) quote = null
+      continue
+    }
+    if (char === "/" && next === "/") {
+      const end = source.indexOf("\n", i + 2)
+      i = end === -1 ? source.length : end
+      continue
+    }
+    if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2)
+      i = end === -1 ? source.length : end + 1
+      continue
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char
+      continue
+    }
+    if (char === open) depth++
+    else if (char === close) {
+      depth--
+      if (depth === 0) return source.slice(start + 1, i)
+    }
+  }
+  return null
+}
+
+function extractAfter(source, key, open, close) {
+  const match = new RegExp(`\\b${key}\\s*:\\s*\\${open}`).exec(source)
+  if (!match) return null
+  const start = match.index + match[0].length - 1
+  return extractBalanced(source, start, open, close)
+}
+
+function extractObjects(block) {
+  if (!block) return []
+  const objects = []
+  let index = block.indexOf("{")
+  while (index !== -1) {
+    const body = extractBalanced(block, index, "{", "}")
+    if (body === null) break
+    objects.push(body)
+    const end = index + body.length + 2
+    index = block.indexOf("{", end)
+  }
+  return objects
 }
 
 export function parseAdapterSource(source) {
@@ -71,14 +143,15 @@ export function parseAdapterSource(source) {
   }
 
   const bin = source.match(/\bbin:\s*["']([^"']+)["']/)?.[1] ?? null
-  const binArgsBlock = source.match(/\bbin_args:\s*\[([^\]]*)\]/)?.[1] ?? ""
+  const binArgsBlock = extractAfter(source, "bin_args", "[", "]") ?? ""
   const binArgs = [...binArgsBlock.matchAll(/["']([^"']+)["']/g)].map((m) => m[1])
 
-  for (const match of source.matchAll(
-    /method:\s*["']([^"']+)["']\s*,\s*(?:package|url):\s*["']([^"']+)["']/g,
-  )) {
-    if (match[1] !== "npm") continue
-    const { name, version } = splitPackageSpec(match[2])
+  for (const object of extractObjects(extractAfter(source, "install", "[", "]"))) {
+    const method = object.match(/\bmethod:\s*["']([^"']+)["']/)?.[1]
+    if (method !== "npm") continue
+    const spec = object.match(/\bpackage:\s*["']([^"']+)["']/)?.[1]
+    if (!spec) continue
+    const { name, version } = splitPackageSpec(spec)
     add(name, version, Boolean(version))
   }
 
@@ -90,10 +163,10 @@ export function parseAdapterSource(source) {
     }
   }
 
-  const versionCheck = source.match(/version_check:\s*\{([\s\S]*?)\}\s*,/)?.[1] ?? ""
-  const range = versionCheck.match(/range:\s*["']([^"']+)["']/)?.[1]
+  const versionCheck = extractAfter(source, "version_check", "{", "}") ?? ""
+  const range = versionCheck.match(/\brange:\s*["']([^"']+)["']/)?.[1]
   const rangeFloor = parseRangeFloor(range)
-  const cmdMatch = versionCheck.match(/cmd:\s*(?:\[([^\]]*)\]|["']([^"']*)["'])/)
+  const cmdMatch = versionCheck.match(/\bcmd:\s*(?:\[([^\]]*)\]|["']([^"']*)["'])/)
   const cmd = cmdMatch ? (cmdMatch[1] ?? cmdMatch[2] ?? "") : ""
   const npmView = cmd.match(/\bnpm\s+view\s+([^\s"']+)\s+version/)
   const npmLs = cmd.match(/\bnpm\s+ls\s+-g\s+([^\s"']+)/)
