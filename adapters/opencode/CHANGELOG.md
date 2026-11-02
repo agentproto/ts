@@ -1,5 +1,16 @@
 # @agentproto/adapter-opencode
 
+## 1.9.6
+
+### Patch Changes
+
+- f99040c: Resolve a pinned opencode console org across every login stored in `opencode.db`, not only the active one. The active login is tried first, expired logins are skipped, a login whose `/api/orgs` call fails does not hide the org held by another, and the final error names the logins tried without their tokens. With a single usable login the behaviour is unchanged.
+- c79fa57: `agentproto auth subaccounts list` for the opencode console now also lists the orgs of the other stored logins, not only the active one. A non-active login that is expired or whose `/api/orgs` call fails is skipped; an expired active login still fails the listing.
+- f99040c: Resolve a pinned opencode console org across every login stored in `opencode.db`, not only the active one. The active login is tried first, expired logins are skipped, and a failed `/api/orgs` call on one login no longer hides an org held by another; the final error names the logins tried without exposing their tokens.
+- Updated dependencies [1b66f60]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.14.2
+
 ## 1.9.5
 
 ### Patch Changes

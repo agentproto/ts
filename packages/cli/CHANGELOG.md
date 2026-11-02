@@ -1,5 +1,38 @@
 # @agentproto/cli
 
+## 1.33.0
+
+### Minor Changes
+
+- 1650650: New `agentproto hook pr-stamp`: a Claude Code PostToolUse hook that appends the `@agentproto-bot` provenance footer to a PR opened with `gh pr create` by a session the daemon did not spawn (Claude desktop Code tab, plain `claude`). `agentproto hook install --host claude-desktop` now installs it (matcher `Bash`).
+- 1395906: Add a derived "launched by" answer to `session_list` (`launchedBy`) and a `LAUNCHED BY` column between `AGE` and `COMMAND` in the default `agentproto sessions` table, folding the existing parent, caller, operator and origin fields into one readable line.
+- 650fa3a: Let worktree gc reclaim integrated worktrees whose only changes carry no work (an emptied checkout, turbo's managed AGENTS.md block, or changes already on base), reported as `reclaimReason: "dirty-no-work"` with the sub-cases in `dirtyNoWork`. Anything unexplained keeps its previous class.
+- 74c2942: `app_install {dir}` no longer silently re-points an app installed from a live dir into a linked git worktree: that is refused unless `repoint: true` (CLI `agentproto app install <dir> --repoint`), so `agentproto maintain` / `steward` run from a worktree build keep the installed copy. The daemon also self-heals a `dir-missing` record left by a removed worktree by re-pointing it at the main worktree's copy of the same app (fail-closed), reported as a `dir-repointed` registry issue.
+
+### Patch Changes
+
+- ededca4: Windows daemon: make the Task Scheduler path work under a Restricted/AllSigned PowerShell execution policy and non-ASCII user profiles. The generated `agentproto-daemon.cmd` launcher switches cmd to UTF-8 (`chcp 65001`) before any non-ASCII path, the install/start/restart hints become `agentproto.cmd ...` when the policy blocks the `.ps1` shim, and uninstall only treats a failed `schtasks /Query` as "already absent" when it reports the task is missing (normalized across English/French and OEM mojibake), so an access-denied query fails with the original error instead of claiming success.
+- 6d47d90: Bump the pinned `@agentclientprotocol/codex-acp` wrapper from 1.13.1 to 2.5.0, which bundles `@openai/codex` ^0.165.0, and keep the adapter manifest, docs, and spawn/onboarding fixtures in sync. The `@agentproto/cli` update only refreshes the onboarding detection fixture to match the new wrapper pin.
+- 9a31444: Make branch gc output something an operator can act on.
+
+  - `summarizeBranchGcPlan` adds `summary.distinct`: branch counts keyed by name across ref kinds (a local branch and its remote twin count once), next to the per-kind ref counts. `agentproto branch gc` prints it.
+  - The `branch_gc` MCP reply is compact by default: the summary, the plan metadata and one page of entries (name, kind, sha, class, status, reclaimReason / mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard when set), 100 rows per page. An apply pages its outcomes by default (pass `section: "entries"` to page the plan entries instead) and keeps the restore log and `applySummary`. `cursor` pages the same run and the same filtered slice without re-running it, keeping the `section`/`classes`/`limit` it was created with. `fields`, `classes`, `section` and `limit` shape the page, and `full: true` returns today's whole result. Callers that read full plan entries must now pass `full: true`.
+  - The repo-maintenance `maintain` workflow requests `full: true` on each branch_gc call, headlines "N branches (M refs)", lists the whole human decision queue (lowest line coverage first) with the `branch_gc_verdict` operator-approval call that clears an entry, and names where the full list is for every other capped list (`review` and `verdictRecords` are now in the run output).
+
+- Updated dependencies [1b66f60]
+- Updated dependencies [f3511ad]
+- Updated dependencies [650fa3a]
+- Updated dependencies [1b66f60]
+- Updated dependencies [9a31444]
+  - @agentproto/model-catalog@0.14.2
+  - @agentproto/sandbox-computer@0.6.1
+  - @agentproto/worktree@0.21.0
+  - @agentproto/apps@0.25.1
+  - @agentproto/inference-endpoint@1.0.1
+  - @agentproto/sandbox-box@0.2.39
+  - @agentproto/sandbox-e2b@0.11.1
+  - @agentproto/sandbox-instabox@0.2.6
+
 ## 1.32.0
 
 ### Minor Changes
