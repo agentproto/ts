@@ -1458,6 +1458,80 @@ steps:
     expect(final?.result?.sessionIds).toEqual(["sess_review_001"])
   })
 
+  it("supervisorSessionId threads into every step spawn as parentSessionId", async () => {
+    const bus = createSessionEventBus()
+    const spawnAgent = vi.fn((input: { cwd?: string; label?: string; parentSessionId?: string }) => ({
+      id: "sess_child_001",
+      kind: "agent-cli" as const,
+      workspaceSlug: "test",
+      command: "mock",
+      pid: null,
+      status: "running" as const,
+      startedAt: "t",
+      cwd: input.cwd,
+      label: input.label,
+      parentSessionId: input.parentSessionId,
+    }))
+    const registry = makeMockRegistry({
+      spawnAgent,
+      sendPrompt: vi.fn(async (sessionId: string) => {
+        bus.emit({ type: "session:turn-end", sessionId, awaitingInput: false, ts: "t" })
+      }),
+      get: vi.fn((id) =>
+        id === "sess_child_001"
+          ? { id, kind: "agent-cli" as const, workspaceSlug: "test", command: "mock", pid: null, status: "running" as const, startedAt: "t" }
+          : undefined,
+      ),
+    })
+    const runner = createRunner({
+      registry,
+      sessionEvents: bus,
+      resolveAgentAdapter: makeMockAdapter(),
+      compileWorkflow: (handle) => compileWorkflow(handle, { tools: {}, candidates: [] }),
+    })
+
+    writeFileSync(
+      join(tmpDir, "entry.mjs"),
+      `export default {
+        name: "Review",
+        id: "review-supervised",
+        description: "Review workflow.",
+        version: "0.1.0",
+        inputs: {},
+        outputs: {},
+        steps: [
+          { id: "review", kind: "agent", adapter: "mock", prompt: () => "review it" },
+        ],
+      }`,
+      "utf8",
+    )
+    const path = writeWorkflowMd(`---
+name: Review
+id: review-supervised
+description: Review workflow.
+version: 0.1.0
+entry: ./entry.mjs
+inputs: {}
+outputs: {}
+steps:
+  - id: review
+    kind: agent
+---
+`)
+
+    const run = await runner.startFromFile({ path, supervisorSessionId: "sess_parent_001" })
+    const terminal = new Set(["done", "failed", "cancelled"])
+    let final = runner.status(run.runId)
+    for (let i = 0; i < 100 && final && !terminal.has(final.status); i++) {
+      await new Promise(res => setTimeout(res, 10))
+      final = runner.status(run.runId)
+    }
+
+    expect(final?.status).toBe("done")
+    expect(spawnAgent).toHaveBeenCalledTimes(1)
+    expect(spawnAgent.mock.calls[0]?.[0]?.parentSessionId).toBe("sess_parent_001")
+  })
+
   // F25: an app-owned workflow run through `startFromFile` with no explicit
   // `cwd` defaults agent-step spawns to the owning app's root (the same root
   // #1395's app-bundled cli drivers spawn under) — never the daemon's own

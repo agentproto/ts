@@ -41,6 +41,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { parseArtifactMarkers } from "../../../scripts/lib/artifact-ledger.mjs"
 import { detectAdapterCrash } from "./crash-signals.mjs"
 import { describeRunProgress } from "../../../scripts/lib/workflow-progress.mjs"
+import { buildReviewSummary } from "../../../scripts/lib/review-run-summary.mjs"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 
@@ -67,6 +68,11 @@ const idleTimeoutMinutes = Number(
   process.env.IDLE_TIMEOUT_MINUTES ?? String(Math.min(timeoutMinutes, 15)),
 )
 const port = Number(process.env.PORT ?? "18790")
+// Opt-in supervising session (pr-review's supervised loop): spawn one idle
+// session before the run and pass its id as the run's `supervisorSessionId`,
+// so every step session the run spawns records a NON-EMPTY `parentSessionId`.
+// The supervisor does no model work (no initial prompt) - it is pure lineage.
+const supervise = (process.env.SUPERVISOR ?? "").trim() === "true"
 
 let workflowInput
 try {
@@ -337,9 +343,45 @@ async function main() {
   )
   await client.connect(transport)
 
+  // Supervising session (see `supervise` above). Best-effort: a spawn failure
+  // must NOT cost the review its run - log it and start the run unparented
+  // rather than fail the whole lane over lineage metadata.
+  let supervisorSessionId
+  if (supervise) {
+    try {
+      const spawned = parseToolResult(
+        await Promise.race([
+          client.callTool({
+            name: "agent_start",
+            arguments: {
+              adapter,
+              cwd,
+              label: "review-supervisor",
+              // A long review/fix loop must not have its parent reaped mid-run.
+              keepAlive: true,
+            },
+          }),
+          sleep(60_000).then(() => {
+            throw new Error("agent_start did not answer within 60s")
+          }),
+        ]),
+      )
+      supervisorSessionId = spawned?.id ?? spawned?.sessionId ?? spawned?.descriptor?.id
+      if (supervisorSessionId) console.log(`driver: supervising session ${supervisorSessionId}`)
+      else console.error("driver: agent_start returned no session id - running unparented")
+    } catch (err) {
+      console.error(`driver: supervisor spawn failed (${err.message}) - running unparented`)
+    }
+  }
+
   const startResult = await client.callTool({
     name: "workflow_run_file",
-    arguments: { path: workflowPath, input: workflowInput, cwd },
+    arguments: {
+      path: workflowPath,
+      input: workflowInput,
+      cwd,
+      ...(supervisorSessionId ? { supervisorSessionId } : {}),
+    },
   })
   const started = parseToolResult(startResult)
   if (started.error) throw new Error(`workflow_run_file failed: ${started.error}`)
@@ -712,6 +754,67 @@ async function main() {
   // and THEN hung no longer looks (to the postcheck's live-head recount) like
   // nothing was posted — which is what arms a duplicate fallback review.
   const finalStatus = timedOut ? "timed-out" : silentNoop || adapterCrashed ? "failed" : run.status
+
+  // Stage/verdict summary - the check run's title + summary, and the job's
+  // step summary. Read the FULL status so step outputs (the typed review
+  // verdicts) are present; the polled status is compact by design. A failure
+  // here is cosmetic only: fall back to the compact run.
+  let fullRun = run
+  try {
+    const full = parseToolResult(
+      await client.callTool({ name: "workflow_status", arguments: { runId, full: true } }),
+    )
+    if (full?.status) fullRun = full
+  } catch (err) {
+    console.error(`driver: full workflow_status for the summary failed: ${err.message}`)
+  }
+  // One event-log page (cap 500) gives the per-EXECUTION stage rows: the run
+  // record dedupes a loop step to one row per id, while the AIP-58 log has
+  // every review/fix iteration.
+  let runEvents
+  try {
+    const page = parseToolResult(
+      await client.callTool({ name: "run_events", arguments: { runId } }),
+    )
+    runEvents = Array.isArray(page?.events) ? page.events : undefined
+  } catch (err) {
+    console.error(`driver: run_events for the summary failed: ${err.message}`)
+  }
+  const summary = buildReviewSummary(
+    { ...fullRun, status: finalStatus === "timed-out" ? "failed" : finalStatus },
+    {
+      maxFixIterations: reviewConfig?.commands?.fix?.maxFixIterations ?? reviewConfig?.maxFixIterations ?? 3,
+      ...(runEvents ? { events: runEvents } : {}),
+    },
+  )
+  await writeGithubOutput("summary-title", summary.title)
+  await writeGithubOutput("summary-verdict", summary.verdict)
+  // Multi-line value: the `name<<EOF` form (never the single-line `name=value`
+  // form, which truncates at the first newline).
+  const summaryFile = process.env.GITHUB_STEP_SUMMARY
+  if (summaryFile) {
+    try {
+      await appendFile(summaryFile, `${summary.summary}\n`, "utf8")
+    } catch (err) {
+      console.error(`driver: could not append the step summary: ${err.message}`)
+    }
+  }
+  const outputFile = process.env.GITHUB_OUTPUT
+  if (outputFile) {
+    await appendFile(outputFile, `summary<<__SUMMARY_EOF__\n${summary.summary}\n__SUMMARY_EOF__\n`, "utf8")
+  }
+  console.log(`driver: summary: ${summary.title} (reviews=${summary.reviews}, fixes=${summary.fixes})`)
+
+  // Retire the idle supervisor: it did no model work, and leaving it alive
+  // would keep a dead root in the sessions tree after the run.
+  if (supervisorSessionId) {
+    try {
+      await client.callTool({ name: "agent_kill", arguments: { sessionId: supervisorSessionId } })
+    } catch (err) {
+      console.error(`driver: supervisor kill failed: ${err.message}`)
+    }
+  }
+
   await writeGithubOutput("run-id", runId)
   await writeGithubOutput("status", finalStatus)
   // Single-line JSON (no newline) — safe for the `name=value` GITHUB_OUTPUT form.
