@@ -8,8 +8,10 @@ description: |
   merged/squash-merged/patch-merged/content-merged branches,
   review-class branches whose stored verdict agreed (subject to branch_gc's
   line-coverage guard, default 95% — refused approvals are reported and
-  stay), and merged-or-fresh+clean worktrees are reclaimed. Anything `hold`
-  is never touched. Set `applyReviewed: false` (or omit it) to keep the
+  stay), and merged-or-fresh+clean worktrees are reclaimed. A `hold` branch
+  is never deleted. The one `hold` worktree that can go is a reviewed held
+  worktree whose stored verdict agreed: worktree_gc re-checks it and removes
+  the worktree only, keeping the branch for branch_gc's guard. Set `applyReviewed: false` (or omit it) to keep the
   apply reclaim-class only. Ships DISABLED (`enabled: false`) — install it
   into a workspace's `.routines/` and flip `enabled: true` to activate.
 version: "1.0.0"
@@ -63,7 +65,12 @@ check), then:
   first delete.
 - `worktree_gc` applies with `salvageDirty: false` — only merged/fresh AND
   clean worktrees are reclaimed; a dirty-but-integrated worktree is left in
-  place.
+  place. With `applyReviewed: true` it also gets `reviewedPaths`: each held
+  worktree whose branch the reviewer agreed on is removed WORKTREE ONLY
+  (`removed-keep-branch`) after an apply-time re-check (same tip and index,
+  clean, idle, no open PR, agreeing stored verdict for the exact tip), else
+  skipped with the reason. The kept branch then goes through `branch_gc`'s
+  reviewed rung and line-coverage guard in the same run.
 
 Recording a verdict via `branch_gc_verdict` is still only a report; nothing
 is reclaimed unless this routine opts in with `applyReviewed: true`. Set it

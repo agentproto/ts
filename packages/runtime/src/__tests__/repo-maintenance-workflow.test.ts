@@ -264,6 +264,7 @@ describe("repo-maintenance maintain workflow — shape", () => {
       "gaps:transform",
       "verdictLookupTips:transform",
       "verdictRecords:map",
+      "reviewedWorktreePaths:transform",
       "worktreeGcApply:tool",
       "branchGcApply:tool",
       "checkpointGcApply:tool",
@@ -1578,14 +1579,26 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
 
   async function run(
     input: Record<string, unknown>,
-    opts: { integration?: Record<string, unknown>; idleExtra?: Record<string, unknown>; record?: Record<string, unknown> } = {},
+    opts: {
+      integration?: Record<string, unknown>
+      idleExtra?: Record<string, unknown>
+      record?: Record<string, unknown>
+      wtOutcomes?: Array<Record<string, unknown>>
+    } = {},
   ) {
     let branchGcCalls = 0
+    const wtApplyCalls: Array<Record<string, unknown>> = []
+    const callOrder: string[] = []
     const dispatchTool: DispatchTool = vi.fn(async (name, inputs) => {
       if (name === "worktree_gc") {
         if (inputs.wait !== true) return mcpResult({ jobId: "wgc_test", status: "running" })
-        return mcpResult(inputs.apply ? { mode: "apply", outcomes: [] } : worktreePlan(opts.integration))
+        if (inputs.expectedPlan) {
+          wtApplyCalls.push(inputs)
+          callOrder.push("worktreeGcApply")
+        }
+        return mcpResult(inputs.apply ? { mode: "apply", outcomes: opts.wtOutcomes ?? [] } : worktreePlan(opts.integration))
       }
+      if (name === "branch_gc" && inputs.scopes) callOrder.push("branchGcApply")
       if (name === "branch_gc") return mcpResult(branchPlan(++branchGcCalls >= 2, opts.idleExtra))
       if (name === "branch_gc_verdict_get") {
         return mcpResult({ sha: inputs.sha, found: true, missing: false, record: { sha: inputs.sha, ...opts.record } })
@@ -1602,7 +1615,7 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       agentRefs: { "@agentproto/repo-maintenance-reviewer": { adapter: "mock-agent" } },
     })
     const { output } = await runWorkflow({ workflow: compiled, agents: host, input: { repoRoot: "/repo", ...input } })
-    return { spawns, sends, report: (output as { report: string }).report }
+    return { spawns, sends, wtApplyCalls, callOrder, report: (output as { report: string }).report }
   }
 
   it("reviews only the idle, clean, no-PR, old-enough worktree branch, telling the reviewer why it was held", async () => {
@@ -1616,12 +1629,41 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
     for (const sha of [SHA_LIVE, SHA_DIRTY, SHA_YOUNG, SHA_PR]) expect(prompt).not.toContain(sha)
   })
 
-  it("reports the verdict with the removal command when the reviewer agreed — and removes nothing itself", async () => {
-    const { report } = await run({})
+  it("reports the verdict with a removal command that KEEPS the branch when the reviewer agreed — and removes nothing itself", async () => {
+    const { report, wtApplyCalls } = await run({})
     expect(report).toContain("## Held worktrees reviewed (1)")
     expect(report).toContain("- `idle` - obsolete - PR: none")
-    expect(report).toContain("nothing of value lost: `agentproto worktree rm /wt/idle`")
+    expect(report).toContain("nothing of value lost: `agentproto worktree rm /wt/idle --keep-branch`")
+    expect(report).toContain("branch_gc's line-coverage guard then decides it")
+    // A bare `worktree rm` deletes the branch too, outside branch_gc's guard: never printed.
+    expect(report).not.toMatch(/`agentproto worktree rm \/wt\/idle`/)
     expect(report).toContain("dry run only, nothing was deleted")
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual([])
+  })
+
+  it("applyMerged alone never hands worktree_gc a reviewed path", async () => {
+    const { wtApplyCalls, report } = await run({ applyMerged: true })
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual([])
+    expect(report).toContain("`agentproto worktree rm /wt/idle --keep-branch`")
+  })
+
+  it("applyMerged + applyReviewed: worktree_gc gets only the agreed held worktree, BEFORE branch_gc applies, and the report gives its outcome", async () => {
+    const { wtApplyCalls, callOrder, report } = await run(
+      { applyMerged: true, applyReviewed: true },
+      { wtOutcomes: [{ path: "/wt/idle", branch: "idle", result: "removed-keep-branch" }] },
+    )
+    expect(wtApplyCalls[0]?.reviewedPaths).toEqual(["/wt/idle"])
+    expect(callOrder).toEqual(["worktreeGcApply", "branchGcApply"])
+    expect(report).toContain("worktree removed, branch kept for branch_gc's line-coverage guard (/wt/idle)")
+    expect(report).not.toContain("agentproto worktree rm")
+  })
+
+  it("applyReviewed reports a worktree worktree_gc refused at apply time, with its reason", async () => {
+    const { report } = await run(
+      { applyMerged: true, applyReviewed: true },
+      { wtOutcomes: [{ path: "/wt/idle", branch: "idle", result: "skipped-stale", reason: "HEAD moved since the plan (111111111 -> 222222222)" }] },
+    )
+    expect(report).toContain("not removed (skipped-stale): HEAD moved since the plan (111111111 -> 222222222) (/wt/idle)")
   })
 
   describe("reviewer evidence: PR state + git cherry", () => {
@@ -1652,7 +1694,8 @@ describe("repo-maintenance maintain workflow — held worktrees (reviewHeldWorkt
       const lines = report.split("\n").filter(l => l.includes("`idle`") && l.includes("reason:"))
       expect(lines).toEqual([
         "- `idle` - obsolete - PR: closed-unmerged #9 - cherry: 2/5 not patch-equivalent on base - " +
-          "reason: all hunks re-landed in #12 - nothing of value lost: `agentproto worktree rm /wt/idle`",
+          "reason: all hunks re-landed in #12 - nothing of value lost: `agentproto worktree rm /wt/idle --keep-branch`" +
+          " (keeps the branch; branch_gc's line-coverage guard then decides it)",
       ])
       expect(report).not.toContain("second line is dropped")
     })

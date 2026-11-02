@@ -61,6 +61,7 @@ import {
   type ForgeClient,
   parseGithubOwnerRepo,
   FileVerdictMemoStore,
+  FileBranchVerdictStore,
   listWorktreeStatuses,
   repoLabel,
   detectDefaultBranch,
@@ -708,6 +709,7 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
     noisePaths,
     activeMinutes,
     expectedPlan,
+    reviewedPaths,
   }): Promise<WorktreeGcResult> => {
     const repoRoot = repoRootOf(resolve(repoRootCandidate))
     if (!repoRoot) {
@@ -759,6 +761,8 @@ export function makeWorktreeGcRunner(): WorktreeGcRunner {
       liveSessionCwds: protectedPaths,
       ...(noisePaths ? { noisePaths } : {}),
       ...(activeMinutes !== undefined ? { activeMinutes } : {}),
+      // Same store and repo key `branch_gc` reads its verdicts from.
+      ...(reviewedPaths?.length ? { reviewed: { paths: reviewedPaths, verdicts: new FileBranchVerdictStore() } } : {}),
     })
     return { mode: "apply", outcomes: outcomes.map(toGcOutcomeView) }
   }
@@ -1509,6 +1513,9 @@ function formatGcOutcomeRow(outcome: GcApplyOutcome): string {
     case "skipped-stale":
       detail = `skipped: stale plan (${outcome.reason})`
       break
+    case "removed-keep-branch":
+      detail = "removed (reviewed), branch kept"
+      break
     case "failed":
       detail = `failed: ${outcome.message}`
       break
@@ -1530,7 +1537,11 @@ function printGcOutcomes(outcomes: readonly GcApplyOutcome[], json: boolean): vo
   const salvaged = outcomes.filter((o) => o.result === "salvaged").length
   const failed = outcomes.filter((o) => o.result === "failed").length
   const stale = outcomes.filter((o) => o.result === "skipped-stale").length
+  const reviewed = outcomes.filter((o) => o.result === "removed-keep-branch").length
   process.stdout.write(
-    `\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed` + (stale > 0 ? `, ${stale} skipped (stale plan)` : "") + ".\n",
+    `\n${reclaimed} reclaimed, ${salvaged} salvaged, ${failed} failed` +
+      (reviewed > 0 ? `, ${reviewed} removed as reviewed (branch kept)` : "") +
+      (stale > 0 ? `, ${stale} skipped (stale plan)` : "") +
+      ".\n",
   )
 }
