@@ -170,6 +170,8 @@ export async function runSetup(
     logPath?: string
     retryOnFailure?: boolean
     signal?: AbortSignal
+    /** Live tap on each hook's stdout/stderr, see `ExecOptions.onOutput`. */
+    onOutput?: (text: string, stream: "stdout" | "stderr") => void
     /** Extra env for the spawned hook, layered OVER the non-interactive
      *  defaults (see {@link nonInteractiveEnv}). An explicit `CI` (or
      *  `npm_config_confirm_modules_purge`) here wins over the default and
@@ -191,7 +193,11 @@ export async function runSetup(
     ...(opts.env ?? {}),
     TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir(),
   }
-  const execOpts = { env, ...(opts.signal ? { signal: opts.signal } : {}) }
+  const execOpts = {
+    env,
+    ...(opts.signal ? { signal: opts.signal } : {}),
+    ...(opts.onOutput ? { onOutput: opts.onOutput } : {}),
+  }
   for (const command of commands) {
     if (opts.signal?.aborted) throw new ProvisionCancelledError()
     let result = await execShell(command, ctx.worktreePath, execOpts)

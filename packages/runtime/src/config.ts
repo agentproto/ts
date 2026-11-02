@@ -387,6 +387,24 @@ export interface WorktreesConfig {
    * host cannot deadlock the queue.
    */
   provisionLoadFactor?: number
+  /**
+   * Boot stall timeout for a provisioning, in ms: when the deps / setup-hook
+   * process prints nothing for this long, its process tree is killed and the
+   * session fails with `error` (phase, last output lines, elapsed). A slow
+   * setup that keeps printing never trips it. `0` disables. Resolution order:
+   * `agent_start.worktree.stallTimeoutMs` > env
+   * `AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` > this field > the
+   * default `120000`.
+   */
+  provisionStallTimeoutMs?: number
+  /**
+   * Hard cap on one provisioning's heavy segment, in ms (counted from when it
+   * gets its slot, not while queued); same failure path as the stall timeout.
+   * `0` disables. Resolution order: `agent_start.worktree.maxMs` > env
+   * `AGENTPROTO_WORKTREES_PROVISION_MAX_MS` > this field > the default
+   * `1800000` (30 min).
+   */
+  provisionMaxMs?: number
 }
 
 /**

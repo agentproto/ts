@@ -115,7 +115,9 @@ agentproto config set daemon.port 18791
     "isolation": "on-request",
     "provisionConcurrency": 2,
     "provisionConcurrencyByRepo": { "~/code/big-monorepo": 1 },
-    "provisionLoadFactor": 0
+    "provisionLoadFactor": 0,
+    "provisionStallTimeoutMs": 120000,
+    "provisionMaxMs": 1800000
   },
 
   // The default AIP-72 memory store. See "memory" below.
@@ -359,6 +361,8 @@ policy for isolating spawned agent sessions into one.
 | `provisionConcurrency` | integer >= 0 | Daemon-wide cap on concurrently running **heavy** provisioning phases (`depsCmd`, `cloneGlobs`/`copyGlobs`, `worktree.setup` hooks). Excess `agent_start({worktree})` spawns wait in a FIFO queue (fair across callers) and show `provisioning: { state: "queued", position }`. `0` disables the cap. Default `2`. Resolution order: `AGENTPROTO_WORKTREES_PROVISION_CONCURRENCY` env > this field > the default. Hot-applied: a change takes effect on the next provisioning without a daemon restart. `git worktree add` and the other cheap steps are never queued. |
 | `provisionConcurrencyByRepo` | object | Extra per-repo cap, `{ "<repo path or directory name>": cap }` (`~/` expands; a bare name matches the repo's directory name). Applies **in addition to** `provisionConcurrency`, never looser than it. Invalid entries are ignored. |
 | `provisionLoadFactor` | number | Optional load guard. When `> 0`, a queued provisioning is not admitted while the 1-minute load average exceeds `cores x provisionLoadFactor`, unless nothing is running (an idle scheduler always admits one, so a permanently loaded host cannot deadlock). Default `0` (off). |
+| `provisionStallTimeoutMs` | integer >= 0 | Stall bound on the heavy provisioning segment, in ms: if the `depsCmd` / `worktree.setup` process prints nothing for this long, its whole process tree is killed and the spawn fails (session `error`) naming the phase, elapsed time and last output lines. Output resets the clock, so a slow install that keeps printing never trips it. Not counted while queued. `0` disables. Default `120000`. Resolution order: per-spawn `agent_start.worktree.stallTimeoutMs` > `AGENTPROTO_WORKTREES_PROVISION_STALL_TIMEOUT_MS` env > this field > the default. Hot-applied. |
+| `provisionMaxMs` | integer >= 0 | Hard cap on the whole heavy provisioning segment, in ms, output or not; same failure path as the stall bound. `0` disables. Default `1800000` (30 min). Resolution order: per-spawn `agent_start.worktree.maxMs` > `AGENTPROTO_WORKTREES_PROVISION_MAX_MS` env > this field > the default. Hot-applied. |
 
 ### `spawn: object`
 

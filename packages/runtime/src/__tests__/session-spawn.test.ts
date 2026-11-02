@@ -7736,6 +7736,54 @@ describe("spawnAgentSession — provisioning progress and cancellation (daemon-w
     expect(registry.get(id)?.provisioning).toBeUndefined()
   })
 
+  it("streams the setup output into the starting row, one [phase] line per complete line, and keeps the error readable", async () => {
+    const { deps, calls, registry, reject } = queueDeps()
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL, worktree: { async: true } })
+    if (!result.ok) throw new Error("expected success")
+    const id = result.descriptor.id
+    const req = calls[0]!
+    req.onProgress?.({ kind: "phase", phase: "setup" })
+    req.onOutput?.("cloning nes", "stdout")
+    req.onOutput?.("ted repos\nresolving\n\u001b[32mdone\u001b[0m\npartial", "stdout")
+    const text = registry.readOutputTail(id, 50).join("\n")
+    expect(text).toContain("[setup] cloning nested repos")
+    expect(text).toContain("[setup] resolving")
+    expect(text).toContain("[setup] done")
+    expect(text).not.toContain("partial")
+    expect(text).not.toContain("\u001b")
+
+    const stall =
+      'worktree provisioning stalled in phase "setup": no output for 2m00s (elapsed 2m05s); the process tree was killed.'
+    reject(new Error(stall))
+    await vi.waitFor(() => expect(registry.get(id)?.status).toBe("error"))
+    expect(registry.get(id)?.lastError).toContain('stalled in phase "setup"')
+    req.onOutput?.("late chunk\n", "stdout")
+    expect(registry.readOutputTail(id, 50).join("\n")).not.toContain("late chunk")
+  })
+
+  it("forwards the per-spawn stallTimeoutMs / maxMs to the provisioner, on both the async and sync paths", async () => {
+    const asyncRun = queueDeps()
+    const a = await spawnAgentSession(asyncRun.deps, {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: true, stallTimeoutMs: 5000, maxMs: 90000 },
+    })
+    expect(a.ok).toBe(true)
+    expect(asyncRun.calls[0]).toMatchObject({ stallTimeoutMs: 5000, maxMs: 90000 })
+
+    const syncRun = queueDeps()
+    const pending = spawnAgentSession(syncRun.deps, {
+      adapter: "mock",
+      cwd: ORIGINAL,
+      worktree: { async: false, stallTimeoutMs: 0 },
+    })
+    await vi.waitFor(() => expect(syncRun.calls).toHaveLength(1))
+    expect(syncRun.calls[0]).toMatchObject({ stallTimeoutMs: 0 })
+    expect(syncRun.calls[0]).not.toHaveProperty("maxMs")
+    syncRun.resolve(isolated)
+    await pending
+  })
+
   it("the synchronous path still emits progress events keyed by the minted session id (no row to update)", async () => {
     const { deps, calls, seen, resolve } = queueDeps()
     const pending = spawnAgentSession(deps, { adapter: "mock", cwd: ORIGINAL, worktree: { async: false } })

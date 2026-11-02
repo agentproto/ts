@@ -6918,10 +6918,16 @@ function parseWorktreeField(raw: unknown): WorktreeField | undefined {
     const slug = typeof obj.slug === "string" ? obj.slug : undefined
     const base = typeof obj.base === "string" ? obj.base : undefined
     const async = typeof obj.async === "boolean" ? obj.async : undefined
+    const ms = (v: unknown): number | undefined =>
+      typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : undefined
+    const stallTimeoutMs = ms(obj.stallTimeoutMs)
+    const maxMs = ms(obj.maxMs)
     return {
       ...(slug !== undefined ? { slug } : {}),
       ...(base !== undefined ? { base } : {}),
       ...(async !== undefined ? { async } : {}),
+      ...(stallTimeoutMs !== undefined ? { stallTimeoutMs } : {}),
+      ...(maxMs !== undefined ? { maxMs } : {}),
     }
   }
   return undefined

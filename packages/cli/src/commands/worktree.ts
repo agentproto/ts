@@ -75,6 +75,7 @@ import {
   livenessSessionCount,
   parseProvisionLimits,
   provisionScheduler,
+  resolveProvisionTimeouts,
   runWithProvisionContext,
   ProvisionCancelledError,
   reclaimOneWorktree,
@@ -499,6 +500,13 @@ export function makeWorktreeProvisioner(configPath?: string): WorktreeProvisione
     // back to env + defaults: it must never take provisioning down.
     const cfg = await loadConfig(configPath).catch(() => undefined)
     provisionScheduler.configure(parseProvisionLimits(cfg?.worktrees))
+    // Boot bounds: per-spawn > env > config > default. Always resolved here so
+    // a daemon-driven provisioning can never hang `starting` forever; the
+    // interactive `worktree new` path never reaches this provisioner.
+    const bounds = resolveProvisionTimeouts(cfg?.worktrees, {
+      ...(req.stallTimeoutMs !== undefined ? { stallTimeoutMs: req.stallTimeoutMs } : {}),
+      ...(req.maxMs !== undefined ? { maxMs: req.maxMs } : {}),
+    })
     // The scheduler-facing context rides AsyncLocalStorage: the tool contract
     // has no room for callbacks, and the runner's own abort signal is bound to
     // the tool's 30s default timeout, which must never cancel a long install.
@@ -507,6 +515,9 @@ export function makeWorktreeProvisioner(configPath?: string): WorktreeProvisione
         ...(req.callerId !== undefined ? { callerKey: req.callerId } : {}),
         ...(req.signal !== undefined ? { signal: req.signal } : {}),
         ...(req.onProgress !== undefined ? { onProgress: req.onProgress } : {}),
+        ...(req.onOutput !== undefined ? { onOutput: req.onOutput } : {}),
+        stallTimeoutMs: bounds.stallTimeoutMs,
+        maxMs: bounds.maxMs,
       },
       () =>
         runTool({

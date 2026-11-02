@@ -57,8 +57,12 @@ import {
 import {
   DEFAULT_WORKTREE_ISOLATION,
   DEFAULT_WORKTREE_PROVISION_CONCURRENCY,
+  DEFAULT_WORKTREE_PROVISION_MAX_MS,
+  DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
   WORKTREE_ISOLATION_ENV,
   WORKTREE_PROVISION_CONCURRENCY_ENV,
+  WORKTREE_PROVISION_MAX_ENV,
+  WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
 } from "./worktree-isolation.js"
 import { DEFAULT_SPAWN_ATTACH, SPAWN_ATTACH_ENV } from "./spawn-attach.js"
 import { DEFAULT_SPAWN_DEDUPE, SPAWN_DEDUPE_ENV } from "./spawn-dedupe.js"
@@ -396,6 +400,8 @@ const worktreesConfigSchema: z.ZodType<WorktreesConfig> = z
     provisionConcurrency: z.number().int().min(0).optional(),
     provisionConcurrencyByRepo: z.record(z.string(), z.number().int().min(0)).optional(),
     provisionLoadFactor: z.number().min(0).optional(),
+    provisionStallTimeoutMs: z.number().int().min(0).optional(),
+    provisionMaxMs: z.number().int().min(0).optional(),
   })
   .passthrough()
 
@@ -1308,6 +1314,28 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Provisioning load guard factor",
     help: "Hold back a new heavy provisioning while the 1-minute load average exceeds cores x this factor. 0 or unset = off.",
     default: 0,
+  },
+  {
+    path: "worktrees.provisionStallTimeoutMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: WORKTREE_PROVISION_STALL_TIMEOUT_ENV,
+    writable: true,
+    section: "defaults",
+    label: "Provisioning stall timeout (ms)",
+    help: "Kill a worktree provisioning and fail the session when its deps/setup process prints nothing for this long. 0 = off.",
+    default: DEFAULT_WORKTREE_PROVISION_STALL_TIMEOUT_MS,
+  },
+  {
+    path: "worktrees.provisionMaxMs",
+    schema: z.number().int().min(0),
+    apply: "hot",
+    env: WORKTREE_PROVISION_MAX_ENV,
+    writable: true,
+    section: "defaults",
+    label: "Provisioning hard cap (ms)",
+    help: "Kill a worktree provisioning and fail the session when its heavy segment runs longer than this, output or not. 0 = off.",
+    default: DEFAULT_WORKTREE_PROVISION_MAX_MS,
   },
   {
     path: "spawn.attach",

@@ -56,6 +56,19 @@ export {
   type SchedulerSnapshot,
 } from "./provision-scheduler.js"
 export {
+  DEFAULT_PROVISION_MAX_MS,
+  DEFAULT_PROVISION_STALL_TIMEOUT_MS,
+  DEFAULT_PROVISION_TIMEOUTS,
+  PROVISION_MAX_ENV,
+  PROVISION_STALL_TIMEOUT_ENV,
+  ProvisionTimeoutError,
+  resolveProvisionTimeouts,
+  startProvisionWatchdog,
+  type ProvisionTimeouts,
+  type ProvisionWatchdog,
+  type ProvisionWatchdogOptions,
+} from "./provision-watchdog.js"
+export {
   CONFIG_FILENAME,
   parseConfig,
   normalizeHook,
