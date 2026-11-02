@@ -1,5 +1,15 @@
 # @agentproto/catalog-sync
 
+## 0.8.13
+
+### Patch Changes
+
+- 1b66f60: Sync generated catalog data from the pinned provider sources.
+- 1b66f60: Sync generated catalog data from the pinned provider sources (LLM pricing/routes, image, voice). Data-only refresh; no hand-written source logic changed.
+- Updated dependencies [1b66f60]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.14.2
+
 ## 0.8.12
 
 ### Patch Changes

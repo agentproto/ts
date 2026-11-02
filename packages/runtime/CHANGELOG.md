@@ -1,5 +1,40 @@
 # @agentproto/runtime
 
+## 6.1.0
+
+### Minor Changes
+
+- 1395906: Add a derived "launched by" answer to `session_list` (`launchedBy`) and a `LAUNCHED BY` column between `AGE` and `COMMAND` in the default `agentproto sessions` table, folding the existing parent, caller, operator and origin fields into one readable line.
+- 650fa3a: Let worktree gc reclaim integrated worktrees whose only changes carry no work (an emptied checkout, turbo's managed AGENTS.md block, or changes already on base), reported as `reclaimReason: "dirty-no-work"` with the sub-cases in `dirtyNoWork`. Anything unexplained keeps its previous class.
+- 24967db: Add an apiKey (service-to-service) auth mode to the `cloudflare-provisioned` tunnel provider, making the OIDC device-flow fields optional when a provisioner API key is supplied.
+- 74c2942: `app_install {dir}` no longer silently re-points an app installed from a live dir into a linked git worktree: that is refused unless `repoint: true` (CLI `agentproto app install <dir> --repoint`), so `agentproto maintain` / `steward` run from a worktree build keep the installed copy. The daemon also self-heals a `dir-missing` record left by a removed worktree by re-pointing it at the main worktree's copy of the same app (fail-closed), reported as a `dir-repointed` registry issue.
+- 9a31444: Make branch gc output something an operator can act on.
+
+  - `summarizeBranchGcPlan` adds `summary.distinct`: branch counts keyed by name across ref kinds (a local branch and its remote twin count once), next to the per-kind ref counts. `agentproto branch gc` prints it.
+  - The `branch_gc` MCP reply is compact by default: the summary, the plan metadata and one page of entries (name, kind, sha, class, status, reclaimReason / mergedPr / mergedPrMatch / holdReason / lineCoverage.pct / verdictGuard when set), 100 rows per page. An apply pages its outcomes by default (pass `section: "entries"` to page the plan entries instead) and keeps the restore log and `applySummary`. `cursor` pages the same run and the same filtered slice without re-running it, keeping the `section`/`classes`/`limit` it was created with. `fields`, `classes`, `section` and `limit` shape the page, and `full: true` returns today's whole result. Callers that read full plan entries must now pass `full: true`.
+  - The repo-maintenance `maintain` workflow requests `full: true` on each branch_gc call, headlines "N branches (M refs)", lists the whole human decision queue (lowest line coverage first) with the `branch_gc_verdict` operator-approval call that clears an entry, and names where the full list is for every other capped list (`review` and `verdictRecords` are now in the run output).
+
+- 24967db: Add apiKey auth mode to cloudflare-provisioned tunnel provider
+
+### Patch Changes
+
+- e56ebfe: Give the files brain an on-disk, incremental search index, and never refuse a search. With `indexPath` set and a runtime whose `node:sqlite` has FTS5 (Node 22.13+, 23.4+, 24+; 22.5 to 22.12 only with `--experimental-sqlite`), `FilesKnowledgeAdapter` keeps its BM25 index in a SQLite FTS5 file run in a worker thread: `ingest()` upserts that document's row and `deleteSource()` empties it instead of invalidating the whole brain, a stat-only scan on open (then at most every `reconcileIntervalMs`, default 5 minutes, in the background) re-indexes only changed files and drops vanished ones, and a query during the first build answers from what is indexed with `partial: true`. The index stores pre-tokenized text from the same tokenizer, and FTS5 candidates are re-scored with the package's own BM25, so rankings match the in-memory engine (exact on the captured parity fixture, 99.7% top-10 overlap on a generated corpus). The file is derived data: deleted or unreadable, it is rebuilt; a schema or tokenizer change rebuilds it. Without FTS5 (Node 20, older 22) the adapter falls back to the in-memory index, which now indexes the most recently modified `maxIndexDocs` files and flags results `partial` above the ceiling instead of throwing `FilesIndexTooLargeError` (kept, deprecated, no longer thrown). `LocalFs` gains `walkStat()`. `KnowledgeQueryResult` gains an optional `partial` flag. Workspace brains put each `files` provider's index at `<brain>/.index/fts-<id>.sqlite` (`"onDiskIndex": false` in `knowledge.json` opts out), the federated provider propagates `partial`, `GET /brain/query` reports `partial` (and `workspacesPartial` in federated mode), and the `maxIndexDocs` config help now describes it as the in-memory fallback's ceiling.
+- 84345e9: Let `tunnel_delete` forget a `cloudflare-provisioned` record that was never provisioned remotely while the provider is unconfigured, and keep refusing to delete one with a stored remote tunnel id.
+- ef84907: Keep the gh shim's provenance footer when a PR body is rewritten
+- 2cf5019: Default the daemon `/mcp` self-mount for every on-host adapter (not just hermes/claude-code) when a spawn supplies no explicit `mcpServers`; on-host workflow agent steps likewise receive the gateway by default. The injected entry carries a per-session `callerSessionId` and keeps `agent_start` visible to `delegationReachFor`, preventing depth-0 sessions from being downgraded to executor. Sandbox spawns remain excluded except hermes.
+- ef84907: Keep the `gh` provenance shim's footer when an agent rewrites a PR body: `gh pr edit --body/-b/--body-file/-F` and `gh api -X PATCH .../(pulls|issues)/N` now re-append the existing rendered footer if the new body dropped it, so a rewritten description no longer fails the provenance/hygiene check on the next push.
+- b7d4143: The PR-provenance reconciler's branch lane no longer stamps a sandboxed session as a PR's opener unless an `Agentproto-Session` trailer on the PR's commits or checkpoint names it. A sandboxed reviewer whose box checked out the PR head was credited as the opener of a PR opened outside agentproto (#2447).
+- Updated dependencies [e56ebfe]
+- Updated dependencies [1b66f60]
+- Updated dependencies [1b66f60]
+- Updated dependencies [9a31444]
+  - @agentproto/workspace-brain@0.7.0
+  - @agentproto/model-catalog@0.14.2
+  - @agentproto/apps@0.25.1
+  - @agentproto/providers-store@0.4.3
+  - @agentproto/sandbox@0.15.1
+  - @agentproto/inference-endpoint@1.0.1
+
 ## 6.0.0
 
 ### Major Changes

@@ -1,5 +1,11 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.10.2
+
+### Patch Changes
+
+- e429491: Document the `auto` reviewer sandbox (computer fleet first, capped e2b overflow, plain e2b fallback) in the CI review lanes reference.
+
 ## 0.10.1
 
 ### Patch Changes
