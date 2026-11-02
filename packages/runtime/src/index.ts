@@ -16,6 +16,8 @@
  */
 
 import { createLivenessTickGuard } from "./liveness-tick-guard.js"
+import { heapLogIntervalFromEnv, startHeapMonitor, writeHeapSnapshotGuarded } from "./heap-diagnostics.js"
+import { eventsIndexCacheSize } from "./events-jsonl-reader.js"
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
 import { existsSync, mkdtempSync } from "node:fs"
@@ -4896,10 +4898,32 @@ export async function createGateway(
       : undefined
   permissionTelegram?.start()
 
+  // E99: one `[heap]` line every few minutes (AGENTPROTO_HEAP_LOG_INTERVAL_MS,
+  // 0 = off) with heapUsed/rss, the floor after the last major GC, live
+  // handles, and the sizes of the long-lived structures below; the same
+  // report backs the operator-only GET /debug/heap.
+  const heapMonitor = startHeapMonitor({
+    intervalMs: heapLogIntervalFromEnv(),
+    probes: {
+      sessions: () => {
+        const all = sessions.list({ includeArchived: true })
+        let live = 0
+        for (const d of all) if (d.status === "running" || d.status === "starting") live++
+        return { total: all.length, live }
+      },
+      policies: () => ({ total: supervisor.list().length }),
+      workflowRuns: () => ({ total: workflowRunner?.list().length ?? 0 }),
+      eventsIndexCache: () => ({ entries: eventsIndexCacheSize() }),
+      ...(opts.hostRegistry?.memoryStats ? { hosts: () => opts.hostRegistry!.memoryStats!() } : {}),
+      ...(opts.pairingRegistry?.memoryStats ? { pairing: () => opts.pairingRegistry!.memoryStats!() } : {}),
+    },
+  })
+
   const http = await startHttpServer({
     port,
     bind: opts.bind,
     mcpObservations,
+    heapDiagnostics: { report: () => heapMonitor.report(), snapshot: () => writeHeapSnapshotGuarded() },
     // Auth is read on every request via this getter. `opts.auth`
     // (when provided) is the startup default and represents the
     // operator's intent — bearer-only deployments stay bearer-only
@@ -5566,6 +5590,7 @@ export async function createGateway(
       if (wiringSweepTimer) clearInterval(wiringSweepTimer)
       // Stop the AIP-58 liveness sweep before sessions shut down (P3b).
       clearInterval(livenessSweepTimer)
+      heapMonitor.stop()
       // Detach the restart-scheduler's session:exited subscription.
       restartScheduler.dispose()
       turnRetryController.dispose()

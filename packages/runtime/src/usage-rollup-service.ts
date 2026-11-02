@@ -55,36 +55,57 @@ export async function collectSessionSnapshots(
     const ids = opts.onlyIds
     descriptors = descriptors.filter(desc => ids.has(desc.id))
   }
-
-  const collected = await Promise.all(
-    descriptors.map(async desc => {
-      // A per-session read failure must never sink the whole rollup — treat it
-      // as "no snapshots" so a single corrupt/half-written transcript is
-      // silently skipped below rather than thrown.
-      const snapshots = await registry
-        .readUsageSnapshots(desc.id)
-        .catch(() => [])
-      if (snapshots.length === 0) return undefined
-      const session: SessionSnapshots = {
-        sessionId: desc.id,
-        profileRef: desc.accessProfile?.profileRef,
-        harness: desc.harness ?? desc.adapterSlug,
-        snapshots,
-      }
-      return session
-    }),
-  )
-
-  let sessions = collected.filter(
-    (s): s is SessionSnapshots => s !== undefined,
-  )
-
+  // The profile is a descriptor field, so filter before reading: a
+  // profile-scoped rollup never opens another profile's transcripts.
   if (opts?.profileRef) {
     const wanted = opts.profileRef
-    sessions = sessions.filter(s => s.profileRef === wanted)
+    descriptors = descriptors.filter(desc => desc.accessProfile?.profileRef === wanted)
   }
 
-  return sessions
+  // Bounded fan-out: each read streams one transcript, and a daemon holds
+  // thousands of them, so an unbounded Promise.all opened them all at once.
+  const collected = await mapWithConcurrency(descriptors, COLLECT_SNAPSHOTS_CONCURRENCY, async desc => {
+    // A per-session read failure must never sink the whole rollup: treat it
+    // as "no snapshots" so a single corrupt/half-written transcript is
+    // silently skipped below rather than thrown.
+    const snapshots = await registry
+      .readUsageSnapshots(desc.id)
+      .catch(() => [])
+    if (snapshots.length === 0) return undefined
+    const session: SessionSnapshots = {
+      sessionId: desc.id,
+      profileRef: desc.accessProfile?.profileRef,
+      harness: desc.harness ?? desc.adapterSlug,
+      snapshots,
+    }
+    return session
+  })
+
+  return collected.filter(
+    (s): s is SessionSnapshots => s !== undefined,
+  )
+}
+
+/** Transcripts `collectSessionSnapshots` reads at the same time. */
+export const COLLECT_SNAPSHOTS_CONCURRENCY = 8
+
+/** `Promise.all(items.map(fn))` with at most `limit` calls in flight; results
+ *  keep the input order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i]!)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
 }
 
 /** Overall wall-clock cap on the whole enrichment fan-out — a floor over the

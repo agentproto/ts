@@ -327,6 +327,10 @@ export interface PairingRegistry {
   revoke(idOrName: string): Promise<boolean>
   /** Is a channel (offer or reconnect) currently served for this fingerprint? */
   isOnline(fingerprint: string): boolean
+  /** Entry counts of the registry's in-memory state (pairings, tombstones,
+   *  offers, rendezvous loops, served channels), for the daemon's `[heap]`
+   *  log line. Cheap, no I/O. Optional so test doubles need not implement it. */
+  memoryStats?(): Record<string, number>
   /** Start standing reconnect connections for every persisted pairing. Call
    *  after the gateway is up (so the injected `serve` can reach it). */
   startAutoconnect(): Promise<void>
@@ -1193,12 +1197,25 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
     channels.clear()
   }
 
+  function memoryStats(): Record<string, number> {
+    return {
+      pairings: pairings.size,
+      revoked: revoked.size,
+      offers: offers.size,
+      loops: loops.size,
+      channels: channels.size,
+      online: onlineCounts.size,
+      localDevices: localDevices.size,
+    }
+  }
+
   return {
     createOffer,
     list,
     rename: renamePairing,
     revoke,
     isOnline,
+    memoryStats,
     startAutoconnect,
     shutdown,
     mintLocalDevice,

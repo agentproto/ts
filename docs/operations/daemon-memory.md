@@ -164,3 +164,70 @@ Two already-running development-server trees (about 246 MB RSS) became classifie
 as orphans once their owning session rows stopped. Their processes predate this
 activation; they were preserved alongside the five previously reported detached
 trees. No old Claude/ACP session tree remained live after shutdown.
+
+## Heap by owner (E99, 2026-11-02)
+
+### What the growth was
+
+Observed on build 33d8622ce, Node 24.21, `--max-old-space-size=12288`, with
+`/health` sampled every 30 s for 30 min: `heapUsed` swung between 568 MB and
+1.8 GB, but every peak was gone by the next sample and the floor stayed flat
+at about 570-650 MB. That is uncollected garbage, not retention: under a
+12 GB cap V8 lets the old space fill for a long time before a major GC, so
+`heapUsed` alone overstates what the daemon holds. On a host that is already
+swapping, those peaks still cost real pages. The OOM crashes in `daemon.log`
+(10-29 and 10-30) predate the on-disk brain index (#2432, #2452).
+
+The largest peak source found offline: `collectSessionSnapshots` (behind
+`usage_rollup` and `GET /usage/rollup`, which the config UI's wallets panel
+calls) read every agent-cli transcript at once through an unbounded
+`Promise.all`. Each read loaded a whole `events.jsonl` into one string and ran
+`JSON.parse` on every line. Measured on a branch daemon with 40 synthetic
+sessions (480 MB of transcripts): one rollup pushed `heapUsed` from about
+200 MB to 0.9-1.2 GB. The reads are now streamed, only lines that mention
+`usage_snapshot` are parsed, at most 8 transcripts are read at a time, and the
+`profileRef` filter runs before any read. Same rollup on the branch: peak
+260-275 MB.
+
+### The `[heap]` log line
+
+Every 5 minutes the daemon logs one line:
+
+```
+[heap] heapUsed=640MB heapTotal=812MB rss=1100MB external=60MB arrayBuffers=11MB
+  afterMajorGc=602MB@2026-11-02T01:31:09.000Z majorGcs=41 handles=Timeout:38,TCPSocketWrap:12
+  sessions=total:930,live:14 policies=total:12 workflowRuns=total:40 eventsIndexCache=entries:64
+  hosts=hosts:325,pollers:19,... pairing=pairings:9,loops:18,...
+```
+
+(one line in the log; wrapped here). `afterMajorGc` is `heapUsed` sampled right
+after the last mark-compact: the retained floor. Read it, not `heapUsed`.
+A floor that climbs while every structure count stays flat points at a
+retainer nothing counts yet; take a snapshot. A count that climbs with the
+floor names the owner. `handles` groups `process.getActiveResourcesInfo()`, so
+a leaked timer or socket shows up there.
+
+`AGENTPROTO_HEAP_LOG_INTERVAL_MS` sets the cadence in ms (`0` turns it off).
+The same report, as JSON, is served by `GET /debug/heap`.
+
+### On-demand heap snapshot
+
+```sh
+curl -X POST http://127.0.0.1:<port>/debug/heap-snapshot
+```
+
+Writes `~/.agentproto/heap-snapshots/heap-<iso>-<pid>.heapsnapshot` and returns
+its path. Open it in Chrome DevTools (Memory tab) and compare two snapshots
+taken some time apart.
+
+**It blocks the daemon's event loop** until the file is written (about 2 s for
+a 200 MB heap, seconds per GB beyond that): no request, session event or timer
+runs meanwhile, and the file is about the size of the heap. It refuses with
+`507 insufficient_memory` when free memory (`os.freemem()`, which on macOS
+leaves out reclaimable inactive pages, so it errs low) is below `heapUsed`
+plus 256 MB.
+
+Both `/debug/*` routes are operator-only: they need the daemon bearer, or a
+loopback call without an `Origin` header (no browser page may trigger one),
+and they answer `403 operator_only` to a session principal (a valid session
+token, or a caller claim naming a session the daemon spawned).
