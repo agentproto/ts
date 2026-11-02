@@ -135,7 +135,7 @@ describe("context behaviour pinned before the rework (Pygmalion profile)", () =>
 
   it("T4: resolveContextContinuityPolicy fills defaults and keeps explicit values", () => {
     const filled = resolveContextContinuityPolicy(undefined, undefined, undefined, { mode: "auto", goal: true })
-    expect(filled.autoCompactAtTokens).toBe(150_000)
+    expect(filled.autoCompactAtTokens).toBeUndefined()
     expect(filled.hardStopAtPct).toBe(90)
     expect(filled.warnAtPct).toBe(55)
 
@@ -193,11 +193,19 @@ describe("context behaviour pinned before the rework (Pygmalion profile)", () =>
     expect(h.prompts.at(-1)).toBe("more")
   })
 
-  it("T5b: without a policy auto-compact still fires from the default token threshold", async () => {
-    const h = harness(200_000, 1_000_000)
+  it("T5b: without a policy auto-compact fires from the window-scaled default threshold", async () => {
+    const h = harness(560_000, 1_000_000)
     const id = spawn(h)
     await reg.sendPrompt(id, "work")
     await vi.waitFor(() => expect(h.prompts.filter(isCompact)).toHaveLength(1), { timeout: 5_000 })
+  })
+
+  it("T5c: without a policy a 1M window at 200k tokens does not auto-compact", async () => {
+    const h = harness(200_000, 1_000_000)
+    const id = spawn(h)
+    await reg.sendPrompt(id, "work")
+    await new Promise(r => setTimeout(r, 600))
+    expect(h.prompts.filter(isCompact)).toHaveLength(0)
   })
 
   it("T6: at 75% in auto mode with no adapter resolver the ladder hard-stops the session and no compaction reaches the harness", async () => {

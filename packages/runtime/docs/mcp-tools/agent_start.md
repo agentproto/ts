@@ -727,10 +727,11 @@ the path of the full transcript and a reminder that `transcript_search` /
 `transcript_read` exist, so the session can look up anything the summary
 dropped: on the compact command itself for a harness whose command takes an
 argument (claude-code), otherwise as a one-line note riding along with the
-next prompt the session receives (never a turn of its own). It is
-window-independent: the percent ladder never fires on a 1M-token window (558k
-of 1M is "55% full", the warn band), so a long session grew without ever
-compacting. Default 150000, clamped to 600000 max, `0` disables. The
+next prompt the session receives (never a turn of its own). An
+explicit value is absolute and window-independent. Unset, the threshold is
+`max(150000, warnAtPct% of the context window)`: 150000 on a 200k window,
+550000 on a 1M window, so a large window never compacts at 15%. Clamped to
+600000 max, `0` disables. The
 continuity mode does not gate it (like the hard-stop floor, it is a safety
 guard, not a nudge).
 

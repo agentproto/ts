@@ -1,7 +1,4 @@
-import {
-  AUTO_COMPACT_DEFAULT_TOKENS,
-  clampAutoCompactTokens,
-} from "./auto-compact.js"
+import { clampAutoCompactTokens, resolveAutoCompactTokens } from "./auto-compact.js"
 
 /**
  * Canonical context-continuity policy for long-running agent sessions.
@@ -76,7 +73,8 @@ export interface ContextContinuityPolicy
    * care how big the window is.
    *
    * Clamped into `[1000, 600000]`; `0` disables autocompact. Unset = the
-   * default (150k). */
+   * default: `max(150k, warnAtPct% of the window)`, so a 1M window compacts
+   * at 550k, not 150k (see `resolveAutoCompactTokens`). */
   autoCompactAtTokens?: number
   /** Optional display label for UIs. */
   label?: string
@@ -159,7 +157,7 @@ export interface ResolvedContextContinuityPolicy
   mode: ContextContinuityMode
   /** See {@link ContextContinuityPolicy.autoCompactAtTokens} (clamped).
    *  Optional so a policy persisted before autocompact existed still
-   *  deserialises; absent = {@link AUTO_COMPACT_DEFAULT_TOKENS}. */
+   *  deserialises; absent = the window-scaled default. */
   autoCompactAtTokens?: number
   /** Effective label (falls back to mode when absent). */
   label: string
@@ -173,7 +171,6 @@ export interface ResolvedContextContinuityPolicy
 
 export const CONTEXT_CONTINUITY_DEFAULTS: ResolvedContextContinuityPolicy = {
   mode: "ask",
-  autoCompactAtTokens: AUTO_COMPACT_DEFAULT_TOKENS,
   warnAtPct: 55,
   compactAtPct: 65,
   continueFreshAtPct: 75,
@@ -300,9 +297,10 @@ function mergePolicyLayer(
   if (!override) return base
   return {
     mode: override.mode ?? base.mode,
-    autoCompactAtTokens: clampAutoCompactTokens(
-      override.autoCompactAtTokens ?? base.autoCompactAtTokens,
-    ),
+    autoCompactAtTokens:
+      override.autoCompactAtTokens === undefined
+        ? base.autoCompactAtTokens
+        : clampAutoCompactTokens(override.autoCompactAtTokens),
     warnAtPct: override.warnAtPct ?? base.warnAtPct,
     compactAtPct: override.compactAtPct ?? base.compactAtPct,
     continueFreshAtPct: override.continueFreshAtPct ?? base.continueFreshAtPct,
@@ -458,7 +456,11 @@ export function computeContextContinuityStatus(
   const nextThreshold = pct === null ? null : thresholds.find(t => t > pct) ?? null
   const nextThresholdDelta = pct === null || nextThreshold === null ? null : nextThreshold - pct
 
-  const autoCompactAtTokens = clampAutoCompactTokens(policy.autoCompactAtTokens)
+  const autoCompactAtTokens = resolveAutoCompactTokens(
+    policy.autoCompactAtTokens,
+    contextSize,
+    policy.warnAtPct,
+  )
   return {
     sessionId,
     contextSize,

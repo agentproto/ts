@@ -183,6 +183,7 @@ import {
   deriveLastTurnOutcome,
   hasWorkInProgress,
   readFiniteTokens,
+  resolveAutoCompactTokens,
   type AutoCompactController,
   type AutoCompactDecision,
   type AutoCompactOutcome,
@@ -10485,8 +10486,11 @@ export function createSessionsRegistry(opts?: {
     const controller = (rt.autoCompact ??= createAutoCompactController({
       readTokens: () => rt.desc.contextUsed,
       readThreshold: () =>
-        rt.desc.contextContinuity?.autoCompactAtTokens ??
-        CONTEXT_CONTINUITY_DEFAULTS.autoCompactAtTokens,
+        resolveAutoCompactTokens(
+          rt.desc.contextContinuity?.autoCompactAtTokens,
+          rt.desc.contextSize,
+          (rt.desc.contextContinuity ?? CONTEXT_CONTINUITY_DEFAULTS).warnAtPct,
+        ),
       isIdle: () => rt.busy !== true,
       hasBackgroundTask: () =>
         (rt.desc.pendingBgTasks ?? 0) > 0 || (rt.desc.backgroundTasks?.length ?? 0) > 0,
