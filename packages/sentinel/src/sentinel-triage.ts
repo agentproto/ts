@@ -28,6 +28,8 @@
 import { appendFileSync, mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
+import { DEFAULT_RECENT_KEYS_CAP, REPEAT_WINDOW_MS, RecentKeys } from "@agentproto/delivery"
+
 import type { TriageDecision } from "./local-types.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
 import type { MessageUrgency } from "./local-types.js"
@@ -35,10 +37,9 @@ import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a
  *  coalesced repeat. */
-export const SENTINEL_TRIAGE_REPEAT_WINDOW_MS = 10 * 60 * 1000
+export const SENTINEL_TRIAGE_REPEAT_WINDOW_MS = REPEAT_WINDOW_MS
 
-/** Default bound on the recent-key map. */
-export const DEFAULT_RECENT_KEYS_CAP = 1000
+export { DEFAULT_RECENT_KEYS_CAP, RecentKeys }
 
 export type SentinelTriageRule = "terminal" | "failure" | "coalesced-repeat" | "default"
 
@@ -53,47 +54,6 @@ export interface SentinelTriageInput {
 export interface SentinelTriageResult {
   decision: TriageDecision
   rule: SentinelTriageRule
-}
-
-function mapKey(target: string, key: string): string {
-  return `${target}\u0000${key}`
-}
-
-/** Bounded insertion-ordered map of recently classified triage keys.
- *  Re-recording a key that is still inside the window keeps its first-seen
- *  timestamp and position; recording past the cap evicts the oldest key. */
-export class RecentKeys {
-  private readonly entries = new Map<string, number>()
-
-  constructor(private readonly cap: number = DEFAULT_RECENT_KEYS_CAP) {}
-
-  get size(): number {
-    return this.entries.size
-  }
-
-  /** True when this `(target, key)` was recorded less than the repeat
-   *  window ago. A key recorded exactly at the window boundary is no longer
-   *  a repeat. */
-  has(target: string, key: string, now: number): boolean {
-    const at = this.entries.get(mapKey(target, key))
-    if (at === undefined) return false
-    const delta = now - at
-    if (delta < 0) return false
-    return delta < SENTINEL_TRIAGE_REPEAT_WINDOW_MS
-  }
-
-  record(target: string, key: string, now: number): void {
-    const id = mapKey(target, key)
-    const at = this.entries.get(id)
-    if (at !== undefined && now >= at && now - at < SENTINEL_TRIAGE_REPEAT_WINDOW_MS) return
-    this.entries.delete(id)
-    this.entries.set(id, now)
-    while (this.entries.size > this.cap) {
-      const oldest = this.entries.keys().next().value
-      if (oldest === undefined) break
-      this.entries.delete(oldest)
-    }
-  }
 }
 
 const FAILURE_VERDICTS: ReadonlySet<string> = new Set([
