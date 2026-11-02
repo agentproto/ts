@@ -210,11 +210,12 @@ export class AgentikTunnelProvider extends TunnelClient implements TunnelProvide
     })
 
     if (!isRecord(record)) {
-      // A provider that accepts the PUT with an empty body is treated as
-      // created; the caller can follow up with `status()` for full detail.
+      // A provider that accepts the PUT with an empty body has created the
+      // tunnel, but nothing confirms the connector is up yet: report
+      // "starting" and let the caller follow up with `status()`.
       return {
         key,
-        status: "active",
+        status: "starting",
         hostnames,
         ...(hostnames[0] ? { publicUrl: `https://${hostnames[0]}` } : {}),
       }

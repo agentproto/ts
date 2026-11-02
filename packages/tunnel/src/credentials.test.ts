@@ -1,4 +1,4 @@
-import { mkdtemp, stat } from "node:fs/promises"
+import { chmod, mkdtemp, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { beforeEach, describe, expect, it } from "vitest"
@@ -43,6 +43,12 @@ describe("credential roundtrip", () => {
       apiKey: "sk-abc",
       baseUrl: "https://x",
     })
+  })
+
+  it("tightens an existing directory to 0700", async () => {
+    await chmod(dir, 0o755)
+    await writeTunnelCredentials("agentik", { apiKey: "sk-abc" }, { dir })
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
   })
 
   it("returns null for a missing file and ignores non-string values", async () => {

@@ -99,7 +99,14 @@ export class TunnelClient {
     const auth: TunnelAuth | undefined = this.config.auth
     if (!auth) return null
     if (auth.mode === "apiKey") return `Bearer ${auth.apiKey}`
-    if (auth.mode === "token") return `Bearer ${auth.token}`
+    if (auth.mode === "token") {
+      if (auth.expiresAt !== undefined && Date.parse(auth.expiresAt) <= Date.now()) {
+        throw new TunnelProviderError(`token expired at ${auth.expiresAt}`, {
+          code: "auth_expired",
+        })
+      }
+      return `Bearer ${auth.token}`
+    }
     const token = await auth.accessToken(forceRefresh ? { forceRefresh: true } : undefined)
     return `Bearer ${token}`
   }
@@ -129,6 +136,14 @@ export class TunnelClient {
   ): Promise<Response> {
     const url = this.url(path)
     const method = options.method ?? "GET"
+    // A signal that is already aborted never fires "abort" again, so check it
+    // up front: no request is sent for a call cancelled before it started.
+    if (options.signal?.aborted) {
+      throw new TunnelProviderError(`${method} ${url} failed: aborted`, {
+        code: "aborted",
+        cause: options.signal.reason,
+      })
+    }
     const headers: Record<string, string> = { ...this.defaultHeaders, ...(options.headers ?? {}) }
 
     if (options.auth !== false) {
@@ -146,6 +161,9 @@ export class TunnelClient {
     }, timeoutMs)
     const onAbort = () => controller.abort()
     options.signal?.addEventListener("abort", onAbort, { once: true })
+    // The signal may have fired while the credential was being resolved,
+    // before the listener existed.
+    if (options.signal?.aborted) controller.abort()
 
     try {
       let res: Response
@@ -165,7 +183,7 @@ export class TunnelClient {
               ? cause.message
               : String(cause)
         throw new TunnelProviderError(`${method} ${url} failed: ${reason}`, {
-          code: timedOut ? "timeout" : "network_error",
+          code: timedOut ? "timeout" : controller.signal.aborted ? "aborted" : "network_error",
           cause,
         })
       }
@@ -174,6 +192,7 @@ export class TunnelClient {
       if (
         res.status === 401 &&
         this.config.auth?.mode === "oidc" &&
+        options.auth !== false &&
         options.retryAuth !== false
       ) {
         return this.requestRaw(path, {

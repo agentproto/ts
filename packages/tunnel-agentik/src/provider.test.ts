@@ -114,13 +114,13 @@ describe("AgentikTunnelProvider.create", () => {
     expect(calls[0]?.url).toBe("https://tunnels.example.com/v1/tunnels/team.api_1")
   })
 
-  it("treats an empty response body as created", async () => {
+  it("treats an empty response body as created but not yet confirmed", async () => {
     const { fetch } = recorder(new Response(null, { status: 204 }))
     await expect(
       provider(fetch).create({ key: "k3", hostnames: ["k3.example.com"] }),
     ).resolves.toEqual({
       key: "k3",
-      status: "active",
+      status: "starting",
       hostnames: ["k3.example.com"],
       publicUrl: "https://k3.example.com",
     })

@@ -9,8 +9,9 @@ Tunnel Provider contract from [`@agentproto/tunnel`](../tunnel).
   `DELETE /v1/tunnels/:key`.
 - **Deps:** none beyond `@agentproto/tunnel`.
 
-See the draft specification in
-[`specs/proposals/aip-73/draft/TUNNEL.md`](../../specs/proposals/aip-73/draft/TUNNEL.md).
+See the draft specification,
+[AIP-73 TUNNEL](https://github.com/agentproto/agentproto/blob/main/specs/aip-73.mdx)
+(proposed in agentproto/agentproto#150).
 
 ## Install
 

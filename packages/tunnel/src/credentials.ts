@@ -66,7 +66,7 @@ export async function readTunnelCredentials(
 
 /**
  * Write (or replace) a provider's setup fields with `0600` permissions and
- * return the file path. Parent directories are created `0700`.
+ * return the file path. The parent directory is set to `0700`.
  */
 export async function writeTunnelCredentials(
   slug: string,
@@ -75,6 +75,9 @@ export async function writeTunnelCredentials(
 ): Promise<string> {
   const path = tunnelCredsPath(slug, options)
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  // mkdir only applies the mode to a directory it creates: tighten an
+  // existing one too, since it holds secrets.
+  await chmod(dirname(path), 0o700).catch(() => {})
   await writeFile(path, `${JSON.stringify(credentials, null, 2)}\n`, { mode: 0o600 })
   await chmod(path, 0o600).catch(() => {})
   return path

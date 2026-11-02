@@ -118,6 +118,85 @@ describe("TunnelClient", () => {
     expect(accessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true })
   })
 
+  it("does not refresh-and-retry a 401 on an unauthenticated request", async () => {
+    const accessToken = vi.fn<TunnelOidcAuth["accessToken"]>().mockResolvedValue("tok")
+    const { fetch, calls } = recorder(jsonResponse({ error: "unauthorized" }, { status: 401 }))
+    const auth: TunnelAuth = {
+      mode: "oidc",
+      issuer: "https://auth.example.com",
+      clientId: "client",
+      accessToken,
+    }
+    const client = new TestClient({ baseUrl: "https://tunnels.example.com", auth, fetch })
+
+    await expect(client.get("/v1/probe", { auth: false })).rejects.toMatchObject({ status: 401 })
+    expect(calls).toHaveLength(1)
+    expect(accessToken).not.toHaveBeenCalled()
+  })
+
+  it("sends a token as a bearer token while it is valid", async () => {
+    const { fetch, calls } = recorder(jsonResponse({}))
+    const client = new TestClient({
+      baseUrl: "https://tunnels.example.com",
+      auth: { mode: "token", token: "short-lived", expiresAt: "2999-01-01T00:00:00Z" },
+      fetch,
+    })
+    await client.get("/v1/tunnels")
+    expect(headersOf(calls[0]?.init)["authorization"]).toBe("Bearer short-lived")
+  })
+
+  it("refuses to send an expired token", async () => {
+    const fetch = vi.fn<FetchLike>()
+    const client = new TestClient({
+      baseUrl: "https://tunnels.example.com",
+      auth: { mode: "token", token: "stale", expiresAt: "2000-01-01T00:00:00Z" },
+      fetch,
+    })
+    const error = await client.get("/v1/tunnels").catch((e: unknown) => e)
+    expect(error).toMatchObject({ name: "TunnelProviderError", code: "auth_expired" })
+    expect(String((error as Error).message)).not.toContain("stale")
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it("sends nothing when the caller signal is already aborted", async () => {
+    const fetch = vi.fn<FetchLike>()
+    const client = new TestClient({ baseUrl: "https://tunnels.example.com", fetch })
+    const controller = new AbortController()
+    controller.abort()
+    await expect(client.get("/v1/tunnels", { signal: controller.signal })).rejects.toMatchObject({
+      code: "aborted",
+    })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it("aborts a request when the caller signal fires after the call started", async () => {
+    let seen: AbortSignal | undefined
+    const fetch: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        seen = init?.signal ?? undefined
+        if (seen?.aborted) reject(new Error("aborted by signal"))
+        seen?.addEventListener("abort", () => reject(new Error("aborted by signal")))
+      })
+    const client = new TestClient({ baseUrl: "https://tunnels.example.com", fetch })
+    const controller = new AbortController()
+    const pending = client.get("/v1/tunnels", { signal: controller.signal })
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ code: "aborted" })
+    expect(seen?.aborted).toBe(true)
+  })
+
+  it("times out a request that never answers", async () => {
+    const fetch: FetchLike = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted by timer")))
+      })
+    const client = new TestClient({ baseUrl: "https://tunnels.example.com", fetch, timeoutMs: 20 })
+    await expect(client.get("/v1/tunnels")).rejects.toMatchObject({
+      code: "timeout",
+      message: expect.stringContaining("timed out after 20ms"),
+    })
+  })
+
   it("maps an error body to a TunnelProviderError", async () => {
     const { fetch } = recorder(
       jsonResponse(
