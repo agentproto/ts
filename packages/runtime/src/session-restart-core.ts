@@ -60,6 +60,7 @@ import {
   isResumable,
   isProviderBoxSession,
   canResume,
+  carrySessionPin,
   SessionRetiredError,
   type AgentSessionLike,
   type SessionDescriptor,
@@ -1780,6 +1781,12 @@ async function restartAgentSessionOnce(
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    // A restart mints a NEW id, so the list pin must ride across explicitly —
+    // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
+    // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);
+    // dropping it on restart silently un-pins a long-lived brain. The
+    // superseded row keeps its own pin, same as it keeps `keepAlive`.
+    carrySessionPin(registry, prev, desc.id)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session
@@ -2535,6 +2542,12 @@ async function restartAgentSessionOnce(
     if (prev.operatorLabel) registry.setOperatorLabel(desc.id, prev.operatorLabel)
     if (prev.operator) registry.setOperator(desc.id, prev.operator, prev.operatorDigest)
     if (prev.toolDenyGrants) registry.setToolDenyGrants(desc.id, prev.toolDenyGrants)
+    // A restart mints a NEW id, so the list pin must ride across explicitly —
+    // same as `keepAlive` above. `pinned` is what exempts a keepAlive row
+    // from the boot-resume idle cutoff (`eager-resume.ts` `staleKeepAlive`);
+    // dropping it on restart silently un-pins a long-lived brain. The
+    // superseded row keeps its own pin, same as it keeps `keepAlive`.
+    carrySessionPin(registry, prev, desc.id)
     // `allowPromptFrom` is spawn-time-only (`agent_start.allowPromptFrom`,
     // applied post-spawn by the MCP tool handler) — never re-derived by
     // `spawnAgentSession` itself, so a restart that lands on a NEW session
