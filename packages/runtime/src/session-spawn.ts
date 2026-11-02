@@ -303,6 +303,7 @@ import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
 import {
   createSandboxAgentSessionHost,
   isSandboxBootCancelledError,
+  isSandboxEgressAllCoolingError,
   isSandboxBoxGoneError,
   resolveLifecyclePolicy,
   SandboxHostBootFailedError,
@@ -320,6 +321,7 @@ import {
   unknownPreflightProbes,
   type PreflightRegistry,
 } from "./sandbox-preflight.js"
+import { egressHealthLedger, isEgressHealthErrorClass } from "./egress-health.js"
 import { isDeviceOfflineError, isDeviceSandboxTarget } from "./sandbox-providers/device.js"
 
 /** BOOTSTRAP P7a — the raw `device:<fp|name>` target a spawn pinned, when
@@ -2257,6 +2259,7 @@ export type SpawnAgentSessionResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_egress_all_cooling"
         | "worktree_disabled"
         | "worktree_provisioner_not_enabled"
         | "worktree_provision_failed"
@@ -6058,6 +6061,7 @@ export async function spawnAgentSession(
     let readUsage: (() => Promise<import("./usage.js").UsageReadResult | null>) | undefined
     let sandboxId: string | undefined
     let sandboxProvider: string | undefined
+    let sandboxEgressIp: { slot: string; publicIp: string } | undefined
     let sandboxProviderChoice: SandboxProviderChoice | undefined
     let sandboxConfig: Record<string, unknown> | undefined
     let sandboxTeardown: SandboxLifecyclePolicy["teardown"] | undefined
@@ -6258,6 +6262,7 @@ export async function spawnAgentSession(
       commandPreview = booted.commandPreview
       sandboxId = booted.sandboxId
       sandboxProvider = booted.provider
+      sandboxEgressIp = booted.egressIp
       sandboxProviderChoice = booted.choice
       sandboxConfig = booted.sandboxConfig
       sandboxTeardown = booted.sandboxTeardown
@@ -6486,6 +6491,7 @@ export async function spawnAgentSession(
       ...(hostSessionId ? { hostSessionId } : {}),
       ...(hostFingerprint ? { hostFingerprint } : {}),
       ...(sandboxProvider ? { sandboxProvider } : {}),
+      ...(sandboxEgressIp ? { sandboxEgressIp: sandboxEgressIp.publicIp, sandboxEgressSlot: sandboxEgressIp.slot } : {}),
       ...(sandboxProviderChoice ? { sandboxProviderChoice } : {}),
       ...(sandboxConfig ? { sandboxConfig } : {}),
       ...(sandboxTeardown ? { sandboxTeardown } : {}),
@@ -6799,6 +6805,11 @@ export type SandboxBootResult =
        *  device provider resolves a name target to its fingerprint at boot).
        *  Stamped onto the descriptor's `hostFingerprint` by the caller. */
       deviceFingerprint?: string
+      /** The egress address the box leaves from (pool slot id + public IP),
+       *  when the provider brokers one. Stamped onto the descriptor so a
+       *  throttled turn on this box can cool the address down in the egress
+       *  health ledger. */
+      egressIp?: { slot: string; publicIp: string }
       /** Spawn-time explanations (derived remote, tar mode, …) the caller
        *  records on the new session. */
       notices?: string[]
@@ -6830,6 +6841,7 @@ export type SandboxBootResult =
         | "sandbox_workspace_setup_failed"
         | "sandbox_preflight_failed"
         | "sandbox_preflight_invalid"
+        | "sandbox_egress_all_cooling"
         | "device_spawn_unreachable"
         | "device_offline"
       message: string
@@ -7506,8 +7518,21 @@ export async function bootSandboxAgentSession(opts: {
       // `daemon.log` instead of silent until it fails.
       log: (line: string) => console.warn(line),
       ...(opts.signal ? { signal: opts.signal } : {}),
+      // An `egressIp: "auto"` computer box picks a pool slot whose address is
+      // not cooling down for this model; other providers ignore it.
+      ...(opts.model ? { egressHealth: egressHealthLedger.view(opts.model) } : {}),
     })
   } catch (err) {
+    // Every pool address is cooling down for this model: nothing was booted,
+    // so a placement ladder can advance without paying for a box.
+    if (isSandboxEgressAllCoolingError(err)) {
+      return {
+        ok: false,
+        code: "sandbox_egress_all_cooling",
+        message: `agent_start: ${err.message}`,
+        details: { model: err.model, slots: err.slots },
+      }
+    }
     // Two DISJOINT failure shapes, both needing a ledger stamp — see
     // `createSandboxAgentSessionHost`: it raises `SandboxHostBootFailedError`
     // only once `connect()`/`boot()` has already SUCCEEDED (the box exists,
@@ -7684,6 +7709,20 @@ export async function bootSandboxAgentSession(opts: {
       )
       for (const o of run.outcomes) {
         if (o.verdict === "unknown") bootWarnings.push(`agent_start: preflight "${o.probe}" inconclusive: ${o.detail}`)
+      }
+      if (
+        run.failed &&
+        host.egressIp?.publicIp &&
+        opts.model &&
+        isEgressHealthErrorClass(run.failed.errorClass)
+      ) {
+        egressHealthLedger.mark({
+          publicIp: host.egressIp.publicIp,
+          model: opts.model,
+          errorClass: run.failed.errorClass,
+          slot: host.egressIp.id,
+          source: `preflight:${run.failed.probe}`,
+        })
       }
       if (run.failed) {
         console.warn(
@@ -8153,6 +8192,7 @@ export async function bootSandboxAgentSession(opts: {
     // fingerprint at boot (even for a name target); forward it so the
     // caller can stamp `hostFingerprint` on the descriptor.
     ...(host.device ? { deviceFingerprint: host.device.fingerprint } : {}),
+    ...(host.egressIp?.publicIp ? { egressIp: { slot: host.egressIp.id, publicIp: host.egressIp.publicIp } } : {}),
     ...(host.ports && Object.keys(host.ports).length > 0 ? { sandboxPorts: host.ports } : {}),
     ...(appServe ? { appServe } : {}),
     // The proxy flattens the box's stream to text (documented limitation),

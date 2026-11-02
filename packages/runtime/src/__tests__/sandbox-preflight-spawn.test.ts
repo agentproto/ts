@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createServer } from "node:net"
 import type { AddressInfo } from "node:net"
+import { SandboxEgressAllCoolingError } from "@agentproto/sandbox"
 import type { SandboxExecOpts, SandboxExecResult, SandboxProvider, SandboxSpec } from "@agentproto/sandbox"
 
 import { createGateway, type GatewayHandle } from "../index.js"
@@ -25,6 +26,7 @@ import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
 import { defaultPreflightRegistry, type PreflightProbe } from "../sandbox-preflight.js"
+import { egressHealthLedger } from "../egress-health.js"
 
 const CI_USAGE_LIMIT =
   "Free usage limit reached. Free models work in OpenCode (https://opencode.ai); subscribe to OpenCode Go to keep going: https://opencode.ai/go"
@@ -88,6 +90,7 @@ describe("agent_start sandbox preflight", () => {
   let provider: SandboxProvider
   let withEgress: boolean
   const registered: string[] = []
+  let prevEgressHealthPath: string | undefined
 
   const registerProbe = (probe: PreflightProbe) => {
     defaultPreflightRegistry.register(probe)
@@ -120,6 +123,8 @@ describe("agent_start sandbox preflight", () => {
   }
 
   beforeEach(async () => {
+    prevEgressHealthPath = process.env.AGENTPROTO_EGRESS_HEALTH
+    process.env.AGENTPROTO_EGRESS_HEALTH = join(tmpdir(), `agentproto-egress-spawn-${process.pid}-${Date.now()}.json`)
     receivedStarts = []
     execCalls = []
     bootCount = 0
@@ -161,6 +166,9 @@ describe("agent_start sandbox preflight", () => {
   })
 
   afterEach(async () => {
+    await rm(process.env.AGENTPROTO_EGRESS_HEALTH ?? "", { force: true })
+    if (prevEgressHealthPath === undefined) delete process.env.AGENTPROTO_EGRESS_HEALTH
+    else process.env.AGENTPROTO_EGRESS_HEALTH = prevEgressHealthPath
     for (const id of registered.splice(0)) {
       // the registry has no unregister: replace with an inert probe
       defaultPreflightRegistry.register({ id, description: "removed", defaultTimeoutMs: 1, run: async () => ({ verdict: "unknown", detail: "removed" }) })
@@ -313,5 +321,76 @@ describe("agent_start sandbox preflight", () => {
     expect(res.code).toBe("sandbox_preflight_failed")
     expect(pauseSpy).toHaveBeenCalledTimes(1)
     expect(stopSpy).not.toHaveBeenCalled()
+  })
+  it("a usage-cap ko cools the box's egress address down for the model", async () => {
+    execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
+    const model = "opencode/glm-5.3-flash-free"
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model,
+      sandbox: "fake",
+      preflight: ["model-answers"],
+    })
+    expect(res.ok).toBe(false)
+    const [entry] = egressHealthLedger.list()
+    expect(entry).toMatchObject({
+      publicIp: EGRESS,
+      model,
+      errorClass: "usage-limit",
+      slot: "slot1",
+      source: "preflight:model-answers",
+    })
+  })
+
+  it("a ko that is not a usage or rate limit does not cool the address", async () => {
+    registerProbe({
+      id: "test-ko",
+      description: "always ko",
+      defaultTimeoutMs: 1000,
+      run: async () => ({ verdict: "ko", errorClass: "auth", detail: "bad key" }),
+    })
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      model: "opencode/big-pickle",
+      sandbox: "fake",
+      preflight: ["test-ko"],
+    })
+    expect(res.ok).toBe(false)
+    expect(egressHealthLedger.list()).toEqual([])
+  })
+
+  it("hands the provider a cooldown view for the model and stamps the egress address on the session", async () => {
+    const model = "opencode/big-pickle"
+    egressHealthLedger.mark({ publicIp: "198.51.100.5", model, errorClass: "usage-limit" })
+    const res = await spawnAgentSession(makeDeps(), { adapter: "fake-cli", model, sandbox: "fake" })
+    expect(res.ok).toBe(true)
+    const opts = (provider.boot as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as {
+      egressHealth?: { model: string; cooling: (ip: string) => unknown }
+    }
+    expect(opts.egressHealth?.model).toBe(model)
+    expect(opts.egressHealth?.cooling("198.51.100.5")).toMatchObject({ errorClass: "usage-limit" })
+    expect(opts.egressHealth?.cooling(EGRESS)).toBeUndefined()
+    expect(registry.list()[0]).toMatchObject({ sandboxEgressIp: EGRESS, sandboxEgressSlot: "slot1" })
+  })
+
+  it("maps every-slot-cooling to the typed sandbox_egress_all_cooling without starting anything", async () => {
+    const slots = [{ slot: "a", publicIp: "198.51.100.5", until: "2026-01-01T01:00:00.000Z", errorClass: "usage-limit" }]
+    provider = {
+      boot: vi.fn(async () => {
+        throw new SandboxEgressAllCoolingError("opencode/big-pickle", slots)
+      }),
+      connect: vi.fn(),
+    } as unknown as SandboxProvider
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      model: "opencode/big-pickle",
+      sandbox: "fake",
+    })
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe("sandbox_egress_all_cooling")
+    expect(res.details).toMatchObject({ model: "opencode/big-pickle", slots })
+    expect(receivedStarts).toHaveLength(0)
+    expect(registry.list()).toHaveLength(0)
   })
 })

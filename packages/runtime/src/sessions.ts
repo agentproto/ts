@@ -3072,6 +3072,12 @@ export interface SessionDescriptor {
    *  just THAT one exists — the VS Code panel's sandbox chip names it in its
    *  tooltip alongside `sandboxId`. */
   sandboxProvider?: string
+  /** Public egress address of the box, when its provider brokers an address
+   *  pool. A throttled turn on this session cools it down in the egress
+   *  health ledger. */
+  sandboxEgressIp?: string
+  /** Egress pool slot id of {@link sandboxEgressIp}. */
+  sandboxEgressSlot?: string
   /**
    * How a composite sandbox provider (`auto`) chose the backend recorded in
    * {@link sandboxProvider} — the requested slug, the actual provider, the
@@ -6206,6 +6212,9 @@ export interface SpawnAgentInput {
   /** Sandbox provider slug, when `remote` is true — see
    *  `SessionDescriptor.sandboxProvider`. */
   sandboxProvider?: string
+  /** Box egress address and pool slot, see `SessionDescriptor.sandboxEgressIp`. */
+  sandboxEgressIp?: string
+  sandboxEgressSlot?: string
   /** Composite-provider choice, when `remote` is true — see
    *  `SessionDescriptor.sandboxProviderChoice`. */
   sandboxProviderChoice?: SandboxProviderChoice
@@ -12573,6 +12582,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxEgressIp ? { sandboxEgressIp: input.sandboxEgressIp } : {}),
+        ...(input.sandboxEgressSlot ? { sandboxEgressSlot: input.sandboxEgressSlot } : {}),
         ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),
@@ -12821,6 +12832,8 @@ export function createSessionsRegistry(opts?: {
         ...(input.hostSessionId ? { hostSessionId: input.hostSessionId } : {}),
         ...(input.hostFingerprint ? { hostFingerprint: input.hostFingerprint } : {}),
         ...(input.sandboxProvider ? { sandboxProvider: input.sandboxProvider } : {}),
+        ...(input.sandboxEgressIp ? { sandboxEgressIp: input.sandboxEgressIp } : {}),
+        ...(input.sandboxEgressSlot ? { sandboxEgressSlot: input.sandboxEgressSlot } : {}),
         ...(input.sandboxProviderChoice ? { sandboxProviderChoice: input.sandboxProviderChoice } : {}),
         ...(input.sandboxConfig ? { sandboxConfig: input.sandboxConfig } : {}),
         ...(input.sandboxTeardown ? { sandboxTeardown: input.sandboxTeardown } : {}),

@@ -335,6 +335,7 @@ import {
 } from "./spawn-field-schemas.js"
 import { makeSandboxCredsStore, makeSandboxResolver } from "./sandbox-adapters.js"
 import { readSandboxLedger, recordSandboxLiveness } from "./sandbox-ledger.js"
+import { probeEgressSlots, readEgressHealth, sandboxEgressProbeInputSchema } from "./egress-health-report.js"
 import {
   execSandboxCommand,
   sandboxExecChoicesFromInput,
@@ -6746,6 +6747,8 @@ function spawnFailureStatus(code: string): number {
   // The box booted but cannot do what the spawn needs from where it sits: not
   // a caller mistake, and a different placement may work.
   if (code === "sandbox_preflight_failed") return 502
+  // Every egress address is cooling down for the model: nothing to boot right now.
+  if (code === "sandbox_egress_all_cooling") return 503
   if (code === "auth_profile_denied") return 403
   if (code === "stdio_mount_denied") return 403
   if (code === "identity_unverified" || code === "identity_mismatch") return 403
@@ -7277,6 +7280,46 @@ async function handleSandboxes(
       ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}),
     })
     json(result.ok ? 200 : 422, result)
+    return true
+  }
+  // GET /sandboxes/egress-health[?provider&model] - the egress pool with the
+  // per-IP model cooldowns; read-only, boots nothing.
+  if (path === "/sandboxes/egress-health") {
+    if (_req.method !== "GET") return false
+    const query = new URL(_req.url ?? "/", "http://localhost").searchParams
+    const provider = query.get("provider") || undefined
+    const model = query.get("model") || undefined
+    const report = await readEgressHealth(
+      { ...(provider ? { provider } : {}), ...(model ? { model } : {}) },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
+    return true
+  }
+  // POST /sandboxes/egress-health/probe - boots one box per pool slot and
+  // re-probes the model from each address (token-gated by the caller).
+  if (path === "/sandboxes/egress-health/probe") {
+    if (_req.method !== "POST") return false
+    const parsed = sandboxEgressProbeInputSchema.safeParse(await readJsonBody(_req))
+    if (!parsed.success) {
+      json(400, {
+        ok: false,
+        code: "egress_probe_invalid_input",
+        message: `sandbox egress-health: invalid request body - ${parsed.error.issues
+          .map(i => `${i.path.join(".") || "(root)"}: ${i.message}`)
+          .join("; ")}`,
+      })
+      return true
+    }
+    const report = await probeEgressSlots(
+      {
+        model: parsed.data.model,
+        ...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
+        ...(parsed.data.adapter ? { adapter: parsed.data.adapter } : {}),
+      },
+      { ...(resolveSandboxProvider ? { resolveSandboxProvider } : {}) },
+    )
+    json(report.ok ? 200 : report.code === "egress_provider_not_found" ? 404 : report.code === "egress_pool_unsupported" ? 501 : 502, report)
     return true
   }
   const match = path.match(/^\/sandboxes\/([^/]+)\/alive$/)

@@ -698,6 +698,28 @@ export {
   type SandboxConnectionDescriptor,
 } from "./sandbox-attach.js"
 export {
+  DEFAULT_EGRESS_COOLDOWN_MS,
+  MAX_EGRESS_COOLDOWN_MS,
+  createEgressHealthLedger,
+  egressHealthLedger,
+  egressHealthPath,
+  isEgressHealthErrorClass,
+  type EgressCooldownEntry,
+  type EgressHealthErrorClass,
+  type EgressHealthLedger,
+  type MarkEgressCooldownInput,
+} from "./egress-health.js"
+export {
+  DEFAULT_EGRESS_HEALTH_PROVIDER,
+  probeEgressSlots,
+  readEgressHealth,
+  registerSandboxEgressHealthTool,
+  type EgressHealthReport,
+  type EgressHealthSlotView,
+  type EgressProbeReport,
+  type EgressProbeSlotResult,
+} from "./egress-health-report.js"
+export {
   SANDBOX_EXEC_STREAM_MAX_CHARS,
   SANDBOX_EXEC_MAX_COMMAND_BYTES,
   SANDBOX_EXEC_MAX_ENV_BYTES,
@@ -1139,6 +1161,7 @@ import {
 } from "./sandbox-adapters.js"
 import { registerSandboxAttachTool } from "./sandbox-attach.js"
 import { registerSandboxExecTool } from "./sandbox-exec.js"
+import { registerSandboxEgressHealthTool } from "./egress-health-report.js"
 import type { WorktreeProvisioner, WorktreeAutoReclaimer, SandboxCheckpointReclaimer } from "./worktree-isolation.js"
 import { registerEvalReporterTools } from "./eval-reporter-tools.js"
 import { registerPresetTools } from "./preset-tools.js"
@@ -4752,6 +4775,11 @@ export async function createGateway(
     // attached-and-left-as-found when one is). Same shared resolver as
     // attach above; the exec capability itself is optional per provider.
     registerSandboxExecTool(server, {
+      resolveSandboxProvider: resolveSandboxProviderResolved,
+    })
+    // `sandbox egress-health` - the provider's egress address pool with the
+    // per-IP model cooldowns (read-only; the re-probe is CLI/HTTP only).
+    registerSandboxEgressHealthTool(server, {
       resolveSandboxProvider: resolveSandboxProviderResolved,
     })
     // Eval-reporter introspection/setup, riding on @agentproto/eval-reporters

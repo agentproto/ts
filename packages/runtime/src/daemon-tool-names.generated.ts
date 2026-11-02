@@ -227,6 +227,7 @@ const DAEMON_TOOL_NAME_LIST = [
   "sandbox_attach",
   "sandbox_checkpoint_gc",
   "sandbox_checkpoint_gc_status",
+  "sandbox_egress_health",
   "sandbox_exec",
   "sandbox_gc",
   "sandbox_list",

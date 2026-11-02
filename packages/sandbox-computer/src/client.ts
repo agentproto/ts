@@ -15,6 +15,7 @@ import {
   computerStatusSchema,
   createComputerRequestSchema,
   createComputerResponseSchema,
+  egressPoolResponseSchema,
   errorResponseSchema,
   execResponseSchema,
   resumeResponseSchema,
@@ -25,6 +26,7 @@ import {
   type ComputerListEntry,
   type ComputerStatus,
   type CreateComputerResponse,
+  type EgressPoolResponse,
   type ExecResponse,
   type ResumeResponse,
   type SessionsResponse,
@@ -300,6 +302,12 @@ export class ComputerControllerClient {
     const params = new URLSearchParams({ from: opts.from, to: opts.to })
     if (opts.endUser !== undefined) params.set("endUser", opts.endUser)
     return this.request("GET", `/v1/usage?${params.toString()}`, usageResponseSchema)
+  }
+
+  /** `GET /v1/egress-pool` - the egress address pool: each slot's id, source
+   *  and public address, and how many computers use it. */
+  async getEgressPool(): Promise<EgressPoolResponse> {
+    return this.request("GET", "/v1/egress-pool", egressPoolResponseSchema)
   }
 
   /** `GET /v1/capacity` - the tenant's whole host budget per resource
