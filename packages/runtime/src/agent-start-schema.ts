@@ -19,6 +19,7 @@ import { modelPolicyInputSchema } from "./model-policy.js"
 import { clerkHooksInputSchema } from "@agentproto/clerk"
 import { sandboxSpecWithReuseSchema } from "./sandbox-spec-schema.js"
 import { sandboxCheckpointOverrideSchema } from "./sandbox-checkpoint-schema.js"
+import { placementInputSchema } from "./placement-ladder.js"
 import {
   attachFieldSchema,
   commandSandboxSchema,
@@ -530,6 +531,11 @@ export const agentStartInputShape = {
     .optional()
     .describe(
       `Sandbox preflight probe ids run on the booted box before the agent starts (e.g. ["model-answers"]); a failing probe destroys the box and fails the spawn with sandbox_preflight_failed. Requires \`sandbox\`. ${help("preflight")}`
+    ),
+  placement: jsonTolerant(opaque(placementInputSchema))
+    .optional()
+    .describe(
+      `Placement ladder: { ladder: [{ sandbox, model?, access?, preflight?, turnRetry? }, ...] }. Rungs are tried in order; a rung is skipped on a failed preflight, a capacity / overflow / egress-pool refusal or a boot failure before the agent started. Omitted rung axes inherit the top-level values. Mutually exclusive with \`sandbox\`. ${help("placement")}`
     ),
   resumeFrom: jsonTolerant(
     opaque(

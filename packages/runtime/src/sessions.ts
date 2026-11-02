@@ -246,6 +246,7 @@ import { homedir } from "node:os"
 import { randomUUID } from "node:crypto"
 import { formatUncommittedRescueNotice } from "./sandbox-delivery.js"
 import type { SandboxCheckpointConfig, SandboxDeliveryRecord, SandboxDeliveryTarget } from "./sandbox-delivery.js"
+import type { SessionPlacement } from "./placement-ladder.js"
 import { checkpointRefFromRecord, type SessionCheckpointRef } from "./checkpoint-resume.js"
 import {
   createSessionMessage,
@@ -3135,6 +3136,15 @@ export interface SessionDescriptor {
    *  (`false` stays off across a daemon restart). Absent ⇒ the global
    *  `defaults.sandbox.checkpoint` alone. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
+  /** The spawn's `agent_start.preflight` probe ids (for a ladder spawn, the
+   *  ones of the rung that placed it), persisted so a restart or migration
+   *  onto a fresh box runs the same probes. Absent ⇒ none. */
+  preflight?: string[]
+  /** How a `placement.ladder` spawn was placed: the rung it runs on, the
+   *  ladder as requested (a restart or migration onto a fresh box re-places
+   *  from rung 1) and one attempt per rung tried, so `session_list` shows why
+   *  a rung was skipped. Absent for a spawn without `placement`. */
+  placement?: SessionPlacement
   /** App ports exposed at boot time (`SandboxSpec.extraPorts`) — maps port
    *  number to its public URL. Only present for sandbox sessions where the
    *  provider resolved `extraPorts` into `BootedSandbox.ports`. */
@@ -5794,6 +5804,10 @@ export interface SessionsRegistry {
    * false for an unknown id or a non-`agent-cli` session.
    */
   setSandboxDeliveryTarget(id: string, target: SandboxDeliveryTarget): boolean
+  /** Stamp the `placement` record of a ladder spawn on the session's
+   *  descriptor. Returns the updated descriptor, or undefined for an unknown
+   *  id. Daemon-internal: only the spawn path calls it. */
+  recordPlacement(id: string, placement: SessionPlacement): SessionDescriptor | undefined
   /**
    * BOOTSTRAP P7b — append pre-shaped MIRROR records (from
    * `device-mirror.ts`) into an agent-cli session's durable transcript.
@@ -6233,6 +6247,8 @@ export interface SpawnAgentInput {
   sandboxRepoRoot?: string
   /** Per-spawn checkpoint override — see `SessionDescriptor.sandboxCheckpointOverride`. */
   sandboxCheckpointOverride?: SandboxCheckpointConfig | false
+  /** Preflight probe ids of the spawn, see `SessionDescriptor.preflight`. */
+  preflight?: string[]
   /** Effective adapter confinement, resolved by the caller — see
    *  `SessionDescriptor.commandSandbox`. */
   commandSandbox?: "off" | "workspace" | "strict"
@@ -12595,6 +12611,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -12845,6 +12862,7 @@ export function createSessionsRegistry(opts?: {
         ...(input.sandboxCheckpointOverride !== undefined
           ? { sandboxCheckpointOverride: input.sandboxCheckpointOverride }
           : {}),
+        ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(input.sandboxPorts ? { sandboxPorts: input.sandboxPorts } : {}),
         ...(input.commandSandbox ? { commandSandbox: input.commandSandbox } : {}),
         // Descriptor echo of the hold flag (it also lands on the runtime,
@@ -15220,6 +15238,14 @@ export function createSessionsRegistry(opts?: {
       rt.desc.sandboxDeliveryTarget = target
       schedulePersist()
       return true
+    },
+    recordPlacement(id, placement) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      rt.desc.placement = placement
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
     },
     appendDeviceMirrorRecords(id, records) {
       const rt = sessions.get(id)

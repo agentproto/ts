@@ -363,6 +363,9 @@ export async function migrateSandboxSession(
     )
   }
 
+  // A session a placement ladder put on its box is re-placed by the same
+  // ladder (from rung 1) unless the caller names a sandbox explicitly.
+  const placementLadder = opts.sandbox === undefined ? prev.placement?.ladder : undefined
   const sandbox = opts.sandbox ?? plan.providerSlug
   // Orchestrator scope: the new session carries `prev`'s mounts, including a
   // host `/mcp/orchestrator?scope=<token>` entry. A box that died for real had
@@ -380,7 +383,11 @@ export async function migrateSandboxSession(
       ...(opts.baseDir ? { baseDir: opts.baseDir } : {}),
       ...(opts.sources ? { sources: opts.sources } : {}),
       spawn: {
-        sandbox,
+        // The ladder carries each rung's own preflight; a top-level one would
+        // leak the rung that placed `prev` onto every rung that has none.
+        ...(placementLadder
+          ? { placement: { ladder: placementLadder } }
+          : { sandbox, ...(prev.preflight ? { preflight: prev.preflight } : {}) }),
         workspaceSlug: plan.workspace.slug,
         // A host path is meaningless in the new box; the workspace remote names the checkout.
         cwd: undefined,
