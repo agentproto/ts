@@ -73,6 +73,7 @@ describe("walkPlacementLadder", () => {
     "sandbox_boot_failed",
     "sandbox_overflow_refused",
     "sandbox_egress_pool_exhausted",
+    "sandbox_egress_all_cooling",
     "sandbox_provider_not_found",
     "device_offline",
   ])("advances on %s", async code => {

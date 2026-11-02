@@ -77,6 +77,7 @@ export const LADDER_ADVANCE_CODES: ReadonlySet<string> = new Set([
   "sandbox_app_serve_failed",
   "sandbox_overflow_refused",
   "sandbox_egress_pool_exhausted",
+  "sandbox_egress_all_cooling",
   "device_offline",
 ])
 

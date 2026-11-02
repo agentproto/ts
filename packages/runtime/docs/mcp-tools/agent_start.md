@@ -1065,7 +1065,8 @@ A rung is skipped only when the box could not be placed, all before the agent
 started: a failed preflight (`sandbox_preflight_failed`), a capacity or
 overflow refusal from the provider (`sandbox_overflow_refused`, or the
 provider's own typed `sandbox_*` code, kept as `errorClass`), an exhausted
-egress pool (`sandbox_egress_pool_exhausted`), a provider that is not set up,
+egress pool (`sandbox_egress_pool_exhausted`), every egress address cooling
+down for the model (`sandbox_egress_all_cooling`, nothing is booted), a provider that is not set up,
 an offline device, or any other boot failure (`sandbox_boot_failed`,
 `sandbox_proxy_failed`, `sandbox_workspace_setup_failed`,
 `sandbox_app_serve_failed`). Any other failure (a bad `cwd`, an unknown
