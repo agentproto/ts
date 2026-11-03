@@ -5,6 +5,7 @@
  * event summary or `data`).
  */
 
+import { RecentKeys as DeliveryRecentKeys } from "@agentproto/delivery"
 import { describe, expect, it } from "vitest"
 import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -44,6 +45,12 @@ const input = (recent: RecentKeys, now: number, target = "sess_1") => ({
   sentinelId: "sen_1",
   now,
   recent,
+})
+
+describe("RecentKeys is the @agentproto/delivery class, re-exported", () => {
+  it("is the same constructor", () => {
+    expect(RecentKeys).toBe(DeliveryRecentKeys)
+  })
 })
 
 describe("classifySentinelEvent", () => {
