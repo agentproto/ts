@@ -33,6 +33,9 @@ import { resolve, dirname, join } from "node:path"
 import { homedir } from "node:os"
 import { mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import { levelFromDecision, type LedgerLine, type LedgerOutcome } from "@agentproto/delivery"
+
 import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
 import { sentinelPlatform } from "./platform.js"
 import type { RetirementFields } from "./local-types.js"
@@ -68,7 +71,6 @@ import {
   classifySentinelEvent,
   recordSentinelTriageKey,
   sentinelTriageKeyFor,
-  writeSentinelTriageLedger,
 } from "./sentinel-triage.js"
 import {
   deliveryPreferenceFor,
@@ -98,6 +100,21 @@ function agentprotoHome(): string {
 
 function describeError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+interface DeliveryOutcome {
+  outcome: LedgerOutcome
+  messageId?: string
+  routedTo?: string
+}
+
+/** What `sendMessage` did. Missing fields (a structural test double) mean the
+ *  send resolved without a refusal, so it delivered. */
+function outcomeOfSendResult(result: SendMessageResult | undefined): LedgerOutcome {
+  if (result?.refused !== undefined) return "dropped"
+  if (result?.queued === true) return "queued"
+  if (result?.delivered?.via === "inbox") return "inbox"
+  return "delivered"
 }
 
 // ── Matching (design §4 — type/subject grammar; contract change — `match`
@@ -209,9 +226,9 @@ export interface SentinelRuntimeOptions {
   /** Override for the parked-event journal (tests). Default
    *  `~/.agentproto/sentinels-parked.jsonl`. */
   parkedPath?: string
-  /** Observation-only triage ledger (tests). Default
-   *  `~/.agentproto/sentinel-triage.jsonl`. */
-  triagePath?: string
+  /** Append-only delivery ledger (tests). Default
+   *  `~/.agentproto/delivery-ledger.jsonl`. */
+  ledgerPath?: string
   nowMs?: () => number
   log?: (line: string) => void
   /** Override persist path for the webhook outbox (tests). Default
@@ -278,7 +295,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   const idleIntervalMs = opts.idleIntervalMs ?? DEFAULT_IDLE_INTERVAL_MS
   const hotWindowMs = opts.hotWindowMs ?? DEFAULT_HOT_WINDOW_MS
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "sentinels-parked.jsonl")
-  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "sentinel-triage.jsonl")
+  const ledgerPath = opts.ledgerPath ?? resolve(agentprotoHome(), DELIVERY_LEDGER_FILE)
   const recentTriageKeys = new RecentKeys()
 
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -486,14 +503,14 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     msg: SessionMessage,
     parentId: string | undefined,
     oneShot?: { urgency: MessageUrgency; textPrefix: string },
-  ): Promise<boolean> {
+  ): Promise<DeliveryOutcome | null> {
     const target = sentinel.spec.target
-    if (target.kind !== "session" || !parentId || parentId === target.sessionId) return false
-    if (!opts.isSessionAlive(parentId)) return false
+    if (target.kind !== "session" || !parentId || parentId === target.sessionId) return null
+    if (!opts.isSessionAlive(parentId)) return null
     // Same retirement check the dead-session path uses: `isSessionAlive` is a
     // pid probe and reads "alive" for a pid-less retired row.
     const parentInfo = opts.sessionInfo?.(parentId)
-    if (parentInfo && sentinelPlatform().lifecycle.isRetired(parentInfo)) return false
+    if (parentInfo && sentinelPlatform().lifecycle.isRetired(parentInfo)) return null
 
     if (hasLiveWatchFor(parentId, event.subject, sentinel.id)) {
       try {
@@ -502,7 +519,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         log(`[sentinel-runtime] failed to drop duplicate sentinel ${sentinel.id}: ${describeError(err)}`)
         store.remove(sentinel.id)
       }
-      return true
+      return { outcome: "duplicate", routedTo: parentId }
     }
 
     const key = coalesceKeyFor(event)
@@ -517,7 +534,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       })
     } catch (err) {
       if (!sentinelPlatform().messages.isSessionNotAlive(err)) throw err
-      return false
+      return null
     }
     store.update(sentinel.id, {
       spec: {
@@ -528,7 +545,11 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     })
     const current = store.get(sentinel.id)
     if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
-    return true
+    return {
+      outcome: "retargeted",
+      routedTo: parentId,
+      ...(forwarded.id ? { messageId: forwarded.id } : {}),
+    }
   }
 
   /** The target was closed on purpose: never resume it. Hand the notice to
@@ -542,21 +563,19 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     msg: SessionMessage,
     sessionId: string,
     info: SentinelSessionInfo,
-  ): Promise<void> {
-    if (
-      await retargetToLiveParent(sentinel, event, msg, info.parentSessionId, {
-        urgency: "fyi",
-        textPrefix: `[for closed session ${sessionId}] `,
-      })
-    ) {
-      return
-    }
+  ): Promise<DeliveryOutcome> {
+    const retargeted = await retargetToLiveParent(sentinel, event, msg, info.parentSessionId, {
+      urgency: "fyi",
+      textPrefix: `[for closed session ${sessionId}] `,
+    })
+    if (retargeted) return retargeted
     parkEvent(
       sentinel,
       event,
       `session ${sessionId} retired (${info.endedReason ?? (info.archived ? "archived" : "superseded")}); not resuming, no live parent`,
     )
     markOrphaned(sentinel)
+    return { outcome: "parked" }
   }
 
   /** The target was superseded: deliver to the end of its `continuedTo`
@@ -568,9 +587,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     msg: SessionMessage,
     sessionId: string,
     successorId: string,
-  ): Promise<void> {
+  ): Promise<DeliveryOutcome> {
     const target = sentinel.spec.target
-    if (target.kind !== "session") return
+    if (target.kind !== "session") return { outcome: "dropped" }
     try {
       let to = successorId
       if (!opts.isSessionAlive(successorId)) {
@@ -578,7 +597,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         if (!succInfo || sentinelPlatform().lifecycle.isRetired(succInfo)) {
           parkEvent(sentinel, event, `session ${sessionId} superseded by ${successorId}, which is not alive`)
           markOrphaned(sentinel)
-          return
+          return { outcome: "parked" }
         }
         to = await opts.restartSession(successorId)
       }
@@ -588,9 +607,15 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       })
       const current = store.get(sentinel.id)
       if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+      return {
+        outcome: "retargeted",
+        routedTo: to,
+        ...(msg.id ? { messageId: msg.id } : {}),
+      }
     } catch (err) {
       parkEvent(sentinel, event, describeError(err))
       markOrphaned(sentinel)
+      return { outcome: "parked" }
     }
   }
 
@@ -598,9 +623,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     sentinel: Sentinel,
     event: SentinelEvent,
     msg: SessionMessage,
-  ): Promise<void> {
+  ): Promise<DeliveryOutcome> {
     const target = sentinel.spec.target
-    if (target.kind !== "session") return
+    if (target.kind !== "session") return { outcome: "dropped" }
     const sessionId = target.sessionId
 
     const info = opts.sessionInfo?.(sessionId)
@@ -609,11 +634,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // in place or under a new id. Its notices go to the successor when
       // there is one, else to the parent / the parking journal.
       if (info.successorId) {
-        await deliverToSuccessor(sentinel, event, msg, sessionId, info.successorId)
-        return
+        return deliverToSuccessor(sentinel, event, msg, sessionId, info.successorId)
       }
-      await routeAroundClosedSession(sentinel, event, msg, sessionId, info)
-      return
+      return routeAroundClosedSession(sentinel, event, msg, sessionId, info)
     }
 
     // The retirement check above runs first on purpose: sendMessage already
@@ -625,7 +648,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       // still sees as alive (a race) — park rather than spin retrying.
       parkEvent(sentinel, event, "session reported alive but sendMessage rejected it")
       markOrphaned(sentinel)
-      return
+      return { outcome: "parked" }
     }
 
     try {
@@ -639,10 +662,17 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
       const current = store.get(sentinel.id)
       if (current && current.status === "orphaned") store.update(sentinel.id, { status: "active" })
+      return {
+        outcome: "revived",
+        ...(resumedId !== sessionId ? { routedTo: resumedId } : {}),
+        ...(msg.id ? { messageId: msg.id } : {}),
+      }
     } catch (err) {
-      if (await retargetToLiveParent(sentinel, event, msg, info?.parentSessionId).catch(() => false)) return
+      const retargeted = await retargetToLiveParent(sentinel, event, msg, info?.parentSessionId).catch(() => null)
+      if (retargeted) return retargeted
       parkEvent(sentinel, event, describeError(err))
       markOrphaned(sentinel)
+      return { outcome: "parked" }
     }
   }
 
@@ -653,6 +683,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     // persisted sentinel never actually reaches this branch — narrows the
     // type for `target.sessionId`/`target.urgency` below.
     if (target.kind !== "session") return
+    const targetSessionId = target.sessionId
+    const targetUrgency = target.urgency
     const now = nowMs()
     let triage: { decision: ReturnType<typeof classifySentinelEvent>["decision"]; rule: ReturnType<typeof classifySentinelEvent>["rule"] } | undefined
     try {
@@ -662,33 +694,48 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         now,
         recent: recentTriageKeys,
       })
-      const triageKey = sentinelTriageKeyFor(event)
-      const eventTs = typeof event.time === "string" && event.time.length > 0 ? event.time : undefined
-      writeSentinelTriageLedger(triagePath, {
-        ts: new Date(now).toISOString(),
-        decision: triage.decision,
-        rule: triage.rule,
-        target: target.sessionId,
-        sentinelId: sentinel.id,
+    } catch (err) {
+      // Observation only: triage must never block delivery.
+      log(`[sentinel-runtime] triage failed: ${describeError(err)}`)
+    }
+    const effectiveTriage = triage ?? { decision: "wake" as const, rule: "default" as const }
+    const eventTs = typeof event.time === "string" && event.time.length > 0 ? event.time : undefined
+    const repeatKey = sentinelTriageKeyFor(event)
+    const msg = buildMessage(sentinel, event, targetSessionId, targetUrgency)
+    const key = coalesceKeyFor(event)
+
+    // One line per (envelope, target), written only once the outcome is
+    // known. The hash chain (`prev`) is the NEXT PR.
+    function writeLedger(outcome: DeliveryOutcome): void {
+      const line: LedgerLine = {
+        ts: new Date(nowMs()).toISOString(),
+        producer: "sentinel",
+        subscriptionId: sentinel.id,
+        target: { kind: "session", id: targetSessionId },
         eventId: event.id,
         type: event.type,
         subject: event.subject,
-        urgency: target.urgency,
         ...(eventTs !== undefined ? { eventTs } : {}),
-        ...(triageKey !== undefined ? { key: triageKey } : {}),
-      })
-    } catch (err) {
-      // Observation only: triage must never block delivery.
-      log(`[sentinel-runtime] triage ledger failed: ${describeError(err)}`)
+        ...(repeatKey !== undefined ? { repeatKey } : {}),
+        level: levelFromDecision(effectiveTriage.decision),
+        cap: 3,
+        rule: effectiveTriage.rule,
+        applied: false,
+        outcome: outcome.outcome,
+        ...(outcome.routedTo !== undefined ? { routedTo: outcome.routedTo } : {}),
+        ...(outcome.messageId !== undefined ? { messageId: outcome.messageId } : {}),
+      }
+      appendLedgerLine(ledgerPath, line)
     }
-    const msg = buildMessage(sentinel, event, target.sessionId, target.urgency)
-    const key = coalesceKeyFor(event)
+
+    let outcome: DeliveryOutcome
     try {
-      await opts.registry.sendMessage(msg, {
+      const result = await opts.registry.sendMessage(msg, {
         source: "sentinel",
         origin: sentinel.id,
         ...(key ? { coalesceKey: key } : {}),
       })
+      outcome = { outcome: outcomeOfSendResult(result), ...(msg.id ? { messageId: msg.id } : {}) }
       try {
         if (triage) {
           recordSentinelTriageKey(event, {
@@ -702,7 +749,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       }
     } catch (err) {
       if (sentinelPlatform().messages.isSessionNotAlive(err)) {
-        await handleDeadSession(sentinel, event, msg)
+        writeLedger(await handleDeadSession(sentinel, event, msg))
         return
       }
       // The target row is gone altogether (deleted/GC'd, not merely ended):
@@ -712,10 +759,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       if (opts.sessionInfo && !opts.isSessionAlive(target.sessionId) && !opts.sessionInfo(target.sessionId)) {
         parkEvent(sentinel, event, `target session ${target.sessionId} no longer exists`)
         markOrphaned(sentinel)
+        writeLedger({ outcome: "parked" })
         return
       }
+      writeLedger({ outcome: "dropped" })
       throw err
     }
+    writeLedger(outcome)
   }
 
   // ── Lifetime (design §2 — `until`; contract change — `subject_terminal`
