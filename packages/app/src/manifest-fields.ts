@@ -12,6 +12,7 @@ import type {
   AppRequirement,
   AppRequirements,
   AppService,
+  AppServiceActivation,
   AppServiceExpose,
   AppSetupCheck,
   AppSetupOption,
@@ -159,6 +160,59 @@ function serviceExpose(v: unknown, path: string): AppServiceExpose {
   }
 }
 
+/** AIP-53 `services[].activation` defaults and bounds (`idleStopMs` is
+ *  capped at 24h: a timer past 2^31-1 ms fires immediately). */
+export const DEFAULT_SERVICE_IDLE_STOP_MS = 300_000
+export const DEFAULT_SERVICE_START_TIMEOUT_MS = 30_000
+const SERVICE_IDLE_STOP_MS_RANGE = [1_000, 86_400_000] as const
+const SERVICE_START_TIMEOUT_MS_RANGE = [1_000, 300_000] as const
+
+function boundedInt(v: unknown, path: string, [min, max]: readonly [number, number]): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < min || v > max) {
+    throw new Error(`'${path}' must be an integer between ${min} and ${max}.`)
+  }
+  return v
+}
+
+/** Validate one `services[i].activation` object (AIP-53 Activation). Closed
+ *  object: `mode` (`always` | `on-demand`, required), plus `idleStopMs` and
+ *  `startTimeoutMs`, which only make sense for `on-demand`. */
+function serviceActivation(v: unknown, path: string, hasPort: boolean): AppServiceActivation {
+  if (!isRecord(v)) {
+    throw new Error(`'${path}' must be an object { mode, idleStopMs?, startTimeoutMs? }.`)
+  }
+  const extra = Object.keys(v).filter(k => k !== "mode" && k !== "idleStopMs" && k !== "startTimeoutMs")
+  if (extra.length > 0) {
+    throw new Error(
+      `'${path}.${extra[0]}' is not a supported activation field (expected mode, idleStopMs, startTimeoutMs).`,
+    )
+  }
+  const mode = v.mode
+  if (mode !== "always" && mode !== "on-demand") {
+    throw new Error(`'${path}.mode' must be 'always' or 'on-demand', got ${JSON.stringify(mode)}.`)
+  }
+  if (mode === "always") {
+    for (const k of ["idleStopMs", "startTimeoutMs"] as const) {
+      if (v[k] !== undefined) throw new Error(`'${path}.${k}' is only valid with mode 'on-demand'.`)
+    }
+    return { mode }
+  }
+  if (!hasPort) {
+    throw new Error(`${path}.mode 'on-demand' requires a port`)
+  }
+  const idleStopMs =
+    v.idleStopMs === undefined ? undefined : boundedInt(v.idleStopMs, `${path}.idleStopMs`, SERVICE_IDLE_STOP_MS_RANGE)
+  const startTimeoutMs =
+    v.startTimeoutMs === undefined
+      ? undefined
+      : boundedInt(v.startTimeoutMs, `${path}.startTimeoutMs`, SERVICE_START_TIMEOUT_MS_RANGE)
+  return {
+    mode,
+    ...(idleStopMs !== undefined ? { idleStopMs } : {}),
+    ...(startTimeoutMs !== undefined ? { startTimeoutMs } : {}),
+  }
+}
+
 /**
  * Parse + validate the AIP-53 `services` array (production hosting surface).
  * One entry = one supervised service process: `name` is a unique kebab-case
@@ -187,10 +241,19 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
     }
     const extra = Object.keys(entry).filter(
       k =>
-        k !== "name" && k !== "entry" && k !== "command" && k !== "args" && k !== "cwd" && k !== "port" && k !== "expose",
+        k !== "name" &&
+        k !== "entry" &&
+        k !== "command" &&
+        k !== "args" &&
+        k !== "cwd" &&
+        k !== "port" &&
+        k !== "expose" &&
+        k !== "activation",
     )
     if (extra.length > 0) {
-      throw new Error(`'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port, expose).`)
+      throw new Error(
+        `'${path}.${extra[0]}' is not a supported service field (expected name, entry, command, args, cwd, port, expose, activation).`,
+      )
     }
     const name = entry.name
     if (typeof name !== "string" || !SERVICE_NAME_RE.test(name)) {
@@ -255,6 +318,10 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
       }
       expose = serviceExpose(entry.expose, `${path}.expose`)
     }
+    const activation =
+      entry.activation !== undefined
+        ? serviceActivation(entry.activation, `${path}.activation`, port !== undefined)
+        : undefined
     return hasCommand
       ? {
           name,
@@ -263,6 +330,7 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
           ...(expose !== undefined ? { expose } : {}),
+          ...(activation !== undefined ? { activation } : {}),
         }
       : {
           name,
@@ -270,6 +338,7 @@ function serviceList(v: unknown, key: string): readonly AppService[] | undefined
           ...(cwd !== undefined ? { cwd } : {}),
           ...(port !== undefined ? { port } : {}),
           ...(expose !== undefined ? { expose } : {}),
+          ...(activation !== undefined ? { activation } : {}),
         }
   })
 }

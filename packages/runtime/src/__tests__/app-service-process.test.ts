@@ -17,6 +17,9 @@ import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import {
   startAppServiceProcess,
+  isAppServiceSupervised,
+  registerAppServiceSupervisor,
+  stopAppServiceSupervisor,
   resolveServiceCommand,
   killServiceProcess,
   appServiceLogPath,
@@ -61,6 +64,7 @@ function startFixture(opts?: {
   logFile?: string
   dir?: string
   env?: Record<string, string>
+  singleAttempt?: Parameters<typeof startAppServiceProcess>[0]["singleAttempt"]
 }): { fx: Fixture; start: () => ReturnType<typeof startAppServiceProcess> } {
   const registry = createSessionsRegistry({ persist: false })
   const fx: Fixture = {
@@ -82,6 +86,7 @@ function startFixture(opts?: {
       ...(opts?.policy ? { restart: opts.policy } : {}),
       ...(opts?.logFile !== undefined ? { logFile: opts.logFile } : {}),
       ...(opts?.env !== undefined ? { env: opts.env } : {}),
+      ...(opts?.singleAttempt !== undefined ? { singleAttempt: opts.singleAttempt } : {}),
       spawnChild: (_spec, o) => {
         void _spec
         const pid = 10_000 + fx.spawned.length
@@ -513,5 +518,68 @@ describe("startAppServiceProcess: AGENTPROTO_PUBLIC_URL (AIP-53 expose)", () => 
     const plain = startFixture()
     expect(plain.start().ok).toBe(true)
     expect(plain.fx.spawnEnvs[0]).not.toHaveProperty("AGENTPROTO_PUBLIC_URL")
+  })
+})
+
+describe("startAppServiceProcess: singleAttempt (on-demand activation)", () => {
+  const exits: Array<{ sessionId: string; deliberate: boolean }> = []
+  // Own service name: the module-level supervisor registry is shared by the
+  // keep-alive tests above, which leave their `web` runners registered.
+  const SERVICE: AppService = { name: "single-web", command: "node", args: ["server.js"] }
+  const singleAttempt = { onExit: (info: { sessionId: string; deliberate: boolean }) => void exits.push(info) }
+  afterEach(() => void (exits.length = 0))
+
+  it("reports an unexpected exit once, and never schedules a restart", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    fx.exit(0, 1)
+    expect(exits).toEqual([{ sessionId: id, deliberate: false }])
+    expect(fx.restarts).toEqual([])
+    expect(fx.spawned).toHaveLength(1)
+    expect(fx.errors).toEqual([])
+  })
+
+  it("does not take the supervisor slot of <appId>:<name>", async () => {
+    const { start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(false)
+    expect(await stopAppServiceSupervisor(APP_ID, SERVICE.name)).toBe(false)
+    // ...so a host can hold it without the runner stopping it.
+    const host = { sessionId: "", pid: undefined, startTicks: undefined, disposed: false, stop: async () => undefined }
+    const unregister = registerAppServiceSupervisor(APP_ID, SERVICE.name, host)
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(true)
+    unregister()
+    expect(isAppServiceSupervised(APP_ID, SERVICE.name)).toBe(false)
+  })
+
+  it("stop() is not an exit: onExit stays silent", async () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    await res.handle.stop()
+    fx.exit(0, 143)
+    expect(exits).toEqual([])
+  })
+
+  it("flags an operator kill of the row as deliberate", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    const id = res.handle.sessionId
+    expect(fx.registry.kill(id, "SIGTERM", "operator-stopped")).toBe(true)
+    fx.exit(0, 143)
+    expect(exits).toEqual([{ sessionId: id, deliberate: true }])
+  })
+
+  it("reports a spawn error (ENOENT) as an exit", () => {
+    const { fx, start } = startFixture({ singleAttempt, service: SERVICE })
+    const res = start()
+    if (!res.ok) throw new Error(res.error)
+    fx.spawned[0]!.child.emit("error", new Error("spawn node ENOENT"))
+    expect(exits).toHaveLength(1)
+    expect(fx.restarts).toEqual([])
   })
 })

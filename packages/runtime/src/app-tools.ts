@@ -45,7 +45,9 @@ import {
   appServiceLogPath,
   assessRecordedServicePid,
   isAppServicePendingRestart,
+  isAppServiceSupervised,
 } from "./app-service-process.js"
+import { isOnDemandService, onDemandServiceState, startOnDemandService } from "./app-service-on-demand.js"
 import { prefixPrompt, projectAgentToSpawn, type AgentProjectionCaps } from "./agent-projection.js"
 import { buildAppBoundary } from "./app-boundary.js"
 import { ensureAppWorkspace, registerAppWorkspace, unregisterAppWorkspace } from "./app-workspace.js"
@@ -57,6 +59,7 @@ import {
   parseAppServices,
   reensureAppServiceOwners,
   removeAppServiceOwners,
+  serviceActivationMode,
   serviceDisplayEntry,
   serviceOwnerLabel,
   type AppService,
@@ -1930,6 +1933,46 @@ export function buildAppServiceEnsurer(
       serviceDisplayEntry(input.service),
     )
     if (legacy.killed) console.warn(`[app-services] ${input.appId}:${input.service.name}: ${legacy.reason}`)
+    /** The persisted owner record, pointing at the live attempt (or, for an
+     *  idle on-demand service, at the last one with no pid). */
+    const recordOwner = (info: { sessionId: string; pid?: number; startTicks?: number }): void => {
+      deps.serviceStore.upsert({
+        appId: input.appId,
+        name: input.service.name,
+        entry: serviceDisplayEntry(input.service),
+        sessionId: info.sessionId,
+        ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
+        ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
+        ...(input.service.port !== undefined ? { port: input.service.port } : {}),
+        ...(serviceActivationMode(input.service) === "on-demand" ? { activation: "on-demand" as const } : {}),
+        // A restart keeps the env, so the record keeps the origin with it.
+        ...(input.env?.[APP_SERVICE_PUBLIC_URL_ENV] !== undefined
+          ? { publicUrl: input.env[APP_SERVICE_PUBLIC_URL_ENV] }
+          : {}),
+        startedAt: new Date().toISOString(),
+      })
+    }
+    // `activation: on-demand`: the host takes the declared port and starts
+    // the process on the first request (see app-service-on-demand.ts). Nothing
+    // is spawned here.
+    if (isOnDemandService(input.service)) {
+      let lastSessionId = ""
+      const hosted = await startOnDemandService({
+        registry: deps.registry,
+        appId: input.appId,
+        dir: input.dir,
+        service: input.service,
+        ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
+        ...(input.env !== undefined ? { env: input.env } : {}),
+        logFile: appServiceLogPath(input.stateDir, input.service.name),
+        onProcessChange: info => {
+          if (info !== undefined) lastSessionId = info.sessionId
+          recordOwner(info ?? { sessionId: lastSessionId })
+        },
+      })
+      if (!hosted.ok) return { ok: false, error: hosted.error }
+      return { ok: true, sessionId: hosted.handle.sessionId }
+    }
     const result = startAppServiceProcess({
       registry: deps.registry,
       appId: input.appId,
@@ -1938,22 +1981,7 @@ export function buildAppServiceEnsurer(
       ...(input.workspaceSlug !== undefined ? { workspaceSlug: input.workspaceSlug } : {}),
       ...(input.env !== undefined ? { env: input.env } : {}),
       logFile: appServiceLogPath(input.stateDir, input.service.name),
-      onRespawn: (_attempt, info) => {
-        deps.serviceStore.upsert({
-          appId: input.appId,
-          name: input.service.name,
-          entry: serviceDisplayEntry(input.service),
-          sessionId: info.sessionId,
-          ...(info.pid !== undefined && info.pid > 0 ? { pid: info.pid } : {}),
-          ...(info.startTicks !== undefined ? { startTicks: info.startTicks } : {}),
-          ...(input.service.port !== undefined ? { port: input.service.port } : {}),
-          // A restart keeps the env, so the record keeps the origin with it.
-          ...(input.env?.[APP_SERVICE_PUBLIC_URL_ENV] !== undefined
-            ? { publicUrl: input.env[APP_SERVICE_PUBLIC_URL_ENV] }
-            : {}),
-          startedAt: new Date().toISOString(),
-        })
-      },
+      onRespawn: (_attempt, info) => recordOwner(info),
     })
     if (!result.ok) return { ok: false, error: result.error }
     const { handle } = result
@@ -1999,6 +2027,9 @@ export function buildAppServiceEnsurer(
             appId: app.appId,
             services,
             isOwnerAlive: owner => {
+              // An on-demand service has no process to look at while idle:
+              // it is alive as long as this daemon holds its host.
+              if (owner.activation === "on-demand") return isAppServiceSupervised(owner.appId, owner.name)
               // Dead-but-restarting (backoff timer in flight): still
               // supervised — a concurrent install in the restart gap must
               // KEEP the record instead of double-spawning (F-5).
@@ -3043,13 +3074,26 @@ export function registerAppTools(
       // AIP-53 Exposure rule 6: per exposed service, its public origin, auth,
       // stability and tunnel state.
       const exposures: AppServiceExposure[] = []
-      if (app && opts.serviceExposer) {
-        let declared: readonly AppService[] = []
+      // AIP-53 Activation: where each on-demand service stands (`absent` =
+      // this daemon holds no host for it, e.g. it could not bind its port).
+      const activations: Array<{ name: string; mode: "on-demand"; state: string }> = []
+      let declared: readonly AppService[] = []
+      if (app) {
         try {
           declared = parseAppServices((await readAppRefs(app.dir)).services).services
         } catch {
           declared = []
         }
+        for (const service of declared) {
+          if (!isOnDemandService(service)) continue
+          activations.push({
+            name: service.name,
+            mode: "on-demand",
+            state: onDemandServiceState(app.appId, service.name) ?? "absent",
+          })
+        }
+      }
+      if (app && opts.serviceExposer) {
         for (const service of declared) {
           if (!isExposedService(service)) continue
           exposures.push(
@@ -3082,7 +3126,14 @@ export function registerAppTools(
         workflowRuns,
         ...(awaitingApprovals.length > 0 ? { awaitingApprovals } : {}),
         ...(state !== undefined ? { state } : {}),
-        ...(exposures.length > 0 ? { services: { exposures } } : {}),
+        ...(exposures.length > 0 || activations.length > 0
+          ? {
+              services: {
+                ...(exposures.length > 0 ? { exposures } : {}),
+                ...(activations.length > 0 ? { activations } : {}),
+              },
+            }
+          : {}),
         ...(app && !existsSync(app.dir) ? { dirMissing: true } : {}),
       })
     },

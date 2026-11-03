@@ -9,12 +9,14 @@
  *       entry: node server.js   # the shell command to run
  *       port: 4321          # optional 1..65535 bookkeeping/health touchpoint
  *
- * One managed process per entry (see `app-service-process.ts` — a
+ * One managed process per entry, kept alive (see `app-service-process.ts` — a
  * deterministic, non-PTY child spawned detached and adopted into the
  * `sessions` REGISTRY, no LLM adapter involved) with its ownership
  * bookkeeping (label, origin, store record) here. The runner restarts the
  * child with backoff on an unexpected exit, capped; there is deliberately
- * NO scheduler here — no cron, no k8s, no queue.
+ * NO scheduler here — no cron, no k8s, no queue. An entry with
+ * `activation: { mode: "on-demand" }` is not kept alive: the host holds its
+ * port and runs the process only while it is used (`app-service-on-demand.ts`).
  *
  * Ownership is persisted (appId + name + entry + the live process's
  * `sessionId` + its process-group-leader `pid`, in a JSON store next to the
@@ -89,11 +91,23 @@ export interface AppServiceOwner {
   startTicks?: number
   /** Mirrors the declared `port` for bookkeeping. */
   port?: number
+  /** Set for an `activation: on-demand` service (AIP-53 Activation); absent =
+   *  keep-alive. `sessionId`/`pid`/`startTicks` then name the LIVE process,
+   *  or the last one while the service is idle (no `pid`). A kept owner
+   *  whose mode no longer matches the manifest is replaced. */
+  activation?: "on-demand"
   /** The `AGENTPROTO_PUBLIC_URL` origin the live process was spawned with
    *  (AIP-53 Exposure rule 3). Unset: spawned without one. A kept owner
    *  whose origin is no longer the current one is respawned. */
   publicUrl?: string
   startedAt: string
+}
+
+/** How the manifest wants this service run: only `on-demand` is recorded on
+ *  an owner, so a record without it (and every pre-activation record) is
+ *  keep-alive. */
+export function serviceActivationMode(service: AppService): "always" | "on-demand" {
+  return service.activation?.mode === "on-demand" ? "on-demand" : "always"
 }
 
 /** The descriptor label a service owner is spawned under. */
@@ -361,6 +375,11 @@ export async function ensureAppServiceOwners(
       if (exposure?.state === "error") return false
       return owner.publicUrl !== exposure?.publicUrl
     }
+    // A running owner of the other activation mode is replaced (a keep-alive
+    // process would keep holding the port an on-demand host must own, and an
+    // idle on-demand host has nothing to serve a keep-alive manifest).
+    const activationIsStale = (owner: AppServiceOwner, service: AppService): boolean =>
+      (owner.activation ?? "always") !== serviceActivationMode(service)
     // Tunnels are ensured for kept owners too (idempotent on the key: same
     // tunnel back, restarted if it is down).
     const exposures: AppServiceExposure[] = []
@@ -376,7 +395,12 @@ export async function ensureAppServiceOwners(
 
     for (const service of deps.services) {
       const prev = byName.get(service.name)
-      if (prev !== undefined && deps.isOwnerAlive(prev) && !originIsStale(prev, exposureByName.get(service.name))) {
+      if (
+        prev !== undefined &&
+        deps.isOwnerAlive(prev) &&
+        !originIsStale(prev, exposureByName.get(service.name)) &&
+        !activationIsStale(prev, service)
+      ) {
         kept.push(prev)
         continue
       }
@@ -402,6 +426,7 @@ export async function ensureAppServiceOwners(
         ...(res.pid !== undefined ? { pid: res.pid } : {}),
         ...(res.startTicks !== undefined ? { startTicks: res.startTicks } : {}),
         ...(service.port !== undefined ? { port: service.port } : {}),
+        ...(serviceActivationMode(service) === "on-demand" ? { activation: "on-demand" as const } : {}),
         ...(env[APP_SERVICE_PUBLIC_URL_ENV] !== undefined ? { publicUrl: env[APP_SERVICE_PUBLIC_URL_ENV] } : {}),
         startedAt: now().toISOString(),
       }

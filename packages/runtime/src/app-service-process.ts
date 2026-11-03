@@ -71,6 +71,29 @@ export async function stopAppServiceSupervisor(appId: string, name: string): Pro
   return true
 }
 
+/**
+ * Enter an on-demand host in the supervisor registry under
+ * `<appId>:<name>` (the slot `startAppServiceProcess` takes for a keep-alive
+ * runner), so the kill paths (`stopAppServiceSupervisor`) reach it too.
+ * Stops a prior holder of the slot; returns the unregister function (a
+ * no-op once a newer holder replaced this one).
+ */
+export function registerAppServiceSupervisor(appId: string, name: string, handle: AppServiceProcess): () => void {
+  const key = supervisorKey(appId, name)
+  const prior = supervisors.get(key)
+  if (prior !== undefined && prior !== handle) void prior.stop().catch(() => undefined)
+  supervisors.set(key, handle)
+  return () => {
+    if (supervisors.get(key) === handle) supervisors.delete(key)
+  }
+}
+
+/** Is a live (not stopped) supervisor registered for `<appId>:<name>`? */
+export function isAppServiceSupervised(appId: string, name: string): boolean {
+  const sup = supervisors.get(supervisorKey(appId, name))
+  return sup !== undefined && !sup.disposed
+}
+
 /** Is this registry row id a dead-but-restarting managed service attempt? */
 export function isAppServicePendingRestart(sessionId: string): boolean {
   return restartPending.has(sessionId)
@@ -281,6 +304,12 @@ export interface StartAppServiceProcessDeps {
   onRespawn?: (attempt: number, info: { sessionId: string; pid?: number; startTicks?: number }) => void
   /** Where a restart-exhausted / failed runner reports for ops. */
   onError?: (message: string) => void
+  /** On-demand activation (AIP-53): run ONE attempt. There is no restart
+   *  loop, and the runner does not enter the supervisor registry (the
+   *  on-demand host owns that slot). `onExit` fires when the child dies or
+   *  fails to spawn without `stop()` having been called; `deliberate` is true
+   *  when an operator killed the attempt's registry row. */
+  singleAttempt?: { onExit: (info: { sessionId: string; deliberate: boolean }) => void }
 }
 
 export type StartAppServiceProcessResult =
@@ -391,6 +420,11 @@ export function startAppServiceProcess(
     settled.add(child)
     const diedId = current.id
     current = undefined
+    if (deps.singleAttempt !== undefined) {
+      disposed = true
+      deps.singleAttempt.onExit({ sessionId: diedId, deliberate: deliberatelyKilled.has(child) })
+      return
+    }
     if (deliberatelyKilled.has(child)) {
       // An explicit operator kill of the service's session row: honour it —
       // stop supervising (no restart timer, no re-upsert of the owner record).
@@ -534,12 +568,14 @@ export function startAppServiceProcess(
 
   const self = handle()
   handleRef = self
-  registeredKey = supervisorKey(deps.appId, deps.service.name)
-  // Defensively stop a prior runner for the same service (e.g. an owner row
-  // was lost) so its restart timer cannot leak alongside the new runner.
-  const prior = supervisors.get(registeredKey)
-  if (prior !== undefined) void prior.stop().catch(() => undefined)
-  supervisors.set(registeredKey, self)
+  if (deps.singleAttempt === undefined) {
+    registeredKey = supervisorKey(deps.appId, deps.service.name)
+    // Defensively stop a prior runner for the same service (e.g. an owner row
+    // was lost) so its restart timer cannot leak alongside the new runner.
+    const prior = supervisors.get(registeredKey)
+    if (prior !== undefined) void prior.stop().catch(() => undefined)
+    supervisors.set(registeredKey, self)
+  }
   launchAttempt()
   return { ok: true, handle: self }
 }

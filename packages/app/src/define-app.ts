@@ -219,7 +219,11 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
   const services: readonly AppService[] | undefined = fields.services
     ? Object.freeze(
         fields.services.map(s =>
-          Object.freeze({ ...s, ...(s.expose !== undefined ? { expose: Object.freeze({ ...s.expose }) } : {}) }),
+          Object.freeze({
+            ...s,
+            ...(s.expose !== undefined ? { expose: Object.freeze({ ...s.expose }) } : {}),
+            ...(s.activation !== undefined ? { activation: Object.freeze({ ...s.activation }) } : {}),
+          }),
         ),
       )
     : undefined
