@@ -8655,8 +8655,7 @@ code { color: #9ad; }
   }
   // POST /sessions/:id/touch — register or refresh an `external` row before
   // it reads its inbox. Body `{ host, name?, hostSessionId?, cwd? }`. Only
-  // honoured on a trusted request (loopback or daemon bearer, as `/mcp`);
-  // `touchExternal` itself refuses to adopt a daemon-owned row.
+  // honoured on a trusted request (loopback or daemon bearer, as `/mcp`).
   const touchMatch = path.match(/^\/sessions\/([^/]+)\/touch$/)
   if (touchMatch && req.method === "POST") {
     const id = decodePathId(touchMatch[1] ?? "")

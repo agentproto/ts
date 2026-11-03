@@ -106,12 +106,11 @@ cc:<session_id> ...` (or `message_send`) works without an MCP connection first.
 ### Migration for machines already installed
 
 Installing no longer writes `env.AGENTPROTO_SESSION_ID`; each chat uses
-`cc:<session_id>`. A legacy `claude-desktop` value is removed on the next
-install, any other value left untouched. Re-run `agentproto hook install
---host claude-desktop` (or delete the variable from
-`~/.claude/settings.json`), then restart open chats. Daemon-spawned `sess_...`
-sessions and items on the old shared id are unchanged. Per-chat MCP identity
-is still pending (headersHelper unverified).
+`cc:<session_id>`. A legacy `claude-desktop` value is removed, any other value
+left untouched. Re-run `agentproto hook install --host claude-desktop` (or
+delete the variable from `~/.claude/settings.json`), then restart open chats.
+Daemon-spawned `sess_...` sessions are unchanged; per-chat MCP identity is
+still pending (headersHelper unverified).
 
 ### `hook install --host claude-desktop`
 

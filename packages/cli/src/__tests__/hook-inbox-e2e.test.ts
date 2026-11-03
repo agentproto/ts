@@ -7,9 +7,7 @@ import { join } from "node:path"
 import { createSessionsRegistry, startHttpServer, createRuntimeEvents, fileConversationStore } from "@agentproto/runtime"
 import type { HeartbeatRunner, SessionsRegistry } from "@agentproto/runtime"
 import { runHook } from "../commands/hook.js"
-
 const heartbeat: HeartbeatRunner = { start() {}, stop() {}, async fireNow() {} }
-
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer()
