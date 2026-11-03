@@ -80,7 +80,7 @@
           "type": "string",
           "pattern": "^(shared|auto|dedicated|[a-z0-9]{1,8})$",
           "default": "shared",
-          "description": "Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable."
+          "description": "Public source address for outbound traffic (AIP-36 v1.3): shared | auto | dedicated | pool slot id. A provider without an address pool MUST refuse any value other than shared with sandbox_egress_pool_unavailable. With auto, a provider given an egress health view skips slots cooling down for the session's model and fails with sandbox_egress_all_cooling, booting nothing, when every slot is cooling (AIP-36 v1.4 §3)."
         }
       }
     },
