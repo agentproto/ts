@@ -122,10 +122,15 @@ verdict still reclaims when this deterministic check holds (no LLM involved):
 4. every file with uncovered added lines is explained: a merged cited PR
    touched that path, it is a `.changeset/*.md`, or base deleted or moved the
    path in a commit that descends from a merged cited PR's merge commit (a path
-   base dropped before the work landed explains nothing).
+   base dropped before the work landed explains nothing), or the
+   [dep-bump](#dep-bump-pass) per-file rules prove every line the branch
+   changes in it (`manifest-proven`: for example a `package.json` whose only
+   change is a `version` base already passed). The refusal names the files
+   none of these explain.
 
 A pass is recorded as `verdictGuard: "passed by verified-pr #N: <guard>"` and
-`verifiedPr: { prs, files: [{ file, why, pr? }] }` on the plan entry, and as
+`verifiedPr: { prs, files: [{ file, why, pr? }] }` on the plan entry (`why`
+is `pr-touched`, `changeset`, `gone-on-base` or `manifest-proven`), and as
 `guard: "verified-pr"` + `verifiedPr` on the apply outcome and the restore log
 entry. A refusal keeps the entry in `review`; `verifiedPrRefusal` on the entry
 and the `refused-guard` outcome names the condition that failed (for example
@@ -172,6 +177,11 @@ branch changed. Nothing comes from the reviewer's text.
        proven, and neither is a dependency the branch removes but base still
        has);
      - a `version` field base already reached (`semver.gte`);
+     - a `packageManager` field `<name>@<version>[+<hash>]` when base
+       declares the same `<name>` at a version greater than or equal to the
+       branch's (the hash suffix is ignored, so pinning a hash at the version
+       base has passes; a different manager, an unparsable value or a lower
+       version on base does not);
    - a `package.json` base no longer has at that path is explained as a
      whole only when no base `package.json` carries the branch's package
      `name` (the package is gone, not moved);

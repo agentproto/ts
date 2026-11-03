@@ -86,8 +86,9 @@
  * and gate say `superseded` and agree, the verdict cites PRs (`landedIn`, else
  * `#N` in gate.reason/evidence), the forge confirms at least one of them
  * MERGED into base's branch, and every file carrying uncovered added lines
- * was touched by such a PR, is a `.changeset/*.md`, or is a path base
- * deleted or moved after such a PR merged. Anything else, or no forge, keeps the refusal
+ * was touched by such a PR, is a `.changeset/*.md`, is a path base
+ * deleted or moved after such a PR merged, or is proven line by line by the
+ * DEP-BUMP per-file rules below (`manifest-proven`). Anything else, or no forge, keeps the refusal
  * (`verifiedPrRefusal` says which condition failed). On by default;
  * `requireOperatorBelowGuard` turns it off. Never for checkpoint refs.
  *
@@ -100,8 +101,9 @@
  * `depBumpCheck` proves, from git objects only, that every line it adds is
  * regenerable or already superseded on base: `pnpm-lock.yaml`, a
  * `.changeset/*.md`, or a `package.json` change that is only dependency
- * entries base declares at an equal or higher lower bound, or a `version`
- * base already reached. Anything else keeps the refusal (`depBumpRefusal`
+ * entries base declares at an equal or higher lower bound, a `version`
+ * base already reached, or a `packageManager` pin base declares at the same
+ * or a newer version (hash ignored). Anything else keeps the refusal (`depBumpRefusal`
  * names the first unexplained line). Same switch, same exclusions as
  * `verified-pr`.
  *
@@ -307,11 +309,14 @@ export interface BranchVerdictSummary {
  * Why one file carrying uncovered added lines does not block the
  * `verified-pr` pass: `pr-touched` a cited PR merged into base touched that
  * path (`pr`), `changeset` it is a `.changeset/*.md` (consumed at release),
- * `gone-on-base` base deleted or moved that path AFTER cited PR `pr` merged.
+ * `gone-on-base` base deleted or moved that path AFTER cited PR `pr` merged,
+ * `manifest-proven` the `dep-bump` per-file rules ({@link depBumpFileRefusal})
+ * prove every line the tip changes in it (a `package.json` version base
+ * already reached, for example).
  */
 export interface VerifiedPrFile {
   file: string
-  why: "pr-touched" | "changeset" | "gone-on-base"
+  why: "pr-touched" | "changeset" | "gone-on-base" | "manifest-proven"
   pr?: number
 }
 
@@ -326,7 +331,7 @@ export interface VerifiedPrProof {
 export interface DepBumpProof {
   /** Dependency entries (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `pnpm.overrides`) the tip changed, each declared on base at an equal or higher lower bound (or gone from every base package). */
   dependencies: number
-  /** `version` fields the tip changed that base already reached. */
+  /** `version` fields (and `packageManager` pins) the tip changed that base already reached. */
   versions: number
   /** Lines added to `pnpm-lock.yaml` files (regenerable). */
   lockfileLines: number
@@ -1373,8 +1378,9 @@ function describePr(n: number, f: ForgePullRequestFacts | null, baseName: string
  *      (no forge, or a lookup that fails, refuses);
  *   4. every file with uncovered added lines (`lineCoverage.missingFiles`) is
  *      explained: one of those merged PRs touched it, it is a
- *      `.changeset/*.md`, or base deleted/moved the path after one of those
- *      PRs merged.
+ *      `.changeset/*.md`, base deleted/moved the path after one of those
+ *      PRs merged, or the `dep-bump` per-file rules prove every line the tip
+ *      changes in it (`depBumpFileRefusal`, `manifest-proven`).
  * The refusal reason names the first condition that failed. Residual risk,
  * accepted by design: "touched the path" is file-level, so a verdict citing a
  * PR that merely edited the same files passes even when the branch's own
@@ -1408,13 +1414,21 @@ async function verifiedPrCheck(entry: BranchGcPlanEntry, record: BranchVerdictRe
   const idx = await env.ctx.index()
   const files: VerifiedPrFile[] = []
   const unexplained: string[] = []
+  let changed: Map<string, ChangedFile> | null | undefined
+  const uncovered = new Set(missingFiles)
   for (const file of missingFiles) {
     const pr = touchedBy.find((t) => t.files.has(file))?.pr
     if (pr !== undefined) files.push({ file, why: "pr-touched", pr })
     else if (CHANGESET_RE.test(file)) files.push({ file, why: "changeset" })
     else {
       const after = idx.byPath.has(file) ? undefined : await goneAfterMerge(env, file, merged)
-      if (after !== undefined) files.push({ file, why: "gone-on-base", pr: after })
+      if (after !== undefined) {
+        files.push({ file, why: "gone-on-base", pr: after })
+        continue
+      }
+      if (changed === undefined) changed = await changedFilesOf(env, entry)
+      const row = changed?.get(file)
+      if (row && (await depBumpFileRefusal(env, entry, row, uncovered, newDepBumpTally())) === null) files.push({ file, why: "manifest-proven" })
       else unexplained.push(file)
     }
   }
@@ -1545,6 +1559,14 @@ async function firstDeletedLineOnBase(env: ClassifyEnv, entry: BranchGcPlanEntry
   return undefined
 }
 
+/** `<name>@<semver>[+<hash>]` of a `packageManager` field, hash dropped; `null` when it does not parse. */
+function packageManagerOf(v: Json | undefined): { name: string; version: string } | null {
+  if (typeof v !== "string") return null
+  const m = /^((?:@[^@/]+\/)?[^@/]+)@([^+]+)(?:\+.*)?$/.exec(v)
+  const version = m ? semver.valid(m[2] as string) : null
+  return m && version ? { name: m[1] as string, version } : null
+}
+
 /**
  * Why one `package.json` change of the tip is not a proven dependency bump,
  * or `null` when every key it changed (merge-base → tip) is explained:
@@ -1555,7 +1577,9 @@ async function firstDeletedLineOnBase(env: ClassifyEnv, entry: BranchGcPlanEntry
  *     ranges (`rangeLowerBound`);
  *   - a dependency (not an override) base dropped from this file AND from
  *     every other base `package.json`;
- *   - a `version` base already reached (`semver.gte`).
+ *   - a `version` base already reached (`semver.gte`);
+ *   - a `packageManager` `<name>@<version>[+<hash>]` where base declares the
+ *     same `<name>` at a version >= the tip's (the hash is ignored).
  * A dependency the tip removes but base still has, an override base lacks,
  * or any other key is not proven. A file base no longer has at that path is
  * explained as a whole only when no base `package.json` carries the tip's
@@ -1622,6 +1646,16 @@ async function packageJsonRefusal(
       counts.dependencies++
       continue
     }
+    if (key === "packageManager") {
+      const show = (v: Json | undefined): string => JSON.stringify(v)?.slice(0, 80) ?? "nothing"
+      const t = packageManagerOf(tipValue)
+      const b = packageManagerOf(baseValue)
+      if (!t || !b) return `${file}: packageManager ${show(tipValue)} vs base ${show(baseValue)} is not comparable`
+      if (t.name !== b.name) return `${file}: packageManager ${show(tipValue)} is ${t.name}, base declares ${b.name}`
+      if (semver.lt(b.version, t.version)) return `${file}: packageManager ${show(tipValue)}, base is still ${show(baseValue)}`
+      counts.versions++
+      continue
+    }
     if (key === "version") {
       const t = typeof tipValue === "string" ? semver.valid(tipValue) : null
       const b = typeof baseValue === "string" ? semver.valid(baseValue) : null
@@ -1631,6 +1665,84 @@ async function packageJsonRefusal(
       continue
     }
     return `${file}: ${key} changed to ${JSON.stringify(tipValue)?.slice(0, 80) ?? "nothing"} (not a dependency entry)`
+  }
+  return null
+}
+
+/** One file the tip changes (merge-base → tip), from `git diff --numstat`: `added` is `null` for a binary. */
+interface ChangedFile {
+  file: string
+  added: number | null
+  deleted: number
+}
+
+/** What {@link depBumpFileRefusal} counted, across the files it proved. */
+interface DepBumpTally {
+  dependencies: number
+  versions: number
+  goneOnBase: string[]
+  lockfileLines: number
+  changesetLines: number
+  packageFiles: string[]
+}
+
+const newDepBumpTally = (): DepBumpTally => ({ dependencies: 0, versions: 0, goneOnBase: [], lockfileLines: 0, changesetLines: 0, packageFiles: [] })
+
+/** Every file the tip changes (merge-base → tip), by path; `null` when git cannot list them. */
+async function changedFilesOf(env: ClassifyEnv, entry: BranchGcPlanEntry): Promise<Map<string, ChangedFile> | null> {
+  if (!entry.mergeBase) return null
+  const numstat = await git(env.ctx.repoRoot, ["diff", "--numstat", "-z", "--no-renames", entry.mergeBase, entry.sha])
+  if (numstat.exitCode !== 0) return null
+  const out = new Map<string, ChangedFile>()
+  for (const row of numstat.stdout.split("\0")) {
+    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(row)
+    if (!m) continue
+    const file = m[3] as string
+    out.set(file, { file, added: m[1] === "-" ? null : Number(m[1]), deleted: m[2] === "-" ? 0 : Number(m[2]) })
+  }
+  return out
+}
+
+/**
+ * The `dep-bump` rules for one changed file: why it is not proven, or `null`
+ * when it is (counted into `tally`). Shared by `depBumpCheck` (every changed
+ * file) and `verifiedPrCheck` (an uncovered file no cited PR touched):
+ *   - a `pnpm-lock.yaml` (regenerable) or a `.changeset/*.md`;
+ *   - a `package.json` whose every changed key `packageJsonRefusal` accepts;
+ *   - a lockfile or binary the line guard does not read, identical to base's;
+ *   - any other file only when none of its added lines is uncovered
+ *     (`uncovered`) and it deletes no non-blank line base's file at the same
+ *     path still has.
+ */
+async function depBumpFileRefusal(
+  env: ClassifyEnv,
+  entry: BranchGcPlanEntry,
+  row: ChangedFile,
+  uncovered: ReadonlySet<string>,
+  tally: DepBumpTally,
+): Promise<string | null> {
+  const { file, added, deleted } = row
+  const sameAsBase = async (): Promise<boolean> =>
+    (await git(env.ctx.repoRoot, ["rev-parse", "--verify", "--quiet", `${entry.sha}:${file}`])).stdout.trim() === (await env.ctx.index()).byPath.get(file)
+  if (added === null) return (await sameAsBase()) ? null : `${file}: binary, not proven`
+  if (added === 0 && deleted === 0) return null
+  if (PNPM_LOCK_RE.test(file)) tally.lockfileLines += added
+  else if (CHANGESET_RE.test(file)) tally.changesetLines += added
+  else if (PACKAGE_JSON_RE.test(file)) {
+    tally.packageFiles.push(file)
+    return packageJsonRefusal(env, entry, file, tally)
+  } else if (LINE_SKIP_RE.test(file)) {
+    if (!(await sameAsBase())) return `${file}: not line-checked (lockfile or binary), not proven`
+  } else {
+    if (added > 0 && uncovered.has(file)) {
+      const line = await firstUncoveredLine(env, entry, file)
+      return `${file}: ${line ? JSON.stringify(line) : "an added line"} is not a dependency, lockfile or changeset line`
+    }
+    // A deletion of work base still carries is a change too: never proven here.
+    if (deleted > 0) {
+      const line = await firstDeletedLineOnBase(env, entry, file)
+      if (line !== undefined) return `${file}: deletes ${JSON.stringify(line)}, which base still has`
+    }
   }
   return null
 }
@@ -1664,55 +1776,22 @@ async function depBumpCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecor
   const missingFiles = entry.lineCoverage?.missingFiles
   if (!missingFiles || !entry.mergeBase) return refuse("no per-file line coverage to explain")
   const uncovered = new Set(missingFiles)
-  const numstat = await git(env.ctx.repoRoot, ["diff", "--numstat", "-z", "--no-renames", entry.mergeBase, entry.sha])
-  if (numstat.exitCode !== 0) return refuse("could not list the tip's changed files")
-  const idx = await env.ctx.index()
-  const counts = { dependencies: 0, versions: 0, goneOnBase: [] as string[] }
-  let lockfileLines = 0
-  let changesetLines = 0
-  const packageFiles: string[] = []
-  for (const row of numstat.stdout.split("\0")) {
-    const m = /^(\d+|-)\t(\d+|-)\t(.+)$/s.exec(row)
-    if (!m) continue
-    const file = m[3] as string
-    const sameAsBase = async (): Promise<boolean> =>
-      (await git(env.ctx.repoRoot, ["rev-parse", "--verify", "--quiet", `${entry.sha}:${file}`])).stdout.trim() === idx.byPath.get(file)
-    if (m[1] === "-") {
-      if (!(await sameAsBase())) return refuse(`${file}: binary, not proven`)
-      continue
-    }
-    const added = Number(m[1])
-    const deleted = Number(m[2])
-    if (added === 0 && deleted === 0) continue
-    if (PNPM_LOCK_RE.test(file)) lockfileLines += added
-    else if (CHANGESET_RE.test(file)) changesetLines += added
-    else if (PACKAGE_JSON_RE.test(file)) {
-      packageFiles.push(file)
-      const why = await packageJsonRefusal(env, entry, file, counts)
-      if (why) return refuse(why)
-    } else if (LINE_SKIP_RE.test(file)) {
-      if (!(await sameAsBase())) return refuse(`${file}: not line-checked (lockfile or binary), not proven`)
-    } else {
-      if (added > 0 && uncovered.has(file)) {
-        const line = await firstUncoveredLine(env, entry, file)
-        return refuse(`${file}: ${line ? JSON.stringify(line) : "an added line"} is not a dependency, lockfile or changeset line`)
-      }
-      // A deletion of work base still carries is a change too: never proven here.
-      if (deleted > 0) {
-        const line = await firstDeletedLineOnBase(env, entry, file)
-        if (line !== undefined) return refuse(`${file}: deletes ${JSON.stringify(line)}, which base still has`)
-      }
-    }
+  const changed = await changedFilesOf(env, entry)
+  if (!changed) return refuse("could not list the tip's changed files")
+  const tally = newDepBumpTally()
+  for (const row of changed.values()) {
+    const why = await depBumpFileRefusal(env, entry, row, uncovered, tally)
+    if (why) return refuse(why)
   }
   return {
     ok: true,
     proof: {
-      dependencies: counts.dependencies,
-      versions: counts.versions,
-      lockfileLines,
-      changesetLines,
-      packageFiles,
-      ...(counts.goneOnBase.length ? { goneOnBase: counts.goneOnBase } : {}),
+      dependencies: tally.dependencies,
+      versions: tally.versions,
+      lockfileLines: tally.lockfileLines,
+      changesetLines: tally.changesetLines,
+      packageFiles: tally.packageFiles,
+      ...(tally.goneOnBase.length ? { goneOnBase: tally.goneOnBase } : {}),
     },
   }
 }

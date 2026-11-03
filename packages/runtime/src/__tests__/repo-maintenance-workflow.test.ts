@@ -721,6 +721,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
                       { file: "src/b.ts", why: "pr-touched", pr: 1101 },
                       { file: ".changeset/x.md", why: "changeset" },
                       { file: "driver/agent-cli/run.ts", why: "gone-on-base" },
+                      { file: "packages/vscode/package.json", why: "manifest-proven" },
                     ],
                   },
                 },
@@ -776,7 +777,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     )
     const auto = on.report.slice(on.report.indexOf("## Auto-passed by verified-pr (1)"), on.report.indexOf("## Auto-passed by dep-bump"))
     expect(auto).toContain(
-      "- `wt/small-residual` (" + SHA_A + ") [local] - PR #1101 - uncovered files: 1 touched by #1101, 1 changeset, 1 moved/deleted on base",
+      "- `wt/small-residual` (" + SHA_A + ") [local] - PR #1101 - uncovered files: 1 touched by #1101, 1 changeset, 1 moved/deleted on base, 1 manifest-proven",
     )
     expect(auto).not.toContain("wt/large-residual")
     const queue = on.report.slice(on.report.indexOf("## Human decision queue"))

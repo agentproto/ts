@@ -47,10 +47,13 @@ One run:
    below it is refused (`refused-guard`) unless the
    [verified-pr pass](./branch.md#verified-pr-pass) proves it (a superseded
    verdict whose cited PR the forge confirms merged into base, with every
-   uncovered file explained), or the
+   uncovered file explained by that PR, a changeset, a later move on base or
+   the dep-bump per-file rules), or the
    [dep-bump pass](./branch.md#dep-bump-pass) does (every added line is a
-   lockfile, changeset or dependency spec base already has at least as new).
-   Tips that pass are listed in "Auto-passed by verified-pr" (branch, PR, why)
+   lockfile, changeset, dependency spec, `version` or `packageManager` pin
+   base already has at least as new).
+   Tips that pass are listed in "Auto-passed by verified-pr" (branch, PR, why,
+   for example `uncovered files: 1 touched by #2143, 1 manifest-proven`)
    and "Auto-passed by dep-bump" (branch, lines checked);
    `--require-operator-below-guard` turns both passes off. The rest are listed in the report's "Human decision queue",
    each row ending with the reason the pass refused it. That queue is never

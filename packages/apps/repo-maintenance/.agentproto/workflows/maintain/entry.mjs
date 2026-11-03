@@ -760,7 +760,8 @@ function formatTipList(groups, cap = REPORT_LIST_CAP, where) {
 }
 
 /** Why each file of a `verified-pr` proof did not block the pass, as one
- *  short clause: `2 touched by #1101, 1 changeset, 1 moved/deleted on base`. */
+ *  short clause: `2 touched by #1101, 1 changeset, 1 moved/deleted on base,
+ *  1 manifest-proven`. */
 export function verifiedPrWhy(proof) {
   const files = Array.isArray(proof?.files) ? proof.files : []
   const parts = []
@@ -771,6 +772,8 @@ export function verifiedPrWhy(proof) {
   if (changesets > 0) parts.push(`${changesets} changeset`)
   const gone = files.filter(f => f.why === "gone-on-base").length
   if (gone > 0) parts.push(`${gone} moved/deleted on base`)
+  const manifest = files.filter(f => f.why === "manifest-proven").length
+  if (manifest > 0) parts.push(`${manifest} manifest-proven`)
   return parts.length > 0 ? `uncovered files: ${parts.join(", ")}` : "no uncovered file"
 }
 
