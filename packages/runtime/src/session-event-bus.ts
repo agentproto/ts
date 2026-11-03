@@ -9,6 +9,7 @@
  */
 
 import { EventEmitter } from "node:events"
+import type { AgentPromptAnswers, AgentPromptField } from "@agentproto/acp"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import type { SessionConfig } from "./session-config.js"
@@ -138,6 +139,17 @@ export interface SessionAwaitingQuestion {
    * this field existed, or an operator override (`session_flag_status`).
    * Nothing reads it yet; clients must treat absent as "unknown". */
   kind?: "permission" | "context" | "harness"
+  /**
+   * Pending-permission id of the harness question behind this wait, when it
+   * is a multi-field question (AIP-45 `question.fields`) parked in the
+   * permission inbox. Answer it with `permissions_respond({ id: requestId,
+   * answers })`. Absent for heuristic and context questions. */
+  requestId?: string
+  /**
+   * The question's fields (AIP-45 `AgentPromptField`), source of truth when
+   * present. `options` then carries the labels of the first `single` field,
+   * for clients that only know `options`. */
+  fields?: AgentPromptField[]
 }
 
 export interface SessionTurnEndEvent {
@@ -283,8 +295,13 @@ export interface SessionPermissionRequestEvent {
 export interface SessionAwaitingQuestionAnsweredEvent {
   type: "session:awaiting-question-answered"
   sessionId: string
-  /** The matched option string, verbatim from `question.options`. */
+  /** The matched option string, verbatim from `question.options`. For a
+   *  multi-field question answered through the permission inbox, a readable
+   *  summary of `answers`. */
   answer: string
+  /** The structured answers, set when a multi-field question
+   *  (`question.fields`) was answered with them. */
+  answers?: AgentPromptAnswers
   /** The question that was answered. */
   question: SessionAwaitingQuestion
   label?: string

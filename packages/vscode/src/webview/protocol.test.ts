@@ -142,4 +142,15 @@ describe("isWebviewMessage", () => {
     expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a", feedback: "main" })).toBe(true)
     expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", optionId: "a", feedback: 3 })).toBe(false)
   })
+
+  it("accepts resolveQuestion with answers (no optionId) and a bare deny, rejects malformed answers", () => {
+    const answers = { question_0: { selected: ["SQLite"], text: "local" }, question_1: { value: 3 } }
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: "p", decision: "approve", answers })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", toolCallId: "p", decision: "deny" })).toBe(true)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", answers: [] })).toBe(false)
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", answers: { q: { selected: [1] } } })).toBe(
+      false,
+    )
+    expect(isWebviewMessage({ type: "resolveQuestion", decision: "approve", answers: { q: "x" } })).toBe(false)
+  })
 })

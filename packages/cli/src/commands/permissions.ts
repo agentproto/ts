@@ -11,6 +11,7 @@
  *   ls        [--json]                list pending permissions (id, session, tool, age)
  *   approve   <id> [--always]         grant — allow-once, or allow-always with --always
  *   deny      <id>                    reject the request
+ *   answer    <id> --select f=v ...   submit a multi-field harness question
  *   watch     --allow-tool <pat> ...  poll the inbox, auto-resolve requests matching
  *                                     explicit rules, leave everything else parked
  *
@@ -49,6 +50,9 @@ Usage:
                                    [--feedback <text>] [--json]
   agentproto permissions deny      <id> [--option-id <optionId>]
                                    [--feedback <text>] [--json]
+  agentproto permissions answer    <id> [--select <field>=<value>]...
+                                   [--text <field>=<text>]... [--answers <json|@file>]
+                                   [--json]
   agentproto permissions watch     [--allow-tool <pat>]... [--deny-tool <pat>]...
                                    [--session <id>] [--rules-json <json|@file>]
                                    [--always] [--interval <dur>] [--timeout <dur>]
@@ -61,6 +65,14 @@ Usage:
   approve   Grant the request. --always picks the allow-always option when the
             request offers one (otherwise allow-once).
   deny      Reject the request (or cancel it when no reject option is offered).
+            On a harness question, deny skips it.
+  answer    Submit a harness question that has fields (radio, checkbox, free
+            text; \`ls\` lists each field's id and choices). --select picks a
+            choice value (repeat it for several values of a multi-choice
+            field), --text sets a field's typed answer (the "Other" box of a
+            choice field, or a text/number field). --answers takes the full
+            { "<field>": { "selected": [...], "text": "...", "value": ... } }
+            object instead. Fields left out are skipped.
   --option-id <id>  When a request offers several options, resolve the named
             one explicitly instead of the default (allow-once / the first
             option). The option ids a request carries are in its options
@@ -122,7 +134,18 @@ interface PermissionEntry {
   /** AIP-45 request kind; absent reads as "tool-permission". */
   request?: "tool-permission" | "question" | "plan-approval"
   /** AIP-45 `question` payload, set when `request` is "question". */
-  question?: unknown
+  question?: {
+    prompt?: string
+    fields?: Array<{
+      id: string
+      input: string
+      header?: string
+      prompt: string
+      choices?: Array<{ value: string; label: string }>
+      allowFreeText?: boolean
+      required?: boolean
+    }>
+  }
   /** AIP-45 `planApproval` payload, set when `request` is "plan-approval". */
   planApproval?: { plan?: string; planRef?: string; targetModeId?: string }
 }
@@ -180,6 +203,7 @@ export async function runPermissions(args: readonly string[]): Promise<number> {
   if (sub === "ls" || sub === "list") return runLs(args.slice(1))
   if (sub === "approve" || sub === "allow") return runRespond(args.slice(1), "approve")
   if (sub === "deny" || sub === "reject") return runRespond(args.slice(1), "deny")
+  if (sub === "answer") return runAnswer(args.slice(1))
   if (sub === "watch") return runWatch(args.slice(1))
 
   if (!sub) {
@@ -187,7 +211,7 @@ export async function runPermissions(args: readonly string[]): Promise<number> {
     return 0
   }
   process.stderr.write(
-    `agentproto permissions: unknown subcommand "${sub}"\n  Known: ls | approve | deny | watch\n`,
+    `agentproto permissions: unknown subcommand "${sub}"\n  Known: ls | approve | deny | answer | watch\n`,
   )
   return 2
 }
@@ -250,7 +274,92 @@ async function runLs(args: readonly string[]): Promise<number> {
     process.stdout.write(
       `${p.id.padEnd(10)}  ${p.sessionId.padEnd(14)}  ${tool.padEnd(18)}  ${age.padEnd(5)}  ${input.padEnd(40)}  ${question}\n`,
     )
+    // A multi-field harness question: list what `permissions answer` takes.
+    for (const f of p.question?.fields ?? []) {
+      const flags = [f.input, ...(f.allowFreeText ? ["+text"] : []), ...(f.required ? ["required"] : [])]
+      process.stdout.write(`    ${f.id} (${flags.join(", ")})  ${f.header ? `[${f.header}] ` : ""}${f.prompt}\n`)
+      for (const c of f.choices ?? []) {
+        process.stdout.write(`      - ${c.value}${c.label !== c.value ? `  (${c.label})` : ""}\n`)
+      }
+    }
   }
+  return 0
+}
+
+/** Split a repeatable `<field>=<value>` flag value. */
+function splitFieldArg(raw: string, flag: string): { field: string; value: string } {
+  const eq = raw.indexOf("=")
+  if (eq <= 0) throw new Error(`${flag} expects <field>=<value>, got "${raw}"`)
+  return { field: raw.slice(0, eq), value: raw.slice(eq + 1) }
+}
+
+async function runAnswer(args: readonly string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: [...args],
+    allowPositionals: true,
+    strict: true,
+    options: {
+      select: { type: "string", multiple: true },
+      text: { type: "string", multiple: true },
+      answers: { type: "string" },
+      json: { type: "boolean" },
+    },
+  })
+  const fail = (msg: string): number => {
+    process.stderr.write(`agentproto permissions answer: ${msg}\n`)
+    return 2
+  }
+  const id = positionals[0]
+  if (!id) return fail("missing <id>.\n  Try: agentproto permissions ls")
+  if (positionals.length > 1) return fail(`unexpected extra positionals: ${positionals.slice(1).join(" ")}`)
+
+  let answers: Record<string, { selected?: string[]; text?: string }> = {}
+  try {
+    if (values.answers !== undefined) {
+      if (values.select || values.text) throw new Error("--answers is mutually exclusive with --select/--text")
+      const parsed = await readJsonArg(values.answers, "--answers")
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("--answers must be a JSON object keyed by field id")
+      }
+      answers = parsed as typeof answers
+    }
+    for (const raw of values.select ?? []) {
+      const { field, value } = splitFieldArg(raw, "--select")
+      const entry = (answers[field] ??= {})
+      entry.selected = [...(entry.selected ?? []), value]
+    }
+    for (const raw of values.text ?? []) {
+      const { field, value } = splitFieldArg(raw, "--text")
+      ;(answers[field] ??= {}).text = value
+    }
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err))
+  }
+
+  const report = await discoverDaemon()
+  if (!report.found) {
+    printNoDaemonError(report, "agentproto permissions answer")
+    return 2
+  }
+  const endpoint = report.found
+  let result: { ok?: boolean; sessionId?: string }
+  try {
+    result = await httpPostJson(
+      `${endpoint.url}/permissions/${encodeURIComponent(id)}`,
+      { answers },
+      endpoint.token,
+    )
+  } catch (err) {
+    process.stderr.write(`agentproto permissions answer: ${err instanceof Error ? err.message : String(err)}\n`)
+    return 1
+  }
+  if (values.json) {
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n")
+    return 0
+  }
+  process.stdout.write(
+    `agentproto permissions answer: ${id} answered${result.sessionId ? ` (session ${result.sessionId})` : ""}\n`,
+  )
   return 0
 }
 

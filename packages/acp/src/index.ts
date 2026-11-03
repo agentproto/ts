@@ -34,9 +34,20 @@ export type {
   AcpMcpServer,
   AcpPermissionResolution,
   Aip44Extensions,
+  AgentPromptAnswers,
+  AgentPromptField,
+  AgentPromptFieldInput,
   AgentPromptPlanApproval,
   AgentPromptQuestion,
   AgentPromptRequestKind,
   BackgroundTaskInfo,
   StreamEvent,
 } from "./types.js"
+export {
+  QUESTION_FREE_TEXT_OPTION_ID,
+  QUESTION_SKIP_OPTION_ID,
+  QUESTION_SUBMIT_OPTION_ID,
+  questionChoiceOptionId,
+  summarizeAgentPromptAnswers,
+  validateAgentPromptAnswers,
+} from "./questions.js"

@@ -153,3 +153,46 @@ describe("modeChangedLabel", () => {
     expect(modeChangedLabel({ modeId: "plan", cause: "agent" })).toBe("Mode: plan · by agent")
   })
 })
+
+describe("parseAgentPrompt with fields", () => {
+  it("reads question.fields, drops malformed ones and an unknown recommendation", () => {
+    const view = parseAgentPrompt({
+      request: "question",
+      options: [
+        { optionId: "submit", kind: "allow_once" },
+        { optionId: "skip", kind: "reject_once" },
+      ],
+      question: {
+        prompt: "Please answer the following questions.",
+        choices: [],
+        allowFreeText: false,
+        fields: [
+          {
+            id: "question_0",
+            input: "multi",
+            header: "Features",
+            prompt: "Which features do you want?",
+            choices: [{ value: "Logs", label: "Logs" }, { value: "Traces", label: "Traces", preview: "p" }],
+            allowFreeText: true,
+            recommended: "Nope",
+          },
+          { id: "n", input: "number", prompt: "How many?", required: true },
+          { id: "x", input: "telepathy", prompt: "?" },
+          { id: "y", input: "single", prompt: "no choices" },
+        ],
+      },
+    })
+    expect(view?.request === "question" ? view.fields : undefined).toEqual([
+      {
+        id: "question_0",
+        input: "multi",
+        header: "Features",
+        prompt: "Which features do you want?",
+        choices: [{ value: "Logs", label: "Logs" }, { value: "Traces", label: "Traces", preview: "p" }],
+        allowFreeText: true,
+        required: false,
+      },
+      { id: "n", input: "number", prompt: "How many?", choices: [], allowFreeText: false, required: true },
+    ])
+  })
+})

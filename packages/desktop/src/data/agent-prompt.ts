@@ -11,12 +11,36 @@ export interface PromptChoice {
   description?: string
 }
 
+export type QuestionFieldInput = "single" | "multi" | "text" | "boolean" | "number"
+
+export interface QuestionFieldChoice {
+  value: string
+  label: string
+  description?: string
+  preview?: string
+}
+
+/** One question of a multi-field prompt (AIP-45 `AgentPromptField`). */
+export interface QuestionField {
+  id: string
+  input: QuestionFieldInput
+  header?: string
+  prompt: string
+  choices: QuestionFieldChoice[]
+  allowFreeText: boolean
+  required: boolean
+  /** A `choices[].value` the daemon recommends. */
+  recommended?: string
+}
+
 export interface QuestionPrompt {
   request: "question"
   prompt: string
   choices: PromptChoice[]
   /** The option that carries a free-text answer in the resolution's `feedback`. */
   freeTextOptionId?: string
+  /** Multi-field form; when present it is the source of truth, answered with `answers`. */
+  fields?: QuestionField[]
 }
 
 export interface PlanApprovalPrompt {
@@ -46,6 +70,45 @@ function asObject(value: JsonValue | undefined): JsonObject | undefined {
 
 function str(value: JsonValue | undefined): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined
+}
+
+const FIELD_INPUTS: ReadonlySet<string> = new Set(["single", "multi", "text", "boolean", "number"])
+
+/** `question.fields`, keeping only well-formed entries; undefined when none are. */
+function parseFields(raw: JsonValue | undefined): QuestionField[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const fields: QuestionField[] = []
+  for (const entry of raw) {
+    const f = asObject(entry)
+    const id = str(f?.id)
+    const input = str(f?.input)
+    const prompt = str(f?.prompt)
+    if (!f || !id || !input || !FIELD_INPUTS.has(input) || !prompt) continue
+    const choices: QuestionFieldChoice[] = []
+    for (const c of Array.isArray(f.choices) ? f.choices : []) {
+      const o = asObject(c)
+      const value = typeof o?.value === "string" ? o.value : undefined
+      const label = str(o?.label)
+      if (!o || value === undefined || !label) continue
+      const description = str(o.description)
+      const preview = str(o.preview)
+      choices.push({ value, label, ...(description ? { description } : {}), ...(preview ? { preview } : {}) })
+    }
+    if ((input === "single" || input === "multi") && choices.length === 0) continue
+    const header = str(f.header)
+    const recommended = str(f.recommended)
+    fields.push({
+      id,
+      input: input as QuestionFieldInput,
+      ...(header ? { header } : {}),
+      prompt,
+      choices,
+      allowFreeText: f.allowFreeText === true,
+      required: f.required === true,
+      ...(recommended && choices.some((c) => c.value === recommended) ? { recommended } : {}),
+    })
+  }
+  return fields.length > 0 ? fields : undefined
 }
 
 /** The optionIds a prompt offers, or undefined when the options were not sent. */
@@ -78,6 +141,7 @@ export function parseAgentPrompt(input: AgentPromptInput): TypedAgentPrompt | un
       choices.push({ optionId, label, ...(description ? { description } : {}) })
     }
     const freeTextOptionId = str(q.freeTextOptionId)
+    const fields = parseFields(q.fields)
     return {
       request: "question",
       prompt,
@@ -85,6 +149,7 @@ export function parseAgentPrompt(input: AgentPromptInput): TypedAgentPrompt | un
       ...(q.allowFreeText === true && freeTextOptionId && isOffered(freeTextOptionId)
         ? { freeTextOptionId }
         : {}),
+      ...(fields ? { fields } : {}),
     }
   }
 
@@ -120,6 +185,72 @@ export function answerFreeText(view: QuestionPrompt, text: string): RespondPermi
   const feedback = text.trim()
   if (!view.freeTextOptionId || !feedback) return undefined
   return { decision: "approve", optionId: view.freeTextOptionId, feedback }
+}
+
+/** What the user has entered so far for one field. */
+export interface FieldDraft {
+  selected: string[]
+  /** Free text ("Other"), a text field's answer, or a number field's digits. */
+  text: string
+  /** A boolean field's state; undefined until touched. */
+  value?: boolean
+}
+
+/** Blank drafts for every field. */
+export function emptyDrafts(fields: readonly QuestionField[]): Record<string, FieldDraft> {
+  return Object.fromEntries(fields.map((f) => [f.id, { selected: [], text: "" }]))
+}
+
+/** Pick `value` on a choice field: a radio replaces the pick, a checkbox toggles it. */
+export function toggleChoice(field: QuestionField, draft: FieldDraft, value: string): FieldDraft {
+  if (field.input === "single") return { ...draft, selected: [value] }
+  const has = draft.selected.includes(value)
+  return { ...draft, selected: has ? draft.selected.filter((v) => v !== value) : [...draft.selected, value] }
+}
+
+/** The first required field left blank, or undefined when the form can be submitted. */
+export function missingRequired(
+  fields: readonly QuestionField[],
+  drafts: Record<string, FieldDraft>,
+): QuestionField | undefined {
+  return fields.find((f) => {
+    if (!f.required) return false
+    const d = drafts[f.id]
+    return !d || (d.selected.length === 0 && d.text.trim() === "" && d.value === undefined)
+  })
+}
+
+/** Submit a multi-field question: one answer per filled field, blank fields skipped. */
+export function answerFields(
+  fields: readonly QuestionField[],
+  drafts: Record<string, FieldDraft>,
+): RespondPermissionInput {
+  const answers: NonNullable<RespondPermissionInput["answers"]> = {}
+  for (const f of fields) {
+    const d = drafts[f.id]
+    if (!d) continue
+    const text = d.text.trim()
+    if (f.input === "boolean") {
+      if (d.value !== undefined) answers[f.id] = { value: d.value }
+    } else if (f.input === "number") {
+      const n = Number(text)
+      if (text !== "" && Number.isFinite(n)) answers[f.id] = { value: n }
+    } else if (f.input === "text") {
+      if (text !== "") answers[f.id] = { text }
+    } else {
+      const selected = d.selected.filter((v) => f.choices.some((c) => c.value === v))
+      const withText = f.allowFreeText && text !== ""
+      if (selected.length > 0 || withText) {
+        answers[f.id] = { ...(selected.length > 0 ? { selected } : {}), ...(withText ? { text } : {}) }
+      }
+    }
+  }
+  return { decision: "approve", answers }
+}
+
+/** Skip a multi-field question (the harness is told the user declined). */
+export function skipQuestion(): RespondPermissionInput {
+  return { decision: "deny" }
 }
 
 /** Approve or reject a plan; feedback only travels with a rejection. */

@@ -27,6 +27,11 @@ import type {
   StreamEvent,
 } from "../types.js"
 import { ACP_META_FEEDBACK } from "../types.js"
+import {
+  elicitationToQuestion,
+  resolutionToElicitationResponse,
+  type ElicitationResponse,
+} from "./elicitation.js"
 
 export type { SessionConfigOption, SessionMode }
 
@@ -44,10 +49,15 @@ type RequestPermissionResponse =
   | { outcome: { outcome: "selected"; optionId: string; _meta?: Record<string, unknown> } }
   | { outcome: { outcome: "cancelled" } }
 
-/** A `session/request_permission` RPC parked by permission-hold mode. */
+/**
+ * An agent RPC parked by permission-hold mode: a `session/request_permission`
+ * or a form `elicitation/create`. `settle` resolves it from the host's
+ * resolution and returns false (leaving it parked) when the resolution does
+ * not fit this request, e.g. `answers` for a plain permission.
+ */
 interface HeldPermission {
   sessionId: string
-  resolve: (response: RequestPermissionResponse) => void
+  settle: (resolution: AcpPermissionResolution) => boolean
 }
 
 /**
@@ -148,6 +158,11 @@ export interface AcpClientOptions {
    * bypassed while this is set. Undefined/false (the default) is unchanged:
    * requests go straight to `handlers.requestPermission`. Used by the
    * daemon's cross-session permission inbox.
+   *
+   * Also advertises `clientCapabilities.elicitation.form` and holds every
+   * form `elicitation/create` the same way, surfaced as an `agent-prompt`
+   * with `request: "question"` and `question.fields`; answer it with
+   * `respondPermission(requestId, { answers })`.
    */
   permissionHold?: boolean
   /** Protocol version to negotiate. Defaults to the SDK's current. */
@@ -373,6 +388,11 @@ export interface AcpClient {
    * found and resolved, false when the id is unknown or already resolved
    * (idempotent — a duplicate response is a no-op). No-op returning false
    * when `permissionHold` was never enabled.
+   *
+   * For a held form elicitation, `{ answers }` (or the `submit` option)
+   * accepts, the `skip` option declines and `{ cancelled }` cancels.
+   * `{ answers }` on a plain permission request returns false and leaves it
+   * parked.
    */
   respondPermission(
     requestId: string,
@@ -548,20 +568,8 @@ export async function createAcpClient(
   ): boolean => {
     const held = pendingPermissions.get(requestId)
     if (!held) return false
+    if (!held.settle(resolution)) return false
     pendingPermissions.delete(requestId)
-    held.resolve(
-      "cancelled" in resolution
-        ? { outcome: { outcome: "cancelled" } }
-        : {
-            outcome: {
-              outcome: "selected",
-              optionId: resolution.optionId,
-              ...(resolution.feedback
-                ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
-                : {}),
-            },
-          },
-    )
     return true
   }
 
@@ -578,7 +586,7 @@ export async function createAcpClient(
       const held = pendingPermissions.get(id)
       if (!held) continue
       pendingPermissions.delete(id)
-      held.resolve({ outcome: { outcome: "cancelled" } })
+      held.settle({ cancelled: true })
     }
   }
 
@@ -827,7 +835,7 @@ export async function createAcpClient(
     async close() {
       // Never leave a held permission RPC dangling — resolve all as cancelled.
       for (const [, held] of pendingPermissions) {
-        held.resolve({ outcome: { outcome: "cancelled" } })
+        held.settle({ cancelled: true })
       }
       pendingPermissions.clear()
       sessions.clear()
@@ -853,6 +861,11 @@ function clientCapabilitiesFromOptions(
       writeTextFile: caps.fs?.writeTextFile ?? false,
     },
     terminal: caps.terminal ?? false,
+    // Form elicitation (a harness question, e.g. claude-code's
+    // AskUserQuestion) is parked like a permission, so it is only advertised
+    // when permission hold is on: without it nobody can answer, and the
+    // harness keeps its own fallback.
+    ...(options.permissionHold ? { elicitation: { form: {} } } : {}),
     ...(caps.asyncTasks === false
       ? {}
       : {
@@ -1340,7 +1353,75 @@ function holdPermissionRequest(
   }
 
   return new Promise<RequestPermissionResponse>(resolve => {
-    ctx.pendingPermissions.set(requestId, { sessionId, resolve })
+    ctx.pendingPermissions.set(requestId, {
+      sessionId,
+      settle(resolution) {
+        if ("answers" in resolution) return false
+        resolve(
+          "cancelled" in resolution
+            ? { outcome: { outcome: "cancelled" } }
+            : {
+                outcome: {
+                  outcome: "selected",
+                  optionId: resolution.optionId,
+                  ...(resolution.feedback
+                    ? { _meta: { [ACP_META_FEEDBACK]: resolution.feedback } }
+                    : {}),
+                },
+              },
+        )
+        return true
+      },
+    })
+  })
+}
+
+/**
+ * Permission-hold path for a form `elicitation/create`: map the schema to an
+ * AIP-45 multi-field question, surface it as an `agent-prompt`
+ * (`request: "question"`) and park the RPC under a minted request id in the
+ * same `pendingPermissions` map, so respond / teardown / cancel behave
+ * exactly like a held permission. A url-mode (or unrenderable) request is
+ * answered `cancel` straight away: there is no surface for it yet.
+ */
+function holdElicitationRequest(
+  rawParams: unknown,
+  sessions: Map<string, SessionState>,
+  ctx: PermissionHoldContext,
+): Promise<ElicitationResponse> {
+  const params = (rawParams ?? {}) as { mode?: unknown; sessionId?: unknown; _meta?: unknown }
+  const mapped = params.mode === "form" ? elicitationToQuestion(params) : undefined
+  const sessionId = typeof params.sessionId === "string" ? params.sessionId : ""
+  const state = sessions.get(sessionId)
+  if (!mapped || !state) {
+    if (mapped) {
+      console.warn(
+        `[acp] permission-hold: no session state for elicitation on sessionId="${sessionId}"; cancelling it.`,
+      )
+    }
+    return Promise.resolve({ action: "cancel" })
+  }
+  const requestId = ctx.nextRequestId()
+  deliver(state, {
+    kind: "agent-prompt",
+    sessionId,
+    toolCallId: requestId,
+    options: mapped.options,
+    text: mapped.question.prompt,
+    request: "question",
+    question: mapped.question,
+    ...(params._meta !== undefined ? { _meta: params._meta } : {}),
+  })
+  return new Promise<ElicitationResponse>(resolve => {
+    ctx.pendingPermissions.set(requestId, {
+      sessionId,
+      settle(resolution) {
+        const response = resolutionToElicitationResponse(mapped, resolution)
+        if (!response) return false
+        resolve(response)
+        return true
+      },
+    })
   })
 }
 
@@ -1451,6 +1532,16 @@ function buildClientHandlers(
       }
       if (partial.requestPermission) return partial.requestPermission(params)
       throw new Error("AcpClient.requestPermission: no handler configured")
+    },
+    async createElicitation(params) {
+      onActivity?.()
+      if (hold.permissionHold) {
+        return holdElicitationRequest(params, sessions, hold) as never
+      }
+      if (partial.createElicitation) return partial.createElicitation(params)
+      // Not advertised without hold; a harness that asks anyway gets a
+      // cancel rather than a request nobody will answer.
+      return { action: "cancel" }
     },
     async readTextFile(params) {
       if (partial.readTextFile) return partial.readTextFile(params)

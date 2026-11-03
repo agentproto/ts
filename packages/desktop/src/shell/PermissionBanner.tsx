@@ -6,17 +6,27 @@
 //
 // AIP-45 typed prompts ride the same response path: a `question` shows its
 // choices (and a text field when it takes free text), a `plan-approval` shows
-// the plan with Approve / Reject. A prompt without a usable typed payload keeps
-// the plain option buttons.
+// the plan with Approve / Reject. A question with `fields` (a harness form,
+// e.g. claude-code's AskUserQuestion) is one form: radios for single choice,
+// checkboxes for multi choice, an "Other" box when free text is allowed,
+// text / number / switch inputs for the rest, then Submit + Skip. A prompt
+// without a usable typed payload keeps the plain option buttons.
 
 import { useState } from "react"
 
 import {
   answerChoice,
+  answerFields,
   answerFreeText,
   answerPlan,
+  emptyDrafts,
+  missingRequired,
   parseAgentPrompt,
+  skipQuestion,
+  toggleChoice,
+  type FieldDraft,
   type PlanApprovalPrompt,
+  type QuestionField,
   type QuestionPrompt,
 } from "../data/agent-prompt"
 import { respondPermission } from "../data/daemon"
@@ -94,6 +104,115 @@ function QuestionBody({
   )
 }
 
+function FieldInput({
+  field,
+  draft,
+  onChange,
+}: {
+  field: QuestionField
+  draft: FieldDraft
+  onChange: (next: FieldDraft) => void
+}) {
+  if (field.input === "single" || field.input === "multi") {
+    return (
+      <>
+        <div className="perm-choices">
+          {field.choices.map((choice) => (
+            <label key={choice.value} className="perm-choice" title={choice.preview}>
+              <input
+                type={field.input === "single" ? "radio" : "checkbox"}
+                name={field.id}
+                checked={draft.selected.includes(choice.value)}
+                onChange={() => onChange(toggleChoice(field, draft, choice.value))}
+              />
+              <span>
+                {choice.label}
+                {field.recommended === choice.value ? <span className="perm-recommended"> (recommended)</span> : null}
+                {choice.description ? <span className="perm-choice-desc"> {choice.description}</span> : null}
+              </span>
+            </label>
+          ))}
+        </div>
+        {field.allowFreeText ? (
+          <div className="perm-reply">
+            <input
+              value={draft.text}
+              placeholder="Other (optional)"
+              onChange={(e) => onChange({ ...draft, text: e.target.value })}
+            />
+          </div>
+        ) : null}
+      </>
+    )
+  }
+  if (field.input === "boolean") {
+    return (
+      <label className="perm-choice">
+        <input
+          type="checkbox"
+          checked={draft.value === true}
+          onChange={(e) => onChange({ ...draft, value: e.target.checked })}
+        />
+        <span>Yes</span>
+      </label>
+    )
+  }
+  return (
+    <div className="perm-reply">
+      <input
+        type={field.input === "number" ? "number" : "text"}
+        value={draft.text}
+        onChange={(e) => onChange({ ...draft, text: e.target.value })}
+      />
+    </div>
+  )
+}
+
+function FieldsBody({
+  prompt,
+  fields,
+  respond,
+}: {
+  prompt: QuestionPrompt
+  fields: QuestionField[]
+  respond: Respond
+}) {
+  const [drafts, setDrafts] = useState(() => emptyDrafts(fields))
+  const missing = missingRequired(fields, drafts)
+  const lone = fields.length === 1 && fields[0]!.prompt === prompt.prompt
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!missing) void respond(answerFields(fields, drafts))
+      }}
+    >
+      {lone ? null : <div className="perm-text">{prompt.prompt}</div>}
+      {fields.map((field) => (
+        <fieldset key={field.id} className="perm-field">
+          <legend className="perm-text">
+            {field.header ? <span className="perm-tool">{field.header}</span> : null} {field.prompt}
+            {field.required ? " *" : ""}
+          </legend>
+          <FieldInput
+            field={field}
+            draft={drafts[field.id] ?? { selected: [], text: "" }}
+            onChange={(next) => setDrafts((d) => ({ ...d, [field.id]: next }))}
+          />
+        </fieldset>
+      ))}
+      <div className="perm-options">
+        <button type="submit" className="btn ghost xs" disabled={missing !== undefined}>
+          Submit
+        </button>
+        <button type="button" className="btn ghost xs" onClick={() => void respond(skipQuestion())}>
+          Skip
+        </button>
+      </div>
+    </form>
+  )
+}
+
 function PlanBody({ prompt, respond }: { prompt: PlanApprovalPrompt; respond: Respond }) {
   const [feedback, setFeedback] = useState("")
   return (
@@ -157,7 +276,9 @@ export function PermissionBanner({ permissions, onResponded, daemonUrl }: Permis
               {perm.toolName ? <span className="perm-tool">{perm.toolName}</span> : null}
               <span className="perm-when">{perm.requestedAt}</span>
             </div>
-            {typed?.request === "question" ? (
+            {typed?.request === "question" && typed.fields ? (
+              <FieldsBody prompt={typed} fields={typed.fields} respond={answer} />
+            ) : typed?.request === "question" ? (
               <QuestionBody prompt={typed} others={otherOptions(perm, typed)} respond={answer} />
             ) : typed?.request === "plan-approval" ? (
               <PlanBody prompt={typed} respond={answer} />

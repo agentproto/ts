@@ -20,7 +20,13 @@
  *   - guilde-web Active tab (session cards + terminal viewer)
  */
 
-import type { AcpMcpServer, AcpPermissionResolution } from "@agentproto/acp"
+import type {
+  AcpMcpServer,
+  AcpPermissionResolution,
+  AgentPromptAnswers,
+  AgentPromptQuestion,
+} from "@agentproto/acp"
+import { summarizeAgentPromptAnswers, validateAgentPromptAnswers } from "@agentproto/acp"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
@@ -868,6 +874,22 @@ function agentPromptQuestionKind(evt: AgentStreamEvent): "permission" | "harness
     /^(allow|reject)_/.test(o.kind ?? ""),
   )
   return permissionShaped ? "permission" : "harness"
+}
+
+/**
+ * Narrow an `agent-prompt` event's `question` (typed `unknown`) to an AIP-45
+ * `AgentPromptQuestion`: an object with a string `prompt`. Its members are
+ * driver-built and carried as-is; `fields` is kept only when it is an array.
+ */
+function asAgentPromptQuestion(raw: unknown): AgentPromptQuestion | undefined {
+  if (!raw || typeof raw !== "object") return undefined
+  const q = raw as AgentPromptQuestion
+  if (typeof q.prompt !== "string") return undefined
+  if (q.fields !== undefined && !Array.isArray(q.fields)) {
+    const { fields: _drop, ...rest } = q
+    return rest
+  }
+  return q
 }
 
 /**
@@ -4579,8 +4601,9 @@ export interface PendingPermission {
   /** AIP-45 request kind from the `agent-prompt` event (absent reads as
    *  "tool-permission"), carried through unchanged. */
   request?: string
-  /** AIP-45 `question` payload from the `agent-prompt` event, unchanged. */
-  question?: unknown
+  /** AIP-45 `question` payload from the `agent-prompt` event, unchanged.
+   *  With `fields`, answer it with `respondPermission(id, { answers })`. */
+  question?: AgentPromptQuestion
   /** AIP-45 `planApproval` payload from the `agent-prompt` event, unchanged. */
   planApproval?: unknown
   /** Set on a permission the DAEMON raised itself (`requestToolPermission`,
@@ -4621,13 +4644,17 @@ export interface PermissionRespondInput {
   optionId?: string
   scope?: "once" | "always"
   feedback?: string
+  /** Answers to a multi-field question (`PendingPermission.question.fields`),
+   *  keyed by field id. When set, `decision` / `optionId` / `scope` /
+   *  `feedback` are ignored: the question is submitted with these answers. */
+  answers?: AgentPromptAnswers
 }
 
 export type PermissionRespondResult =
   | { ok: true; permission: PendingPermission; decision: "approve" | "deny"; optionId?: string }
   | {
       ok: false
-      error: "not_found" | "session_gone" | "no_matching_option" | "unsupported"
+      error: "not_found" | "session_gone" | "no_matching_option" | "unsupported" | "invalid_answers"
       message: string
     }
 
@@ -7464,7 +7491,7 @@ export function createSessionsRegistry(opts?: {
       ...(evt.rawInput !== undefined ? { rawInput: evt.rawInput } : {}),
       ...(evt._meta !== undefined ? { _meta: evt._meta } : {}),
       ...(evt.request !== undefined ? { request: evt.request } : {}),
-      ...(evt.question !== undefined ? { question: evt.question } : {}),
+      ...(asAgentPromptQuestion(evt.question) ? { question: asAgentPromptQuestion(evt.question) } : {}),
       ...(evt.planApproval !== undefined ? { planApproval: evt.planApproval } : {}),
     }
     pendingPermissions.set(id, pending)
@@ -7527,6 +7554,84 @@ export function createSessionsRegistry(opts?: {
   }
 
   /**
+   * Submit a parked multi-field question (`pending.question.fields`) with
+   * `answers`: validate them against the fields, resolve the held driver RPC
+   * with `{ answers }`, clear the session's awaiting state, and emit
+   * `session:permission-resolved` (approve) plus
+   * `session:awaiting-question-answered` carrying the answers.
+   */
+  const resolvePendingQuestion = async (
+    pending: PendingPermission,
+    answers: AgentPromptAnswers,
+  ): Promise<PermissionRespondResult> => {
+    const { id } = pending
+    const fields = pending.question?.fields
+    if (!fields?.length || daemonGatePermissions.has(id)) {
+      return {
+        ok: false,
+        error: "unsupported",
+        message: `permission "${id}" is not a multi-field question; answer it with decision/optionId`,
+      }
+    }
+    const invalid = validateAgentPromptAnswers(fields, answers)
+    if (invalid) return { ok: false, error: "invalid_answers", message: invalid }
+    const rt = sessions.get(pending.sessionId)
+    if (!rt || !rt.agentSession) {
+      pendingPermissions.delete(id)
+      if (rt) refreshAwaitingPermission(rt)
+      return {
+        ok: false,
+        error: "session_gone",
+        message: `session "${pending.sessionId}" for permission "${id}" is no longer alive`,
+      }
+    }
+    const respond = rt.agentSession.respondPermission
+    if (!respond) {
+      return {
+        ok: false,
+        error: "unsupported",
+        message: `session "${pending.sessionId}" driver does not support held permissions`,
+      }
+    }
+    pendingPermissions.delete(id)
+    const question: SessionAwaitingQuestion =
+      rt.desc.awaitingQuestion?.requestId === id
+        ? rt.desc.awaitingQuestion
+        : { text: pending.question!.prompt, source: "structured", kind: "harness", requestId: id, fields }
+    delete rt.desc.awaitingInput
+    rt.desc.awaitingQuestion = undefined
+    refreshAwaitingPermission(rt)
+    await respond(id, { answers })
+    const ts = new Date().toISOString()
+    if (sessionEvents) {
+      sessionEvents.emit({
+        type: "session:permission-resolved",
+        sessionId: pending.sessionId,
+        permissionId: id,
+        decision: "approve",
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+      sessionEvents.emit({
+        type: "session:awaiting-question-answered",
+        sessionId: pending.sessionId,
+        answer: summarizeAgentPromptAnswers(fields, answers),
+        answers,
+        question,
+        ...(rt.desc.label ? { label: rt.desc.label } : {}),
+        ts,
+      })
+    }
+    transcriptWriter.recordEvent(pending.sessionId, {
+      kind: "permission-resolved",
+      toolCallId: id,
+      decision: "approve",
+    })
+    schedulePersist()
+    return { ok: true, permission: pending, decision: "approve" }
+  }
+
+  /**
    * Resolve a parked permission by id — maps the decision (or explicit
    * optionId) to one of the offered options, resolves the held driver RPC,
    * clears the session's awaiting-permission state, and emits
@@ -7548,6 +7653,7 @@ export function createSessionsRegistry(opts?: {
         message: `no pending permission "${id}" (unknown or already resolved)`,
       }
     }
+    if (input.answers !== undefined) return resolvePendingQuestion(pending, input.answers)
     const gate = daemonGatePermissions.get(id)
     if (gate) {
       const selected = selectPermissionOptionId(pending.options, input)
@@ -8568,6 +8674,26 @@ export function createSessionsRegistry(opts?: {
       }
       case "agent-prompt": {
         rt.desc.awaitingInput = true
+        const fieldsQuestion = evt.request === "question" ? asAgentPromptQuestion(evt.question) : undefined
+        if (fieldsQuestion?.fields?.length && evt.toolCallId) {
+          // A multi-field harness question (an ACP form elicitation). Always
+          // parked for a human: the hook rule table decides tool calls, and
+          // no rule can answer a question. `options` keeps the first single
+          // field's labels for clients that only know `options`.
+          const firstSingle = fieldsQuestion.fields.find(f => f.input === "single")
+          const labels = firstSingle?.choices?.map(c => c.label) ?? []
+          rt.desc.awaitingQuestion = {
+            text: fieldsQuestion.prompt,
+            ...(labels.length > 0 ? { options: labels } : {}),
+            source: "structured",
+            kind: "harness",
+            requestId: evt.toolCallId,
+            fields: fieldsQuestion.fields,
+          }
+          registerPendingPermission(rt, evt)
+          appendLine(rt, `\x1b[33m[question] ${fieldsQuestion.prompt}\x1b[0m`, "stdout")
+          break
+        }
         const options = normalizeAgentPromptOptions(evt.options)
         if (options) {
           rt.desc.awaitingQuestion = {

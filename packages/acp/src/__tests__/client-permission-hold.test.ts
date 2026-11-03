@@ -95,6 +95,29 @@ describe("createAcpClient — permission-hold mode", () => {
     expect(client.respondPermission(evt.toolCallId, { optionId: "a" })).toBe(false)
   })
 
+  it("rejects `answers` for a plain permission and keeps it parked", async () => {
+    const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
+    const session = await client.newSession({ cwd: "/tmp" })
+    const iter = session
+      .prompt({ messages: [{ type: "text", text: "go" }] })
+      [Symbol.asyncIterator]()
+    const handlers = capturedHandlersFactory!()
+    let resolved: unknown
+    const rpc = handlers.requestPermission(PERM_PARAMS).then(r => {
+      resolved = r
+    })
+    const { value } = await iter.next()
+    const evt = value as Extract<StreamEvent, { kind: "agent-prompt" }>
+
+    expect(client.respondPermission(evt.toolCallId, { answers: { q: { text: "x" } } })).toBe(false)
+    await Promise.resolve()
+    expect(resolved).toBeUndefined()
+    // Still answerable the normal way.
+    expect(client.respondPermission(evt.toolCallId, { optionId: "r" })).toBe(true)
+    await rpc
+    expect(resolved).toEqual({ outcome: { outcome: "selected", optionId: "r" } })
+  })
+
   it("carries the tool call's rawInput through to the agent-prompt event", async () => {
     const client = await createAcpClient({ ...fakeStreams(), permissionHold: true })
     const session = await client.newSession({ cwd: "/tmp" })

@@ -62,7 +62,13 @@
           }
         },
         "allowFreeText": { "type": "boolean", "description": "A typed answer is accepted: the caller selects freeTextOptionId and puts the text in the resolution's feedback." },
-        "freeTextOptionId": { "type": "string", "minLength": 1, "description": "REQUIRED when allowFreeText is true. MUST appear in the event's options." }
+        "freeTextOptionId": { "type": "string", "minLength": 1, "description": "REQUIRED when allowFreeText is true. MUST appear in the event's options." },
+        "fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/questionField" },
+          "description": "Multi-field question (2026-11-03). When present it is the source of truth: the caller answers with respondPermission(toolCallId, { answers }) keyed by field id, and the legacy members (prompt as the overall message, choices, allowFreeText, freeTextOptionId) are a projection for consumers that predate it."
+        }
       },
       "allOf": [
         {
@@ -70,10 +76,45 @@
           "then": { "required": ["freeTextOptionId"] }
         },
         {
-          "if": { "properties": { "allowFreeText": { "const": false } }, "required": ["allowFreeText"] },
+          "if": {
+            "properties": { "allowFreeText": { "const": false } },
+            "required": ["allowFreeText"],
+            "not": { "required": ["fields"] }
+          },
           "then": { "properties": { "choices": { "minItems": 1 } } }
         }
       ]
+    },
+    "questionField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "input", "prompt"],
+      "description": "One question of a multi-field prompt. For an ACP form elicitation, one schema property.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "Stable key, unique in the prompt. For an ACP elicitation: the schema property key." },
+        "input": { "enum": ["single", "multi", "text", "boolean", "number"] },
+        "header": { "type": "string", "description": "Short chip label." },
+        "prompt": { "type": "string", "minLength": 1, "description": "The question text for this field." },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["value", "label"],
+            "properties": {
+              "value": { "type": "string", "description": "What goes back to the harness." },
+              "label": { "type": "string", "minLength": 1 },
+              "description": { "type": "string" },
+              "preview": { "type": "string" }
+            }
+          }
+        },
+        "allowFreeText": { "type": "boolean", "description": "single / multi: the user may type an answer instead of, or in addition to, a choice." },
+        "required": { "type": "boolean" },
+        "recommended": { "type": "string", "description": "Daemon recommendation, a choices[].value. Never guessed by a client." }
+      },
+      "if": { "properties": { "input": { "enum": ["single", "multi"] } } },
+      "then": { "required": ["choices"], "properties": { "choices": { "minItems": 1 } } }
     },
     "planApprovalRequest": {
       "type": "object",
@@ -92,7 +133,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["kind", "sessionId", "toolCallId", "options"],
-      "description": "The agent asks the caller to choose among options. Answered with respondPermission(toolCallId, { optionId, feedback? } | { cancelled: true }).",
+      "description": "The agent asks the caller to choose among options. Answered with respondPermission(toolCallId, { optionId, feedback? } | { answers } | { cancelled: true }); answers only for a question with fields.",
       "properties": {
         "kind": { "const": "agent-prompt" },
         "sessionId": { "type": "string", "minLength": 1 },

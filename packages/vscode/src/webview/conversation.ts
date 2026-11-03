@@ -29,6 +29,7 @@ import {
   modeChangedLabel,
   parseAgentPrompt,
   type PromptChoice,
+  type QuestionField,
   type TypedAgentPrompt,
 } from "./agentPrompt.logic.js"
 
@@ -646,7 +647,7 @@ export interface PresentedQuestionSegment {
   /** AIP-45 typed request; absent for a plain tool permission. */
   request?: "question" | "plan-approval"
   /** `request: "question"`: the ask, its choices and its free-text option. */
-  question?: { prompt: string; choices: PromptChoice[]; freeTextOptionId?: string }
+  question?: { prompt: string; choices: PromptChoice[]; freeTextOptionId?: string; fields?: QuestionField[] }
   /** `request: "plan-approval"`: the plan (markdown rendered to safe HTML),
    *  the mode approval switches to, and the options Approve / Reject answer. */
   plan?: {
@@ -936,6 +937,7 @@ function presentPrompt(
         prompt: prompt.prompt,
         choices: prompt.choices,
         ...(prompt.freeTextOptionId ? { freeTextOptionId: prompt.freeTextOptionId } : {}),
+        ...(prompt.fields ? { fields: prompt.fields } : {}),
       },
     }
   }
