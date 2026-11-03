@@ -515,3 +515,169 @@ describe("/mcp gateway registration", () => {
     })
   })
 })
+
+describe("POST /sessions/:id/touch and header caller identity", () => {
+  const conversations: ConversationStore = {
+    async open() {},
+    async appendTurn() {},
+    async read() {
+      return { meta: {} as never, turns: [] }
+    },
+    async list() {
+      return []
+    },
+    pathFor: (id: string) => id,
+  }
+  const heartbeat: HeartbeatRunner = { start() {}, stop() {}, async fireNow() {} }
+
+  function freePort(): Promise<number> {
+    return new Promise((resolve, reject) => {
+      const srv = createServer()
+      srv.once("error", reject)
+      srv.listen(0, "127.0.0.1", () => {
+        const port = (srv.address() as AddressInfo).port
+        srv.close(() => resolve(port))
+      })
+    })
+  }
+
+  async function withGateway(
+    fn: (base: string, registry: SessionsRegistry, callers: Array<string | undefined>) => Promise<void>,
+    makeFactory?: (callers: Array<string | undefined>) => Parameters<typeof startHttpServer>[0]["mcpServerFactory"],
+  ): Promise<void> {
+    const tmp = mkdtempSync(join(tmpdir(), "external-touch-http-"))
+    const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const callers: Array<string | undefined> = []
+    const factory =
+      makeFactory?.(callers) ??
+      (async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server)
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: factory,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter: (async () => ({ startSession: vi.fn(), commandPreview: "x" })) as unknown as AgentAdapterResolver,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      await fn(`http://127.0.0.1:${port}`, registry, callers)
+    } finally {
+      await http.stop()
+      registry.shutdown()
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  }
+
+  const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    })
+
+  it("404s the cc: inbox before a touch, then creates the row with name/cwd/hostSessionId", async () => {
+    await withGateway(async (base, registry) => {
+      expect((await fetch(`${base}/sessions/cc%3Achat-1/inbox`)).status).toBe(404)
+
+      const res = await post(`${base}/sessions/cc%3Achat-1/touch`, {
+        host: "claude-desktop",
+        name: "Chat one",
+        cwd: "/work/repo",
+        hostSessionId: "host-1",
+      })
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { session: Record<string, unknown> }
+      expect(body.session).toMatchObject({
+        id: "cc:chat-1",
+        kind: "external",
+        status: "running",
+        externalHost: "claude-desktop",
+        externalHostSessionId: "host-1",
+        name: "Chat one",
+        cwd: "/work/repo",
+      })
+      expect(registry.listInbox("cc:chat-1")).toEqual([])
+      expect((await fetch(`${base}/sessions/cc%3Achat-1/inbox`)).status).toBe(200)
+    })
+  })
+
+  it("renames an external row on a second touch", async () => {
+    await withGateway(async (base, registry) => {
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", name: "First" })
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", name: "Second" })
+      expect(registry.get("cc:chat-1")?.name).toBe("Second")
+    })
+  })
+
+  it("refuses a touch that did not arrive on a trusted (loopback/bearer) request", async () => {
+    await withGateway(async (base, registry) => {
+      const res = await post(
+        `${base}/sessions/cc%3Achat-1/touch`,
+        { host: "claude-desktop" },
+        { "x-forwarded-for": "203.0.113.7" },
+      )
+      expect(res.status).toBe(403)
+      expect(registry.get("cc:chat-1")).toBeUndefined()
+    })
+  })
+
+  it("refuses a touch without a host and never adopts a daemon-owned row", async () => {
+    await withGateway(async (base, registry) => {
+      expect((await post(`${base}/sessions/cc%3Achat-1/touch`, {})).status).toBe(400)
+
+      const spawned = registry.spawnAgent({
+        workspaceSlug: "w",
+        cwd: "/tmp",
+        agentSession: {
+          sessionId: "acp-x",
+          pid: 1,
+          async *send() {
+            yield { kind: "turn-end", reason: "completed" }
+          },
+          async cancel() {},
+          async close() {},
+        },
+        adapterSlug: "mock",
+      })
+      expect((await post(`${base}/sessions/${spawned.id}/touch`, { host: "claude-desktop" })).status).toBe(409)
+      expect(registry.get(spawned.id)?.kind).toBe("agent-cli")
+    })
+  })
+
+  it("registers cc:<id> from the identity header on loopback and resolves it as the caller", async () => {
+    await withGateway(
+      async (base, registry, callers) => {
+        const init = await fetch(`${base}/mcp?host=claude-desktop`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            "x-agentproto-caller-session-id": "cc:header-1",
+          },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+          }),
+        })
+        expect(init.status).toBe(200)
+        expect(registry.get("cc:header-1")).toMatchObject({
+          kind: "external",
+          externalHost: "claude-desktop",
+        })
+        expect(callers.length).toBeGreaterThan(0)
+        expect(callers.every(c => c === "cc:header-1")).toBe(true)
+      },
+      callers =>
+        async (_deny, callerSessionId) => {
+          callers.push(callerSessionId)
+          return (await createMcpServer({ specs: [], name: "t", version: "0" })).server
+        },
+    )
+  })
+})

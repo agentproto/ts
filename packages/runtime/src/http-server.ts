@@ -3591,6 +3591,7 @@ export async function startHttpServer(
             opts.cronScheduler,
             resolveCallerSessionIdObserved,
             credentialSessionOf,
+            externalClaimTrusted,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
           )
           if (handled) return
@@ -7503,6 +7504,9 @@ async function handleSessions(
   // spawn proof gate's credential leg (AIP-46 §Session principals). Never
   // read from the request body.
   resolveCredentialSessionIdFor?: (req: IncomingMessage) => string | undefined,
+  // The trust test for an external-session touch claim (loopback socket or
+  // daemon bearer). Absent ⇒ `POST /sessions/:id/touch` refuses every claim.
+  externalClaimTrustedFor?: (req: IncomingMessage) => boolean,
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
@@ -8638,11 +8642,67 @@ code { color: #9ad; }
     }
     return true
   }
+  // POST /sessions/:id/touch — register or refresh an `external` session row
+  // (a Claude Desktop / CLI chat the daemon did not spawn) before it reads
+  // its inbox. Body `{ host, name?, hostSessionId?, cwd? }`. The claim is
+  // only honoured on a trusted request (loopback or daemon bearer), the same
+  // rule `/mcp` uses; a daemon-owned row is never adopted.
+  const touchMatch = path.match(/^\/sessions\/([^/]+)\/touch$/)
+  if (touchMatch && req.method === "POST") {
+    const rawId = touchMatch[1]
+    if (!rawId) return false
+    let id: string
+    try {
+      id = decodeURIComponent(rawId)
+    } catch {
+      json(400, { error: "invalid_session_id", id: rawId })
+      return true
+    }
+    if (!/^[A-Za-z0-9._:-]{1,128}$/.test(id)) {
+      json(400, { error: "invalid_session_id", id })
+      return true
+    }
+    if (!externalClaimTrustedFor?.(req)) {
+      json(403, { error: "forbidden_external_claim" })
+      return true
+    }
+    const b = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>
+    const host = typeof b.host === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(b.host) ? b.host : undefined
+    if (!host) {
+      json(400, { error: "host_required", message: "host must match [A-Za-z0-9._-]{1,64}" })
+      return true
+    }
+    const existing = registry.get(id)
+    if (existing && existing.kind !== "external") {
+      json(409, { error: "not_external", id, kind: existing.kind })
+      return true
+    }
+    const desc = registry.touchExternal({
+      id,
+      host,
+      ...(typeof b.name === "string" ? { name: b.name } : {}),
+      ...(typeof b.cwd === "string" ? { cwd: b.cwd } : {}),
+      ...(typeof b.hostSessionId === "string" ? { hostSessionId: b.hostSessionId } : {}),
+    })
+    if (!desc) {
+      json(409, { error: "not_external", id })
+      return true
+    }
+    json(200, { ok: true, session: desc })
+    return true
+  }
   // GET /sessions/:id/inbox — un-consumed messages, oldest first.
   const inboxMatch = path.match(/^\/sessions\/([^/]+)\/inbox$/)
   if (inboxMatch && req.method === "GET") {
-    const id = inboxMatch[1]
-    if (!id) return false
+    const rawId = inboxMatch[1]
+    if (!rawId) return false
+    let id: string
+    try {
+      id = decodeURIComponent(rawId)
+    } catch {
+      json(400, { error: "invalid_session_id", id: rawId })
+      return true
+    }
     const inbox = registry.listInbox(id)
     if (inbox === null) {
       json(404, { error: "no_such_session", id })
@@ -8656,8 +8716,15 @@ code { color: #9ad; }
   // POST /sessions/:id/inbox/ack — body `{ ids: string[] | "all" }`.
   const inboxAckMatch = path.match(/^\/sessions\/([^/]+)\/inbox\/ack$/)
   if (inboxAckMatch && req.method === "POST") {
-    const id = inboxAckMatch[1]
-    if (!id) return false
+    const rawId = inboxAckMatch[1]
+    if (!rawId) return false
+    let id: string
+    try {
+      id = decodeURIComponent(rawId)
+    } catch {
+      json(400, { error: "invalid_session_id", id: rawId })
+      return true
+    }
     if (!registry.get(id)) {
       json(404, { error: "no_such_session", id })
       return true

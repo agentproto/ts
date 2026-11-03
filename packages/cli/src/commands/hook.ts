@@ -16,9 +16,11 @@
  * exits 0 with nothing on stdout, bounded to 20 s: a missed checkpoint must
  * never break the compaction.
  */
-import { statSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { parseArgs } from "node:util"
-import { runHookInstall } from "./hook-install.js"
+import { DESKTOP_HOST, runHookInstall } from "./hook-install.js"
 import { runPrStamp } from "./hook-pr-stamp.js"
 import {
   discoverDaemon,
@@ -43,8 +45,11 @@ prints nothing and exits 0.
 Session id, first valid wins: --session; else $AGENTPROTO_SESSION_ID when it
 starts with \`sess_\` (a daemon-spawned session); else \`cc:\` + the payload's
 \`session_id\`; else $AGENTPROTO_SESSION_ID when the payload has no session id.
-$CLAUDE_CODE_SESSION_ID is never read. Event name: --event, else the payload's
-\`hook_event_name\`, else UserPromptSubmit.
+$CLAUDE_CODE_SESSION_ID is never read. For a \`cc:\` id it first registers the
+per-chat daemon row (\`POST /sessions/<id>/touch\`, host \`claude-desktop\`,
+plus name/hostSessionId from the Claude session registry and cwd from the
+payload); a failed touch never fails the hook. Event name: --event, else the
+payload's \`hook_event_name\`, else UserPromptSubmit.
 
 Example settings.json entry:
   { "hooks": { "UserPromptSubmit": [ { "hooks": [ { "type": "command", "command": "agentproto hook inbox" } ] } ] } }
@@ -63,11 +68,20 @@ daemon did not spawn. After a successful \`gh pr create\` it appends the
 created PR's body. It skips daemon-spawned sessions (AGENTPROTO_SESSION_ID
 starting with sess_), never stamps twice, and always exits 0.
 
-\`install --host claude-desktop\` merges AGENTPROTO_SESSION_ID, the two
-\`hook inbox\` hooks (UserPromptSubmit, PostToolUse) and the \`hook pr-stamp\`
-hook (PostToolUse, matcher Bash) into a Claude Desktop settings file (default ~/.claude/settings.json, or $CLAUDE_CONFIG_DIR). It is
+\`install --host claude-desktop\` merges the two \`hook inbox\` hooks
+(UserPromptSubmit, PostToolUse) and the \`hook pr-stamp\` hook (PostToolUse,
+matcher Bash) into a Claude Desktop settings file (default
+~/.claude/settings.json, or $CLAUDE_CONFIG_DIR). It no longer writes
+\`env.AGENTPROTO_SESSION_ID\`: each chat registers as \`cc:<session_id>\` from
+the hook payload. An existing value equal to the old default
+(\`claude-desktop\`) is removed; any other value is left alone. It is
 idempotent, leaves other keys alone, and prints the MCP URL to register. With
 --dry-run it prints the merged settings JSON and writes nothing.
+
+Migration for machines already installed: re-run
+\`agentproto hook install --host claude-desktop\`, or remove
+\`env.AGENTPROTO_SESSION_ID\` from ~/.claude/settings.json, then restart open
+chats.
 `
 
 const DEFAULT_MAX = 20
@@ -122,6 +136,12 @@ export interface HookDeps {
   /** The environment the command reads; defaults to `process.env`. */
   env?: Record<string, string | undefined>
   timeoutMs?: number
+  /** Overridable fs seam for the Claude session registry lookup (tests keep
+   *  it hermetic). Defaults to the real directory listing / file reads. */
+  readDir?: (path: string) => string[]
+  readFile?: (path: string) => string
+  /** Overrides the `sessions` directory under `$CLAUDE_CONFIG_DIR`/`~/.claude`. */
+  claudeSessionsDir?: string
 }
 
 const PRE_COMPACT_TIMEOUT_MS = 20_000
@@ -297,6 +317,48 @@ export function resolveInboxSessionId(
   return candidates.find(candidate => candidate && SESSION_ID_RE.test(candidate))
 }
 
+export interface ClaudeSessionFields {
+  name?: string
+  hostSessionId?: string
+}
+
+/** Read `name` and `hostSessionId` for `sessionId` from the Claude session
+ *  registry (`<dir>/*.json`), matching a file whose `sessionId` field equals
+ *  `sessionId`. Only `*.json` entries are ever read: a `*.key` file in the
+ *  same directory is never opened. A missing directory, an unreadable file,
+ *  or no match all yield no fields. */
+export function claudeSessionFields(
+  sessionId: string,
+  dir: string,
+  readDir: (path: string) => string[],
+  readFile: (path: string) => string,
+): ClaudeSessionFields {
+  let entries: string[]
+  try {
+    entries = readDir(dir)
+  } catch {
+    return {}
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue
+    try {
+      const parsed: unknown = JSON.parse(readFile(join(dir, entry)))
+      if (!parsed || typeof parsed !== "object") continue
+      const record = parsed as Record<string, unknown>
+      if (record.sessionId !== sessionId) continue
+      return {
+        ...(typeof record.name === "string" && record.name ? { name: record.name } : {}),
+        ...(typeof record.hostSessionId === "string" && record.hostSessionId
+          ? { hostSessionId: record.hostSessionId }
+          : {}),
+      }
+    } catch {
+      /* unreadable / malformed entry: try the next one */
+    }
+  }
+  return {}
+}
+
 async function runInbox(args: readonly string[], deps: HookDeps): Promise<number> {
   const { values } = parseArgs({
     args: [...args],
@@ -307,14 +369,15 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
     },
     allowPositionals: false,
   })
-  let payload: { session_id?: unknown; hook_event_name?: unknown } = {}
+  const env = deps.env ?? process.env
+  let payload: { session_id?: unknown; hook_event_name?: unknown; cwd?: unknown } = {}
   try {
     const raw = await (deps.readStdin ?? readStdin)()
     if (raw.trim()) payload = JSON.parse(raw) as typeof payload
   } catch {
     /* no / malformed payload — fall back to env + defaults */
   }
-  const sessionId = resolveInboxSessionId(values, deps.env ?? process.env, payload)
+  const sessionId = resolveInboxSessionId(values, env, payload)
   if (!sessionId) return 0
 
   const rawEvent = values.event ?? (typeof payload.hook_event_name === "string" ? payload.hook_event_name : "UserPromptSubmit")
@@ -325,6 +388,34 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
   const report = await discoverDaemon()
   if (!report.found) return 0
   const endpoint = report.found
+
+  // A Claude Desktop chat's daemon row does not exist until someone
+  // registers it. Touch it before reading the inbox so the GET can find it;
+  // a failed touch must not break the hook (still exit 0, still try the GET).
+  if (sessionId.startsWith("cc:")) {
+    const payloadSessionId = typeof payload.session_id === "string" ? payload.session_id : undefined
+    const fields = payloadSessionId
+      ? claudeSessionFields(
+          payloadSessionId,
+          deps.claudeSessionsDir ?? join(env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "sessions"),
+          deps.readDir ?? (p => readdirSync(p)),
+          deps.readFile ?? (p => readFileSync(p, "utf8")),
+        )
+      : {}
+    try {
+      await httpPostJson(
+        `${endpoint.url}/sessions/${encodeURIComponent(sessionId)}/touch`,
+        {
+          host: DESKTOP_HOST,
+          ...(typeof payload.cwd === "string" ? { cwd: payload.cwd } : {}),
+          ...fields,
+        },
+        endpoint.token,
+      )
+    } catch {
+      /* no daemon / refused claim / old daemon: fall through to the GET */
+    }
+  }
 
   const listed = await httpGetJson<{ inbox?: InboxItem[] }>(
     `${endpoint.url}/sessions/${encodeURIComponent(sessionId)}/inbox`,

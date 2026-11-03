@@ -74,11 +74,14 @@ finishes. Three things have to line up:
    ```
 2. **The inbox id comes from the payload.** Each Claude Desktop chat carries
    its own `session_id` in the hook payload, and `hook inbox` reads
-   `cc:<session_id>` for it. An `AGENTPROTO_SESSION_ID` starting with `sess_`
-   (a daemon-spawned session) still takes precedence; any other
-   `AGENTPROTO_SESSION_ID` is a legacy fallback used only when the payload
-   has no usable `session_id`. To pin a fixed custom id, pass
-   `--session <id>` in the hook command.
+   `cc:<session_id>` for it. On that path it first registers the row with
+   `POST /sessions/<id>/touch` (host `claude-desktop`, plus `name` and
+   `hostSessionId` from `sessions/*.json` in the Claude config directory and
+   `cwd` from the payload); a failed touch never fails the hook. An
+   `AGENTPROTO_SESSION_ID` starting with `sess_` (a daemon-spawned session)
+   still takes precedence; any other `AGENTPROTO_SESSION_ID` is a legacy
+   fallback used only when the payload has no usable `session_id`. To pin a
+   fixed custom id, pass `--session <id>` in the hook command.
 3. **Two hooks run `agentproto hook inbox`**, on `UserPromptSubmit` and
    `PostToolUse`. `agentproto` must be on the PATH of the app.
 
@@ -87,7 +90,6 @@ The settings file the app reads (`~/.claude/settings.json`, or
 
 ```json
 {
-  "env": { "AGENTPROTO_SESSION_ID": "<id>" },
   "hooks": {
     "UserPromptSubmit": [
       { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
@@ -101,34 +103,41 @@ The settings file the app reads (`~/.claude/settings.json`, or
 
 One settings file no longer means one shared inbox: `hook inbox` resolves each
 Desktop chat's payload to its own `cc:<session_id>` inbox instead of the
-global id. **Interim caveat:** nothing registers or deposits into a `cc:` inbox
-yet — that arrives with the lazy-registration PR — so a `cc:` read currently
-404s and the hook silently prints nothing. To deliver today, pin the hook to an
-already-registered session id with `--session <id>` (e.g. the `callerSessionId`
-row from step 1, `claude-desktop` by default). The `AGENTPROTO_SESSION_ID` in
-that file is only a legacy fallback for payloads without a session id.
+global id. The hook registers that row on first use, so sending to
+`cc:<session_id>` works without an MCP connection first. Send to a chat with
+`agentproto send cc:<session_id> ...` (or the `message_send` tool).
 
-### Migration
+### Migration for machines already installed
 
-Daemon-spawned sessions (`AGENTPROTO_SESSION_ID=sess_...`) are unchanged. A
-Desktop chat that still has the old global `AGENTPROTO_SESSION_ID` is resolved
-to `cc:<session_id>` whenever the payload carries one, so until the
-lazy-registration PR lands it reads nothing; keep delivery by pinning
-`--session <id>` to the already-registered id. Items already queued on
-the old shared id stay there; read them with `inbox_list` on that id. A setup
-that wants a fixed custom id can pin it with
-`agentproto hook inbox --session <id>` in the hook command.
+Installing no longer writes `env.AGENTPROTO_SESSION_ID`; each chat uses
+`cc:<session_id>` from the hook payload. An existing value equal to the old
+default (`claude-desktop`) is removed on the next install, and any other
+value the user set is left untouched. To migrate:
+
+- re-run `agentproto hook install --host claude-desktop`, or remove
+  `env.AGENTPROTO_SESSION_ID` from `~/.claude/settings.json`;
+- restart open chats so they pick up the new settings.
+
+Daemon-spawned sessions (`AGENTPROTO_SESSION_ID=sess_...`) are unchanged.
+Items already queued on the old shared id stay there; read them with
+`inbox_list` on that id. A setup that wants a fixed custom id can pin it with
+`agentproto hook inbox --session <id>` in the hook command. The MCP URL still
+carries a single `callerSessionId`; per-chat MCP identity is pending
+(headersHelper unverified).
 
 ### `hook install --host claude-desktop`
 
 Writes the block above for you. It merges into the existing file (other keys,
 other hooks and other env vars are kept), is idempotent (a second run changes
-nothing), and refuses to touch a file it cannot parse.
+nothing), and refuses to touch a file it cannot parse. It does not write
+`env.AGENTPROTO_SESSION_ID`; a legacy value equal to `claude-desktop` is
+removed (and an emptied `env` object is dropped), while any other value is
+left untouched.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--host <name>` | required | Only `claude-desktop` is supported. |
-| `--session <id>` | the id already in the file, else `claude-desktop` | Value of `AGENTPROTO_SESSION_ID` and of `callerSessionId` in the printed MCP URL. |
+| `--session <id>` | `claude-desktop` when no legacy value is present | Value of `callerSessionId` in the printed MCP URL. No longer written to `env`. |
 | `--settings <path>` | `~/.claude/settings.json` (`$CLAUDE_CONFIG_DIR` honoured) | Settings file to merge into. |
 | `--port <n>` | `18790` | Daemon port used in the printed MCP URL. |
 | `--dry-run` | off | Print the merged settings JSON on stdout (and the target path and MCP URL on stderr); write nothing. |
