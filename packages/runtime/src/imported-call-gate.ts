@@ -34,10 +34,11 @@
  * human hold. Deny-only: no grants, no evaluation.
  */
 
-import { callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
+import { CALLER_SESSION_HEADER, callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import type { ProxyCallGuard } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
+import type { createSubsessionMinter } from "./subsession-minter.js"
 import { toolDenyRefusal } from "./tool-deny-gate.js"
 
 export interface ImportedCallGuardOptions {
@@ -48,6 +49,9 @@ export interface ImportedCallGuardOptions {
   timeoutMs?: number
   /** Where trees are read from. Default: the daemon's shared instance. */
   scopes?: CallerScopes
+  /** AIP-59 section 8: an import that speaks it gets a minted sub-session
+   *  token instead of the spoofable caller header. Unset = today's behaviour. */
+  subsessions?: ReturnType<typeof createSubsessionMinter>
 }
 
 export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCallGuard {
@@ -55,11 +59,28 @@ export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCa
     const callerSessionId = context?.callerSessionId
     const callerScope = (opts.scopes ?? callerScopes).resolve(callerSessionId, opts.registry)
     if (callerScope.kind === "refused") return { allow: false, reason: callerScope.reason }
-    const headers = callerHeaders(callerScope)
-    const proceed = { allow: true as const, ...(headers ? { headers } : {}) }
     const caller = callerSessionId ? opts.registry.get(callerSessionId) : undefined
     const refusal = toolDenyRefusal(caller?.toolDenyGrants, `${alias}/${toolName}`, callerSessionId)
     if (refusal) return { allow: false, reason: `${refusal.reason}; nothing was sent.` }
+
+    let headers = callerHeaders(callerScope)
+    if (opts.subsessions && callerScope.kind === "session") {
+      try {
+        if (await opts.subsessions.applies(alias)) {
+          const rest = headers ? { ...headers } : {}
+          delete rest[CALLER_SESSION_HEADER]
+          const token = await opts.subsessions.tokenFor(alias, callerScope.sessionId)
+          headers = { ...rest, "agentproto-subsession": token }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          allow: false,
+          reason: `${alias}: could not mint a sub-session token (${message}); nothing was sent.`,
+        }
+      }
+    }
+    const proceed = { allow: true as const, ...(headers ? { headers } : {}) }
     const rules = loadHooksConfig(caller?.cwd ?? opts.workspace)
     if (rules.length === 0) return proceed
 

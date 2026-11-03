@@ -279,6 +279,10 @@ import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-sessio
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createImportedCallGuard } from "./imported-call-gate.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { loadImportedMcps } from "./mcp-imports.js"
+import { resolveImportConnection } from "./mcp-import-resolve.js"
+import { createSubsessionMinter } from "./subsession-minter.js"
 import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
@@ -3714,9 +3718,43 @@ export async function createGateway(
   // captures it so each /mcp request reuses the same upstream
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
+  // AIP-59 section 8: imports that opt in with `subsession: "aip-59"` get a
+  // per-session token minted from the device credential they already carry,
+  // instead of the spoofable `x-agentproto-caller-session` header. Built once
+  // so the cache/revocation state is shared across every gateway caller.
+  const subsessions = createSubsessionMinter({
+    resolve: async alias => {
+      const config = await loadImportedMcps()
+      const entry = config.imports.find(e => e.alias === alias)
+      if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
+      const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
+      if (connection.type !== "http" || typeof connection.url !== "string") return undefined
+      let baseUrl: string
+      try {
+        baseUrl = new URL(connection.url).origin
+      } catch {
+        return undefined
+      }
+      return { baseUrl, headers: { ...(connection.headers ?? {}) } }
+    },
+    // AIP-63 M7: store the recordings LINK on the session, never a copy.
+    onMinted: (sessionId, target) => {
+      sessions.setBrowserRecordings(sessionId, {
+        url: `${target.baseUrl}/recordings?callerSessionId=${encodeURIComponent(sessionId)}`,
+      })
+    },
+  })
+  // Revoke this session's tokens when it ends; a revocation failure never
+  // throws into the exit path.
+  sessionEvents.on("session:exited", ev => {
+    void subsessions.revokeSession(ev.sessionId).catch(err => {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[subsessions] revoke for ${ev.sessionId} failed: ${message}`)
+    })
+  })
   // Per-call human approval for imported tools named by a `hold` rule in
   // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
-  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace }))
+  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
 
   // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
   // session's chat. Its own config-keyed client pool: a harness alias is
