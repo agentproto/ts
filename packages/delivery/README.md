@@ -13,3 +13,9 @@ mentions GitHub, sessions or cron).
 - `createClassifierRegistry(classifiers)`: built from a fixed array of classifiers, never
   module-global. First match wins, and a classifier that declines falls through.
 - `RecentKeys`: the bounded repeat-window map, moved here from `@agentproto/sentinel`.
+
+- `LedgerLine` types (`ledger.ts`): the append-only delivery ledger's pure
+  schema. `ledger-writer.ts` lives on the separate
+  `@agentproto/delivery/ledger-writer` subpath because it is the one module
+  here that touches `node:fs`; importing the root entry stays I/O free. See
+  `LEDGER.md` for the on-disk format and field meanings.

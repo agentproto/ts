@@ -25,14 +25,10 @@
  * first-seen time, so the window is fixed rather than sliding.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
-import { dirname } from "node:path"
-
 import { DEFAULT_RECENT_KEYS_CAP, REPEAT_WINDOW_MS, RecentKeys } from "@agentproto/delivery"
 
 import type { TriageDecision } from "./local-types.js"
 import { coalesceKeyFor } from "./sentinel-coalesce.js"
-import type { MessageUrgency } from "./local-types.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a
@@ -117,53 +113,5 @@ export function recordSentinelTriageKey(
   const key = sentinelTriageKeyFor(event)
   if (key !== undefined) {
     input.recent.record(input.target, key, input.now)
-  }
-}
-
-/** The fields the caller supplies for one ledger line. `source` and
- *  `applied` are owned by {@link writeSentinelTriageLedger}. */
-export interface SentinelTriageLedgerRecord {
-  ts: string
-  decision: TriageDecision
-  rule: SentinelTriageRule
-  target: string
-  sentinelId: string
-  eventId: string
-  type: string
-  subject: string
-  urgency: MessageUrgency
-  eventTs?: string
-  key?: string
-}
-
-export interface SentinelTriageLedgerLine extends SentinelTriageLedgerRecord {
-  source: "sentinel"
-  applied: false
-}
-
-/** Append exactly one observation line. Never throws and never records the
- *  event summary or `data`: the ledger carries identifiers and classification
- *  only. */
-export function writeSentinelTriageLedger(path: string, record: SentinelTriageLedgerRecord): void {
-  try {
-    mkdirSync(dirname(path), { recursive: true })
-    const line: SentinelTriageLedgerLine = {
-      ts: record.ts,
-      source: "sentinel",
-      applied: false,
-      decision: record.decision,
-      rule: record.rule,
-      target: record.target,
-      sentinelId: record.sentinelId,
-      eventId: record.eventId,
-      type: record.type,
-      subject: record.subject,
-      urgency: record.urgency,
-      ...(record.eventTs !== undefined ? { eventTs: record.eventTs } : {}),
-      ...(record.key !== undefined ? { key: record.key } : {}),
-    }
-    appendFileSync(path, JSON.stringify(line) + "\n", { mode: 0o600 })
-  } catch {
-    // Observation only: a failed ledger write must never affect delivery.
   }
 }
