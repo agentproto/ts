@@ -1,5 +1,13 @@
 # @agentproto/skill-pack-agentproto
 
+## 0.10.2
+
+### Patch Changes
+
+- e429491: Document the `auto` reviewer sandbox (computer fleet first, capped e2b overflow, plain e2b fallback) in the CI review lanes reference.
+- 68a84bc: Add per-rung agentStartTimeoutMs and box start diagnostics to placement
+- 0380c2b: Agent workflow steps accept `placement` (an ordered sandbox ladder) and `turnRetry` (usage-limit and rate-limit fallback) selectors, and export the `AgentPlacementRef` and `AgentTurnRetryRef` types. The runtime session host forwards both onto the spawn, and a failed sandbox boot now settles its dedupe claim, so a labelled spawn walking a placement ladder moves on to the next rung instead of waiting on its own failed first attempt. The CI review-lane skill doc now describes the placement ladder and the turn-retry fallback.
+
 ## 0.10.1
 
 ### Patch Changes

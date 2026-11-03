@@ -1,5 +1,16 @@
 # @agentproto/pairing-host
 
+## 0.3.0
+
+### Minor Changes
+
+- 42d1366: Bound the daemon's usage-rollup transcript reads and log the heap by owner. `collectSessionSnapshots` (behind `usage_rollup` and `GET /usage/rollup`) read every agent-cli transcript at once, each as one string with every line parsed: one rollup over 480 MB of transcripts took the daemon's heap from about 200 MB to 0.9-1.2 GB. `readUsageSnapshots` now streams the file and parses only lines that mention `usage_snapshot`, the collector reads at most 8 transcripts at a time, and a `profileRef` rollup filters on the descriptor before reading anything (peak 260-275 MB on the same rollup). The daemon also logs a `[heap]` line every 5 minutes (`AGENTPROTO_HEAP_LOG_INTERVAL_MS`, `0` turns it off) with heapUsed, rss, the heap right after the last major GC, live handles by type, and the sizes of its long-lived structures (sessions, policies, workflow runs, the events index cache, hosts, pairing). The same report is served by the operator-only `GET /debug/heap`, and `POST /debug/heap-snapshot` writes a heap snapshot under `~/.agentproto/heap-snapshots/`, refusing with 507 when free memory (capped by a cgroup v2 limit) is below heapUsed plus 256 MB (the write blocks the event loop); once the daemon has a bearer token, that route requires it. `HostRegistry` and `PairingRegistry` gain an optional `memoryStats()`.
+
+### Patch Changes
+
+- Updated dependencies [6effe4d]
+  - @agentproto/acp@0.14.0
+
 ## 0.2.12
 
 ### Patch Changes

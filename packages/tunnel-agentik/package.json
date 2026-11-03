@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/tunnel-agentik",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/tunnel-agentik - Agentik TunnelProvider (tunnels.agentik.net): create/list/delete tunnels over a bearer API key, using the @agentproto/tunnel contract.",
   "keywords": [
     "agentproto",

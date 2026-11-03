@@ -1,5 +1,31 @@
 # @agentproto/sandbox
 
+## 0.16.0
+
+### Minor Changes
+
+- c0dc0c8: Add egress IP health ledger and cooldown-aware slot selection
+
+### Patch Changes
+
+- 9fcc8aa: Regenerate the sandbox frontmatter schema for the AIP-36 v1.4 `network.egressIp` description, documenting the `sandbox_egress_all_cooling` failure mode when every egress slot is cooling. Description-only change; no behavior difference.
+- Updated dependencies [8d3a80e]
+- Updated dependencies [29a0599]
+- Updated dependencies [f12741f]
+- Updated dependencies [440acad]
+- Updated dependencies [0d39c7f]
+- Updated dependencies [7b7e06b]
+- Updated dependencies [35a339d]
+- Updated dependencies [457da84]
+- Updated dependencies [e65057d]
+- Updated dependencies [6c86b8c]
+- Updated dependencies [650fa3a]
+- Updated dependencies [0bc7927]
+- Updated dependencies [9a31444]
+- Updated dependencies [0380c2b]
+  - @agentproto/worktree@0.21.0
+  - @agentproto/workflow-runtime@0.21.0
+
 ## 0.15.0
 
 ### Minor Changes

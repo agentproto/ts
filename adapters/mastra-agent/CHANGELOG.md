@@ -1,5 +1,57 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.7.47
+
+### Patch Changes
+
+- Updated dependencies [b4daa21]
+- Updated dependencies [bb8ae6b]
+- Updated dependencies [ef716d5]
+- Updated dependencies [c7a8fb0]
+- Updated dependencies [a492f59]
+- Updated dependencies [e56ebfe]
+- Updated dependencies [8d3a80e]
+- Updated dependencies [29a0599]
+- Updated dependencies [f12741f]
+- Updated dependencies [440acad]
+- Updated dependencies [7b7e06b]
+- Updated dependencies [35a339d]
+- Updated dependencies [8acac8f]
+- Updated dependencies [9d55db7]
+- Updated dependencies [42d1366]
+- Updated dependencies [0664ea3]
+- Updated dependencies [ec30aa8]
+- Updated dependencies [84345e9]
+- Updated dependencies [c0dc0c8]
+- Updated dependencies [68a84bc]
+- Updated dependencies [1395906]
+- Updated dependencies [457da84]
+- Updated dependencies [eb4ba8a]
+- Updated dependencies [ef84907]
+- Updated dependencies [e65057d]
+- Updated dependencies [420384b]
+- Updated dependencies [6effe4d]
+- Updated dependencies [6c86b8c]
+- Updated dependencies [650fa3a]
+- Updated dependencies [3977111]
+- Updated dependencies [24967db]
+- Updated dependencies [74c2942]
+- Updated dependencies [2cf5019]
+- Updated dependencies [ef84907]
+- Updated dependencies [61f0498]
+- Updated dependencies [ac1a69f]
+- Updated dependencies [0bc7927]
+- Updated dependencies [b7d4143]
+- Updated dependencies [9a31444]
+- Updated dependencies [56380b7]
+- Updated dependencies [18dd915]
+- Updated dependencies [6f84e12]
+- Updated dependencies [24967db]
+- Updated dependencies [b0d7203]
+- Updated dependencies [0380c2b]
+  - @agentproto/runtime@6.1.0
+  - @agentproto/harness@3.0.1
+
 ## 0.7.46
 
 ### Patch Changes

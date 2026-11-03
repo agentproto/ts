@@ -1,5 +1,20 @@
 # @agentproto/adapter-pi
 
+## 0.6.0
+
+### Minor Changes
+
+- ab7830c: Run OpenCode Zen (`opencode/<id>`) and OpenCode Go (`opencode-go/<id>`) models on pi. Both route tables join pi's model menu from the shared catalog, and api-key profiles on either endpoint land in `OPENCODE_API_KEY`. A Go profile pinned to an OpenCode console org now authenticates like the opencode adapter: the org's provider block is translated into a per-session pi provider override (bearer `${OPENCODE_CONSOLE_TOKEN}` plus the `x-opencode-org-id` header, env references only) applied by a shipped `provider-overrides-extension.mjs`.
+
+### Patch Changes
+
+- Updated dependencies [2d5f4b9]
+- Updated dependencies [1b66f60]
+- Updated dependencies [7f8bf00]
+- Updated dependencies [1b66f60]
+  - @agentproto/model-catalog@0.15.0
+  - @agentproto/harness@3.0.1
+
 ## 0.5.5
 
 ### Patch Changes
