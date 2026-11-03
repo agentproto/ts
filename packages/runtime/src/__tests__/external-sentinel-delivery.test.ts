@@ -65,7 +65,7 @@ function setup(opts?: { kill?: boolean }) {
       return d ? { endedReason: d.endedReason, archived: d.archived, retiredAt: d.retiredAt } : undefined
     },
     parkedPath,
-    triagePath: join(tmp, "triage.jsonl"),
+    ledgerPath: join(tmp, "delivery-ledger.jsonl"),
     log: () => undefined,
   })
   const cleanup = () => {
