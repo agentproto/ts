@@ -1540,9 +1540,10 @@ describe("branch gc — line-coverage guard", () => {
     expect(e.verdictGuard).toBe("line coverage 0% of 2 added lines (< 95%)")
 
     const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir: await tmp("branch-gc-state-") })
-    // The verified-pr and dep-bump passes ran too, and say why they could not pass it either.
+    // The verified-pr, dep-bump and history-covered passes ran too, and say why they could not pass it either.
     expect(e.verifiedPrRefusal).toBe("no PR cited (landedIn, or #N in gate.reason/evidence)")
     expect(e.depBumpRefusal).toMatch(/^src\/a\.ts: ".*" is not a dependency, lockfile or changeset line$/)
+    expect(e.historyRefusal).toMatch(/^src\/a\.ts: ".*" was never added to src\/a\.ts on base$/)
     expect(outcomes).toContainEqual({
       kind: "local",
       name: "feat/lost",
@@ -1551,6 +1552,7 @@ describe("branch gc — line-coverage guard", () => {
       guard: e.verdictGuard,
       verifiedPrRefusal: e.verifiedPrRefusal,
       depBumpRefusal: e.depBumpRefusal,
+      historyRefusal: e.historyRefusal,
     })
     expect(restoreLog).toBeNull()
     expect(await refExists(repo, "refs/heads/feat/lost")).toBe(true)
@@ -2448,5 +2450,150 @@ describe("branch gc: manifest-proven files in the verified-pr pass, and packageM
     expect(e.class).toBe("review")
     expect(e.verifiedPrRefusal).toBe("1 uncovered file(s) not explained by #2143: package.json")
     expect(e.depBumpRefusal).toBe(`package.json: packageManager ${JSON.stringify(PIN).slice(0, 80)} is pnpm, base declares yarn`)
+  })
+})
+
+describe("branch gc: history-covered guard pass", () => {
+  const NAME = "wt/stale-snapshot"
+
+  async function record(repo: string, tip: string, opts: { verdict?: string; agree?: boolean } = {}) {
+    const verdicts = new InMemoryBranchVerdictStore()
+    const v = opts.verdict ?? "obsolete"
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: NAME,
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: v, confidence: 0.9, reason: "base rewrote these lines since" },
+        gate: { agree: opts.agree ?? true, verdict: v, reason: "every missing line is older wording base replaced", evidence: ["git log -p"] },
+      },
+    })
+    return verdicts
+  }
+
+  const judged = async (repo: string, verdicts: InMemoryBranchVerdictStore, extra: Partial<PlanBranchGcInput> = {}) =>
+    entry(await plan(repo, { verdicts, includeReviewed: true, ...extra }), NAME)
+
+  /**
+   * Base writes `v1` wording, then rewrites it to `v2`; the branch, cut from
+   * `v2`, puts `v1` back (a revert); base then moves on to `v3`. `branchExtra`
+   * adds files to the branch commit.
+   */
+  async function revertedWording(branchExtra: Record<string, string | null> = {}) {
+    const repo = await makeRepo()
+    const v1 = await commitFiles(repo, { "src/msg.ts": "export const greeting = 'hello, old wording'\nexport const keep = 'stays on base'\n" }, "v1")
+    await commitFiles(repo, { "src/msg.ts": "export const greeting = 'hello, newer wording'\nexport const keep = 'stays on base'\n" }, "v2")
+    const tip = await branchWith(repo, NAME, { "src/msg.ts": "export const greeting = 'hello, old wording'\nexport const keep = 'stays on base'\n", ...branchExtra })
+    await commitFiles(repo, { "src/msg.ts": "export const greeting = 'hello, newest wording'\nexport const keep = 'stays on base'\n" }, "v3")
+    return { repo, tip, v1 }
+  }
+
+  it("reclaims a tip that adds back a line base had in an older commit and has since rewritten", async () => {
+    const { repo, tip, v1 } = await revertedWording()
+    const verdicts = await record(repo, tip)
+    const p = await plan(repo, { verdicts, includeReviewed: true })
+    const e = entry(p, NAME)
+    expect(e.lineCoverage?.pct).toBe(0)
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.depBumpRefusal).toBeUndefined()
+    expect(e.historyRefusal).toBeUndefined()
+    expect(e.verdictGuard).toBe("passed by history-covered (1 line(s) in base history across 1 file(s)): line coverage 0% of 1 added lines (< 95%)")
+    expect(e.historyCovered).toEqual({ filesChecked: 1, linesMatched: 1, files: [{ file: "src/msg.ts", lines: 1, oldest: v1, newest: v1 }] })
+
+    const stateDir = await tmp("branch-gc-state-")
+    const { outcomes, restoreLog } = await applyBranchGc(p, { scopes: ["local"], forge: new FakeForge(), verdicts, stateDir })
+    expect(outcomes).toContainEqual({ kind: "local", name: NAME, sha: tip, result: "deleted", reclaimReason: "reviewed", guard: "history-covered", historyCovered: e.historyCovered })
+    const log = await readBranchGcRestoreLog(restoreLog as string)
+    expect(log.entries).toContainEqual(expect.objectContaining({ name: NAME, sha: tip, deleted: true, guard: "history-covered", historyCovered: e.historyCovered }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(false)
+  })
+
+  it("reclaims a stale generated JSON snapshot whose every line base had in earlier versions", async () => {
+    const snap = (entries: Record<string, string>): string => JSON.stringify({ generated: true, entries }, null, 2) + "\n"
+    const repo = await makeRepo()
+    await commitFiles(repo, { "catalog/snapshot.json": snap({ alpha: "alpha-v1-model", beta: "beta-v1-model" }) }, "catalog: first snapshot")
+    // The branch regenerates the snapshot; base lands its own regeneration (one more entry), then regenerates again.
+    const tip = await branchWith(repo, NAME, { "catalog/snapshot.json": snap({ alpha: "alpha-v2-model", beta: "beta-v2-model", gamma: "gamma-v2-model" }) })
+    const second = await commitFiles(
+      repo,
+      { "catalog/snapshot.json": snap({ alpha: "alpha-v2-model", beta: "beta-v2-model", zeta: "zeta-v2-model", gamma: "gamma-v2-model" }) },
+      "catalog: regenerate",
+    )
+    const third = await commitFiles(repo, { "catalog/snapshot.json": snap({ alpha: "alpha-v3-model", gamma: "gamma-v2-model", delta: "delta-v3-model" }) }, "catalog: regenerate again")
+    expect(third).not.toBe(second)
+    const e = await judged(repo, await record(repo, tip))
+    expect(e.lineCoverage?.pct).toBeLessThan(95)
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.historyRefusal).toBeUndefined()
+    // alpha and beta (gone from base), and gamma without its trailing comma (base's last entry is now delta).
+    expect(e.historyCovered).toEqual({ filesChecked: 1, linesMatched: 3, files: [{ file: "catalog/snapshot.json", lines: 3, oldest: second, newest: second }] })
+  })
+
+  it("reclaims when base moved the file after the fork and the tip's lines are in the moved path's history", async () => {
+    const body = "// generated runner table\nexport const table = [\n  'first runner entry',\n  'second runner entry',\n  'third runner entry',\n]\n"
+    const repo = await makeRepo()
+    await commitFiles(repo, { "src/old/gen.ts": body }, "seed")
+    const tip = await branchWith(repo, NAME, { "src/old/gen.ts": body.replace("]\n", "  'fourth runner entry',\n]\n") })
+    await commitFiles(repo, { "src/old/gen.ts": null, "src/new/gen.ts": body }, "refactor: move gen.ts")
+    const added = await commitFiles(repo, { "src/new/gen.ts": body.replace("]\n", "  'fourth runner entry',\n]\n") }, "add the fourth entry")
+    await commitFiles(repo, { "src/new/gen.ts": body.replace("]\n", "  'fourth runner entry, renamed',\n]\n") }, "rename the fourth entry")
+    const e = await judged(repo, await record(repo, tip))
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.historyCovered?.files).toEqual([{ file: "src/old/gen.ts", lines: 1, oldest: added, newest: added, movedTo: ["src/new/gen.ts"] }])
+  })
+
+  it("keeps the tip when a line was never on base, naming it", async () => {
+    const { repo, tip } = await revertedWording({ "src/extra.ts": "export const neverOnBase = 'branch only'\n" })
+    const e = await judged(repo, await record(repo, tip))
+    expect(e.class).toBe("review")
+    expect(e.historyCovered).toBeUndefined()
+    expect(e.historyRefusal).toBe(`src/extra.ts: "export const neverOnBase = 'branch only'" was never added to src/extra.ts on base`)
+    const { outcomes } = await applyBranchGc(await plan(repo, { verdicts: await record(repo, tip), includeReviewed: true }), {
+      scopes: ["local"],
+      forge: new FakeForge(),
+      verdicts: await record(repo, tip),
+      stateDir: await tmp("branch-gc-state-"),
+    })
+    expect(outcomes).toContainEqual(expect.objectContaining({ sha: tip, result: "refused-guard", historyRefusal: e.historyRefusal }))
+    expect(await refExists(repo, `refs/heads/${NAME}`)).toBe(true)
+  })
+
+  it("keeps the tip when the line was only ever on base in a different path", async () => {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "src/msg.ts": "export const greeting = 'hello'\n", "src/other.ts": "export const shared = 'lives in other.ts'\n" }, "seed")
+    await commitFiles(repo, { "src/other.ts": "export const shared = 'rewritten in other.ts'\n" }, "rewrite other")
+    const tip = await branchWith(repo, NAME, { "src/msg.ts": "export const greeting = 'hello'\nexport const shared = 'lives in other.ts'\n" })
+    const e = await judged(repo, await record(repo, tip))
+    expect(e.class).toBe("review")
+    expect(e.historyRefusal).toBe(`src/msg.ts: "export const shared = 'lives in other.ts'" was never added to src/msg.ts on base`)
+  })
+
+  it("keeps the tip when it deletes a line base still has", async () => {
+    const { repo, tip } = await revertedWording({ "src/msg.ts": "export const greeting = 'hello, old wording'\n" })
+    const e = await judged(repo, await record(repo, tip))
+    expect(e.class).toBe("review")
+    expect(e.historyRefusal).toBe(`src/msg.ts: deletes "export const keep = 'stays on base'", which base still has`)
+  })
+
+  it("keeps the tip when the verdict does not agree or is not obsolete/superseded", async () => {
+    const { repo, tip } = await revertedWording()
+    const disagreed = await judged(repo, await record(repo, tip, { agree: false }))
+    expect(disagreed.class).toBe("review")
+    expect(disagreed.historyCovered).toBeUndefined()
+    const salvage = await judged(repo, await record(repo, tip, { verdict: "salvage" }))
+    expect(salvage.class).toBe("review")
+    expect(salvage.historyCovered).toBeUndefined()
+    expect(salvage.historyRefusal).toBe("verdict is salvage, not obsolete or superseded")
+  })
+
+  it("is off with requireOperatorBelowGuard, like verified-pr and dep-bump", async () => {
+    const { repo, tip } = await revertedWording()
+    const e = await judged(repo, await record(repo, tip), { requireOperatorBelowGuard: true })
+    expect(e.class).toBe("review")
+    expect(e.historyCovered).toBeUndefined()
+    expect(e.historyRefusal).toBeUndefined()
   })
 })

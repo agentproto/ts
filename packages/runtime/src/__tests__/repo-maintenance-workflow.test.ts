@@ -694,8 +694,11 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     expect(result.report).not.toContain("documented seam")
   })
 
-  it("verified-pr and dep-bump: auto-passed tips get their own sections, the queue keeps only refusals with why, and the opt-out reaches branch_gc", async () => {
+  it("verified-pr, dep-bump and history-covered: auto-passed tips get their own sections, the queue keeps only refusals with why, and the opt-out reaches branch_gc", async () => {
     const SHA_DEP = "d".repeat(40)
+    const SHA_HIST = "e".repeat(40)
+    const OLD = "1".repeat(40)
+    const NEW = "2".repeat(40)
     const run = async (input: Record<string, unknown>) => {
       const calls: Array<{ name: string; inputs: Record<string, unknown> }> = []
       let branchGcCallCount = 0
@@ -733,6 +736,7 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
                   guard: "line coverage 40% of 50 added lines (< 95%)",
                   verifiedPrRefusal: "1 uncovered file(s) not explained by #949: src/new.ts",
                   depBumpRefusal: 'src/new.ts: "export const fresh = 1" is not a dependency, lockfile or changeset line',
+                  historyRefusal: 'src/new.ts: "export const fresh = 1" was never added to src/new.ts on base',
                 },
                 {
                   kind: "local",
@@ -742,6 +746,15 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
                   reclaimReason: "reviewed",
                   guard: "dep-bump",
                   depBump: { dependencies: 3, versions: 1, lockfileLines: 12, changesetLines: 5, packageFiles: ["package.json", "packages/a/package.json"] },
+                },
+                {
+                  kind: "local",
+                  name: "bot/request",
+                  sha: SHA_HIST,
+                  result: "deleted",
+                  reclaimReason: "reviewed",
+                  guard: "history-covered",
+                  historyCovered: { filesChecked: 2, linesMatched: 7, files: [{ file: "catalog/snapshot.json", lines: 7, oldest: OLD, newest: NEW }] },
                 },
               ],
               restoreLog: "/tmp/restore.json",
@@ -769,9 +782,13 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     // Unset = the pass is on (the tool only turns it off for `true`).
     expect(on.calls[2]!.inputs.requireOperatorBelowGuard).not.toBe(true)
     expect(on.report).toContain(
-      "reviewed: 2 reclaimed (includeReviewed true; 1 of them past the line guard by verified-pr; 1 past the line guard by dep-bump), 1 refused",
+      "reviewed: 3 reclaimed (includeReviewed true; 1 of them past the line guard by verified-pr; 1 past the line guard by dep-bump; 1 past the line guard by history-covered), 1 refused",
     )
-    const depBump = on.report.slice(on.report.indexOf("## Auto-passed by dep-bump (1)"), on.report.indexOf("## Human decision queue"))
+    const history = on.report.slice(on.report.indexOf("## Auto-passed by history-covered (1)"), on.report.indexOf("## Human decision queue"))
+    expect(history).toContain(
+      "- `bot/request` (" + SHA_HIST + ") [local] - 7 line(s) found in base history: catalog/snapshot.json (7, 1111111111..2222222222)",
+    )
+    const depBump = on.report.slice(on.report.indexOf("## Auto-passed by dep-bump (1)"), on.report.indexOf("## Auto-passed by history-covered"))
     expect(depBump).toContain(
       "- `wt/dep-bump-2026-w31-a` (" + SHA_DEP + ") [local] - 3 dependency, 1 version, 12 lockfile, 5 changeset line(s) in package.json, packages/a/package.json",
     )
@@ -783,9 +800,10 @@ describe("repo-maintenance maintain workflow — run (fake tools + fake agent)",
     const queue = on.report.slice(on.report.indexOf("## Human decision queue"))
     expect(queue).toContain("(1)")
     expect(queue).toContain(
-      'verified-pr refused: 1 uncovered file(s) not explained by #949: src/new.ts - dep-bump refused: src/new.ts: "export const fresh = 1" is not a dependency, lockfile or changeset line',
+      'verified-pr refused: 1 uncovered file(s) not explained by #949: src/new.ts - dep-bump refused: src/new.ts: "export const fresh = 1" is not a dependency, lockfile or changeset line' +
+        ' - history refused: src/new.ts: "export const fresh = 1" was never added to src/new.ts on base',
     )
-    expect(queue).toContain("neither the verified-pr nor the dep-bump pass could prove it")
+    expect(queue).toContain("none of the verified-pr, dep-bump and history-covered passes could prove it")
     expect(queue).not.toContain("wt/small-residual")
 
     const off = await run({ repoRoot: "/repo", applyMerged: true, applyReviewed: true, requireOperatorBelowGuard: true })

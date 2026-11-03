@@ -54,10 +54,11 @@ Usage:
                    pass proves them (a cited PR merged into base explains
                    every uncovered file) or its dep-bump pass does (every
                    added line is a lockfile, changeset or dependency spec
-                   base already has at least as new). Ignored without
-                   --apply-merged.
+                   base already has at least as new) or its history-covered
+                   pass does (every missing line was once added to the same
+                   path on base). Ignored without --apply-merged.
   --require-operator-below-guard
-                   Turn the verified-pr and dep-bump passes off: below the
+                   Turn the verified-pr, dep-bump and history-covered passes off: below the
                    guard only an operator approval reclaims.
   --review-preset <name>
                    Reviewer model set for this run: ${MODEL_ROLE_PRESET_NAMES.join(", ")}.

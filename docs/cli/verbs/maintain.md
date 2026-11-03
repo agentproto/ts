@@ -51,11 +51,15 @@ One run:
    the dep-bump per-file rules), or the
    [dep-bump pass](./branch.md#dep-bump-pass) does (every added line is a
    lockfile, changeset, dependency spec, `version` or `packageManager` pin
-   base already has at least as new).
+   base already has at least as new), or the
+   [history-covered pass](./branch.md#history-covered-pass) does (every line
+   missing from base's tip was once added to the same path in base's history,
+   and nothing base still has is deleted).
    Tips that pass are listed in "Auto-passed by verified-pr" (branch, PR, why,
-   for example `uncovered files: 1 touched by #2143, 1 manifest-proven`)
-   and "Auto-passed by dep-bump" (branch, lines checked);
-   `--require-operator-below-guard` turns both passes off. The rest are listed in the report's "Human decision queue",
+   for example `uncovered files: 1 touched by #2143, 1 manifest-proven`),
+   "Auto-passed by dep-bump" (branch, lines checked) and "Auto-passed by
+   history-covered" (branch, lines found, base commits);
+   `--require-operator-below-guard` turns all three passes off. The rest are listed in the report's "Human decision queue",
    each row ending with the reason the pass refused it. That queue is never
    capped: every refused tip is listed
    once (a branch and its remote twin share one line, with the ref kinds and
@@ -87,7 +91,7 @@ branch.
 | `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
 | `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
-| `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr and dep-bump passes off, so below the guard only an operator approval reclaims. |
+| `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr, dep-bump and history-covered passes off, so below the guard only an operator approval reclaims. |
 | `--review-preset <name>` | daemon `modelRolePreset` | Reviewer model set for this run: `opus`, `sonnet`, `haiku`, `go-free`, `free-sonnet` (see [`modelRolePreset`](../reference/config-schema.md#modelrolepreset-string)). Each reviewer spawns on the adapter its model needs, so `go-free` runs on opencode. |
 | `--max-reviews <n>` | workflow `maxReviews` (`40`) | Cap how many unmerged branches this run sends to a reviewer (newest tip first). Must be a positive integer, else exit `2` before any daemon contact. Branches with a stored verdict are never re-reviewed, so repeated runs walk the backlog. |
 | `--wait` | `false` | Block until each run ends, then print its markdown report. Exit `0` when all done, `1` when any failed or was cancelled. |
