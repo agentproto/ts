@@ -124,6 +124,9 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
     args: string[] = ["inbox"],
   ) => runHook(args, { readStdin: async () => JSON.stringify(payload), env })
 
+  // The daemon has no cc: inbox route yet (that is a later PR), so this proves
+  // only that the resolver selects cc:<session_id>; httpGetJson is mocked and
+  // does not prove the daemon serves such an inbox.
   it("routes each Claude chat to its own cc:<session_id> inbox and acks there", async () => {
     await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "aaaa-1" })
     await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "bbbb-2" })

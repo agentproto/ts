@@ -63,8 +63,10 @@ finishes. Three things have to line up:
    `http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop`
    (18790 is the default daemon port; use `daemon.port` if you changed it).
    The first authenticated request creates the `external` row for `<id>`.
-   `<id>` must match `[A-Za-z0-9._:-]{1,128}`. A request over loopback is
-   trusted as is; through a tunnel it needs the daemon bearer token, otherwise
+   `<id>` is the external row's daemon-side session id: the id sentinels and
+   `session_follow` address (e.g. `claude-desktop`), not the harness's per-chat
+   `session_id`. It must match `[A-Za-z0-9._:-]{1,128}`. A request over loopback
+   is trusted as is; through a tunnel it needs the daemon bearer token, otherwise
    it never registers the session.
    ```sh
    claude mcp add --transport http --scope user agentproto-desktop \
@@ -97,18 +99,24 @@ The settings file the app reads (`~/.claude/settings.json`, or
 }
 ```
 
-One settings file no longer means one shared inbox: every Desktop conversation
-now reads its own `cc:<session_id>` inbox. The `AGENTPROTO_SESSION_ID` in that
-file is only a legacy fallback for payloads without a session id; pass
-`--session <id>` in the hook command to use a fixed custom id instead.
+One settings file no longer means one shared inbox: `hook inbox` resolves each
+Desktop chat's payload to its own `cc:<session_id>` inbox instead of the
+global id. **Interim caveat:** nothing registers or deposits into a `cc:` inbox
+yet — that arrives with the lazy-registration PR — so a `cc:` read currently
+404s and the hook silently prints nothing. To deliver today, pin the hook to an
+already-registered session id with `--session <id>` (e.g. the `callerSessionId`
+row from step 1, `claude-desktop` by default). The `AGENTPROTO_SESSION_ID` in
+that file is only a legacy fallback for payloads without a session id.
 
 ### Migration
 
 Daemon-spawned sessions (`AGENTPROTO_SESSION_ID=sess_...`) are unchanged. A
-Desktop chat that still has the old global `AGENTPROTO_SESSION_ID` keeps
-working: it now reads its own `cc:<session_id>` inbox instead of the shared
-one. Items already queued on the old shared id stay there; read them with
-`inbox_list` on that id. A setup that wants a fixed custom id can pin it with
+Desktop chat that still has the old global `AGENTPROTO_SESSION_ID` is resolved
+to `cc:<session_id>` whenever the payload carries one, so until the
+lazy-registration PR lands it reads nothing; keep delivery by pinning
+`--session <id>` to the already-registered id. Items already queued on
+the old shared id stay there; read them with `inbox_list` on that id. A setup
+that wants a fixed custom id can pin it with
 `agentproto hook inbox --session <id>` in the hook command.
 
 ### `hook install --host claude-desktop`
