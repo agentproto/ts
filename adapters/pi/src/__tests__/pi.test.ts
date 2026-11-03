@@ -37,6 +37,7 @@ describe("@agentproto/adapter-pi — manifest", () => {
       "GOOGLE_GENERATIVE_AI_API_KEY",
       "MOONSHOT_API_KEY",
       "OPENROUTER_API_KEY",
+      "OPENCODE_API_KEY",
     ])
     expect(pi.continuation?.default).toBe("native-resume")
     expect(pi.continuation?.supported).toContain("native-resume")

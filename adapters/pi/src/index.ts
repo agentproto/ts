@@ -37,7 +37,11 @@ import {
   type AgentCliHandle,
   type AgentCliRuntime,
 } from "@agentproto/harness"
-import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
+import {
+  DEFAULT_ANTHROPIC_MODEL,
+  getModelsByProvider,
+  listModels,
+} from "@agentproto/model-catalog"
 
 /**
  * Build pi's model menu from the shared provider catalog. Pi routes by the
@@ -61,6 +65,12 @@ import { DEFAULT_ANTHROPIC_MODEL, listModels } from "@agentproto/model-catalog"
  * `openrouter/glm-5.3-flash`, losing `z-ai`). Mirrors
  * `adapters/opencode/src/index.ts`'s `buildOpencodeModelMenu`, which hits
  * the exact same shape and special-cases it the same way.
+ *
+ * OpenCode Zen (`opencode/<id>`) and OpenCode Go (`opencode-go/<id>`) are pi
+ * built-in providers with the same spelling as opencode's. Their catalog
+ * entries live only in generated route tables (not `listModels`), so they are
+ * read through `getModelsByProvider`, exactly like `buildOpencodeModelMenu`;
+ * the catalog ids already carry the provider prefix.
  */
 function buildPiModelMenu(): Array<{ id: string; provider: string }> {
   const supported = [
@@ -92,6 +102,16 @@ function buildPiModelMenu(): Array<{ id: string; provider: string }> {
     out.push({ id, provider: "openrouter" })
   }
 
+  for (const provider of ["opencode", "opencode-go"] as const) {
+    for (const model of getModelsByProvider(provider)) {
+      if (model.kind !== "llm") continue
+      const id = model.id.includes("/") ? model.id : `${provider}/${model.id}`
+      if (seen.has(id)) continue
+      seen.add(id)
+      out.push({ id, provider })
+    }
+  }
+
   return out.sort((a, b) => {
     if (a.provider !== b.provider) return a.provider.localeCompare(b.provider)
     return a.id.localeCompare(b.id)
@@ -104,7 +124,7 @@ export const pi: AgentCliHandle = defineHarness({
   description:
     "earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's " +
     "persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. " +
-    "Multi-provider (Anthropic/OpenAI/Google/Moonshot/OpenRouter), streaming, live-duplex " +
+    "Multi-provider (Anthropic/OpenAI/Google/Moonshot/OpenRouter/OpenCode Zen/OpenCode Go), streaming, live-duplex " +
     "(steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP " +
     "servers are BRIDGED into pi tools via a generated pi extension (see " +
     "MCP-BRIDGE.md); otherwise pi runs only its own built-in file/shell tools.",
@@ -147,6 +167,7 @@ export const pi: AgentCliHandle = defineHarness({
         "GOOGLE_GENERATIVE_AI_API_KEY",
         "MOONSHOT_API_KEY",
         "OPENROUTER_API_KEY",
+        "OPENCODE_API_KEY",
       ],
     },
   },
@@ -209,6 +230,15 @@ export const pi: AgentCliHandle = defineHarness({
       // `moonshotai` prefix.
       moonshot: "MOONSHOT_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
+      // pi reads OPENCODE_API_KEY for BOTH its `opencode` (Zen) and
+      // `opencode-go` providers (pi docs/providers.md), so an api-key profile
+      // on either endpoint lands there. Two different secrets share the name;
+      // the resolved profile's endpoint decides which balance bills. A Go
+      // console-org profile instead arrives as OPENCODE_CONSOLE_TOKEN + the
+      // org's provider block, which client.ts turns into a pi provider
+      // override (see provider-overrides.ts).
+      opencode: "OPENCODE_API_KEY",
+      "opencode-go": "OPENCODE_API_KEY",
     },
   },
   capabilities: {
