@@ -242,6 +242,19 @@ describe("agent_start placement ladder", () => {
     expect(res.descriptor.placement?.attempts[0]).toMatchObject({ provider: "nowhere", errorClass: "sandbox_provider_not_found" })
   })
 
+  it("a labelled spawn with dedupe on still falls to rung 2: a failed boot settles its claim", async () => {
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      label: "ci-review",
+      prompt: "review the PR",
+      dedupe: true,
+      placement: { ladder: [{ sandbox: "nowhere" }, { sandbox: "beta" }] },
+    })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(res.descriptor.placement?.attempts[0]).toMatchObject({ provider: "nowhere", errorClass: "sandbox_provider_not_found" })
+  }, 15_000)
+
   it("every rung fails: a typed error listing every attempt, and nothing is left registered", async () => {
     alphaFails = () => coded("sandbox_capacity", "alpha is full")
     betaFails = () => coded("sandbox_overflow_refused", "beta refused")

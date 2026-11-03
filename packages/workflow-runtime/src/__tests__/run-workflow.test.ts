@@ -579,6 +579,59 @@ describe("runWorkflow — agent step", () => {
     })
   })
 
+  it("passes a literal placement ladder and turnRetry policy through to host.spawn", async () => {
+    const host = fakeHost()
+    const placement = { ladder: [{ sandbox: "e2b" }, { sandbox: "computer", model: "m" }] }
+    const turnRetry = { on: ["usage-limit"], fallback: [{ model: "m" }] }
+    const wf: RuntimeWorkflow = {
+      id: "agent-placement-literal",
+      steps: [
+        { kind: "agent", id: "s1", adapter: "mock-adapter", placement, turnRetry, prompt: () => "hello" },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host })
+    expect(host.spawn).toHaveBeenCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+      placement,
+      turnRetry,
+    })
+  })
+
+  it("resolves placement/turnRetry selectors per-run; undefined omits the key, null opts out", async () => {
+    const host = fakeHost()
+    const placement = { ladder: [{ sandbox: "e2b" }] }
+    const wf: RuntimeWorkflow = {
+      id: "agent-placement-sel",
+      steps: [
+        {
+          kind: "agent",
+          id: "s1",
+          adapter: "mock-adapter",
+          placement: (b) => ((b.input as { boxed: boolean }).boxed ? placement : undefined),
+          turnRetry: (b) => ((b.input as { boxed: boolean }).boxed ? { on: ["rate-limit"] } : null),
+          prompt: () => "hello",
+        },
+      ],
+    }
+    await runWorkflow({ workflow: wf, agents: host, input: { boxed: true } })
+    expect(host.spawn).toHaveBeenLastCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+      placement,
+      turnRetry: { on: ["rate-limit"] },
+    })
+    await runWorkflow({ workflow: wf, agents: host, input: { boxed: false } })
+    expect(host.spawn).toHaveBeenLastCalledWith("mock-adapter", {
+      cwd: undefined,
+      workspaceSlug: undefined,
+      stepId: "s1",
+      turnRetry: null,
+    })
+  })
+
   it("a host that rejects the sandbox spawn fails the run loudly (no silent host fallback)", async () => {
     const spawn = vi.fn(async () => {
       throw new Error("agent step sandbox spawn failed (sandbox_provider_not_found): no resolver")

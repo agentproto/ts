@@ -30,6 +30,7 @@ import {
   changesetRulesBlock,
   hardRulesBlock,
   reviewerModelFor,
+  reviewerTurnRetryFor,
 } from "../lib/sandbox-agent.mjs"
 import {
   buildReviewSummary,
@@ -299,6 +300,10 @@ const reviewStep = {
   id: "review",
   adapter: (b) => adapterFor(b?.input?.reviewConfig, "review"),
   model: (b) => reviewerModelFor(b?.input?.reviewConfig, "review"),
+  // HOST session: no placement ladder (that is the box lanes' job), but the
+  // same usage-limit / rate-limit fallback as the box path, read from the same
+  // `reviewerTurnRetry` through the same lib helper.
+  turnRetry: (b) => reviewerTurnRetryFor(b?.input?.reviewConfig, "review"),
   prompt: reviewPrompt,
   outputSchema: reviewVerdictSchema,
 }
@@ -308,6 +313,7 @@ const fixStep = {
   id: "fix",
   adapter: (b) => adapterFor(b?.input?.reviewConfig, "fix"),
   model: (b) => fixerModelFor(b?.input?.reviewConfig),
+  turnRetry: (b) => reviewerTurnRetryFor(b?.input?.reviewConfig, "fix"),
   prompt: fixPrompt,
 }
 

@@ -14,6 +14,8 @@ import {
   hardRulesBlock,
   restPostReviewBlock,
   reviewerModelFor,
+  reviewerPlacementFor,
+  reviewerTurnRetryFor,
   sandboxRefFor,
   workspaceCwdFor,
 } from "../lib/sandbox-agent.mjs"
@@ -21,15 +23,26 @@ import {
 // placement "local" is always a HOST spawn on the CALLER's daemon, in the
 // caller's cwd — regardless of what reviewConfig says. This is a deliberate
 // second line of defense: the daemon caller (scripts/agentflow/primitives/
-// review.mjs#reviewViaDaemon) already strips reviewerSandbox before sending
-// reviewConfig, but this step must not depend on that — a mis-scoped or
-// stale reviewConfig reaching here must never accidentally route a "local"
-// run through sandboxRefFor (which would try to provision e2b, something a
-// dev's own daemon has no way to do).
-const sandboxRef = (bindings) =>
-  bindings?.input?.placement === "local" ? undefined : sandboxRefFor(bindings?.input?.reviewConfig, "review")
+// review.mjs#reviewViaDaemon) already strips reviewerSandbox / reviewerPlacement
+// before sending reviewConfig, but this step must not depend on that — a
+// mis-scoped or stale reviewConfig reaching here must never accidentally route
+// a "local" run through a sandbox (something a dev's own daemon has no way to
+// provision) or hand it the CI lane's paid-model fallback.
+const isLocal = (bindings) => bindings?.input?.placement === "local"
 
-const inSandbox = (bindings) => sandboxRef(bindings) !== undefined
+// The ordered placement ladder (reviewerPlacement): computer fleet, then e2b,
+// then the paid model on the fleet. undefined ⇒ no ladder configured.
+const placementLadder = (bindings) =>
+  isLocal(bindings) ? undefined : reviewerPlacementFor(bindings?.input?.reviewConfig, "review")
+
+// A single-sandbox declaration (reviewerSandbox) is only consulted when there
+// is no ladder: `placement` and `sandbox` are mutually exclusive on a spawn.
+const sandboxRef = (bindings) =>
+  isLocal(bindings) || placementLadder(bindings) !== undefined
+    ? undefined
+    : sandboxRefFor(bindings?.input?.reviewConfig, "review")
+
+const inSandbox = (bindings) => placementLadder(bindings) !== undefined || sandboxRef(bindings) !== undefined
 
 // The three delivery placements a review step can run under:
 //   - "host"    — CI runner checkout, `gh` CLI already authenticated.
@@ -255,7 +268,7 @@ export default {
     placement: {
       type: "string",
       description:
-        "Delivery placement: \"host\" (gh CLI, default) | \"sandbox\" (inferred from reviewConfig.reviewerSandbox + repo) | \"local\" (no PR, no posting — emit a structured verdict as the final message).",
+        "Delivery placement: \"host\" (gh CLI, default) | \"sandbox\" (inferred from reviewConfig.reviewerPlacement / reviewerSandbox + repo) | \"local\" (no PR, no posting — emit a structured verdict as the final message).",
       default: "host",
     },
     prNumber: {
@@ -289,17 +302,29 @@ export default {
       // Model id override (reviewerModel in .github/agentic-review.json) —
       // same selector semantics as `adapter`; undefined ⇒ adapter default.
       model: (b) => reviewerModelFor(b?.input?.reviewConfig, "review"),
-      // Sandbox placement (reviewerSandbox, e.g. "e2b"): the daemon-internal
+      // Single-sandbox placement (reviewerSandbox, e.g. "e2b"): the daemon-internal
       // spawn failure on the CI runner does not reproduce inside a sandbox —
       // the box's OWN daemon spawns the adapter (proven via agent_start
       // sandbox:"local", 5/6 adapters green). undefined ⇒ host spawn.
       sandbox: sandboxRef,
+      // Placement ladder (reviewerPlacement): rungs tried in order, the first
+      // box that places and passes its preflight hosts the session. Exclusive
+      // with `sandbox` above (this step sets at most one).
+      placement: placementLadder,
+      // Graceful answer to a free-tier cap (reviewerTurnRetry): the SAME
+      // session switches model instead of failing the review. Shared with the
+      // supervised review/fix steps through lib/sandbox-agent.mjs.
+      turnRetry: (b) => (isLocal(b) ? undefined : reviewerTurnRetryFor(b?.input?.reviewConfig, "review")),
       // A remote box can't see the runner's checkout path — land in the box
       // workspace and let the Phase 0 bootstrap clone the repo there. Same
       // "local" override as sandboxRef above — undefined ⇒ run in the
       // caller's own cwd (its already-checked-out worktree).
       cwd: (b) =>
-        b?.input?.placement === "local" ? undefined : workspaceCwdFor(b?.input?.reviewConfig, "review"),
+        isLocal(b)
+          ? undefined
+          : placementLadder(b) !== undefined
+            ? "/home/user"
+            : workspaceCwdFor(b?.input?.reviewConfig, "review"),
       prompt: reviewPrompt,
     },
   ],

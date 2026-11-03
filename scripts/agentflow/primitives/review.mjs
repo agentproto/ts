@@ -124,9 +124,9 @@ const PR_REVIEW_WORKFLOW = ['.github', 'agentproto-workflows', 'pr-review', 'WOR
 
 /** Build the `reviewConfig` input for a "local" placement run of the pr-review
  *  workflow: the parsed `.github/agentic-review.json`, with `reviewerSandbox`
- *  removed (a local daemon run must be a HOST spawn on the dev's own daemon —
- *  otherwise `sandboxRefFor` would try to route it through e2b, which the
- *  dev's daemon has no way to provision) and `reviewerAdapter` overridden by
+ *  and `reviewerPlacement` removed (a local daemon run must be a HOST spawn on
+ *  the dev's own daemon — otherwise the lib would try to route it through a
+ *  box, which the dev's daemon has no way to provision) and `reviewerAdapter` overridden by
  *  `adapterOverride` when given (default: keep the file's value — a dev's
  *  daemon typically has `claude-code` available, not the CI lane's
  *  `claude-sdk`). */
@@ -135,6 +135,7 @@ function buildDaemonReviewConfig(root, adapterOverride) {
   const config = JSON.parse(raw)
   const reviewConfig = toReviewConfig(config, resolveAgentAction(config, 'review'))
   delete reviewConfig.reviewerSandbox
+  delete reviewConfig.reviewerPlacement
   if (adapterOverride) reviewConfig.reviewerAdapter = adapterOverride
   return reviewConfig
 }

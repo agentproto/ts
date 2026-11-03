@@ -6371,7 +6371,7 @@ async function spawnAgentSessionOnce(
         // existed (no orphaned `starting` row).
         registry.forget(pendingSandbox.id)
         sandboxPendingId = undefined
-        return booted
+        return finish(booted)
       }
       // Belt and braces for a kill that landed between the boot's final
       // cancellation check and this point: never adopt a row that is no

@@ -1303,10 +1303,18 @@ jobs:
           # doesn't know the join token's own name ("ci-reviewer"), only the
           # home daemon does — join-token-registry.ts synthesizes
           # "<token name> #<pr>" from these labels when the box doesn't
-          # self-report one. No AGENTPROTO_JOIN_PROVIDER here: reviewerSandbox
-          # is `auto` (computer first, e2b fallback), so sandboxRefFor sets it
-          # to the leg it picked (computer, or e2b without a fleet URL).
+          # self-report one. No AGENTPROTO_JOIN_PROVIDER here: reviewerPlacement
+          # is a ladder (computer, e2b, computer with the paid fallback model),
+          # so reviewerPlacementFor defaults it to the first rung's provider.
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          # The paid usage-limit fallback rung (opencode-go/*) needs its own key:
+          # Zen and Go both read OPENCODE_API_KEY, which the api-key input below
+          # fills with ONE of them. reviewerPlacementFor/reviewerTurnRetryFor
+          # read these two from the daemon env, drop the paid id when the key is
+          # absent or the id is not in the owner-only allowlist, and pass the Go
+          # key into the box as OPENCODE_GO_API_KEY (never as OPENCODE_API_KEY).
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
         with:
           adapter: ${{ steps.cliver.outputs.adapter }}
           # The key authenticates OpenCode. It is selected by the resolved
@@ -1318,16 +1326,17 @@ jobs:
           provider-key: ${{ (startsWith(steps.cliver.outputs.model, 'opencode-go/') && (secrets.OPENCODE_GO_API_KEY || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY)) || secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.model }}
-          # Sandbox for the reviewer session: `auto` (computer fleet, e2b
-          # fallback/overflow; reviewerSandbox in
+          # Sandbox for the reviewer session: a placement ladder (computer
+          # fleet, e2b, computer with the paid fallback model;
+          # reviewerPlacement in
           # .github/agentic-review.json) — the daemon-internal spawn failure on
           # the runner does not reproduce inside a sandbox, whose own daemon
           # spawns the adapter.
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
-          # Computer fleet leg of the `auto` reviewer sandbox (reviewerSandbox in
-          # .github/agentic-review.json). All five are optional: with no
-          # COMPUTER_FLEET_URL (fork PR, secrets not provisioned) sandboxRefFor
-          # resolves the sandbox to plain e2b. E2B_API_KEY above stays: it funds the
+          # Computer fleet legs of the reviewer placement ladder (reviewerPlacement
+          # in .github/agentic-review.json). All five are optional: with no
+          # COMPUTER_FLEET_URL (fork PR, secrets not provisioned) reviewerPlacementFor
+          # drops the computer rungs and the ladder is just the e2b rung. E2B_API_KEY above stays: it funds the
           # e2b leg (the fallback, and the capped overflow when the fleet is full).
           computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
           computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
@@ -1553,7 +1562,7 @@ jobs:
           oauth-token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_FALLBACK }}
           model: ${{ steps.cliver.outputs.model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
-          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          # Computer fleet legs of the placement ladder: see the primary lane step.
           computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
           computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
           computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}
@@ -1742,6 +1751,8 @@ jobs:
           GITHUB_TOKEN: ${{ steps.setup.outputs.token }}
           AGENTPROTO_JOIN: ${{ secrets.AGENTPROTO_JOIN }}
           AGENTPROTO_JOIN_LABELS: "pr=${{ github.event.pull_request.number }},repo=${{ github.repository }},run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
         with:
           adapter: opencode
           auth-mode: api-key
@@ -1750,7 +1761,7 @@ jobs:
           provider-key-env: OPENCODE_API_KEY
           model: ${{ steps.cliver.outputs.fallback-model }}
           e2b-api-key: ${{ secrets.E2B_API_KEY }}
-          # Computer fleet leg of the `auto` sandbox: see the primary attempt in ci.yml.
+          # Computer fleet legs of the placement ladder: see the primary lane step.
           computer-controller-url: ${{ secrets.COMPUTER_FLEET_URL }}
           computer-token: ${{ secrets.COMPUTER_CI_TOKEN }}
           computer-tenant-id: ${{ secrets.COMPUTER_CI_TENANT }}

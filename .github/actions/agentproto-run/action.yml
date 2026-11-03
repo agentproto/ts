@@ -105,9 +105,9 @@ inputs:
     description: >
       Computer fleet controller URL (secrets.COMPUTER_FLEET_URL), exported as
       COMPUTER_CONTROLLER_URL on the daemon env. The `computer` leg of a
-      `reviewerSandbox.provider: "auto"` spec reads it; the workflow lane
-      (`sandboxRefFor` in .github/agentproto-workflows/lib/sandbox-agent.mjs)
-      falls back to plain e2b when it is empty. Setting it also exports
+      `computer` rungs of `reviewerPlacement` read it; the workflow lane
+      (`reviewerPlacementFor` in .github/agentproto-workflows/lib/sandbox-agent.mjs)
+      drops those rungs when it is empty, leaving the e2b rung. Setting it also exports
       COMPUTER_DAEMON_ROUTE=1 (the runner reaches boxes through the controller,
       not directly). Empty ⇒ none of the COMPUTER_* variables are set.
     required: false

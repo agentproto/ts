@@ -12,12 +12,6 @@
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/mimo-v2.6-flash-free",
-      "reviewerSandbox": {
-        "provider": "e2b",
-        "lifecycle": {
-          "destroy_on": "workspace-close"
-        }
-      },
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
@@ -27,31 +21,35 @@
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/step-5-preview-free",
-      "reviewerSandbox": {
-        "provider": "e2b",
-        "lifecycle": {
-          "destroy_on": "workspace-close"
-        }
-      },
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
-      ]
+      ],
+      "reviewerTurnRetry": {
+        "on": [
+          "rate-limit",
+          "upstream-5xx",
+          "no-output-stall",
+          "usage-limit"
+        ],
+        "maxRetries": 6,
+        "fallback": [
+          {
+            "model": "opencode-go/deepseek-v4.1-flash"
+          }
+        ]
+      }
     },
     "claude-cloud": {
       "cloud": "anthropic",
-      "reviewerAdapter": "claude-code-cloud"
+      "reviewerAdapter": "claude-code-cloud",
+      "reviewerPlacement": null,
+      "reviewerTurnRetry": null
     },
     "opencode-deepseek-free": {
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/deepseek-v4.1-flash-free",
-      "reviewerSandbox": {
-        "provider": "e2b",
-        "lifecycle": {
-          "destroy_on": "workspace-close"
-        }
-      },
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
@@ -61,27 +59,29 @@
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode-go/step-5-preview-free",
-      "reviewerSandbox": {
-        "provider": "e2b",
-        "lifecycle": {
-          "destroy_on": "workspace-close"
-        }
-      },
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
-      ]
+      ],
+      "reviewerTurnRetry": {
+        "on": [
+          "rate-limit",
+          "upstream-5xx",
+          "no-output-stall",
+          "usage-limit"
+        ],
+        "maxRetries": 6,
+        "fallback": [
+          {
+            "model": "opencode-go/deepseek-v4.1-flash"
+          }
+        ]
+      }
     },
     "opencode-go-deepseek-flash": {
       "reviewerAdapter": "opencode",
       "reviewerAuthMode": "api-key",
       "reviewerModel": "opencode/mimo-v2.6-flash-free",
-      "reviewerSandbox": {
-        "provider": "e2b",
-        "lifecycle": {
-          "destroy_on": "workspace-close"
-        }
-      },
       "reviewerSandboxEnv": [
         "OPENCODE_API_KEY",
         "GITHUB_TOKEN"
@@ -114,16 +114,113 @@
   "reviewerAdapter": "opencode",
   "reviewerAuthMode": "api-key",
   "reviewerModel": "opencode/deepseek-v4.1-flash-free",
-  "reviewerSandbox": {
-    "provider": "e2b",
-    "lifecycle": {
-      "destroy_on": "workspace-close"
-    }
+  "reviewerPlacement": {
+    "ladder": [
+      {
+        "sandbox": {
+          "provider": "computer",
+          "config": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egressIp": "auto",
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "lifecycle": {
+            "destroy_on": "workspace-close"
+          }
+        },
+        "preflight": [
+          "model-answers"
+        ]
+      },
+      {
+        "sandbox": {
+          "provider": "e2b",
+          "lifecycle": {
+            "destroy_on": "workspace-close"
+          }
+        },
+        "preflight": [
+          "model-answers"
+        ]
+      },
+      {
+        "sandbox": {
+          "provider": "computer",
+          "config": {
+            "template": "agentproto-workstation",
+            "cpus": 2,
+            "memoryMiB": 4096,
+            "fleetCapacityWaitMs": 240000,
+            "egressIp": "auto",
+            "egress": [
+              "github.com",
+              "api.github.com",
+              "codeload.github.com",
+              "objects.githubusercontent.com",
+              "raw.githubusercontent.com",
+              "registry.npmjs.org",
+              "opencode.ai",
+              "models.opencode.ai",
+              "models.dev",
+              "rdv.agentproto.sh"
+            ]
+          },
+          "lifecycle": {
+            "destroy_on": "workspace-close"
+          }
+        },
+        "model": "opencode-go/deepseek-v4.1-flash"
+      }
+    ]
   },
   "reviewerSandboxEnv": [
     "OPENCODE_API_KEY",
     "GITHUB_TOKEN"
   ],
+  "reviewerTurnRetry": {
+    "on": [
+      "rate-limit",
+      "upstream-5xx",
+      "no-output-stall",
+      "usage-limit"
+    ],
+    "maxRetries": 6,
+    "rotate": [
+      {
+        "model": "opencode/mimo-v2.6-flash-free"
+      },
+      {
+        "model": "opencode/deepseek-v4.1-flash-free"
+      },
+      {
+        "model": "opencode/glm-5.3-flash-free"
+      }
+    ],
+    "rotateOn": [
+      "rate-limit",
+      "upstream-5xx",
+      "no-output-stall"
+    ],
+    "fallback": [
+      {
+        "model": "opencode-go/deepseek-v4.1-flash"
+      }
+    ]
+  },
   "describe": {
     "auto": true,
     "minBodyChars": 80
