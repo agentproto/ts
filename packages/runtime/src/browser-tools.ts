@@ -1692,7 +1692,9 @@ export function registerBrowserTools(
           tip:
             "Watch live: open <daemon http url>" +
             viewPathSuffix(input.sessionId) +
-            " (same-origin HTML viewer, MJPEG). Remote: run `tunnel_create` over the daemon's HTTP port " +
+            "?token=<the \"token\" field of <workspace>/.agentproto/runtime.json> " +
+            "(same-origin HTML viewer, MJPEG; the screencast routes need the per-boot token, " +
+            "or an allowlisted Origin). Remote: run `tunnel_create` over the daemon's HTTP port " +
             "and use the same path behind the tunnel's signed URL. Record: call `browser_screencast_stop`.",
         })
       } catch (err) {
