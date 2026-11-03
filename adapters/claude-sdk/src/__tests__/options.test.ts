@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
+import type { McpServer } from "@agentclientprotocol/sdk"
 import {
   buildQueryOptions,
   DEFAULT_MODEL,
+  mapAcpMcpServers,
   UnroutedGatewayModelError,
   type ClaudeSdkConfig,
 } from "../options.js"
@@ -213,5 +215,50 @@ describe("buildQueryOptions — partial-message streaming", () => {
     // so the idle watchdog isn't tripped by a silent >90s thinking block.
     expect(build({}).includePartialMessages).toBe(true)
     expect(build({ thinking: true, baseUrl: "https://api.moonshot.ai/anthropic" }).includePartialMessages).toBe(true)
+  })
+})
+
+describe("mapAcpMcpServers: duplicate server names", () => {
+  const http = (name: string, url: string): McpServer => ({
+    type: "http",
+    name,
+    url,
+    headers: [],
+  })
+
+  const urlOf = (mapped: Record<string, unknown>, name: string): string => {
+    const entry = mapped[name]
+    return typeof entry === "object" && entry !== null && "url" in entry
+      ? String((entry as { url: unknown }).url)
+      : ""
+  }
+
+  it("keeps both the full self-mount and the scoped orchestrator gateway when the daemon injects two `agentproto` entries", () => {
+    // A session-chat orchestrator spawn gets the daemon's full self-mount
+    // (`/mcp`, carrying every app UI tool) AND a scoped orchestrator gateway
+    // (`/mcp/orchestrator`, the curated delegation subset), both named
+    // `agentproto`. A naive overwrite drops the full gateway and with it the
+    // `agentproto_work_board` / `app_ui_*` tools.
+    const mapped = mapAcpMcpServers([
+      http("agentproto", "http://127.0.0.1:18790/mcp?deferred=0&callerSessionId=sess_1"),
+      http("agentproto", "http://127.0.0.1:18790/mcp/orchestrator?scope=abc123"),
+    ])
+    expect(Object.keys(mapped)).toHaveLength(2)
+    expect(urlOf(mapped, "agentproto")).toContain("/mcp?")
+    expect(urlOf(mapped, "agentproto-2")).toContain("/mcp/orchestrator")
+  })
+
+  it("leaves a single server's name unchanged", () => {
+    const mapped = mapAcpMcpServers([http("agentproto", "http://127.0.0.1:18790/mcp")])
+    expect(Object.keys(mapped)).toEqual(["agentproto"])
+  })
+
+  it("disambiguates a third same-named server without colliding", () => {
+    const mapped = mapAcpMcpServers([
+      http("agentproto", "http://127.0.0.1:18790/mcp"),
+      http("agentproto", "http://127.0.0.1:18790/mcp/orchestrator?scope=one"),
+      http("agentproto", "http://127.0.0.1:18790/mcp/orchestrator?scope=two"),
+    ])
+    expect(Object.keys(mapped).sort()).toEqual(["agentproto", "agentproto-2", "agentproto-3"])
   })
 })
