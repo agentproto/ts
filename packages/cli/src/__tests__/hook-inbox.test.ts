@@ -62,6 +62,57 @@ describe("buildInboxHookOutput", () => {
   })
 })
 
+describe("buildInboxHookOutput for Stop", () => {
+  const steer = { ...item(2, "CI failed on main"), urgency: "steer", kind: "blocker" }
+  const fyi = { ...item(1), urgency: "fyi" }
+  const nextTurn = { ...item(3), urgency: "next-turn" }
+
+  it("answers a block decision carrying the inbox block when a steer item is unread", () => {
+    const built = buildInboxHookOutput([steer], "Stop")!
+    expect(built.output).toEqual({ decision: "block", reason: expect.stringContaining("CI failed on main") })
+    expect(built.output.reason).toContain('untrusted="true"')
+    expect(built.output.hookSpecificOutput).toBeUndefined()
+    expect(built.injectedIds).toEqual(["msg_2"])
+  })
+
+  it("answers a block decision for an interrupt item, the tier above steer", () => {
+    const built = buildInboxHookOutput([{ ...item(4, "wake now"), urgency: "interrupt" }], "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.output.reason).toContain("wake now")
+    expect(built.injectedIds).toEqual(["msg_4"])
+  })
+
+  it("blocks when the only must-wake item sits beyond the printed window", () => {
+    const items = [
+      ...Array.from({ length: 20 }, (_, i) => ({ ...item(i + 1), urgency: "next-turn" })),
+      { ...item(21, "late wake"), urgency: "interrupt" },
+    ]
+    const built = buildInboxHookOutput(items, "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.injectedIds).toHaveLength(20)
+    expect(built.injectedIds).not.toContain("msg_21")
+  })
+
+  it("includes lower-urgency unread items in the same block and acks them all", () => {
+    const built = buildInboxHookOutput([fyi, steer], "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.injectedIds).toEqual(["msg_1", "msg_2"])
+  })
+
+  it("returns nothing when stop_hook_active is true", () => {
+    expect(buildInboxHookOutput([steer], "Stop", 20, { stopHookActive: true })).toBeUndefined()
+  })
+
+  it("returns nothing when only fyi or next-turn items are unread", () => {
+    expect(buildInboxHookOutput([fyi, nextTurn], "Stop")).toBeUndefined()
+    expect(buildInboxHookOutput([item(4)], "Stop")).toBeUndefined()
+  })
+
+  it("returns nothing for an empty inbox", () => {
+    expect(buildInboxHookOutput([], "Stop")).toBeUndefined()
+  })
+})
+
 describe("resolveInboxSessionId", () => {
   it("lets --session win over the environment and the payload", () => {
     expect(
@@ -227,4 +278,49 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
     )
     expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_flag/inbox")
   })
+
+  const stdoutText = () => vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")
+
+  it("resolves cc:<session_id> for SessionStart and echoes the event", async () => {
+    await run({}, { session_id: "aaaa-1", hook_event_name: "SessionStart" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop" },
+      "t",
+    )
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+    const printed = JSON.parse(stdoutText()) as { hookSpecificOutput: { hookEventName: string } }
+    expect(printed.hookSpecificOutput.hookEventName).toBe("SessionStart")
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox/ack",
+      { ids: ["msg_1"] },
+      "t",
+    )
+  })
+
+  it("resolves cc:<session_id> for Stop and emits a block decision for a steer item", async () => {
+    httpGetJson.mockResolvedValue({ inbox: [{ ...item(1, "wake me"), urgency: "steer" }] } as never)
+    await run({}, { session_id: "aaaa-1", hook_event_name: "Stop" })
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+    expect(JSON.parse(stdoutText())).toMatchObject({ decision: "block" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox/ack",
+      { ids: ["msg_1"] },
+      "t",
+    )
+  })
+
+  it.each(["SessionStart", "Stop"])(
+    "prints nothing for %s when the id is the legacy env fallback",
+    async event => {
+      httpGetJson.mockResolvedValue({ inbox: [{ ...item(1, "wake me"), urgency: "steer" }] } as never)
+      expect(await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { hook_event_name: event })).toBe(0)
+      expect(stdoutText()).toBe("")
+      expect(httpGetJson).not.toHaveBeenCalled()
+      expect(httpPostJson).not.toHaveBeenCalled()
+    },
+  )
 })
