@@ -551,14 +551,19 @@ test('non-auto providers do not get a join provider default (join gating unchang
 
 const FLASH = 'opencode-go/deepseek-v4.1-flash'
 const lifecycle = { destroy_on: 'workspace-close' }
-const ladderPresets = Object.entries(reviewConfig.agentPresets ?? {}).filter(([, p]) => p.reviewerPlacement)
 const mergedPreset = name => ({ ...reviewConfig, ...reviewConfig.agentPresets[name] })
+// Presets inherit the top-level ladder (toReviewConfig spreads the preset over
+// the config), so the opencode presets are the ones that run on it.
+const ladderPresets = Object.entries(reviewConfig.agentPresets ?? {})
+  .filter(([, p]) => p.reviewerAdapter === 'opencode')
+  .map(([name]) => [name, mergedPreset(name)])
 const GO_ENV = { OPENCODE_GO_API_KEY: 'go-key', AGENT_ALLOWED_METERED_MODELS: FLASH }
 
-test('agentic-review.json: the top level and every opencode preset declare the same 3-rung ladder', () => {
+test('agentic-review.json: one 3-rung ladder at the top level, inherited by every opencode preset', () => {
   assert.equal(ladderPresets.length, 5)
   assert.equal(reviewConfig.reviewerSandbox, undefined, 'a ladder is exclusive with reviewerSandbox')
   for (const [name, preset] of ladderPresets) {
+    assert.equal(reviewConfig.agentPresets[name].reviewerPlacement, undefined, `${name} redeclares the ladder`)
     assert.equal(preset.reviewerSandbox, undefined, name)
     assert.deepEqual(preset.reviewerPlacement, reviewConfig.reviewerPlacement, name)
   }
