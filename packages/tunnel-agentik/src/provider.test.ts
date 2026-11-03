@@ -108,6 +108,22 @@ describe("AgentikTunnelProvider.create", () => {
     })
   })
 
+  it("sends the requested root, and omits it when unset", async () => {
+    const { fetch, calls } = recorder(
+      jsonResponse({ key: "chat", hostnames: ["x7.agentproto.cloud"] }),
+      jsonResponse({ key: "chat", hostnames: ["x7.tunnel.agentik.net"] }),
+    )
+    const instance = provider(fetch)
+    await instance.create({ key: "chat", root: "agentproto.cloud" })
+    await instance.create({ key: "chat" })
+    expect(JSON.parse(String(calls[0]?.init?.body))).toEqual({
+      service: null,
+      hostnames: [],
+      root: "agentproto.cloud",
+    })
+    expect(JSON.parse(String(calls[1]?.init?.body))).toEqual({ service: null, hostnames: [] })
+  })
+
   it("accepts a dotted, underscored key verbatim", async () => {
     const { fetch, calls } = recorder(jsonResponse({ key: "team.api_1", hostnames: [] }))
     await provider(fetch).create({ key: "team.api_1" })

@@ -33,7 +33,7 @@ const USAGE = `agentproto tunnel — manage public cloudflared tunnels
 Usage:
   agentproto tunnel create --port <n> [--provider <slug>] [--name <slug>]
                            [--label <text>] [--host <host>] [--autostart]
-                           [--hostname <fqdn>] [--tunnel-id <id>]
+                           [--hostname <fqdn>] [--root <domain>] [--tunnel-id <id>]
                            [--credentials-file <path>] [--ttl <1h|24h|7d>]
                            [--public] [--json]
   agentproto tunnel list   [--active] [--json]
@@ -68,6 +68,12 @@ Providers (built-in; legacy aliases quick/named accepted):
                    configured once via the setup_tunnel_provider MCP tool.
                    \`add-hostname\` / \`remove-hostname\` swap hostnames with
                    an overlap window.
+  cloudflare-provisioned
+                   A provisioning service creates the tunnel (log in once with
+                   \`tunnel login cloudflare-provisioned\`). --hostname is
+                   optional (the service assigns one); --root picks the domain
+                   it assigns under when it serves several (e.g.
+                   agentproto.cloud).
   ngrok            Ngrok tunnel — configure its authtoken first via the
                    setup_tunnel_provider MCP tool.
   Any installed third-party provider (@scope/agentproto-adapter-<slug> or
@@ -83,6 +89,8 @@ Examples:
   agentproto tunnel create --port 5173 --name vite-preview --json
   agentproto tunnel create --port 3040 --name guilde --provider cloudflare-named \\
     --hostname guilde-local.example.com --tunnel-id guilde --autostart
+  agentproto tunnel create --port 4000 --provider cloudflare-provisioned \\
+    --root agentproto.cloud
   agentproto tunnel list --active
   agentproto tunnel stop vite-preview
   agentproto tunnel status vite-preview
@@ -131,6 +139,7 @@ async function runCreate(args: readonly string[]): Promise<number> {
       host: { type: "string" },
       autostart: { type: "boolean" },
       hostname: { type: "string" },
+      root: { type: "string" },
       "tunnel-id": { type: "string" },
       "credentials-file": { type: "string" },
       ttl: { type: "string" },
@@ -186,6 +195,7 @@ async function runCreate(args: readonly string[]): Promise<number> {
   if (values.host) body.targetHost = values.host
   if (values.autostart) body.autostart = true
   if (values.hostname) body.hostname = values.hostname
+  if (values.root) body.root = values.root
   if (values["tunnel-id"]) body.tunnelId = values["tunnel-id"]
   if (values["credentials-file"]) body.credentialsFile = values["credentials-file"]
   if (values.ttl) body.ttl = values.ttl

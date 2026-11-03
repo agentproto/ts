@@ -25,7 +25,7 @@
  * token).
  *
  *   PUT    {provisionerUrl}/v1/tunnels/{key}
- *          body  { service: "http://127.0.0.1:<port>" | null, hostnames: string[] }
+ *          body  { service: "http://127.0.0.1:<port>" | null, hostnames: string[], root?: string }
  *          200   { tunnelId, hostnames: string[], token }
  *   DELETE {provisionerUrl}/v1/tunnels/{key}            -> 2xx | 404
  *
@@ -33,6 +33,9 @@
  *   per user, so two users' keys never collide.
  * - `hostnames` is a request (primary first). Empty = "assign me one". The
  *   service decides what is allowed and returns what it actually routed.
+ * - `root` (optional) picks the domain an assigned hostname lives under
+ *   (e.g. `agentproto.cloud`) on a service that serves several. Omitted =
+ *   the service's choice for this caller. Sent on every PUT of the tunnel.
  * - `service: null` = the tunnel isn't running here; keep the current origin.
  * - PUT is idempotent and replayed on every start, like the managed engine.
  * - Errors: JSON `{ error, message, checkoutUrl? }`. 401 -> in OIDC mode the
@@ -311,8 +314,12 @@ export function cloudflareProvisionedTunnelProvider(
     return new ProvisionerError(res.status, code, msg, body.checkoutUrl)
   }
 
-  const put = async (key: string, hostnames: string[], svc: string | null): Promise<PutResult> => {
-    const res = await call("PUT", key, { service: svc, hostnames })
+  const put = async (tunnel: TunnelIdentity, hostnames: string[], svc: string | null): Promise<PutResult> => {
+    const res = await call("PUT", tunnel.key, {
+      service: svc,
+      hostnames,
+      ...(tunnel.root ? { root: tunnel.root } : {}),
+    })
     if (!res.ok) throw await failure(res, "provision")
     const body = (await res.json()) as Partial<PutResult>
     if (!body.tunnelId || !body.token || !Array.isArray(body.hostnames) || body.hostnames.length === 0) {
@@ -377,7 +384,7 @@ export function cloudflareProvisionedTunnelProvider(
       service = `http://${opts.target.host}:${opts.target.port}`
       let rec: PutResult
       try {
-        rec = await put(tunnel.key, tunnel.hostnames.map(normalizeHost), service)
+        rec = await put(tunnel, tunnel.hostnames.map(normalizeHost), service)
       } catch (err) {
         service = null
         if (err instanceof OidcError) throw new Error(`cloudflare-provisioned: ${err.message}`)
@@ -441,14 +448,14 @@ export function cloudflareProvisionedTunnelProvider(
     async addHostname(tunnel: TunnelIdentity, hostname: string): Promise<void> {
       const h = normalizeHost(hostname)
       const next = [h, ...tunnel.hostnames.map(normalizeHost).filter(x => x !== h)]
-      const rec = await put(tunnel.key, next, service)
+      const rec = await put(tunnel, next, service)
       runner?.setHostnames(rec.hostnames)
     },
 
     async removeHostname(tunnel: TunnelIdentity, hostname: string): Promise<void> {
       const h = normalizeHost(hostname)
       const rest = tunnel.hostnames.map(normalizeHost).filter(x => x !== h)
-      const rec = await put(tunnel.key, rest, service)
+      const rec = await put(tunnel, rest, service)
       runner?.setHostnames(rec.hostnames)
     },
 

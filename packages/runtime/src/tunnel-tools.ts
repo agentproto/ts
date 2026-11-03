@@ -79,6 +79,7 @@ export function registerTunnelTools(
     health: t.health?.state,
     hostname: t.hostname,
     hostnames: t.hostnames,
+    root: t.root,
     createdAt: t.createdAt,
   })
 
@@ -170,6 +171,15 @@ export function registerTunnelTools(
           "REQUIRED for `named` and `cloudflare-managed`: the stable public " +
             "hostname routed to the tunnel (e.g. app.example.com).",
         ),
+      root: z
+        .string()
+        .optional()
+        .describe(
+          "`cloudflare-provisioned` only: the domain the service assigns the " +
+            "hostname under, when it serves several (e.g. `agentproto.cloud`). " +
+            "Omit for the service's default for your key. Refused by every " +
+            "other provider.",
+        ),
       tunnelId: z
         .string()
         .optional()
@@ -214,6 +224,7 @@ export function registerTunnelTools(
           ...(input.targetHost ? { targetHost: input.targetHost } : {}),
           ...(input.autostart ? { autostart: true } : {}),
           ...(input.hostname ? { hostname: input.hostname } : {}),
+          ...(input.root !== undefined ? { root: input.root } : {}),
           ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
           ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
           ...(input.ttl ? { ttl: input.ttl } : {}),

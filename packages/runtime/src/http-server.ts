@@ -10564,6 +10564,7 @@ async function handleTunnels(
         ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
         ...(b.autostart === true ? { autostart: true } : {}),
         ...(typeof b.hostname === "string" ? { hostname: b.hostname } : {}),
+        ...(typeof b.root === "string" ? { root: b.root } : {}),
         ...(typeof b.tunnelId === "string" ? { tunnelId: b.tunnelId } : {}),
         ...(typeof b.credentialsFile === "string"
           ? { credentialsFile: b.credentialsFile }

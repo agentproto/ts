@@ -12,7 +12,7 @@
  *           200 { tunnels: [TunnelRecord, …] }
  *
  *   PUT    {baseUrl}/v1/tunnels/{key}
- *           body { service: "http://127.0.0.1:<port>" | null, hostnames: string[] }
+ *           body { service: "http://127.0.0.1:<port>" | null, hostnames: string[], root?: string }
  *           200   { key, tunnelId, hostnames, publicUrl?, token }
  *
  *   DELETE {baseUrl}/v1/tunnels/{key}
@@ -206,7 +206,7 @@ export class AgentikTunnelProvider extends TunnelClient implements TunnelProvide
     const hostnames = input.hostnames ?? []
     const record = await this.request<unknown>(`/v1/tunnels/${encodeURIComponent(key)}`, {
       method: "PUT",
-      body: { service, hostnames },
+      body: { service, hostnames, ...(input.root ? { root: input.root } : {}) },
     })
 
     if (!isRecord(record)) {
