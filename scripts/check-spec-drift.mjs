@@ -27,7 +27,11 @@
  *
  * Usage: node scripts/check-spec-drift.mjs
  *   --aip 36 --slug sandbox --doctype SANDBOX  (these defaults)
- *   [--inline-refs]
+ *   [--inline-refs] [--write]
+ *
+ * `--write` rewrites the generated code in `packages/<slug>/src/schema.ts`
+ * instead of only reporting drift, preserving each package's own leading
+ * doc comment.
  *
  * A manual run of a package DEFAULT_PACKAGES guards takes that entry's
  * flags (`--inline-refs` for AIP-72), so it regens exactly as the scripted
@@ -42,7 +46,7 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -67,7 +71,7 @@ export const DEFAULT_PACKAGES = [
   { aip: 42, slug: "agent", doctype: "AGENT", inlineRef: ["toolRef"] },
 ]
 
-const BOOLEAN_FLAGS = new Set(["inline-refs"])
+const BOOLEAN_FLAGS = new Set(["inline-refs", "write"])
 
 function parseArgs(argv) {
   const args = {}
@@ -109,14 +113,21 @@ export function cliTargets(argv) {
   ]
 }
 
+/** Split schema.ts into its leading `/** ... *\/` doc comment (plus the
+ *  blank lines after it) and the generated code below it. */
+export function splitSchema(src) {
+  const match = src.match(/^(\/\*\*[\s\S]*?\*\/\n*)([\s\S]*)$/)
+  return match ? { header: match[1], code: match[2] } : { header: "", code: src }
+}
+
 /** schema.ts without its leading `/** ... *\/` doc comment (and the blank
  *  lines after it), so a package-specific header is not reported as drift. */
 export function schemaCode(src) {
-  return src.replace(/^\/\*\*[\s\S]*?\*\/\n*/, "")
+  return splitSchema(src).code
 }
 
 export async function checkSpecDrift(opts = {}) {
-  const { aip, slug, doctype, inlineRefs, inlineRef } = { ...DEFAULTS, ...opts }
+  const { aip, slug, doctype, inlineRefs, inlineRef, write } = { ...DEFAULTS, ...opts }
   const specJsonPath = resolve(ROOT, "specs", "resources", `aip-${aip}`, "draft", `${doctype}.schema.json`)
   if (!existsSync(specJsonPath)) {
     return { ok: false, message: `JSON draft not found: ${specJsonPath}` }
@@ -139,12 +150,21 @@ export async function checkSpecDrift(opts = {}) {
     return { ok: false, message: `scaffold-aip --schema-only failed:\n${res.stderr || res.stdout}` }
   }
 
-  const checkedIn = schemaCode(
-    readFileSync(resolve(ROOT, "packages", slug, "src", "schema.ts"), "utf8"),
-  )
+  const schemaPath = resolve(ROOT, "packages", slug, "src", "schema.ts")
+  const checkedInRaw = readFileSync(schemaPath, "utf8")
+  const checkedIn = schemaCode(checkedInRaw)
   const regen = schemaCode(res.stdout)
   if (regen === checkedIn) {
-    return { ok: true, message: `spec↔codegen in sync for @agentproto/${slug}` }
+    return { ok: true, changed: false, message: `spec↔codegen in sync for @agentproto/${slug}` }
+  }
+  if (write) {
+    const written = `${splitSchema(checkedInRaw).header}${regen}`
+    writeFileSync(schemaPath, written)
+    return {
+      ok: true,
+      changed: true,
+      message: `spec-codegen: rewrote packages/${slug}/src/schema.ts`,
+    }
   }
   const lines = []
   const e = regen.split("\n")
@@ -166,10 +186,12 @@ export async function checkSpecDrift(opts = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const targets = cliTargets(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  const targets = cliTargets(argv)
+  const write = argv.includes("--write")
   let ok = true
   for (const t of targets) {
-    const result = await checkSpecDrift(t)
+    const result = await checkSpecDrift({ ...t, write })
     if (result.ok) {
       console.log(result.message)
     } else {
