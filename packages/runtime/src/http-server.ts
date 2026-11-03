@@ -2034,6 +2034,10 @@ export async function startHttpServer(
    * (list, get, SSE stream) stay open for read-only telemetry from
    * existing tools that haven't learned about the token yet.
    */
+  function isScreencastSessionsRoute(path: string): boolean {
+    return /^\/sessions\/[^/]+\/screencast(?:\.(?:jpg|mjpg))?$/.test(path)
+  }
+
   function isMutatingSessionsRoute(method: string, path: string): boolean {
     if (!path.startsWith("/sessions")) return false
     if (method === "POST" || method === "DELETE" || method === "PUT" || method === "PATCH") {
@@ -3557,7 +3561,12 @@ export async function startHttpServer(
         // /sessions/:id/stream (SSE), POST /sessions/:id/kill,
         // DELETE /sessions/:id (forget after exit).
         if (opts.sessions && (path.startsWith("/sessions") || path === "/usage/rollup")) {
-          if (isMutatingSessionsRoute(req.method ?? "GET", path)) {
+          // chrome-live screencast reads stream the pixels of the agent tab
+          // inside the user's own Chrome. Unlike the other read-only GETs they
+          // are gated like a mutating route (bearer / ?token= / allowlisted
+          // Origin / embed token): CORS answers `*` to an untrusted origin, so
+          // without this any web page could fetch a frame from loopback.
+          if (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path)) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
               rejectUnauthorizedSession(req, res, gate)
@@ -8229,6 +8238,28 @@ async function handleSessions(
     }
 
     // Extensionless: a minimal same-origin HTML viewer around the MJPEG stream.
+    // The <img> request carries no Origin and no Authorization header, so the
+    // credential that let this page through the gate (?token= or ?et=) is
+    // echoed onto the stream URL. Everything interpolated is HTML-escaped.
+    const escapeHtml = (value: string): string =>
+      value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;")
+    const viewerQuery = new URLSearchParams()
+    const pageQuery = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
+    for (const key of ["token", "et"]) {
+      const value = pageQuery.get(key)
+      if (value) viewerQuery.set(key, value)
+    }
+    const viewerQueryString = viewerQuery.toString()
+    const streamQuery = viewerQueryString ? `?${viewerQueryString}` : ""
+    const safeId = escapeHtml(browserDescriptor.id)
+    const streamSrc = escapeHtml(
+      `/sessions/${encodeURIComponent(browserDescriptor.id)}/screencast.mjpg${streamQuery}`
+    )
     const html = `<!doctype html>
 <html>
 <head>
@@ -8244,10 +8275,10 @@ code { color: #9ad; }
 </head>
 <body>
 <header>
-  <strong>chrome-live screencast</strong> · session <code>${browserDescriptor.id}</code> ·
+  <strong>chrome-live screencast</strong> · session <code>${safeId}</code> ·
   agent tab inside the user's Chrome (CDP <code>Page.startScreencast</code>; not a desktop capture).
 </header>
-<img alt="chrome-live screencast" src="/sessions/${browserDescriptor.id}/screencast.mjpg"/>
+<img alt="chrome-live screencast" src="${streamSrc}"/>
 </body>
 </html>
 `
