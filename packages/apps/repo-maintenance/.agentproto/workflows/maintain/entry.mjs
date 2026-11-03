@@ -787,6 +787,18 @@ export function depBumpWhy(proof) {
   )
 }
 
+/** What a `history-covered` proof found, as one short clause:
+ *  `3 line(s) found in base history: catalog/snapshot.json (3, a1b2c3d4e5..f6a7b8c9d0)`. */
+export function historyCoveredWhy(proof) {
+  const files = Array.isArray(proof?.files) ? proof.files : []
+  const shown = files.slice(0, 3).map(f => {
+    const span = f.oldest === f.newest ? String(f.oldest ?? "").slice(0, 10) : `${String(f.oldest ?? "").slice(0, 10)}..${String(f.newest ?? "").slice(0, 10)}`
+    return `${f.file} (${f.lines}, ${span}${Array.isArray(f.movedTo) && f.movedTo.length > 0 ? `, moved to ${f.movedTo.join(", ")}` : ""})`
+  })
+  const more = files.length > 3 ? `, … and ${files.length - 3} more` : ""
+  return `${proof?.linesMatched ?? 0} line(s) found in base history${shown.length > 0 ? `: ${shown.join(", ")}${more}` : ""}`
+}
+
 /** The coverage percentage in a `branch_gc` `verdictGuard` string
  *  (`"line coverage 80% of 50 added lines (< 95%)"`), or null when absent. */
 export function lineCoveragePctOfGuard(guard) {
@@ -931,6 +943,8 @@ export function buildReport(b) {
   const autoPassed = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "verified-pr"))
   // ... or by the dep-bump pass: only lockfile, changeset and dependency lines base already has at least as new.
   const autoPassedDepBump = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "dep-bump"))
+  // ... or by the history-covered pass: every missing line was once added to the same path on base.
+  const autoPassedHistory = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "deleted" && o.guard === "history-covered"))
   const verifiedPrOn = b.input?.requireOperatorBelowGuard !== true
   const refusedByGuard = groupOutcomesBySha(applyOutcomes.filter(o => o.result === "refused-guard"))
 
@@ -1078,7 +1092,8 @@ export function buildReport(b) {
       lines.push(
         `- reviewed: ${reclaimedReviewed.length} reclaimed (includeReviewed true` +
           `${autoPassed.length > 0 ? `; ${autoPassed.length} of them past the line guard by verified-pr` : ""}` +
-          `${autoPassedDepBump.length > 0 ? `; ${autoPassedDepBump.length} past the line guard by dep-bump` : ""}), ` +
+          `${autoPassedDepBump.length > 0 ? `; ${autoPassedDepBump.length} past the line guard by dep-bump` : ""}` +
+          `${autoPassedHistory.length > 0 ? `; ${autoPassedHistory.length} past the line guard by history-covered` : ""}), ` +
           `${refusedByGuard.length} refused by the line-coverage guard`,
       )
     } else {
@@ -1141,13 +1156,23 @@ export function buildReport(b) {
     )
     for (const g of autoPassedDepBump) lines.push(`- ${tipLabel(g)} - ${depBumpWhy(g.outcome.depBump)}`)
   }
+  if (applyReviewed && autoPassedHistory.length > 0) {
+    lines.push("")
+    lines.push(`## Auto-passed by history-covered (${autoPassedHistory.length})`)
+    lines.push(
+      "Below the line guard, but reclaimed without a human: every added line not on base's tip was added to the same path " +
+        "(or the path base moved it to) by a commit in base's history, and no line base still has is deleted. " +
+        "Restorable from the restore log above.",
+    )
+    for (const g of autoPassedHistory) lines.push(`- ${tipLabel(g)} - ${historyCoveredWhy(g.outcome.historyCovered)}`)
+  }
   if (applyReviewed && refusedByGuard.length > 0) {
     lines.push("")
     lines.push(`## Human decision queue — reviewer agreed, refused by line guard (${refusedByGuard.length})`)
     lines.push(
       "The reviewer's `gate.agree` was an honest safety judgement, not a policy decision. " +
         "`branch_gc` refused it deterministically because line coverage was below the guard" +
-        (verifiedPrOn ? " and neither the verified-pr nor the dep-bump pass could prove it (each row says why)" : "") +
+        (verifiedPrOn ? " and none of the verified-pr, dep-bump and history-covered passes could prove it (each row says why)" : "") +
         "; " +
         "these are for a human to decide, NOT evidence that the reviewer said the work was unsafe.",
     )
@@ -1160,7 +1185,8 @@ export function buildReport(b) {
       lines.push(
         decisionQueueLine(g, pct, tipEvidenceOf(g.sha, b.steps.branchGcVerify, wtPlan), records.get(g.sha)) +
           (g.outcome.verifiedPrRefusal ? ` - verified-pr refused: ${g.outcome.verifiedPrRefusal}` : "") +
-          (g.outcome.depBumpRefusal ? ` - dep-bump refused: ${g.outcome.depBumpRefusal}` : ""),
+          (g.outcome.depBumpRefusal ? ` - dep-bump refused: ${g.outcome.depBumpRefusal}` : "") +
+          (g.outcome.historyRefusal ? ` - history refused: ${g.outcome.historyRefusal}` : ""),
       )
     }
     lines.push("")

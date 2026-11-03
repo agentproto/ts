@@ -102,7 +102,12 @@ Usage:
                 package.json dependency spec (or version) base already declares
                 at an equal or higher lower bound; any other line keeps the
                 refusal, naming it.
-                --require-operator-below-guard turns both passes off.
+                Then the history-covered pass reclaims an obsolete or superseded
+                verdict when every changed file is proven by the dep-bump rules,
+                or every added line not on base's tip was added to that same path
+                (or the path base moved it to) by a commit in base's history and
+                no line base still has is deleted; otherwise it names the line.
+                --require-operator-below-guard turns all three passes off.
   gc approve    Record a human operator approval that lets --include-reviewed reclaim a
                 tip the line-coverage guard refused. Copies the stored verdict for each
                 <sha> (or the current tip of <branch>) and adds { by, note }. Refused when
@@ -419,7 +424,8 @@ function entryAction(e: BranchGcPlanEntry): string {
     `review${c ? ` (${c.unique}u ${c.evolved}e ${c.deletes}d)` : ""}${lc ? ` ${lc.pct}% of ${lc.added} lines in base` : ""}` +
     `${e.pushed ? ` ${e.pushed}` : ""}${e.verdictGuard ? ` — verdict refused: ${e.verdictGuard}` : ""}` +
     `${e.verifiedPrRefusal ? ` (verified-pr: ${e.verifiedPrRefusal})` : ""}` +
-    `${e.depBumpRefusal ? ` (dep-bump: ${e.depBumpRefusal})` : ""}`
+    `${e.depBumpRefusal ? ` (dep-bump: ${e.depBumpRefusal})` : ""}` +
+    `${e.historyRefusal ? ` (history: ${e.historyRefusal})` : ""}`
   )
 }
 
@@ -457,7 +463,8 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
     if (o.result === "deleted") {
       detail =
         `deleted (${o.reclaimReason}${o.verifiedPr ? `, verified-pr ${o.verifiedPr.prs.map((n) => `#${n}`).join(", ")}` : ""}` +
-        `${o.depBump ? `, dep-bump ${o.depBump.dependencies} dependency line(s)` : ""})`
+        `${o.depBump ? `, dep-bump ${o.depBump.dependencies} dependency line(s)` : ""}` +
+        `${o.historyCovered ? `, history-covered ${o.historyCovered.linesMatched} line(s)` : ""})`
     }
     else if (o.result === "aborted-moved") detail = `aborted: tip moved to ${o.currentSha.slice(0, 10)} since the plan`
     else if (o.result === "aborted-reclassified") detail = `aborted: reclassified ${o.from} → ${o.to}${o.holdReason ? ` (${o.holdReason})` : ""}`
@@ -465,7 +472,8 @@ function printOutcomes(outcomes: readonly BranchGcApplyOutcome[], restoreLog: st
     else if (o.result === "refused-guard") {
       detail =
         `verdict refused: ${o.guard}${o.verifiedPrRefusal ? ` (verified-pr: ${o.verifiedPrRefusal})` : ""}` +
-        `${o.depBumpRefusal ? ` (dep-bump: ${o.depBumpRefusal})` : ""}`
+        `${o.depBumpRefusal ? ` (dep-bump: ${o.depBumpRefusal})` : ""}` +
+        `${o.historyRefusal ? ` (history: ${o.historyRefusal})` : ""}`
     }
     process.stdout.write(`${o.kind.padEnd(6)}  ${o.name.padEnd(48)}  ${detail}\n`)
   }

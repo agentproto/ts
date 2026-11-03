@@ -45,6 +45,13 @@ export interface BranchGcDepBumpView {
   goneOnBase?: string[]
 }
 
+/** The `history-covered` pass's proof, mirrors `HistoryCoveredProof`. */
+export interface BranchGcHistoryCoveredView {
+  filesChecked: number
+  linesMatched: number
+  files: Array<{ file: string; lines: number; oldest: string; newest: string; movedTo?: string[] }>
+}
+
 /** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
 export interface BranchGcVerifiedPrView {
   prs: number[]
@@ -109,6 +116,10 @@ export interface BranchGcPlanEntryView {
   depBump?: BranchGcDepBumpView
   /** Set when the guard, `verified-pr` and `dep-bump` all refused: the first line `dep-bump` could not explain. */
   depBumpRefusal?: string
+  /** Set when the `history-covered` pass reclaimed a guard-refused verdict. */
+  historyCovered?: BranchGcHistoryCoveredView
+  /** Set when the `history-covered` pass refused too: the first file or line it could not find in base's history. */
+  historyRefusal?: string
 }
 
 export interface BranchGcPlanView {
@@ -169,7 +180,7 @@ export interface BranchGcOutcomeView {
   from?: BranchGcClass
   to?: BranchGcClass
   message?: string
-  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"` or `"dep-bump"` when that pass reclaimed it. */
+  /** `refused-guard`: why the agreeing verdict was refused. `deleted`: `"verified-pr"`, `"dep-bump"` or `"history-covered"` when that pass reclaimed it. */
   guard?: string
   /** `deleted` by the `verified-pr` pass: its proof. */
   verifiedPr?: BranchGcVerifiedPrView
@@ -179,6 +190,10 @@ export interface BranchGcOutcomeView {
   depBump?: BranchGcDepBumpView
   /** `refused-guard`: why the `dep-bump` pass refused too. */
   depBumpRefusal?: string
+  /** `deleted` by the `history-covered` pass: its proof. */
+  historyCovered?: BranchGcHistoryCoveredView
+  /** `refused-guard`: why the `history-covered` pass refused too. */
+  historyRefusal?: string
 }
 
 /** Per-scope tally of apply outcomes. `skipped` = everything that was not
@@ -345,6 +360,7 @@ export interface BranchGcCompactEntry {
   headPr?: BranchGcPlanEntryView["headPr"]
   verifiedPrRefusal?: string
   depBumpRefusal?: string
+  historyRefusal?: string
 }
 
 export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactEntry {
@@ -363,6 +379,7 @@ export function compactBranchGcEntry(e: BranchGcPlanEntryView): BranchGcCompactE
     ...(e.headPr !== undefined ? { headPr: e.headPr } : {}),
     ...(e.verifiedPrRefusal !== undefined ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
     ...(e.depBumpRefusal !== undefined ? { depBumpRefusal: e.depBumpRefusal } : {}),
+    ...(e.historyRefusal !== undefined ? { historyRefusal: e.historyRefusal } : {}),
   }
 }
 

@@ -275,6 +275,8 @@ export {
   type VerifiedPrFile,
   type VerifiedPrProof,
   type DepBumpProof,
+  type HistoryCoveredFile,
+  type HistoryCoveredProof,
   type RestoreBranchGcInput,
   type BranchGcRestoreOutcome,
   type BranchGcRestoreResult,

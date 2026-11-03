@@ -107,6 +107,19 @@
  * names the first unexplained line). Same switch, same exclusions as
  * `verified-pr`.
  *
+ * HISTORY-COVERED PASS. The next most common false positive is a tip whose
+ * missing lines are older wording base has since rewritten (a stale
+ * generated snapshot, a revert to a value base once had). When `dep-bump`
+ * refuses too, an agreeing `obsolete` or `superseded` verdict still reclaims
+ * (`verdictGuard: "passed by history-covered ..."`, `historyCovered` on the
+ * entry, the apply outcome and the restore log) when `historyCoveredCheck`
+ * proves every changed file is either proven by the `dep-bump` per-file rules
+ * or a text file whose every uncovered added line was ADDED to that same path
+ * (or the path base moved it to) by some commit reachable from base, and that
+ * deletes no line base still has: every line is recoverable from base's own
+ * history. Bounded per tip; past the bound it refuses. Anything else keeps
+ * the refusal (`historyRefusal`). Same switch, same exclusions as `dep-bump`.
+ *
  * One ref family is classified against something other than base: a SANDBOX
  * CHECKPOINT branch (remote kind, name `agentproto-checkpoint/<work>` — the
  * force-pushed snapshot of a sandbox box's uncommitted work). Its tip is a
@@ -327,6 +340,27 @@ export interface VerifiedPrProof {
   files: VerifiedPrFile[]
 }
 
+/** One file whose uncovered added lines the `history-covered` pass found in base's history of that path. */
+export interface HistoryCoveredFile {
+  file: string
+  /** Uncovered added lines found as added lines in base's history. */
+  lines: number
+  /** Of the newest base commits that added each matched line, the oldest and the newest. */
+  oldest: string
+  newest: string
+  /** The paths base moved this one to, whose history was searched too (absent when base still has the path or never moved it). */
+  movedTo?: string[]
+}
+
+/** What the `history-covered` pass checked before it let a guard-refused verdict reclaim. */
+export interface HistoryCoveredProof {
+  /** Files the tip changes (merge-base to tip), every one checked. */
+  filesChecked: number
+  /** Uncovered added lines found in base's history, across `files`. */
+  linesMatched: number
+  files: HistoryCoveredFile[]
+}
+
 /** What the `dep-bump` pass checked before it let a guard-refused verdict reclaim. */
 export interface DepBumpProof {
   /** Dependency entries (`dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `pnpm.overrides`) the tip changed, each declared on base at an equal or higher lower bound (or gone from every base package). */
@@ -377,6 +411,10 @@ export interface BranchGcPlanEntry extends BranchRef, TipClassification {
   depBump?: DepBumpProof
   /** Set when the guard, `verified-pr` and the `dep-bump` pass all refused: the first line `dep-bump` could not explain. */
   depBumpRefusal?: string
+  /** Set when the `history-covered` pass reclaimed a guard-refused verdict. */
+  historyCovered?: HistoryCoveredProof
+  /** Set when the `history-covered` pass refused too: the first file or line it could not find in base's history. */
+  historyRefusal?: string
 }
 
 export interface BranchGcPlan {
@@ -395,7 +433,7 @@ export interface BranchGcPlan {
   includeReviewed: boolean
   /** An agreeing verdict only reclaims when the tip's line coverage is at least this (percent). */
   minLineCoverage: number
-  /** true = no `verified-pr` or `dep-bump` pass: below the line guard only an operator approval reclaims. Absent on an older plan (= false). */
+  /** true = no `verified-pr`, `dep-bump` or `history-covered` pass: below the line guard only an operator approval reclaims. Absent on an older plan (= false). */
   requireOperatorBelowGuard?: boolean
   /** `git ls-remote <remote> refs/pull/<N>/head` for the forge-mirror shortcut: unavailable = no shortcut. */
   forgeMirrorCheck: { available: boolean; reason?: string }
@@ -1796,13 +1834,224 @@ async function depBumpCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecor
   }
 }
 
+/** Bound on the files one tip can make the `history-covered` pass search base's history for. */
+const HISTORY_MAX_FILES = 50
+/** Bound on the `git log -p` bytes one tip can make the `history-covered` pass read (summed over its paths, cached or not). */
+const HISTORY_MAX_BYTES = 32 * 1024 * 1024
+/** Bound on how many times the pass follows a path base moved (a move of a move ...). */
+const HISTORY_MAX_MOVES = 3
+
+/** Base's history of one path: every non-trivial added line, mapped to the newest commit (index into `commits`, newest first) that added it. `time` is the committer time, comparable across paths. */
+interface PathHistory {
+  bytes: number
+  /** Set when the history exceeds {@link HISTORY_MAX_BYTES} or git failed: nothing in it can be trusted. */
+  error?: "too-large" | "unreadable"
+  commits: Array<{ sha: string; time: number }>
+  lines: Map<string, number>
+}
+
+const pathHistoryCache = new WeakMap<ClassifyEnv, Map<string, Promise<PathHistory>>>()
+
+/**
+ * {@link PathHistory} of `path` on base: `git log -p -U0` over the commits
+ * reachable from base that touch that exact path (no rename following, no
+ * merge diffs), the `+` lines trimmed with the line guard's normalization.
+ * Read once per snapshot, aborted past {@link HISTORY_MAX_BYTES}.
+ */
+function pathHistoryOf(env: ClassifyEnv, path: string): Promise<PathHistory> {
+  let cache = pathHistoryCache.get(env)
+  if (!cache) pathHistoryCache.set(env, (cache = new Map()))
+  let pending = cache.get(path)
+  if (!pending) {
+    pending = (async () => {
+      const abort = new AbortController()
+      let bytes = 0
+      const res = await execArgv(
+        "git",
+        [
+          "-C", env.ctx.repoRoot, "--literal-pathspecs", "log", "-p", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv",
+          "--format=%x01%H %ct", env.ctx.baseSha, "--", path,
+        ],
+        env.ctx.repoRoot,
+        {
+          signal: abort.signal,
+          killGraceMs: 1000,
+          onOutput: (text, stream) => {
+            if (stream !== "stdout") return
+            bytes += Buffer.byteLength(text)
+            if (bytes > HISTORY_MAX_BYTES && !abort.signal.aborted) abort.abort()
+          },
+        },
+      )
+      const out: PathHistory = { bytes, commits: [], lines: new Map() }
+      if (abort.signal.aborted) return { ...out, error: "too-large" }
+      if (res.exitCode !== 0) return { ...out, error: "unreadable" }
+      let inHunk = false
+      for (const l of res.stdout.split("\n")) {
+        if (l.startsWith("\u0001")) {
+          const [sha = "", time = "0"] = l.slice(1).trim().split(" ")
+          out.commits.push({ sha, time: Number(time) })
+          inHunk = false
+        } else if (l.startsWith("diff --git ")) inHunk = false
+        else if (l.startsWith("@@")) inHunk = true
+        else if (inHunk && l.startsWith("+")) {
+          const line = l.slice(1).trim()
+          // Newest first: the first commit seen is the newest that added it.
+          if (line.length >= LINE_MIN_LENGTH && !out.lines.has(line)) out.lines.set(line, out.commits.length - 1)
+        }
+      }
+      return out
+    })()
+    cache.set(path, pending)
+  }
+  return pending
+}
+
+/**
+ * The paths base moved `file` to, when base no longer has it: the newest base
+ * commit that deleted the path, read with rename detection, names where it
+ * went; repeated while that path is gone too, at most
+ * {@link HISTORY_MAX_MOVES} times. Empty when base still has it, deleted it
+ * outright, or never had it.
+ */
+async function movedOnBase(env: ClassifyEnv, file: string): Promise<string[]> {
+  const idx = await env.ctx.index()
+  const out: string[] = []
+  let cur = file
+  for (let hop = 0; hop < HISTORY_MAX_MOVES && !idx.byPath.has(cur); hop++) {
+    const del = await git(env.ctx.repoRoot, ["--literal-pathspecs", "log", "-1", "--no-renames", "--diff-filter=D", "--format=%H", env.ctx.baseSha, "--", cur])
+    const commit = del.exitCode === 0 ? del.stdout.trim() : ""
+    if (!commit) break
+    const tree = await git(env.ctx.repoRoot, ["diff-tree", "-r", "-M", "-z", "--name-status", "--no-commit-id", commit])
+    if (tree.exitCode !== 0) break
+    const parts = tree.stdout.split("\0")
+    let next: string | undefined
+    for (let i = 0; i < parts.length; ) {
+      const status = parts[i] ?? ""
+      if (status.startsWith("R") || status.startsWith("C")) {
+        if (status.startsWith("R") && parts[i + 1] === cur) next = parts[i + 2]
+        i += 3
+      } else i += 2
+    }
+    if (!next || out.includes(next) || next === file) break
+    out.push(next)
+    cur = next
+  }
+  return out
+}
+
+/** The tip's added lines of `file` (merge-base to tip) not in base's file at the same path, with the line guard's normalization; `null` when the diff fails. */
+async function uncoveredLinesOf(env: ClassifyEnv, entry: BranchGcPlanEntry, file: string): Promise<string[] | null> {
+  const d = await git(env.ctx.repoRoot, ["--literal-pathspecs", "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv", entry.mergeBase as string, entry.sha, "--", file])
+  if (d.exitCode !== 0) return null
+  const blob = (await env.ctx.index()).byPath.get(file)
+  const base = new Set<string>()
+  if (blob) {
+    const shown = await git(env.ctx.repoRoot, ["cat-file", "blob", blob])
+    if (shown.exitCode !== 0) return null
+    for (const l of shown.stdout.split("\n")) base.add(l.trim())
+  }
+  const out: string[] = []
+  let inHunk = false
+  for (const l of d.stdout.split("\n")) {
+    if (l.startsWith("@@")) inHunk = true
+    if (!inHunk || !l.startsWith("+")) continue
+    const line = l.slice(1).trim()
+    if (line.length >= LINE_MIN_LENGTH && !base.has(line) && !out.includes(line)) out.push(line)
+  }
+  return out
+}
+
+type HistoryCoveredResult = { ok: true; proof: HistoryCoveredProof } | { ok: false; reason: string }
+
+/**
+ * The `history-covered` pass: may a verdict the line guard, `verified-pr` and
+ * `dep-bump` refused reclaim anyway? Deterministic, git objects only, every
+ * condition must hold:
+ *   1. triage AND gate say `obsolete` or `superseded`, and the gate agreed;
+ *   2. every file the tip changes (merge-base to tip) is either proven by
+ *      `depBumpFileRefusal`, or is a text file the line guard reads that
+ *      deletes no non-blank line base's file at the same path still has, and
+ *      whose every uncovered added line (`uncoveredLinesOf`) some commit
+ *      reachable from base ADDED to that same path (`pathHistoryOf`), or to a
+ *      path base later moved it to (`movedOnBase`). Lines from any other path
+ *      never count;
+ *   3. at most {@link HISTORY_MAX_FILES} files need a history search and
+ *      their histories total at most {@link HISTORY_MAX_BYTES}; past that it
+ *      refuses rather than slow the run.
+ * The refusal reason names the first file or line that failed. Residual
+ * limit, accepted by design: as for the line guard, matching is per path and
+ * order-free, so a line counts when base added that text to the path at any
+ * point, whatever surrounded it then.
+ */
+async function historyCoveredCheck(entry: BranchGcPlanEntry, record: BranchVerdictRecord, env: ClassifyEnv): Promise<HistoryCoveredResult> {
+  const refuse = (reason: string): HistoryCoveredResult => ({ ok: false, reason })
+  const gate = record.gate
+  if (!DEP_BUMP_VERDICTS.has(record.triage.verdict) || !gate || !DEP_BUMP_VERDICTS.has(gate.verdict)) {
+    return refuse(`verdict is ${record.triage.verdict}${gate && gate.verdict !== record.triage.verdict ? ` (gate ${gate.verdict})` : ""}, not obsolete or superseded`)
+  }
+  if (gate.agree !== true) return refuse("gate did not agree")
+  const missingFiles = entry.lineCoverage?.missingFiles
+  if (!missingFiles || !entry.mergeBase) return refuse("no per-file line coverage to explain")
+  const uncovered = new Set(missingFiles)
+  const changed = await changedFilesOf(env, entry)
+  if (!changed) return refuse("could not list the tip's changed files")
+  const files: HistoryCoveredFile[] = []
+  let searched = 0
+  let bytes = 0
+  for (const row of changed.values()) {
+    const { file } = row
+    const why = await depBumpFileRefusal(env, entry, row, uncovered, newDepBumpTally())
+    if (why === null) continue
+    // A binary or a lockfile the line guard does not read has no lines to look up.
+    if (row.added === null || LINE_SKIP_RE.test(file)) return refuse(why)
+    const deleted = row.deleted > 0 ? await firstDeletedLineOnBase(env, entry, file) : undefined
+    if (deleted !== undefined) return refuse(`${file}: deletes ${JSON.stringify(deleted)}, which base still has`)
+    const lines = uncovered.has(file) ? await uncoveredLinesOf(env, entry, file) : []
+    if (lines === null) return refuse(`${file}: diff unreadable`)
+    if (lines.length === 0) continue
+    if (++searched > HISTORY_MAX_FILES) return refuse(`history too large to check: more than ${HISTORY_MAX_FILES} files to search`)
+    const movedTo = await movedOnBase(env, file)
+    const histories: PathHistory[] = []
+    for (const path of [file, ...movedTo]) {
+      const h = await pathHistoryOf(env, path)
+      bytes += h.bytes
+      if (h.error === "too-large" || bytes > HISTORY_MAX_BYTES) return refuse(`${file}: history too large to check (> ${HISTORY_MAX_BYTES / (1024 * 1024)} MiB of base history)`)
+      if (h.error) return refuse(`${file}: base history of ${path} unreadable`)
+      histories.push(h)
+    }
+    let oldest: { sha: string; time: number } | undefined
+    let newest: { sha: string; time: number } | undefined
+    for (const line of lines) {
+      // The newest commit, across the searched paths, that added this line.
+      let hit: { sha: string; time: number } | undefined
+      for (const h of histories) {
+        const at = h.lines.get(line)
+        const c = at === undefined ? undefined : h.commits[at]
+        if (c && (!hit || c.time > hit.time)) hit = c
+      }
+      if (!hit) {
+        const where = movedTo.length ? `${file} (or ${movedTo.join(", ")})` : file
+        return refuse(`${file}: ${JSON.stringify(line.slice(0, 120))} was never added to ${where} on base`)
+      }
+      if (!oldest || hit.time < oldest.time) oldest = hit
+      if (!newest || hit.time > newest.time) newest = hit
+    }
+    if (!oldest || !newest) continue
+    files.push({ file, lines: lines.length, oldest: oldest.sha, newest: newest.sha, ...(movedTo.length ? { movedTo } : {}) })
+  }
+  return { ok: true, proof: { filesChecked: changed.size, linesMatched: files.reduce((n, f) => n + f.lines, 0), files } }
+}
+
 /**
  * Resolve an unmerged entry that reached the review rung: `includeReviewed`
  * plus an agreeing verdict reclaims it (`reviewed`) unless the deterministic
  * line-coverage guard refuses it (operator approval bypasses the guard and is
  * recorded in `verdictGuard`; so does a passing `verified-pr` check, recorded
  * in `verifiedPr`, or, when that refuses, a passing `dep-bump` check,
- * recorded in `depBump`). Otherwise the entry stays `review`.
+ * recorded in `depBump`, or, when that refuses too, a passing
+ * `history-covered` check, recorded in `historyCovered`). Otherwise the entry
+ * stays `review`.
  *
  * `requireCoverage` makes a missing `lineCoverage` fail closed: checkpoint
  * refs may be the only copy of rescued work, so an agreeing verdict alone must
@@ -1843,17 +2092,27 @@ async function applyReviewedDecision(
         // Then the dependency-bump proof: every added line is a lockfile,
         // changeset or dependency spec base already declares at least as new.
         const bump = check && record ? await depBumpCheck(entry, record, env) : null
-        if (!bump?.ok) {
-          entry.verdictGuard = guard
-          if (check) entry.verifiedPrRefusal = check.reason
-          if (bump) entry.depBumpRefusal = bump.reason
-          entry.class = "review"
-          return
+        if (bump?.ok) {
+          const p = bump.proof
+          entry.verdictGuard =
+            `passed by dep-bump (${p.dependencies} dependency, ${p.versions} version, ${p.lockfileLines} lockfile, ${p.changesetLines} changeset line(s)): ${guard}`
+          entry.depBump = p
+        } else {
+          // Last, the history proof: every missing line was once on base in
+          // the same path, so base's own history keeps it.
+          const hist = bump && record ? await historyCoveredCheck(entry, record, env) : null
+          if (!hist?.ok) {
+            entry.verdictGuard = guard
+            if (check) entry.verifiedPrRefusal = check.reason
+            if (bump) entry.depBumpRefusal = bump.reason
+            if (hist) entry.historyRefusal = hist.reason
+            entry.class = "review"
+            return
+          }
+          const p = hist.proof
+          entry.verdictGuard = `passed by history-covered (${p.linesMatched} line(s) in base history across ${p.files.length} file(s)): ${guard}`
+          entry.historyCovered = p
         }
-        const p = bump.proof
-        entry.verdictGuard =
-          `passed by dep-bump (${p.dependencies} dependency, ${p.versions} version, ${p.lockfileLines} lockfile, ${p.changesetLines} changeset line(s)): ${guard}`
-        entry.depBump = p
       }
     }
   }
@@ -2028,7 +2287,7 @@ interface ClassifyEnv {
   minAgeDays: number
   includeReviewed: boolean
   minLineCoverage: number
-  /** true = no `verified-pr` or `dep-bump` pass below the line guard. */
+  /** true = no `verified-pr`, `dep-bump` or `history-covered` pass below the line guard. */
   requireOperatorBelowGuard: boolean
   /** The forge the `verified-pr` pass asks for PR facts; absent = that pass refuses. */
   forge?: ForgeClient
@@ -2282,7 +2541,7 @@ export interface PlanBranchGcInput {
   includeReviewed?: boolean
   /** `includeReviewed` refuses an agreeing verdict when the tip's line coverage is below this percent. Default 95. */
   minLineCoverage?: number
-  /** Turn the `verified-pr` and `dep-bump` passes off: below `minLineCoverage` only an operator approval reclaims. Default false. */
+  /** Turn the `verified-pr`, `dep-bump` and `history-covered` passes off: below `minLineCoverage` only an operator approval reclaims. Default false. */
   requireOperatorBelowGuard?: boolean
   /** Explicit anchor for a re-rooted base. Omitted → auto-detected. */
   anchor?: string
@@ -2505,23 +2764,33 @@ export function branchReviewQueue(plan: BranchGcPlan, options: { all?: boolean }
 // ── apply ────────────────────────────────────────────────────────────
 
 export type BranchGcApplyOutcome =
-  /** `guard: "verified-pr"` + `verifiedPr` (or `"dep-bump"` + `depBump`): a guard-refused verdict that pass reclaimed. */
+  /** `guard: "verified-pr"` + `verifiedPr` (or `"dep-bump"` + `depBump`, `"history-covered"` + `historyCovered`): a guard-refused verdict that pass reclaimed. */
   | {
       kind: BranchRefKind
       name: string
       sha: string
       result: "deleted"
       reclaimReason: BranchGcReclaimReason
-      guard?: "verified-pr" | "dep-bump"
+      guard?: "verified-pr" | "dep-bump" | "history-covered"
       verifiedPr?: VerifiedPrProof
       depBump?: DepBumpProof
+      historyCovered?: HistoryCoveredProof
     }
   | { kind: BranchRefKind; name: string; sha: string; result: "held"; holdReason?: BranchGcHoldReason }
   /** `review` class: never touched by apply — the review/approval path decides these. */
   | { kind: BranchRefKind; name: string; sha: string; result: "skipped-review" }
   /** `review` class whose agreeing verdict was refused by a deterministic guard (`verdictGuard`, e.g. line coverage). */
-  /** `verifiedPrRefusal` / `depBumpRefusal`: why the `verified-pr` and `dep-bump` passes did not reclaim it either (absent when they are off). */
-  | { kind: BranchRefKind; name: string; sha: string; result: "refused-guard"; guard: string; verifiedPrRefusal?: string; depBumpRefusal?: string }
+  /** `verifiedPrRefusal` / `depBumpRefusal` / `historyRefusal`: why the `verified-pr`, `dep-bump` and `history-covered` passes did not reclaim it either (absent when they are off). */
+  | {
+      kind: BranchRefKind
+      name: string
+      sha: string
+      result: "refused-guard"
+      guard: string
+      verifiedPrRefusal?: string
+      depBumpRefusal?: string
+      historyRefusal?: string
+    }
   /** The ref now points somewhere else than the plan saw — never delete what wasn't classified. */
   | { kind: BranchRefKind; name: string; sha: string; result: "aborted-moved"; currentSha: string }
   /** The ref no longer exists. */
@@ -2564,10 +2833,11 @@ export interface BranchGcRestoreEntry {
   command: string
   /** Set once the delete ran. */
   deleted?: boolean
-  /** Set when the `verified-pr` (or `dep-bump`) pass reclaimed this ref past the line guard. */
-  guard?: "verified-pr" | "dep-bump"
+  /** Set when the `verified-pr` (or `dep-bump`, `history-covered`) pass reclaimed this ref past the line guard. */
+  guard?: "verified-pr" | "dep-bump" | "history-covered"
   verifiedPr?: VerifiedPrProof
   depBump?: DepBumpProof
+  historyCovered?: HistoryCoveredProof
 }
 
 export interface BranchGcRestoreLog {
@@ -2604,9 +2874,10 @@ function restoreEntry(repoRoot: string, e: BranchGcPlanEntry, baseRemote: string
 }
 
 /** The `guard` + proof fields of an entry a second pass reclaimed past the line guard. */
-function passedGuardOf(e: BranchGcPlanEntry): Pick<BranchGcRestoreEntry, "guard" | "verifiedPr" | "depBump"> {
+function passedGuardOf(e: BranchGcPlanEntry): Pick<BranchGcRestoreEntry, "guard" | "verifiedPr" | "depBump" | "historyCovered"> {
   if (e.verifiedPr) return { guard: "verified-pr", verifiedPr: e.verifiedPr }
   if (e.depBump) return { guard: "dep-bump", depBump: e.depBump }
+  if (e.historyCovered) return { guard: "history-covered", historyCovered: e.historyCovered }
   return {}
 }
 
@@ -2670,6 +2941,7 @@ export async function applyBranchGc(plan: BranchGcPlan, options: ApplyBranchGcOp
               guard: e.verdictGuard,
               ...(e.verifiedPrRefusal ? { verifiedPrRefusal: e.verifiedPrRefusal } : {}),
               ...(e.depBumpRefusal ? { depBumpRefusal: e.depBumpRefusal } : {}),
+              ...(e.historyRefusal ? { historyRefusal: e.historyRefusal } : {}),
             }
           : { ...id, result: "skipped-review" },
       )

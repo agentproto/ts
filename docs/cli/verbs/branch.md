@@ -212,6 +212,52 @@ that only moves or duplicates lines within one file is not seen. A
 dependency-bump branch does not touch such files, so in practice any source
 change refuses; [`gc restore`](#gc-restore) undoes any deletion.
 
+#### History-covered pass
+
+The next most common refusal is a tip whose missing lines are older wording
+base has since rewritten: a stale generated catalog snapshot, or a revert to a
+sha base once pinned. Deleting such a branch loses nothing, since every one of
+its lines can be recovered from base's own history. So when the dep-bump pass
+refuses, a guard-refused verdict still reclaims when this check holds. It reads
+git objects only:
+
+1. the verdict's triage and gate both say `obsolete` or `superseded`, and the
+   gate agreed;
+2. every file the branch changes (merge base to tip) is either proven by the
+   [dep-bump](#dep-bump-pass) per-file rules, or is a text file where:
+   - it deletes no non-blank line that base's file at the same path still has
+     (the intent of a deletion would be lost), and
+   - every uncovered added line (the lines the line guard counts as missing,
+     same normalization: trimmed, at least 8 characters, not in base's file at
+     that path) appears as an ADDED line in `git log -p` of that same path over
+     the commits reachable from base. When base no longer has the path, the
+     history of the path base moved it to counts too (the commit that deleted
+     it is read with rename detection, followed at most 3 moves). Lines from
+     any other path never count;
+   - a binary or a lockfile the line guard does not read must be identical to
+     base's, as for dep-bump;
+3. at most 50 files need a history search, and their histories total at most
+   32 MiB of `git log -p` output; past either bound the pass refuses with
+   `history too large to check` instead of slowing the run. Each path's
+   history is read once per plan.
+
+A pass is recorded as `verdictGuard: "passed by history-covered (<n> line(s)
+in base history across <n> file(s)): <guard>"` and `historyCovered: {
+filesChecked, linesMatched, files: [{ file, lines, oldest, newest, movedTo? }]
+}` on the plan entry (`oldest`/`newest`: of the newest base commits that added
+each matched line, the oldest and the newest), and as `guard:
+"history-covered"` + `historyCovered` on the apply outcome and the restore log
+entry. A refusal sets `historyRefusal` on the entry and the `refused-guard`
+outcome, naming the first failing file or line, for example `src/x.ts:
+"export const y = 1" was never added to src/x.ts on base`. Checkpoint refs
+never take this pass, and `--require-operator-below-guard` turns it off with
+the other two.
+
+Residual limit, accepted by design: matching is per path and order-free, as
+for the line guard. A line counts when base added that text to the path at any
+point, whatever surrounded it then, so the branch's exact file is not
+necessarily a version base ever had; each line of it is.
+
 ### `gc restore`
 
 ```text
