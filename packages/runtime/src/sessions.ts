@@ -1723,6 +1723,10 @@ export interface SessionDescriptor {
    *  revives the row. Persisted, so it survives restarts and archiving. See
    *  `session-outcome.ts`. */
   outcome?: SessionOutcome
+  /** Link to this session's browser recordings, when a server it reached
+   *  minted an AIP-59 section 8 sub-session token for it (Bureau, AIP-63 M7).
+   *  A link only; the recordings themselves stay on the server. Persisted. */
+  browserRecordings?: { url: string }
   /** A steward verdict of `"blocked"` or `"needs-input"` from
    *  `registry.closeWithOutcome` (`session-wrapup.ts` / FIX-9A) — recorded
    *  INSTEAD of closing, since neither verdict means the session is done.
@@ -5297,6 +5301,11 @@ export interface SessionsRegistry {
    *  same `schedulePersist` every descriptor mutation uses. Never touches
    *  the live agent. Throws when the id is unknown. */
   mergeMeta(id: string, patch: Record<string, string>): SessionDescriptor
+  /** Record the link to a session's recordings on a server that minted an
+   *  AIP-59 sub-session token for it (Bureau, AIP-63 M7). Stores the LINK
+   *  only, never a copy. Silently returns undefined when the session is gone
+   *  (a mint can land as the row is exiting). */
+  setBrowserRecordings(id: string, recordings: { url: string }): SessionDescriptor | undefined
   /** AIP-42 hot role refresh (the `session_role_refresh` MCP verb) — reload
    *  a manifest-spawned session's AGENT.md, re-render it through the SAME
    *  projection the spawn used, and diff against the fingerprint recorded
@@ -15505,6 +15514,14 @@ export function createSessionsRegistry(opts?: {
       const rt = sessions.get(id)
       if (!rt) throw new Error(`mergeMeta: no session "${id}"`)
       rt.desc.meta = { ...rt.desc.meta, ...patch }
+      schedulePersist()
+      stampReadLiveness(rt.desc)
+      return rt.desc
+    },
+    setBrowserRecordings(id, recordings) {
+      const rt = sessions.get(id)
+      if (!rt) return undefined
+      rt.desc.browserRecordings = recordings
       schedulePersist()
       stampReadLiveness(rt.desc)
       return rt.desc

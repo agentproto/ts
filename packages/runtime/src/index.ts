@@ -20,7 +20,7 @@ import { heapLogIntervalFromEnv, startHeapMonitor, writeHeapSnapshotGuarded } fr
 import { eventsIndexCacheSize } from "./events-jsonl-reader.js"
 import { sweepSessionBrowser } from "./browser-mount.js"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdtempSync } from "node:fs"
+import { existsSync, mkdtempSync, statSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { hostname, tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -279,6 +279,10 @@ import { createMcpObservationStore, wireMcpDegradedWarnings } from "./mcp-sessio
 import { createEventRing } from "./event-ring.js"
 import { createWebhookNotifier } from "./webhook-notifier.js"
 import { createImportedCallGuard } from "./imported-call-gate.js"
+import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { IMPORTED_MCPS_PATH, loadImportedMcps } from "./mcp-imports.js"
+import { resolveImportConnection } from "./mcp-import-resolve.js"
+import { createSubsessionMinter } from "./subsession-minter.js"
 import { createPermissionTelegramBridge } from "./permission-telegram-bridge.js"
 import { createWorkflowRunner } from "./workflow-runner.js"
 import { createReviewRunner } from "./review-runner.js"
@@ -3714,9 +3718,62 @@ export async function createGateway(
   // captures it so each /mcp request reuses the same upstream
   // sessions instead of re-spawning stdio children.
   const mcpProxy = new McpProxyRegistry()
+  // AIP-59 section 8: imports that opt in with `subsession: "aip-59"` get a
+  // per-session token minted from the device credential they already carry,
+  // instead of the spoofable `x-agentproto-caller-session` header. Built once
+  // so the cache/revocation state is shared across every gateway caller.
+  // The guard asks on every imported call; re-read the imports file only
+  // when it changed (mtime), not per call.
+  let importsCache: { mtimeMs: number; config: Awaited<ReturnType<typeof loadImportedMcps>> } | undefined
+  const importsSnapshot = async (): Promise<Awaited<ReturnType<typeof loadImportedMcps>>> => {
+    let mtimeMs = -1
+    try {
+      mtimeMs = statSync(IMPORTED_MCPS_PATH()).mtimeMs
+    } catch {
+      // No file yet: loadImportedMcps answers an empty config.
+    }
+    if (importsCache && importsCache.mtimeMs === mtimeMs) return importsCache.config
+    const config = await loadImportedMcps()
+    importsCache = { mtimeMs, config }
+    return config
+  }
+  const subsessions = createSubsessionMinter({
+    resolve: async alias => {
+      const config = await importsSnapshot()
+      const entry = config.imports.find(e => e.alias === alias)
+      if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
+      const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
+      if (connection.type !== "http" || typeof connection.url !== "string") return undefined
+      // AIP-59 section 8.6 binds /pair/subsessions at the server root, not
+      // under the MCP path, hence the origin.
+      let baseUrl: string
+      try {
+        baseUrl = new URL(connection.url).origin
+      } catch {
+        return undefined
+      }
+      return { baseUrl, headers: { ...(connection.headers ?? {}) } }
+    },
+    // AIP-63 M7: store the recordings LINK on the session, never a copy.
+    onMinted: (sessionId, target) => {
+      // One link per session (its Bureau); rewritten only when it changes, so
+      // an hourly re-mint does not persist the session snapshot again.
+      const url = `${target.baseUrl}/recordings?callerSessionId=${encodeURIComponent(sessionId)}`
+      if (sessions.get(sessionId)?.browserRecordings?.url === url) return
+      sessions.setBrowserRecordings(sessionId, { url })
+    },
+  })
+  // Revoke this session's tokens when it ends; a revocation failure never
+  // throws into the exit path.
+  sessionEvents.on("session:exited", ev => {
+    void subsessions.revokeSession(ev.sessionId).catch(err => {
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn(`[subsessions] revoke for ${ev.sessionId} failed: ${message}`)
+    })
+  })
   // Per-call human approval for imported tools named by a `hold` rule in
   // `.agentproto/hooks.json` (e.g. agentpush `send_message`). No rule, no change.
-  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace }))
+  mcpProxy.setCallGuard(createImportedCallGuard({ registry: sessions, workspace, subsessions }))
 
   // MCP Apps host (mcp-apps-host.ts) — the daemon fetches app UIs for a
   // session's chat. Its own config-keyed client pool: a harness alias is

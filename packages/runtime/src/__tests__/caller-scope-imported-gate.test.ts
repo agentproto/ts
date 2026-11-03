@@ -23,6 +23,7 @@ import {
   withCallHeaders,
 } from "../mcp-client-pool.js"
 import { McpProxyRegistry } from "../mcp-proxy.js"
+import { createSubsessionMinter } from "../subsession-minter.js"
 import { PERSO_ID, NOTES_ID, SESSION, buildCallerFixture, type CallerFixture } from "./caller-scope-fixture.js"
 
 let fx: CallerFixture
@@ -31,13 +32,23 @@ beforeEach(() => {
 })
 afterEach(() => fx.cleanup())
 
-function proxyWith(upstream: (headers: Record<string, string> | undefined) => unknown) {
+function proxyWith(
+  upstream: (headers: Record<string, string> | undefined) => unknown,
+  opts: { subsessions?: ReturnType<typeof createSubsessionMinter> } = {},
+) {
   const proxy = new McpProxyRegistry()
   const registry = {
     get: (id: string) => fx.sessions.get(id),
     requestToolPermission: vi.fn(),
   }
-  proxy.setCallGuard(createImportedCallGuard({ registry: registry as never, workspace: fx.free, scopes: fx.scopes } as never))
+  proxy.setCallGuard(
+    createImportedCallGuard({
+      registry: registry as never,
+      workspace: fx.free,
+      scopes: fx.scopes,
+      ...(opts.subsessions ? { subsessions: opts.subsessions } : {}),
+    } as never),
+  )
   const seen: Array<Record<string, string> | undefined> = []
   const callTool = vi.fn(async () => {
     const headers = currentCallHeaders?.()
@@ -194,5 +205,70 @@ describe("the headers reach a real http MCP server", () => {
     )
     await client.close()
     expect(received.some((h) => h[CALLER_SESSION_HEADER] !== undefined)).toBe(false)
+  })
+})
+
+describe("an AIP-59 import is identified by a minted sub-session token", () => {
+  const minted = (now = Date.now()) =>
+    JSON.stringify({ token: "sub-token", sessionId: SESSION.perso, deviceId: "dev_1", expiresAt: new Date(now + 3600_000).toISOString() })
+
+  it("receives agentproto-subsession and NOT x-agentproto-caller-session", async () => {
+    const fetchImpl = vi.fn(async () => new Response(minted(), { status: 200 }))
+    const subsessions = createSubsessionMinter({
+      resolve: async () => ({ baseUrl: "https://bureau.example", headers: { authorization: "Bearer device" } }),
+      fetch: fetchImpl as unknown as typeof fetch,
+    })
+    const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
+    const out = await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
+    expect(out.ok).toBe(true)
+    // The token is the only identity sent: no bare session claim, no node id.
+    expect(seen).toEqual([{ "agentproto-subsession": "sub-token" }])
+    expect(seen[0]![CALLER_SESSION_HEADER]).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it("a mint failure refuses the call and dispatches nothing", async () => {
+    const fetchImpl = vi.fn(async () => new Response("nope", { status: 500 }))
+    const subsessions = createSubsessionMinter({
+      resolve: async () => ({ baseUrl: "https://bureau.example", headers: { authorization: "Bearer device" } }),
+      fetch: fetchImpl as unknown as typeof fetch,
+    })
+    const { proxy, callTool } = proxyWith(() => ({ content: [] }), { subsessions })
+    const out = await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
+    expect(out.ok).toBe(false)
+    expect((out as { error: string }).error).toMatch(/could not mint a sub-session token/)
+    expect((out as { error: string }).error).toMatch(/nothing was sent/)
+    expect(callTool).not.toHaveBeenCalled()
+  })
+
+  it("an unreadable imports config never blocks a non-AIP-59 call", async () => {
+    const subsessions = createSubsessionMinter({
+      resolve: async () => {
+        throw new Error("imported-mcps.json: Unexpected token")
+      },
+      fetch: vi.fn(),
+    })
+    const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
+    const out = await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
+    expect(out.ok).toBe(true)
+    expect(seen).toEqual([{ [CALLER_SESSION_HEADER]: SESSION.perso, [CALLER_NODE_HEADER]: PERSO_ID }])
+  })
+
+  it("an import that does not speak AIP-59 keeps exactly the old headers", async () => {
+    const subsessions = createSubsessionMinter({ resolve: async () => undefined, fetch: vi.fn() })
+    const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
+    await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
+    expect(seen).toEqual([{ [CALLER_SESSION_HEADER]: SESSION.perso, [CALLER_NODE_HEADER]: PERSO_ID }])
+  })
+})
+
+describe("per-call headers reach an AIP-59 import even when it is remote", () => {
+  it("forwardsCallHeaders: remote http import forwards only when it speaks AIP-59 or opted in", async () => {
+    const { forwardsCallHeaders } = await import("../mcp-proxy.js")
+    const remote = { type: "http", url: "https://bureau.example/mcp" } as never
+    expect(forwardsCallHeaders({}, remote)).toBe(false)
+    expect(forwardsCallHeaders({ subsession: "aip-59" }, remote)).toBe(true)
+    expect(forwardsCallHeaders({ forwardCaller: true }, remote)).toBe(true)
+    expect(forwardsCallHeaders({}, { type: "http", url: "http://127.0.0.1:8830/mcp" } as never)).toBe(true)
   })
 })
