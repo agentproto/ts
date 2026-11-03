@@ -91,6 +91,7 @@ agentproto-desktop | `packages/desktop` | core | product runtime package consume
 @agentproto/eval | `packages/eval` | core | product runtime package consumed by the runtime/cli |
 @agentproto/eval-reporters | `packages/eval-reporters` | core | product runtime package consumed by the runtime/cli |
 @agentproto/events-channel | `packages/events-channel` | core | product runtime package consumed by the runtime/cli |
+@agentproto/git-cas | `packages/git-cas` | core | product runtime package consumed by the runtime/cli |
 @agentproto/governance-engine | `packages/governance/engine` | core | product runtime package consumed by the runtime/cli |
 @agentproto/harness | `packages/harness` | core | product runtime package consumed by the runtime/cli |
 @agentproto/inference-endpoint | `packages/inference-endpoint` | core | product runtime package consumed by the runtime/cli |
