@@ -12,7 +12,7 @@ import { promises as fs } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, resolve as resolvePath } from "node:path"
 import { z } from "zod"
-import { loadImportedMcps } from "./mcp-imports.js"
+import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 
 export interface Bundle {
   /** Stable machine-local id, e.g. `research`. */
@@ -51,6 +51,44 @@ const bundlesFileSchema = z.object({
 })
 
 export type BundlesFile = z.infer<typeof bundlesFileSchema>
+
+/** Built-in bundle that carries the Bureau MCP import + the shared browser
+ *  skill. A user bundle with the same id in `bundles.json` replaces it. */
+export const BUILTIN_BROWSER_BUNDLE_ID = "browser"
+export const BUILTIN_BROWSER_BUNDLE_LABEL = "Browser (Bureau)"
+
+/**
+ * The built-in `browser` bundle: every imported entry whose alias equals
+ * `defaults.browser.proxyImport` (none when unset), plus the `browser` skill.
+ * Pure, so bundle_list, spawn expansion and tests share one definition.
+ */
+export function builtinBrowserBundle(
+  proxyImport: string | undefined,
+  imported: ImportedMcpsConfig,
+): Bundle {
+  const mcpImports = proxyImport
+    ? imported.imports.filter(entry => entry.alias === proxyImport).map(entry => entry.id)
+    : []
+  return {
+    id: BUILTIN_BROWSER_BUNDLE_ID,
+    label: BUILTIN_BROWSER_BUNDLE_LABEL,
+    mcpImports,
+    skills: ["browser"],
+  }
+}
+
+/** User bundles plus every built-in one; a user bundle with a built-in's id
+ *  wins (same policy as the rest of the daemon's user-over-builtin stores). */
+export function effectiveBundles(
+  userBundles: readonly Bundle[],
+  proxyImport: string | undefined,
+  imported: ImportedMcpsConfig,
+): Bundle[] {
+  const ids = new Set(userBundles.map(bundle => bundle.id))
+  return ids.has(BUILTIN_BROWSER_BUNDLE_ID)
+    ? [...userBundles]
+    : [...userBundles, builtinBrowserBundle(proxyImport, imported)]
+}
 
 export const BUNDLES_PATH = (): string => resolvePath(homedir(), ".agentproto", "bundles.json")
 

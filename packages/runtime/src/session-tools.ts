@@ -75,12 +75,14 @@ import {
   type ImportedSkillEntry,
 } from "./skill-imports.js"
 import { getMcpCredentialDeps } from "./mcp-credential-deps.js"
+import { loadConfig } from "./config.js"
 import {
   loadBundles,
   createBundle,
   updateBundle,
   deleteBundle,
   danglingImports,
+  effectiveBundles,
   BundleValidationError,
   type Bundle,
 } from "./bundles.js"
@@ -3943,9 +3945,17 @@ export function registerSessionTools(
       "this bundle skips those entries with a warning.",
     schema: bundleListSchema,
     body: async () => {
-      const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+      const [bundlesFile, importedConfig, config] = await Promise.all([
+        loadBundles(),
+        loadImportedMcps(),
+        loadConfig(),
+      ])
       const importedIds = new Set(importedConfig.imports.map(e => e.id))
-      return bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) }))
+      return effectiveBundles(
+        bundlesFile.bundles,
+        config.defaults?.browser?.proxyImport,
+        importedConfig,
+      ).map(b => ({ ...b, dangling: danglingImports(b, importedIds) }))
     },
     project: item => item,
     keyOf: b => b.id,

@@ -74,7 +74,7 @@ import {
   type CredentialSource,
   forwardedSubaccountAuthInputs,
 } from "./spawn-defaults.js"
-import { loadBundles, type BundlesFile } from "./bundles.js"
+import { effectiveBundles, loadBundles, type BundlesFile } from "./bundles.js"
 import { loadImportedMcps, type ImportedMcpsConfig } from "./mcp-imports.js"
 import {
   loadImportedSkills,
@@ -4303,18 +4303,24 @@ async function spawnAgentSessionOnce(
       )
     }
     const bundlesFile = deps.loadBundlesConfig ? await deps.loadBundlesConfig() : await loadBundles()
-    let importedConfig: ImportedMcpsConfig | undefined
+    // The built-in `browser` bundle needs the live import set to resolve its
+    // `mcpImports`, even when this spawn mounts nothing (sandbox / no /mcp).
+    const importedConfig: ImportedMcpsConfig = deps.loadImportedMcpsConfig
+      ? await deps.loadImportedMcpsConfig()
+      : await loadImportedMcps()
+    const resolvedBundles = effectiveBundles(
+      bundlesFile.bundles,
+      configDefaults?.browser?.proxyImport,
+      importedConfig,
+    )
     for (const bundleId of bundleIds) {
-      const bundle = bundlesFile.bundles.find(b => b.id === bundleId)
+      const bundle = resolvedBundles.find(b => b.id === bundleId)
       if (!bundle) {
         spawnWarnings.push(`agent_start: bundle "${bundleId}" not found — skipped.`)
         continue
       }
       for (const skill of bundle.skills) bundleSkillsUnion.add(skill)
       if (!mcpMountUrl) continue
-      importedConfig ??= deps.loadImportedMcpsConfig
-        ? await deps.loadImportedMcpsConfig()
-        : await loadImportedMcps()
       const mounted = mountImports(bundle.mcpImports, {
         bundleId,
         mcpMountUrl,

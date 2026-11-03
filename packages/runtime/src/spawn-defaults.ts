@@ -149,6 +149,14 @@ export interface SpawnDefaultsConfig {
   /** Capability bundle ids auto-attached to every spawn — see
    *  {@link DefaultsAdapterConfig.bundles} for the per-adapter union partner. */
   bundles?: string[]
+  /** Browser integration (TARGET-STATE: Bureau owns the browser). */
+  browser?: {
+    /** Alias of an imported MCP that is a Bureau server (e.g. `bureau`).
+     *  Set: the daemon's six `browser_*` interaction tools forward to the
+     *  Bureau tool of the same name, and the built-in `browser` bundle
+     *  mounts that import. Unset: every tool behaves exactly as before. */
+    proxyImport?: string
+  }
   contextContinuity?: ContextContinuityPolicy
   /** AIP-46 name of the block; same keys as contextContinuity, which stays an
    *  alias. Within one layer, a key set here wins over the same key in

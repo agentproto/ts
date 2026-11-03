@@ -252,6 +252,10 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
     options: optionsMapSchema.optional(),
     adapters: z.record(z.string(), defaultsAdapterConfigSchema).optional(),
     bundles: z.array(z.string()).optional(),
+    browser: z
+      .object({ proxyImport: z.string().min(1).optional() })
+      .passthrough()
+      .optional(),
     contextContinuity: contextContinuityPolicySchema.optional(),
     contextSettings: contextContinuityPolicySchema.optional(),
     defaultRoleDepthCutoff: z.number().optional(),
@@ -1173,6 +1177,15 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     section: "defaults",
     label: "Default capability bundles",
     help: "Bundle ids (bundle_list) auto-attached to every agent_start spawn (unioned with per-adapter bundles).",
+  },
+  {
+    path: "defaults.browser.proxyImport",
+    schema: str,
+    apply: "hot",
+    writable: true,
+    section: "defaults",
+    label: "Browser proxy import",
+    help: "Alias of an imported MCP that is a Bureau server (for example `bureau`). When set, the daemon browser_navigate/click/fill/evaluate/get_dom/screenshot tools forward to the Bureau tool of the same name and the built-in `browser` bundle mounts that import. Unset: every browser tool behaves exactly as before.",
   },
   {
     path: "defaults.defaultRoleDepthCutoff",

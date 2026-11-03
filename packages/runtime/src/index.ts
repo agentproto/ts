@@ -4479,6 +4479,8 @@ export async function createGateway(
     registerWebSearchTools(server)
     registerBrowserTools(server, {
       registry: sessions,
+      mcpProxy,
+      ...(callerSessionId ? { callerSessionId } : {}),
       ...(opts.resolveBrowserAdapter
         ? { resolveBrowserAdapter: opts.resolveBrowserAdapter }
         : {}),
