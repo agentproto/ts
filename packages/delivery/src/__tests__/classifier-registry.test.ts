@@ -92,6 +92,31 @@ describe("createClassifierRegistry", () => {
     expect(reg.list().map((c) => c.id)).toEqual(["a"])
   })
 
+  it("a stale unregister does not remove a later re-registration of the same object", () => {
+    const reg = createClassifierRegistry()
+    const c = fixed("a", ["acme.*"], 1)
+    const off1 = reg.register(c)
+    off1()
+    const off2 = reg.register(c)
+    off1()
+    expect(reg.list().map((x) => x.id)).toEqual(["a"])
+    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 1, rule: "a" })
+    off2()
+    off2()
+    expect(reg.list()).toEqual([])
+  })
+
+  it("a stale unregister does not remove a same-id replacement object", () => {
+    const reg = createClassifierRegistry()
+    const first = fixed("a", ["acme.*"], 1)
+    const off1 = reg.register(first)
+    const replacement = fixed("a", ["acme.*"], 3)
+    reg.register(replacement)
+    off1()
+    expect(reg.list()).toEqual([replacement])
+    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "a" })
+  })
+
   it("type globs are exact or trailing star; a bare star matches everything", () => {
     const reg = createClassifierRegistry()
     reg.register(fixed("exact", ["acme.widget.failed"], 3))

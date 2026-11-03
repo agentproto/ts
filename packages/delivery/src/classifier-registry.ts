@@ -11,22 +11,31 @@ function covers(c: Classifier, type: string): boolean {
   return c.types.some((p) => matchesType(p, type))
 }
 
+interface Entry {
+  readonly c: Classifier
+  readonly token: object
+}
+
 export function createClassifierRegistry(): ClassifierRegistry {
-  const classifiers: Classifier[] = []
+  const entries: Entry[] = []
 
   return {
     register(c: Classifier): () => void {
-      const idx = classifiers.findIndex((x) => x.id === c.id)
-      if (idx === -1) classifiers.push(c)
-      else classifiers[idx] = c
+      const token = {}
+      const idx = entries.findIndex((x) => x.c.id === c.id)
+      if (idx === -1) entries.push({ c, token })
+      else entries[idx] = { c, token }
+      let active = true
       return () => {
-        const at = classifiers.indexOf(c)
-        if (at !== -1) classifiers.splice(at, 1)
+        if (!active) return
+        active = false
+        const at = entries.findIndex((x) => x.token === token)
+        if (at !== -1) entries.splice(at, 1)
       }
     },
 
     classify(env: Envelope, ctx: ClassifyContext): { level: Level; rule: string } {
-      for (const c of classifiers) {
+      for (const { c } of entries) {
         if (!covers(c, env.type)) continue
         const level = c.classify(env, ctx)
         if (level !== undefined) return { level, rule: c.id }
@@ -35,7 +44,7 @@ export function createClassifierRegistry(): ClassifierRegistry {
     },
 
     list(): readonly Classifier[] {
-      return [...classifiers]
+      return entries.map((x) => x.c)
     },
   }
 }

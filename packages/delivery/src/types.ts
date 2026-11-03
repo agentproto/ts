@@ -4,7 +4,7 @@ export type Level = 0 | 1 | 2 | 3
 /** The claims that pin level 3. A producer sets at most one. */
 export type Floor = "awaiting-human" | "crash"
 
-/** Delivery tier a level maps to. */
+/** MessageUrgency minus `interrupt`, plus `drop` = not delivered. */
 export type Tier = "steer" | "next-turn" | "fyi" | "drop"
 
 /** The one event shape every producer emits. No producer-specific field. */

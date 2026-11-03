@@ -7,7 +7,14 @@
  * actually reads.
  */
 
+import type { Tier } from "@agentproto/delivery"
+
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
+
+/** Compile-time guard: every delivery tier except `drop` must be a known urgency. */
+type _TierIsUrgency = Exclude<Tier, "drop"> extends MessageUrgency ? true : never
+const _tierIsUrgency: _TierIsUrgency = true
+void _tierIsUrgency
 export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
 export type MessageRelation =
   | "child"
