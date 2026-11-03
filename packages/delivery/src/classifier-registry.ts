@@ -11,40 +11,15 @@ function covers(c: Classifier, type: string): boolean {
   return c.types.some((p) => matchesType(p, type))
 }
 
-interface Entry {
-  readonly c: Classifier
-  readonly token: object
-}
-
-export function createClassifierRegistry(): ClassifierRegistry {
-  const entries: Entry[] = []
-
+export function createClassifierRegistry(classifiers: readonly Classifier[]): ClassifierRegistry {
   return {
-    register(c: Classifier): () => void {
-      const token = {}
-      const idx = entries.findIndex((x) => x.c.id === c.id)
-      if (idx === -1) entries.push({ c, token })
-      else entries[idx] = { c, token }
-      let active = true
-      return () => {
-        if (!active) return
-        active = false
-        const at = entries.findIndex((x) => x.token === token)
-        if (at !== -1) entries.splice(at, 1)
-      }
-    },
-
     classify(env: Envelope, ctx: ClassifyContext): { level: Level; rule: string } {
-      for (const { c } of entries) {
+      for (const c of classifiers) {
         if (!covers(c, env.type)) continue
         const level = c.classify(env, ctx)
         if (level !== undefined) return { level, rule: c.id }
       }
       return { level: env.levelHint ?? 2, rule: "default" }
-    },
-
-    list(): readonly Classifier[] {
-      return entries.map((x) => x.c)
     },
   }
 }

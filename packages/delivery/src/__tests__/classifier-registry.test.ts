@@ -41,14 +41,12 @@ const fixed = (id: string, types: string[], level: 0 | 1 | 2 | 3 | undefined): C
 
 describe("createClassifierRegistry", () => {
   it("an uncovered type falls back to the default rule", () => {
-    const reg = createClassifierRegistry()
-    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 2, rule: "default" })
-    reg.register(fixed("other", ["other.*"], 1))
+    const reg = createClassifierRegistry([fixed("other", ["other.*"], 1)])
     expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 2, rule: "default" })
   })
 
   it("an unclassified envelope is never dropped: default rule, level hint or 2", () => {
-    const reg = createClassifierRegistry()
+    const reg = createClassifierRegistry([])
     expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 2, rule: "default" })
     expect(reg.classify(env("acme.widget.failed", { levelHint: 1 }), ctx)).toEqual({
       level: 1,
@@ -56,80 +54,37 @@ describe("createClassifierRegistry", () => {
     })
   })
 
-  it("first registered match wins, in registration order", () => {
-    const reg = createClassifierRegistry()
-    reg.register(fixed("specific", ["acme.widget.failed"], 3))
-    reg.register(fixed("broad", ["acme.*"], 1))
+  it("first match wins, in array order", () => {
+    const reg = createClassifierRegistry([
+      fixed("specific", ["acme.widget.failed"], 3),
+      fixed("broad", ["acme.*"], 1),
+    ])
     expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "specific" })
     expect(reg.classify(env("acme.widget.ok"), ctx)).toEqual({ level: 1, rule: "broad" })
-    expect(reg.list().map((c) => c.id)).toEqual(["specific", "broad"])
+
+    const reversed = createClassifierRegistry([
+      fixed("broad", ["acme.*"], 1),
+      fixed("specific", ["acme.widget.failed"], 3),
+    ])
+    expect(reversed.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 1, rule: "broad" })
   })
 
   it("a classifier that declines falls through to the next match", () => {
-    const reg = createClassifierRegistry()
-    reg.register(fixed("decliner", ["acme.*"], undefined))
-    reg.register(fixed("next", ["acme.*"], 0))
+    const reg = createClassifierRegistry([
+      fixed("decliner", ["acme.*"], undefined),
+      fixed("next", ["acme.*"], 0),
+    ])
     expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 0, rule: "next" })
   })
 
-  it("registering a duplicate id replaces in place and keeps its position", () => {
-    const reg = createClassifierRegistry()
-    reg.register(fixed("a", ["acme.*"], 1))
-    reg.register(fixed("b", ["acme.*"], 2))
-    reg.register(fixed("a", ["acme.*"], 3))
-    expect(reg.list().map((c) => c.id)).toEqual(["a", "b"])
-    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "a" })
-  })
-
-  it("the unregister function removes the classifier, but not a replacement", () => {
-    const reg = createClassifierRegistry()
-    const off = reg.register(fixed("a", ["acme.*"], 1))
-    reg.register(fixed("a", ["acme.*"], 3))
-    off()
-    expect(reg.list()).toHaveLength(1)
-    const off2 = reg.register(fixed("b", ["acme.*"], 1))
-    off2()
-    expect(reg.list().map((c) => c.id)).toEqual(["a"])
-  })
-
-  it("a stale unregister does not remove a later re-registration of the same object", () => {
-    const reg = createClassifierRegistry()
-    const c = fixed("a", ["acme.*"], 1)
-    const off1 = reg.register(c)
-    off1()
-    const off2 = reg.register(c)
-    off1()
-    expect(reg.list().map((x) => x.id)).toEqual(["a"])
-    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 1, rule: "a" })
-    off2()
-    off2()
-    expect(reg.list()).toEqual([])
-  })
-
-  it("a stale unregister does not remove a same-id replacement object", () => {
-    const reg = createClassifierRegistry()
-    const first = fixed("a", ["acme.*"], 1)
-    const off1 = reg.register(first)
-    const replacement = fixed("a", ["acme.*"], 3)
-    reg.register(replacement)
-    off1()
-    expect(reg.list()).toEqual([replacement])
-    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "a" })
-  })
-
   it("type globs are exact or trailing star; a bare star matches everything", () => {
-    const reg = createClassifierRegistry()
-    reg.register(fixed("exact", ["acme.widget.failed"], 3))
-    expect(reg.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "exact" })
-    expect(reg.classify(env("acme.widget.failed2"), ctx)).toEqual({ level: 2, rule: "default" })
-    reg.register(fixed("all", ["*"], 1))
-    expect(reg.classify(env("anything.at.all"), ctx)).toEqual({ level: 1, rule: "all" })
-  })
-
-  it("registries are independent, not module-global", () => {
-    const a = createClassifierRegistry()
-    const b = createClassifierRegistry()
-    a.register(fixed("a", ["*"], 1))
-    expect(b.list()).toEqual([])
+    const exactOnly = createClassifierRegistry([fixed("exact", ["acme.widget.failed"], 3)])
+    expect(exactOnly.classify(env("acme.widget.failed"), ctx)).toEqual({ level: 3, rule: "exact" })
+    expect(exactOnly.classify(env("acme.widget.failed2"), ctx)).toEqual({
+      level: 2,
+      rule: "default",
+    })
+    const all = createClassifierRegistry([fixed("all", ["*"], 1)])
+    expect(all.classify(env("anything.at.all"), ctx)).toEqual({ level: 1, rule: "all" })
   })
 })

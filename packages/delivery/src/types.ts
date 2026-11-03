@@ -53,7 +53,7 @@ export interface ClassifyContext {
 export interface Classifier {
   /** Stable id, recorded in the ledger as `rule`. */
   readonly id: string
-  /** Type globs: exact, or a prefix ending in `*`. First registered match wins. */
+  /** Type globs: exact, or a prefix ending in `*`. First match in registry order wins. */
   readonly types: readonly string[]
   /** A level, or undefined to decline. */
   classify(env: Envelope, ctx: ClassifyContext): Level | undefined
@@ -62,9 +62,6 @@ export interface Classifier {
 }
 
 export interface ClassifierRegistry {
-  /** Registers a classifier; the same `id` replaces in place. Returns an unregister function. */
-  register(c: Classifier): () => void
   /** First non-declining match; no match is `{ level: levelHint ?? 2, rule: "default" }`. */
   classify(env: Envelope, ctx: ClassifyContext): { level: Level; rule: string }
-  list(): readonly Classifier[]
 }
