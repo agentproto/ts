@@ -41,10 +41,32 @@ async function probe(command: string): Promise<boolean> {
 }
 
 /**
+ * Build the concat-demuxer list for `frames`. Each `duration` is the time
+ * the frame is SHOWN, i.e. the gap to the NEXT frame (ts[i+1] - ts[i]),
+ * clamped into [0.05, 2] seconds; using the gap BEHIND shifted every frame's
+ * show time one frame late. The last frame has no successor and is shown for
+ * the fallback interval, then named again (the concat demuxer ignores the
+ * duration of the final entry).
+ */
+export function buildScreencastConcatList(frames: ScreencastFrameLike[]): string[] {
+  const ext = frames[0]!.format === "png" ? "png" : "jpg"
+  const clamp = (v: number) => Math.min(Math.max(v, 0.05), 2)
+  const list: string[] = []
+  for (const [i, frame] of frames.entries()) {
+    const next = frames[i + 1]
+    const nextTs = next ? next.timestampMs : frame.timestampMs + FRAME_FALLBACK_INTERVAL_S * 1000
+    list.push(`file 'f${String(i).padStart(4, "0")}.${ext}'`, `duration ${clamp((nextTs - frame.timestampMs) / 1000)}`)
+  }
+  list.push(`file 'f${String(frames.length - 1).padStart(4, "0")}.${ext}'`)
+  return list
+}
+
+/**
  * Encode buffered screencast frames into an mp4 at `outPath`.
  *
- * Uses the concat demuxer with a per-frame `duration` (frames arrive on an
- * irregular cadence), re-timed to 10fps so players handle the sparse stream.
+ * Uses the concat demuxer with a per-frame `duration` from
+ * `buildScreencastConcatList` (frames arrive on an irregular cadence),
+ * re-timed to 10fps so players handle the sparse stream.
  * Resolves the output path; throws with a clear cause when ffmpeg is missing
  * or fails.
  */
@@ -57,21 +79,11 @@ export async function encodeScreencastFramesToMp4(
   const work = await mkdtemp(join(tmpdir(), "chrome-live-screencast-"))
   try {
     const ext = frames[0]!.format === "png" ? "png" : "jpg"
-    const list: string[] = []
-    // Per-frame delta (clamped): the concat demuxer expects each entry's
-    // duration to be SHOW TIME of that file, not a cumulative offset —
-    // cumulative values made recent-motion recordings play ~40× too slow.
-    const clamp = (v: number) => Math.min(Math.max(v, 0.05), 2)
     for (const [i, frame] of frames.entries()) {
-      const file = `f${String(i).padStart(4, "0")}.${ext}`
-      await writeFile(join(work, file), Buffer.from(frame.data, "base64"))
-      const prev = i === 0 ? frames[0]!.timestampMs : frames[i - 1]!.timestampMs
-      list.push(`file '${file}'`, `duration ${clamp((frame.timestampMs - prev) / 1000)}`)
+      await writeFile(join(work, `f${String(i).padStart(4, "0")}.${ext}`), Buffer.from(frame.data, "base64"))
     }
-    // The concat demuxer needs the last file named again (its duration is ignored).
-    list.push(`file 'f${String(frames.length - 1).padStart(4, "0")}.${ext}'`)
     const listPath = join(work, "list.txt")
-    await writeFile(listPath, list.join("\n") + "\n")
+    await writeFile(listPath, buildScreencastConcatList(frames).join("\n") + "\n")
 
     const fps = opts.fps ?? 10
     let stderr = ""
