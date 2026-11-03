@@ -218,7 +218,7 @@ describe("buildQueryOptions — partial-message streaming", () => {
   })
 })
 
-describe("mapAcpMcpServers — duplicate server names", () => {
+describe("mapAcpMcpServers: duplicate server names", () => {
   const http = (name: string, url: string): McpServer => ({
     type: "http",
     name,
