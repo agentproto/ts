@@ -192,3 +192,75 @@ test("--check ignores dotfiles like .DS_Store", (t) => {
   const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--check"])
   assert.equal(res.status, 0, res.stdout + res.stderr)
 })
+
+test("--prune-ratified removes an allowlist entry whose vendored value now equals canonical", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" }, extra: { type: "boolean" } },
+  })
+  // Pre-sync vendored copy already matches canonical: the field was ratified.
+  writeSchema(join(target, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" }, extra: { type: "boolean" } },
+  })
+  writeAllowlist(allowlist, [
+    { file: "aip-1/draft/FOO.schema.json", field: "properties.extra", reason: "test-only ts-ahead field" },
+  ])
+  const lock = join(tmp, "canonical.lock.json")
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", "0123456789abcdef0123456789abcdef01234567", "--prune-ratified"])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.match(res.stdout, /sync-specs: ratified upstream, allowlist entry removed: aip-1\/draft\/FOO\.schema\.json properties\.extra/)
+  const remaining = JSON.parse(readFileSync(allowlist, "utf8"))
+  assert.deepEqual(remaining.entries, [])
+  assert.ok(readFileSync(allowlist, "utf8").endsWith("\n"), "allowlist keeps its trailing newline")
+  const check = run(["--source", source, "--target", target, "--allowlist", allowlist, "--check"])
+  assert.equal(check.status, 0, check.stdout + check.stderr)
+})
+
+test("--prune-ratified keeps an allowlist entry whose vendored value still differs from canonical", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" }, extra: { type: "boolean" } },
+  })
+  writeSchema(join(target, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" }, extra: { type: "string" } },
+  })
+  writeAllowlist(allowlist, [
+    { file: "aip-1/draft/FOO.schema.json", field: "properties.extra", reason: "test-only ts-ahead field" },
+  ])
+  const lock = join(tmp, "canonical.lock.json")
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", "0123456789abcdef0123456789abcdef01234567", "--prune-ratified"])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.doesNotMatch(res.stdout, /ratified upstream/)
+  const remaining = JSON.parse(readFileSync(allowlist, "utf8"))
+  assert.equal(remaining.entries.length, 1)
+  assert.equal(remaining.entries[0].field, "properties.extra")
+})
+
+test("--prune-ratified keeps a missing-field entry so --check still fails", (t) => {
+  const { tmp, source, target, allowlist } = makeFixture(t)
+  writeSchema(join(source, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" }, extra: { type: "boolean" } },
+  })
+  // Vendored copy LACKS the allowlisted field: the silent-overwrite case.
+  writeSchema(join(target, "aip-1", "draft"), {
+    type: "object",
+    properties: { name: { type: "string" } },
+  })
+  writeAllowlist(allowlist, [
+    { file: "aip-1/draft/FOO.schema.json", field: "properties.extra", reason: "test-only ts-ahead field" },
+  ])
+  const lock = join(tmp, "canonical.lock.json")
+  const res = run(["--source", source, "--target", target, "--allowlist", allowlist, "--lock", lock, "--source-sha", "0123456789abcdef0123456789abcdef01234567", "--prune-ratified"])
+  assert.equal(res.status, 0, res.stdout + res.stderr)
+  assert.doesNotMatch(res.stdout, /ratified upstream/)
+  const remaining = JSON.parse(readFileSync(allowlist, "utf8"))
+  assert.equal(remaining.entries.length, 1)
+  const check = run(["--source", source, "--target", target, "--allowlist", allowlist, "--check"])
+  assert.equal(check.status, 1)
+  assert.match(check.stderr, /missing from the vendored copy/)
+})
