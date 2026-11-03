@@ -26,11 +26,7 @@
  *
  * ONE model for chrome-live: every one of these addresses the agent's OWN
  * tab (opened by `browser_navigate`, never a foreign one) — there is no
- * second, instance-wide control surface for chrome-live. (The generic,
- * unused `projectBrowserTools` in `browser-projection.ts` is a DIFFERENT
- * model — one whole attached instance, no per-agent tab ownership — and its
- * tool names are deliberately prefixed `browser_kit_*` so the two can never
- * collide if both ever get mounted on the same server.)
+ * second, instance-wide control surface for chrome-live.
  *
  * Auth: same as every other daemon tool — gated by the gateway's auth source.
  *
