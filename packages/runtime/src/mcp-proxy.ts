@@ -412,6 +412,19 @@ function toDescriptor(tool: {
 }
 
 /**
+ * Whether per-call headers reach this import. Loopback servers and imports
+ * that opted in with `forwardCaller` always did; an AIP-59 import
+ * (`subsession: "aip-59"`) needs them too, since its sub-session token
+ * travels as a per-call header and its server is usually remote.
+ */
+export function forwardsCallHeaders(
+  entry: Pick<ImportedMcpEntry, "forwardCaller" | "subsession">,
+  config: Parameters<typeof shouldForwardCallerHeaders>[0],
+): boolean {
+  return shouldForwardCallerHeaders(config, entry.forwardCaller === true || entry.subsession === "aip-59")
+}
+
+/**
  * Open a transport for a discovered MCP. stdio spawns the command;
  * http/sse open over the network. Returns a connected `Client` on
  * success; throws with a useful message on failure.
@@ -427,7 +440,7 @@ async function openClient(entry: ImportedMcpEntry): Promise<{
     label: `import "${entry.alias}"`,
     // claude-code `.mcp.json` semantics; parity with McpClientPool.
     expandHeaders: true,
-    forwardCallHeaders: shouldForwardCallerHeaders(config, entry.forwardCaller === true),
+    forwardCallHeaders: forwardsCallHeaders(entry, config),
     // Pass explicitly rather than relying on `openMcpClient`'s own
     // `getMcpCredentialDeps()` fallback: this module and `serve.ts`'s
     // `setMcpCredentialDeps` call happen to share a bundle today (both

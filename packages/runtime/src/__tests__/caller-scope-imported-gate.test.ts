@@ -221,7 +221,8 @@ describe("an AIP-59 import is identified by a minted sub-session token", () => {
     const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
     const out = await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
     expect(out.ok).toBe(true)
-    expect(seen).toEqual([{ [CALLER_NODE_HEADER]: PERSO_ID, "agentproto-subsession": "sub-token" }])
+    // The token is the only identity sent: no bare session claim, no node id.
+    expect(seen).toEqual([{ "agentproto-subsession": "sub-token" }])
     expect(seen[0]![CALLER_SESSION_HEADER]).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
@@ -240,10 +241,34 @@ describe("an AIP-59 import is identified by a minted sub-session token", () => {
     expect(callTool).not.toHaveBeenCalled()
   })
 
+  it("an unreadable imports config never blocks a non-AIP-59 call", async () => {
+    const subsessions = createSubsessionMinter({
+      resolve: async () => {
+        throw new Error("imported-mcps.json: Unexpected token")
+      },
+      fetch: vi.fn(),
+    })
+    const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
+    const out = await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
+    expect(out.ok).toBe(true)
+    expect(seen).toEqual([{ [CALLER_SESSION_HEADER]: SESSION.perso, [CALLER_NODE_HEADER]: PERSO_ID }])
+  })
+
   it("an import that does not speak AIP-59 keeps exactly the old headers", async () => {
     const subsessions = createSubsessionMinter({ resolve: async () => undefined, fetch: vi.fn() })
     const { proxy, seen } = proxyWith(() => ({ content: [] }), { subsessions })
     await proxy.callTool("app", "whoami", {}, { callerSessionId: SESSION.perso })
     expect(seen).toEqual([{ [CALLER_SESSION_HEADER]: SESSION.perso, [CALLER_NODE_HEADER]: PERSO_ID }])
+  })
+})
+
+describe("per-call headers reach an AIP-59 import even when it is remote", () => {
+  it("forwardsCallHeaders: remote http import forwards only when it speaks AIP-59 or opted in", async () => {
+    const { forwardsCallHeaders } = await import("../mcp-proxy.js")
+    const remote = { type: "http", url: "https://bureau.example/mcp" } as never
+    expect(forwardsCallHeaders({}, remote)).toBe(false)
+    expect(forwardsCallHeaders({ subsession: "aip-59" }, remote)).toBe(true)
+    expect(forwardsCallHeaders({ forwardCaller: true }, remote)).toBe(true)
+    expect(forwardsCallHeaders({}, { type: "http", url: "http://127.0.0.1:8830/mcp" } as never)).toBe(true)
   })
 })

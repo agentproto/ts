@@ -141,8 +141,9 @@ describe("createSubsessionMinter", () => {
     ])
     expect(deletes[0]!.headers.get("authorization")).toMatch(/Bearer device-/)
 
-    await minter.tokenFor("bureau", "sess_1")
-    expect(calls.filter(c => c.method === "POST")).toHaveLength(3)
+    // A revoked (ended) session never gets a token again.
+    await expect(minter.tokenFor("bureau", "sess_1")).rejects.toThrow(/session ended/)
+    expect(calls.filter(c => c.method === "POST")).toHaveLength(2)
   })
 
   it("an error message never contains a token or an Authorization value", async () => {
@@ -162,5 +163,45 @@ describe("createSubsessionMinter", () => {
     expect(err.message).not.toContain("super-secret-token")
     expect(err.message).not.toContain("Bearer device-a")
     expect(err.message).not.toContain("device-a")
+  })
+
+  it("a mint still in flight when the session ends is revoked, never cached", async () => {
+    let release!: () => void
+    const gate = new Promise<void>(r => (release = r))
+    const deletes: string[] = []
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? "GET").toUpperCase() === "DELETE") {
+        deletes.push(String(input))
+        return new Response(null, { status: 204 })
+      }
+      await gate
+      return new Response(JSON.stringify({ token: "late", expiresAt: new Date(Date.now() + 3600_000).toISOString() }), { status: 200 })
+    })
+    const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl as unknown as typeof fetch })
+    const pending = minter.tokenFor("bureau", "sess_1")
+    await new Promise(r => setTimeout(r, 0))
+    await minter.revokeSession("sess_1")
+    release()
+    await expect(pending).rejects.toThrow(/session ended/)
+    expect(deletes).toEqual(["https://bureau.example/pair/subsessions/sess_1"])
+    await expect(minter.tokenFor("bureau", "sess_1")).rejects.toThrow(/session ended/)
+  })
+
+  it("a revoke the server does not confirm is kept and retried", async () => {
+    let deleteStatus = 500
+    const deletes: number[] = []
+    const fetchImpl = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      if ((init?.method ?? "GET").toUpperCase() === "DELETE") {
+        deletes.push(deleteStatus)
+        return new Response(null, { status: deleteStatus })
+      }
+      return new Response(JSON.stringify({ token: "t", expiresAt: new Date(Date.now() + 3600_000).toISOString() }), { status: 200 })
+    })
+    const minter = createSubsessionMinter({ resolve: async () => TARGET_A, fetch: fetchImpl as unknown as typeof fetch })
+    await minter.tokenFor("bureau", "sess_1")
+    await expect(minter.revokeSession("sess_1")).rejects.toThrow(/will retry/)
+    deleteStatus = 204
+    await minter.revokeSession("sess_other")
+    expect(deletes).toEqual([500, 204])
   })
 })

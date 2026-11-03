@@ -34,7 +34,7 @@
  * human hold. Deny-only: no grants, no evaluation.
  */
 
-import { CALLER_SESSION_HEADER, callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
+import { callerHeaders, callerScopes, type CallerScopes } from "./caller-scope.js"
 import { decideRule, loadHooksConfig } from "./hooks-config.js"
 import type { ProxyCallGuard } from "./mcp-proxy.js"
 import type { SessionsRegistry } from "./sessions.js"
@@ -64,14 +64,18 @@ export function createImportedCallGuard(opts: ImportedCallGuardOptions): ProxyCa
     if (refusal) return { allow: false, reason: `${refusal.reason}; nothing was sent.` }
 
     let headers = callerHeaders(callerScope)
+    let aip59 = false
     if (opts.subsessions && callerScope.kind === "session") {
+      // Whether the import speaks AIP-59 is a config lookup: a failure there
+      // (unreadable imports file) means "no", so it never blocks other imports.
+      aip59 = await opts.subsessions.applies(alias).catch(() => false)
+    }
+    if (aip59 && opts.subsessions && callerScope.kind === "session") {
       try {
-        if (await opts.subsessions.applies(alias)) {
-          const rest = headers ? { ...headers } : {}
-          delete rest[CALLER_SESSION_HEADER]
-          const token = await opts.subsessions.tokenFor(alias, callerScope.sessionId)
-          headers = { ...rest, "agentproto-subsession": token }
-        }
+        // The token is the ONLY identity an AIP-59 server receives: no bare
+        // caller-session claim, no node id (the server may be remote).
+        const token = await opts.subsessions.tokenFor(alias, callerScope.sessionId)
+        headers = { "agentproto-subsession": token }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         return {

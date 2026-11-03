@@ -60,6 +60,23 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
   const ttlSeconds = o.ttlSeconds ?? DEFAULT_TTL_SECONDS
   const cache = new Map<string, CachedToken>()
   const inFlight = new Map<string, Promise<string>>()
+  /** Sessions already revoked: a mint that lands after the revoke is deleted, never cached. */
+  const revoked = new Set<string>()
+  /** Revocations the server did not confirm, retried on the next revokeSession call. */
+  const pendingDeletes = new Map<string, { alias: string; sessionId: string; target: SubsessionTarget }>()
+
+  async function deleteOnServer(alias: string, sessionId: string, target: SubsessionTarget): Promise<boolean> {
+    try {
+      const res = await fetchImpl(
+        `${trimBase(target.baseUrl)}/pair/subsessions/${encodeURIComponent(sessionId)}`,
+        { method: "DELETE", headers: { ...target.headers } },
+      )
+      // 404: the server no longer knows the session, which is the goal.
+      return res.ok || res.status === 404
+    } catch {
+      return false
+    }
+  }
 
   async function mint(alias: string, sessionId: string, target: SubsessionTarget): Promise<string> {
     let res: Response
@@ -90,6 +107,14 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
     }
     const parsedExpiry = typeof record.expiresAt === "string" ? Date.parse(record.expiresAt) : Number.NaN
     const expiresAtMs = Number.isFinite(parsedExpiry) ? parsedExpiry : now() + ttlSeconds * 1000
+    if (revoked.has(sessionId)) {
+      // The session ended while this mint was in flight: do not keep the
+      // token, revoke it on the server too.
+      if (!(await deleteOnServer(alias, sessionId, target))) {
+        pendingDeletes.set(keyOf(alias, sessionId), { alias, sessionId, target })
+      }
+      throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
+    }
     cache.set(keyOf(alias, sessionId), { alias, sessionId, token, expiresAtMs, target })
     try {
       o.onMinted?.(sessionId, target)
@@ -105,6 +130,9 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
     },
 
     async tokenFor(alias, sessionId) {
+      if (revoked.has(sessionId)) {
+        throw new Error(`sub-session mint for "${alias}" failed: the session ended`)
+      }
       const key = keyOf(alias, sessionId)
       const cached = cache.get(key)
       if (cached && cached.expiresAtMs - now() > CACHE_MARGIN_MS) return cached.token
@@ -124,26 +152,23 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
     },
 
     async revokeSession(sessionId) {
-      const targets = new Map<string, SubsessionTarget>()
+      revoked.add(sessionId)
+      const toDelete = new Map(pendingDeletes)
+      pendingDeletes.clear()
       for (const [key, entry] of cache) {
         if (entry.sessionId !== sessionId) continue
-        targets.set(entry.alias, entry.target)
+        toDelete.set(key, { alias: entry.alias, sessionId, target: entry.target })
         cache.delete(key)
       }
       const failures: string[] = []
-      for (const alias of targets.keys()) {
-        const target = targets.get(alias)!
-        try {
-          await fetchImpl(
-            `${trimBase(target.baseUrl)}/pair/subsessions/${encodeURIComponent(sessionId)}`,
-            { method: "DELETE", headers: { ...target.headers } },
-          )
-        } catch {
-          failures.push(alias)
-        }
+      for (const [key, item] of toDelete) {
+        if (await deleteOnServer(item.alias, item.sessionId, item.target)) continue
+        // Kept for the next call: a token the server still honours is never forgotten.
+        pendingDeletes.set(key, item)
+        failures.push(`${item.alias}/${item.sessionId}`)
       }
       if (failures.length > 0) {
-        throw new Error(`sub-session revoke for "${sessionId}" failed for: ${failures.join(", ")}`)
+        throw new Error(`sub-session revoke failed for: ${failures.join(", ")} (will retry)`)
       }
     },
   }
