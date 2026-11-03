@@ -31,7 +31,7 @@ export function normalizeStepId(id) {
   return String(id ?? "").replace(/\[[^\]]*\]$/, "")
 }
 
-const POSTED_REVIEW_LINE = /^\s*Review posted\b.*\((APPROVE|APPROVED|REQUEST[_ ]CHANGES|CHANGES[_ ]REQUESTED)\)/im
+const POSTED_REVIEW_LINE = /^\s*Review posted\b.*\((APPROVE|APPROVED|REQUEST[_ ]CHANGES|CHANGES[_ ]REQUESTED)\)[.\s]*$/im
 
 /**
  * The verdict of an agent step that has no `outputSchema` (the single-step
@@ -44,14 +44,15 @@ const POSTED_REVIEW_LINE = /^\s*Review posted\b.*\((APPROVE|APPROVED|REQUEST[_ ]
 function verdictFromText(text) {
   if (typeof text !== "string" || !text.trim()) return undefined
   const trimmed = text.trim()
-  const start = trimmed.lastIndexOf("{")
-  for (const candidate of [trimmed, start > 0 ? trimmed.slice(start) : undefined]) {
-    if (!candidate || !candidate.startsWith("{")) continue
+  // The verdict object may be followed by prose and preceded by other braces:
+  // try each `{` up to the last `}`.
+  const end = trimmed.lastIndexOf("}")
+  for (let i = trimmed.indexOf("{"); i !== -1 && i < end; i = trimmed.indexOf("{", i + 1)) {
     try {
-      const parsed = JSON.parse(candidate)
-      if (parsed && typeof parsed === "object") return verdictFromValue(parsed)
+      const verdict = verdictFromValue(JSON.parse(trimmed.slice(i, end + 1)))
+      if (verdict) return verdict
     } catch {
-      // not JSON - try the posted-review line
+      // not a JSON object from here - keep looking, then the posted-review line
     }
   }
   const m = POSTED_REVIEW_LINE.exec(trimmed)

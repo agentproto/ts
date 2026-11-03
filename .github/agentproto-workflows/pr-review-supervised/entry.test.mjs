@@ -259,6 +259,22 @@ test('buildReviewSummary does not read prose or a COMMENT review as approval', (
   }
 })
 
+test('buildReviewSummary reads the posted-review line past a non-verdict JSON blob and a retracted line stays incomplete', () => {
+  const posted = 'Review posted: https://github.com/o/r/pull/1#pullrequestreview-9 (APPROVE)'
+  assert.equal(buildReviewSummary(unschemaedRun(`config was {"a":1}\n\n${posted}`)).verdict, 'approved')
+  assert.equal(
+    buildReviewSummary(unschemaedRun('Review posted: https://github.com/o/r/pull/1#pullrequestreview-9 (APPROVE) - retracted, see (COMMENT)')).verdict,
+    'incomplete',
+  )
+})
+
+test('buildReviewSummary reads a JSON verdict that has prose after it', () => {
+  const out = buildReviewSummary(
+    unschemaedRun('{"conclusion":"request_changes","summary":"one bug","findings":[{"severity":"high","file":"a.ts","note":"x"}]}\n\nDone.'),
+  )
+  assert.equal(out.verdict, 'changes_requested')
+})
+
 test('the stage diagram names the fix + re-review loop and its bound', () => {
   assert.match(stageDiagram(3), /fix -> re-review/)
   assert.match(stageDiagram(3), /3 fix round/)
