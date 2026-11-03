@@ -673,14 +673,6 @@ export {
   defaultBrowserAdapterResolution,
   defaultBrowserAdapterIds,
 } from "./browser-adapters.js"
-export { projectBrowserTools } from "./browser-projection.js"
-export type {
-  ProjectedBrowserTool,
-  ProjectedBrowserTools,
-  ProjectedProvider,
-  ProjectedToolResult,
-  ProjectBrowserToolsOptions,
-} from "./browser-projection.js"
 export type { BrowserAdapterHandle } from "./browser-adapters.js"
 export type {
   SandboxProviderResolver,
