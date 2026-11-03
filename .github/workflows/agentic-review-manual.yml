@@ -40,6 +40,13 @@ jobs:
           cache: pnpm
 
       - name: Build the workspace CLI and OpenCode adapter
+        env:
+          # Same remote cache as ci.yml: a cold workspace build is ~7 min, a cache
+          # restore is seconds. No TURBO_SCM_BASE: this builds a filtered closure,
+          # not an --affected set.
+          TURBO_API: https://turbo-cache.agentik.net
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
         run: |
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
@@ -63,6 +70,12 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The paid usage-limit fallback rung (opencode-go/*) needs its own key and
+          # the owner-only allowlist; without both, placement drops the paid id
+          # ("not listed in AGENT_ALLOWED_METERED_MODELS"). Same wiring as the
+          # reviewer-agentproto step in ci.yml.
+          OPENCODE_GO_API_KEY: ${{ secrets.OPENCODE_GO_API_KEY }}
+          AGENT_ALLOWED_METERED_MODELS: ${{ vars.AGENT_ALLOWED_METERED_MODELS }}
         with:
           adapter: ${{ steps.review.outputs.adapter }}
           auth-mode: ${{ steps.review.outputs.auth-mode }}
@@ -118,6 +131,13 @@ jobs:
           cache: pnpm
 
       - name: Build the workspace CLI and Claude cloud relay
+        env:
+          # Same remote cache as ci.yml: a cold workspace build is ~7 min, a cache
+          # restore is seconds. No TURBO_SCM_BASE: this builds a filtered closure,
+          # not an --affected set.
+          TURBO_API: https://turbo-cache.agentik.net
+          TURBO_TEAM: agentproto-ts
+          TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
         run: |
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-claude-code-cloud...

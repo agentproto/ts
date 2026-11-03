@@ -2084,6 +2084,14 @@ export interface SpawnAgentSessionInput {
    *  meaningful with `sandbox`; an id with no registered probe is refused
    *  (`sandbox_preflight_invalid`) before any box boots. */
   preflight?: string[]
+  /** Budget, ms, for the box's own `agent_start` (the adapter spawn on the
+   *  booted box). Unset keeps the harness client's 5 minute request timeout.
+   *  Set per placement rung (`placement.ladder[].agentStartTimeoutMs`) so a
+   *  box that accepted the workspace but never starts the adapter costs the
+   *  ladder that budget instead of 5 minutes; an expiry fails the rung with
+   *  `sandbox_proxy_failed` (`details.errorClass: "sandbox_agent_start_timeout"`)
+   *  and tears the box down. Only meaningful with `sandbox`. */
+  agentStartTimeoutMs?: number
   /** Ordered placement ladder: rung 1 is tried first and the spawn moves down
    *  the list when a rung cannot place the box (failed preflight, capacity or
    *  overflow refusal, egress pool exhausted, any boot failure before the
@@ -6313,6 +6321,7 @@ async function spawnAgentSessionOnce(
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
+        ...(input.agentStartTimeoutMs !== undefined ? { agentStartTimeoutMs: input.agentStartTimeoutMs } : {}),
         ...(sandboxTarWorkspace
           ? {
               tarWorkspace: sandboxTarWorkspace,
@@ -7222,6 +7231,61 @@ async function startDeviceSessionWithRetry(
   throw new DeviceSpawnUnreachableError(target, attempts, lastErr)
 }
 
+/** The box's own `agent_start` outlived its budget. */
+class AgentStartTimeoutError extends Error {
+  readonly timeoutMs: number
+  constructor(timeoutMs: number) {
+    super(`the box's agent_start did not return within ${timeoutMs}ms`)
+    this.name = "AgentStartTimeoutError"
+    this.timeoutMs = timeoutMs
+  }
+}
+
+/** Settle with `start`, or reject once `timeoutMs` passes. The underlying call
+ *  is not cancellable; the caller destroys the box, which ends it. */
+function startWithinBudget<T>(start: Promise<T>, timeoutMs: number | undefined): Promise<T> {
+  if (timeoutMs === undefined) return start
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new AgentStartTimeoutError(timeoutMs)), timeoutMs)
+    start.then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      err => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+const BOX_DIAGNOSTICS_COMMAND =
+  'tail -n 40 "$HOME/.agentproto-daemon.log" 2>&1; echo "--- processes"; ' +
+  "ps -eo pid,etime,pcpu,args 2>&1 | grep -E 'npm|npx|opencode|claude' | grep -v grep | head -n 10"
+const BOX_DIAGNOSTICS_BUDGET_MS = 8_000
+const BOX_DIAGNOSTICS_MAX_CHARS = 4_000
+
+/** Best-effort tail of the box daemon log plus the adapter-related processes,
+ *  read after a failed `agent_start` and before the box is destroyed. Never
+ *  throws and never takes longer than its budget. */
+async function boxStartDiagnostics(exec: NonNullable<SandboxAgentSessionHost["exec"]>): Promise<string | undefined> {
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const budget = new Promise<undefined>(resolve => {
+      timer = setTimeout(() => resolve(undefined), BOX_DIAGNOSTICS_BUDGET_MS)
+    })
+    const ran = exec({ command: BOX_DIAGNOSTICS_COMMAND, timeoutMs: BOX_DIAGNOSTICS_BUDGET_MS }).catch(() => undefined)
+    const result = await Promise.race([ran, budget])
+    if (timer) clearTimeout(timer)
+    if (!result) return undefined
+    const text = `${result.stdout}${result.stderr}`.trim()
+    return text ? text.slice(-BOX_DIAGNOSTICS_MAX_CHARS) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 /**
  * Resolve `opts.sandbox`, boot the box, spawn `adapter` on the box's OWN
  * `agent_start`, and wrap the result in a `SandboxAgentSessionProxy`. Called
@@ -7383,6 +7447,9 @@ export async function bootSandboxAgentSession(opts: {
    *  booted box before anything else is set up in it. A `ko` tears the box
    *  down and fails with `sandbox_preflight_failed`. */
   preflight?: readonly string[]
+  /** Budget, ms, for the box's own `agent_start`; see
+   *  `SpawnAgentSessionInput.agentStartTimeoutMs`. */
+  agentStartTimeoutMs?: number
   /** Probe registry; defaults to the daemon-wide one. Test seam. */
   preflightRegistry?: PreflightRegistry
   /** Per-probe budget override, ms. Test seam. */
@@ -8116,7 +8183,7 @@ export async function bootSandboxAgentSession(opts: {
     const remoteDesc =
       deviceTarget !== undefined
         ? await startDeviceSessionWithRetry(host, startArgs, deviceTarget)
-        : await host.start(startArgs)
+        : await startWithinBudget(host.start(startArgs), opts.agentStartTimeoutMs)
     remoteSessionId = remoteDesc.id
     console.warn(`[sandbox] boot: agent started (${actualProvider} ${host.sandboxId}, session ${remoteSessionId})`)
     if (bootCancelled()) {
@@ -8144,6 +8211,14 @@ export async function bootSandboxAgentSession(opts: {
         `adapter ${opts.adapter}, ${Date.now() - agentStartStartedAt}ms): ` +
         `${err instanceof Error ? err.message : String(err)}`,
     )
+    // The box is about to be destroyed and its own daemon log with it, so
+    // pull what shows why the adapter never started while it still exists.
+    if (boxExec) {
+      const diagnostics = await boxStartDiagnostics(boxExec)
+      if (diagnostics) {
+        console.warn(`[sandbox] boot: box diagnostics (${actualProvider} ${host.sandboxId}):\n${diagnostics}`)
+      }
+    }
     // PARENT RELAY: the boot never completed, so the relay grant minted
     // above is dead on arrival - revoke it instead of leaving a live token
     // behind for a box session that will never exist.
@@ -8170,6 +8245,9 @@ export async function bootSandboxAgentSession(opts: {
       message:
         `agent_start: the sandbox's own agent_start failed for adapter "${opts.adapter}" — ` +
         `${err instanceof Error ? err.message : String(err)}`,
+      ...(err instanceof AgentStartTimeoutError
+        ? { details: { errorClass: "sandbox_agent_start_timeout", timeoutMs: err.timeoutMs } }
+        : {}),
     }
   }
 

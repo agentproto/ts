@@ -16,6 +16,10 @@ import { turnRetryInputSchema, type TurnRetryInput } from "./turn-retry-policy.j
 
 export const MAX_PLACEMENT_RUNGS = 8
 
+/** Ceiling for a rung's own `agentStartTimeoutMs`: the unset default is the
+ *  harness client's 5 minute `agent_start` request timeout. */
+export const MAX_AGENT_START_TIMEOUT_MS = 300_000
+
 const accessSchema = z
   .object({
     profileRef: z.string().min(1).optional(),
@@ -30,6 +34,7 @@ export const placementRungSchema = z
     access: accessSchema.optional(),
     preflight: z.array(z.string().min(1)).optional(),
     turnRetry: turnRetryInputSchema.optional(),
+    agentStartTimeoutMs: z.number().int().positive().max(MAX_AGENT_START_TIMEOUT_MS).optional(),
   })
   .strict()
 
@@ -141,6 +146,7 @@ export interface PlacementOverrides {
   access?: { profileRef?: string; profileRefs?: string[] }
   preflight?: string[]
   turnRetry?: TurnRetryInput
+  agentStartTimeoutMs?: number
 }
 
 /** The spawn-input axes a rung overrides; omitted axes inherit the caller's. */
@@ -151,6 +157,7 @@ export function rungOverrides(rung: PlacementRung): PlacementOverrides {
     ...(rung.access !== undefined ? { access: rung.access } : {}),
     ...(rung.preflight !== undefined ? { preflight: rung.preflight } : {}),
     ...(rung.turnRetry !== undefined ? { turnRetry: rung.turnRetry } : {}),
+    ...(rung.agentStartTimeoutMs !== undefined ? { agentStartTimeoutMs: rung.agentStartTimeoutMs } : {}),
   }
 }
 

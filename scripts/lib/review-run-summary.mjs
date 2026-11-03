@@ -31,12 +31,37 @@ export function normalizeStepId(id) {
   return String(id ?? "").replace(/\[[^\]]*\]$/, "")
 }
 
-/** The review verdict carried by one step record, when it has one. */
-export function reviewVerdictOf(step) {
-  const out = step?.output
-  if (!out || typeof out !== "object") return undefined
-  // An agent step's output is `{ sessionId, output: <schema value> }`.
-  const value = out.output && typeof out.output === "object" ? out.output : out
+const POSTED_REVIEW_LINE = /^\s*Review posted\b.*\((APPROVE|APPROVED|REQUEST[_ ]CHANGES|CHANGES[_ ]REQUESTED)\)[.\s]*$/im
+
+/**
+ * The verdict of an agent step that has no `outputSchema` (the single-step
+ * pr-review lane): its output is `{ sessionId, text }`, `text` being the
+ * agent's final message. Two shapes are recognized, both anchored so prose
+ * that merely mentions a verdict never reads as one: a JSON verdict object
+ * (the "local" placement's contract) and the "Review posted: <url> (APPROVE)"
+ * line the reviewer ends with after posting through `gh` / REST.
+ */
+function verdictFromText(text) {
+  if (typeof text !== "string" || !text.trim()) return undefined
+  const trimmed = text.trim()
+  // The verdict object may be followed by prose and preceded by other braces:
+  // try each `{` up to the last `}`.
+  const end = trimmed.lastIndexOf("}")
+  for (let i = trimmed.indexOf("{"); i !== -1 && i < end; i = trimmed.indexOf("{", i + 1)) {
+    try {
+      const verdict = verdictFromValue(JSON.parse(trimmed.slice(i, end + 1)))
+      if (verdict) return verdict
+    } catch {
+      // not a JSON object from here - keep looking, then the posted-review line
+    }
+  }
+  const m = POSTED_REVIEW_LINE.exec(trimmed)
+  if (!m) return undefined
+  const conclusion = /^APPROVE/i.test(m[1]) ? "approve" : "request_changes"
+  return { conclusion, summary: "", findings: [] }
+}
+
+function verdictFromValue(value) {
   const conclusion = value?.conclusion
   if (conclusion === "approve" || conclusion === "request_changes") {
     return {
@@ -46,6 +71,15 @@ export function reviewVerdictOf(step) {
     }
   }
   return undefined
+}
+
+/** The review verdict carried by one step record, when it has one. */
+export function reviewVerdictOf(step) {
+  const out = step?.output
+  if (!out || typeof out !== "object") return undefined
+  // An agent step's output is `{ sessionId, output: <schema value> }`.
+  const value = out.output && typeof out.output === "object" ? out.output : out
+  return verdictFromValue(value) ?? verdictFromText(out.text)
 }
 
 function stepsOf(run) {

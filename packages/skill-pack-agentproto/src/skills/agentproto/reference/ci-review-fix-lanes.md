@@ -216,8 +216,11 @@ This is what took the most work to get right.
   waits up to 4 min for the woken host and only then overflows to e2b.
 - **`reviewerPlacement` (this repo's `pr-review` lane).** Instead of one
   `reviewerSandbox`, the config can declare `reviewerPlacement: { ladder: [...] }`,
-  an ordered list of rungs `{ sandbox, model?, preflight?, turnRetry? }` that
-  `spawnAgentSession` walks until one boots and passes its preflight. This
+  an ordered list of rungs `{ sandbox, model?, preflight?, turnRetry?,
+  agentStartTimeoutMs? }` that `spawnAgentSession` walks until one boots and
+  passes its preflight (`agentStartTimeoutMs`, max 300000, caps how long the
+  box's `agent_start` may hang before the rung is abandoned and the next one
+  runs; the box's daemon log tail is logged first). This
   repo's ladder is computer (with the `model-answers` preflight), e2b (same
   preflight), then computer again with the paid
   `opencode-go/deepseek-v4.1-flash`. `reviewerPlacementFor` in
