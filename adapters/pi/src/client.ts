@@ -44,6 +44,11 @@ import {
   type PiResponse,
   type PiSessionEvent,
 } from "./pi-events.js"
+import {
+  PROVIDER_OVERRIDES_CONFIG_ENV,
+  buildOpencodeProviderOverrides,
+  writeProviderOverridesConfig,
+} from "./provider-overrides.js"
 import { resolveWindowsPiSpawn } from "./win32-pi-bin.js"
 
 /** Env var the bridge extension reads to find its per-session config JSON. */
@@ -52,6 +57,11 @@ const BRIDGE_CONFIG_ENV = "PI_MCP_BRIDGE_CONFIG"
 /** Resolve the built bridge extension next to this module (dist/…). */
 function bridgeExtensionPath(): string {
   return fileURLToPath(new URL("./mcp-bridge-extension.mjs", import.meta.url))
+}
+
+/** Resolve the built provider-overrides extension next to this module (dist/…). */
+function providerOverridesExtensionPath(): string {
+  return fileURLToPath(new URL("./provider-overrides-extension.mjs", import.meta.url))
 }
 
 /** Env override for the pi binary path — lets a smoke test point at an
@@ -165,8 +175,13 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
    *  unknown window, not a fabricated one. */
   let contextWindow: number | undefined
   let onActivity: (() => void) | undefined
-  /** Session temp dir holding the bridge config JSON; removed on close(). */
+  /** Session temp dir holding the bridge / provider-override config JSON;
+   *  removed on close(). */
   let bridgeTempDir: string | undefined
+  function sessionTempDir(): string {
+    bridgeTempDir ??= mkdtempSync(join(tmpdir(), "pi-mcp-bridge-"))
+    return bridgeTempDir
+  }
 
   const pending = new Map<string, PendingCommand>()
   const stderrLines: string[] = []
@@ -335,16 +350,30 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
       // `-e <extension>` + PI_MCP_BRIDGE_CONFIG so the extension registers one
       // pi tool per MCP tool. See ./mcp-bridge/ and ../MCP-BRIDGE.md.
       const childEnv: Record<string, string> = { ...opts.env }
+
+      // OpenCode console-org profile (Go sub-account): the spawn env carries
+      // the org's opencode provider block, which pi cannot read. Translate it
+      // into a per-session pi provider override (bearer + org header as `$ENV`
+      // references, no secret in the file) applied by a shipped extension.
+      // Applied in lean mode too: it is auth, not context.
+      const overrides = buildOpencodeProviderOverrides(childEnv)
+      if (overrides) {
+        Object.assign(childEnv, overrides.env)
+        childEnv[PROVIDER_OVERRIDES_CONFIG_ENV] = writeProviderOverridesConfig(
+          sessionTempDir(),
+          overrides.config,
+        )
+        args.push("-e", providerOverridesExtensionPath())
+      }
+
       if (opts.mcpServers?.length && !lean) {
         const { config, errors } = await enumerateMcpTools(opts.mcpServers)
         for (const e of errors) {
           console.warn(`[adapter-pi] mcp-bridge: server "${e.server}" unavailable — ${e.message}`)
         }
         if (config.tools.length > 0) {
-          const dir = mkdtempSync(join(tmpdir(), "pi-mcp-bridge-"))
-          const configPath = join(dir, "config.json")
+          const configPath = join(sessionTempDir(), "config.json")
           writeFileSync(configPath, JSON.stringify(config), "utf8")
-          bridgeTempDir = dir
           childEnv[BRIDGE_CONFIG_ENV] = configPath
           args.push("-e", bridgeExtensionPath())
           console.info(

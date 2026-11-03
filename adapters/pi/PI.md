@@ -1,7 +1,7 @@
 ---
 name: pi
 id: pi
-description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google/Moonshot), streaming, live-duplex (steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP servers are bridged into pi tools via a generated pi extension (see MCP-BRIDGE.md).
+description: earendil-works/pi — MIT headless TypeScript coding agent. Driven over pi's persistent JSON-over-stdio RPC mode (`pi --mode rpc`) as a spawned child. Multi-provider (Anthropic/OpenAI/Google/Moonshot/OpenRouter/OpenCode Zen/OpenCode Go), streaming, live-duplex (steer/follow-up/abort mid-turn). No native ACP/MCP, but injected MCP servers are bridged into pi tools via a generated pi extension (see MCP-BRIDGE.md).
 version: 0.1.0
 bin: pi
 install:
@@ -72,6 +72,12 @@ menu (`anthropic/claude-sonnet-4-5`, `openai/gpt-5.1`,
 `google/gemini-2.5-flash`, `moonshotai/kimi-k2.7-code`); the free-form `model`
 option accepts any pattern pi's `--model` understands (`provider/id`, verified
 against pi's `core/model-resolver.ts`). `env` maps provider → key env var.
+
+`opencode/<id>` (OpenCode Zen) and `opencode-go/<id>` (OpenCode Go) come from
+the shared catalog's route tables; both read `OPENCODE_API_KEY`. An OpenCode
+console-org (Go sub-account) profile is applied as a per-session pi provider
+override (bearer `${OPENCODE_CONSOLE_TOKEN}` + `x-opencode-org-id` header) by
+the shipped `provider-overrides-extension.mjs`; see README.md.
 
 ## Options
 

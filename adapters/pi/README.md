@@ -47,7 +47,8 @@ Unlike `@agentproto/adapter-mastracode-inprocess` (the in-process proprietary
 arm), **this arm spawns a real child** (`pi --mode rpc`) and translates pi's
 RPC event stream into the canonical `StreamEvent` taxonomy.
 
-- **Multi-provider** — Anthropic, OpenAI, Google (Gemini), Moonshot AI, OpenRouter. One
+- **Multi-provider** — Anthropic, OpenAI, Google (Gemini), Moonshot AI, OpenRouter,
+  OpenCode Zen (`opencode/<id>`), OpenCode Go (`opencode-go/<id>`). One
   provider key minimum. See [`SECRETS.md`](./SECRETS.md).
 - **Streaming** — text + thinking deltas, tool-call/result lifecycle.
 - **Live duplex** — pi's RPC mode supports `steer` / `follow_up` / `abort`
@@ -83,6 +84,33 @@ agentproto sessions start pi \
   --model openrouter/deepseek/deepseek-v4.1-flash \
   --access-profile openrouter-dev-local
 ```
+
+## OpenCode Zen and OpenCode Go models
+
+`opencode` (Zen, pay-as-you-go) and `opencode-go` (the Go subscription) are pi
+built-in providers with the same spelling as opencode's, so `models.allowed`
+lists both route tables from the shared catalog (`opencode/deepseek-v4.1-flash`,
+`opencode-go/deepseek-v4.1-flash`, ...). Pi reads `OPENCODE_API_KEY` for both;
+an api-key profile on either endpoint lands there, and the profile's endpoint
+decides which balance bills.
+
+A Go profile pinned to an OpenCode console org (`source: "opencode-console"`,
+resolved by `@agentproto/adapter-opencode`'s sub-account provider) arrives as
+`OPENCODE_CONSOLE_TOKEN` plus the org's opencode provider block in
+`OPENCODE_CONFIG_CONTENT`. Pi cannot read that block, so `client.ts` translates
+it (`src/provider-overrides.ts`) into a per-session pi provider override,
+`{"providers":{"opencode-go":{"apiKey":"${OPENCODE_CONSOLE_TOKEN}","headers":{"x-opencode-org-id":"org_..."}}}}`,
+written to the session temp dir and applied by the shipped
+`provider-overrides-extension.mjs` (`-e`, `PI_PROVIDER_OVERRIDES_CONFIG`) via
+`pi.registerProvider`. The file holds only `$ENV` references, never the token;
+the user's `~/.pi/agent` is not touched. Pi itself already sends
+`x-opencode-session: <pi session id>` and `x-opencode-client: pi` on every
+OpenCode request, so the adapter does not set them.
+
+Note: a key stored in pi's own `~/.pi/agent/auth.json` for `opencode` /
+`opencode-go` takes precedence over both the env var and the override (pi's
+auth order), so keep that file free of OpenCode entries on a host that bills
+through agentproto profiles.
 
 ## Lean review mode
 
