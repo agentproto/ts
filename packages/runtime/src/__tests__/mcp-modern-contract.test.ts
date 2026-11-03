@@ -436,14 +436,19 @@ describe("current behaviour (characterization)", () => {
       expect(r.text).toBe("")
     })
 
-    it("`Accept` without both `application/json` and `text/event-stream` is a 406 with `-32000`", async () => {
-      for (const accept of [undefined, "application/json"]) {
-        const headers: Record<string, string> = { "content-type": "application/json", "mcp-protocol-version": MODERN_VERSION }
-        if (accept) headers["accept"] = accept
-        const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
-        expect(r.status, `accept=${accept}`).toBe(406)
-        expect(r.json?.error.code).toBe(-32000)
-      }
+    it("an absent `Accept` is a 406 with `-32000`", async () => {
+      const headers: Record<string, string> = { "content-type": "application/json", "mcp-protocol-version": MODERN_VERSION }
+      const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
+      expect(r.status).toBe(406)
+      expect(r.json?.error.code).toBe(-32000)
+    })
+
+    it("a JSON-only `Accept` is served as a 200 JSON body (MCP Apps hosts without SSE)", async () => {
+      const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json", "mcp-protocol-version": MODERN_VERSION }
+      const r = await send({ method: "POST", headers, body: rpc("tools/list", { _meta: MODERN_META }) })
+      expect(r.status).toBe(200)
+      expect(r.headers.get("content-type")).toContain("application/json")
+      expect(r.json?.result?.tools).toHaveLength(1)
     })
 
     it("a `Content-Type` other than `application/json` is a 415 with `-32000`", async () => {
