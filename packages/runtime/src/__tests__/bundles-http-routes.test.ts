@@ -82,8 +82,8 @@ describe("capability bundles — REST routes", () => {
 
       const listRes = await fetch(`${base}/bundles`)
       const listed = (await listRes.json()) as { bundles: BundleShape[] }
-      // User bundles plus the built-in `browser` bundle.
-      expect(listed.bundles.map(b => b.id)).toEqual(["research", "browser"])
+      // No proxyImport configured: the built-in `browser` bundle is not listed.
+      expect(listed.bundles.map(b => b.id)).toEqual(["research"])
       expect(listed.bundles[0]).toMatchObject({ id: "research", dangling: [] })
     })
   })
@@ -99,7 +99,7 @@ describe("capability bundles — REST routes", () => {
       expect((await res.json()) as { error: string }).toMatchObject({ error: "invalid_input" })
 
       const listed = (await (await fetch(`${base}/bundles`)).json()) as { bundles: BundleShape[] }
-      expect(listed.bundles.map(b => b.id)).toEqual(["browser"])
+      expect(listed.bundles.map(b => b.id)).toEqual([])
     })
   })
 
@@ -157,7 +157,7 @@ describe("capability bundles — REST routes", () => {
       expect((await delRes.json()) as { deleted: boolean }).toMatchObject({ deleted: true })
 
       const listed = (await (await fetch(`${base}/bundles`)).json()) as { bundles: BundleShape[] }
-      expect(listed.bundles.map(b => b.id)).toEqual(["browser"])
+      expect(listed.bundles.map(b => b.id)).toEqual([])
 
       const missing = await fetch(`${base}/bundles/ghost`, { method: "DELETE" })
       expect(missing.status).toBe(404)

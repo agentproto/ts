@@ -97,9 +97,16 @@ export function mapBrowserProxyArgs(
   for (const key of mapping.forward) {
     if (input[key] !== undefined) args[key] = input[key]
   }
-  const notes = mapping.dropped
-    .filter(key => input[key] !== undefined)
-    .map(key => `dropped "${key}" (no Bureau equivalent)`)
+  const notes = [
+    ...mapping.dropped
+      .filter(key => input[key] !== undefined)
+      .map(key => `dropped "${key}" (no Bureau equivalent)`),
+    // The daemon's browser-session selector means nothing to Bureau, which
+    // identifies the caller session itself: say so instead of ignoring it.
+    ...mapping.consumed
+      .filter(key => input[key] !== undefined)
+      .map(key => `ignored "${key}": Bureau drives the caller session's own tab`),
+  ]
   return { args, notes }
 }
 

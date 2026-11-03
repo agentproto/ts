@@ -161,6 +161,8 @@ describe("browser proxy - the six proxied tools", () => {
         })
         expect((res.structuredContent as { notes?: string[] }).notes ?? []).toEqual([
           `dropped "${c.dropped}" (no Bureau equivalent)`,
+          // The daemon session selector is reported, not silently ignored.
+          `ignored "sessionId": Bureau drives the caller session's own tab`,
         ])
       } finally {
         await cleanup()

@@ -78,14 +78,16 @@ export function builtinBrowserBundle(
 }
 
 /** User bundles plus every built-in one; a user bundle with a built-in's id
- *  wins (same policy as the rest of the daemon's user-over-builtin stores). */
+ *  wins (same policy as the rest of the daemon's user-over-builtin stores).
+ *  The built-in `browser` bundle exists only once `defaults.browser.proxyImport`
+ *  names a Bureau import: on a host without one it would mount nothing. */
 export function effectiveBundles(
   userBundles: readonly Bundle[],
   proxyImport: string | undefined,
   imported: ImportedMcpsConfig,
 ): Bundle[] {
   const ids = new Set(userBundles.map(bundle => bundle.id))
-  return ids.has(BUILTIN_BROWSER_BUNDLE_ID)
+  return !proxyImport || ids.has(BUILTIN_BROWSER_BUNDLE_ID)
     ? [...userBundles]
     : [...userBundles, builtinBrowserBundle(proxyImport, imported)]
 }
