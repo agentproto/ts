@@ -514,4 +514,59 @@ describe("/mcp gateway registration", () => {
       expect(registry.get("desktop-9")).toBeUndefined()
     })
   })
+
+  const post = (url: string, body: unknown, headers: Record<string, string> = {}) =>
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    })
+
+  it("404s the cc: inbox before a touch, then registers name/cwd/hostSessionId", async () => {
+    await withGateway(async (base, registry) => {
+      expect((await fetch(`${base}/sessions/cc%3Achat-1/inbox`)).status).toBe(404)
+      const res = await post(`${base}/sessions/cc%3Achat-1/touch`, {
+        host: "claude-desktop",
+        name: "Chat one",
+        cwd: "/work/repo",
+        hostSessionId: "host-1",
+      })
+      expect(res.status).toBe(200)
+      expect(((await res.json()) as { session: Record<string, unknown> }).session).toMatchObject({
+        id: "cc:chat-1",
+        kind: "external",
+        externalHost: "claude-desktop",
+        externalHostSessionId: "host-1",
+        name: "Chat one",
+        cwd: "/work/repo",
+      })
+      await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop", name: "Renamed" })
+      expect(registry.get("cc:chat-1")?.name).toBe("Renamed")
+    })
+  })
+
+  it("refuses an untrusted touch, a missing host, and a daemon-owned row", async () => {
+    await withGateway(async (base, registry) => {
+      expect(
+        (await post(`${base}/sessions/cc%3Achat-1/touch`, { host: "claude-desktop" }, { "x-forwarded-for": "203.0.113.7" }))
+          .status,
+      ).toBe(403)
+      expect((await post(`${base}/sessions/cc%3Achat-1/touch`, {})).status).toBe(400)
+      const spawned = registry.spawnAgent({
+        workspaceSlug: "w",
+        cwd: "/tmp",
+        agentSession: { sessionId: "acp-x", pid: 1, async *send() { yield { kind: "turn-end", reason: "completed" } }, async cancel() {}, async close() {} },
+        adapterSlug: "mock",
+      })
+      expect((await post(`${base}/sessions/${spawned.id}/touch`, { host: "claude-desktop" })).status).toBe(409)
+      expect(registry.get("cc:chat-1")).toBeUndefined()
+    })
+  })
+
+  it("registers cc:<id> from the identity header on a host-carrying /mcp request", async () => {
+    await withGateway(async (base, registry) => {
+      await initialize(`${base}/mcp?host=claude-desktop`, { "x-agentproto-caller-session-id": "cc:header-1" })
+      expect(registry.get("cc:header-1")).toMatchObject({ kind: "external", externalHost: "claude-desktop" })
+    })
+  })
 })

@@ -1,5 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { buildInboxHookOutput, resolveInboxSessionId, runHook } from "../commands/hook.js"
+import {
+  buildInboxHookOutput,
+  claudeSessionFields,
+  resolveInboxSessionId,
+  runHook,
+  type HookDeps,
+} from "../commands/hook.js"
 
 vi.mock("../commands/_daemon-helpers.js", async importOriginal => {
   const orig = await importOriginal<typeof import("../commands/_daemon-helpers.js")>()
@@ -122,33 +128,74 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
     env: Record<string, string | undefined>,
     payload: Record<string, unknown> = { session_id: "claude-conv-1", hook_event_name: "UserPromptSubmit" },
     args: string[] = ["inbox"],
-  ) => runHook(args, { readStdin: async () => JSON.stringify(payload), env })
+    extra: Partial<HookDeps> = {},
+  ) =>
+    runHook(args, {
+      readStdin: async () => JSON.stringify(payload),
+      env,
+      claudeSessionsDir: "/claude-sessions",
+      readDir: () => [],
+      ...extra,
+    })
 
-  // The daemon has no cc: inbox route yet (that is a later PR), so this proves
-  // only that the resolver selects cc:<session_id>; httpGetJson is mocked and
-  // does not prove the daemon serves such an inbox.
+  it("touches cc:<id> before reading the inbox, with host and payload cwd", async () => {
+    await run({}, { session_id: "aaaa-1", cwd: "/work/repo" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop", cwd: "/work/repo" },
+      "t",
+    )
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+    expect(httpPostJson.mock.invocationCallOrder[0]).toBeLessThan(httpGetJson.mock.invocationCallOrder[0]!)
+    httpPostJson.mockRejectedValueOnce(new Error("HTTP 404"))
+    expect(await run({}, { session_id: "aaaa-1" })).toBe(0)
+  })
+
+  it("adds name and hostSessionId from the matching *.json registry file, never reading .key", async () => {
+    const read = vi.fn((path: string) => {
+      if (path.endsWith("b.json")) {
+        return JSON.stringify({ sessionId: "aaaa-1", name: "My chat", hostSessionId: "host-9" })
+      }
+      return JSON.stringify({ sessionId: "other", name: "Wrong chat" })
+    })
+    await run({}, { session_id: "aaaa-1" }, ["inbox"], {
+      readDir: () => ["a.json", "b.json", "cccc.key"],
+      readFile: read,
+    })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop", name: "My chat", hostSessionId: "host-9" },
+      "t",
+    )
+    expect(read.mock.calls.map(c => c[0])).not.toContainEqual(expect.stringContaining(".key"))
+    expect(read.mock.calls.map(c => c[0])).toContain("/claude-sessions/b.json")
+  })
+
   it("routes each Claude chat to its own cc:<session_id> inbox and acks there", async () => {
     await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "aaaa-1" })
     await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { session_id: "bbbb-2" })
     expect(httpGetJson).toHaveBeenNthCalledWith(1, "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
     expect(httpGetJson).toHaveBeenNthCalledWith(2, "http://127.0.0.1:1/sessions/cc%3Abbbb-2/inbox")
     expect(httpPostJson).toHaveBeenNthCalledWith(
-      1,
+      2,
       "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox/ack",
       { ids: ["msg_1"] },
       "t",
     )
     expect(httpPostJson).toHaveBeenNthCalledWith(
-      2,
+      4,
       "http://127.0.0.1:1/sessions/cc%3Abbbb-2/inbox/ack",
       { ids: ["msg_1"] },
       "t",
     )
   })
 
-  it("keeps a daemon-spawned AGENTPROTO_SESSION_ID over the payload id", async () => {
+  it("keeps a daemon-spawned AGENTPROTO_SESSION_ID over the payload id and does not touch it", async () => {
     await run({ AGENTPROTO_SESSION_ID: "sess_daemon" }, { session_id: "claude-conv-2" })
     expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_daemon/inbox")
+    expect(httpPostJson.mock.calls.some(c => String(c[0]).endsWith("/touch"))).toBe(false)
   })
 
   it("falls back to a non-daemon AGENTPROTO_SESSION_ID when the payload has no session_id", async () => {

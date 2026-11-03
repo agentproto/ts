@@ -39,22 +39,27 @@ function hasHookCommand(entries: unknown, command: string): boolean {
   )
 }
 
-/** Pure merge. `sessionId` overrides an existing `AGENTPROTO_SESSION_ID` when
- *  given; otherwise an existing one is kept and the default fills a gap. */
+/** Pure merge. The session id is only used for the printed MCP URL now: the
+ *  hook payload's own `session_id` (as `cc:<id>`) is the per-chat identity,
+ *  so installing no longer writes `env.AGENTPROTO_SESSION_ID`. An existing
+ *  value equal to the old default (`claude-desktop`) is removed; any other
+ *  value the user set is left alone. */
 export function mergeDesktopSettings(
   existing: Json,
   sessionId?: string,
-): { settings: Json; sessionId: string; changed: boolean } {
+): { settings: Json; sessionId: string; changed: boolean; removedLegacyEnv: boolean } {
   const settings: Json = structuredClone(existing)
   let changed = false
+  let removedLegacyEnv = false
 
   const env: Json = isObject(settings.env) ? settings.env : {}
   const current = typeof env.AGENTPROTO_SESSION_ID === "string" ? env.AGENTPROTO_SESSION_ID : undefined
   const effective = sessionId ?? current ?? DEFAULT_DESKTOP_SESSION_ID
-  if (current !== effective) {
-    env.AGENTPROTO_SESSION_ID = effective
-    settings.env = env
+  if (current === DEFAULT_DESKTOP_SESSION_ID) {
+    delete env.AGENTPROTO_SESSION_ID
+    removedLegacyEnv = true
     changed = true
+    if (Object.keys(env).length === 0) delete settings.env
   }
 
   const hooks: Json = isObject(settings.hooks) ? settings.hooks : {}
@@ -72,7 +77,7 @@ export function mergeDesktopSettings(
     changed = true
   }
   if (changed) settings.hooks = hooks
-  return { settings, sessionId: effective, changed }
+  return { settings, sessionId: effective, changed, removedLegacyEnv }
 }
 
 export function defaultDesktopSettingsPath(env: Record<string, string | undefined> = process.env): string {
@@ -134,9 +139,18 @@ export async function runHookInstall(args: readonly string[], deps: HookInstallD
 
   const merged = mergeDesktopSettings(existing, values.session)
   const url = desktopMcpUrl(merged.sessionId, port)
+  const removedNote = merged.removedLegacyEnv
+    ? `Removed env.AGENTPROTO_SESSION_ID (was "${DEFAULT_DESKTOP_SESSION_ID}"): each chat now uses cc:<session_id> from the hook payload.\n`
+    : ""
+  const pendingNote =
+    "Note: per-chat MCP identity is pending (headersHelper unverified); the MCP URL keeps its callerSessionId.\n"
   if (values["dry-run"]) {
     out(JSON.stringify(merged.settings, null, 2) + "\n")
-    err(`# would ${merged.changed ? "update" : "leave unchanged"} ${path}\n# MCP URL: ${url}\n`)
+    err(
+      `# would ${merged.changed ? "update" : "leave unchanged"} ${path}\n` +
+        (merged.removedLegacyEnv ? `# would remove env.AGENTPROTO_SESSION_ID ("${DEFAULT_DESKTOP_SESSION_ID}")\n` : "") +
+        `# MCP URL: ${url}\n# ${pendingNote}`,
+    )
     return 0
   }
   if (merged.changed) {
@@ -145,9 +159,10 @@ export async function runHookInstall(args: readonly string[], deps: HookInstallD
   }
   out(
     `${merged.changed ? "Updated" : "Already up to date:"} ${path}\n` +
-      `Session id: ${merged.sessionId}\n` +
+      removedNote +
       `Register the session with the daemon (once):\n` +
-      `  claude mcp add --transport http --scope user agentproto-desktop "${url}"\n`,
+      `  claude mcp add --transport http --scope user agentproto-desktop "${url}"\n` +
+      pendingNote,
   )
   return 0
 }

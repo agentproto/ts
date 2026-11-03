@@ -372,6 +372,9 @@ export type {
 // `buildDaemonTunnelServerOptions` (which sets it) and http-server.ts's own
 // `handleDeviceInference` (which checks it) share one literal, not two.
 export { HOST_SCOPE_HEADER } from "./http-server.js"
+export { startHttpServer } from "./http-server.js"
+export { createSessionsRegistry } from "./sessions.js"
+export { createRuntimeEvents } from "./events.js"
 export type {
   CapabilitiesInventory,
   CapabilitiesInventoryMcp,
