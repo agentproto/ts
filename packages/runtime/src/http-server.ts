@@ -2098,6 +2098,41 @@ export async function startHttpServer(
   }
 
   /**
+   * The SDK's stateless `StreamableHTTPServerTransport` refuses a POST whose
+   * `Accept` header does not advertise BOTH `application/json` and
+   * `text/event-stream` with a 406, then answers in SSE mode by default. An
+   * MCP Apps host that opens the transport the modern way (Accept:
+   * application/json, no SSE) is bounced before its tool call ever runs, and
+   * a host that reads the SSE envelope as strict JSON-RPC treats the closed
+   * stream as a transport fault (the observed "Transport closed" on a
+   * follow-up `tools/call`). For that JSON-only Accept, `serveMcp` switches
+   * the transport to a plain JSON body (`enableJsonResponse`) and widens the
+   * header here so the SDK's check passes. Legacy clients that already accept
+   * `text/event-stream` keep the SSE path untouched. Rewriting both the
+   * parsed header and the raw pair mirrors
+   * {@link coerceUnsupportedProtocolVersionHeader}; `@hono/node-server`
+   * builds its Headers from `req.rawHeaders`, not `req.headers`.
+   *
+   * Returns true when the Accept was JSON-only and had to be widened, which
+   * is the signal `serveMcp` uses to enable the JSON response mode.
+   */
+  function coerceJsonOnlyAccept(req: IncomingMessage): boolean {
+    const headerValue = req.headers["accept"]
+    const accept = Array.isArray(headerValue) ? headerValue.join(",") : headerValue
+    if (typeof accept !== "string") return false
+    if (!/application\/json/i.test(accept) || /text\/event-stream/i.test(accept)) return false
+    const widened = `${accept}, text/event-stream`
+    req.headers["accept"] = widened
+    const rawHeaders = req.rawHeaders
+    for (let i = 0; i < rawHeaders.length - 1; i += 2) {
+      if (rawHeaders[i]?.toLowerCase() === "accept") {
+        rawHeaders[i + 1] = widened
+      }
+    }
+    return true
+  }
+
+  /**
    * Drive one MCP request over a fresh server+transport pair, per the
    * SDK's stateless pattern. Sharing either across requests breaks after
    * the first one because `Protocol.connect` rejects re-attachment.
@@ -2114,8 +2149,13 @@ export async function startHttpServer(
     const rawVersionHeader = req.headers["mcp-protocol-version"]
     const clientProtocolVersion = Array.isArray(rawVersionHeader) ? rawVersionHeader[0] : rawVersionHeader
     coerceUnsupportedProtocolVersionHeader(req)
+    // JSON-only Accept widening + JSON response mode are POST-only: a GET's
+    // SSE stream is its own negotiation and must keep the SDK's 406 for a
+    // client that doesn't accept `text/event-stream`.
+    const jsonResponse = req.method === "POST" ? coerceJsonOnlyAccept(req) : false
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
+      ...(jsonResponse ? { enableJsonResponse: true } : {}),
     })
     // `onerror` is an unofficial SDK hook — guard before assigning so
     // a future SDK rename doesn't silently drop transport error logs.
