@@ -252,7 +252,7 @@ import {
   resolveAppToolsForWorkflow,
   performInstall,
 } from "./app-tools.js"
-import { createAppServiceStore } from "./app-services.js"
+import { createAppServiceStore, type AppServiceStore } from "./app-services.js"
 import { registerAppDataTools } from "./app-data.js"
 import { APP_STATE_APPEND_TOOL_NAME } from "./app-state.js"
 import { registerAppExternalTools } from "./app-external.js"
@@ -1888,6 +1888,12 @@ export interface CreateGatewayOptions {
    *  `~/.agentproto/sessions.json`. The structured-transcript dir follows
    *  this path's parent, so pinning it isolates transcripts too. */
   persistPath?: string
+  /** Service-owner store shared by `registerAppTools` (app_install/...)
+   *  and the boot re-ensure pass. Tests inject a store to observe/seed the
+   *  owner records both consumers read and write. Default: one store from
+   *  the resolved `persist` switch (`~/.agentproto/app-services.json` in
+   *  the daemon, in memory when persistence is off). */
+  appServiceStore?: AppServiceStore
   /** Override the per-boot bearer token. Default: `randomUUID()`.
    *  Tests can pin a known value; production should always let
    *  the gateway generate fresh. The token is written into
@@ -3451,6 +3457,14 @@ export async function createGateway(
   // share the one instance — same persistence defaults as before this WP.
   const appRegistry = createAppRegistry({ persist })
 
+  // ONE service-owner store per gateway (TS-18). `registerAppTools` upserts
+  // owners on install/reinstall and the boot re-ensure reads + replaces them;
+  // two separate stores meant the boot pass saw none of the persisted records
+  // (leftover children kept their ports) and its own writes never reached
+  // `app-services.json`. `persist` is the RESOLVED switch, so the default
+  // store is the same persisted file/instance `registerAppTools` used.
+  const appServiceStore = opts.appServiceStore ?? createAppServiceStore({ persist })
+
   // BOOTSTRAP P7a/P7b closures — the device mirror + id resolution all
   // route through (BUG-1637's two-halves fix):
   //
@@ -4592,6 +4606,7 @@ export async function createGateway(
       resolveModelRole: resolveModelRoleId,
       persist,
       serviceExposer: appServiceExposer,
+      serviceStore: appServiceStore,
       ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
       ...(workflowRunner ? { workflowRunner } : {}),
     })
@@ -5662,9 +5677,7 @@ export async function createGateway(
       }
       const result = await reensureInstalledAppServicesOnBoot({
         appRegistry,
-        serviceStore: createAppServiceStore({
-          ...(opts.persist !== undefined ? { persist: opts.persist } : {}),
-        }),
+        serviceStore: appServiceStore,
         registry: sessions,
         exposer: appServiceExposer,
         ...(opts.resolveAgentAdapter ? { resolveAgentAdapter: opts.resolveAgentAdapter } : {}),
