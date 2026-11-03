@@ -521,6 +521,23 @@ describe("cloudflareProvisionedTunnelProvider", () => {
     expect(world.tunnels.has("wa")).toBe(false)
     await expect(provider.destroy!({ key: "wa", hostnames: [] })).resolves.toBeUndefined()
   })
+
+  it("sends the tunnel's root on start and on every hostname swap", async () => {
+    const world = new FakeWorld()
+    const { provider } = await loggedInProvider(world)
+    const identity = { key: "chat", hostnames: [], root: "agentproto.cloud" }
+    await provider.start({ target: { host: "127.0.0.1", port: 9000 }, workspace: "/x", tunnel: identity })
+    await provider.addHostname!({ ...identity, hostnames: ["user-42.example.sh"] }, "b.example.sh")
+    await provider.removeHostname!(
+      { ...identity, hostnames: ["b.example.sh", "user-42.example.sh"] },
+      "user-42.example.sh",
+    )
+    const puts = world.requests.filter(r => r.method === "PUT")
+    expect(puts).toHaveLength(3)
+    for (const put of puts) expect(put.body).toMatchObject({ root: "agentproto.cloud" })
+    expect(puts[0]!.body).toEqual({ service: "http://127.0.0.1:9000", hostnames: [], root: "agentproto.cloud" })
+    await provider.stop()
+  })
 })
 
 describe("fileSessionStore", () => {

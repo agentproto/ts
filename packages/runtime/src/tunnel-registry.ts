@@ -136,6 +136,13 @@ export interface TunnelDescriptor {
   /** Keyed tunnels only: the hostname the caller requested (normalized), kept
    *  apart from `hostname` because a provider may assign another name. */
   hostnameRequest?: string
+  /**
+   * `cloudflare-provisioned` only: the hostname root asked of the
+   * provisioning service (e.g. `agentproto.cloud`), normalized. Unset = the
+   * service picks (the API key's root, else its default). Replayed on every
+   * start so a restart stays on the same root.
+   */
+  root?: string
   /** Set only for `access: "public"` — surfaced back to the caller (and
    *  logged) since skipping the guard is the one choice here with real
    *  blast radius if picked by habit instead of intent. */
@@ -200,6 +207,8 @@ export interface CreateTunnelInput {
   key?: string
   /** Keyed tunnels only, see {@link TunnelDescriptor.owner}. */
   owner?: TunnelOwner
+  /** `cloudflare-provisioned` only, see {@link TunnelDescriptor.root}. */
+  root?: string
 }
 
 export interface TunnelRegistryOptions {
@@ -293,6 +302,7 @@ export class TunnelRegistry {
       }
       hostname = normalizeHostname(hostname)
     }
+    const root = rootRequestOf(provider, input.root)
 
     this.assertGatewayNotExposed({
       access: input.public ? "public" : "private",
@@ -331,6 +341,7 @@ export class TunnelRegistry {
         : {}),
       ...(input.tunnelId ? { tunnelId: input.tunnelId } : {}),
       ...(input.credentialsFile ? { credentialsFile: input.credentialsFile } : {}),
+      ...(root ? { root } : {}),
       ...(input.key !== undefined
         ? {
             key: input.key,
@@ -394,12 +405,14 @@ export class TunnelRegistry {
     const access = input.public ? "public" : "private"
     const targetHost = input.targetHost ?? "127.0.0.1"
     const request = input.hostname ? normalizeHostname(input.hostname) : undefined
+    const root = rootRequestOf(provider, input.root)
     const live = desc.status === "active" || desc.status === "starting"
     const changed =
       desc.targetPort !== input.targetPort ||
       desc.targetHost !== targetHost ||
       (desc.access ?? "private") !== access ||
-      desc.hostnameRequest !== request
+      desc.hostnameRequest !== request ||
+      desc.root !== root
     if (live && !changed) return { ...desc }
     if (live) await this.stop(desc.id)
 
@@ -423,6 +436,16 @@ export class TunnelRegistry {
         // The request was dropped: forget the old name too, or the restart
         // would hand it to the provider again. The provider assigns one.
         delete desc.hostnameRequest
+        delete desc.hostname
+        delete desc.hostnames
+      }
+    }
+    if (root !== desc.root) {
+      if (root !== undefined) desc.root = root
+      else delete desc.root
+      // The routed names belong to the old root: without an explicit
+      // request, let the service assign one under the new root.
+      if (request === undefined) {
         delete desc.hostname
         delete desc.hostnames
       }
@@ -1024,7 +1047,25 @@ function identityOf(desc: TunnelDescriptor): TunnelIdentity {
     key: desc.key ?? (desc.name ? `${desc.name}-${desc.id.slice(0, 8)}` : desc.id),
     hostnames: hostnamesOf(desc),
     ...(desc.tunnelId ? { tunnelId: desc.tunnelId } : {}),
+    ...(desc.root ? { root: desc.root } : {}),
   }
+}
+
+/**
+ * Normalized hostname root request. Only a provisioning service assigns
+ * hostnames under a root it serves, so any other provider refuses one rather
+ * than ignoring it silently.
+ */
+function rootRequestOf(provider: TunnelProvider, root: string | undefined): string | undefined {
+  if (root === undefined) return undefined
+  const normalized = root.trim().toLowerCase().replace(/\.$/, "")
+  if (!normalized) throw new Error('tunnel "root" must be a non-empty domain (e.g. agentproto.cloud)')
+  if (normalizeProviderSlug(provider) !== CLOUDFLARE_PROVISIONED_SLUG) {
+    throw new Error(
+      `tunnel "root" is only supported by ${CLOUDFLARE_PROVISIONED_SLUG} (got provider "${provider}")`,
+    )
+  }
+  return normalized
 }
 
 function withHost(url: string, hostname: string): string {

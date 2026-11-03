@@ -41,6 +41,11 @@ export interface TunnelIdentity {
    * provider tell a never-provisioned local record from one with remote state.
    */
   tunnelId?: string
+  /**
+   * Hostname root asked of a provisioning service (`cloudflare-provisioned`),
+   * e.g. `agentproto.cloud`. Unset = the service's default for the caller.
+   */
+  root?: string
 }
 
 export type TunnelHealthState = "active" | "degraded" | "error"

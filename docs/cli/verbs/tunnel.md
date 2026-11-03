@@ -153,7 +153,10 @@ daemon only ever receives the connector token of its own tunnel.
    enabled.
 3. Run `tunnel_create({ provider: "cloudflare-provisioned", targetPort: … })`.
    `hostname` is an optional request; the service decides what it actually
-   routes and returns it.
+   routes and returns it. `root` (CLI `--root`) picks the domain an assigned
+   hostname lives under when the service serves several, e.g.
+   `{ root: "agentproto.cloud" }`; omit it for the service's default for your
+   key. The root is stored on the tunnel and sent again on every start.
 
 Everything after provisioning — the supervised `cloudflared`, the token kept
 in the environment only, health, `tunnel_add_hostname` / `tunnel_remove_hostname`
@@ -164,11 +167,11 @@ and `tunnel purge` — works as for `cloudflare-managed`.
 
 | Call | Body | Response |
 |------|------|----------|
-| `PUT {provisionerUrl}/v1/tunnels/{key}` | `{ "service": "http://127.0.0.1:<port>" \| null, "hostnames": ["…"] }` | `200 { "tunnelId", "hostnames": ["…"], "token" }` |
+| `PUT {provisionerUrl}/v1/tunnels/{key}` | `{ "service": "http://127.0.0.1:<port>" \| null, "hostnames": ["…"], "root"?: "…" }` | `200 { "tunnelId", "hostnames": ["…"], "token" }` |
 | `DELETE {provisionerUrl}/v1/tunnels/{key}` | — | 2xx, or 404 if already gone |
 
 - `key` is the daemon's stable tunnel id; the service namespaces it per user.
-- An empty `hostnames` means "assign me one".
+- An empty `hostnames` means "assign me one" (under `root` when it is set).
 - `service: null` means the tunnel isn't running locally; keep the current origin.
 - `PUT` is idempotent and replayed on every start.
 - Errors are JSON `{ error, message, checkoutUrl? }`:
@@ -191,6 +194,7 @@ Creates a tunnel via `POST /tunnels`.
 | `--host <host>` | `127.0.0.1` | Target host to forward to. |
 | `--autostart` | `false` | Relaunch the tunnel automatically when the daemon boots. |
 | `--hostname <fqdn>` | — | (Named, managed) Stable FQDN for the tunnel. |
+| `--root <domain>` | — | (Provisioned) Domain the service assigns the hostname under, e.g. `agentproto.cloud`. Refused by other providers. |
 | `--tunnel-id <id>` | — | (Named) Pre-provisioned Cloudflare tunnel id. |
 | `--credentials-file <path>` | — | (Named) Path to Cloudflare credentials JSON. |
 | `--ttl <dur>` | `24h` | How long the signed link stays valid (`1h`, `24h`, `7d`; clamped to 1 minute – 30 days). Ignored with `--public`. |

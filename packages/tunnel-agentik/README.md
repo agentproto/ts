@@ -31,6 +31,7 @@ const tunnel = await provider.create({
   key: "my-api",
   target: { host: "127.0.0.1", port: 3000 },
   hostnames: [], // let the service assign one
+  root: "agentproto.cloud", // optional: domain to assign under, else the key's default
 })
 
 console.log(tunnel.publicUrl)

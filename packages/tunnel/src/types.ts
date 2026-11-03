@@ -60,6 +60,11 @@ export interface CreateTunnelInput {
   service?: string | null
   /** Requested public hostnames, primary first. Empty = "assign me one". */
   hostnames?: string[]
+  /**
+   * Domain to assign the hostname under, for a provider that serves several
+   * (e.g. `agentproto.cloud`). Omitted = the provider's default for the caller.
+   */
+  root?: string
   /** Convenience alternative to `service`; providers may derive the origin. */
   target?: TunnelTarget
   /** Free-form provider metadata, stored remotely when supported. */
