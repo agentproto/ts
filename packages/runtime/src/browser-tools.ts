@@ -49,6 +49,12 @@ import { z } from "zod"
 import type { AdapterLister } from "@agentproto/provider-kit"
 import { registerBuiltinTool } from "@agentproto/mcp-server"
 import { catchErrors, paginated } from "@agentproto/tool"
+import { loadConfig } from "./config.js"
+import {
+  callProxiedBrowserTool,
+  type BrowserProxyCaller,
+  type ProxiedBrowserToolName,
+} from "./browser-proxy.js"
 import type { SessionsRegistry, SessionDescriptor } from "./sessions.js"
 import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { encodeScreencastFramesToMp4, prepareScreencastOutDir } from "./browser-screencast.js"
@@ -379,6 +385,16 @@ interface RegisterBrowserToolsOptions {
   /** Extra directories `browser_upload_file` may read files from (absolute).
    *  Merged over the defaults (see `defaultBrowserUploadAllowDirs`). */
   uploadAllowDirs?: readonly string[]
+  /** Imported-MCP registry - required for the one-version Bureau proxy
+   *  (`defaults.browser.proxyImport`). Unset: every tool keeps its own path. */
+  mcpProxy?: BrowserProxyCaller
+  /** Calling session id of this `/mcp` request, threaded into the proxy so
+   *  the imported-call guard can stamp the subsession token headers. */
+  callerSessionId?: string
+  /** Resolves `defaults.browser.proxyImport` (tests inject a stub; the
+   *  default reads `~/.agentproto/config.json` at call time so a
+   *  `config_set` takes effect on the next tool call). */
+  loadProxyImport?: () => Promise<string | undefined>
   log?: (msg: string) => void
 }
 
@@ -388,6 +404,25 @@ export function registerBrowserTools(
 ): void {
   const server = withBrowserObservers(rawServer)
   const { registry, resolveBrowserAdapter, listBrowserAdapters, lister, log } = opts
+  const loadProxyImport =
+    opts.loadProxyImport ?? (async () => (await loadConfig()).defaults?.browser?.proxyImport)
+
+  /** Forward to Bureau when configured; undefined means "take the old path". */
+  const tryProxy = async (
+    toolName: ProxiedBrowserToolName,
+    input: Record<string, unknown>,
+  ): Promise<Awaited<ReturnType<typeof callProxiedBrowserTool>> | undefined> => {
+    if (!opts.mcpProxy) return undefined
+    const alias = await loadProxyImport()
+    if (!alias) return undefined
+    return callProxiedBrowserTool({
+      proxy: opts.mcpProxy,
+      alias,
+      toolName,
+      toolInput: input,
+      ...(opts.callerSessionId ? { callerSessionId: opts.callerSessionId } : {}),
+    })
+  }
 
   // ── browser_adapter_list ────────────────────────────────────────────────────
   // Migrated onto the AIP contract layer (defineTool + implementTool +
@@ -828,6 +863,8 @@ export function registerBrowserTools(
         ),
     },
     async input => {
+      const proxied = await tryProxy("browser_screenshot", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc)
         return errResult(`browser_screenshot: session "${input.sessionId}" not found.`)
@@ -1016,6 +1053,8 @@ export function registerBrowserTools(
         .describe("Provider-owned target id to navigate (default: any existing owned tab, else a new one)."),
     },
     async input => {
+      const proxied = await tryProxy("browser_navigate", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_navigate: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1092,6 +1131,8 @@ export function registerBrowserTools(
         .describe("Provider-owned target id to read (default: the first active agent tab)."),
     },
     async input => {
+      const proxied = await tryProxy("browser_get_dom", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_get_dom: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1128,6 +1169,8 @@ export function registerBrowserTools(
       clickCount: z.number().int().min(1).max(3).optional().describe("Default 1 (2 for a double-click)."),
     },
     async input => {
+      const proxied = await tryProxy("browser_click", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_click: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1167,6 +1210,8 @@ export function registerBrowserTools(
       clear: z.boolean().optional().describe("Clear the existing value first. Default true."),
     },
     async input => {
+      const proxied = await tryProxy("browser_fill", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_fill: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")
@@ -1207,6 +1252,8 @@ export function registerBrowserTools(
       maxResultBytes: z.number().int().positive().optional().describe("Cap on the serialized result size. Default 64000."),
     },
     async input => {
+      const proxied = await tryProxy("browser_evaluate", input)
+      if (proxied) return proxied
       const desc = registry.get(input.sessionId)
       if (!desc) return errResult(`browser_evaluate: session "${input.sessionId}" not found.`)
       if (desc.kind !== "browser")

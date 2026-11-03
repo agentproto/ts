@@ -319,6 +319,7 @@ import {
   updateBundle,
   deleteBundle,
   danglingImports,
+  effectiveBundles,
   BundleValidationError,
   type Bundle,
 } from "./bundles.js"
@@ -5132,12 +5133,20 @@ export async function startHttpServer(
         // bundle_list/bundle_create/bundle_update/bundle_delete MCP tools.
         // GET /bundles → { bundles: (Bundle & { dangling: string[] })[] }
         if (path === "/bundles" && req.method === "GET") {
-          const [bundlesFile, importedConfig] = await Promise.all([loadBundles(), loadImportedMcps()])
+          const [bundlesFile, importedConfig, config] = await Promise.all([
+            loadBundles(),
+            loadImportedMcps(),
+            loadConfig(),
+          ])
           const importedIds = new Set(importedConfig.imports.map(e => e.id))
           res.writeHead(200, { "content-type": "application/json" })
           res.end(
             JSON.stringify({
-              bundles: bundlesFile.bundles.map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
+              bundles: effectiveBundles(
+                bundlesFile.bundles,
+                config.defaults?.browser?.proxyImport,
+                importedConfig,
+              ).map(b => ({ ...b, dangling: danglingImports(b, importedIds) })),
             }),
           )
           return
