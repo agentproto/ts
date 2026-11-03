@@ -1,23 +1,18 @@
 /**
  * Unit tests for the observation-only sentinel triage (`sentinel-triage.ts`):
  * the ordered rules, the 10-minute repeat window and its boundary, the
- * bounded recent-key map, and the ledger shape (identifiers only, never the
- * event summary or `data`).
+ * bounded recent-key map. The delivery ledger writer is tested in
+ * `@agentproto/delivery`.
  */
 
 import { RecentKeys as DeliveryRecentKeys } from "@agentproto/delivery"
 import { describe, expect, it } from "vitest"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-
 import {
   DEFAULT_RECENT_KEYS_CAP,
   RecentKeys,
   SENTINEL_TRIAGE_REPEAT_WINDOW_MS,
   classifySentinelEvent,
   recordSentinelTriageKey,
-  writeSentinelTriageLedger,
 } from "../sentinel-triage.js"
 import type { SentinelEvent } from "../sentinel-providers/types.js"
 
@@ -277,105 +272,5 @@ describe("RecentKeys", () => {
     const recent = new RecentKeys()
     expect(classifySentinelEvent(push(), input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
     expect(recent.size).toBe(0)
-  })
-})
-
-describe("writeSentinelTriageLedger", () => {
-  it("appends one identifier-only JSON line with source/applied fixed", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-"))
-    const filePath = join(dir, "nested", "sentinel-triage.jsonl")
-    try {
-      writeSentinelTriageLedger(filePath, {
-        ts: "2026-10-01T00:00:00.000Z",
-        decision: "fyi",
-        rule: "coalesced-repeat",
-        target: "sess_1",
-        sentinelId: "sen_1",
-        eventId: "evt_1",
-        type: "github.pull_request.synchronize",
-        subject: "github:acme/widgets#42",
-        urgency: "next-turn",
-      })
-
-      const raw = readFileSync(filePath, "utf8")
-      expect(raw.endsWith("\n")).toBe(true)
-      const lines = raw.trim().split("\n")
-      expect(lines).toHaveLength(1)
-      expect(JSON.parse(lines[0]!)).toEqual({
-        ts: "2026-10-01T00:00:00.000Z",
-        source: "sentinel",
-        applied: false,
-        decision: "fyi",
-        rule: "coalesced-repeat",
-        target: "sess_1",
-        sentinelId: "sen_1",
-        eventId: "evt_1",
-        type: "github.pull_request.synchronize",
-        subject: "github:acme/widgets#42",
-        urgency: "next-turn",
-      })
-      expect(raw).not.toContain("summary")
-      expect(raw).not.toContain("data")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("appends eventTs and key when available, and still no summary or data", () => {
-    const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-"))
-    const filePath = join(dir, "sentinel-triage.jsonl")
-    try {
-      writeSentinelTriageLedger(filePath, {
-        ts: "2026-10-01T00:05:00.000Z",
-        decision: "wake",
-        rule: "failure",
-        target: "sess_1",
-        sentinelId: "sen_1",
-        eventId: "evt_1",
-        type: "github.check_suite.completed",
-        subject: "github:acme/widgets#42",
-        urgency: "next-turn",
-        eventTs: "2026-10-01T00:00:00.000Z",
-        key: "sentinel:github-ci:ci:github:acme/widgets#42:sha1|failure",
-      })
-
-      const raw = readFileSync(filePath, "utf8")
-      const line = JSON.parse(raw.trim())
-      expect(line).toEqual({
-        ts: "2026-10-01T00:05:00.000Z",
-        source: "sentinel",
-        applied: false,
-        decision: "wake",
-        rule: "failure",
-        target: "sess_1",
-        sentinelId: "sen_1",
-        eventId: "evt_1",
-        type: "github.check_suite.completed",
-        subject: "github:acme/widgets#42",
-        urgency: "next-turn",
-        eventTs: "2026-10-01T00:00:00.000Z",
-        key: "sentinel:github-ci:ci:github:acme/widgets#42:sha1|failure",
-      })
-      expect(raw).not.toContain("summary")
-      expect(raw).not.toContain("data")
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  it("never throws on an unwritable path", () => {
-    expect(() =>
-      writeSentinelTriageLedger("\u0000not-a-path", {
-        ts: "2026-10-01T00:00:00.000Z",
-        decision: "wake",
-        rule: "default",
-        target: "sess_1",
-        sentinelId: "sen_1",
-        eventId: "evt_1",
-        type: "fake",
-        subject: "fake:thing",
-        urgency: "next-turn",
-      }),
-    ).not.toThrow()
   })
 })

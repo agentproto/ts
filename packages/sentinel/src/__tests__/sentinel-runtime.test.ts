@@ -9,7 +9,7 @@
  */
 
 import { afterAll, describe, expect, it, vi } from "vitest"
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -86,13 +86,13 @@ function resolverFor(provider: SentinelProviderHandle) {
 
 // Every runtime in this file writes an observation ledger. Keep that off the
 // operator's real home directory; individual tests that inspect the ledger
-// pass their own `triagePath`.
+// pass their own `ledgerPath`.
 const defaultTriageDir = mkdtempSync(join(tmpdir(), "sentinel-triage-default-"))
-const defaultTriagePath = join(defaultTriageDir, "sentinel-triage.jsonl")
+const defaultLedgerPath = join(defaultTriageDir, "delivery-ledger.jsonl")
 afterAll(() => rmSync(defaultTriageDir, { recursive: true, force: true }))
 
 function createSentinelRuntime(opts: SentinelRuntimeOptions) {
-  return createSentinelRuntimeBase({ ...opts, triagePath: opts.triagePath ?? defaultTriagePath })
+  return createSentinelRuntimeBase({ ...opts, ledgerPath: opts.ledgerPath ?? defaultLedgerPath })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -135,7 +135,7 @@ describe("SentinelRuntime", () => {
 
   it("writes exactly one observation ledger line and delivers the same sendMessage call", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-runtime-"))
-    const triagePath = join(dir, "sentinel-triage.jsonl")
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
     try {
       const store = createSentinelStore({ persist: false })
       const provider = createFakeSentinelProvider()
@@ -156,7 +156,7 @@ describe("SentinelRuntime", () => {
         resolveProvider: resolverFor(provider),
         isSessionAlive: () => true,
         restartSession: async id => id,
-        triagePath,
+        ledgerPath,
       })
 
       await runtime.pollOnce()
@@ -180,21 +180,24 @@ describe("SentinelRuntime", () => {
         opts: { source: "sentinel", origin: sentinel.id },
       })
 
-      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
       expect(lines).toHaveLength(1)
       expect(JSON.parse(lines[0]!)).toEqual({
         ts: expect.any(String),
-        source: "sentinel",
+        producer: "sentinel",
         applied: false,
-        decision: "wake",
+        level: 2,
+        cap: 3,
         rule: "default",
-        target: "sess_1",
-        sentinelId: sentinel.id,
+        target: { kind: "session", id: "sess_1" },
+        subscriptionId: sentinel.id,
         eventId: "evt_1",
         type: "fake.widget.created",
         subject: "fake:widget-1",
-        urgency: "next-turn",
+        repeatKey: expect.any(String),
         eventTs: expect.any(String),
+        outcome: "delivered",
+        messageId: "msg_test",
       })
       expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")
       expect(lines[0]).not.toContain("SECRET_DATA_VALUE")
@@ -203,9 +206,52 @@ describe("SentinelRuntime", () => {
     }
   })
 
+  it("writes the line only after sendMessage resolves", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sentinel-ledger-order-"))
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
+    try {
+      const store = createSentinelStore({ persist: false })
+      const provider = createFakeSentinelProvider()
+      newSentinel(store, { sessionId: "sess_1" })
+      provider.emit(makeFakeEvent({ id: "evt_1", type: "fake.widget.created", subject: "fake:widget-1" }))
+
+      let resolveSend!: (result: SendMessageResult) => void
+      const gate = new Promise<SendMessageResult>(resolve => {
+        resolveSend = resolve
+      })
+      const registry = stubRegistry(async () => gate)
+      const runtime = createSentinelRuntime({
+        store,
+        registry,
+        resolveProvider: resolverFor(provider),
+        isSessionAlive: () => true,
+        restartSession: async id => id,
+        ledgerPath,
+      })
+
+      const poll = runtime.pollOnce()
+      await vi.waitFor(() => expect(registry.calls).toHaveLength(1))
+      expect(existsSync(ledgerPath)).toBe(false)
+
+      resolveSend(okResult())
+      await poll
+
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        producer: "sentinel",
+        eventId: "evt_1",
+        messageId: "msg_test",
+        outcome: "delivered",
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it("ledger line carries the event timestamp and triage key, still never summary or data", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-runtime-key-"))
-    const triagePath = join(dir, "sentinel-triage.jsonl")
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
     try {
       const store = createSentinelStore({ persist: false })
       const provider = createFakeSentinelProvider()
@@ -229,16 +275,16 @@ describe("SentinelRuntime", () => {
         resolveProvider: resolverFor(provider),
         isSessionAlive: () => true,
         restartSession: async id => id,
-        triagePath,
+        ledgerPath,
       })
 
       await runtime.pollOnce()
 
-      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
       expect(lines).toHaveLength(1)
       const line = JSON.parse(lines[0]!)
       expect(line.eventTs).toBe(eventTs)
-      expect(line.key).toBe(`sentinel:github-ci:ci:${subject}:sha1|failure`)
+      expect(line.repeatKey).toBe(`sentinel:github-ci:ci:${subject}:sha1|failure`)
       expect(line).not.toHaveProperty("summary")
       expect(line).not.toHaveProperty("data")
       expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")
@@ -250,7 +296,7 @@ describe("SentinelRuntime", () => {
 
   it("on sendMessage failure the event is retried without treating it as a repeat", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-retry-"))
-    const triagePath = join(dir, "sentinel-triage.jsonl")
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
     try {
       const store = createSentinelStore({ persist: false })
       const provider = createFakeSentinelProvider()
@@ -274,7 +320,7 @@ describe("SentinelRuntime", () => {
         resolveProvider: resolverFor(provider),
         isSessionAlive: () => true,
         restartSession: async id => id,
-        triagePath,
+        ledgerPath,
       })
 
       await runtime.pollOnce()
@@ -285,12 +331,14 @@ describe("SentinelRuntime", () => {
       expect(registry.calls).toHaveLength(2)
       expect(store.isSeen(sentinel.id, "evt_1")).toBe(true)
 
-      const lines = readFileSync(triagePath, "utf8").trim().split("\n")
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
       expect(lines).toHaveLength(2)
       const first = JSON.parse(lines[0]!)
       const second = JSON.parse(lines[1]!)
       expect(first.rule).toBe("default")
+      expect(first.outcome).toBe("dropped")
       expect(second.rule).toBe("default")
+      expect(second.outcome).toBe("delivered")
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
