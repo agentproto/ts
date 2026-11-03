@@ -43,7 +43,7 @@ function stubRegistry(initial: Desc[]) {
   const sent: SessionMessage[] = []
   const sendMessage = vi.fn(async (msg: SessionMessage) => {
     sent.push(msg)
-    return {}
+    return { messageId: msg.id, delivered: { via: "turn" }, queued: false, urgencyApplied: msg.urgency }
   })
   return {
     sessions,
@@ -94,7 +94,7 @@ describe("follow-triage", () => {
       store,
       readLastOutput: () => undefined,
       parkedPath: join(tmp, "parked.jsonl"),
-      triagePath: join(tmp, "triage.jsonl"),
+      ledgerPath: join(tmp, "delivery-ledger.jsonl"),
       log: () => {},
       ...extra,
     })
@@ -380,7 +380,7 @@ describe("follow-triage", () => {
       expect(logs.join("\n")).not.toContain("which one?")
     })
 
-    it("identifies every ledger line with eventTs and a per-flush digestId", async () => {
+    it("identifies every ledger line with eventTs and the digest messageId", async () => {
       const { sent } = setup([running("chief"), running("w")], {
         selector: { sessionIds: ["w"] },
         triage: { enabled: true },
@@ -388,31 +388,87 @@ describe("follow-triage", () => {
       exited("w", { ts: at(1_000), reason: "operator-stopped" })
       turnEnd("w", { ts: at(2_000) })
       await handle!.flush()
-      const first = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+      const first = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8")
         .trim()
         .split("\n")
         .map(l => JSON.parse(l) as Record<string, unknown>)
       expect(first).toHaveLength(2)
-      expect(first[0]).toMatchObject({ event: "exited", eventTs: at(1_000), digestId: expect.any(String) })
-      expect(first[1]).toMatchObject({ event: "turn-end", eventTs: at(2_000), digestId: expect.any(String) })
-      expect(new Set(first.map(line => line.digestId)).size).toBe(1)
+      expect(first[0]).toMatchObject({
+        producer: "follow",
+        type: "exited",
+        eventTs: at(1_000),
+        outcome: "dropped",
+        level: 1,
+      })
+      expect(first[0]).not.toHaveProperty("messageId")
+      expect(first[1]).toMatchObject({
+        producer: "follow",
+        type: "turn-end",
+        eventTs: at(2_000),
+        outcome: "delivered",
+        level: 2,
+        messageId: expect.any(String),
+      })
 
       exited("w", { ts: at(3_000), reason: "operator-stopped" })
       await handle!.flush()
-      const second = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+      const second = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8")
         .trim()
         .split("\n")
         .slice(first.length)
         .map(l => JSON.parse(l) as Record<string, unknown>)
       expect(second).toHaveLength(1)
-      expect(second[0]).toMatchObject({ event: "exited", eventTs: at(3_000), digestId: expect.any(String) })
-      expect(second[0]!.digestId).not.toBe(first[0]!.digestId)
+      expect(second[0]).toMatchObject({
+        producer: "follow",
+        type: "exited",
+        eventTs: at(3_000),
+        outcome: "inbox",
+        messageId: expect.any(String),
+      })
+      expect(second[0]!.messageId).not.toBe(first[1]!.messageId)
 
       for (const line of [...first, ...second]) {
         expect(line).not.toHaveProperty("detail")
         expect(line).not.toHaveProperty("text")
       }
       expect(sent).toHaveLength(2)
+    })
+
+    it("writes each line only after the digest sendMessage resolves", async () => {
+      const { sent, registry } = setup([running("chief"), running("w")], {
+        selector: { sessionIds: ["w"] },
+        triage: { enabled: true },
+      })
+      let resolveSend!: (value: unknown) => void
+      const gate = new Promise<unknown>(resolve => {
+        resolveSend = resolve
+      })
+      registry.registry.sendMessage = (async (msg: SessionMessage) => {
+        sent.push(msg)
+        return gate
+      }) as typeof registry.registry.sendMessage
+
+      turnEnd("w")
+      const flush = handle!.flush()
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      expect(existsSync(join(tmp, "delivery-ledger.jsonl"))).toBe(false)
+
+      resolveSend({
+        messageId: sent[0]!.id,
+        delivered: { via: "turn" },
+        queued: false,
+        urgencyApplied: "next-turn",
+      })
+      await flush
+
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        producer: "follow",
+        eventId: `w:turn-end:${T0}`,
+        messageId: sent[0]!.id,
+        outcome: "delivered",
+      })
     })
 
     it("records the event key and task id on a board line", async () => {
@@ -422,14 +478,15 @@ describe("follow-triage", () => {
       })
       taskChanged("worker", "board-1", "t1")
       await handle!.flush()
-      const line = JSON.parse(readFileSync(join(tmp, "triage.jsonl"), "utf8").trim()) as Record<string, unknown>
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim()) as Record<string, unknown>
       expect(line).toMatchObject({
-        event: "task-changed",
+        type: "task-changed",
         eventTs: T0,
-        key: "board-1:t1",
-        taskId: "t1",
-        digestId: expect.any(String),
+        repeatKey: "board-1:t1",
+        outcome: "delivered",
+        messageId: expect.any(String),
       })
+      expect(line).not.toHaveProperty("taskId")
       expect(sent).toHaveLength(1)
     })
 
@@ -441,13 +498,19 @@ describe("follow-triage", () => {
       exited("w", { reason: "operator-stopped" })
       turnEnd("w")
       await handle!.flush()
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map(l => JSON.parse(l) as { event: string; decision: string; rule: string; follower: string })
+        .map(l => JSON.parse(l) as Record<string, unknown>)
       expect(lines).toHaveLength(2)
-      expect(lines[0]).toMatchObject({ follower: "chief", event: "exited", decision: "fyi", rule: "operator-exit" })
-      expect(lines[1]).toMatchObject({ event: "turn-end", decision: "wake", rule: "default" })
+      expect(lines[0]).toMatchObject({
+        subscriptionId: expect.any(String),
+        type: "exited",
+        level: 1,
+        rule: "operator-exit",
+        outcome: "dropped",
+      })
+      expect(lines[1]).toMatchObject({ type: "turn-end", level: 2, rule: "default", outcome: "delivered" })
       expect(sent).toHaveLength(1)
     })
 
@@ -468,28 +531,28 @@ describe("follow-triage", () => {
       turnEnd("w")
       exited("w", { reason: "operator-stopped" })
       await handle!.flush()
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8")
         .trim()
         .split("\n")
         .map(l => JSON.parse(l) as Record<string, unknown>)
       expect(lines).toHaveLength(2)
       expect(lines[0]).toMatchObject({
-        source: "follow",
+        producer: "follow",
         applied: false,
-        event: "turn-end",
-        decision: "drop",
+        type: "turn-end",
+        level: 0,
         rule: "reported-turn-end",
       })
       expect(lines[1]).toMatchObject({
-        source: "follow",
+        producer: "follow",
         applied: false,
-        event: "exited",
-        decision: "fyi",
+        type: "exited",
+        level: 1,
         rule: "operator-exit",
       })
-      expect(lines[0]).toMatchObject({ eventTs: T0, digestId: expect.any(String) })
-      expect(lines[1]).toMatchObject({ eventTs: T0, digestId: expect.any(String) })
-      expect(new Set(lines.map(line => line.digestId)).size).toBe(1)
+      expect(lines[0]).toMatchObject({ eventTs: T0, messageId: expect.any(String) })
+      expect(lines[1]).toMatchObject({ eventTs: T0, messageId: expect.any(String) })
+      expect(new Set(lines.map(line => line.messageId)).size).toBe(1)
       for (const line of lines) {
         expect(line).not.toHaveProperty("detail")
         expect(line).not.toHaveProperty("text")
@@ -515,11 +578,11 @@ describe("follow-triage", () => {
       await handle!.flush()
       expect(existsSync(marker)).toBe(false)
       expect(sent).toHaveLength(1)
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")
       expect(JSON.parse(lines[0]!)).toMatchObject({
-        source: "follow",
+        producer: "follow",
         applied: false,
-        decision: "wake",
+        level: 2,
         rule: "default",
       })
     })
@@ -597,11 +660,11 @@ describe("follow-triage", () => {
       // The rules decide: a plain turn-end wakes.
       expect(sent).toHaveLength(1)
       expect(sent[0]!.urgency).toBe("next-turn")
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8")
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8")
         .trim()
         .split("\n")
-        .map(l => JSON.parse(l) as { decision: string; rule: string })
-      expect(lines[0]).toMatchObject({ decision: "wake", rule: "default" })
+        .map(l => JSON.parse(l) as { level: number; rule: string })
+      expect(lines[0]).toMatchObject({ level: 2, rule: "default" })
     })
 
     it("never lets the classifier silence an always-wake event", async () => {
@@ -630,8 +693,8 @@ describe("follow-triage", () => {
       await handle!.flush()
       expect(existsSync(marker)).toBe(false)
       expect(sent).toHaveLength(1)
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
-      expect(JSON.parse(lines[0]!)).toMatchObject({ decision: "wake", rule: "default" })
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")
+      expect(JSON.parse(lines[0]!)).toMatchObject({ level: 2, rule: "default" })
     })
 
     it("rejects a per-follow classifier on the `session_follow` tool", () => {
@@ -658,8 +721,8 @@ describe("follow-triage", () => {
       // operatorExit is off for this follow: the exit is NOT downgraded to fyi.
       expect(sent).toHaveLength(1)
       expect(sent[0]!.urgency).toBe("next-turn")
-      const lines = readFileSync(join(tmp, "triage.jsonl"), "utf8").trim().split("\n")
-      expect(JSON.parse(lines[0]!)).toMatchObject({ decision: "wake", rule: "default" })
+      const lines = readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")
+      expect(JSON.parse(lines[0]!)).toMatchObject({ level: 2, rule: "default" })
     })
 
     it("keeps a rule ON for a follow that does not name it", async () => {

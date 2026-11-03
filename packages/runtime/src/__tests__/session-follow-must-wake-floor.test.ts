@@ -75,7 +75,7 @@ describe("must-wake floor on a fyi follow", () => {
       store,
       readLastOutput: () => undefined,
       parkedPath: join(tmp, "parked.jsonl"),
-      triagePath: join(tmp, "triage.jsonl"),
+      ledgerPath: join(tmp, "delivery-ledger.jsonl"),
       log: () => {},
       ...extra,
     })
