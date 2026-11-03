@@ -144,7 +144,8 @@
         },
         "preflight": [
           "model-answers"
-        ]
+        ],
+        "agentStartTimeoutMs": 120000
       },
       {
         "sandbox": {
@@ -155,7 +156,8 @@
         },
         "preflight": [
           "model-answers"
-        ]
+        ],
+        "agentStartTimeoutMs": 120000
       },
       {
         "sandbox": {
@@ -183,7 +185,8 @@
             "destroy_on": "workspace-close"
           }
         },
-        "model": "opencode-go/deepseek-v4.1-flash"
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "agentStartTimeoutMs": 120000
       }
     ]
   },

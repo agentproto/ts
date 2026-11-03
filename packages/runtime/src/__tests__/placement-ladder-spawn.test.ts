@@ -181,6 +181,51 @@ describe("agent_start placement ladder", () => {
     expect(registry.get(res.descriptor.id)?.placement?.rung).toBe(0)
   })
 
+  it("a rung whose box never starts the adapter is abandoned after its agentStartTimeoutMs, and the next rung runs", async () => {
+    let release: () => void = () => {}
+    const hang = new Promise<void>(resolve => {
+      release = resolve
+    })
+    let calls = 0
+    startImpl = async () => {
+      calls++
+      if (calls === 1) await hang
+      return okAgent()
+    }
+    try {
+      // the first box's start never settles until `finally`, so only the rung budget can end the wait
+      const res = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        placement: { ladder: [{ sandbox: "alpha", agentStartTimeoutMs: 300 }, { sandbox: "beta" }] },
+      })
+      expect(res.ok).toBe(true)
+      if (!res.ok) return
+      expect(alphaStop).toHaveBeenCalledTimes(1)
+      expect(res.descriptor.sandboxProvider).toBe("beta")
+      expect(res.descriptor.placement?.attempts[0]).toMatchObject({
+        rung: 0,
+        provider: "alpha",
+        outcome: "failed",
+        errorClass: "sandbox_agent_start_timeout",
+      })
+      const warned = vi.mocked(console.warn).mock.calls.map(c => String(c[0]))
+      expect(warned.some(w => w.includes("box diagnostics") && w.includes("sbx_alpha"))).toBe(true)
+    } finally {
+      release()
+    }
+  })
+
+  it("rejects an agentStartTimeoutMs above the harness client's own ceiling", async () => {
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "fake-cli",
+      placement: { ladder: [{ sandbox: "alpha", agentStartTimeoutMs: 900_000 }] },
+    })
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe("placement_invalid")
+    expect(alphaBoot).not.toHaveBeenCalled()
+  })
+
   it("rung 1 preflight ko, then rung 2 ok: the failed box is stopped and the session lands on rung 2", async () => {
     registerProbe({
       id: "test-ko",

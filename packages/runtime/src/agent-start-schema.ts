@@ -535,7 +535,7 @@ export const agentStartInputShape = {
   placement: jsonTolerant(opaque(placementInputSchema))
     .optional()
     .describe(
-      `Placement ladder: { ladder: [{ sandbox, model?, access?, preflight?, turnRetry? }, ...] }. Rungs are tried in order; a rung is skipped on a failed preflight, a capacity / overflow / egress-pool refusal or a boot failure before the agent started. Omitted rung axes inherit the top-level values. Mutually exclusive with \`sandbox\`. ${help("placement")}`
+      `Placement ladder: { ladder: [{ sandbox, model?, access?, preflight?, turnRetry?, agentStartTimeoutMs? }, ...] }. \`agentStartTimeoutMs\` caps the box's own agent_start for that rung (default 5 min); on expiry the rung fails and the next is tried. Rungs are tried in order; a rung is skipped on a failed preflight, a capacity / overflow / egress-pool refusal or a boot failure before the agent started. Omitted rung axes inherit the top-level values. Mutually exclusive with \`sandbox\`. ${help("placement")}`
     ),
   resumeFrom: jsonTolerant(
     opaque(

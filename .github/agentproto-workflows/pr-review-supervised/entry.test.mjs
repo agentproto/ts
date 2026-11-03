@@ -214,6 +214,51 @@ test('buildReviewSummary never reads a missing verdict as approval', () => {
   assert.equal(failed.title, 'Agentic review: run failed')
 })
 
+// The single-step pr-review workflow has no outputSchema: its review step
+// output is `{ sessionId, text }` where `text` is the agent's final message
+// after it posted the review itself. Observed live (box lane run
+// 41568759681): the review posted as APPROVE and the summary read "incomplete".
+const unschemaedRun = (text, status = 'done') => ({
+  status,
+  stages: [{ index: 0, status, steps: [{ id: 'review', status, output: { sessionId: 's1', text } }] }],
+})
+
+test('buildReviewSummary reads the verdict from a posted-review final message', () => {
+  const approved = buildReviewSummary(
+    unschemaedRun(
+      'Review posted: https://github.com/agentproto/ts/pull/2492#pullrequestreview-5746793771 (APPROVE).\n\n- Verified the extraction.',
+    ),
+  )
+  assert.equal(approved.verdict, 'approved')
+  assert.equal(approved.title, 'Agentic review: approved')
+  assert.equal(approved.reviews, 1)
+  assert.match(approved.summary, /\| review \| review \| done \| approve/)
+
+  const changes = buildReviewSummary(
+    unschemaedRun('Review posted: https://github.com/o/r/pull/1#pullrequestreview-9 (REQUEST_CHANGES).'),
+  )
+  assert.equal(changes.verdict, 'changes_requested')
+})
+
+test('buildReviewSummary reads a local-placement JSON verdict from the final message', () => {
+  const out = buildReviewSummary(
+    unschemaedRun('{"conclusion":"request_changes","summary":"one bug","findings":[{"severity":"high","file":"a.ts","note":"x"}]}'),
+  )
+  assert.equal(out.verdict, 'changes_requested')
+  assert.match(out.summary, /request_changes - one bug/)
+})
+
+test('buildReviewSummary does not read prose or a COMMENT review as approval', () => {
+  for (const text of [
+    'I will post the review once the build is done (APPROVE) if it passes.',
+    'Review posted: https://github.com/o/r/pull/1#pullrequestreview-9 (COMMENT).',
+    'Could not post: gh failed. Would have been APPROVE.',
+    '',
+  ]) {
+    assert.equal(buildReviewSummary(unschemaedRun(text)).verdict, 'incomplete', text)
+  }
+})
+
 test('the stage diagram names the fix + re-review loop and its bound', () => {
   assert.match(stageDiagram(3), /fix -> re-review/)
   assert.match(stageDiagram(3), /3 fix round/)
