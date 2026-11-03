@@ -1142,6 +1142,7 @@ import { TunnelRegistry } from "./tunnel-registry.js"
 import { registerTunnelTools } from "./tunnel-tools.js"
 import { registerAppTunnelTools } from "./app-tunnel-tools.js"
 import { createTunnelRegistryExposer } from "./app-service-expose.js"
+import { stopAllOnDemandServices } from "./app-service-on-demand.js"
 import { LlmEndpointRegistry } from "./llm-endpoint-registry.js"
 import { registerLlmEndpointTools } from "./llm-endpoint-tools.js"
 import { registerBuiltinRoutes } from "./builtin-routes.js"
@@ -5773,6 +5774,11 @@ export async function createGateway(
       taskLedger.dispose()
       // Clear the approvals engine's pending `approval_wait` timers.
       approvalsEngine.dispose()
+      // On-demand app services: the host's listener dies with this daemon, so
+      // a process it started would be unreachable and never stopped. Close
+      // the listeners and kill the processes (a keep-alive service is left to
+      // the sessions registry below, as before).
+      await stopAllOnDemandServices()
       // Kill all live sessions before tearing down HTTP — otherwise
       // long-running children inherit the daemon's listening socket
       // and stay around as zombies after the parent exits.

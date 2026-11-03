@@ -376,7 +376,7 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 65535,
-            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. Bookkeeping only: the host records it and does not inject it into the service's environment. An `expose`d service's tunnel targets it."
+            "description": "Optional TCP port the service listens on. Omitted = a service that does not listen. For a keep-alive service this is bookkeeping only: the host records it and does not inject it into the service's environment. With `activation.mode: on-demand` the host listens on this port itself and gives the process another one in `PORT`. An `expose`d service's tunnel targets it."
           },
           "expose": {
             "type": "object",
@@ -397,6 +397,50 @@
               }
             },
             "description": "Ask the host for a public URL that reaches `port`, through one AIP-73 tunnel per service, keyed `app.<app>.<service>.<hash>` (AIP-53 § Tunnel key). The host picks the provider and passes the public origin to the process as `AGENTPROTO_PUBLIC_URL`. Requires `port`. See AIP-53 § Exposure."
+          },
+          "activation": {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "mode": {
+                "enum": [
+                  "always",
+                  "on-demand"
+                ],
+                "description": "`always`: the host starts the process at install and boot and keeps it running. `on-demand`: the host owns `port` (and the `expose` tunnel's target), starts the process on the first inbound connection, proxies HTTP and WebSocket traffic to it and stops it after `idleStopMs` without traffic. `on-demand` requires `port`, and the process MUST bind the port the host passes in `PORT`."
+              },
+              "idleStopMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 86400000,
+                "default": 300000,
+                "description": "`on-demand` only. Milliseconds without an open request or connection before the host stops the process. Default 300000."
+              },
+              "startTimeoutMs": {
+                "type": "integer",
+                "minimum": 1000,
+                "maximum": 300000,
+                "default": 30000,
+                "description": "`on-demand` only. Milliseconds a request waits for the process to start listening before the host answers 503. Default 30000."
+              }
+            },
+            "if": {
+              "properties": {
+                "mode": {
+                  "const": "always"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "idleStopMs": false,
+                "startTimeoutMs": false
+              }
+            },
+            "description": "When the host runs the process. Omitted means `{ mode: always }`: kept running from install and boot, restarted on an unexpected exit. Only a service whose work is driven entirely by inbound requests may be `on-demand`; one that polls or schedules on its own would be stopped while idle. See AIP-53 § Activation."
           }
         },
         "dependentRequired": {
@@ -422,9 +466,35 @@
               "entry": false
             }
           }
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "activation"
+              ],
+              "properties": {
+                "activation": {
+                  "required": [
+                    "mode"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "on-demand"
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "port"
+              ]
+            }
+          }
         ]
       },
-      "description": "Production hosting surface: long-running processes the host starts with the app, one process per entry. No dependency graph, no scaling, no scheduler. Not `dev.launch`, which stays dev-only and is never executed. See AIP-53 § Services."
+      "description": "Production hosting surface: long-running processes the host starts with the app, one process per entry. No dependency graph, no replicas, no scheduler; `activation` only chooses between keeping the process running and starting it on demand. Not `dev.launch`, which stays dev-only and is never executed. See AIP-53 § Services."
     },
     "setup": {
       "type": "array",

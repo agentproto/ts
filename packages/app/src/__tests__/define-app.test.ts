@@ -384,6 +384,23 @@ describe("defineApp — services (production hosting surface)", () => {
     ).toThrow(/invalid services declaration.*services\[0\]\.expose\.auth/)
   })
 
+  it("carries services[].activation frozen, and rejects on-demand without a port", () => {
+    const app = defineApp({
+      agents: [agent("solo", [])],
+      services: [
+        { name: "miniapp", command: "node", port: 8788, activation: { mode: "on-demand", idleStopMs: 60_000 } },
+      ],
+    })
+    expect(app.services![0]!.activation).toEqual({ mode: "on-demand", idleStopMs: 60_000 })
+    expect(Object.isFrozen(app.services![0]!.activation)).toBe(true)
+    expect(() =>
+      defineApp({
+        agents: [agent("solo", [])],
+        services: [{ name: "api", entry: "a", activation: { mode: "on-demand" } }],
+      }),
+    ).toThrow(/invalid services declaration . services\[0\]\.activation\.mode 'on-demand' requires a port/)
+  })
+
   it("carries services through to the handle, frozen", () => {
     const app = defineApp({
       agents: [agent("solo", [])],

@@ -546,6 +546,38 @@ describe("loadAppHandle — services (production hosting surface)", () => {
     }
   })
 
+  it("round-trips services[].activation through emit -> loadAppHandle, and rejects a bad one at load", async () => {
+    const d = await mkdtemp(join(tmpdir(), "app-kit-load-activation-"))
+    try {
+      const { appPath } = await defineApp({
+        agents: [{ agent: soloAgent(), body: "Solo." }],
+        services: [
+          { name: "miniapp", command: "node", port: 8788, activation: { mode: "on-demand", idleStopMs: 60_000 } },
+          { name: "poller", entry: "node poll.js", activation: { mode: "always" } },
+        ],
+      }).emit(d)
+      const loaded = await loadAppHandle(d)
+      expect(loaded.services).toEqual([
+        { name: "miniapp", command: "node", port: 8788, activation: { mode: "on-demand", idleStopMs: 60_000 } },
+        { name: "poller", entry: "node poll.js", activation: { mode: "always" } },
+      ])
+      const parsed = matter(await readFile(appPath, "utf8"))
+      await writeFile(
+        appPath,
+        matter.stringify(parsed.content, {
+          ...parsed.data,
+          services: [{ name: "web", entry: "x", activation: { mode: "on-demand" } }],
+        }),
+        "utf8",
+      )
+      await expect(loadAppHandle(d)).rejects.toThrow(
+        /invalid services declaration . services\[0\]\.activation\.mode 'on-demand' requires a port/,
+      )
+    } finally {
+      await rm(d, { recursive: true, force: true })
+    }
+  })
+
   it("rejects two services with the same name as a load error", async () => {
     const d = await mkdtemp(join(tmpdir(), "app-kit-load-dupservices-"))
     try {

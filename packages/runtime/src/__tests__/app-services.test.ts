@@ -298,6 +298,95 @@ describe("ensureAppServiceOwners", () => {
   })
 })
 
+describe("ensureAppServiceOwners with activation: on-demand", () => {
+  const onDemand = { name: "web", command: "node", port: 8788, activation: { mode: "on-demand" as const } }
+  const keepAlive = { name: "web", command: "node", port: 8788 }
+  const fixedNow = () => new Date("2026-02-02T03:04:05.000Z")
+  const idleOwner: AppServiceOwner = {
+    appId: "@a/app",
+    name: "web",
+    entry: "node",
+    sessionId: "",
+    port: 8788,
+    activation: "on-demand",
+    startedAt: "2026-01-01T00:00:00.000Z",
+  }
+
+  it("records the mode on the owner, and nothing for a keep-alive service", async () => {
+    const store = createAppServiceStore({ persist: false })
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [onDemand, { name: "poller", entry: "run poller" }],
+      isOwnerAlive: () => false,
+      spawn: async () => ({ ok: true as const, sessionId: "sess" }),
+      killOwner: () => {},
+      now: fixedNow,
+    })
+    const [web, poller] = store.listForApp("@a/app")
+    expect(web).toMatchObject({ name: "web", port: 8788, activation: "on-demand" })
+    expect(poller).not.toHaveProperty("activation")
+  })
+
+  it("keeps an on-demand owner while its host is alive, whatever its process is doing", async () => {
+    const store = createAppServiceStore({ persist: false })
+    store.upsert(idleOwner)
+    const spawn = vi.fn()
+    const result = await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [onDemand],
+      isOwnerAlive: () => true,
+      spawn,
+      killOwner: () => {},
+    })
+    expect(result.kept).toEqual([idleOwner])
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it("replaces a live keep-alive owner when the manifest turns the service on-demand (it would hold the port the host must own)", async () => {
+    const store = createAppServiceStore({ persist: false })
+    const live: AppServiceOwner = { ...idleOwner, sessionId: "sess_live", pid: 77 }
+    delete (live as { activation?: unknown }).activation
+    store.upsert(live)
+    const killOwner = vi.fn()
+    const spawn = vi.fn(async () => ({ ok: true as const, sessionId: "" }))
+    const result = await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [onDemand],
+      isOwnerAlive: () => true,
+      spawn,
+      killOwner,
+      now: fixedNow,
+    })
+    expect(killOwner).toHaveBeenCalledWith(live)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(result.kept).toEqual([])
+    expect(store.listForApp("@a/app")[0]).toMatchObject({ activation: "on-demand" })
+    expect(store.listForApp("@a/app")[0]).not.toHaveProperty("pid")
+  })
+
+  it("replaces a live on-demand owner when the manifest turns the service back to keep-alive", async () => {
+    const store = createAppServiceStore({ persist: false })
+    store.upsert(idleOwner)
+    const killOwner = vi.fn()
+    const spawn = vi.fn(async () => ({ ok: true as const, sessionId: "sess_new", pid: 5 }))
+    await ensureAppServiceOwners({
+      store,
+      appId: "@a/app",
+      services: [keepAlive],
+      isOwnerAlive: () => true,
+      spawn,
+      killOwner,
+      now: fixedNow,
+    })
+    expect(killOwner).toHaveBeenCalledWith(idleOwner)
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(store.listForApp("@a/app")[0]).not.toHaveProperty("activation")
+  })
+})
+
 describe("removeAppServiceOwners", () => {
   it("kills every owner and drops the records", async () => {
     const store = createAppServiceStore({ persist: false })

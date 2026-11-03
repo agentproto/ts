@@ -45,7 +45,11 @@ export type { AgentManifestLayout, RenderAgentManifestTarget, RenderedAgentManif
 export { loadAppHandle, AppLoadError, resolveAppUIRoot, peekAppUi, workspaceFromMarkdownText } from "./load-app.js"
 export type { AppUiPeek } from "./load-app.js"
 export { loadAppBundledTools } from "./load-app-tools.js"
-export { parseServiceList } from "./manifest-fields.js"
+export {
+  parseServiceList,
+  DEFAULT_SERVICE_IDLE_STOP_MS,
+  DEFAULT_SERVICE_START_TIMEOUT_MS,
+} from "./manifest-fields.js"
 export type { ServiceListResult } from "./manifest-fields.js"
 export {
   packApp,
@@ -84,6 +88,7 @@ export type {
   AppDevDefinition,
   AppService,
   AppServiceExpose,
+  AppServiceActivation,
   AppSetupStep,
   AppSetupStepBase,
   AppSetupCmdStep,

@@ -170,7 +170,11 @@ runtime app registry:
   `port` 1..65535, no extra keys), carried verbatim and frozen like the other
   optional surfaces. app never executes a service `entry`; the host (the
   daemon) spawns one keep-alive service-owner session per entry at install
-  time, and `app_uninstall` tears those owners down.
+  time, and `app_uninstall` tears those owners down. An entry may carry
+  `activation: { mode: "on-demand", idleStopMs?, startTimeoutMs? }` (needs a
+  `port`): the daemon then owns that port, starts the process on the first
+  request and stops it when idle, handing it a free port in `PORT`. See
+  `docs/cli/guides/app-services.md`.
 
 An app can also be **UI-only**: omit `agents` (or pass `agents: []`) when the
 app is a pure UI panel with no agent behavior of its own. In that case `ui`
