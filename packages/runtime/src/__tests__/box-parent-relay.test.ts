@@ -20,7 +20,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { mkdtempSync, readFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
@@ -320,6 +320,66 @@ describe("parent relay: the host delivers to the right parent", () => {
     expect(sent[0]?.kind).toBe("blocker")
     expect(sent[0]?.urgency).toBe("steer")
     expect(sent[0]?.text).toBe("blocked on a flaky test")
+  })
+
+  it("writes exactly one ledger line, only after sendMessage resolves", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "parent-relay-ledger-"))
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
+    try {
+      const sent: Array<{ id: string; to: string }> = []
+      let resolveSend!: (value: unknown) => void
+      const gate = new Promise<unknown>(resolve => {
+        resolveSend = resolve
+      })
+      const fakeRegistry: ParentRelayRegistry = {
+        get: (id: string) => ({ id, status: "running" }),
+        sendMessage: async envelope => {
+          sent.push({ id: envelope.id, to: envelope.to })
+          return gate as never
+        },
+      }
+      const remote = mintParentRelayGrant({
+        parentSessionId: "sess_parent",
+        boxSessionId: "sess_box",
+        url: "https://host.example",
+      })
+      const pending = deliverParentRelayMessage({
+        token: remote.token,
+        payload: { message: "blocked", kind: "blocker", urgency: "steer" },
+        registry: fakeRegistry,
+        ledgerPath,
+      })
+      await vi.waitFor(() => expect(sent).toHaveLength(1))
+      expect(existsSync(ledgerPath)).toBe(false)
+
+      resolveSend({
+        messageId: sent[0]!.id,
+        queued: false,
+        urgencyApplied: "steer",
+        delivered: { via: "turn" },
+      })
+      const result = await pending
+      expect(result.ok).toBe(true)
+
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        producer: "message",
+        subscriptionId: "message:parent-relay",
+        type: "message.blocker",
+        subject: "sess_box",
+        target: { kind: "session", id: "sess_parent" },
+        eventId: sent[0]!.id,
+        messageId: sent[0]!.id,
+        level: 3,
+        cap: 3,
+        rule: "sender-urgency",
+        applied: false,
+        outcome: "delivered",
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it("an unknown/expired token is refused: the payload cannot pick the recipient", async () => {

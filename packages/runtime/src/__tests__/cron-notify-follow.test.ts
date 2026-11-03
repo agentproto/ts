@@ -225,7 +225,7 @@ describe("cron notify onFailure", () => {
       },
       readLastOutput: () => undefined,
       parkedPath: join(workspace, "parked.jsonl"),
-      triagePath: join(workspace, "triage.jsonl"),
+      ledgerPath: join(workspace, "delivery-ledger.jsonl"),
       log: () => {},
     })
     const job = await createJob("onFailure", ["echo delivered"])
@@ -237,8 +237,8 @@ describe("cron notify onFailure", () => {
     expect(messages[0]?.urgency).toBe("fyi")
     expect(messages[0]?.text).toContain("for your information only")
     const { readFileSync } = await import("node:fs")
-    const lines = readFileSync(join(workspace, "triage.jsonl"), "utf8").trim().split("\n")
+    const lines = readFileSync(join(workspace, "delivery-ledger.jsonl"), "utf8").trim().split("\n")
     expect(lines).toHaveLength(1)
-    expect(JSON.parse(lines[0]!)).toMatchObject({ event: "exited", decision: "fyi" })
+    expect(JSON.parse(lines[0]!)).toMatchObject({ type: "exited", level: 1, outcome: "inbox" })
   })
 })

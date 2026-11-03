@@ -30,6 +30,7 @@ import { defaultBrowserAdapterIds } from "./browser-adapters.js"
 import { randomUUID, randomBytes, timingSafeEqual } from "node:crypto"
 import { handleModernRequest } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { homedir } from "node:os"
 import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
@@ -75,6 +76,8 @@ import {
   type MessageKind,
   type MessageUrgency,
 } from "./session-message.js"
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import { type LedgerLine, type LedgerOutcome, type Level } from "@agentproto/delivery"
 import { resolveMessagingDefaults, type ResolvedMessagingDefaults } from "./messaging-defaults.js"
 import { buildMessagingPermissionContext } from "./messaging-context.js"
 import { deriveEffectiveGrants, resolveOperatorDelegates } from "./effective-grants.js"
@@ -1011,6 +1014,22 @@ export type CatalogModelsLister = (
   query: CatalogModelsQuery,
 ) => Promise<CatalogModelsResponse>
 
+function agentprotoHome(): string {
+  return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+}
+
+function urgencyLevel(urgency: MessageUrgency): Level {
+  if (urgency === "fyi") return 1
+  if (urgency === "next-turn") return 2
+  return 3
+}
+
+function messageOutcome(result: { queued: boolean; delivered?: { via: string } | null; refused?: "inbox-full" }): LedgerOutcome {
+  if (result.refused !== undefined) return "dropped"
+  if (result.queued) return "queued"
+  return result.delivered?.via === "inbox" ? "inbox" : "delivered"
+}
+
 export interface AuthOptions {
   mode: "none" | "bearer"
   token?: string
@@ -1132,6 +1151,9 @@ export interface RuntimeHttpServerOptions {
    * read per request). A seam for tests.
    */
   resolveMessagingDefaults?: () => Promise<ResolvedMessagingDefaults>
+  /** Append-only delivery ledger for `POST /sessions/:id/messages` (tests).
+   *  Default `<agentprotoHome()>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
   /** Resolver for `defaults.tasks.operatorDelegates` used by `GET /permissions/grants`. A seam for tests. */
   resolveOperatorDelegates?: () => Promise<string[]>
   /** Resolver for `defaults.spawn.delegationGate` used by `GET /permissions/grants`. A seam for tests. */
@@ -3643,6 +3665,7 @@ export async function startHttpServer(
             credentialSessionOf,
             externalClaimTrusted,
             opts.resolveMessagingDefaults ?? resolveMessagingDefaults,
+            opts.ledgerPath,
           )
           if (handled) return
         }
@@ -7566,6 +7589,7 @@ async function handleSessions(
   // daemon bearer). Absent ⇒ `POST /sessions/:id/touch` refuses every claim.
   externalClaimTrustedFor?: (req: IncomingMessage) => boolean,
   messagingDefaultsFor: () => Promise<ResolvedMessagingDefaults> = resolveMessagingDefaults,
+  ledgerPathOverride?: string,
 ): Promise<boolean> {
   const json = (status: number, body: unknown): void => {
     res.writeHead(status, { "content-type": "application/json" })
@@ -8709,6 +8733,25 @@ code { color: #9ad; }
       return true
     }
     const provenance = sender ? `${relation}:${sender.id}` : "user"
+    const ledgerPath = ledgerPathOverride ?? join(agentprotoHome(), DELIVERY_LEDGER_FILE)
+    const writeLedger = (outcome: LedgerOutcome): void => {
+      const line: LedgerLine = {
+        ts: new Date().toISOString(),
+        producer: "message",
+        subscriptionId: "message:http",
+        target: { kind: "session", id },
+        eventId: msg.id,
+        type: `message.${msg.kind ?? "message"}`,
+        subject: sender?.id ?? "user",
+        level: urgencyLevel(msg.urgency),
+        cap: 3,
+        rule: "sender-urgency",
+        applied: false,
+        outcome,
+        messageId: msg.id,
+      }
+      appendLedgerLine(ledgerPath, line)
+    }
     try {
       const r = await registry.sendMessage(msg, {
         source: sender ? provenance : "user",
@@ -8719,8 +8762,10 @@ code { color: #9ad; }
         // it to session senders by default — they get `steer` instead).
         ...(interruptDecision.allow ? { allowInterrupt: true } : {}),
       })
+      writeLedger(messageOutcome(r))
       json(200, { ok: true, id, relation, ...r })
     } catch (err) {
+      writeLedger("dropped")
       if (err instanceof SessionRetiredError) {
         json(409, retiredErrorWire(err))
         return true

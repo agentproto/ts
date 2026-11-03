@@ -3996,6 +3996,9 @@ importers:
       '@agentproto/decision':
         specifier: workspace:*
         version: link:../decision
+      '@agentproto/delivery':
+        specifier: workspace:*
+        version: link:../delivery
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
