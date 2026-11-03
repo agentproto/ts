@@ -998,12 +998,33 @@ export function registerOrchestrationTools(
       "allow-once); `decision:\"deny\"` selects a reject option (or cancels " +
       "the request when none is offered). An explicit `optionId` overrides " +
       "the decision→option mapping. Errors clearly on an unknown/already-" +
-      "resolved id. The agent's turn unblocks with the chosen outcome.",
+      "resolved id. The agent's turn unblocks with the chosen outcome. " +
+      "A harness question with `question.fields` (radio/checkbox/free text, " +
+      "possibly several questions) is answered with `answers` instead, keyed " +
+      "by field id: `{selected:[value...]}` for single/multi choice (plus " +
+      "`text` for the free-text \"Other\"), `{text}` for a text field, " +
+      "`{value}` for boolean/number. `decision:\"deny\"` skips it.",
     {
       id: z.string().describe("Pending permission id from `permissions_list`."),
       decision: z
         .enum(["approve", "deny"])
-        .describe("approve → an allow option; deny → a reject option / cancel."),
+        .optional()
+        .describe(
+          "approve → an allow option; deny → a reject option / cancel. Required unless `answers` is given.",
+        ),
+      answers: z
+        .record(
+          z.string(),
+          z.object({
+            selected: z.array(z.string()).optional(),
+            text: z.string().optional(),
+            value: z.union([z.boolean(), z.number()]).optional(),
+          }),
+        )
+        .optional()
+        .describe(
+          "Answers to a multi-field question (`question.fields`), keyed by field id. Submits the question.",
+        ),
       optionId: z
         .string()
         .optional()
@@ -1037,8 +1058,20 @@ export function registerOrchestrationTools(
           isError: true,
         }
       }
+      if (!input.decision && !input.answers) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({ error: "invalid_input", message: "pass `decision` or `answers`" }),
+            },
+          ],
+          isError: true,
+        }
+      }
       const result = await registry.respondPermission(input.id, {
-        decision: input.decision,
+        decision: input.decision ?? "approve",
+        ...(input.answers ? { answers: input.answers } : {}),
         ...(input.optionId ? { optionId: input.optionId } : {}),
         ...(input.scope ? { scope: input.scope } : {}),
         ...(input.feedback ? { feedback: input.feedback } : {}),

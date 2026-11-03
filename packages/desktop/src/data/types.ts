@@ -54,6 +54,9 @@ export interface SessionDescriptor {
     source: string
     /** Mirrors the runtime's SessionAwaitingQuestion.kind; absent = unclassified. */
     kind?: "permission" | "context" | "harness"
+    /** Pending-permission id of a multi-field harness question; it is
+     *  answered from the permission banner, not by sending a prompt. */
+    requestId?: string
   }
   awaitingPermission?: boolean
   turnsCompleted?: number
@@ -234,4 +237,6 @@ export interface RespondPermissionInput {
   scope?: "once" | "always"
   /** Free-text answer of a question, or the reason of a rejected plan. */
   feedback?: string
+  /** Answers to a multi-field question (AIP-45 `question.fields`), keyed by field id. */
+  answers?: Record<string, { selected?: string[]; text?: string; value?: boolean | number }>
 }

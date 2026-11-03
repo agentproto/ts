@@ -289,6 +289,8 @@ export interface RespondPermissionInput {
   scope?: "once" | "always"
   /** Free-text answer to a question, or the reason for rejecting a plan. */
   feedback?: string
+  /** Answers to a multi-field question (AIP-45 `question.fields`), keyed by field id. */
+  answers?: Record<string, { selected?: string[]; text?: string; value?: boolean | number }>
 }
 
 /** One `GET /brain/query` hit — the lean shape the daemon route maps

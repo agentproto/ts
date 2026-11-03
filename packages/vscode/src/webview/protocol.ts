@@ -5,6 +5,7 @@
  */
 
 import type { SessionDescriptor } from "../client/types.js"
+import { isQuestionAnswers, type QuestionAnswers } from "./agentPrompt.logic.js"
 import { isBinaryPayload } from "./attachments.logic.js"
 import type { ConversationUsage, PresentedConversation, PresentedTurn } from "./conversation.js"
 import type { MentionCandidate } from "./mentions.logic.js"
@@ -442,9 +443,13 @@ export type WebviewMessage =
       type: "resolveQuestion"
       toolCallId?: string
       decision: "approve" | "deny"
-      optionId: string
+      /** The chosen option. Absent only for a multi-field question, which is
+       *  submitted with `answers` or skipped with `decision: "deny"`. */
+      optionId?: string
       /** A typed question's free-text answer, or the reason a plan was rejected. */
       feedback?: string
+      /** A multi-field question's answers, keyed by field id. */
+      answers?: QuestionAnswers
     }
 
 export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
@@ -503,7 +508,9 @@ export function isWebviewMessage(msg: unknown): msg is WebviewMessage {
     case "resolveQuestion":
       return (
         (m.decision === "approve" || m.decision === "deny") &&
-        typeof m.optionId === "string" &&
+        (typeof m.optionId === "string" ||
+          (m.optionId === undefined && (isQuestionAnswers(m.answers) || m.decision === "deny"))) &&
+        (m.answers === undefined || isQuestionAnswers(m.answers)) &&
         (m.toolCallId === undefined || typeof m.toolCallId === "string") &&
         (m.feedback === undefined || typeof m.feedback === "string")
       )

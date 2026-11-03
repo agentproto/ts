@@ -297,6 +297,76 @@ describe("transcriptPanel webview — DOM patch reconciliation", () => {
       expect(node?.textContent).toBe("Mode: plan -> execute · by agent")
     })
 
+    it("paints a multi-field question as one form and posts its answers keyed by field id", () => {
+      const posted: unknown[] = []
+      const panel = mount(
+        {
+          kind: "agent-question",
+          id: "qf",
+          toolCallId: "perm_3",
+          options: ["Submit", "Skip"],
+          request: "question",
+          question: {
+            prompt: "Please answer the following questions.",
+            choices: [],
+            fields: [
+              {
+                id: "question_0",
+                input: "single",
+                header: "Database",
+                prompt: "Which database should we use?",
+                choices: [
+                  { value: "Postgres", label: "Postgres" },
+                  { value: "SQLite", label: "SQLite" },
+                ],
+                allowFreeText: true,
+                required: false,
+                recommended: "SQLite",
+              },
+              {
+                id: "question_1",
+                input: "multi",
+                header: "Features",
+                prompt: "Which features do you want?",
+                choices: [
+                  { value: "Logs", label: "Logs" },
+                  { value: "Traces", label: "Traces" },
+                ],
+                allowFreeText: true,
+                required: false,
+              },
+            ],
+          },
+        },
+        msg => posted.push(msg),
+      )
+      const node = segNode(panel, "qf")!
+      expect(node.textContent).toContain("Database")
+      expect(node.textContent).toContain("SQLite (recommended)")
+      const field = (id: string) =>
+        [...node.querySelectorAll("fieldset.question-field")].find(f => f.dataset.fieldId === id)!
+      const single = [...field("question_0").querySelectorAll("input[type=radio]")]
+      const multi = [...field("question_1").querySelectorAll("input[type=checkbox]")]
+      expect(single).toHaveLength(2)
+      expect(multi).toHaveLength(2)
+      for (const input of [single[1], multi[0], multi[1]]) (input as unknown as HTMLInputElement).checked = true
+      type(panel, field("question_1").querySelector("input.question-text"), "profiles")
+      click(panel, node.querySelector("button.question-submit"))
+      expect(posted).toEqual([
+        {
+          type: "resolveQuestion",
+          toolCallId: "perm_3",
+          decision: "approve",
+          answers: {
+            question_0: { selected: ["SQLite"] },
+            question_1: { selected: ["Logs", "Traces"], text: "profiles" },
+          },
+        },
+      ])
+      click(panel, node.querySelector("button.question-skip"))
+      expect(posted[1]).toEqual({ type: "resolveQuestion", toolCallId: "perm_3", decision: "deny" })
+    })
+
     it("paints a question's choices as buttons that post the chosen optionId", () => {
       const posted: unknown[] = []
       const panel = mount(

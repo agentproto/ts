@@ -9,12 +9,39 @@ export interface PromptChoice {
   description?: string
 }
 
+export type QuestionFieldInput = "single" | "multi" | "text" | "boolean" | "number"
+
+export interface QuestionFieldChoice {
+  value: string
+  label: string
+  description?: string
+  preview?: string
+}
+
+/** One question of a multi-field prompt (AIP-45 `AgentPromptField`). */
+export interface QuestionField {
+  id: string
+  input: QuestionFieldInput
+  header?: string
+  prompt: string
+  choices: QuestionFieldChoice[]
+  allowFreeText: boolean
+  required: boolean
+  /** A `choices[].value` the daemon recommends. */
+  recommended?: string
+}
+
+/** Answers to a multi-field prompt, keyed by field id (AIP-45 `AgentPromptAnswers`). */
+export type QuestionAnswers = Record<string, { selected?: string[]; text?: string; value?: boolean | number }>
+
 export interface QuestionPrompt {
   request: "question"
   prompt: string
   choices: PromptChoice[]
   /** The option that carries a free-text answer in the resolution's `feedback`. */
   freeTextOptionId?: string
+  /** Multi-field form; when present it is the source of truth, answered with `answers`. */
+  fields?: QuestionField[]
 }
 
 export interface PlanApprovalPrompt {
@@ -53,6 +80,60 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined
 }
 
+const FIELD_INPUTS: ReadonlySet<string> = new Set(["single", "multi", "text", "boolean", "number"])
+
+/** `question.fields`, keeping only well-formed entries; undefined when none are. */
+export function parseQuestionFields(raw: unknown): QuestionField[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const fields: QuestionField[] = []
+  for (const entry of raw) {
+    const f = asObject(entry)
+    const id = str(f?.id)
+    const input = str(f?.input)
+    const prompt = str(f?.prompt)
+    if (!f || !id || !input || !FIELD_INPUTS.has(input) || !prompt) continue
+    const choices: QuestionFieldChoice[] = []
+    for (const c of Array.isArray(f.choices) ? f.choices : []) {
+      const o = asObject(c)
+      const value = typeof o?.value === "string" ? o.value : undefined
+      const label = str(o?.label)
+      if (!o || value === undefined || !label) continue
+      const description = str(o.description)
+      const preview = str(o.preview)
+      choices.push({ value, label, ...(description ? { description } : {}), ...(preview ? { preview } : {}) })
+    }
+    if ((input === "single" || input === "multi") && choices.length === 0) continue
+    const header = str(f.header)
+    const recommended = str(f.recommended)
+    fields.push({
+      id,
+      input: input as QuestionFieldInput,
+      ...(header ? { header } : {}),
+      prompt,
+      choices,
+      allowFreeText: f.allowFreeText === true,
+      required: f.required === true,
+      ...(recommended && choices.some(c => c.value === recommended) ? { recommended } : {}),
+    })
+  }
+  return fields.length > 0 ? fields : undefined
+}
+
+/** True when `raw` has the `QuestionAnswers` shape (the daemon checks it against the fields). */
+export function isQuestionAnswers(raw: unknown): raw is QuestionAnswers {
+  const answers = asObject(raw)
+  if (!answers) return false
+  return Object.values(answers).every(a => {
+    const o = asObject(a)
+    if (!o) return false
+    if (o.selected !== undefined && !(Array.isArray(o.selected) && o.selected.every(s => typeof s === "string"))) {
+      return false
+    }
+    if (o.text !== undefined && typeof o.text !== "string") return false
+    return o.value === undefined || typeof o.value === "boolean" || typeof o.value === "number"
+  })
+}
+
 /** The optionIds a prompt offers, or undefined when the options were not sent. */
 function offeredIds(options: unknown): ReadonlySet<string> | undefined {
   if (!Array.isArray(options)) return undefined
@@ -83,6 +164,7 @@ export function parseAgentPrompt(input: AgentPromptInput): TypedAgentPrompt | un
       choices.push({ optionId, label, ...(description ? { description } : {}) })
     }
     const freeTextOptionId = str(q.freeTextOptionId)
+    const fields = parseQuestionFields(q.fields)
     return {
       request: "question",
       prompt,
@@ -90,6 +172,7 @@ export function parseAgentPrompt(input: AgentPromptInput): TypedAgentPrompt | un
       ...(q.allowFreeText === true && freeTextOptionId && isOffered(freeTextOptionId)
         ? { freeTextOptionId }
         : {}),
+      ...(fields ? { fields } : {}),
     }
   }
 

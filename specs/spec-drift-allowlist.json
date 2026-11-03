@@ -50,6 +50,21 @@
       "file": "aip-7/draft/GOVERNANCE.schema.json",
       "field": "$defs.approvalChannel",
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
+    },
+    {
+      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
+      "field": "$defs.questionRequest",
+      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
+    },
+    {
+      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
+      "field": "$defs.questionField",
+      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
+    },
+    {
+      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
+      "field": "$defs.agentPrompt.description",
+      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
     }
   ]
 }

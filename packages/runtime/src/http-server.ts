@@ -34,7 +34,7 @@ import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
 import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
-import type { AcpMcpServer } from "@agentproto/acp"
+import type { AcpMcpServer, AgentPromptAnswers } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
@@ -12089,7 +12089,8 @@ async function resolveProfileGateMode(
  *                                  the delegation and auth-profile gates'
  *                                  modes and counters.
  *                                  Read-only.
- *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny
+ *   POST /permissions/:id        → { decision, optionId?, scope?, feedback? } approve/deny,
+ *                                  or { answers } to submit a multi-field question
  *
  * Mirrors the MCP `permissions_list` / `permissions_respond` tools over the
  * same SessionsRegistry inbox. Each list entry is enriched with the owning
@@ -12165,7 +12166,15 @@ async function handlePermissions(
     const id = decodeURIComponent(idMatch[1] ?? "")
     const body = await readJsonBody(req)
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
-    const decision = b.decision
+    const answers =
+      b.answers && typeof b.answers === "object" && !Array.isArray(b.answers)
+        ? (b.answers as AgentPromptAnswers)
+        : undefined
+    if (b.answers !== undefined && !answers) {
+      json(400, { error: "invalid_answers", message: "body.answers must be an object keyed by field id" })
+      return true
+    }
+    const decision = b.decision ?? (answers ? "approve" : undefined)
     if (decision !== "approve" && decision !== "deny") {
       json(400, {
         error: "invalid_decision",
@@ -12178,12 +12187,18 @@ async function handlePermissions(
     const feedback = typeof b.feedback === "string" ? b.feedback : undefined
     const result = await registry.respondPermission(id, {
       decision,
+      ...(answers ? { answers } : {}),
       ...(optionId ? { optionId } : {}),
       ...(scope ? { scope } : {}),
       ...(feedback ? { feedback } : {}),
     })
     if (!result.ok) {
-      const status = result.error === "not_found" || result.error === "session_gone" ? 404 : 409
+      const status =
+        result.error === "not_found" || result.error === "session_gone"
+          ? 404
+          : result.error === "invalid_answers"
+            ? 400
+            : 409
       json(status, { error: result.error, message: result.message })
       return true
     }

@@ -385,7 +385,8 @@ export async function handleWebviewMessage(
       }
       await client.respondPermission(perm.id, {
         decision: msg.decision,
-        optionId: msg.optionId,
+        ...(msg.answers ? { answers: msg.answers } : {}),
+        ...(msg.optionId ? { optionId: msg.optionId } : {}),
         ...(msg.feedback ? { feedback: msg.feedback } : {}),
       })
       return
@@ -1315,6 +1316,32 @@ export function buildHtml(
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
+    }
+    /* Multi-field question form (AIP-45 question.fields). */
+    .question-field {
+      border: 0;
+      margin: 0 0 10px;
+      padding: 0;
+    }
+    .question-field legend {
+      margin-bottom: 6px;
+    }
+    .question-header {
+      font-size: 0.8em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+      color: var(--vscode-descriptionForeground);
+    }
+    .question-choice {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      margin: 3px 0;
+    }
+    .question-choice-desc {
+      color: var(--vscode-descriptionForeground);
+      font-size: 0.88em;
     }
     .question-option {
       display: inline-flex;
@@ -3630,6 +3657,109 @@ export function buildHtml(
               input.disabled = !seg.toolCallId;
               return input;
             };
+            if (seg.request === 'question' && seg.question && seg.question.fields && seg.question.fields.length) {
+              // A multi-field form (AIP-45 question.fields): radios for single
+              // choice, checkboxes for multi choice, an "Other" box when free
+              // text is allowed, text / number / checkbox for the rest. Submit
+              // posts the answers keyed by field id; Skip is a deny.
+              const q = seg.question;
+              const fields = q.fields;
+              const form = el('form', 'question-form');
+              const lone = fields.length === 1 && fields[0].prompt === q.prompt;
+              if (!lone) form.appendChild(el('div', 'question-prompt', q.prompt));
+              const readers = [];
+              fields.forEach((f, fi) => {
+                const box = el('fieldset', 'question-field');
+                box.dataset.fieldId = f.id;
+                const legend = el('legend', 'question-prompt');
+                if (f.header) legend.appendChild(el('span', 'question-header', f.header));
+                legend.appendChild(document.createTextNode((f.header ? ' ' : '') + f.prompt + (f.required ? ' *' : '')));
+                box.appendChild(legend);
+                const name = 'q-' + seg.id + '-' + fi;
+                let other = null;
+                if (f.input === 'single' || f.input === 'multi') {
+                  const inputs = [];
+                  for (const c of f.choices || []) {
+                    const label = el('label', 'question-choice');
+                    const input = el('input');
+                    input.type = f.input === 'single' ? 'radio' : 'checkbox';
+                    input.name = name;
+                    input.value = c.value;
+                    input.disabled = !seg.toolCallId;
+                    label.appendChild(input);
+                    label.appendChild(el('span', undefined, c.label + (f.recommended === c.value ? ' (recommended)' : '')));
+                    if (c.description) label.appendChild(el('span', 'question-choice-desc', c.description));
+                    if (c.preview) label.title = c.preview;
+                    box.appendChild(label);
+                    inputs.push(input);
+                  }
+                  if (f.allowFreeText) {
+                    other = el('input', 'question-text');
+                    other.type = 'text';
+                    other.placeholder = 'Other (optional)';
+                    other.disabled = !seg.toolCallId;
+                    box.appendChild(other);
+                  }
+                  readers.push(() => {
+                    const selected = inputs.filter((i) => i.checked).map((i) => i.value);
+                    const text = other ? other.value.trim() : '';
+                    if (!selected.length && !text) return null;
+                    return Object.assign({}, selected.length ? { selected } : {}, text ? { text } : {});
+                  });
+                } else if (f.input === 'boolean') {
+                  const label = el('label', 'question-choice');
+                  const input = el('input');
+                  input.type = 'checkbox';
+                  input.disabled = !seg.toolCallId;
+                  label.appendChild(input);
+                  label.appendChild(el('span', undefined, 'Yes'));
+                  box.appendChild(label);
+                  readers.push(() => ({ value: input.checked }));
+                } else {
+                  const input = el('input', 'question-text');
+                  input.type = f.input === 'number' ? 'number' : 'text';
+                  input.disabled = !seg.toolCallId;
+                  box.appendChild(input);
+                  readers.push(() => {
+                    const text = input.value.trim();
+                    if (!text) return null;
+                    if (f.input === 'number') {
+                      const n = Number(text);
+                      return Number.isFinite(n) ? { value: n } : null;
+                    }
+                    return { text };
+                  });
+                }
+                form.appendChild(box);
+              });
+              const row = el('div', 'question-options');
+              const submit = el('button', 'question-option primary question-submit', 'Submit');
+              submit.type = 'button';
+              const skip = el('button', 'question-option secondary question-skip', 'Skip');
+              skip.type = 'button';
+              submit.disabled = !seg.toolCallId;
+              skip.disabled = !seg.toolCallId;
+              const send = () => {
+                if (!seg.toolCallId) return;
+                const answers = {};
+                fields.forEach((f, fi) => {
+                  const a = readers[fi]();
+                  if (a) answers[f.id] = a;
+                });
+                const missing = fields.find((f) => f.required && !answers[f.id]);
+                if (missing) return;
+                reply({ decision: 'approve', answers });
+              };
+              submit.addEventListener('click', send);
+              // Enter in a text box submits the form.
+              form.addEventListener('submit', (e) => { e.preventDefault(); send(); });
+              skip.addEventListener('click', () => reply({ decision: 'deny' }));
+              row.appendChild(submit);
+              row.appendChild(skip);
+              form.appendChild(row);
+              node.appendChild(form);
+              return;
+            }
             if (seg.request === 'question' && seg.question) {
               const q = seg.question;
               node.appendChild(el('div', 'question-prompt', q.prompt));

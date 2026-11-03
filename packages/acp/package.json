@@ -75,7 +75,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.21.1",
+    "@agentclientprotocol/sdk": "^1.5.0",
     "@agentproto/doctype": "workspace:*",
     "gray-matter": "^4.0.3",
     "zod": "^4.6.7"
