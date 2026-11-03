@@ -1,5 +1,12 @@
 # @agentproto/harness
 
+## 3.0.1
+
+### Patch Changes
+
+- Updated dependencies [6effe4d]
+  - @agentproto/acp@0.14.0
+
 ## 3.0.0
 
 ### Major Changes

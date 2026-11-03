@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/git-cas",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Compare-and-swap git push: update a remote branch only if it still points at the expected SHA. Typed outcome (pushed, noop, head_moved, rejected_other), one JSON log line, never retries or rebases. Zero runtime dependencies.",
   "keywords": [
     "git",

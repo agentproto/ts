@@ -1,5 +1,11 @@
 # @agentproto/adapter-copilot-cli
 
+## 0.4.2
+
+### Patch Changes
+
+- @agentproto/harness@3.0.1
+
 ## 0.4.1
 
 ### Patch Changes

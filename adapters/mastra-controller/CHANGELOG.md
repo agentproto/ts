@@ -1,5 +1,11 @@
 # @agentproto/adapter-mastra-controller
 
+## 0.1.1
+
+### Patch Changes
+
+- @agentproto/harness@3.0.1
+
 ## 0.1.0
 
 ### Minor Changes

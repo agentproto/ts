@@ -1,5 +1,18 @@
 # @agentproto/sandbox-computer
 
+## 0.7.0
+
+### Minor Changes
+
+- c0dc0c8: Add egress IP health ledger and cooldown-aware slot selection
+
+### Patch Changes
+
+- f3511ad: Send the descriptive join metadata (`AGENTPROTO_JOIN_NAME`, `_PROVIDER`, `_SANDBOX_ID`, `_LABELS`) to the box daemon through its start command instead of the create env, so the controller's argv check no longer refuses the daemon start exec when a short value such as `computer` appears in the box origin.
+- Updated dependencies [c0dc0c8]
+- Updated dependencies [9fcc8aa]
+  - @agentproto/sandbox@0.16.0
+
 ## 0.6.0
 
 ### Minor Changes

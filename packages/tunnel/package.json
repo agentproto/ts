@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/tunnel",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "@agentproto/tunnel - the Tunnel Provider primitive: a stable public-URL provider contract (create/list/delete/status/health), auth modes, credential store, and shared HTTP plumbing.",
   "keywords": [
     "agentproto",
