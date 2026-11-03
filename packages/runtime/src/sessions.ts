@@ -3017,6 +3017,10 @@ export interface SessionDescriptor {
   /** `kind: "external"` only: the connecting client's `host` query param
    *  (e.g. `claude-desktop`). */
   externalHost?: string
+  /** `kind: "external"` only: the host harness's own session id for this
+   *  chat (e.g. Claude's `hostSessionId`), so the daemon row can be matched
+   *  back to the client that registered it. */
+  externalHostSessionId?: string
   /** `kind: "external"` only: ISO instant of the session's last MCP request
    *  (or inbox poll). The row is alive while `now - lastSeenAt` is inside the
    *  registry's liveness window; `startedAt` is the first sighting. */
@@ -4800,7 +4804,13 @@ export interface SessionsRegistry {
    *    it expired, unless it was deliberately ended) and returns it;
    *  - any other existing row, or an unknown `id` without `host` → no-op,
    *    `undefined` (today's behaviour is unchanged). */
-  touchExternal(input: { id: string; host?: string }): SessionDescriptor | undefined
+  touchExternal(input: {
+    id: string
+    host?: string
+    name?: string
+    cwd?: string
+    hostSessionId?: string
+  }): SessionDescriptor | undefined
   /** Send a follow-up turn to a live agent session and AWAIT it. Throws
    *  when the session is missing, not an agent-cli kind, dead (exited/
    *  killed/error and unresumable — `SessionNotAliveError`), or busy
@@ -13534,6 +13544,9 @@ export function createSessionsRegistry(opts?: {
         }
         desc.lastSeenAt = nowIso
         if (input.host && !desc.externalHost) desc.externalHost = input.host
+        if (input.name) desc.name = input.name
+        if (input.cwd) desc.cwd = input.cwd
+        if (input.hostSessionId) desc.externalHostSessionId = input.hostSessionId
         schedulePersist()
         return desc
       }
@@ -13548,6 +13561,9 @@ export function createSessionsRegistry(opts?: {
         startedAt: nowIso,
         lastSeenAt: nowIso,
         externalHost: input.host,
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(input.hostSessionId ? { externalHostSessionId: input.hostSessionId } : {}),
       }
       const rt: SessionRuntime = {
         desc,
