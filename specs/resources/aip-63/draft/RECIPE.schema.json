@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentproto.sh/docs/aip-63/RECIPE.schema.json",
+  "title": "recipe/v1",
+  "description": "JSON Schema for the YAML frontmatter of an AIP-63 site recipe manifest (RECIPE.md). The property set is closed: an unknown top-level key is a load error, never a silent ignore (P2). The tool prefix rule (P3) and the workflow prefix rule (P4) are normative prose, not expressible here because each composes with the recipe id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "id", "version", "title", "api", "sites", "tools", "publisher"],
+  "properties": {
+    "schema": { "const": "recipe/v1", "description": "Required, exact (P2)." },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,30}$",
+      "description": "Recipe id. Also the directory name (P1) and the base of the tool prefix (P3)."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$",
+      "description": "Semver. One recipe, one version."
+    },
+    "title": { "type": "string", "minLength": 1, "description": "Display name." },
+    "api": {
+      "const": 1,
+      "description": "The recipe API version this recipe targets. A host MUST refuse an api it does not know."
+    },
+    "sites": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/domain" },
+      "description": "Non-empty registrable domains, lowercase. The recipe's origin guard covers each domain and its subdomains exactly as C2 does for grants (P8)."
+    },
+    "accounts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/domain" },
+      "description": "Optional subset of sites. The recipe needs an Account (C17) on these sites (P5, P11). A subset relation is not expressible in JSON Schema; the loader checks it."
+    },
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/toolName" },
+      "description": "Exact set of tool names the entry returns (P6). Every name starts with the recipe's tool prefix (P3, prose)."
+    },
+    "workflows": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+      "description": "Exact set of workflow ids the entry returns (P6). Every id starts with `<id>-` (P4, prose)."
+    },
+    "writes": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/toolName" },
+      "additionalProperties": { "type": "string", "enum": ["approve", "confirm"] },
+      "description": "Tool name to write gate level (P5, P9, P10). Every tool not listed is a read."
+    },
+    "probes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*$" },
+      "description": "Exact set of probe ids the entry exports (P6, P15)."
+    },
+    "entry": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Entry module path. Default dist/index.js (P1)."
+    },
+    "guide": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Guide path. Default guide/GUIDE.md (P1)."
+    },
+    "publisher": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Who publishes the recipe. Shown in discovery and in the guide's provenance."
+    }
+  },
+  "$defs": {
+    "domain": {
+      "type": "string",
+      "maxLength": 253,
+      "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
+      "description": "An explicit lowercase registrable domain or host (at least two labels, ASCII or punycode). No wildcard, no leading dot, no bare TLD. A schema cannot see the Public Suffix List, so a host MUST additionally reject public suffixes at runtime (C2)."
+    },
+    "toolName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Generic AIP-14 tool name shape. The recipe id prefix rule is prose (P3)."
+    }
+  }
+}

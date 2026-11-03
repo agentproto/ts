@@ -17,26 +17,6 @@
       "reason": "link-token scoping: argument-level refinement of ui.tools, keyed by tool id, enforced only for calls made under a valid AIP-53 scoped link/session token; pending upstream spec PR"
     },
     {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.services.items.properties.activation",
-      "reason": "on-demand services: services[].activation { mode: always | on-demand, idleStopMs?, startTimeoutMs? }, the host owns the port and starts the process on the first request; pending upstream spec PR"
-    },
-    {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.services.items.allOf",
-      "reason": "on-demand services: activation.mode on-demand requires port; pending upstream spec PR"
-    },
-    {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.services.items.properties.port.description",
-      "reason": "on-demand services: with activation on-demand the host listens on port and passes the process another one in PORT; pending upstream spec PR"
-    },
-    {
-      "file": "aip-53/draft/APP.schema.json",
-      "field": "properties.services.description",
-      "reason": "on-demand services: activation chooses between keep-alive and start-on-demand, so the description no longer says 'no scaling'; pending upstream spec PR"
-    },
-    {
       "file": "aip-62/draft/REVIEW.schema.json",
       "field": "$defs.agentCheck.properties.fallbackPresets",
       "reason": "review lane fallback: ordered fallback reviewer presets tried when the primary reviewer is unavailable; pending upstream spec PR"
@@ -70,21 +50,6 @@
       "file": "aip-7/draft/GOVERNANCE.schema.json",
       "field": "$defs.approvalChannel",
       "reason": "approvals: telegram joins web_click/ui_card as a declared human decide channel, gated by a shared bot-bridge bearer secret instead of an Origin check; pending upstream spec PR"
-    },
-    {
-      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
-      "field": "$defs.questionRequest",
-      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
-    },
-    {
-      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
-      "field": "$defs.questionField",
-      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
-    },
-    {
-      "file": "aip-45/draft/STREAM-EVENTS.schema.json",
-      "field": "$defs.agentPrompt.description",
-      "reason": "AIP-45 multi-field questions (question.fields + answers, 2026-11-03); pending upstream spec PR"
     }
   ]
 }

@@ -54,6 +54,7 @@
           "minLength": 1,
           "description": "The agent or browser session that was recorded."
         },
+        "callerSessionId": { "type": "string", "minLength": 1, "description": "Caller session (AIP-63 L15) that drove the recorded targets, established by an AIP-59 sub-session token (R16)." },
         "provider": {
           "type": "string",
           "minLength": 1,
@@ -229,6 +230,7 @@
           "description": "Page URL when the action started, with fragment and any userinfo removed."
         },
         "tabId": { "type": "string", "minLength": 1 },
+        "callerSessionId": { "type": "string", "minLength": 1, "description": "Caller session (AIP-63 L15) that made this call." },
         "target": {
           "type": "object",
           "additionalProperties": false,
