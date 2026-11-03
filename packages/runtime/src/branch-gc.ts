@@ -48,7 +48,7 @@ export interface BranchGcDepBumpView {
 /** The `verified-pr` pass's proof, mirrors `VerifiedPrProof`. */
 export interface BranchGcVerifiedPrView {
   prs: number[]
-  files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base"; pr?: number }>
+  files: Array<{ file: string; why: "pr-touched" | "changeset" | "gone-on-base" | "manifest-proven"; pr?: number }>
 }
 
 /** One classified ref — mirrors `BranchGcPlanEntry` structurally. */

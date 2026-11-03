@@ -2325,3 +2325,128 @@ describe("branch gc: restore from a restore log", () => {
     expect(after).toMatchObject({ triage: { verdict: "superseded" }, gate: { agree: true } })
   })
 })
+
+describe("branch gc: manifest-proven files in the verified-pr pass, and packageManager pins", () => {
+  const pkg = (o: Record<string, unknown>): string => JSON.stringify(o, null, 2) + "\n"
+  const NAME = "fix/vscode-adapter-list-compact"
+  const PIN = "pnpm@10.4.1+sha512.c753b6c3ad7afa13af388fa6d808035a008e30ea9993f58c6663e2bc5ff21679aa834db094987129aa4d488b86df57f7b634981b2f827cdcacc698cc0cfb88af"
+
+  class FactsForge extends FakeForge {
+    constructor(private readonly facts: Record<number, ForgePullRequestFacts>) {
+      super()
+    }
+    async pullRequestFacts(n: number): Promise<ForgePullRequestFacts | null> {
+      return this.facts[n] ?? null
+    }
+  }
+
+  /**
+   * The branch edits `src/list.ts` (landed as squash #2143, reworded) and
+   * changes `packages/vscode/package.json` from `seedPkg` to `branchPkg`;
+   * base then moves that file to `basePkg`. #2143 never touched the
+   * package.json, so only the manifest rules can explain it.
+   */
+  async function setup(seedPkg: Record<string, unknown>, branchPkg: Record<string, unknown>, basePkg: Record<string, unknown>, file = "packages/vscode/package.json") {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "src/list.ts": "export const list = 'v1'\n", [file]: pkg(seedPkg) }, "seed")
+    const tip = await branchWith(repo, NAME, {
+      "src/list.ts": "export const list = 'v1'\nexport function compactList() { return 'compact' }\n",
+      [file]: pkg(branchPkg),
+    })
+    const squash = await commitFiles(repo, { "src/list.ts": "export const list = 'v1'\nexport function compactList(): string { return 'compact!' }\n" }, "fix: compact list (#2143)")
+    await commitFiles(repo, { [file]: pkg(basePkg) }, "chore: release")
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: NAME,
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: "superseded", confidence: 0.9, reason: "landed upstream" },
+        gate: { agree: true, verdict: "superseded", reason: "Squash-merged as #2143", evidence: ["git show " + squash.slice(0, 9)] },
+      },
+    })
+    const forge = new FactsForge({ 2143: { number: 2143, state: "closed", merged: true, baseRefName: "main", mergeCommitOid: squash, files: ["src/list.ts"] } })
+    return { repo, tip, verdicts, forge }
+  }
+
+  const judged = async (s: Awaited<ReturnType<typeof setup>>): Promise<BranchGcPlanEntry> =>
+    entry(await plan(s.repo, { verdicts: s.verdicts, includeReviewed: true, forge: s.forge }), NAME)
+
+  it("reclaims when the only file the cited PR did not touch is a version bump base already passed", async () => {
+    const s = await setup({ name: "vscode", version: "0.24.3" }, { name: "vscode", version: "0.24.4" }, { name: "vscode", version: "0.26.0" })
+    const e = await judged(s)
+    expect(e.lineCoverage?.missingFiles).toContain("packages/vscode/package.json")
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.verdictGuard).toMatch(/^passed by verified-pr #2143: line coverage /)
+    expect(e.verifiedPrRefusal).toBeUndefined()
+    expect(e.verifiedPr).toEqual({
+      prs: [2143],
+      files: [
+        { file: "packages/vscode/package.json", why: "manifest-proven" },
+        { file: "src/list.ts", why: "pr-touched", pr: 2143 },
+      ],
+    })
+  })
+
+  it("reclaims a packageManager hash pin at the version base declares", async () => {
+    const s = await setup({ name: "root", packageManager: "pnpm@10.4.1" }, { name: "root", packageManager: PIN }, { name: "root", packageManager: "pnpm@10.4.1" }, "package.json")
+    const e = await judged(s)
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.verifiedPr?.files).toContainEqual({ file: "package.json", why: "manifest-proven" })
+  })
+
+  it("the dep-bump pass alone proves a packageManager pin base reached or passed", async () => {
+    const repo = await makeRepo()
+    await commitFiles(repo, { "package.json": pkg({ name: "root", packageManager: "pnpm@10.4.1" }) }, "seed")
+    const tip = await branchWith(repo, "wt/pin-pnpm", { "package.json": pkg({ name: "root", packageManager: PIN }) })
+    await commitFiles(repo, { "package.json": pkg({ name: "root", packageManager: "pnpm@10.6.0" }) }, "chore: newer pnpm")
+    const verdicts = new InMemoryBranchVerdictStore()
+    await recordBranchVerdict({
+      repoRoot: repo,
+      repoName: "fixture",
+      store: verdicts,
+      verdict: {
+        name: "wt/pin-pnpm",
+        sha: tip,
+        reviewer: "flash reviewer",
+        triage: { verdict: "obsolete", confidence: 0.9, reason: "base has newer pnpm" },
+        gate: { agree: true, verdict: "obsolete", reason: "base pins pnpm 10.6.0", evidence: ["package.json"] },
+      },
+    })
+    const e = entry(await plan(repo, { verdicts, includeReviewed: true }), "wt/pin-pnpm")
+    expect(e).toMatchObject({ class: "reclaim", reclaimReason: "reviewed" })
+    expect(e.depBump).toMatchObject({ dependencies: 0, versions: 1, packageFiles: ["package.json"] })
+  })
+
+  it("keeps the tip when the package.json also changes a script, naming the file", async () => {
+    const s = await setup(
+      { name: "vscode", version: "0.24.3", scripts: { build: "tsc" } },
+      { name: "vscode", version: "0.24.4", scripts: { build: "tsc && node ./sneaky.js" } },
+      { name: "vscode", version: "0.26.0", scripts: { build: "tsc" } },
+    )
+    const e = await judged(s)
+    expect(e.class).toBe("review")
+    expect(e.verifiedPr).toBeUndefined()
+    expect(e.verifiedPrRefusal).toBe("1 uncovered file(s) not explained by #2143: packages/vscode/package.json")
+    expect(e.depBumpRefusal).toBe('packages/vscode/package.json: scripts.build changed to "tsc && node ./sneaky.js" (not a dependency entry)')
+  })
+
+  it("keeps the tip when base's packageManager is at a lower version", async () => {
+    const s = await setup({ name: "root", packageManager: "pnpm@10.4.1" }, { name: "root", packageManager: "pnpm@10.5.0+sha512.abc" }, { name: "root", packageManager: "pnpm@10.4.2" }, "package.json")
+    const e = await judged(s)
+    expect(e.class).toBe("review")
+    expect(e.verifiedPrRefusal).toBe("1 uncovered file(s) not explained by #2143: package.json")
+    expect(e.depBumpRefusal).toBe('package.json: packageManager "pnpm@10.5.0+sha512.abc", base is still "pnpm@10.4.2"')
+  })
+
+  it("keeps the tip when base declares a different package manager", async () => {
+    const s = await setup({ name: "root", packageManager: "pnpm@10.4.1" }, { name: "root", packageManager: PIN }, { name: "root", packageManager: "yarn@4.5.0" }, "package.json")
+    const e = await judged(s)
+    expect(e.class).toBe("review")
+    expect(e.verifiedPrRefusal).toBe("1 uncovered file(s) not explained by #2143: package.json")
+    expect(e.depBumpRefusal).toBe(`package.json: packageManager ${JSON.stringify(PIN).slice(0, 80)} is pnpm, base declares yarn`)
+  })
+})
