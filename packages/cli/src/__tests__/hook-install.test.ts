@@ -14,7 +14,12 @@ describe("mergeDesktopSettings", () => {
     expect(changed).toBe(true)
     expect(sessionId).toBe("claude-desktop")
     expect(settings).toEqual({
-      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
+      hooks: {
+        UserPromptSubmit: [inboxEntry],
+        PostToolUse: [inboxEntry, prStampEntry],
+        SessionStart: [inboxEntry],
+        Stop: [inboxEntry],
+      },
     })
   })
 
@@ -36,8 +41,24 @@ describe("mergeDesktopSettings", () => {
     expect(settings).toMatchObject({
       model: "opus",
       env: { FOO: "1" },
-      hooks: { PostToolUse: [other, inboxEntry, prStampEntry], Stop: [other], UserPromptSubmit: [inboxEntry] },
+      hooks: {
+        PostToolUse: [other, inboxEntry, prStampEntry],
+        Stop: [other, inboxEntry],
+        SessionStart: [inboxEntry],
+        UserPromptSubmit: [inboxEntry],
+      },
     })
+  })
+
+  it("adds only the missing Stop and SessionStart entries to a file that has the older two", () => {
+    const old = {
+      hooks: { UserPromptSubmit: [inboxEntry], PostToolUse: [inboxEntry, prStampEntry] },
+    }
+    const { settings, changed } = mergeDesktopSettings(old)
+    expect(changed).toBe(true)
+    expect(settings).toMatchObject({ hooks: { SessionStart: [inboxEntry], Stop: [inboxEntry] } })
+    expect((settings.hooks as Record<string, unknown[]>).PostToolUse).toHaveLength(2)
+    expect(mergeDesktopSettings(settings).changed).toBe(false)
   })
 
   it("removes a legacy claude-desktop env value and drops an emptied env", () => {
@@ -96,7 +117,10 @@ describe("hook install --host claude-desktop", () => {
     writeFileSync(path, JSON.stringify({ model: "opus" }))
     expect(await run(["--session", "desk-1"])).toBe(0)
     const first = readFileSync(path, "utf8")
-    expect(JSON.parse(first)).toMatchObject({ model: "opus", hooks: { UserPromptSubmit: [inboxEntry] } })
+    expect(JSON.parse(first)).toMatchObject({
+      model: "opus",
+      hooks: { UserPromptSubmit: [inboxEntry], SessionStart: [inboxEntry], Stop: [inboxEntry] },
+    })
     expect(JSON.parse(first)).not.toHaveProperty("env")
     expect(out).toContain("Updated")
     expect(out).toContain('claude mcp add --transport http --scope user agentproto-desktop "http://127.0.0.1:18790/mcp?callerSessionId=desk-1&host=claude-desktop"')

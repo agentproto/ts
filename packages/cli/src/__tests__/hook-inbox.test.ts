@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import {
+  HOOK_EVENTS,
   buildInboxHookOutput,
   claudeSessionFields,
   resolveInboxSessionId,
@@ -59,6 +60,62 @@ describe("buildInboxHookOutput", () => {
     const ctx = (built.output.hookSpecificOutput as { additionalContext: string }).additionalContext
     expect(ctx).toContain("[truncated]")
     expect(ctx.length).toBeLessThan(3000)
+  })
+})
+
+
+describe("HOOK_EVENTS", () => {
+  it("accepts the four inbox hook events", () => {
+    for (const name of ["UserPromptSubmit", "PostToolUse", "SessionStart", "Stop"]) {
+      expect(HOOK_EVENTS.has(name)).toBe(true)
+    }
+    expect(HOOK_EVENTS.has("PreToolUse")).toBe(false)
+  })
+})
+
+describe("buildInboxHookOutput for SessionStart", () => {
+  it("injects the unread inbox as additionalContext with the same block text as UserPromptSubmit", () => {
+    const start = buildInboxHookOutput([item(1)], "SessionStart")!
+    const prompt = buildInboxHookOutput([item(1)], "UserPromptSubmit")!
+    const out = start.output.hookSpecificOutput as { hookEventName: string; additionalContext: string }
+    expect(out.hookEventName).toBe("SessionStart")
+    expect(out.additionalContext).toBe(
+      (prompt.output.hookSpecificOutput as { additionalContext: string }).additionalContext,
+    )
+    expect(start.injectedIds).toEqual(["msg_1"])
+  })
+})
+
+describe("buildInboxHookOutput for Stop", () => {
+  const steer = { ...item(2, "CI failed on main"), urgency: "steer", kind: "blocker" }
+  const fyi = { ...item(1), urgency: "fyi" }
+  const nextTurn = { ...item(3), urgency: "next-turn" }
+
+  it("answers a block decision carrying the inbox block when a steer item is unread", () => {
+    const built = buildInboxHookOutput([steer], "Stop")!
+    expect(built.output).toEqual({ decision: "block", reason: expect.stringContaining("CI failed on main") })
+    expect(built.output.reason).toContain('untrusted="true"')
+    expect(built.output.hookSpecificOutput).toBeUndefined()
+    expect(built.injectedIds).toEqual(["msg_2"])
+  })
+
+  it("includes lower-urgency unread items in the same block and acks them all", () => {
+    const built = buildInboxHookOutput([fyi, steer], "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.injectedIds).toEqual(["msg_1", "msg_2"])
+  })
+
+  it("returns nothing when stop_hook_active is true", () => {
+    expect(buildInboxHookOutput([steer], "Stop", 20, { stopHookActive: true })).toBeUndefined()
+  })
+
+  it("returns nothing when only fyi or next-turn items are unread", () => {
+    expect(buildInboxHookOutput([fyi, nextTurn], "Stop")).toBeUndefined()
+    expect(buildInboxHookOutput([item(4)], "Stop")).toBeUndefined()
+  })
+
+  it("returns nothing for an empty inbox", () => {
+    expect(buildInboxHookOutput([], "Stop")).toBeUndefined()
   })
 })
 
@@ -226,5 +283,78 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
       ["inbox", "--session", "sess_flag"],
     )
     expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/sess_flag/inbox")
+  })
+
+  it("echoes SessionStart from the payload instead of coercing it to UserPromptSubmit", async () => {
+    await run({}, { session_id: "aaaa-1", hook_event_name: "SessionStart", source: "startup" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop" },
+      "t",
+    )
+    expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+    const printed = vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")
+    expect(JSON.parse(printed).hookSpecificOutput.hookEventName).toBe("SessionStart")
+  })
+
+  describe("with a payload session_id", () => {
+    const steer = { ...item(1, "wake me"), urgency: "steer" }
+
+    it("Stop resolves cc:<session_id>, touches it, reads the inbox and answers a block decision", async () => {
+      httpGetJson.mockResolvedValue({ inbox: [steer] } as never)
+      await run({}, { session_id: "aaaa-1", hook_event_name: "Stop", stop_hook_active: false })
+      expect(httpPostJson).toHaveBeenNthCalledWith(
+        1,
+        "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+        { host: "claude-desktop" },
+        "t",
+      )
+      expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+      const printed = vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")
+      expect(JSON.parse(printed)).toMatchObject({ decision: "block" })
+      expect(httpPostJson).toHaveBeenCalledWith(
+        "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox/ack",
+        { ids: ["msg_1"] },
+        "t",
+      )
+    })
+
+    it("Stop prints nothing and acks nothing when stop_hook_active is true", async () => {
+      httpGetJson.mockResolvedValue({ inbox: [steer] } as never)
+      expect(await run({}, { session_id: "aaaa-1", hook_event_name: "Stop", stop_hook_active: true })).toBe(0)
+      expect(vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")).toBe("")
+      expect(httpPostJson.mock.calls.some(c => String(c[0]).endsWith("/inbox/ack"))).toBe(false)
+    })
+
+    it("SessionStart resolves cc:<session_id>, touches it and reads the inbox", async () => {
+      await run({}, { session_id: "aaaa-1", hook_event_name: "SessionStart" })
+      expect(httpPostJson).toHaveBeenNthCalledWith(
+        1,
+        "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+        { host: "claude-desktop" },
+        "t",
+      )
+      expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/cc%3Aaaaa-1/inbox")
+      const printed = vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")
+      expect(JSON.parse(printed).hookSpecificOutput.hookEventName).toBe("SessionStart")
+    })
+  })
+
+  describe("with the legacy env fallback (no sess_ prefix, no payload session_id)", () => {
+    it("Stop exits 0 and prints nothing for a non-steer inbox", async () => {
+      httpGetJson.mockResolvedValue({ inbox: [{ ...item(1), urgency: "fyi" }] } as never)
+      expect(await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { hook_event_name: "Stop" })).toBe(0)
+      expect(vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")).toBe("")
+      expect(httpPostJson.mock.calls.some(c => String(c[0]).endsWith("/touch"))).toBe(false)
+    })
+
+    it("SessionStart exits 0 and emits a SessionStart context for the legacy id", async () => {
+      await run({ AGENTPROTO_SESSION_ID: "claude-desktop" }, { hook_event_name: "SessionStart" })
+      expect(httpGetJson).toHaveBeenCalledWith("http://127.0.0.1:1/sessions/claude-desktop/inbox")
+      expect(httpPostJson.mock.calls.some(c => String(c[0]).endsWith("/touch"))).toBe(false)
+      const printed = vi.mocked(process.stdout.write).mock.calls.map(c => String(c[0])).join("")
+      expect(JSON.parse(printed).hookSpecificOutput.hookEventName).toBe("SessionStart")
+    })
   })
 })
