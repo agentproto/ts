@@ -75,6 +75,24 @@ describe("buildInboxHookOutput for Stop", () => {
     expect(built.injectedIds).toEqual(["msg_2"])
   })
 
+  it("answers a block decision for an interrupt item, the tier above steer", () => {
+    const built = buildInboxHookOutput([{ ...item(4, "wake now"), urgency: "interrupt" }], "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.output.reason).toContain("wake now")
+    expect(built.injectedIds).toEqual(["msg_4"])
+  })
+
+  it("blocks when the only must-wake item sits beyond the printed window", () => {
+    const items = [
+      ...Array.from({ length: 20 }, (_, i) => ({ ...item(i + 1), urgency: "next-turn" })),
+      { ...item(21, "late wake"), urgency: "interrupt" },
+    ]
+    const built = buildInboxHookOutput(items, "Stop")!
+    expect(built.output.decision).toBe("block")
+    expect(built.injectedIds).toHaveLength(20)
+    expect(built.injectedIds).not.toContain("msg_21")
+  })
+
   it("includes lower-urgency unread items in the same block and acks them all", () => {
     const built = buildInboxHookOutput([fyi, steer], "Stop")!
     expect(built.output.decision).toBe("block")

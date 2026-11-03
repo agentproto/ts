@@ -42,9 +42,9 @@ SessionStart / Stop hook. It lists the session's unread daemon inbox items
 marked as untrusted data, and acks the ones it emitted. It never fails the
 hook: on any error it prints nothing and exits 0. As a Stop hook it answers
 {"decision":"block","reason":<inbox block>} only when an unread item with
-urgency "steer" exists and the payload's stop_hook_active is not true;
-otherwise it prints nothing and acks nothing. SessionStart and Stop stay
-silent when the id is the legacy env fallback (no payload session_id).
+urgency "steer" or "interrupt" exists and the payload's stop_hook_active is
+not true; otherwise it prints nothing and acks nothing. SessionStart and Stop
+stay silent when the id is the legacy env fallback (no payload session_id).
 
 Session id, first valid wins: --session; else $AGENTPROTO_SESSION_ID when it
 starts with \`sess_\` (a daemon-spawned session); else \`cc:\` + the payload's
@@ -92,8 +92,13 @@ export const HOOK_EVENTS: ReadonlySet<string> = new Set([
   "SessionStart",
   "Stop",
 ])
-/** Urgency of the must-wake class (level 3); the only one a Stop hook blocks for. */
-const MUST_WAKE_URGENCY = "steer"
+/** Urgency rank at which a Stop hook blocks (level 3); `interrupt` (level 4) ranks higher. */
+const MUST_WAKE_URGENCY_RANK = 3
+const URGENCY_RANK: Record<string, number> = { fyi: 1, "next-turn": 2, steer: 3, interrupt: 4 }
+
+function isMustWake(urgency: string | undefined): boolean {
+  return (URGENCY_RANK[urgency ?? ""] ?? 0) >= MUST_WAKE_URGENCY_RANK
+}
 
 interface InboxItem {
   id: string
@@ -117,12 +122,15 @@ export function buildInboxHookOutput(
   max: number = DEFAULT_MAX,
   options: { stopHookActive?: boolean } = {},
 ): { output: Record<string, unknown>; injectedIds: string[] } | undefined {
-  const picked = items.slice(0, Math.max(0, max))
-  if (picked.length === 0) return undefined
   if (eventName === "Stop") {
     if (options.stopHookActive === true) return undefined
-    if (!picked.some(m => m.urgency === MUST_WAKE_URGENCY)) return undefined
+    // The predicate scans the whole inbox (up to INBOX_CAP), not just the
+    // window we print: a must-wake item must never be missed behind a flood
+    // of lower-urgency entries.
+    if (!items.some(m => isMustWake(m.urgency))) return undefined
   }
+  const picked = items.slice(0, Math.max(0, max))
+  if (picked.length === 0) return undefined
   const lines = picked.map((m, i) => {
     const from = m.from?.sessionId ? `${m.from.relation ?? "?"}:${m.from.sessionId}` : (m.from?.relation ?? "?")
     const text = neutralise(m.text ?? "")

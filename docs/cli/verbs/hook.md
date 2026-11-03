@@ -41,8 +41,9 @@ chat start, resume, clear or compaction.
 `Stop` is different: it cannot add context after the turn, it can only keep the
 turn going. It prints
 `{"decision":"block","reason":"<the same inbox block>"}` (the model continues
-with `reason` as its input) only when an unread item with urgency `steer` (the
-must-wake class) is among the items it would print **and** the payload's
+with `reason` as its input) only when an unread item with urgency `steer` or
+`interrupt` (the must-wake classes) is anywhere in the inbox — the predicate
+scans all unread items, not just the ones it prints — **and** the payload's
 `stop_hook_active` is not `true`. Otherwise it prints nothing and acks nothing:
 `fyi` and `next-turn` items wait for the next prompt, tool call or start, and a
 turn that was already continued by a Stop hook is never continued twice. When
@@ -79,8 +80,8 @@ authenticated request.
 A Claude Desktop session is an `external` session: the daemon cannot start a
 turn in it, so every event (sentinel, `session_follow`, workflow) is parked in
 its inbox and shown the next time the user submits a prompt, a tool call
-finishes or a chat starts (a `steer` item also keeps a turn that is ending
-going, through the `Stop` hook). Three things have to line up:
+finishes or a chat starts (a `steer` or `interrupt` item also keeps a turn that
+is ending going, through the `Stop` hook). Three things have to line up:
 
 1. **The MCP URL registers the session.** Connect the app to
    `http://127.0.0.1:18790/mcp?callerSessionId=<id>&host=claude-desktop`
