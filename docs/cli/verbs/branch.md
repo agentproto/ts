@@ -93,7 +93,7 @@ missed, and only when the work branch is merged.
 | `--min-age-days N` | `3` | Unmerged refs younger than this are held. |
 | `--include-reviewed` | `false` | Reclaim reviewed refs whose gate agreed (see `review-queue`). An agreeing verdict under `--min-line-coverage` is refused unless the [verified-pr pass](#verified-pr-pass) proves it, or it carries an `operator` block (see below), which bypasses the guard and is shown as `bypassed by operator <by>`. |
 | `--min-line-coverage PCT` | `95` | The line-coverage guard: the share of a tip's added lines that must already be in base. |
-| `--require-operator-below-guard` | `false` | Turn the verified-pr and [dep-bump](#dep-bump-pass) passes off: below the guard only an operator approval reclaims. |
+| `--require-operator-below-guard` | `false` | Turn the [verified-pr](#verified-pr-pass), [dep-bump](#dep-bump-pass) and [history-covered](#history-covered-pass) passes off: below the guard only an operator approval reclaims. |
 | `--anchor <sha>` | auto | Old-history twin of a re-rooted base's root. It's auto-detected when base has a single root and some tips share no history with it. |
 | `--apply` | `false` | Execute the plan for `--scopes`. |
 | `--json` | `false` | Emit `{ plan, summary }` (or `{ outcomes, restoreLog }` with `--apply`) as JSON. |

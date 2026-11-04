@@ -1,7 +1,7 @@
 # `agentproto app`
 
 ```text
-agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>]
+agentproto app install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>] [--repoint]
 agentproto app resync <appId>
 agentproto app list
 agentproto app tunnel <dir> [--session <id>] [--hostname <fqdn>] [--name <name>] [--public] [--json]
@@ -49,7 +49,7 @@ survive the round-trip. The APP.md `package` block narrows what ships, and
 
 ## Subverbs
 
-### `install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>]`
+### `install <appDir|url|file.agentapp|appId> [--ref <ref>] [--subdir <path>] [--data-dir <path>] [--repoint]`
 
 Register the app (its `id` from `.agentproto/APP.md`) → `<appDir>` mapping in
 `~/.agentproto/apps.json`, the same file the daemon's `app_install` writes, so

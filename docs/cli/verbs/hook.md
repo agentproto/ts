@@ -5,12 +5,13 @@ Status: Experimental
 ```text
 agentproto hook inbox [--session <id>] [--event <name>] [--max <n>]
 agentproto hook pre-compact
+agentproto hook pr-stamp
 agentproto hook install --host claude-desktop [--session <id>] [--settings <path>]
                         [--port <n>] [--dry-run]
 ```
 
-Claude Code hook commands: `inbox` and `pre-compact`, plus `install` to wire
-`inbox` into a Claude Desktop settings file.
+Claude Code hook commands: `inbox`, `pre-compact` and `pr-stamp`, plus
+`install` to wire `inbox` and `pr-stamp` into a Claude Desktop settings file.
 
 ## `hook inbox`
 
@@ -129,6 +130,11 @@ The settings file the app reads (`~/.claude/settings.json`, or
 }
 ```
 
+For PR provenance there is one more entry: `agentproto hook pr-stamp` as a
+second `PostToolUse` hook with matcher `Bash` (see
+[`hook pr-stamp`](#hook-pr-stamp) below). `hook install` adds it for you; add
+it by hand to the `PostToolUse` array if you are wiring the file yourself.
+
 One settings file no longer means one shared inbox: `hook inbox` resolves each
 Desktop chat's payload to its own `cc:<session_id>` inbox instead of the
 global id. The hook registers that row on first use, so `agentproto send
@@ -145,9 +151,10 @@ still pending (headersHelper unverified).
 
 ### `hook install --host claude-desktop`
 
-Writes the block above for you (including `SessionStart` and `Stop`; a file
-installed by an older version gains just those two entries on the next run).
-It merges into the existing file (other keys,
+Writes the block above for you (including `SessionStart` and `Stop`) plus the
+[`pr-stamp`](#hook-pr-stamp) entry — a second `PostToolUse` hook with matcher
+`Bash`. A file installed by an older version gains whichever of those it is
+missing on the next run. It merges into the existing file (other keys,
 other hooks and other env vars are kept), is idempotent (a second run changes
 nothing), and refuses to touch a file it cannot parse. It no longer writes
 `env.AGENTPROTO_SESSION_ID`; a legacy `claude-desktop` value is removed.
@@ -170,6 +177,29 @@ shown as `exited`, but it keeps accepting inbox delivery: nothing can restart
 it, so events wait in the inbox until the next hook run, and any later MCP
 request or inbox poll marks it `running` again. A row that was killed or
 retired is refused.
+
+## `hook pr-stamp`
+
+A Claude Code `PostToolUse` hook (matcher `Bash`) for sessions the daemon did
+**not** spawn — a Claude Desktop Code tab, a plain `claude` CLI. When the tool
+call was a successful `gh pr create`, it appends the `@agentproto-bot`
+provenance footer (harness session id, host, cwd) to the created PR's body, so
+an externally opened PR is stamped the way the daemon stamps its own. The hook
+does the stamping; the model never has to.
+
+It reads the hook payload on stdin and only acts on a Bash `gh pr create`
+whose response printed a `https://github.com/<owner>/<repo>/pull/<n>` URL
+(stdout first, so a PR url quoted on a warning is never the one edited). It
+skips a daemon-spawned session (`AGENTPROTO_SESSION_ID` starting with
+`sess_` — the daemon's own gh shim and reconciler stamp those with a richer
+footer, and a thinner one landing first would block it), and never stamps a
+body that already carries a provenance footer. Any failure (no `gh`,
+unreadable PR, bad payload) is silent and exits `0`: a hook must never break
+the session.
+
+`hook install --host claude-desktop` wires it in; wire it by hand as a
+matcher-`Bash` `PostToolUse` entry in the settings file if you are setting the
+hooks up yourself.
 
 ## `hook pre-compact`
 
