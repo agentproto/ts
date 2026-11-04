@@ -21,6 +21,11 @@
  * `--extras` prints the `--filter`s of packages a shard's tests need BUILT but
  * that are not in its dependency graph (see BUILD_EXTRAS) — the old single job
  * built the whole workspace, so nothing had to say so out loud.
+ *
+ *   node scripts/ci-test-shards.mjs --shard 1 --of 5 --vitest-shard
+ *
+ * `--vitest-shard` prints the vitest `--shard=k/n` argument for a shard that
+ * runs one slice of a SPLIT package (see SPLIT), and nothing otherwise.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -44,6 +49,18 @@ export const WEIGHTS = {
   '@agentproto/harness': 25,
   '@agentproto/corpus': 23,
   '@agentproto/workflow-runtime': 22,
+}
+
+/**
+ * Packages too heavy for one shard, split by test FILE with vitest's own
+ * `--shard=k/n`. runtime alone set the wall clock of the whole run (tests
+ * 345-563 s against at most 274 s for any other shard, 20 runs 2026-11-04):
+ * whole-package balancing can never go below its weight. Each slice gets a
+ * dedicated shard, taken first (shards 1..k); every other package is spread
+ * over the remaining shards. Value = number of slices.
+ */
+export const SPLIT = {
+  '@agentproto/runtime': 2,
 }
 
 /**
@@ -92,6 +109,28 @@ export function partition(names, count, weights = WEIGHTS) {
   return shards.map((s) => s.names.sort())
 }
 
+/**
+ * Full shard plan: the SPLIT slices first, one dedicated shard each, then
+ * `partition` of every other package over the shards left. A SPLIT package
+ * absent from `names` takes no shard. Needs at least one shard left over for
+ * the rest, so `count` must exceed the number of slices.
+ *
+ * @returns {{ names: string[], vitestShard: string | null }[]}
+ */
+export function plan(names, count, weights = WEIGHTS, split = SPLIT) {
+  if (!Number.isInteger(count) || count < 1) throw new Error(`shard count must be a positive integer (got ${count})`)
+  const present = new Set(names)
+  const slices = Object.entries(split)
+    .filter(([name]) => present.has(name))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .flatMap(([name, n]) => Array.from({ length: n }, (_, i) => ({ names: [name], vitestShard: `--shard=${i + 1}/${n}` })))
+  if (slices.length > 0 && count <= slices.length) {
+    throw new Error(`shard count ${count} leaves no shard for the unsplit packages (${slices.length} split slices)`)
+  }
+  const rest = partition(names.filter((n) => !(n in split) || !present.has(n)), count - slices.length, weights)
+  return [...slices, ...rest.map((r) => ({ names: r, vitestShard: null }))]
+}
+
 /** Workspace packages the CI gate covers (packages/** + adapters/**) that define a `test` script. */
 export function listTestedPackages(root) {
   const raw = execFileSync('pnpm', ['ls', '-r', '--depth', '-1', '--json'], {
@@ -127,8 +166,12 @@ function main(argv) {
     console.error('ci-test-shards: found no workspace packages with a test script — refusing to emit an empty shard')
     process.exit(1)
   }
-  const shardNames = partition(names, of)[shard - 1]
-  const out = argv.includes('--extras') ? buildExtras(shardNames) : shardNames
+  const entry = plan(names, of)[shard - 1]
+  if (argv.includes('--vitest-shard')) {
+    if (entry.vitestShard) console.log(entry.vitestShard)
+    return
+  }
+  const out = argv.includes('--extras') ? buildExtras(entry.names) : entry.names
   for (const name of out) console.log(`--filter=${name}`)
 }
 

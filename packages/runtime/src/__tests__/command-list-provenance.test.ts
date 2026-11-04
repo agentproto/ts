@@ -45,7 +45,10 @@ describe("command_list — provenance fields", () => {
     registry = createSessionsRegistry({ persistPath: join(workspace, "sessions.json"), persist: false })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
+    // recordCommand's events.jsonl write is fire-and-forget: drain it before
+    // deleting the dir, or its mkdir races the rmSync and logs ENOENT.
+    await registry.settlePendingWrites()
     registry.shutdown()
     rmSync(workspace, { recursive: true, force: true })
   })
