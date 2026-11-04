@@ -25,6 +25,7 @@ import type {
   ReadResourceResult,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js"
+import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js"
 import {
   getToolUiResourceUri,
   isToolVisibilityAppOnly,
@@ -328,6 +329,36 @@ const defaultOpener: McpClientOpener = (config, label) =>
 export const DEAD_CONNECTION_RE =
   /closed|disconnect|EPIPE|ECONNRESET|\b40[13]\b|unauthorized|forbidden/i
 
+/** How long a network (`http`/`sse`) `tools/list` stays fresh. A stateless
+ *  streamable-HTTP server keeps no session, so a restart is never observed as
+ *  a disconnect; without a TTL its cached list would live forever. */
+export const DEFAULT_TOOL_CACHE_TTL_MS = 45_000
+
+/** Upstream replies that mean the named tool is gone (or never existed),
+ *  the trigger to re-list. Covers both a thrown JSON-RPC error and the
+ *  `isError: true` tool result the SDK server returns for an unknown tool. */
+const UNKNOWN_TOOL_RE =
+  /unknown tool|tool\s+["'`]?[\w.:-]+["'`]?\s+not found|no such tool/i
+
+export function isUnknownToolError(message: string): boolean {
+  return UNKNOWN_TOOL_RE.test(message)
+}
+
+/** Whether a `tools/call` result is the SDK's unknown-tool error shape. */
+export function resultIsUnknownTool(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false
+  const r = result as { isError?: unknown; content?: unknown }
+  if (r.isError !== true || !Array.isArray(r.content)) return false
+  const text = r.content
+    .map(part => {
+      if (!part || typeof part !== "object") return ""
+      const block = part as { type?: unknown; text?: unknown }
+      return block.type === "text" && typeof block.text === "string" ? block.text : ""
+    })
+    .join(" ")
+  return isUnknownToolError(text)
+}
+
 /** `tools/list` is a paginated MCP result (`nextCursor`); a server with
  *  enough tools may spread them over several pages. The UI index needs
  *  every tool the server has — a first-page-only read would make page-2+
@@ -348,23 +379,44 @@ async function listAllTools(client: Client): Promise<Tool[]> {
   return tools
 }
 
+export interface PooledMcpClientOptions {
+  /** Network transports only: how long a cached `tools/list` stays fresh. */
+  toolCacheTtlMs?: number
+  /** Clock seam for tests. */
+  now?: () => number
+}
+
 /**
  * A lazily-connected client for one config. Caches `tools/list` and the UI
- * index derived from it; both are dropped whenever the connection is, so a
- * reconnect always re-lists.
+ * index derived from it; both are dropped whenever the connection is, when
+ * the server sends `notifications/tools/list_changed`, when a network cache
+ * outlives its TTL, or when a call names a tool the cache does not know.
  */
 export class PooledMcpClient {
   private client: Client | null = null
   private connecting: Promise<Client> | null = null
   private tools: Tool[] | null = null
   private index: McpUiToolIndex | null = null
+  private toolsFetchedAt = 0
+  private refreshing: Promise<void> | null = null
+  private lastRefreshError: unknown = null
+  private readonly ttlMs: number
+  private readonly now: () => number
 
   constructor(
     readonly key: string,
     readonly config: McpConnectionConfig,
     private readonly label: string,
-    private readonly opener: McpClientOpener
-  ) {}
+    private readonly opener: McpClientOpener,
+    options: PooledMcpClientOptions = {}
+  ) {
+    this.ttlMs = options.toolCacheTtlMs ?? DEFAULT_TOOL_CACHE_TTL_MS
+    this.now = options.now ?? Date.now
+  }
+
+  private get isNetwork(): boolean {
+    return this.config.type === "http" || this.config.type === "sse"
+  }
 
   /** Connect (once; concurrent callers share the attempt) and list tools.
    *  Throws the connect/list error — callers classify it. */
@@ -374,9 +426,17 @@ export class PooledMcpClient {
       this.connecting = (async () => {
         const client = await this.opener(this.config, this.label)
         try {
-          this.tools = await listAllTools(client)
-          this.index = null
+          const tools = await listAllTools(client)
           this.client = client
+          this.tools = tools
+          this.index = null
+          this.toolsFetchedAt = this.now()
+          this.lastRefreshError = null
+          // Register after the first list so a notification racing the
+          // connect cannot be overwritten by that list's result.
+          client.setNotificationHandler?.(ToolListChangedNotificationSchema, () => {
+            this.invalidateTools()
+          })
           return client
         } catch (err) {
           await safeClose(client)
@@ -389,9 +449,45 @@ export class PooledMcpClient {
     return this.connecting
   }
 
-  async listTools(): Promise<Tool[]> {
+  /** Re-list `tools/list`, coalescing concurrent callers into one request.
+   *  A failed refresh keeps the existing cache unless the connection died. */
+  async refreshTools(): Promise<void> {
+    if (this.refreshing) return this.refreshing
+    this.refreshing = (async () => {
+      const client = this.client
+      if (!client) return
+      try {
+        const tools = await listAllTools(client)
+        // The connection may have been reset/replaced while the list was in
+        // flight; never let the old client's result overwrite the new cache.
+        if (this.client !== client) return
+        this.tools = tools
+        this.index = null
+        this.toolsFetchedAt = this.now()
+        this.lastRefreshError = null
+      } catch (err) {
+        this.lastRefreshError = err
+        await this.dropIfDead(err)
+      }
+    })().finally(() => {
+      this.refreshing = null
+    })
+    return this.refreshing
+  }
+
+  async listTools(options?: { refresh?: boolean }): Promise<Tool[]> {
     await this.connected()
-    return this.tools ?? []
+    if (options?.refresh || this.tools === null || this.toolsStale()) {
+      await this.refreshTools()
+    }
+    if (this.tools === null) {
+      // A refresh that could not produce a list must not masquerade as an
+      // empty server: surface the failure, as the pre-cache path did.
+      throw this.lastRefreshError instanceof Error
+        ? this.lastRefreshError
+        : new Error(`tools/list failed for ${this.label}`)
+    }
+    return this.tools
   }
 
   async uiIndex(): Promise<McpUiToolIndex> {
@@ -415,18 +511,29 @@ export class PooledMcpClient {
     args: Record<string, unknown>
   ): Promise<CallToolResult> {
     const client = await this.connected()
+    // A name the cache does not know is exactly the case a restarted server
+    // adds tools in: re-list before forwarding, so the call is not sent
+    // against a list we already know is incomplete.
+    if (this.tools !== null && !this.tools.some(t => t.name === name)) {
+      await this.refreshTools()
+    }
     try {
       const result = await client.callTool({ name, arguments: args })
       // The SDK's return type also admits the legacy `{ toolResult }`
       // shape (protocol 2024-10-07); normalise it into content.
-      if ("content" in result && Array.isArray(result.content)) {
-        return result as CallToolResult
-      }
-      return {
-        content: [{ type: "text", text: JSON.stringify(result.toolResult ?? null) }],
-      }
+      const normalised: CallToolResult =
+        "content" in result && Array.isArray(result.content)
+          ? (result as CallToolResult)
+          : {
+              content: [{ type: "text", text: JSON.stringify(result.toolResult ?? null) }],
+            }
+      // The SDK reports an unknown tool as an `isError` result, not a throw.
+      if (resultIsUnknownTool(normalised)) this.invalidateTools()
+      return normalised
     } catch (err) {
-      await this.dropIfDead(err)
+      const msg = err instanceof Error ? err.message : String(err)
+      if (isUnknownToolError(msg)) this.invalidateTools()
+      else await this.dropIfDead(err)
       throw err
     }
   }
@@ -437,7 +544,20 @@ export class PooledMcpClient {
     this.client = null
     this.tools = null
     this.index = null
+    this.toolsFetchedAt = 0
     await safeClose(client)
+  }
+
+  private invalidateTools(): void {
+    this.tools = null
+    this.index = null
+    this.toolsFetchedAt = 0
+    this.lastRefreshError = null
+  }
+
+  private toolsStale(): boolean {
+    if (!this.isNetwork || this.tools === null) return false
+    return this.now() - this.toolsFetchedAt > this.ttlMs
   }
 
   private async dropIfDead(err: unknown): Promise<void> {
@@ -449,7 +569,10 @@ export class PooledMcpClient {
 export class McpClientPool {
   private clients = new Map<string, PooledMcpClient>()
 
-  constructor(private readonly opener: McpClientOpener = defaultOpener) {}
+  constructor(
+    private readonly opener: McpClientOpener = defaultOpener,
+    private readonly options: PooledMcpClientOptions = {}
+  ) {}
 
   /** The pooled client for `config`, created on first use. `label` only
    *  names the server in config errors. */
@@ -457,7 +580,7 @@ export class McpClientPool {
     const key = mcpConfigKey(config)
     let pooled = this.clients.get(key)
     if (!pooled) {
-      pooled = new PooledMcpClient(key, config, label, this.opener)
+      pooled = new PooledMcpClient(key, config, label, this.opener, this.options)
       this.clients.set(key, pooled)
     }
     return pooled
