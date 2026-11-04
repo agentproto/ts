@@ -77,6 +77,10 @@ jobs:
           ref: ${{ steps.ctx.outputs.head_ref }}
           token: ${{ steps.bot.outputs.token || secrets.BOT_PAT || secrets.GITHUB_TOKEN }}
 
+      - name: Capture base SHA
+        id: base
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
 
@@ -91,6 +95,9 @@ jobs:
       # with the pnpm cache to always install.
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build git-cas
+        run: pnpm --filter @agentproto/git-cas build
 
       # ── Sandboxed agentflow lane (review / pr / implement / fix) ──────────
       # The same "sandboxed agentproto agent" block ci.yml's auto-review uses
@@ -242,10 +249,14 @@ jobs:
       # gh_open_pr-based flows already switched to a bot/* branch (clean tree),
       # so this is a no-op for them.
       - name: Commit + push working-tree changes (commit-mode)
+        id: commit
         if: always() && steps.ctx.outputs.is_pr == 'true'
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
           BOT_SLUG: ${{ steps.bot.outputs.app-slug }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
+          HEAD_REF: ${{ steps.ctx.outputs.head_ref }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           # Attribute the commit to the App bot (mentionable) when available.
           bash scripts/configure-bot-git.sh
@@ -258,8 +269,39 @@ jobs:
             echo "No working-tree changes to push."
           else
             git commit -m "chore: agent-command edit (from comment) [skip ci]"
-            git push origin "HEAD:${{ steps.ctx.outputs.head_ref }}"
+            node scripts/agentflow/bot-push.mjs push \
+              --branch "$HEAD_REF" \
+              --expect "$BASE_SHA" \
+              --pr "$PR_NUMBER" \
+              --step "the command" \
+              --patch-dir .agentflow-park
           fi
+
+      - name: Upload parked command work
+        if: steps.commit.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkcommand
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.commit.outputs.cas_artifact_name }}
+          path: ${{ steps.commit.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Reply on parked command work
+        if: steps.commit.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.ctx.outputs.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.commit.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkcommand.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --reply-to "$COMMENT_ID"
 
       - name: Stamp PR provenance footer
         if: >
