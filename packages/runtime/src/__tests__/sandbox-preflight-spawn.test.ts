@@ -25,7 +25,7 @@ import { createSessionsRegistry, type SessionsRegistry, type AgentSessionLike, t
 import { setDefaultSessionsBaseDir } from "../transcript-writer.js"
 import type { AgentAdapterResolver } from "../http-server.js"
 import type { SandboxProviderHandle } from "../sandbox-providers/types.js"
-import { defaultPreflightRegistry, type PreflightProbe } from "../sandbox-preflight.js"
+import { commandPreflightProbe, defaultPreflightRegistry, type PreflightProbe } from "../sandbox-preflight.js"
 import { egressHealthLedger } from "../egress-health.js"
 
 const CI_USAGE_LIMIT =
@@ -232,29 +232,11 @@ describe("agent_start sandbox preflight", () => {
     expect(res.warnings?.some(w => w.includes('preflight "model-answers" inconclusive'))).toBe(true)
   })
 
-  it("a credentialed spawn on a Zen free id still probes: the per-IP cap does not depend on the key", async () => {
+  it("a credentialed spawn skips a probe that does not declare runsWithSpawnAuth (model-answers): it cannot present the credential", async () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
       model: "opencode/glm-5.3-flash-free",
-      sandbox: "fake",
-      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
-      preflight: ["model-answers"],
-    })
-    expect(res.ok).toBe(false)
-    if (res.ok) return
-    expect(res.code).toBe("sandbox_preflight_failed")
-    expect(execCalls).toHaveLength(1)
-    expect(JSON.stringify(execCalls)).not.toContain("sk-test-credential")
-    expect(stopSpy).toHaveBeenCalledTimes(1)
-    expect(receivedStarts).toHaveLength(0)
-  })
-
-  it("a credentialed spawn on a non-free model skips the probe: it cannot present the credential, so it must not veto", async () => {
-    execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
-    const res = await spawnAgentSession(makeDeps(), {
-      adapter: "opencode",
-      model: "opencode-go/deepseek-v4.1-flash",
       sandbox: "fake",
       auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
       preflight: ["model-answers"],
@@ -265,6 +247,32 @@ describe("agent_start sandbox preflight", () => {
     expect(stopSpy).not.toHaveBeenCalled()
     expect(receivedStarts).toHaveLength(1)
     expect(res.warnings?.some(w => w.includes("preflight model-answers skipped") && w.includes("credentials"))).toBe(true)
+  })
+
+  it("a credentialed spawn still runs a probe that declares runsWithSpawnAuth, and its ko fails the spawn", async () => {
+    registerProbe(
+      commandPreflightProbe({
+        id: "zen-free-answers",
+        command: "opencode run -m opencode/glm-5.3-flash-free 'reply ok' < /dev/null",
+        koWhen: [{ match: "Free usage limit reached", errorClass: "usage-limit" }],
+        runsWithSpawnAuth: true,
+      }),
+    )
+    execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+      sandbox: "fake",
+      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
+      preflight: ["zen-free-answers"],
+    })
+    expect(res.ok).toBe(false)
+    if (res.ok) return
+    expect(res.code).toBe("sandbox_preflight_failed")
+    expect(execCalls).toHaveLength(1)
+    expect(JSON.stringify(execCalls)).not.toContain("sk-test-credential")
+    expect(stopSpy).toHaveBeenCalledTimes(1)
+    expect(receivedStarts).toHaveLength(0)
   })
 
   it("an unregistered probe id is rejected before any box boots", async () => {

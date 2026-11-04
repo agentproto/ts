@@ -2,4 +2,4 @@
 "@agentproto/runtime": patch
 ---
 
-Run the `model-answers` preflight on credentialed spawns of a Zen free model (`opencode/<id>-free`, `opencode/big-pickle`). The free cap is per source IP and no key changes it, so the unauthenticated probe is valid there; before, any spawn carrying auth (CI's api-key lane included) silently skipped the preflight and the placement ladder never dropped a burned IP. Paid and Go-route models still skip.
+Make the sandbox preflight a generic yes/no check that a deployment extends from config. `defaults.sandbox.preflight.probes` declares probes as one shell command run in the box (`command`, `okExitCode`, `okStdoutMatches`, `koWhen` patterns with an error class, `failAs`), so "the Zen free model still answers from this IP" or "gh is installed" is a config entry, not code. Each probe now says whether it may run when the spawn carries credentials (`runsWithSpawnAuth`); before, any spawn with auth skipped the whole preflight, so CI's api-key lane never ran its ladder preflight. Probes that need the credential (the built-in `model-answers`) are still skipped, per probe, with a warning.

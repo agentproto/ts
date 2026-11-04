@@ -322,7 +322,7 @@ import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sa
 import { projectRemoteUsage, type RemoteUsageSnapshot } from "./sandbox-usage.js"
 import {
   defaultPreflightRegistry,
-  isAnonymouslyProbeable,
+  buildPreflightRegistry,
   preflightFailedResult,
   runSandboxPreflight,
   unknownPreflightProbes,
@@ -6396,6 +6396,9 @@ async function spawnAgentSessionOnce(
         ...(descriptorRoute ? { route: descriptorRoute } : {}),
         ...(input.appServe ? { appServe: input.appServe } : {}),
         ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
+        ...(configDefaults?.sandbox?.preflight?.probes?.length
+          ? { preflightRegistry: buildPreflightRegistry(configDefaults.sandbox.preflight.probes) }
+          : {}),
         ...(input.agentStartTimeoutMs !== undefined ? { agentStartTimeoutMs: input.agentStartTimeoutMs } : {}),
         ...(input.ladderCapacityWaitBudgetMs !== undefined
           ? { capacityWaitBudgetMs: input.ladderCapacityWaitBudgetMs }
@@ -7984,20 +7987,23 @@ export async function bootSandboxAgentSession(opts: {
       bootWarnings.push(
         `agent_start: preflight ${preflightIds.join(", ")} skipped, provider "${actualProvider}" cannot run commands in the box`,
       )
-    } else if (opts.auth && !isAnonymouslyProbeable(opts.adapter, opts.model)) {
-      // The box's credentials reach it through its own `agent_start` (`host.start`),
-      // never through its environment, so a probe run now would call the model
-      // unauthenticated: a spurious cap or auth failure would veto a healthy
-      // placement. An explicit credential means the probe cannot speak for the
-      // spawn, EXCEPT for a Zen free id, whose per-IP cap no credential changes
-      // (`isAnonymouslyProbeable`): CI's api-key lane always carries auth, so
-      // skipping there left the ladder's `model-answers` rung dead.
-      bootWarnings.push(
-        `agent_start: preflight ${preflightIds.join(", ")} skipped, the spawn carries credentials a probe cannot present`,
-      )
     } else {
+      // `host.exec` exists, so the probes that can speak for this spawn run now. The box's
+      // credentials reach it through its own `agent_start` (`host.start`), never through its
+      // environment, so a probe whose verdict depends on them would call the model
+      // unauthenticated and veto a healthy placement: those are skipped, visibly. A probe
+      // that declares `runsWithSpawnAuth` (installed tooling, a per-IP cap no key changes)
+      // runs either way.
+      const runnable = opts.auth
+        ? preflightIds.filter(id => preflightRegistry.get(id)?.runsWithSpawnAuth === true)
+        : preflightIds
+      for (const id of preflightIds) {
+        if (!runnable.includes(id)) {
+          bootWarnings.push(`agent_start: preflight ${id} skipped, the spawn carries credentials a probe cannot present`)
+        }
+      }
       const run = await runSandboxPreflight(
-        preflightIds,
+        runnable,
         {
           exec: host.exec,
           adapter: opts.adapter,
