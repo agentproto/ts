@@ -341,7 +341,7 @@ export function wrapE2E(
           fail(new E2eError("decode", "decrypted payload was not a valid tunnel frame"))
           return
         }
-        if (decoded.t === "hello" && decoded.capabilities.e2ePadding === true) {
+        if (decoded.t === "hello" && decoded.capabilities?.e2ePadding === true) {
           sendPadding = true
         }
         deliver(decoded)

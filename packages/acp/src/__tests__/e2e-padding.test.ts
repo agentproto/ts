@@ -6,7 +6,7 @@
 
 import { describe, expect, it, vi } from "vitest"
 import { randomBytes } from "node:crypto"
-import { wrapE2E as wrapE2ECore, type E2eKeys } from "../tunnel/e2e.js"
+import { paddedFrameSize, wrapE2E as wrapE2ECore, type E2eKeys } from "../tunnel/e2e.js"
 import { nodeAead } from "../tunnel/aead-node.js"
 import { encodeFrame, type TunnelFrame } from "../tunnel/frames.js"
 import { connect, type Middleware } from "./e2e-harness.js"
@@ -14,12 +14,6 @@ import { connect, type Middleware } from "./e2e-harness.js"
 const TAG_LEN = 16
 const HEADER_LEN = 12
 const BUCKETS = new Set([256, 1024, 4096, 16384, 32768, 49152])
-
-/** The bucket the spec promises for an encoded frame. */
-function paddedFrameSize(size: number): number {
-  for (const bucket of [256, 1024, 4096, 16384]) if (size <= bucket) return bucket
-  return Math.ceil(size / 16384) * 16384
-}
 
 function sessionKeys(): { client: E2eKeys; daemon: E2eKeys } {
   const k1 = randomBytes(32)
@@ -121,6 +115,23 @@ describe("E2E frame padding", () => {
     await vi.waitFor(() => expect(atD).toHaveLength(1))
     expect(atD[0]).toEqual(frame)
     const sent = aToB.filter(f => f.t === "e2e").at(-1)!
+    expect(cipherLength(sent) - TAG_LEN).toBe(encodeFrame(frame).length)
+  })
+
+  it("delivers a hello without capabilities and leaves padding off", async () => {
+    const { c, d, aToB, atC, atD } = channel()
+    // parseFrame only checks `t`, so an authenticated peer can send this.
+    const bare = { t: "hello", version: "agentproto/tunnel/v1" } as unknown as TunnelFrame
+    d.send(bare)
+    await vi.waitFor(() => expect(atC).toHaveLength(1))
+    expect(atC[0]).toEqual(bare)
+
+    // No capability was advertised, so the client keeps sending unpadded.
+    const frame: TunnelFrame = { t: "ping", nonce: "after-bare-hello" }
+    c.send(frame)
+    await vi.waitFor(() => expect(atD).toHaveLength(1))
+    expect(atD[0]).toEqual(frame)
+    const sent = aToB.filter(f => f.t === "e2e")[0]!
     expect(cipherLength(sent) - TAG_LEN).toBe(encodeFrame(frame).length)
   })
 
