@@ -14,7 +14,8 @@
  */
 
 import { build } from "esbuild"
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -92,4 +93,34 @@ const problems = [
 ].filter(([re]) => re.test(doc))
 if (problems.length) throw new Error(`build: index.html breaks the CSP: ${problems.map(([, what]) => what).join(", ")}`)
 
-console.log(`pair-page: dist/index.html, dist/${js}, dist/${css}, dist/pair-sw.js`)
+// Publish what this build produced so a careful user or a monitor can check
+// the bytes a daemon's pair origin serves (AIP-59 §5.9). The hash covers the
+// static bundle the Worker serves (document, hashed assets, service worker,
+// manifest, icons) in sorted relative-path order, each path followed by a NUL
+// byte and then the file bytes. The manifest file itself is excluded.
+async function listFiles(dir, base = "") {
+  const out = []
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const rel = base ? `${base}/${entry.name}` : entry.name
+    if (entry.isDirectory()) out.push(...(await listFiles(path.join(dir, entry.name), rel)))
+    else if (entry.isFile()) out.push(rel)
+  }
+  return out
+}
+
+const manifestRel = ".well-known/agentproto-pair-page.json"
+const bundleFiles = (await listFiles(dist)).filter(f => f !== manifestRel).sort()
+const hash = createHash("sha256")
+for (const rel of bundleFiles) {
+  hash.update(rel, "utf8")
+  hash.update("\0")
+  hash.update(await readFile(path.join(dist, rel)))
+}
+const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
+await mkdir(path.join(dist, ".well-known"), { recursive: true })
+await writeFile(
+  path.join(dist, manifestRel),
+  JSON.stringify({ version: pkg.version, sha256: hash.digest("hex"), builtAt: new Date().toISOString() }, null, 2) + "\n",
+)
+
+console.log(`pair-page: dist/index.html, dist/${js}, dist/${css}, dist/pair-sw.js, dist/${manifestRel}`)
