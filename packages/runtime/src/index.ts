@@ -292,6 +292,19 @@ import { registerReviewTools, reviewLedgerView } from "./review-tools.js"
 import { compileWorkflow } from "@agentproto/workflow-runtime"
 import { withDeferredTools } from "./deferred-tools.js"
 export { resolveDeferredToolsGatewayOption, type DeferredToolsConfig } from "./deferred-tools.js"
+import {
+  resolveToolProfileAllowSet,
+  resolveToolProfileSelection,
+  type ToolProfileName,
+} from "./tool-profiles.js"
+export {
+  parseToolProfileList,
+  profilesExposingTool,
+  resolveToolProfileAllowSet,
+  resolveToolProfileSelection,
+  TOOL_PROFILE_NAMES,
+  type ToolProfileName,
+} from "./tool-profiles.js"
 import { withToolExclusion, withToolSubset } from "./tool-subset.js"
 import { withToolDenyGate } from "./tool-deny-gate.js"
 import { boundaryFromMeta, boundaryRestartOptions } from "./app-boundary.js"
@@ -1919,6 +1932,13 @@ export interface CreateGatewayOptions {
    * curated allowlist (`DEFAULT_ORCHESTRATOR_TOOLS`).
    */
   deferredTools?: { alwaysOn?: readonly string[] }
+  /**
+   * Boot-time MCP surface profile (`defaults.mcp.profile`, see
+   * `tool-profiles.ts`): `core`, `orchestrator`, `apps`, `admin`, `full`, or
+   * a comma-composed list. Omitted ⇒ `full` (every tool registered, exactly
+   * the pre-profile behaviour). A per-request `?profile=` wins over this.
+   */
+  mcpProfile?: string
   /**
    * Optional sandbox provider resolver — overrides the sandbox family's
    * default resolver (built-ins + `@agentproto/sandbox-<slug>` dynamic
@@ -4121,7 +4141,12 @@ export async function createGateway(
     allowTools?: ReadonlySet<string>,
     surface?: string,
     credentialSessionId?: string,
+    profileOverride?: readonly string[],
   ) => {
+    const activeProfiles: ToolProfileName[] | undefined = resolveToolProfileSelection({
+      query: profileOverride,
+      config: opts.mcpProfile,
+    })
     const { server: rawServer } = await createMcpServer({
       specs: opts.specs,
       workspace,
@@ -4199,6 +4224,14 @@ export async function createGateway(
           ]),
         })
       : gatedServer
+    // Named surface profiles (`?profile=` / `defaults.mcp.profile`, see
+    // tool-profiles.ts). Applied before the deny/allow gates so `denyTools`
+    // still wins outright and a workflow step's `allowTools` intersects the
+    // profile. `full`/absent leaves the surface unrestricted.
+    const profileTools = resolveToolProfileAllowSet(activeProfiles)
+    if (profileTools) {
+      server = withToolSubset(server, profileTools)
+    }
     // Spawn-role-profiles tool gate (the hard part of the executor/
     // supervisor primitive — see role.ts). Per-request denylist parsed
     // from `?denyTools=a,b` on THIS `/mcp` call (see `handleMcp` in
@@ -4271,7 +4304,7 @@ export async function createGateway(
     // Read-only lookup for a tool's long-form docs (`tool-help.ts`) — the
     // fetch side of the slimmed-description contract every tool's schema
     // now points at. Always-on (see DEFAULT_ALWAYS_ON_TOOLS) and tiny.
-    registerToolHelpTool(server)
+    registerToolHelpTool(server, { activeProfiles })
     // Live provider quota for a named auth profile (AIP-67). Always-on (see
     // DEFAULT_ALWAYS_ON_TOOLS). `currentProfileRef` resolves the CALLING
     // session's own access profile from the trusted `callerSessionId`, the

@@ -934,6 +934,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // (undefined ⇒ `createGateway` never wraps `withDeferredTools` —
         // today's fully-eager behaviour, unchanged for existing clients).
         deferredTools: resolveDeferredToolsGatewayOption(cfg.defaults?.mcp?.deferredTools),
+        // Gateway-wide MCP surface profile (`defaults.mcp.profile`, see
+        // tool-profiles.ts). Absent ⇒ full, so existing daemons are unchanged.
+        // A per-mount `?profile=` on /mcp wins over this boot-time default.
+        mcpProfile: cfg.defaults?.mcp?.profile,
         llmEndpoint: effectiveLlmEndpoint,
         // Opt-in, no smart-default (unlike `llmEndpoint` above) — exposing
         // this daemon's local inference to a paired host-scoped controller

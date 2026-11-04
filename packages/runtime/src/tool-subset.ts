@@ -18,6 +18,16 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
+/** A set entry ending in `*` is a prefix match (`app_ui_*` covers every
+ *  installed app's dynamic MCP Apps panel). Exact names still match exactly. */
+function isAllowedBySubset(subset: ReadonlySet<string>, name: string): boolean {
+  if (subset.has(name)) return true
+  for (const entry of subset) {
+    if (entry.endsWith("*") && name.startsWith(entry.slice(0, -1))) return true
+  }
+  return false
+}
+
 export function withToolSubset(
   server: McpServer,
   subset: ReadonlySet<string>,
@@ -31,7 +41,7 @@ export function withToolSubset(
       // registration slip the allowlist entirely. Mirrors deferred-tools.ts.
       if (prop === "tool" || prop === "registerTool") {
         return (name: string, ...rest: unknown[]): unknown => {
-          if (!subset.has(name)) return undefined
+          if (!isAllowedBySubset(subset, name)) return undefined
           return (
             target[prop] as unknown as (n: string, ...r: unknown[]) => unknown
           )(name, ...rest)
