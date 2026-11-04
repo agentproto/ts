@@ -58,6 +58,11 @@ export interface McpDefaultsConfig {
    *  per-mount `?deferred=1|0` query override on `/mcp` — this is only
    *  the BOOT-TIME default for connections that specify neither. */
   deferredTools?: DeferredToolsConfig
+  /** Gateway-wide MCP surface profile (see `tool-profiles.ts`), e.g.
+   *  `"core"`, `"core,apps"`, `"admin"`. Absent ⇒ `full` (every tool, the
+   *  pre-profile behaviour). A per-mount `?profile=` query wins over this
+   *  boot-time default. */
+  profile?: string
 }
 
 /**

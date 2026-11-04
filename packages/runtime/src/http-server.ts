@@ -1096,6 +1096,14 @@ export interface RuntimeHttpServerOptions {
    * `denyTools` (a name on both is excluded).
    */
   /**
+   * `profile`, when present, is parsed from the request's `?profile=core,apps`
+   * query string (see `handleMcp` below) — named MCP surface profiles
+   * (tool-profiles.ts). The query wins over the gateway's boot-time
+   * `defaults.mcp.profile`; an absent/unknown query falls through to that
+   * default, and neither naming a profile means `full` (every tool, the
+   * pre-profile behaviour). `denyTools` still wins over a profile.
+   */
+  /**
    * `surface`, when present, is parsed from the request's `?surface=<name>`
    * query string (see `handleMcp` below). Today's only value,
    * `"approval-cards"`, is the ONLY way `approval_card_decide` and any
@@ -1116,6 +1124,10 @@ export interface RuntimeHttpServerOptions {
     surface?: string,
     /** The session a valid session token on the request was minted for. */
     credentialSessionId?: string,
+    /** `?profile=` names for this request (tool-profiles.ts). Undefined
+     *  falls through to the gateway's `defaults.mcp.profile`; the query
+     *  wins when it names at least one known profile. */
+    profile?: readonly string[],
   ) => Promise<McpServer>
   /**
    * Optional — when wired, every `/mcp` request carrying a
@@ -2234,6 +2246,19 @@ export async function startHttpServer(
     return names.length > 0 ? new Set(names) : undefined
   }
 
+  /** `?profile=core,apps` — named MCP surface profiles (tool-profiles.ts).
+   *  Comma-separated and order-independent; validation/fallback lives in
+   *  `resolveToolProfileSelection` (index.ts), so an unknown name here is
+   *  passed through rather than silently treated as a full surface. */
+  function parseProfileQuery(url: string): string[] | undefined {
+    const qIdx = url.indexOf("?")
+    if (qIdx === -1) return undefined
+    const raw = new URLSearchParams(url.slice(qIdx + 1)).get("profile")
+    if (!raw) return undefined
+    const names = raw.split(",").map(s => s.trim()).filter(Boolean)
+    return names.length > 0 ? names : undefined
+  }
+
   /** Mirrors `parseToolListQuery` for the `callerSessionId` query param
    *  (PR 7 / Gap 7) — see `mcpServerFactory`'s doc for the wire contract. */
   function parseCallerSessionIdQuery(url: string): string | undefined {
@@ -2518,6 +2543,7 @@ export async function startHttpServer(
     const callerSessionId = resolveCallerSessionId(req)
     const origin = parseOriginQuery(req.url ?? "")
     const deferred = parseDeferredQuery(req.url ?? "")
+    const profile = parseProfileQuery(req.url ?? "")
     const surface = parseSurfaceQuery(req.url ?? "")
     // Security boundary (approval-cards): a daemon-spawned session's
     // self-ref connection (`callerSessionId`) must NEVER reach the
@@ -2545,6 +2571,7 @@ export async function startHttpServer(
       allowTools,
       surface,
       credentialSessionOf(req),
+      profile,
     )
     await serveMcp(req, res, server, callerSessionId)
   }

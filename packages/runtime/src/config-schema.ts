@@ -177,6 +177,7 @@ const defaultsAdapterConfigSchema: z.ZodType<DefaultsAdapterConfig> = z
 const mcpDefaultsConfigSchema: z.ZodType<McpDefaultsConfig> = z
   .object({
     deferredTools: deferredToolsConfigSchema.optional(),
+    profile: z.string().optional(),
   })
   .passthrough()
 
@@ -1476,6 +1477,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Deferred MCP tools",
     help: "Gateway-wide lazy tools/list loading. false/absent ⇒ eager (today's behaviour).",
     default: false,
+  },
+  {
+    path: "defaults.mcp.profile",
+    schema: z.string(),
+    apply: "restart",
+    writable: true,
+    section: "defaults",
+    label: "MCP surface profile",
+    help: "Default /mcp tool surface: core, orchestrator, apps, admin, full, or a comma-composed list. Absent ⇒ full. A ?profile= query wins.",
+    default: "full",
   },
   {
     path: "defaults.backgroundTaskWake.enabled",

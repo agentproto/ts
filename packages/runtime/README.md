@@ -76,6 +76,36 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 | `conversation_export` | Export a daemon transcript to a target adapter's native store, e.g. `claude-code` (new) |
 | `llm_endpoint_*` (`start`, `stop`, `status`, `set_upstream_link`, `list_links`) | Local LLM Endpoint proxy sidecar — only when `features.llmEndpoint` is enabled (new) |
 
+### MCP surface profiles
+
+`POST /mcp` accepts `?profile=` to narrow the registered tool surface before
+a client loads it. Profiles compose, order does not matter:
+
+- `core` — the everyday working set (roughly 45 tools: agent lifecycle,
+  session observation, messaging, policies/tasks, memory, files, commands,
+  terminals, imported MCP calls, app run/status, PR open).
+- `orchestrator` — the curated delegation set from
+  `DEFAULT_ORCHESTRATOR_TOOLS` (spawn/drive/observe children, messages,
+  policies, task ledger).
+- `apps` — all `app_*` tools plus every installed app's dynamic
+  `app_ui_<slug>` MCP Apps panel.
+- `admin` — setup, tunnels, auth profiles, devices/join tokens, pairing,
+  remote access, garbage collection, presets/bundles, inbound watchers,
+  sentinels, cron, and local LLM endpoints.
+- `full` — everything. This is the default when no profile is named, so
+  existing callers are unchanged.
+
+```text
+POST /mcp?profile=core,apps
+```
+
+To set a daemon-wide default, add `defaults.mcp.profile` to
+`~/.agentproto/config.json` (same name/comma composition). A per-request
+`?profile=` wins over the config. `?denyTools=a,b` still wins over any
+profile, and `?allowTools=a,b` intersects with it. `tool_help` keeps
+answering for tools outside the active profile and names the profile(s)
+that expose them.
+
 ### App state ledger (`app_state_*`)
 
 Per installed app, an append-only JSONL event log lives in the daemon's own
