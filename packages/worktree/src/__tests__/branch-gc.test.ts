@@ -1694,6 +1694,62 @@ describe("approveBranchVerdict — operator approval copied from the stored verd
     expect((await store.get("fixture", tip))?.operator).toBeUndefined()
   })
 
+  describe("stored names that are display labels", () => {
+    const labelled = async (name: string) => {
+      const { repo, tip } = await setup()
+      const store = new InMemoryBranchVerdictStore()
+      await recordBranchVerdict({ repoRoot: repo, repoName: "fixture", store, verdict: verdict(name, tip, true) })
+      return { repo, tip, store }
+    }
+    const approve = (repo: string, store: InMemoryBranchVerdictStore, target: string, extra: { dryRun?: boolean } = {}) =>
+      approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store, target, by: "Jeremy", ...extra })
+
+    it("a `remote:<branch>` label resolves to the origin ref at the sha", async () => {
+      const { repo, tip, store } = await labelled("remote:feat/guarded")
+      // Drop the local branch so only the origin tracking ref is left at the sha.
+      await execGit(repo, ["branch", "-q", "-D", "feat/guarded"])
+      const dry = await approve(repo, store, tip, { dryRun: true })
+      expect(dry).toMatchObject({ ok: true, status: "would-record", name: "remote:feat/guarded", refs: ["refs/remotes/origin/feat/guarded"] })
+      const res = await approve(repo, store, tip)
+      expect(res).toMatchObject({ ok: true, status: "recorded", refs: ["refs/remotes/origin/feat/guarded"] })
+      expect((await store.get("fixture", tip))?.operator?.by).toBe("Jeremy")
+    })
+
+    it("a `local:a, local:b` label lists every matching ref", async () => {
+      const { repo, tip, store } = await labelled("local:feat/guarded, local:feat/twin")
+      await execGit(repo, ["branch", "-q", "feat/twin", tip])
+      const res = await approve(repo, store, tip)
+      expect(res).toMatchObject({ ok: true, status: "recorded" })
+      if (!res.ok) throw new Error("unreachable")
+      // feat/guarded also has its origin twin; the label names it, so it counts too.
+      expect(res.refs.sort()).toEqual(["refs/heads/feat/guarded", "refs/heads/feat/twin", "refs/remotes/origin/feat/guarded"])
+    })
+
+    it("a labelled name whose refs all moved is still tip-moved", async () => {
+      const { repo, tip, store } = await labelled("local:feat/guarded, remote:feat/guarded")
+      await execGit(repo, ["checkout", "-q", "feat/guarded"])
+      await commitFiles(repo, { "more.txt": "more\n" }, "more work")
+      await execGit(repo, ["push", "-q", "origin", "feat/guarded"])
+      await execGit(repo, ["fetch", "-q", "origin"])
+      await execGit(repo, ["checkout", "-q", "main"])
+      expect(await approve(repo, store, tip)).toMatchObject({ ok: false, refusal: "tip-moved" })
+      expect((await store.get("fixture", tip))?.operator).toBeUndefined()
+    })
+
+    it("only the three exact kind prefixes are stripped", async () => {
+      const { repo, tip, store } = await labelled("scope:feat/guarded")
+      expect(await approve(repo, store, tip)).toMatchObject({ ok: false, refusal: "tip-moved" })
+    })
+
+    it("a plain name behaves as before, including by branch-name target", async () => {
+      const { repo, tip, store } = await labelled("feat/guarded")
+      const res = await approve(repo, store, "feat/guarded")
+      expect(res).toMatchObject({ ok: true, status: "recorded", name: "feat/guarded", sha: tip })
+      if (!res.ok) throw new Error("unreachable")
+      expect(res.refs.sort()).toEqual(["refs/heads/feat/guarded", "refs/remotes/origin/feat/guarded"])
+    })
+  })
+
   it("refuses with no stored verdict, a non-agreeing gate, a moved tip, or --by equal to the reviewer", async () => {
     const { repo, tip, store } = await setup()
     const approve = (target: string, by = "Jeremy", s = store) => approveBranchVerdict({ repoRoot: repo, repoName: "fixture", store: s, target, by })

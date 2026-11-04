@@ -3727,6 +3727,20 @@ async function refsNamed(repoRoot: string, name: string): Promise<Array<{ ref: s
   return hits
 }
 
+const VERDICT_NAME_KIND_PREFIX_RE = /^(?:local|remote|orphan):/
+
+/** Branch names a stored verdict `name` stands for. Older reviewer flows stored
+ *  a display label (`local:a, remote:b`); a plain name yields itself. Only the
+ *  three exact kind prefixes are stripped, so other colons stay in the name. */
+function verdictNameCandidates(name: string): string[] {
+  const out = new Set<string>([name])
+  for (const part of name.split(",")) {
+    const bare = part.trim().replace(VERDICT_NAME_KIND_PREFIX_RE, "").trim()
+    if (bare) out.add(bare)
+  }
+  return [...out]
+}
+
 /**
  * Record a human operator approval for one stored verdict, copying it so the
  * operator names only the tip (`target`: a full sha, or a branch name whose
@@ -3774,7 +3788,11 @@ export async function approveBranchVerdict(input: {
   if (record.gate?.agree !== true) {
     return refuse("not-agreed", `the stored verdict for ${record.sha} has no agreeing gate (gate.agree is ${record.gate ? String(record.gate.agree) : "absent"})`)
   }
-  const atTip = (await refsNamed(input.repoRoot, record.name)).filter((r) => r.sha === record.sha)
+  const atTipByRef = new Map<string, { ref: string; sha: string }>()
+  for (const candidate of verdictNameCandidates(record.name)) {
+    for (const r of await refsNamed(input.repoRoot, candidate)) if (r.sha === record.sha) atTipByRef.set(r.ref, r)
+  }
+  const atTip = [...atTipByRef.values()]
   if (atTip.length === 0) {
     return refuse("tip-moved", `no ref named "${record.name}" points at ${record.sha} any more: the verdict is for an old tip`)
   }
