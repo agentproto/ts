@@ -127,7 +127,7 @@ export const WALLET_RATE_LIMIT_COOLDOWN_MS = 60_000
  *  {@link PERMANENT_ERROR_RE}: this is not "don't retry the turn", it is
  *  "don't touch this wallet again for a while". */
 const WALLET_EXHAUSTED_RE =
-  /usage limit (reached|exceeded)|quota exceeded|insufficient (credit|balance|funds)|rate limit exceeded/i
+  /usage limit (reached|exceeded)|quota exceeded|insufficient(?: [a-z]+){0,2} (credit|balance|funds)|rate limit exceeded/i
 const RATE_LIMIT_RE = /rate limit exceeded/i
 
 /** The auth profile a resolved preset would spawn under — harness presets

@@ -806,6 +806,17 @@ describe("createDaemonReviewerHost — an exhausted auth profile is never re-spa
     registry.shutdown()
   })
 
+  it("an \"Insufficient account funds\" refusal (word between insufficient and funds) cools the wallet too", async () => {
+    const funds = 'error:402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
+    const { host, registry, spawnedWith } = setup([funds, "review"], undefined, { harnessProfiles: GO_PROFILES })
+    const a = await lane(host, { preset: "go", fallbackPresets: ["fb"] })
+    expect(a).toMatchObject({ status: "ended", preset: "fb" })
+    const b = await lane(host, { preset: "go2", fallbackPresets: ["fb"] })
+    expect(b).toMatchObject({ status: "ended", preset: "fb" })
+    expect(spawnedWith).toHaveLength(3) // go, fb, fb: go2 never spawned
+    registry.shutdown()
+  })
+
   it("a fallback preset on the SAME exhausted profile is skipped inside one chain", async () => {
     const { host, registry, spawnedWith } = setup([GO_LIMIT, "review"], undefined, { harnessProfiles: GO_PROFILES })
     const res = await lane(host, { preset: "go", fallbackPresets: ["go2", "fb"] })
