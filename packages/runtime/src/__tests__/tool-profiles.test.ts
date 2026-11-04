@@ -112,6 +112,12 @@ describe("MCP surface profile budgets", () => {
     expect(composed!.has("cron_list")).toBe(false)
   })
 
+  it("keeps tool_help in the allow set under every named profile", () => {
+    for (const profile of ["core", "orchestrator", "apps", "admin"] as const) {
+      expect(resolveToolProfileAllowSet([profile])!.has("tool_help"), profile).toBe(true)
+    }
+  })
+
   it("parses comma lists and gives the per-request query precedence over config", () => {
     expect(parseToolProfileList("core, apps,core")).toEqual(["core", "apps"])
     expect(parseToolProfileList("nope")).toBeUndefined()

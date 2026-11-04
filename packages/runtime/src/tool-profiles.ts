@@ -499,7 +499,7 @@ export function resolveToolProfileAllowSet(
   profiles: readonly ToolProfileName[] | undefined,
 ): ReadonlySet<string> | undefined {
   if (!profiles || profiles.length === 0 || profiles.includes("full")) return undefined
-  const names = new Set<string>()
+  const names = new Set<string>(["tool_help"])
   for (const profile of profiles) {
     if (profile === "full") return undefined
     for (const name of PROFILE_TOOLS[profile]) names.add(name)
