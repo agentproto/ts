@@ -695,14 +695,18 @@ export function registerAgentTools(
       // scope). Any session caller (scoped sub-gateway or the self-ref
       // `?callerSessionId=` query) is refused: a remote parent names the
       // relay URL the session's reports (and its relay token) are sent to.
-      if (input.remoteParent !== undefined && (callerScope !== undefined || effectiveCaller() !== undefined)) {
+      if (
+        (input.remoteParent !== undefined || input.credentialRelay !== undefined) &&
+        (callerScope !== undefined || effectiveCaller() !== undefined)
+      ) {
         return {
           content: [
             {
               type: "text",
               text:
-                "agent_start: `remoteParent` is daemon-internal (the host daemon forwards it into a box " +
-                "at spawn time) and cannot be supplied by a session caller.",
+                `agent_start: \`${input.remoteParent !== undefined ? "remoteParent" : "credentialRelay"}\` is ` +
+                "daemon-internal (the host daemon forwards it into a box at spawn time) and cannot be " +
+                "supplied by a session caller.",
             },
           ],
           isError: true,

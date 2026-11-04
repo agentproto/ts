@@ -45,6 +45,12 @@
  * must be reachable FROM the box (a tunnel / public endpoint). When no relay
  * URL is configured the host forwards NO remote parent, and the box's
  * `message_parent` keeps today's clear "no recorded parent" error.
+ *
+ * The same grant also carries the CREDENTIAL RELAY (`credential-relay.ts`):
+ * a box orchestrator spawned by the host operator has no parent session, so
+ * its grant has no `parentSessionId` (and `message_parent` rightly answers
+ * `relay_no_parent`), but it can carry a `profileRefs` allowlist that lets
+ * its nested spawns bill those host profiles.
  */
 
 import { createHash, randomBytes } from "node:crypto"
@@ -69,6 +75,16 @@ export interface RemoteParent {
   token: string
 }
 
+/** The credential-relay block a host forwards into a box next to (or instead
+ *  of) a {@link RemoteParent}: where a box-side nested spawn asks the HOST to
+ *  resolve a profile the host owns. Same token as the parent relay's grant. */
+export interface CredentialRelay {
+  /** The host daemon's relay base URL (reachable FROM the box). */
+  url: string
+  /** Short-lived, single-session-scoped relay token. */
+  token: string
+}
+
 /** What the box sends to the host's relay endpoint. The RECIPIENT is never
  *  in here - the host resolves it from the token. */
 export interface ParentRelayPayload {
@@ -87,10 +103,18 @@ export interface ParentRelayPayload {
 export interface ParentRelayGrant {
   /** SHA-256 (hex) of the relay token - see {@link hashParentRelayToken}. */
   tokenHash: string
-  /** The host-side parent session the report is delivered to. */
-  parentSessionId: string
+  /** The host-side parent session the report is delivered to. Absent for a
+   *  box session the host OPERATOR spawned (no parent session): such a grant
+   *  can only be used for the credential relay. */
+  parentSessionId?: string
   /** The host-side proxy row of the BOX session (the attested sender). */
   boxSessionId: string
+  /** Auth profile ids a box-side nested spawn may bill through this grant
+   *  (the box session's own profile, the operator's shared profiles and an
+   *  explicit `access.delegateProfileRefs` allowlist, snapshotted at the
+   *  host spawn). Names only, never a credential. Absent or empty ⇒ the
+   *  grant cannot be used for the credential relay. */
+  profileRefs?: string[]
   expiresAt: number
   /** The grant's own lifetime - reused to SLIDE the expiry on every
    *  successful relay use (see `slideParentRelayGrant`). */
@@ -153,7 +177,9 @@ function isGrantShape(v: unknown): v is ParentRelayGrant {
   return (
     typeof g.tokenHash === "string" &&
     /^[0-9a-f]{64}$/.test(g.tokenHash) &&
-    typeof g.parentSessionId === "string" &&
+    (g.parentSessionId === undefined || typeof g.parentSessionId === "string") &&
+    (g.profileRefs === undefined ||
+      (Array.isArray(g.profileRefs) && g.profileRefs.every(r => typeof r === "string"))) &&
     typeof g.boxSessionId === "string" &&
     typeof g.expiresAt === "number" &&
     typeof g.ttlMs === "number"
@@ -197,7 +223,8 @@ function loadGrants(path: string, nowMs: number): void {
       if (!grants.has(g.tokenHash)) {
         grants.set(g.tokenHash, {
           tokenHash: g.tokenHash,
-          parentSessionId: g.parentSessionId,
+          ...(g.parentSessionId !== undefined ? { parentSessionId: g.parentSessionId } : {}),
+          ...(g.profileRefs !== undefined ? { profileRefs: g.profileRefs } : {}),
           boxSessionId: g.boxSessionId,
           expiresAt: g.expiresAt,
           ttlMs: g.ttlMs,
@@ -266,6 +293,34 @@ export function clearRelayTokens(): void {
   relayTokensBySession.clear()
 }
 
+/** The BOX side's credential relays (url + token), keyed by the box session
+ *  id. Memory only, exactly like {@link relayTokensBySession}: the token is a
+ *  secret, so it never lands on a descriptor or on disk, and a restarted box
+ *  daemon loses it (a nested spawn then fails with the clear "no auth
+ *  profile" error naming `sandbox.reuse`). */
+const credentialRelaysBySession = new Map<string, CredentialRelay>()
+
+/** Remember the credential relay a box session was spawned with. */
+export function rememberCredentialRelay(sessionId: string, relay: CredentialRelay): void {
+  if (!sessionId || !relay.token || !relay.url) return
+  credentialRelaysBySession.set(sessionId, { url: relay.url, token: relay.token })
+}
+
+/** The credential relay a box session was spawned with, if any. */
+export function credentialRelayForSession(sessionId: string): CredentialRelay | undefined {
+  return credentialRelaysBySession.get(sessionId)
+}
+
+/** Forget a session's credential relay (when the session ends). */
+export function forgetCredentialRelay(sessionId: string): void {
+  credentialRelaysBySession.delete(sessionId)
+}
+
+/** Test seam: drop every remembered credential relay. */
+export function clearCredentialRelays(): void {
+  credentialRelaysBySession.clear()
+}
+
 /** The configured host relay base URL, or `undefined` when the operator did
  *  not configure one (⇒ no remote parent is forwarded at all). */
 export function parentRelayUrlFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -313,7 +368,9 @@ export function sweepParentRelayGrants(nowMs: number = Date.now()): {
       continue
     }
     if (!liveness) continue
-    const parent = liveness(grant.parentSessionId)
+    // A grant with no parent session (the host operator spawned the box
+    // session) has nobody to outlive: only the box session's liveness counts.
+    const parent = grant.parentSessionId !== undefined ? liveness(grant.parentSessionId) : "live"
     const box = liveness(grant.boxSessionId)
     if (parent === "dead" || box === "dead") {
       grants.delete(hash)
@@ -341,6 +398,38 @@ function ensurePruneTimer(): void {
   pruneTimer.unref?.()
 }
 
+/** Mint a relay grant for one box session and return the raw token + the
+ *  relay URL. `parentSessionId` is absent when the host operator spawned the
+ *  box session; `profileRefs` is the credential-relay allowlist. */
+export function mintBoxRelayGrant(input: {
+  parentSessionId?: string
+  boxSessionId: string
+  url: string
+  profileRefs?: readonly string[]
+  ttlMs?: number
+  nowMs?: number
+}): CredentialRelay {
+  const now = input.nowMs ?? Date.now()
+  // Sweep the dead ones first: a mint is the natural moment to notice that
+  // an earlier box session's grant is stale.
+  pruneExpiredParentRelayGrants(now)
+  ensurePruneTimer()
+  const token = randomBytes(24).toString("hex")
+  const ttlMs = input.ttlMs ?? PARENT_RELAY_TTL_MS
+  const tokenHash = hashParentRelayToken(token)
+  const profileRefs = [...new Set((input.profileRefs ?? []).filter(ref => ref !== ""))]
+  grants.set(tokenHash, {
+    tokenHash,
+    ...(input.parentSessionId !== undefined ? { parentSessionId: input.parentSessionId } : {}),
+    ...(profileRefs.length > 0 ? { profileRefs } : {}),
+    boxSessionId: input.boxSessionId,
+    expiresAt: now + ttlMs,
+    ttlMs,
+  })
+  persistGrants()
+  return { url: input.url.replace(/\/+$/, ""), token }
+}
+
 /** Mint a relay token for one (parent, box-session) pair and return the
  *  remote-parent block to forward into the box. */
 export function mintParentRelayGrant(input: {
@@ -350,27 +439,8 @@ export function mintParentRelayGrant(input: {
   ttlMs?: number
   nowMs?: number
 }): RemoteParent {
-  const now = input.nowMs ?? Date.now()
-  // Sweep the dead ones first: a mint is the natural moment to notice that
-  // an earlier box session's grant is stale.
-  pruneExpiredParentRelayGrants(now)
-  ensurePruneTimer()
-  const token = randomBytes(24).toString("hex")
-  const ttlMs = input.ttlMs ?? PARENT_RELAY_TTL_MS
-  const tokenHash = hashParentRelayToken(token)
-  grants.set(tokenHash, {
-    tokenHash,
-    parentSessionId: input.parentSessionId,
-    boxSessionId: input.boxSessionId,
-    expiresAt: now + ttlMs,
-    ttlMs,
-  })
-  persistGrants()
-  return {
-    sessionId: input.parentSessionId,
-    url: input.url.replace(/\/+$/, ""),
-    token,
-  }
+  const { url, token } = mintBoxRelayGrant(input)
+  return { sessionId: input.parentSessionId, url, token }
 }
 
 /** Resolve a relay token to its grant, or `undefined` when the token is
@@ -425,6 +495,33 @@ export function mintRemoteParentForBox(
   const url = parentRelayUrlFromEnv(env)
   if (!url) return undefined
   return mintParentRelayGrant({ ...parentRelay, url })
+}
+
+/** HOST: mint ONE grant for a box session and return what to forward into
+ *  the box's `agent_start`: a remote parent when the session has a host-side
+ *  parent, and a credential relay when the host delegated profiles to it.
+ *  `undefined` when there is nothing to relay or no relay URL is configured
+ *  (the box then keeps today's behaviour: "no recorded parent" and "no auth
+ *  profile" errors). */
+export function mintRelayForBox(
+  relay:
+    | { parentSessionId?: string; boxSessionId: string; profileRefs?: readonly string[] }
+    | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): { remoteParent?: RemoteParent; credentialRelay?: CredentialRelay; token: string } | undefined {
+  if (!relay) return undefined
+  const delegates = (relay.profileRefs ?? []).some(ref => ref !== "")
+  if (relay.parentSessionId === undefined && !delegates) return undefined
+  const url = parentRelayUrlFromEnv(env)
+  if (!url) return undefined
+  const minted = mintBoxRelayGrant({ ...relay, url })
+  return {
+    token: minted.token,
+    ...(relay.parentSessionId !== undefined
+      ? { remoteParent: { sessionId: relay.parentSessionId, url: minted.url, token: minted.token } }
+      : {}),
+    ...(delegates ? { credentialRelay: minted } : {}),
+  }
 }
 
 /** SLIDE the grant's expiry forward by its own TTL: every SUCCESSFUL relay
@@ -550,6 +647,13 @@ export async function deliverParentRelayMessage(input: {
     }
   }
   const parentId = grant.parentSessionId
+  if (parentId === undefined) {
+    return {
+      ok: false,
+      code: "relay_no_parent",
+      message: "this relay grant has no parent session (the host operator spawned the box session)",
+    }
+  }
   const parent = input.registry.get(parentId)
   if (!parent) {
     return {
@@ -575,7 +679,7 @@ export async function deliverParentRelayMessage(input: {
   const principal = {
     kind: "relay",
     boxSessionId: grant.boxSessionId,
-    parentSessionId: grant.parentSessionId,
+    parentSessionId: parentId,
   } as const
   const resource = { kind: "session", session: parent } as const
   const policy = { messaging: { agentInterrupt: input.allowInterrupt === true ? "allow" : "deny" } } as const
