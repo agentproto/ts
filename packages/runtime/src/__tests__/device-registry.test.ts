@@ -17,6 +17,9 @@ function fakeRegistry(
   return {
     createOffer: vi.fn(),
     list: async () => records.map(r => ({ ...r })),
+    listPending: async () => [],
+    confirmPending: vi.fn(async () => ({ ok: false as const, reason: "not_found" as const, message: "" })),
+    declinePending: vi.fn(async () => ({ ok: false as const, reason: "not_found" as const, message: "" })),
     rename: vi.fn(async () => opts.renameMatches ?? true),
     revoke: vi.fn(async () => opts.revokeMatches ?? true),
     isOnline: fp => online.has(fp),

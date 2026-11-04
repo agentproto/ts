@@ -7,11 +7,11 @@
  */
 
 import {
+  connect,
   inspectOffer,
   pairFromOffer,
   TunnelClientError,
   type PairCredential,
-  type PairedDaemon,
   type PendingPairing,
 } from "@agentproto/pairing"
 import { daemonOrigin } from "../lib/host"
@@ -163,49 +163,63 @@ export function startPairPage(root: HTMLElement): void {
     )
   }
 
-  const confirmView = (pending: PendingPairing, saving: boolean): HTMLElement => {
+  const waitingView = (pending: PendingPairing): HTMLElement => {
     const daemon = pending.daemon
     return shell(
-      { eyebrow: "confirm pairing", title: `Pair with ${daemon.name}?`, tone: "warn" },
-      p("Check that this fingerprint matches the one printed by ", code("agentproto pair offer"), ":"),
+      { eyebrow: "waiting for confirmation", title: `Approve this phone on ${daemon.name}`, tone: "warn" },
+      p("On the computer, compare this code with the one the daemon shows:"),
+      h("div", { class: "fingerprint" }, code(pending.code)),
+      p("Daemon:"),
       fingerprint(daemon.fingerprint),
-      daemon.platform ? h("p", { class: "error-text" }, daemon.platform) : null,
-      row(
-        button(saving ? "Pairing…" : "Confirm", () => void confirm(pending), { disabled: saving }),
-        button("Cancel", () => cancel(pending), { variant: "secondary", disabled: saving }),
+      p(
+        "Then confirm on the computer with ",
+        code(`agentproto pair confirm ${pending.code}`),
+        ". Nothing is saved on this phone until then.",
       ),
     )
   }
 
-  const confirm = async (pending: PendingPairing): Promise<void> => {
-    show(confirmView(pending, true))
+  const waitForApproval = async (pending: PendingPairing, expiresAt: Date): Promise<void> => {
+    const credential = await pending.credential()
+    const client = connect(credential, {
+      handshakeTimeoutMs: 5_000,
+      reconnectMinMs: 500,
+      reconnectMaxMs: 3_000,
+      requestWaitMs: 15_000,
+    })
     try {
-      const credential = await pending.confirm()
+      for (;;) {
+        if (Date.now() >= expiresAt.getTime()) {
+          throw new TunnelClientError(
+            "pairing_failed",
+            "this pairing request expired before it was confirmed; get a fresh QR from the computer",
+          )
+        }
+        try {
+          await client.ready()
+          break
+        } catch (err) {
+          const terminal =
+            err instanceof TunnelClientError &&
+            (err.code === "revoked" || err.code === "protocol_outdated" || err.code === "closed")
+          if (terminal) throw err
+          // Still pending on the daemon: retry until the offer expires.
+          await new Promise(resolve => setTimeout(resolve, 1_000))
+        }
+      }
+      await pairStore().put(credential)
+      client.close()
       const reg = await registerPairingWorker(credential.id)
       // A worker already running for this daemon (a re-pair after a revoke
       // or an outdated pairing) still holds the old credential's client.
       postToWorker(reg, { type: "agentproto-pair:reset" })
       window.location.replace(statusPath(credential.id))
     } catch (err) {
+      client.close()
       show(errorView(err))
     }
   }
 
-  const cancel = (pending: PendingPairing): void => {
-    pending.cancel()
-    const daemon: PairedDaemon = pending.daemon
-    show(
-      shell(
-        { eyebrow: "cancelled", title: "Nothing was saved on this phone" },
-        p(
-          "The daemon still lists this device. Remove it on the computer with ",
-          code(`agentproto pair revoke ${daemon.fingerprint}`),
-          ".",
-        ),
-        button("Done", () => void loadHome(), { variant: "secondary" }),
-      ),
-    )
-  }
 
   if (!offer) {
     show(shell({ eyebrow: "agentproto pair", title: "Loading…" }))
@@ -237,7 +251,8 @@ export function startPairPage(root: HTMLElement): void {
         show(wrongAddressView(mode.fingerprint, pending.daemon.fingerprint, offer))
         return
       }
-      show(confirmView(pending, false))
+      show(waitingView(pending))
+      await waitForApproval(pending, info.expiresAt)
     } catch (err) {
       show(errorView(err))
     }

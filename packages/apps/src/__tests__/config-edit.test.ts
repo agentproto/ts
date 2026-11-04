@@ -432,6 +432,60 @@ describe("config app edit flows (real panel script, fake McpApp bridge)", () => 
     expect(panel.window.document.body.innerHTML).not.toContain(bearer)
   })
 
+  it("renders a pending pairing with its short code and confirms it", async () => {
+    const fp = "abcdef0123456789abcdef0123456789"
+    const panel = renderPanel({
+      pair_pending: () => ok({ pending: [{ id: fp, fingerprint: fp, code: "abcdef01", name: "phone", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), rendezvous: "wss://rdv.example/v1" }] }),
+      pair_confirm: () => ok({ ok: true, confirmed: fp }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    expect(panel.window.document.body.innerHTML).toContain("abcdef01")
+    expect(panel.window.document.body.innerHTML).toContain("phone")
+
+    const confirmBtn = panel.window.document.querySelector(`[data-pair-confirm="${fp}"]`) as DomElement
+    expect(confirmBtn).toBeTruthy()
+    click(panel.window, confirmBtn)
+    await settle(30)
+    expect(panel.calls.some(c => c.tool === "pair_confirm" && c.args.target === fp)).toBe(true)
+  })
+
+  it("revoke-all leaves pending pairings untouched for confirm or decline", async () => {
+    const fp = "abcdef0123456789abcdef0123456789"
+    const panel = renderPanel({
+      remote_status: () => ok({ enabled: true, publicUrl: "https://gw.trycloudflare.com", createdAt: "2026-11-01T00:00:00.000Z" }),
+      pair_list: () => ok({ pairings: [{ name: "iPhone", fingerprint: "11111111111111111111111111111111", createdAt: "2026-11-02T00:00:00.000Z", lastSeen: "2026-11-03T00:00:00.000Z", rendezvous: "wss://rdv.example/v1" }] }),
+      pair_pending: () => ok({ pending: [{ id: fp, fingerprint: fp, code: "abcdef01", name: "new-phone", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), rendezvous: "wss://rdv.example/v1" }] }),
+      tunnel_list: () => ok({ tunnels: [{ id: "tun-1", label: "vite-preview", provider: "cloudflare-managed", targetPort: 5173, publicUrl: "https://relay.example.com", status: "active", createdAt: "2026-11-03T00:00:00.000Z" }] }),
+      pair_confirm: () => ok({ ok: true, confirmed: fp }),
+      pair_decline: () => ok({ ok: true, declined: fp }),
+      pair_revoke: () => ok({ ok: true }),
+      tunnel_delete: () => ok({ ok: true }),
+      remote_disable: () => ok({ disabled: true }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    click(panel.window, el(panel.window, "remote-revoke-all-btn"))
+    await settle(20)
+    const input = el(panel.window, "remote-revoke-all-input") as DomElement & { value: string }
+    input.value = "REVOKE"
+    click(panel.window, el(panel.window, "remote-revoke-all-confirm"))
+    await settle(80)
+
+    expect(panel.calls.some(c => c.tool === "pair_confirm")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "pair_decline")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "pair_revoke")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "tunnel_delete")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "remote_disable")).toBe(true)
+    // The pending row still renders after the reload.
+    expect(panel.window.document.body.innerHTML).toContain("abcdef01")
+    expect(el(panel.window, "toast").textContent).toMatch(/pending pairing\(s\) left/)
+  })
+
   it("renders no tunnel phone link in the Remote section; Pair a phone is the phone entry", async () => {
     const bearer = "AGENTPROTO_BEARER_TOKEN_XYZ"
     const phoneUrl = "https://x.test/apps/@agentik/session-chat/ui#token=PHONE_ONLY"

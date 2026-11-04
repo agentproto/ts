@@ -53,6 +53,8 @@ describe("serveLoopbackHttp", () => {
     const { client } = await pairViaOffer(rv, offer.url, "agent")
     closers.push(() => client.close())
     await client.ready()
+    const [pending] = await registry.listPending()
+    if (pending) await registry.confirmPending(pending.id)
     return client
   }
 
