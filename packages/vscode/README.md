@@ -41,6 +41,9 @@ Node.js ≥ 20 · VS Code ≥ 1.90.
   [GitHub Releases](https://github.com/agentproto/ts/releases) →
   **Extensions: Install from VSIX…**, or
   `code --install-extension agentproto-vscode-<version>.vsix`.
+- **Local build** (from a checkout of this repo): run
+  `pnpm run install:local` in `packages/vscode`. It rebuilds, clears `output/`,
+  packages a fresh `.vsix`, and force-installs exactly that file.
 
 ## Quick start
 
