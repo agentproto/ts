@@ -532,9 +532,10 @@ async function mapControllerError(err: unknown, client?: ComputerControllerClien
       err.retryAfterMs !== undefined
         ? `; retry after ${Math.ceil(err.retryAfterMs / 1000)}s`
         : ""
+    const why = code === "sandbox_fleet_capacity" && err.reason !== undefined ? ` (reason: ${err.reason})` : ""
     return new ComputerSandboxError(
       code,
-      `computer sandbox: ${label}${cap}${retry}`,
+      `computer sandbox: ${label}${why}${cap}${retry}`,
       {
         status: err.status,
         resource: err.resource,
@@ -1243,6 +1244,8 @@ async function bootOnClient(
     sendAuto ? `${bootKey}-auto` : slotPlan !== undefined && slotIndex > 0 ? `${bootKey}-${slotPlan[slotIndex]}` : bootKey
   const fleetCapacityWaitMs = Math.max(0, config.fleetCapacityWaitMs ?? DEFAULT_FLEET_CAPACITY_WAIT_MS)
   const fleetCapacityRetryMs = Math.max(0, config.fleetCapacityRetryMs ?? DEFAULT_FLEET_CAPACITY_RETRY_MS)
+  const capacityWaitBudgetMs = opts.capacityWaitBudgetMs !== undefined ? Math.max(0, opts.capacityWaitBudgetMs) : undefined
+  let capacityGiveUp: string | undefined
   const fleetWaitStartedAt = Date.now()
   let fleetAttempt = 1
   const attemptCreate = async (): Promise<CreateComputerResponse> => {
@@ -1326,11 +1329,28 @@ async function bootOnClient(
         }
         if (!(err instanceof ComputerApiError) || err.code !== "fleet-capacity") throw err
         const waited = Date.now() - fleetWaitStartedAt
-        const left = fleetCapacityWaitMs - waited
+        let left = fleetCapacityWaitMs - waited
         // A Retry-After of 0 must not spin for the whole window; a long one
         // still gets a last attempt when the window closes.
         const asked =
           err.retryAfterMs !== undefined ? Math.max(MIN_FLEET_CAPACITY_RETRY_AFTER_MS, err.retryAfterMs) : fleetCapacityRetryMs
+        // The caller has another placement to try: no Retry-After means no
+        // host is waking, so fail the rung now; with one, wait once, within
+        // the caller's budget, then let the caller move on.
+        if (capacityWaitBudgetMs !== undefined) {
+          if (err.retryAfterMs === undefined || fleetAttempt > 1) {
+            bootLog(
+              `create refused (HTTP ${err.status}, "fleet-capacity"${err.reason ? `, ${err.reason}` : ""}): ` +
+                (err.retryAfterMs === undefined
+                  ? "no Retry-After, no host is waking; "
+                  : `still refused after waiting ${formatSeconds(waited)}; `) +
+                "giving up so the caller can try its next placement",
+            )
+            capacityGiveUp = err.retryAfterMs === undefined ? "no host is waking" : "still full after one wait"
+            throw err
+          }
+          left = Math.min(left, capacityWaitBudgetMs)
+        }
         const delay = Math.min(asked, left)
         if (left <= 0) {
           if (fleetAttempt > 1) {
@@ -1367,8 +1387,12 @@ async function bootOnClient(
     }
     if (err instanceof ComputerApiError) {
       const mapped = await mapControllerError(err, client)
-      if (mapped instanceof ComputerSandboxError && mapped.code === "sandbox_fleet_capacity" && fleetAttempt > 1) {
-        mapped.message += ` (still refused after ${fleetAttempt} attempts over ${formatSeconds(Date.now() - fleetWaitStartedAt)})`
+      if (mapped instanceof ComputerSandboxError && mapped.code === "sandbox_fleet_capacity") {
+        if (capacityGiveUp !== undefined) {
+          mapped.message += ` (not waiting for the fleet: ${capacityGiveUp}, another placement is available)`
+        } else if (fleetAttempt > 1) {
+          mapped.message += ` (still refused after ${fleetAttempt} attempts over ${formatSeconds(Date.now() - fleetWaitStartedAt)})`
+        }
       }
       if (mapped !== err) {
         bootLog(
