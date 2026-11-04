@@ -116,8 +116,10 @@ const compactPermissionItem = (p: Record<string, unknown>) => ({
   ...(p.sessionTitle !== undefined ? { sessionTitle: p.sessionTitle } : {}),
   ...(p.toolName !== undefined ? { toolName: p.toolName } : {}),
   ...(p.rawInput !== undefined ? { rawInput: p.rawInput } : {}),
-  // AIP-45 request kind (absent = tool-permission); its payload stays behind `full: true`.
+  // AIP-45 request kind (absent = tool-permission) and, for a question, the
+  // question itself: it is the payload an answerer needs to call `permissions_respond`.
   ...(p.request !== undefined ? { request: p.request } : {}),
+  ...(p.question !== undefined ? { question: p.question } : {}),
   options: p.options,
   ageMs: p.ageMs,
 })
@@ -971,7 +973,7 @@ export function registerOrchestrationTools(
       "and age. Resolve one with `permissions_respond`. Optionally filter by " +
       "`sessionId`. Empty list = nothing is waiting on a decision. COMPACT " +
       "BY DEFAULT: each entry is a slim projection (id/sessionId/adapter/" +
-      "sessionLabel/sessionTitle/toolName/rawInput/options/ageMs) — the ACP " +
+      "sessionLabel/sessionTitle/toolName/rawInput/request/question/options/ageMs) — the ACP " +
       "`text` line, `_meta` payload, and `toolCallId` echo are behind " +
       "`full: true` / `compact: false`.",
     inputSchema: permissionsListSchema,

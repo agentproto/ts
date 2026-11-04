@@ -970,6 +970,57 @@ describe("pending-permissions inbox: multi-field questions", () => {
     registry.shutdown()
   })
 
+  it("refuses a bare submit on a fields question and keeps it parked; skip still declines", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-bare")
+    await spawnAndPark(registry, fake)
+    // What an outdated client sends when it only knows Submit / Skip.
+    for (const input of [
+      { decision: "approve" as const, optionId: "submit" },
+      { decision: "approve" as const },
+    ]) {
+      const result = await registry.respondPermission("perm-bare", input)
+      expect(result).toMatchObject({ ok: false, error: "invalid_answers" })
+    }
+    expect(fake.responded).toEqual([])
+    expect(registry.listPendingPermissions()).toHaveLength(1)
+
+    const skipped = await registry.respondPermission("perm-bare", { decision: "deny" })
+    expect(skipped).toMatchObject({ ok: true })
+    expect(fake.responded).toEqual([{ requestId: "perm-bare", resolution: { optionId: "skip" } }])
+    registry.shutdown()
+  })
+
+  it("POST /permissions/:id with a bare submit 400s invalid_answers", async () => {
+    const registry = createSessionsRegistry({ persist: false, transcriptDir })
+    const fake = questionSession("perm-http-bare")
+    await spawnAndPark(registry, fake)
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "main", version: "0" })).server,
+      conversations: noopConversations(),
+      events: createRuntimeEvents(),
+      heartbeat: noopHeartbeat(),
+      sessions: registry,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/permissions/perm-http-bare`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approve", optionId: "submit" }),
+      })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toMatchObject({ error: "invalid_answers" })
+      expect(fake.responded).toEqual([])
+    } finally {
+      await http.stop()
+    }
+    registry.shutdown()
+  })
+
   it("deny skips the question; answers on a plain permission are refused", async () => {
     const registry = createSessionsRegistry({ persist: false, transcriptDir })
     const q = questionSession("perm-skip")

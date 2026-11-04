@@ -290,8 +290,9 @@ import { buildOccurrenceKey } from "./action-hooks/occurrence-key.js"
 import { computeContextPct, layerContextSettings, withContextPolicy } from "./context-continuity.js"
 import { ContinueFreshSpawnError, continueAgentSessionFresh } from "./session-continue-fresh.js"
 import { SessionMigrateError, migrateSandboxSession, summarizeMigration } from "./session-migrate.js"
-import { spawnAgentSession, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
+import { spawnAgentSession, resolveAccessProfileAuth, cleanAgentLines, type BuildOrchestratorMcp, type SpawnAgentSessionInput, type SandboxSpecInput, type SpawnAgentSessionDeps } from "./session-spawn.js"
 import { deliverParentRelayMessage, resolveParentRelayGrant, PARENT_RELAY_PATH, PARENT_RELAY_TOKEN_HEADER } from "./parent-relay.js"
+import { CREDENTIAL_RELAY_PATH, grantRelayedCredential, parseCredentialRelayRequest } from "./credential-relay.js"
 import { CLOUD_ADAPTER_PLACEHOLDER } from "@agentproto/cloud-agent"
 import { stripAnsi } from "./agent-tools.js"
 import {
@@ -1097,7 +1098,7 @@ export interface RuntimeHttpServerOptions {
    */
   /**
    * `profile`, when present, is parsed from the request's `?profile=core,apps`
-   * query string (see `handleMcp` below) — named MCP surface profiles
+   * query string (see `handleMcp` below): named MCP surface profiles
    * (tool-profiles.ts). The query wins over the gateway's boot-time
    * `defaults.mcp.profile`; an absent/unknown query falls through to that
    * default, and neither naming a profile means `full` (every tool, the
@@ -1829,6 +1830,9 @@ export async function startHttpServer(
     // report up to its host parent. POST-only, and the token gate inside
     // the route refuses anything without a valid token.
     if (method === "POST" && path === PARENT_RELAY_PATH) return true
+    // CREDENTIAL RELAY: same token-authenticated exemption; the route only
+    // answers for a profile the grant's allowlist names.
+    if (method === "POST" && path === CREDENTIAL_RELAY_PATH) return true
     const header = req.headers.authorization
     if (header === `Bearer ${auth.token}`) return true
     const urlStr = req.url ?? ""
@@ -2246,7 +2250,7 @@ export async function startHttpServer(
     return names.length > 0 ? new Set(names) : undefined
   }
 
-  /** `?profile=core,apps` — named MCP surface profiles (tool-profiles.ts).
+  /** `?profile=core,apps`: named MCP surface profiles (tool-profiles.ts).
    *  Comma-separated and order-independent; validation/fallback lives in
    *  `resolveToolProfileSelection` (index.ts), so an unknown name here is
    *  passed through rather than silently treated as a full surface. */
@@ -3620,6 +3624,51 @@ export async function startHttpServer(
             delivery: result.delivery,
             urgencyApplied: result.urgencyApplied,
           })
+          return
+        }
+
+        // CREDENTIAL RELAY: a box-side nested spawn asks THIS daemon to
+        // resolve an auth profile the host owns (the box holds no profiles).
+        // Same per-session relay token as the parent relay; the grant's
+        // allowlist, never the payload, decides which profiles may be billed.
+        // The answer carries a credential: never cached, never logged.
+        // See `credential-relay.ts`.
+        if (path === CREDENTIAL_RELAY_PATH && req.method === "POST") {
+          const json = (status: number, body: unknown): void => {
+            res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" })
+            res.end(JSON.stringify(body))
+          }
+          if (!opts.resolveAgentAdapter) {
+            json(501, { error: "no_adapter_resolver" })
+            return
+          }
+          const header = req.headers[PARENT_RELAY_TOKEN_HEADER]
+          const relayToken = Array.isArray(header) ? header[0] : header
+          if (!relayToken) {
+            json(401, { error: "relay_token_missing", message: "no relay token presented" })
+            return
+          }
+          if (!resolveParentRelayGrant(relayToken)) {
+            json(401, { error: "relay_token_unknown", message: "the relay token is unknown or expired" })
+            return
+          }
+          const credentialRequest = parseCredentialRelayRequest(await readJsonBody(req))
+          if (!credentialRequest) {
+            json(400, { error: "relay_request_invalid", message: "a credential request names an adapter and at least one profile" })
+            return
+          }
+          const granted = await grantRelayedCredential({
+            token: relayToken,
+            request: credentialRequest,
+            resolveAgentAdapter: opts.resolveAgentAdapter,
+            resolveAccessProfileAuth,
+          })
+          if (!granted.ok) {
+            json(granted.status, { error: granted.code, message: granted.message })
+            return
+          }
+          const { ok: _ok, ...resolved } = granted
+          json(200, { ok: true, ...resolved })
           return
         }
 

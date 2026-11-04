@@ -10,7 +10,12 @@
  */
 
 import { describe, expect, it } from "vitest"
+import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { createMcpServer } from "@agentproto/mcp-server"
 import { DAEMON_TOOL_NAMES } from "../daemon-tool-names.generated.js"
+import { registerToolHelpTool } from "../tool-help-mcp.js"
+import { withToolSubset } from "../tool-subset.js"
 import {
   ADMIN_PROFILE_TOOLS,
   APP_UI_TOOL_WILDCARD,
@@ -124,5 +129,60 @@ describe("MCP surface profile budgets", () => {
   it("exposes every named profile with a valid profile name", () => {
     const expected: ToolProfileName[] = ["core", "orchestrator", "apps", "admin"]
     expect(Object.keys(PROFILE_TOOLS).sort()).toEqual([...expected].sort())
+  })
+})
+
+async function withProfileHelp(profile: ToolProfileName): Promise<{
+  names: string[]
+  callHelp: (name: string) => Promise<string>
+  close: () => Promise<void>
+}> {
+  const allow = resolveToolProfileAllowSet([profile])
+  expect(allow).toBeDefined()
+  const { server } = await createMcpServer({ specs: [], name: `profile-${profile}`, version: "0" })
+  const scoped = withToolSubset(server, allow!)
+  registerToolHelpTool(scoped, { activeProfiles: [profile] })
+
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+  await scoped.connect(serverTransport)
+  const client = new Client({ name: `profile-${profile}-test`, version: "0" })
+  await client.connect(clientTransport)
+
+  const names = (await client.listTools()).tools.map(tool => tool.name)
+  return {
+    names,
+    callHelp: async (name: string) => {
+      const result = (await client.callTool({ name: "tool_help", arguments: { name } })) as {
+        content?: Array<{ type: string; text: string }>
+      }
+      return result.content?.[0]?.text ?? ""
+    },
+    close: () => client.close(),
+  }
+}
+
+describe("tool_help on narrow profiles", () => {
+  it.each(["orchestrator", "apps", "admin"] as const)(
+    "stays registered under ?profile=%s",
+    async profile => {
+      const help = await withProfileHelp(profile)
+      try {
+        expect(help.names).toContain("tool_help")
+      } finally {
+        await help.close()
+      }
+    },
+  )
+
+  it("names the profile that exposes a tool hidden from ?profile=apps", async () => {
+    const help = await withProfileHelp("apps")
+    try {
+      expect(help.names).not.toContain("cron_list")
+      const text = await help.callHelp("cron_list")
+      expect(text).toContain("Not in the active profile (apps).")
+      expect(text).toContain("Exposed by: admin, full.")
+    } finally {
+      await help.close()
+    }
   })
 })

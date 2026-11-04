@@ -27,7 +27,13 @@ import {
   type ResolvedCloudSpawn,
 } from "@agentproto/cloud-agent"
 import { RESUME_CONNECTION_LOST_RE, RESUME_ID_REJECTED_RE } from "./resume-strategies.js"
-import { mintRemoteParentForBox, revokeParentRelayGrant } from "./parent-relay.js"
+import {
+  credentialRelayForSession,
+  mintRelayForBox,
+  revokeParentRelayGrant,
+  type CredentialRelay,
+} from "./parent-relay.js"
+import { requestRelayedCredential, withBoxProfileHint } from "./credential-relay.js"
 import {
   discoverRestoredAdapterConversation,
   restoreAdapterStore,
@@ -751,6 +757,7 @@ export interface AccessProfileAuthError {
     | "unsupported_auth_mode"
     | "unsupported_auth_source"
     | "auth_source_unresolved"
+    | "auth_profile_denied"
   message: string
   details?: Record<string, unknown>
 }
@@ -1930,7 +1937,7 @@ export interface SpawnAgentSessionInput {
    *  the runtime bills the FIRST profile eligible for the model's route.
    *  Resolved from auth-profiles + keychain at the final spawn boundary; the
    *  secret never crosses HTTP/MCP. */
-  access?: { profileRef?: string; profileRefs?: string[] }
+  access?: { profileRef?: string; profileRefs?: string[]; delegateProfileRefs?: string[] }
   /** Bind this spawn to a local/LAN inference endpoint — resolved (and fit-
    *  checked) at the very top of `spawnAgentSession`, BEFORE preset
    *  expansion, into ordinary `model`/`route`/`access`/`auth`/`deferredTools`
@@ -2167,6 +2174,11 @@ export interface SpawnAgentSessionInput {
    *  (see `parent-relay.ts` and `docs/lineage-handover.md`). Recorded
    *  verbatim onto {@link SessionDescriptor.remoteParent}. */
   remoteParent?: { sessionId: string; url: string; token: string }
+  /** A CREDENTIAL relay forwarded by the host into a BOX daemon's
+   *  `agent_start` (see `credential-relay.ts`): where this session's nested
+   *  spawns ask the HOST to resolve a profile the box does not hold. The
+   *  token is kept in memory only, never on a descriptor. */
+  credentialRelay?: { url: string; token: string }
   /** Per-spawn opt-out of sentinel auto-link (AIP-60 §6/step 4): `false`
    *  means a PR this session opens is never auto-watched, regardless of
    *  `config.sentinel.autoWatchPrs`. Recorded verbatim onto
@@ -3793,6 +3805,9 @@ async function spawnAgentSessionOnce(
     for (const ref of [
       requestedAccess?.profileRef,
       ...(requestedAccess?.profileRefs ?? []),
+      // Delegating a profile to a box supervisor hands out the right to bill
+      // it, so it is held to the same "own or shared" rule as naming it.
+      ...(requestedAccess?.delegateProfileRefs ?? []),
     ]) {
       if (ref !== undefined && ref !== "" && !requestedProfiles.includes(ref)) {
         requestedProfiles.push(ref)
@@ -4995,7 +5010,7 @@ async function spawnAgentSessionOnce(
   // unchanged while the profile-resolved gateway also drives wire routing.
   let profileResolvedRoute: RouteSpec | undefined
   if (resolved && (input.access?.profileRef || input.access?.profileRefs?.length) && !cloudResolved) {
-    const result = await resolveAccessProfileAuth({
+    let result = await resolveAccessProfileAuth({
       adapter: input.adapter,
       ...(input.access?.profileRef ? { profileRef: input.access.profileRef } : {}),
       ...(input.access?.profileRefs?.length ? { profileRefs: input.access.profileRefs } : {}),
@@ -5004,6 +5019,26 @@ async function spawnAgentSessionOnce(
       model: input.model,
       defaultModel: resolved.defaultModel,
     })
+    // CREDENTIAL RELAY: a box daemon holds no auth profiles, so a nested
+    // spawn naming one finds nothing locally. When the calling box session was
+    // granted a host credential relay, ask the HOST to resolve the profile
+    // (the host enforces the grant's allowlist). A local profile always wins;
+    // the relay is only a fallback, and a still-refused spawn names the fix.
+    if (!result.ok && result.code === "access_profile_not_found" && input.sandbox === undefined) {
+      const relayCallerId = spawnGateCallerId(callerScope, input)
+      const relay = relayCallerId ? credentialRelayForSession(relayCallerId) : undefined
+      if (relay) {
+        result = await requestRelayedCredential(relay, {
+          adapter: input.adapter,
+          ...(input.access?.profileRef ? { profileRef: input.access.profileRef } : {}),
+          ...(input.access?.profileRefs?.length ? { profileRefs: input.access.profileRefs } : {}),
+          ...(input.route ? { route: input.route } : {}),
+          ...(input.model ? { model: input.model } : {}),
+        })
+      } else if (relayCallerId !== undefined) {
+        result = { ...result, message: withBoxProfileHint(result.message) }
+      }
+    }
     if (!result.ok) {
       return {
         ok: false,
@@ -5927,6 +5962,7 @@ async function spawnAgentSessionOnce(
         ...(sessionSkills.length > 0 ? { sessionSkills } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
         ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
+        ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinel === false ? { sentinelAutoWatch: false } : {}),
         meta: spawnDescriptorMeta(),
@@ -6272,6 +6308,25 @@ async function spawnAgentSessionOnce(
         ...(input.costBudget !== undefined ? { costBudget: input.costBudget } : {}),
       })
       sandboxPendingId = pendingSandbox.id
+      // CREDENTIAL RELAY allowlist: the host profiles this box session's
+      // NESTED spawns may bill. Only an orchestrator that can reach
+      // `agent_start` gets one: its own resolved profile, the operator's
+      // shared profiles and an explicit `access.delegateProfileRefs`.
+      const delegatedProfileRefs: string[] = []
+      if (
+        sandboxOrchestratorForward === true ||
+        (typeof sandboxOrchestratorForward === "object" &&
+          (sandboxOrchestratorForward.tools === undefined ||
+            sandboxOrchestratorForward.tools.includes("agent_start")))
+      ) {
+        for (const ref of [
+          accessProfileEcho?.profileRef,
+          ...(configDefaults?.spawn?.sharedProfiles ?? []),
+          ...(input.access?.delegateProfileRefs ?? []),
+        ]) {
+          if (ref !== undefined && ref !== "" && !delegatedProfileRefs.includes(ref)) delegatedProfileRefs.push(ref)
+        }
+      }
       const booted = await bootSandboxAgentSession({
         sandbox: input.sandbox,
         resolveSandboxProvider,
@@ -6378,7 +6433,15 @@ async function spawnAgentSessionOnce(
         // box's own `agent_start` (the parent lives in the HOST registry).
         // No relay URL configured ⇒ nothing forwarded (the box keeps today's
         // clear "no recorded parent" error).
-        ...(parentSessionId ? { parentRelay: { parentSessionId, boxSessionId: mintedSessionId } } : {}),
+        ...(parentSessionId || delegatedProfileRefs.length > 0
+          ? {
+              parentRelay: {
+                ...(parentSessionId ? { parentSessionId } : {}),
+                boxSessionId: mintedSessionId,
+                ...(delegatedProfileRefs.length > 0 ? { profileRefs: delegatedProfileRefs } : {}),
+              },
+            }
+          : {}),
       })
       if (!booted.ok) {
         // The boot never produced a session: remove the placeholder so the
@@ -6596,6 +6659,7 @@ async function spawnAgentSessionOnce(
       // `depth + 1` — see `recordedDepth`.
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(input.remoteParent ? { remoteParent: input.remoteParent } : {}),
+      ...(input.credentialRelay ? { credentialRelay: input.credentialRelay } : {}),
       ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
       meta: spawnDescriptorMeta(),
       ...(reactionStamp ? { origin: reactionStamp.origin } : input.origin ? { origin: input.origin } : {}),
@@ -7377,8 +7441,11 @@ export async function bootSandboxAgentSession(opts: {
    *  The relay URL itself comes from the operator's configuration
    *  (`AGENTPROTO_PARENT_RELAY_URL`): without it no remote parent is
    *  forwarded and the box keeps today's clear "no recorded parent" error.
+   *  `parentSessionId` is absent when the host operator spawned the session;
+   *  `profileRefs` is the allowlist of host profiles its nested spawns may
+   *  bill through the credential relay (`credential-relay.ts`).
    *  Absent for every non-sandbox spawn. */
-  parentRelay?: { parentSessionId: string; boxSessionId: string }
+  parentRelay?: { parentSessionId?: string; boxSessionId: string; profileRefs?: readonly string[] }
   /** The HOST-side resolved billing auth (`ResolvedAuthSpec`) for this spawn,
    *  when one was resolved (config-default wallet / access profile). Consulted
    *  by `env.autoPassthrough` (below) to learn the credential's env-var NAME —
@@ -8135,11 +8202,16 @@ export async function bootSandboxAgentSession(opts: {
   // the operator configured a relay URL reachable FROM the box; without one
   // nothing is forwarded and the box's `message_parent` keeps today's clear
   // "no recorded parent" error.
-  const remoteParent = mintRemoteParentForBox(opts.parentRelay)
+  const relayMint = mintRelayForBox(opts.parentRelay)
+  const remoteParent = relayMint?.remoteParent
+  const credentialRelay = relayMint?.credentialRelay
+  const revokeRelayGrant = (): void => {
+    if (relayMint) revokeParentRelayGrant(relayMint.token)
+  }
   let boxResumeVia: string | undefined
   let boxSpawnEnforcedPostures: string[] | undefined
   if (bootCancelled()) {
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     return cancelBoot()
   }
   const agentStartStartedAt = Date.now()
@@ -8185,6 +8257,9 @@ export async function bootSandboxAgentSession(opts: {
       // PARENT RELAY: the REMOTE parent (host relay) block; see the
       // `remoteParent` mint above.
       ...(remoteParent ? { remoteParent } : {}),
+      // CREDENTIAL RELAY: the same grant, for a box orchestrator's nested
+      // spawns (see `credential-relay.ts`).
+      ...(credentialRelay ? { credentialRelay } : {}),
     }
     const remoteDesc =
       deviceTarget !== undefined
@@ -8193,7 +8268,7 @@ export async function bootSandboxAgentSession(opts: {
     remoteSessionId = remoteDesc.id
     console.warn(`[sandbox] boot: agent started (${actualProvider} ${host.sandboxId}, session ${remoteSessionId})`)
     if (bootCancelled()) {
-      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      revokeRelayGrant()
       return cancelBoot()
     }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
@@ -8228,7 +8303,7 @@ export async function bootSandboxAgentSession(opts: {
     // PARENT RELAY: the boot never completed, so the relay grant minted
     // above is dead on arrival - revoke it instead of leaving a live token
     // behind for a box session that will never exist.
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     if (!(await detachOnBootFailure())) {
       await host.stop().catch(() => undefined)
       recordSandboxState(host.sandboxId, "stopped")
@@ -8271,7 +8346,7 @@ export async function bootSandboxAgentSession(opts: {
     if (!serve.ok) {
       // PARENT RELAY: the boot failed after the grant was minted - revoke
       // it (see the `agent_start` failure path above).
-      if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+      revokeRelayGrant()
       if (!(await detachOnBootFailure())) {
         await host.stop().catch(() => undefined)
         recordSandboxState(host.sandboxId, "stopped")
@@ -8326,7 +8401,7 @@ export async function bootSandboxAgentSession(opts: {
   const onBeforeTeardown = composeTeardownHooks(trackedDeliveryOpts?.onBeforeTeardown, appGithubPushHook)
 
   if (bootCancelled()) {
-    if (remoteParent) revokeParentRelayGrant(remoteParent.token)
+    revokeRelayGrant()
     return cancelBoot()
   }
 

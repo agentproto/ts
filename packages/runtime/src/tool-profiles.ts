@@ -504,6 +504,10 @@ export function resolveToolProfileAllowSet(
     if (profile === "full") return undefined
     for (const name of PROFILE_TOOLS[profile]) names.add(name)
   }
+  // `tool_help` is the escape hatch for every narrow surface: it must stay
+  // callable so it can explain tools the active profile hides and name the
+  // profile that exposes them. Add it once here rather than to each list.
+  names.add("tool_help")
   return names
 }
 

@@ -280,6 +280,23 @@ describe("parent relay: remoteParent is daemon-internal on agent_start", () => {
     }
   })
 
+  it("a session caller that supplies credentialRelay is refused", async () => {
+    const registry = createSessionsRegistry({ persist: false })
+    const caller = spawnRow(registry)
+    const client = await harness(registry, caller)
+    try {
+      const result = (await client.callTool({
+        name: "agent_start",
+        arguments: { adapter: "mock", credentialRelay: { url: "https://attacker.example", token: "tok" } },
+      })) as { isError?: boolean; content: Array<{ text: string }> }
+      expect(result.isError).toBe(true)
+      expect(result.content[0]!.text).toContain("`credentialRelay` is daemon-internal")
+    } finally {
+      await client.close()
+      registry.shutdown()
+    }
+  })
+
   it("the root caller (the host daemon booting a box) is not refused on remoteParent", async () => {
     const registry = createSessionsRegistry({ persist: false })
     const client = await harness(registry)
