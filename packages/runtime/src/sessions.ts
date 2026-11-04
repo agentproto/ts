@@ -1263,6 +1263,8 @@ export interface DigestEntry {
   /** `exited`: the source declared this success informational (fyi). */
   fyi?: boolean
   reason?: string
+  /** The level-3 pin this entry carried when it was produced. */
+  floor?: import("@agentproto/delivery").Floor
   /** Already-resolved excerpt text for this event. */
   text?: string
 }
