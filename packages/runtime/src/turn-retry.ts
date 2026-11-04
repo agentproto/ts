@@ -113,10 +113,12 @@ const MAX_ERROR_ECHO = 300
 
 /** Pull an HTTP status code out of an error string, when it names one in a
  *  recognisable position ("429 status code", "status: 503", "HTTP 502",
- *  `"status":401`, "503 Service Unavailable"). A bare number elsewhere in the
- *  message ("max_tokens 500") is deliberately NOT read as a status. */
+ *  `"status":401`, "503 Service Unavailable", or leading the message as
+ *  "402: {...}" the way the pi adapter prints it). A bare number elsewhere in
+ *  the message ("max_tokens 500") is deliberately NOT read as a status. */
 export function extractHttpStatus(message: string): number | undefined {
   const patterns = [
+    /^\s*([1-5]\d\d)\s*:/,
     /\b(?:status(?:[ _-]?code)?|http(?:[ _-]?status)?|statuscode)\b["']?\s*[:=]?\s*["']?([1-5]\d\d)\b/i,
     /\b([1-5]\d\d)\s+(?:status\b|unauthorized|forbidden|payment required|too many requests|internal server error|bad gateway|service unavailable|gateway time-?out|overloaded)/i,
     /\b(?:error|code)\s*[:=]?\s*\(?([45]\d\d)\)?(?=[\s:,.)\]]|$)/i,
@@ -129,7 +131,7 @@ export function extractHttpStatus(message: string): number | undefined {
 }
 
 const AUTH_RE =
-  /\bunauthori[sz]ed\b|\bforbidden\b|\bpayment required\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\binsufficient[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\bpermission[ _-]denied\b/i
+  /\bunauthori[sz]ed\b|\bforbidden\b|\bpayment required\b|\binvalid[ _-]?(?:api[ _-]?key|x-api-key|token|credentials?)\b|\bauthentication (?:failed|error|required)\b|\binsufficient(?:[ _-](?!(?:to|for|of|in|on|at|and|or|the)\b)[a-z]+){0,2}[ _-](?:credits?|balance|quota|funds)\b|\bcredit balance\b|\bpermission[ _-]denied\b/i
 const RATE_LIMIT_RE =
   /\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b|\bresource[ _-]exhausted\b|\bthrottl(?:ed|ing)\b/i
 const UPSTREAM_5XX_RE =

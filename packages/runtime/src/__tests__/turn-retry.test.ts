@@ -25,6 +25,7 @@ import {
   createTurnRetryController,
   decideTurnRetry,
   decideTurnRetryAction,
+  extractHttpStatus,
   extractRetryAfterMs,
   isReadOnlyToolName,
   isSandboxSession,
@@ -57,6 +58,14 @@ describe("classifyTurnError", () => {
     ["Invalid API key provided", "auth"],
     // Billing reported with a 429 is still billing — not retryable.
     ["429: insufficient_quota — check your plan", "auth"],
+    // pi's "NNN: body" shape: the leading status is the signal, and the body's
+    // `server_error` type must not turn a billing refusal into a 5xx retry.
+    ['402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
+    ['{"type":"server_error","message":"Upstream request failed: Insufficient account funds"}', "auth"],
+    ["Insufficient wallet balance", "auth"],
+    ["insufficient available credits", "auth"],
+    ['503: {"type":"server_error","message":"Upstream request failed"}', "upstream-5xx"],
+    ["Insufficient permissions to list funds", "other"],
     ["Go usage limit exceeded", "usage-limit"],
     ["You've hit your session limit · resets 5pm", "usage-limit"],
     ["context length exceeded: max_tokens 500", "other"],
@@ -68,8 +77,34 @@ describe("classifyTurnError", () => {
     expect(classifyTurnError(message)).toBe(expected)
   })
 
+  it("never retries the live OpenCode Zen out-of-funds refusal", () => {
+    const live = '402: {"type":"server_error","message":"Upstream request failed: Insufficient account funds"}'
+    expect(extractHttpStatus(live)).toBe(402)
+    expect(classifyTurnError(live)).toBe("auth")
+  })
+
   it("the stall marker matches the registry's constant", () => {
     expect(NO_OUTPUT_STALL_MARKER).toBe(NO_OUTPUT_STALL_TURN_ERROR)
+  })
+})
+
+describe("extractHttpStatus", () => {
+  it.each([
+    ["402: out of credits", 402],
+    ['  503: {"type":"server_error"}', 503],
+    ["429 status code (no body)", 429],
+    ["status: 503", 503],
+  ])("%s → %s", (message, expected) => {
+    expect(extractHttpStatus(message)).toBe(expected)
+  })
+
+  it.each([
+    "max_tokens 500",
+    "context length exceeded: max_tokens 500",
+    "request 402 bytes over the limit: see docs",
+    "999: not a status",
+  ])("does not read a bare number as a status: %s", message => {
+    expect(extractHttpStatus(message)).toBeUndefined()
   })
 })
 
