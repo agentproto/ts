@@ -6,6 +6,7 @@
  * family a one-object change.
  */
 
+import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
 import { afterEach, describe, expect, it } from "vitest"
 import {
   coalesceKeyFor,
@@ -13,7 +14,17 @@ import {
   matchesType,
   registerSentinelCoalesceRule,
 } from "../sentinel-coalesce.js"
+import {
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+} from "../sentinel-triage.js"
 import type { SentinelEvent } from "../sentinel-providers/types.js"
+
+registerGithubDeliveryModule({
+  registerClassifier: registerSentinelClassifier,
+  registerCoalesceRule: registerSentinelCoalesceRule,
+  registerRepeatKey: registerSentinelRepeatKey,
+})
 
 function makeEvent(over: Partial<SentinelEvent> & Pick<SentinelEvent, "type">): SentinelEvent {
   return {

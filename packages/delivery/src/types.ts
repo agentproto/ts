@@ -41,13 +41,6 @@ export interface Envelope {
 
 export interface ClassifyContext {
   readonly targetId: string
-  /** Facts the runtime knows and the envelope does not carry. */
-  readonly facts: {
-    reportedRecently(sessionId: string, targetId: string, windowMs: number): boolean
-    isDescendant(sessionId: string, ancestorId: string): boolean
-    cronOutcome(sessionId: string): boolean | undefined
-    supersededByNewTurn(sessionId: string, turnTs: string): boolean
-  }
 }
 
 export interface Classifier {
@@ -57,8 +50,6 @@ export interface Classifier {
   readonly types: readonly string[]
   /** A level, or undefined to decline. */
   classify(env: Envelope, ctx: ClassifyContext): Level | undefined
-  /** Optional queue-coalesce key when the producer did not set `repeatKey`. */
-  repeatKey?(env: Envelope): string | undefined
 }
 
 export interface ClassifierRegistry {

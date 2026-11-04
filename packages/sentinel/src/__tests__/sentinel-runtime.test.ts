@@ -8,6 +8,7 @@
  * `supervisor-notify.test.ts`, which needs `markCrashed`).
  */
 
+import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
 import { afterAll, describe, expect, it, vi } from "vitest"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -24,6 +25,14 @@ import { singleMatch, type SentinelMatchClause, type SentinelProviderHandle } fr
 import type { SendMessageResult } from "../local-types.js"
 import { SessionNotAliveError } from "./test-support.js"
 import type { SessionMessage } from "../local-types.js"
+import { registerSentinelClassifier, registerSentinelRepeatKey } from "../sentinel-triage.js"
+import { registerSentinelCoalesceRule } from "../sentinel-coalesce.js"
+
+registerGithubDeliveryModule({
+  registerClassifier: registerSentinelClassifier,
+  registerCoalesceRule: registerSentinelCoalesceRule,
+  registerRepeatKey: registerSentinelRepeatKey,
+})
 
 // ── Test doubles ─────────────────────────────────────────────────────
 
@@ -248,7 +257,7 @@ describe("SentinelRuntime", () => {
     }
   })
 
-  it("ledger line carries the event timestamp and triage key, still never summary or data", async () => {
+  it("ledger line carries the event timestamp, still never summary or data, and a failure has no repeat key", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sentinel-triage-runtime-key-"))
     const ledgerPath = join(dir, "delivery-ledger.jsonl")
     try {
@@ -283,7 +292,8 @@ describe("SentinelRuntime", () => {
       expect(lines).toHaveLength(1)
       const line = JSON.parse(lines[0]!)
       expect(line.eventTs).toBe(eventTs)
-      expect(line.repeatKey).toBe(`sentinel:github-ci:ci:${subject}:sha1|failure`)
+      expect(line.repeatKey).toBeUndefined()
+      expect(line.rule).toBe("failure")
       expect(line).not.toHaveProperty("summary")
       expect(line).not.toHaveProperty("data")
       expect(lines[0]).not.toContain("SECRET_SUMMARY_TEXT")

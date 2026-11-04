@@ -244,6 +244,7 @@
     "@agentproto/command-sandbox": "workspace:*",
     "@agentproto/decision": "workspace:*",
     "@agentproto/delivery": "workspace:*",
+    "@agentproto/delivery-github": "workspace:*",
     "@agentproto/driver": "workspace:*",
     "@agentproto/driver-browser": "workspace:*",
     "@agentproto/driver-http": "workspace:*",

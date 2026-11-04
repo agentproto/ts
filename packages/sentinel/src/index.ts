@@ -11,6 +11,12 @@
 
 export const SPEC_NAME = "sentinel/v1" as const
 
+export { registerSentinelCoalesceRule } from "./sentinel-coalesce.js"
+export {
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+} from "./sentinel-triage.js"
+
 export {
   createSentinelStore,
   mintSentinelId,

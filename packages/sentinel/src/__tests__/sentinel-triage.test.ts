@@ -6,6 +6,9 @@
  */
 
 import { RecentKeys as DeliveryRecentKeys } from "@agentproto/delivery"
+import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
+import { readFileSync } from "node:fs"
+
 import { describe, expect, it } from "vitest"
 import {
   DEFAULT_RECENT_KEYS_CAP,
@@ -13,8 +16,21 @@ import {
   SENTINEL_TRIAGE_REPEAT_WINDOW_MS,
   classifySentinelEvent,
   recordSentinelTriageKey,
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+  sentinelEnvelopeFor,
 } from "../sentinel-triage.js"
+import { registerSentinelCoalesceRule } from "../sentinel-coalesce.js"
 import type { SentinelEvent } from "../sentinel-providers/types.js"
+
+registerGithubDeliveryModule({
+  registerClassifier: registerSentinelClassifier,
+  registerCoalesceRule: registerSentinelCoalesceRule,
+  registerRepeatKey: registerSentinelRepeatKey,
+})
+
+const SYNC_RULE = "github-triage-table:pull-request-synchronize"
+const SYNC = { decision: "fyi" as const, rule: SYNC_RULE }
 
 function makeEvent(over: Partial<SentinelEvent> & Pick<SentinelEvent, "type">): SentinelEvent {
   return {
@@ -61,7 +77,7 @@ describe("classifySentinelEvent", () => {
     const recent = new RecentKeys()
     const firstEvent = push()
     const first = classifySentinelEvent(firstEvent, input(recent, 0))
-    expect(first).toEqual({ decision: "wake", rule: "default" })
+    expect(first).toEqual(SYNC)
     recordSentinelTriageKey(firstEvent, input(recent, 0))
 
     const second = classifySentinelEvent(push({ id: "evt_2" }), input(recent, 60_000))
@@ -71,15 +87,9 @@ describe("classifySentinelEvent", () => {
   it("a repeat counts per target, not globally", () => {
     const recent = new RecentKeys()
     const e1 = push()
-    expect(classifySentinelEvent(e1, input(recent, 0, "sess_1"))).toEqual({
-      decision: "wake",
-      rule: "default",
-    })
+    expect(classifySentinelEvent(e1, input(recent, 0, "sess_1"))).toEqual(SYNC)
     recordSentinelTriageKey(e1, input(recent, 0, "sess_1"))
-    expect(classifySentinelEvent(push({ id: "evt_2" }), input(recent, 1_000, "sess_2"))).toEqual({
-      decision: "wake",
-      rule: "default",
-    })
+    expect(classifySentinelEvent(push({ id: "evt_2" }), input(recent, 1_000, "sess_2"))).toEqual(SYNC)
   })
 
   it("failure: a failing verdict on the same head as an earlier pending tick still wakes", () => {
@@ -174,8 +184,8 @@ describe("classifySentinelEvent", () => {
       data: { headSha: "sha1", conclusion: "success" },
     })
     expect(classifySentinelEvent(success, input(recent, 60_000))).toEqual({
-      decision: "wake",
-      rule: "default",
+      decision: "fyi",
+      rule: "github-triage-table:check-suite-success",
     })
   })
 
@@ -192,7 +202,7 @@ describe("classifySentinelEvent", () => {
   it("a key recorded exactly 10 minutes ago is no longer a repeat, just inside is", () => {
     const inside = new RecentKeys()
     const e1 = push()
-    expect(classifySentinelEvent(e1, input(inside, 0))).toEqual({ decision: "wake", rule: "default" })
+    expect(classifySentinelEvent(e1, input(inside, 0))).toEqual(SYNC)
     recordSentinelTriageKey(e1, input(inside, 0))
     expect(
       classifySentinelEvent(push({ id: "evt_inside" }), input(inside, SENTINEL_TRIAGE_REPEAT_WINDOW_MS - 1)),
@@ -200,11 +210,11 @@ describe("classifySentinelEvent", () => {
 
     const boundary = new RecentKeys()
     const e2 = push()
-    expect(classifySentinelEvent(e2, input(boundary, 0))).toEqual({ decision: "wake", rule: "default" })
+    expect(classifySentinelEvent(e2, input(boundary, 0))).toEqual(SYNC)
     recordSentinelTriageKey(e2, input(boundary, 0))
     expect(
       classifySentinelEvent(push({ id: "evt_boundary" }), input(boundary, SENTINEL_TRIAGE_REPEAT_WINDOW_MS)),
-    ).toEqual({ decision: "wake", rule: "default" })
+    ).toEqual(SYNC)
   })
 })
 
@@ -237,8 +247,8 @@ describe("classifySentinelEvent: review and check verdicts that need action", ()
   it("approved and commented reviews are not failures, in either casing", () => {
     for (const state of ["approved", "APPROVED", "commented", "COMMENTED"]) {
       expect(classifySentinelEvent(review(state), input(new RecentKeys(), 0))).toEqual({
-        decision: "wake",
-        rule: "default",
+        decision: "fyi",
+        rule: "github-triage-table:review-approved-or-commented",
       })
     }
   })
@@ -250,6 +260,58 @@ describe("classifySentinelEvent: review and check verdicts that need action", ()
       decision: "fyi",
       rule: "coalesced-repeat",
     })
+  })
+})
+
+describe("sentinel triage registry", () => {
+  it("uses a registered classifier's level: a level-2 classifier on a synthetic event wakes", () => {
+    const unregister = registerSentinelClassifier({
+      id: "test-acme-widget-failed",
+      types: ["acme.widget.failed"],
+      classify: () => 2,
+    })
+    try {
+      const event = makeEvent({ type: "acme.widget.failed", data: {} })
+      expect(classifySentinelEvent(event, input(new RecentKeys(), 0))).toEqual({
+        decision: "wake",
+        rule: "test-acme-widget-failed",
+      })
+    } finally {
+      unregister()
+    }
+  })
+
+  it("a failure carries no repeatKey, so another failure on the same head still wakes", () => {
+    const recent = new RecentKeys()
+    const failure = (id: string): SentinelEvent =>
+      makeEvent({
+        id,
+        type: "github.check_suite.completed",
+        data: { headSha: "sha1", conclusion: "failure" },
+      })
+
+    const first = failure("evt_1")
+    expect(sentinelEnvelopeFor(first).repeatKey).toBeUndefined()
+    expect(classifySentinelEvent(first, input(recent, 0))).toEqual({ decision: "wake", rule: "failure" })
+    recordSentinelTriageKey(first, input(recent, 0))
+
+    const second = failure("evt_2")
+    expect(sentinelEnvelopeFor(second).repeatKey).toBeUndefined()
+    expect(classifySentinelEvent(second, input(recent, 60_000))).toEqual({
+      decision: "wake",
+      rule: "failure",
+    })
+  })
+})
+
+describe("GitHub knowledge stays out of the sentinel kernel", () => {
+  it("the kernel files contain no GitHub payload or type literals", () => {
+    const files = ["sentinel-triage.ts", "sentinel-coalesce.ts", "sentinel-runtime.ts"]
+    for (const file of files) {
+      const source = readFileSync(new URL(`../${file}`, import.meta.url), "utf8")
+      expect(source).not.toContain("data.conclusion")
+      expect(source).not.toContain("github.")
+    }
   })
 })
 
@@ -270,7 +332,7 @@ describe("RecentKeys", () => {
 
   it("does not record the classifying event; the caller records after a successful delivery", () => {
     const recent = new RecentKeys()
-    expect(classifySentinelEvent(push(), input(recent, 0))).toEqual({ decision: "wake", rule: "default" })
+    expect(classifySentinelEvent(push(), input(recent, 0))).toEqual(SYNC)
     expect(recent.size).toBe(0)
   })
 })
