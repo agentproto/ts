@@ -432,6 +432,31 @@ describe("config app edit flows (real panel script, fake McpApp bridge)", () => 
     expect(panel.window.document.body.innerHTML).not.toContain(bearer)
   })
 
+  it("renders no tunnel phone link in the Remote section; Pair a phone is the phone entry", async () => {
+    const bearer = "AGENTPROTO_BEARER_TOKEN_XYZ"
+    const phoneUrl = "https://x.test/apps/@agentik/session-chat/ui#token=PHONE_ONLY"
+    const panel = renderPanel({
+      remote_enable: () => ok({ publicUrl: "https://x.test", bearerToken: bearer, phoneUrl }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    expect(panel.window.document.body.innerHTML).toContain("Pair a phone")
+
+    const enableBtn = el(panel.window, "remote-enable-btn")
+    click(panel.window, enableBtn) // arm
+    await settle(10)
+    click(panel.window, enableBtn) // confirm
+    await settle(50)
+
+    // The bearer (remote MCP clients) still shows; the tunnel phone link does not.
+    expect(panel.window.document.body.innerHTML).toContain(bearer)
+    expect(panel.window.document.body.innerHTML).not.toContain(phoneUrl)
+    expect(panel.window.document.body.innerHTML).not.toContain("PHONE_ONLY")
+    expect(panel.window.document.body.innerHTML).not.toContain("Phone link")
+  })
+
   it("clears a pending pairing offer reveal on host teardown", async () => {
     const offerUrl = "agentproto://pair?token=SUPER_SECRET_OFFER"
     const panel = renderPanel({

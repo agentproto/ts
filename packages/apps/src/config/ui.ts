@@ -2451,7 +2451,6 @@ function renderRemote(remoteR, pairR, tunnelR) {
       html += '<div class="reveal-box">'
         + '<div>Shown once. Store it now, it will not be shown again.</div>'
         + (remoteReveal.bearerToken ? '<div>Bearer token<code>' + escHtml(remoteReveal.bearerToken) + '</code><button type="button" class="btn-sm" data-copy="bearer">copy token</button></div>' : '')
-        + (remoteReveal.phoneUrl ? '<div>Phone link<code>' + escHtml(remoteReveal.phoneUrl) + '</code><button type="button" class="btn-sm" data-copy="phoneUrl">copy link</button></div>' : '')
         + (remoteReveal.mcpConfigSnippet ? '<div>.mcp.json<code>' + escHtml(remoteReveal.mcpConfigSnippet) + '</code><button type="button" class="btn-sm" data-copy="snippet">copy snippet</button></div>' : '')
         + '</div>';
     }
@@ -2460,7 +2459,7 @@ function renderRemote(remoteR, pairR, tunnelR) {
     html += '<div class="muted-note">remote_status: ' + escHtml(remoteR.message) + '</div>';
   }
 
-  html += '<div class="sect-h">Pairing<button type="button" class="btn-sm" id="pair-offer-btn">+ new pairing</button></div>';
+  html += '<div class="sect-h">Pair a phone<button type="button" class="btn-sm" id="pair-offer-btn">Pair a phone</button></div>';
   if (pairReveal) {
     html += '<div class="reveal-box">'
       + '<div>Offer URL. Shown once, expires <span id="pair-offer-countdown"></span>.</div>'
@@ -2510,7 +2509,7 @@ function renderRemote(remoteR, pairR, tunnelR) {
   el.innerHTML = html;
   wireRemote(el);
   if (remoteReveal) {
-    wireCopyButtons(el, { bearer: remoteReveal.bearerToken, phoneUrl: remoteReveal.phoneUrl, snippet: remoteReveal.mcpConfigSnippet });
+    wireCopyButtons(el, { bearer: remoteReveal.bearerToken, snippet: remoteReveal.mcpConfigSnippet });
   }
   if (pairReveal) {
     wireCopyButtons(el, { pairOffer: pairReveal.url });
@@ -2525,7 +2524,7 @@ function wireRemote(container) {
       confirmClick("remote-enable", enableBtn, function () {
         loadTool("remote_enable", {}).then(function (r) {
           if (!r.ok) { toast(r.message, true); return; }
-          remoteReveal = { bearerToken: r.data.bearerToken, phoneUrl: r.data.phoneUrl, mcpConfigSnippet: r.data.mcpConfigSnippet };
+          remoteReveal = { bearerToken: r.data.bearerToken, mcpConfigSnippet: r.data.mcpConfigSnippet };
           toast("Remote enabled.", false);
           loadRemote();
         });
