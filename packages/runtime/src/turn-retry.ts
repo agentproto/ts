@@ -140,6 +140,17 @@ const UPSTREAM_5XX_RE =
  *  is at capacity; retry shortly", OpenCode Go's `ttft_admission_refused`):
  *  a temporary server-side refusal, retried like a 5xx. */
 const CAPACITY_RE = /\bttft_admission_refused\b|\b(?:at|over) capacity\b|\bretry shortly\b/i
+/** A network-level failure between the harness and the provider: a one-off
+ *  TLS handshake failure, a reset / timed-out / broken socket, a transient DNS
+ *  miss. Observed 2026-11-04 on opencode executors (`opencode-go/...`): the
+ *  `stream error` stderr line carried `error.error="TypeError: EPROTO: The TLS
+ *  handshake failed. Does the server speak TLS on this port?"` and the turn
+ *  was dropped as non-transient. Nothing reached the provider, so a retry
+ *  with backoff is safe; it is retried like a 5xx. `ENOTFOUND` and
+ *  `ECONNREFUSED` are left out on purpose: they usually mean a wrong host or
+ *  port, which no backoff fixes. */
+const NETWORK_RE =
+  /\b(?:EPROTO|ECONNRESET|ECONNABORTED|ETIMEDOUT|EPIPE|EAI_AGAIN|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT)\b|\bTLS handshake (?:failed|timed? ?out)\b|\bsocket hang up\b|\bconnection reset(?: by peer)?\b|\bnetwork socket disconnected\b|\bother side closed\b/i
 
 /**
  * Classify a turn's error text. Order matters: the stall marker is exact;
@@ -156,7 +167,8 @@ export function classifyTurnError(message: string | undefined): TurnErrorClass {
   if (
     (status !== undefined && status >= 500 && status <= 599) ||
     UPSTREAM_5XX_RE.test(message) ||
-    CAPACITY_RE.test(message)
+    CAPACITY_RE.test(message) ||
+    NETWORK_RE.test(message)
   ) {
     return "upstream-5xx"
   }
