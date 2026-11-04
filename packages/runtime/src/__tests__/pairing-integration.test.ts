@@ -206,6 +206,14 @@ function guessToken(): string {
   return randomBytes(32).toString("base64url")
 }
 
+/** First contact is pending until the operator confirms (AIP-59 §3.7).
+ *  These tests stand in for that operator. */
+async function confirmPending(reg: PairingRegistry): Promise<void> {
+  await vi.waitFor(async () => expect((await reg.listPending()).length).toBe(1))
+  const [pending] = await reg.listPending()
+  expect(await reg.confirmPending(pending!.code)).toMatchObject({ ok: true })
+}
+
 // ── in-process (malicious/untrusted broker) tests ────────────────
 
 describe("paired channel over an untrusted broker (in-process)", () => {
@@ -266,6 +274,7 @@ describe("paired channel over an untrusted broker (in-process)", () => {
       "jeremy@laptop",
     )
 
+    await confirmPending(registry)
     const hello = await client.ready()
     expect(hello.label).toBe("paired-daemon")
 
@@ -463,6 +472,7 @@ describe("paired channel over the real rendezvous broker", () => {
       offerTokens.auth,
       "jeremy@laptop",
     )
+    await confirmPending(registry)
     await client.ready()
     const res1 = await client.forwardHttp({ method: "GET", path: "/health" })
     expect(res1.status).toBe(200)
@@ -577,6 +587,7 @@ describe("paired channel over the real rendezvous broker", () => {
       offerTokens.auth,
       "phone",
     )
+    await confirmPending(registry)
     await first.ready()
     await first.close()
     const pairRoot = await derivePairRoot(session)
@@ -631,6 +642,7 @@ describe("paired channel over the real rendezvous broker", () => {
       offerTokens.auth,
       "phone",
     )
+    await confirmPending(registry)
     await client.ready()
     await client.close()
     const pairRoot = await derivePairRoot(session)
@@ -710,6 +722,7 @@ describe("paired channel over the real rendezvous broker", () => {
       offerTokens.auth,
       "legit",
     )
+    await confirmPending(registry)
     await client.ready()
     expect((await client.forwardHttp({ method: "GET", path: "/health" })).status).toBe(200)
     expect(served.map(c => c.mode)).toEqual(["offer"])
@@ -766,6 +779,7 @@ describe("paired channel over the real rendezvous broker", () => {
       offerTokens.auth,
       "roller",
     )
+    await confirmPending(registry)
     await client.ready()
     await client.close()
     const pairRoot = await derivePairRoot(session)
