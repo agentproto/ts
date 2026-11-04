@@ -82,6 +82,7 @@ agentproto | `packages/agentproto-placeholder` | core | product runtime package 
 create-agentproto-app | `packages/create-agentproto-app` | core | product runtime package consumed by the runtime/cli |
 @agentproto/decision | `packages/decision` | core | product runtime package consumed by the runtime/cli |
 @agentproto/delivery | `packages/delivery` | core | product runtime package consumed by the runtime/cli |
+@agentproto/delivery-github | `packages/delivery-github` | core | product runtime package consumed by the runtime/cli |
 agentproto-desktop | `packages/desktop` | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-browser | `packages/driver/browser` | core | product runtime package consumed by the runtime/cli |
 @agentproto/driver-cli | `packages/driver/cli` | core | product runtime package consumed by the runtime/cli |
