@@ -1,7 +1,7 @@
 # `agentproto maintain`
 
 ```text
-agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
+agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]
 ```
 
 Convenience shortcut over `agentproto workflow run-file` for the built-in
@@ -89,6 +89,7 @@ branch.
 |------|---------|-------------|
 | `--repo <dir>` | cwd | Any dir inside the repo. **Repeatable** — pass multiple `--repo` flags to target specific repos. Combined with `--all` to supplement discovered repos. |
 | `--all` | `false` | Run once per repo: every main repo that owns a worktree under the worktrees root, plus any `--repo` dirs. Prints the discovered repo list first; exits `1` if any run fails. |
+| `--worktrees-root <dir>` | none | With `--all`: also scan this dir for worktrees, in addition to the configured worktrees root. **Repeatable.** A dir holds worktrees directly (`<dir>/<slug>`) or in buckets (`<dir>/<repo>/<slug>`); main checkouts inside it are skipped. Use it for pools outside the root (e.g. a repo's `_worktrees/`). |
 | `--apply-merged` | `false` | Apply (reclaim-class only) after review. When used with `--all`, applies to every repo. |
 | `--apply-reviewed` | `false` | With `--apply-merged`, also reclaim `review`-class branches whose stored verdict agreed (`includeReviewed: true`). `branch_gc` refuses approvals below its line-coverage guard (default 95%) unless its verified-pr pass proves them, and reports them; ignored without `--apply-merged`. |
 | `--require-operator-below-guard` | `false` | Workflow input `requireOperatorBelowGuard`: turn the verified-pr, dep-bump and history-covered passes off, so below the guard only an operator approval reclaims. |
