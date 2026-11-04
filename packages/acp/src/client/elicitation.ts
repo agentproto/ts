@@ -50,13 +50,16 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v !== 
 function toChoice(raw: unknown): NonNullable<AgentPromptField["choices"]>[number] | undefined {
   if (typeof raw === "string") return { value: raw, label: raw }
   if (!isObject(raw) || typeof raw.const !== "string") return undefined
-  const description = str(raw.description)
+  const label = str(raw.title) ?? raw.const
+  // Some wrappers repeat the label as the description; showing it twice is noise.
+  const rawDescription = str(raw.description)
+  const description = rawDescription === label ? undefined : rawDescription
   const meta = isObject(raw._meta) ? raw._meta : undefined
   const previewMeta = meta && isObject(meta[OPTION_PREVIEW_META_KEY]) ? meta[OPTION_PREVIEW_META_KEY] : undefined
   const preview = previewMeta ? str(previewMeta.preview) : undefined
   return {
     value: raw.const,
-    label: str(raw.title) ?? raw.const,
+    label,
     ...(description ? { description } : {}),
     ...(preview ? { preview } : {}),
   }

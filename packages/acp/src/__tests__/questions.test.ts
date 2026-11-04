@@ -42,6 +42,32 @@ describe("elicitationToQuestion, generic MCP forms", () => {
     ).toEqual({ region: "us", name: "web", verbose: true, port: 8080 })
   })
 
+  it("drops a choice description that only repeats its label", () => {
+    const mapped = elicitationToQuestion({
+      mode: "form",
+      message: "Pick",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          db: {
+            type: "string",
+            oneOf: [
+              { const: "pg", title: "Postgres", description: "Postgres" },
+              { const: "lite", title: "SQLite", description: "Embedded file" },
+              { const: "plain", description: "plain" },
+            ],
+          },
+        },
+      },
+    })!
+    expect(mapped.question.fields![0]!.choices).toEqual([
+      { value: "pg", label: "Postgres" },
+      { value: "lite", label: "SQLite", description: "Embedded file" },
+      { value: "plain", label: "plain" },
+    ])
+    expect(mapped.question.choices.map(c => c.description)).toEqual([undefined, "Embedded file", undefined])
+  })
+
   it("returns undefined for a form with nothing renderable", () => {
     expect(elicitationToQuestion({ mode: "form", message: "x", requestedSchema: { properties: {} } })).toBeUndefined()
   })
