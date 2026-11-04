@@ -26,7 +26,7 @@ import type {
   AgentPromptAnswers,
   AgentPromptQuestion,
 } from "@agentproto/acp"
-import { summarizeAgentPromptAnswers, validateAgentPromptAnswers } from "@agentproto/acp"
+import { QUESTION_SUBMIT_OPTION_ID, summarizeAgentPromptAnswers, validateAgentPromptAnswers } from "@agentproto/acp"
 import type { McpAppToolCallRecord } from "./mcp-apps-host.js"
 import type { SessionConfigOption, SessionMode } from "@agentproto/acp/client"
 import { spawn, type ChildProcess } from "node:child_process"
@@ -7655,6 +7655,22 @@ export function createSessionsRegistry(opts?: {
     }
     if (input.answers !== undefined) return resolvePendingQuestion(pending, input.answers)
     const gate = daemonGatePermissions.get(id)
+    // A bare submit (the `submit` option, or an approve that would pick it)
+    // on a fields question carries no answers: forwarding it would accept an
+    // empty form and the agent would read it as "did not answer".
+    if (
+      !gate &&
+      pending.question?.fields?.length &&
+      (input.optionId === QUESTION_SUBMIT_OPTION_ID || (!input.optionId && input.decision === "approve"))
+    ) {
+      return {
+        ok: false,
+        error: "invalid_answers",
+        message:
+          `permission "${id}" is a question with fields; submitting it needs \`answers\` keyed by field id ` +
+          `(use decision "deny" or optionId "skip" to skip it)`,
+      }
+    }
     if (gate) {
       const selected = selectPermissionOptionId(pending.options, input)
       if (selected === null || "cancelled" in selected) {
