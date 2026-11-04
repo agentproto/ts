@@ -1107,6 +1107,26 @@ export function pickEgressSlot(
   return { candidates: candidates.map(slot => slot.id), cooling }
 }
 
+/** Fleet reasons a pinned slot's refusal says nothing about other hosts: no
+ *  host is awake, so another slot cannot help. */
+const FLEET_WIDE_CAPACITY_REASONS = new Set(["no-active-host"])
+
+/** A create naming a pool slot was refused for capacity on that slot's host:
+ *  `fleet-capacity` (the fleet's `reason` names the shortfall, e.g. `memory`,
+ *  `cpus`, `egress-slot-unavailable`) or the older bare
+ *  `egress-slot-unavailable` code. */
+function isSlotHostCapacityRefusal(err: ComputerApiError): boolean {
+  if (err.code === "egress-slot-unavailable") return true
+  return err.code === "fleet-capacity" && !(err.reason !== undefined && FLEET_WIDE_CAPACITY_REASONS.has(err.reason))
+}
+
+/** Ordered slot ids to try, plus the host that owns each slot when the pool
+ *  said so (a fleet pool does, a single controller's does not). */
+interface EgressSlotPlan {
+  slots: string[]
+  hosts: ReadonlyMap<string, string>
+}
+
 /** Slot ids to try, in order, when `auto` should avoid cooling addresses.
  *  `undefined` leaves the selection to the controller (no health view, not
  *  `auto`, or the pool cannot be read: the controller then answers with its
@@ -1116,16 +1136,19 @@ async function planEgressSlots(
   config: ComputerSandboxConfig,
   opts: SandboxBootOpts,
   bootLog: (line: string) => void,
-): Promise<string[] | undefined> {
+): Promise<EgressSlotPlan | undefined> {
   const health = opts.egressHealth
   if (config.egressIp !== "auto" || health === undefined) return undefined
   let pool: SandboxEgressSlot[]
+  const hosts = new Map<string, string>()
   try {
-    pool = (await client.getEgressPool()).map(entry => ({
-      id: entry.id,
-      publicIp: entry.publicIp,
-      computers: entry.computers,
-    }))
+    pool = (await client.getEgressPool()).map(entry => {
+      // A fleet adds the owning `hostId` to each slot (the entry schema is
+      // passthrough); a single controller does not.
+      const hostId = (entry as { hostId?: unknown }).hostId
+      if (typeof hostId === "string" && hostId !== "") hosts.set(entry.id, hostId)
+      return { id: entry.id, publicIp: entry.publicIp, computers: entry.computers }
+    })
   } catch (err) {
     bootLog(`egress pool unreadable (${err instanceof Error ? err.message : String(err)}); leaving slot choice to the controller`)
     return undefined
@@ -1136,7 +1159,7 @@ async function planEgressSlots(
   if (cooling.length > 0) {
     bootLog(`egress slots cooling for ${health.model}: ${cooling.map(c => `${c.slot} (${c.publicIp})`).join(", ")}`)
   }
-  return candidates
+  return { slots: candidates, hosts }
 }
 
 async function bootOnClient(
@@ -1207,11 +1230,17 @@ async function bootOnClient(
   // One key for every attempt of this boot: a retry after a fleet-capacity
   // refusal (or a replay of a create that did land) gets the same box back.
   const bootKey = `boot-${randomUUID()}`
-  const slotPlan = await planEgressSlots(client, config, opts, bootLog)
+  const plan = await planEgressSlots(client, config, opts, bootLog)
+  const slotPlan = plan?.slots
   let slotIndex = 0
+  // Set once every planned slot was refused for capacity: the create then
+  // sends plain `auto`, which the fleet places host-first.
+  let sendAuto = false
+  // Hosts a slot create was refused on for capacity; their other slots are skipped.
+  const fullHosts = new Set<string>()
   // A different slot is a different create body, so it gets its own key.
   const currentIdempotencyKey = (): string =>
-    slotPlan !== undefined && slotIndex > 0 ? `${bootKey}-${slotPlan[slotIndex]}` : bootKey
+    sendAuto ? `${bootKey}-auto` : slotPlan !== undefined && slotIndex > 0 ? `${bootKey}-${slotPlan[slotIndex]}` : bootKey
   const fleetCapacityWaitMs = Math.max(0, config.fleetCapacityWaitMs ?? DEFAULT_FLEET_CAPACITY_WAIT_MS)
   const fleetCapacityRetryMs = Math.max(0, config.fleetCapacityRetryMs ?? DEFAULT_FLEET_CAPACITY_RETRY_MS)
   const fleetWaitStartedAt = Date.now()
@@ -1232,7 +1261,7 @@ async function bootOnClient(
             ...(config.maxSessions !== undefined ? { maxSessions: config.maxSessions } : {}),
             ...(config.egress ? { egress: { allow: config.egress } } : {}),
             ...(slotPlan !== undefined
-              ? { egressIp: slotPlan[slotIndex] as string }
+              ? { egressIp: sendAuto ? "auto" : (slotPlan[slotIndex] as string) }
               : config.egressIp !== undefined && config.egressIp !== "shared"
                 ? { egressIp: config.egressIp }
                 : {}),
@@ -1259,6 +1288,40 @@ async function bootOnClient(
         ) {
           bootLog(`egress slot ${slotPlan[slotIndex]} refused (${err.code}); trying ${slotPlan[slotIndex + 1]}`)
           slotIndex++
+          continue
+        }
+        // A concrete slot id pins the host that owns it, so a capacity
+        // refusal on it says that host is full, not the fleet. Try a slot on
+        // another host, then plain `auto`, before waiting on the fleet.
+        if (
+          plan !== undefined &&
+          !sendAuto &&
+          err instanceof ComputerApiError &&
+          isSlotHostCapacityRefusal(err)
+        ) {
+          const refused = plan.slots[slotIndex] as string
+          const why = err.reason ?? err.code ?? "capacity"
+          const refusedHost = plan.hosts.get(refused)
+          if (refusedHost !== undefined) fullHosts.add(refusedHost)
+          const skipped: string[] = []
+          let next = slotIndex + 1
+          for (; next < plan.slots.length; next++) {
+            const host = plan.hosts.get(plan.slots[next] as string)
+            if (host === undefined || !fullHosts.has(host)) break
+            skipped.push(plan.slots[next] as string)
+          }
+          const skippedNote =
+            skipped.length > 0 ? `, skipping ${skipped.join(", ")} on a host already refused (${plan.hosts.get(skipped[0] as string)})` : ""
+          if (next < plan.slots.length) {
+            bootLog(`egress slot ${refused} refused for capacity (${why})${skippedNote}; trying ${plan.slots[next]}`)
+            slotIndex = next
+          } else {
+            bootLog(
+              `egress slot ${refused} refused for capacity (${why})${skippedNote}; ` +
+                "no slot left on another host, sending auto",
+            )
+            sendAuto = true
+          }
           continue
         }
         if (!(err instanceof ComputerApiError) || err.code !== "fleet-capacity") throw err

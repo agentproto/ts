@@ -82,9 +82,12 @@ export interface FakeControllerOptions {
   /** Slots served by `GET /v1/egress-pool`. A create that names a slot id
    *  reports that slot as its `egressIp`. Unset: the route answers 400
    *  `egress-pool-disabled`. */
-  egressPool?: Array<{ id: string; sourceIp: string; publicIp: string; computers: number }>
+  egressPool?: Array<{ id: string; sourceIp: string; publicIp: string; computers: number; hostId?: string }>
   /** Slot ids whose explicit create is refused with `409 egress-slot-dedicated`. */
   dedicatedSlots?: string[]
+  /** Slot id to the `reason` of the `503 fleet-capacity` that create gets: a
+   *  fleet pinning the host that owns the slot and finding it full. */
+  capacityRefusedSlots?: Record<string, string>
   /** `egressIp` reported by GET for a computer created by resume (models a
    *  resumed row that carries a different address than the suspended one). */
   egressIpAfterResume?: { id: string; publicIp: string } | null
@@ -197,6 +200,8 @@ export class FakeController {
   /** Holders currently occupying a session slot, per computer. */
   readonly sessionHolders = new Map<string, Set<string>>()
   readonly fileSystem = new Map<string, string>()
+  /** Every `egressIp` a create named, refused or served, in order. */
+  readonly createEgressAttempts: string[] = []
   /** Per-computer egress overrides; absent means `options.egressIp`. */
   readonly egressIpByComputer = new Map<string, { id: string; publicIp: string } | null>()
   // Process-wide so ids never repeat across instances: the provider keeps
@@ -314,6 +319,14 @@ export class FakeController {
       }
       const parsed = JSON.parse(body) as Record<string, unknown>
       assertContract(createComputerRequestSchema, parsed)
+      if (typeof parsed.egressIp === "string") this.createEgressAttempts.push(parsed.egressIp)
+      const capacityReason =
+        typeof parsed.egressIp === "string" ? this.options.capacityRefusedSlots?.[parsed.egressIp] : undefined
+      if (capacityReason !== undefined) {
+        const refusal = { error: "fleet-capacity", reason: capacityReason }
+        assertContract(errorResponseSchema, refusal)
+        return reply(res, 503, refusal)
+      }
       if (typeof parsed.egressIp === "string" && this.options.dedicatedSlots?.includes(parsed.egressIp)) {
         const refusal = { error: "egress-slot-dedicated" }
         assertContract(errorResponseSchema, refusal)
