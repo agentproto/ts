@@ -81,18 +81,18 @@ The `/mcp` endpoint exposes the core toolset plus several opt-in / feature-gated
 `POST /mcp` accepts `?profile=` to narrow the registered tool surface before
 a client loads it. Profiles compose, order does not matter:
 
-- `core` — the everyday working set (roughly 45 tools: agent lifecycle,
+- `core`: the everyday working set (roughly 45 tools: agent lifecycle,
   session observation, messaging, policies/tasks, memory, files, commands,
   terminals, imported MCP calls, app run/status, PR open).
-- `orchestrator` — the curated delegation set from
+- `orchestrator`: the curated delegation set from
   `DEFAULT_ORCHESTRATOR_TOOLS` (spawn/drive/observe children, messages,
   policies, task ledger).
-- `apps` — all `app_*` tools plus every installed app's dynamic
+- `apps`: all `app_*` tools plus every installed app's dynamic
   `app_ui_<slug>` MCP Apps panel.
-- `admin` — setup, tunnels, auth profiles, devices/join tokens, pairing,
+- `admin`: setup, tunnels, auth profiles, devices/join tokens, pairing,
   remote access, garbage collection, presets/bundles, inbound watchers,
   sentinels, cron, and local LLM endpoints.
-- `full` — everything. This is the default when no profile is named, so
+- `full`: everything. This is the default when no profile is named, so
   existing callers are unchanged.
 
 ```text

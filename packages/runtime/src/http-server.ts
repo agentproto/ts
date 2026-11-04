@@ -1098,7 +1098,7 @@ export interface RuntimeHttpServerOptions {
    */
   /**
    * `profile`, when present, is parsed from the request's `?profile=core,apps`
-   * query string (see `handleMcp` below) — named MCP surface profiles
+   * query string (see `handleMcp` below): named MCP surface profiles
    * (tool-profiles.ts). The query wins over the gateway's boot-time
    * `defaults.mcp.profile`; an absent/unknown query falls through to that
    * default, and neither naming a profile means `full` (every tool, the
@@ -2250,7 +2250,7 @@ export async function startHttpServer(
     return names.length > 0 ? new Set(names) : undefined
   }
 
-  /** `?profile=core,apps` — named MCP surface profiles (tool-profiles.ts).
+  /** `?profile=core,apps`: named MCP surface profiles (tool-profiles.ts).
    *  Comma-separated and order-independent; validation/fallback lives in
    *  `resolveToolProfileSelection` (index.ts), so an unknown name here is
    *  passed through rather than silently treated as a full surface. */

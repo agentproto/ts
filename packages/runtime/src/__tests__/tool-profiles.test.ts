@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest"
 import { DAEMON_TOOL_NAMES } from "../daemon-tool-names.generated.js"
 import {
   ADMIN_PROFILE_TOOLS,
+  ALWAYS_ON_TOOLS,
   APP_UI_TOOL_WILDCARD,
   APPS_PROFILE_TOOLS,
   CLASSIFIED_TOOL_NAMES,
@@ -20,6 +21,7 @@ import {
   FULL_ONLY_TOOLS,
   PROFILE_TOOLS,
   parseToolProfileList,
+  profilesExposingTool,
   resolveToolProfileAllowSet,
   resolveToolProfileSelection,
   type ToolProfileName,
@@ -110,6 +112,18 @@ describe("MCP surface profile budgets", () => {
     expect(composed!.has("agent_start")).toBe(true)
     expect(composed!.has(APP_UI_TOOL_WILDCARD)).toBe(true)
     expect(composed!.has("cron_list")).toBe(false)
+  })
+
+  it("keeps tool_help in the allow set under every named profile", () => {
+    for (const profile of ["core", "orchestrator", "apps", "admin"] as const) {
+      expect(resolveToolProfileAllowSet([profile])!.has("tool_help"), profile).toBe(true)
+    }
+  })
+
+  it("reports every always-on tool as exposed by every named profile", () => {
+    for (const name of ALWAYS_ON_TOOLS) {
+      expect(profilesExposingTool(name)).toEqual(["core", "orchestrator", "apps", "admin", "full"])
+    }
   })
 
   it("parses comma lists and gives the per-request query precedence over config", () => {
