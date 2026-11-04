@@ -44,5 +44,5 @@ test("violations skip the allowlist", (t) => {
     violations.map((entry) => entry.file),
     ["ci.yml"],
   )
-  assert.deepEqual(DEFAULT_ALLOWLIST, ["release.yml", "update-deps.yml"])
+  assert.deepEqual(DEFAULT_ALLOWLIST, ["release.yml"])
 })

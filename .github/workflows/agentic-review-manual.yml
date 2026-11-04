@@ -51,6 +51,11 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build --filter @agentproto/cli... --filter @agentproto/adapter-opencode...
 
+      # pr-review/entry.mjs imports lib/sandbox-agent.mjs, which imports the
+      # built @agentproto/git-cas for its CAS push prompts.
+      - name: Build git-cas
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
       - name: Resolve review inputs
         id: review
         env:
