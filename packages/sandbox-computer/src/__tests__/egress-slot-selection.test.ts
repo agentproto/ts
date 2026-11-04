@@ -169,7 +169,7 @@ describe("computerSandboxProvider egressIp auto when a slot's host is full", () 
     expect(booted.egressIp).toEqual({ id: "b1", publicIp: "203.0.113.11" })
     expect(lines.filter(line => line.includes("waiting"))).toEqual([])
     expect(lines.some(line => line.includes("egress slot a1 refused") && line.includes("memory") && line.includes("b1"))).toBe(true)
-    expect(lines.some(line => line.includes("skipping a2, a3 on the same host (host-a)"))).toBe(true)
+    expect(lines.some(line => line.includes("skipping a2, a3 on a host already refused (host-a)"))).toBe(true)
     await booted.stop()
   })
 

@@ -1311,7 +1311,7 @@ async function bootOnClient(
             skipped.push(plan.slots[next] as string)
           }
           const skippedNote =
-            skipped.length > 0 ? `, skipping ${skipped.join(", ")} on the same host (${refusedHost})` : ""
+            skipped.length > 0 ? `, skipping ${skipped.join(", ")} on a host already refused (${plan.hosts.get(skipped[0] as string)})` : ""
           if (next < plan.slots.length) {
             bootLog(`egress slot ${refused} refused for capacity (${why})${skippedNote}; trying ${plan.slots[next]}`)
             slotIndex = next
