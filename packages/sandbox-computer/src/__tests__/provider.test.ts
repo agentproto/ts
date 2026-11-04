@@ -603,6 +603,75 @@ describe("computerSandboxProvider shared sessions", () => {
     expect(controller.sessions.get(booted.sandboxId)).toBe(1)
   })
 
+  it("an attach rendezvous (expose private) takes no session slot, even on a full computer", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 1, sessionHolder: "sess_a" }),
+      bootOpts,
+    )
+    const attaches = controller.attachBodies.length
+
+    const rendezvous = await computerSandboxProvider.connect!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 1 }),
+      { ...bootOpts, expose: "private" },
+    )
+
+    // Nobody ever closes a rendezvous handle, so a slot taken here would leak.
+    expect(controller.attachBodies.length).toBe(attaches)
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(rendezvous.sandboxId).toBe(booted.sandboxId)
+    expect(controller.sessionHolders.get(booted.sandboxId)).toEqual(new Set(["sess_a"]))
+  })
+
+  it("a connect whose handle cannot be built releases the slots it took", async () => {
+    const first = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_a" }),
+      bootOpts,
+    )
+    const unbuildable = { ...spec(controller.url, { maxSessions: 2, sessionHolder: "sess_b", daemonRoute: true }), extraPorts: [9000] }
+    await expect(computerSandboxProvider.connect!(first.sandboxId, unbuildable, bootOpts)).rejects.toThrow(
+      /daemonRoute mode can only reach/,
+    )
+    expect(controller.sessionHolders.get(first.sandboxId)).toEqual(new Set(["sess_a"]))
+    expect(controller.sessions.get(first.sandboxId)).toBe(1)
+
+    // The process-local count was released too: a good connect still fits.
+    const second = await computerSandboxProvider.connect!(
+      first.sandboxId,
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_b" }),
+      bootOpts,
+    )
+    expect(controller.sessions.get(first.sandboxId)).toBe(2)
+    await second.detach!()
+    await first.stop()
+  })
+
+  it("a boot whose handle cannot be built removes the computer it created", async () => {
+    const unbuildable = { ...spec(controller.url, { daemonRoute: true }), extraPorts: [9000] }
+    await expect(computerSandboxProvider.boot(unbuildable, bootOpts)).rejects.toThrow(/daemonRoute mode can only reach/)
+    expect(controller.removed).toHaveLength(1)
+  })
+
+  it("releaseSession frees a dead holder's slot without resuming or removing the computer", async () => {
+    const booted = await computerSandboxProvider.boot(
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_dead" }),
+      bootOpts,
+    )
+    await computerSandboxProvider.connect!(
+      booted.sandboxId,
+      spec(controller.url, { maxSessions: 2, sessionHolder: "sess_live" }),
+      bootOpts,
+    )
+    await computerSandboxProvider.releaseSession!(booted.sandboxId, "sess_dead")
+    expect(controller.sessionHolders.get(booted.sandboxId)).toEqual(new Set(["sess_live"]))
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+    expect(controller.removed).toEqual([])
+    expect(controller.suspended).toEqual([])
+    // Idempotent: a holder the controller no longer knows is a no-op.
+    await computerSandboxProvider.releaseSession!(booted.sandboxId, "sess_dead")
+    expect(controller.sessions.get(booted.sandboxId)).toBe(1)
+  })
+
   it("works against a controller without the attach routes", async () => {
     controller.options.noSessionRoutes = true
     const booted = await computerSandboxProvider.boot(spec(controller.url), bootOpts)

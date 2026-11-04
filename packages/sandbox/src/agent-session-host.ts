@@ -600,6 +600,16 @@ export interface SandboxProvider {
    */
   remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
   /**
+   * Release ONE session's provider-side claim on a box WITHOUT connecting to
+   * it (connecting resumes a suspended box, which needs capacity). The gc
+   * calls it for a session that died or vanished without closing its handle,
+   * so its slot stops counting against the box's session cap. `holder` is the
+   * stable session identity the claim was taken under. Idempotent; an unknown
+   * box or holder is success. Optional: providers with no per-session claim
+   * omit it.
+   */
+  releaseSession?(sandboxId: string, holder: string): Promise<void>
+  /**
    * List the boxes this provider's control plane still holds - the surface
    * the orphan-box gc reads. A box the provider still lists (and still
    * charges RAM for) that no live agentproto session references is an
@@ -782,6 +792,18 @@ export async function createSandboxAgentSessionHost(
       },
     )
   }
+  // The daemon connection of a dead or unreachable box often fails to close
+  // cleanly. That must never skip the provider-side stop/pause/detach: the
+  // provider call is what releases the session slot and the box, so a throwing
+  // close would leak both exactly when the session died.
+  const closeHostThen = async (release: () => Promise<void>): Promise<void> => {
+    try {
+      await host.close()
+    } catch {
+      // best-effort: the provider release below is the part that must run
+    }
+    await release()
+  }
   return {
     ...host,
     mcpUrl: booted.mcpUrl,
@@ -798,22 +820,19 @@ export async function createSandboxAgentSessionHost(
     ...(booted.extendTimeout ? { extendTimeout: booted.extendTimeout.bind(booted) } : {}),
     ...(booted.lifetimeMs !== undefined ? { lifetimeMs: booted.lifetimeMs } : {}),
     async stop(): Promise<void> {
-      await host.close()
-      await booted.stop()
+      await closeHostThen(() => booted.stop())
     },
     ...(booted.pause
       ? {
           async pause(): Promise<void> {
-            await host.close()
-            await booted.pause!()
+            await closeHostThen(() => booted.pause!())
           },
         }
       : {}),
     ...(booted.detach
       ? {
           async detach(): Promise<void> {
-            await host.close()
-            await booted.detach!()
+            await closeHostThen(() => booted.detach!())
           },
         }
       : {}),
