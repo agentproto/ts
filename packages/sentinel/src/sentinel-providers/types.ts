@@ -14,6 +14,7 @@
  * here rather than the other way around.
  */
 
+import type { Envelope } from "@agentproto/delivery"
 import type { AdapterHandle, SetupField } from "@agentproto/provider-kit"
 import type { MessageUrgency } from "../local-types.js"
 
@@ -29,30 +30,9 @@ import type { MessageUrgency } from "../local-types.js"
  * `github:agentproto/ts#1428`). `subjects` is the full hierarchy, most
  * specific first — a sentinel `subject` ending in `*` prefix-matches it.
  */
-export interface SentinelEvent {
-  readonly specversion: "1.0"
-  /** Stable across retries/redeliveries. Idempotency key is `(sentinelId,
-   *  event.id)` — unaffected by `SentinelSpec.match` fan-out: an event that
-   *  happens to satisfy more than one match clause on the same sentinel is
-   *  still landed at most once. */
-  readonly id: string
-  /** URI naming the provider instance that emitted this event. */
-  readonly source: string
-  readonly type: string
-  /** Primary (most specific) subject this event is filed under. */
-  readonly subject: string
-  /** ISO-8601. */
-  readonly time: string
+export interface SentinelEvent extends Envelope {
+  /** Content type of `data`; SentinelEvents are always structured JSON. */
   readonly datacontenttype: "application/json"
-  /** Normalized projection, <= 32 KiB. Raw provider payloads never appear
-   *  here. */
-  readonly data: Record<string, unknown>
-  /** One line, used verbatim as inbox text (after a `[<scheme>]` prefix). */
-  readonly summary: string
-  /** Full subject hierarchy, most specific first. */
-  readonly subjects: readonly string[]
-  /** Ends the subject's lifecycle when `spec.until.kind === "subject_terminal"`. */
-  readonly terminal: boolean
   /** Opaque consumer reference the provider was asked to stamp (agentpush's
    *  `consumerRef`), when applicable. */
   readonly consumerref?: string

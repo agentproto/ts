@@ -7,28 +7,36 @@
  * delivery it actually performs. The ledger is training data for that later
  * stage, not a gate.
  *
- * Rules are checked in order; the first match wins:
+ * Generic rules live here; producer knowledge (GitHub verdicts, the explicit
+ * event-class table and its coalesce keys) is registered by
+ * `@agentproto/delivery-github`. Rules are checked in order:
  * 1. `terminal`: an event that ends its subject's lifecycle always wakes.
- * 2. `failure`: a failing verdict (conclusion/state) always wakes, because a
- *    real failure must never be demoted by an earlier pending tick on the
- *    same head.
- * 3. `coalesced-repeat`: the same `(target, triage key)` was first classified
- *    within the last 10 minutes, so this one is only `fyi`.
- * 4. `default`: everything else wakes.
+ * 2. `coalesced-repeat`: the same `(target, repeatKey)` was first seen within
+ *    the last 10 minutes, so this one is only `fyi`.
+ * 3. the registered classifier registry: first non-declining classifier wins;
+ *    no match is the default level (`levelHint ?? 2` -> wake).
  *
- * The triage key is the delivery coalesce key plus the event's verdict when
- * it carries one, so a different conclusion/state on the same head is not a
- * repeat. Keys are recorded by the caller AFTER a successful delivery, so an
- * event never counts as a repeat of itself and a failed send is not recorded
- * as seen. {@link RecentKeys} is a bounded map (1000 entries by default) that
- * evicts the oldest insertion when full; a repeat does not refresh its
- * first-seen time, so the window is fixed rather than sliding.
+ * A producer sets `Envelope.repeatKey` when it is safe to coalesce. The
+ * GitHub producer deliberately sets none on failures, so a repeated failure
+ * on the same head always wakes. Keys are recorded by the caller AFTER a
+ * successful delivery, so an event never counts as a repeat of itself and a
+ * failed send is not recorded as seen. {@link RecentKeys} is a bounded map
+ * (1000 entries by default) that evicts the oldest insertion when full; a
+ * repeat does not refresh its first-seen time, so the window is fixed rather
+ * than sliding.
  */
 
-import { DEFAULT_RECENT_KEYS_CAP, REPEAT_WINDOW_MS, RecentKeys } from "@agentproto/delivery"
+import {
+  DEFAULT_RECENT_KEYS_CAP,
+  REPEAT_WINDOW_MS,
+  RecentKeys,
+  createClassifierRegistry,
+  type Classifier,
+  type Envelope,
+  type Level,
+} from "@agentproto/delivery"
 
 import type { TriageDecision } from "./local-types.js"
-import { coalesceKeyFor } from "./sentinel-coalesce.js"
 import type { SentinelEvent } from "./sentinel-providers/types.js"
 
 /** How recently the same `(target, key)` must have been seen to count as a
@@ -37,7 +45,7 @@ export const SENTINEL_TRIAGE_REPEAT_WINDOW_MS = REPEAT_WINDOW_MS
 
 export { DEFAULT_RECENT_KEYS_CAP, RecentKeys }
 
-export type SentinelTriageRule = "terminal" | "failure" | "coalesced-repeat" | "default"
+export type SentinelTriageRule = string
 
 export interface SentinelTriageInput {
   /** Delivery target identity (the target session id). */
@@ -52,37 +60,51 @@ export interface SentinelTriageResult {
   rule: SentinelTriageRule
 }
 
-const FAILURE_VERDICTS: ReadonlySet<string> = new Set([
-  "failure",
-  "error",
-  "cancelled",
-  "timed_out",
-  // Verdicts that need the recipient to act, not just know: a review asking
-  // for changes, a check suite waiting on a human.
-  "changes_requested",
-  "action_required",
-])
+const classifiers: Classifier[] = []
+const repeatKeyResolvers: Array<(event: Envelope) => string | undefined> = []
 
-/** The event's own verdict: `conclusion` (check suites/runs, workflow runs)
- *  or `state` (statuses, reviews), lowercased because providers disagree on
- *  casing (webhook `changes_requested`, GraphQL `CHANGES_REQUESTED`), or ""
- *  when it carries neither. */
-function verdictOf(event: SentinelEvent): string {
-  const conclusion = event.data.conclusion
-  if (typeof conclusion === "string") return conclusion.toLowerCase()
-  const state = event.data.state
-  return typeof state === "string" ? state.toLowerCase() : ""
+/** Register a classifier for sentinel triage. Idempotent by classifier id so
+ *  a producer module can be imported more than once. */
+export function registerSentinelClassifier(classifier: Classifier): () => void {
+  const existing = classifiers.findIndex(candidate => candidate.id === classifier.id)
+  if (existing !== -1) classifiers.splice(existing, 1)
+  classifiers.push(classifier)
+  return () => {
+    const idx = classifiers.findIndex(candidate => candidate === classifier)
+    if (idx !== -1) classifiers.splice(idx, 1)
+  }
 }
 
-/** Triage repeat key: the delivery coalesce key plus the verdict, so a
- *  different conclusion/state on the same head is a different event. */
-export function sentinelTriageKeyFor(event: SentinelEvent): string | undefined {
-  const key = coalesceKeyFor(event)
-  return key === undefined ? undefined : `${key}|${verdictOf(event)}`
+export function listSentinelClassifiers(): readonly Classifier[] {
+  return [...classifiers]
 }
 
-function isFailureEvent(event: SentinelEvent): boolean {
-  return event.terminal !== true && FAILURE_VERDICTS.has(verdictOf(event))
+/** Register a producer's repeat-key resolver. The first resolver that claims
+ *  an event (returns a key) wins; none means the event never coalesces. */
+export function registerSentinelRepeatKey(
+  resolver: (event: Envelope) => string | undefined,
+): () => void {
+  repeatKeyResolvers.push(resolver)
+  return () => {
+    const idx = repeatKeyResolvers.indexOf(resolver)
+    if (idx !== -1) repeatKeyResolvers.splice(idx, 1)
+  }
+}
+
+/** The event with the producer's repeat key attached, when one is known. */
+export function sentinelEnvelopeFor<E extends SentinelEvent>(event: E): E & Envelope {
+  if (event.repeatKey !== undefined) return event
+  for (const resolve of repeatKeyResolvers) {
+    const repeatKey = resolve(event)
+    if (repeatKey !== undefined) return { ...event, repeatKey }
+  }
+  return event
+}
+
+function decisionForLevel(level: Level): TriageDecision {
+  if (level >= 2) return "wake"
+  if (level === 1) return "fyi"
+  return "drop"
 }
 
 /** Classify one event without applying anything. The caller records the
@@ -92,25 +114,30 @@ export function classifySentinelEvent(
   event: SentinelEvent,
   input: SentinelTriageInput,
 ): SentinelTriageResult {
-  const key = sentinelTriageKeyFor(event)
+  const envelope = sentinelEnvelopeFor(event)
 
   if (event.terminal === true) {
     return { decision: "wake", rule: "terminal" }
-  } else if (isFailureEvent(event)) {
-    return { decision: "wake", rule: "failure" }
-  } else if (key !== undefined && input.recent.has(input.target, key, input.now)) {
-    return { decision: "fyi", rule: "coalesced-repeat" }
-  } else {
-    return { decision: "wake", rule: "default" }
   }
+  if (
+    envelope.repeatKey !== undefined &&
+    input.recent.has(input.target, envelope.repeatKey, input.now)
+  ) {
+    return { decision: "fyi", rule: "coalesced-repeat" }
+  }
+
+  const { level, rule } = createClassifierRegistry(classifiers).classify(envelope, {
+    targetId: input.target,
+  })
+  return { decision: decisionForLevel(level), rule }
 }
 
-/** Record the triage key for a successfully delivered event. */
+/** Record the repeat key for a successfully delivered event. */
 export function recordSentinelTriageKey(
   event: SentinelEvent,
   input: Pick<SentinelTriageInput, "target" | "now" | "recent">,
 ): void {
-  const key = sentinelTriageKeyFor(event)
+  const key = sentinelEnvelopeFor(event).repeatKey
   if (key !== undefined) {
     input.recent.record(input.target, key, input.now)
   }

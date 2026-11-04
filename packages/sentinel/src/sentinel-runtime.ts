@@ -70,7 +70,7 @@ import {
   RecentKeys,
   classifySentinelEvent,
   recordSentinelTriageKey,
-  sentinelTriageKeyFor,
+  sentinelEnvelopeFor,
 } from "./sentinel-triage.js"
 import {
   deliveryPreferenceFor,
@@ -686,9 +686,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     const targetSessionId = target.sessionId
     const targetUrgency = target.urgency
     const now = nowMs()
+    const envelope = sentinelEnvelopeFor(event)
     let triage: { decision: ReturnType<typeof classifySentinelEvent>["decision"]; rule: ReturnType<typeof classifySentinelEvent>["rule"] } | undefined
     try {
-      triage = classifySentinelEvent(event, {
+      triage = classifySentinelEvent(envelope, {
         target: target.sessionId,
         sentinelId: sentinel.id,
         now,
@@ -700,7 +701,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
     const effectiveTriage = triage ?? { decision: "wake" as const, rule: "default" as const }
     const eventTs = typeof event.time === "string" && event.time.length > 0 ? event.time : undefined
-    const repeatKey = sentinelTriageKeyFor(event)
+    const repeatKey = envelope.repeatKey
     const msg = buildMessage(sentinel, event, targetSessionId, targetUrgency)
     const key = coalesceKeyFor(event)
 
@@ -738,7 +739,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       outcome = { outcome: outcomeOfSendResult(result), ...(msg.id ? { messageId: msg.id } : {}) }
       try {
         if (triage) {
-          recordSentinelTriageKey(event, {
+          recordSentinelTriageKey(envelope, {
             target: target.sessionId,
             now,
             recent: recentTriageKeys,

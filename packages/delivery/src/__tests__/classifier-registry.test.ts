@@ -7,15 +7,7 @@ import {
   type Envelope,
 } from "../index.js"
 
-const ctx: ClassifyContext = {
-  targetId: "sess_1",
-  facts: {
-    reportedRecently: () => false,
-    isDescendant: () => false,
-    cronOutcome: () => undefined,
-    supersededByNewTurn: () => false,
-  },
-}
+const ctx: ClassifyContext = { targetId: "sess_1" }
 
 function env(type: string, over: Partial<Envelope> = {}): Envelope {
   return {
