@@ -1,5 +1,5 @@
 /**
- * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]`
+ * `agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]`
  *
  * Convenience shortcut over `agentproto workflow run-file` for the built-in
  * `repo-maintenance` app's `maintain` workflow (`@agentproto/apps`'s
@@ -35,7 +35,7 @@ import { APP_INSTALL_WORKTREE_REPOINT_REFUSED, MODEL_ROLE_PRESET_NAMES } from "@
 const USAGE = `agentproto maintain — plan/review (and optionally apply) branch + worktree gc for a repo
 
 Usage:
-  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--wait] [--json]
+  agentproto maintain [--repo <dir>]... [--all] [--apply-merged] [--apply-reviewed] [--require-operator-below-guard] [--review-preset <name>] [--max-reviews <n>] [--worktrees-root <dir>]... [--wait] [--json]
   agentproto maintain --help
 
   --repo <dir>     Any dir inside the repo. Repeatable. Default: cwd's git
@@ -69,6 +69,11 @@ Usage:
                    (newest tip first). Default: the workflow's own (40).
                    Branches with a stored verdict are never re-reviewed, so
                    repeated runs walk the backlog.
+  --worktrees-root <dir>
+                   With --all: also scan this dir for worktrees (repeatable), in
+                   addition to the configured worktrees root. A dir may hold
+                   worktrees directly (\`<dir>/<slug>\`) or in buckets
+                   (\`<dir>/<repo>/<slug>\`).
   --wait           Block until each run ends, then print its markdown report
                    (exit 0 when all done, 1 when any failed/was cancelled).
   --json           Print the raw workflow_run_file reply (with --wait: the
@@ -138,6 +143,7 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			"require-operator-below-guard": { type: "boolean" },
 			"review-preset": { type: "string" },
 			"max-reviews": { type: "string" },
+			"worktrees-root": { type: "string", multiple: true },
 			wait: { type: "boolean", default: false },
 			json: { type: "boolean", default: false },
 		},
@@ -177,7 +183,8 @@ export async function runMaintain(args: readonly string[]): Promise<number> {
 			return root
 		})
 		if (explicit.some((r) => r === null)) return 2
-		repos = await resolveAllRepos(worktreesRoot, explicit as string[])
+		const extraRoots = (values["worktrees-root"] ?? []).map((dir) => resolve(dir))
+		repos = await resolveAllRepos([worktreesRoot, ...extraRoots], explicit as string[])
 		if (repos.length === 0) {
 			process.stderr.write(
 				`agentproto maintain: --all found no repos — no worktrees under ${worktreesRoot} and no --repo given.\n`,
