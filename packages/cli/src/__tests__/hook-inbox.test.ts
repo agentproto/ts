@@ -300,6 +300,17 @@ describe("hook inbox takes its session id from the payload and the daemon's vari
     )
   })
 
+  it("touches cc:<session_id> for Notification and reads no inbox", async () => {
+    await run({}, { session_id: "aaaa-1", hook_event_name: "Notification" })
+    expect(httpPostJson).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1:1/sessions/cc%3Aaaaa-1/touch",
+      { host: "claude-desktop" },
+      "t",
+    )
+    expect(httpGetJson).not.toHaveBeenCalled()
+  })
+
   it("resolves cc:<session_id> for Stop and emits a block decision for a steer item", async () => {
     httpGetJson.mockResolvedValue({ inbox: [{ ...item(1, "wake me"), urgency: "steer" }] } as never)
     await run({}, { session_id: "aaaa-1", hook_event_name: "Stop" })

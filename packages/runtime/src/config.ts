@@ -199,6 +199,13 @@ export interface DaemonConfig {
    *  30 min; non-positive falls back to the default. Set via `agentproto
    *  config set daemon.externalSessionLivenessMs <ms>`. */
   externalSessionLivenessMs?: number
+  /** Opt-in `claude-socket` wake adapter for external Claude Code sessions
+   *  (`cc:<session_id>` rows). When true, a level 2+ message (next-turn /
+   *  steer) also wakes the idle Claude Code process over its per-session
+   *  unix socket, instead of waiting for the next hook poll. Level 1 (fyi)
+   *  and `bypassPermissions` targets always fall back to the inbox. Default
+   *  false. Set via `agentproto config set daemon.claudeSocketWake true`. */
+  claudeSocketWake?: boolean
   /** On-disk retention for REVIEW-LANE sessions (`origin: "review"` /
    *  `review:` label): a terminal review session whose last activity is older
    *  than this many days has its `~/.agentproto/sessions/<id>/` dir DELETED

@@ -363,6 +363,7 @@ const daemonConfigSchema: z.ZodType<DaemonConfig> = z
     reviewSessionRetentionDays: z.number().optional(),
     sessionRetentionDays: z.number().optional(),
     adapterCacheRetentionDays: z.number().optional(),
+    claudeSocketWake: z.boolean().optional(),
   })
   .passthrough()
 
@@ -947,6 +948,16 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Adapter cache retention (days)",
     help: "Delete the cache content (pnpm store, opencode snapshot/tool-output/log) of dead sessions' ~/.agentproto/adapter-config/<id> dirs after this many quiet days. Resume data is kept. 0/negative disables.",
     default: 1,
+  },
+  {
+    path: "daemon.claudeSocketWake",
+    schema: bool,
+    apply: "restart",
+    writable: true,
+    section: "daemon",
+    label: "Claude Code socket wake",
+    help: "Wake an idle external Claude Code session over its per-session unix socket for level 2+ messages (next-turn / steer). fyi and bypassPermissions targets still use the inbox. Off by default.",
+    default: false,
   },
   {
     path: "sessions.eventsDir",

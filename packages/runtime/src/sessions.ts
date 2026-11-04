@@ -100,6 +100,11 @@ import {
   readOutputTail,
   type SessionBackgroundTask,
 } from "./background-task-wake.js"
+import {
+  wakeClaudeSocket,
+  type ClaudeSocketWakeConfig,
+  type ClaudeSocketWakeOutcome,
+} from "./claude-socket-wake.js"
 import { resolveEffectiveRoute } from "./catalog-models.js"
 import { normalizeModelForWire } from "./model-wire.js"
 import {
@@ -1510,6 +1515,11 @@ export interface SendMessageResult {
    *  `null`, `queued` is `false`): the recipient's inbox is entirely
    *  un-consumed blocker/question messages and this one is noise. */
   refused?: "inbox-full"
+  /** External Claude Code rows only: what the opt-in `claude-socket` wake
+   *  adapter did with this message. Absent for every other kind. A skipped
+   *  or failed wake still delivered to the inbox above; `reason` records the
+   *  fallback. */
+  wake?: ClaudeSocketWakeOutcome
 }
 
 export interface WaitForMessagesResult {
@@ -6658,6 +6668,12 @@ export function createSessionsRegistry(opts?: {
   externalSessionLivenessMs?: number
   /** Clock override (ms since epoch) for external-session liveness — tests. */
   externalNow?: () => number
+  /** Opt-in `claude-socket` wake adapter for `cc:<session_id>` external rows.
+   *  When enabled, a level 2+ (next-turn / steer) message written to such a
+   *  row also wakes the idle Claude Code process over its unix socket; every
+   *  skip or failure falls back to the inbox and is reported on
+   *  `SendMessageResult.wake`. Off unless `enabled` is true. */
+  claudeSocketWake?: ClaudeSocketWakeConfig
   /** How long a queued prompt may wait before it is reported stuck
    *  (`pendingPrompts[].stale`, sender notice). Default
    *  {@link DEFAULT_PENDING_PROMPT_STALE_MS}; `sweepPendingPrompts({staleMs})`
@@ -6895,6 +6911,7 @@ export function createSessionsRegistry(opts?: {
       ? opts.externalSessionLivenessMs
       : DEFAULT_EXTERNAL_SESSION_LIVENESS_MS
   const externalNowMs = opts?.externalNow ?? Date.now
+  const claudeSocketWake = opts?.claudeSocketWake
   /** Lazily expire an `external` row whose last sighting fell out of the
    *  liveness window: there is no process whose exit could flip it, so every
    *  read/deliver path calls this first. Terminal status carries no
@@ -14061,7 +14078,22 @@ export function createSessionsRegistry(opts?: {
         }
         recordSent(parked)
         emitSessionMessage(parked)
-        return { messageId: msg.id, delivered: { via: "inbox" }, queued: false, urgencyApplied: msg.urgency }
+        const wake =
+          rt.desc.kind === "external"
+            ? await wakeClaudeSocket({
+                sessionId: rt.desc.id,
+                text: msg.text,
+                urgency: msg.urgency,
+                config: claudeSocketWake,
+              })
+            : undefined
+        return {
+          messageId: msg.id,
+          delivered: { via: "inbox" },
+          queued: false,
+          urgencyApplied: msg.urgency,
+          ...(wake ? { wake } : {}),
+        }
       }
       // An un-granted interrupt never cuts a turn: the fastest thing short
       // of that is steering it in.

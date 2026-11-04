@@ -16,7 +16,7 @@ Claude Code hook commands: `inbox`, `pre-compact` and `pr-stamp`, plus
 ## `hook inbox`
 
 Meant to run as a Claude Code `UserPromptSubmit`, `PostToolUse`,
-`SessionStart` or `Stop` hook. It
+`SessionStart`, `Stop` or `Notification` hook. It
 reads the session's unread AIP-46 inbox from the daemon
 (`GET /sessions/:id/inbox`), prints the oldest items as `additionalContext`
 in the hook JSON protocol, then acks exactly the items it printed
@@ -32,7 +32,7 @@ containing the closing tag has it neutralised, and each item is truncated at
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--session <id>` | see below | Session whose inbox to read. First valid value wins: `--session`; `$AGENTPROTO_SESSION_ID` when it starts with `sess_`; `cc:` + the payload's `session_id`; then `$AGENTPROTO_SESSION_ID` when the payload has no session id. `$CLAUDE_CODE_SESSION_ID` is never read. |
-| `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse` \| `SessionStart` \| `Stop`). Any other name is treated as `UserPromptSubmit`. |
+| `--event <name>` | the payload's `hook_event_name`, else `UserPromptSubmit` | Hook event name echoed in the output (`UserPromptSubmit` \| `PostToolUse` \| `SessionStart` \| `Stop` \| `Notification`). Any other name is treated as `UserPromptSubmit`. A `Notification` event only touches the session and reads no inbox. |
 | `--max <n>` | `20` | Maximum items per invocation (capped at 20), oldest first. |
 
 `SessionStart` prints the same block and the same
@@ -104,9 +104,9 @@ is ending going, through the `Stop` hook). Three things have to line up:
    `AGENTPROTO_SESSION_ID` is a legacy fallback used only when the payload
    has no usable `session_id`. To pin a fixed custom id, pass
    `--session <id>` in the hook command.
-3. **Four hooks run `agentproto hook inbox`**, on `UserPromptSubmit`,
-   `PostToolUse`, `SessionStart` and `Stop`. `agentproto` must be on the PATH
-   of the app.
+3. **Five hooks run `agentproto hook inbox`**, on `UserPromptSubmit`,
+   `PostToolUse`, `SessionStart`, `Stop` and `Notification`. `agentproto` must
+   be on the PATH of the app.
 
 The settings file the app reads (`~/.claude/settings.json`, or
 `$CLAUDE_CONFIG_DIR/settings.json`) then contains:
@@ -124,6 +124,9 @@ The settings file the app reads (`~/.claude/settings.json`, or
       { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
     ],
     "Stop": [
+      { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
+    ],
+    "Notification": [
       { "hooks": [{ "type": "command", "command": "agentproto hook inbox" }] }
     ]
   }
@@ -151,7 +154,8 @@ still pending (headersHelper unverified).
 
 ### `hook install --host claude-desktop`
 
-Writes the block above for you (including `SessionStart` and `Stop`) plus the
+Writes the block above for you (including `SessionStart`, `Stop` and
+`Notification`) plus the
 [`pr-stamp`](#hook-pr-stamp) entry — a second `PostToolUse` hook with matcher
 `Bash`. A file installed by an older version gains whichever of those it is
 missing on the next run. It merges into the existing file (other keys,
