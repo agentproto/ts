@@ -6,9 +6,14 @@
  * claude-agent-acp renders `AskUserQuestion` as one `question_<n>` property
  * per question (single select = string + `oneOf`, multi select = array +
  * `items.anyOf`) plus a `question_<n>_custom` string companion marked with
- * `_meta._askUserQuestionCustomAnswer` for the "Other" box; codex-acp uses
- * the same marker. Any other form (an MCP server's elicitation, a
- * refusal-fallback prompt) maps through the same generic rules.
+ * `_meta._askUserQuestionCustomAnswer` for the "Other" box. codex-acp
+ * (`request_user_input`) puts the question text in `title`, the header chip
+ * in `description`, and marks each property with `_meta.codex` (`isOther`,
+ * `isSecret`); its "Other" box is an extra `oneOf` choice plus a separate
+ * `<id>_note` string property whose `_meta.codex.role` is `user_note`. That
+ * note property is the free-text companion, not a field of its own. Any
+ * other form (an MCP server's elicitation, a refusal-fallback prompt) maps
+ * through the same generic rules.
  */
 
 import type { AgentPromptAnswers, AgentPromptField, AgentPromptQuestion } from "../types.js"
@@ -23,6 +28,8 @@ import {
 const CUSTOM_ANSWER_META_KEY = "_askUserQuestionCustomAnswer"
 /** `_meta` key under which claude-agent-acp forwards an option's `preview`. */
 const OPTION_PREVIEW_META_KEY = "_claude/askUserQuestionOption"
+/** `_meta` key marking a property as a codex-acp `request_user_input` field. */
+const CODEX_META_KEY = "codex"
 
 /** The value types an ACP elicitation `accept` may carry per property. */
 export type ElicitationContentValue = string | number | boolean | string[]
@@ -71,11 +78,21 @@ function choicesOf(list: unknown): AgentPromptField["choices"] | undefined {
   return choices.length > 0 ? choices : undefined
 }
 
+/** The `_meta.codex` block of a property, when it is one. */
+function codexMeta(prop: Json): Json | undefined {
+  const meta = isObject(prop._meta) ? prop._meta : undefined
+  const codex = meta && isObject(meta[CODEX_META_KEY]) ? meta[CODEX_META_KEY] : undefined
+  return codex
+}
+
 /** The field id a companion property points at, when it is one. */
 function companionTarget(prop: Json): string | undefined {
   const meta = isObject(prop._meta) ? prop._meta : undefined
   const marker = meta && isObject(meta[CUSTOM_ANSWER_META_KEY]) ? meta[CUSTOM_ANSWER_META_KEY] : undefined
-  return marker ? str(marker.questionId) : undefined
+  if (marker) return str(marker.questionId)
+  // codex-acp marks its "Other" note property with `_meta.codex.role`.
+  const codex = codexMeta(prop)
+  return codex && codex.role === "user_note" ? str(codex.questionId) : undefined
 }
 
 /**
@@ -128,11 +145,19 @@ export function elicitationToQuestion(params: unknown): MappedElicitation | unde
   const fields: AgentPromptField[] = visible.map(({ id, prop, field }) => {
     const title = str(prop.title)
     const description = str(prop.description)
-    // A lone field without its own description is the question `message`
-    // asks (claude-agent-acp puts a single question there); its title is
-    // then the short header chip.
-    const prompt = description ?? (visible.length === 1 ? message : (title ?? message))
-    const header = title && title !== prompt ? title : undefined
+    let prompt: string
+    let header: string | undefined
+    if (codexMeta(prop)) {
+      // codex-acp: `title` carries the question, `description` the header chip.
+      prompt = title ?? message
+      header = description && description !== prompt ? description : undefined
+    } else {
+      // A lone field without its own description is the question `message`
+      // asks (claude-agent-acp puts a single question there); its title is
+      // then the short header chip.
+      prompt = description ?? (visible.length === 1 ? message : (title ?? message))
+      header = title && title !== prompt ? title : undefined
+    }
     return {
       ...field!,
       ...(header ? { header } : {}),

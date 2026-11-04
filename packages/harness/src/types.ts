@@ -994,6 +994,16 @@ export interface AgentCliDefinition {
    * supportsSystemPrompt`.
    */
   systemPrompt?: AgentCliSystemPrompt
+  /**
+   * Inline JSON config this CLI needs only when the session runs with
+   * `permissionHold` (a harness that exposes an interactive question tool
+   * through the held-permission channel). The driver deep-merges `entries`
+   * into the JSON object in `env` at spawn time, preserving keys already
+   * present (for codex, its `developer_instructions` system prompt). Ignored
+   * when `permissionHold` is off. A value that is not a JSON object is left
+   * untouched and warned about.
+   */
+  permissionHoldConfig?: { env: string; entries: Record<string, unknown> }
   runner?: string | Record<string, unknown>
   protocol: AgentCliProtocol
   /** REQUIRED when protocol=acp. Workspace-relative ref to AIP-44 ACP.md. */

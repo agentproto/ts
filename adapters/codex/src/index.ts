@@ -136,6 +136,14 @@ export const codex: AgentCliHandle = defineHarness({
     key: "developer_instructions",
     shape: "text",
   },
+  // A permission-hold session is the only place codex-acp advertises form
+  // elicitation, so enable codex's native `request_user_input` tool only
+  // there. The harness deep-merges this into `CODEX_CONFIG`, preserving the
+  // `developer_instructions` set by the system-prompt channel above.
+  permissionHoldConfig: {
+    env: "CODEX_CONFIG",
+    entries: { features: { default_mode_request_user_input: true } },
+  },
   protocol: "acp",
   acp: "./codex-acp.ACP.md",
   session: {

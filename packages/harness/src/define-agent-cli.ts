@@ -550,6 +550,35 @@ export function createAgentCliRuntime(
       if (systemPromptText && systemPromptDecl?.via === "env-file") {
         env[systemPromptDecl.env] = writeSystemPromptFile(systemPromptText)
       }
+      // Some CLIs gate an interactive question tool (codex's
+      // `request_user_input`) behind their own inline JSON config, and only
+      // expose it through the held-permission channel. Merged after every
+      // other inline-config writer so it lands on the final JSON, and WITHOUT
+      // dropping keys already there (the system prompt above). See
+      // `permissionHoldConfig`'s doc for the opt-in contract.
+      const holdConfig = definition.permissionHoldConfig
+      if (opts?.permissionHold && holdConfig) {
+        const prior = env[holdConfig.env]
+        let current: Record<string, unknown> | undefined
+        if (prior === undefined || prior === "") {
+          current = {}
+        } else {
+          try {
+            const parsed: unknown = JSON.parse(prior)
+            if (isPlainObject(parsed)) current = parsed
+          } catch {
+            // Not JSON: leave the value for the CLI to complain about.
+          }
+        }
+        if (current) {
+          env[holdConfig.env] = JSON.stringify(deepMergeJson(current, holdConfig.entries))
+        } else {
+          console.warn(
+            `[agent-cli] permission-hold config: ${holdConfig.env} is not a JSON object: ` +
+              "the permission-hold config entries are not delivered to this session.",
+          )
+        }
+      }
       // opencode advertises no native `bypass`/`accept-edits`/`read-only`
       // mode, so the runtime's only path for those was the advisory prompt
       // preamble. Enforce them instead through the session's own inline
