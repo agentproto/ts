@@ -656,6 +656,12 @@ export const agentCliFrontmatterSchema = z
         maxChars: z.number().int().positive().optional(),
       }).strict(),
     ]).optional(),
+    // Inline JSON config merged only for a permissionHold session (see
+    // AgentCliDefinition.permissionHoldConfig in types.ts).
+    permissionHoldConfig: z.object({
+      env: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+      entries: z.record(z.string(), z.unknown()),
+    }).strict().optional(),
     runner: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
     protocol: z.enum(["acp", "mcp", "proprietary", "print"]),
     acp: z.string().optional(),
