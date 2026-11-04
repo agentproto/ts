@@ -53,6 +53,9 @@ export interface SentinelWatchInput {
   types?: string[]
   urgency?: MessageUrgency
   until?: "subject_terminal" | "never"
+  /** Coalescing window for this target, in milliseconds. Absent or 0 keeps
+   *  one delivery per envelope. */
+  batchMs?: number
   provider?: string
   /** ISO timestamp after which the sentinel is cancelled/removed. Defaulted
    *  for session-target sentinels. */
@@ -159,7 +162,12 @@ export async function createSentinelWatch(
   const spec: SentinelSpec = {
     match: singleMatch(subject, types),
     until,
-    target: { kind: "session", sessionId, urgency: input.urgency ?? "next-turn" },
+    target: {
+      kind: "session",
+      sessionId,
+      urgency: input.urgency ?? "next-turn",
+      ...(input.batchMs !== undefined ? { batchMs: input.batchMs } : {}),
+    },
     provider: providerSlug,
   }
 
@@ -361,6 +369,7 @@ export function registerSentinelTools(server: McpServer, opts: RegisterSentinelT
       types: z.array(z.string()).optional().describe("Type globs. Defaults to the provider's defaultTypes(subject)."),
       urgency: urgencyField.optional().describe("Inbox delivery urgency. Default \"next-turn\"."),
       until: untilField.optional().describe("Lifetime. Default \"subject_terminal\" for prUrl and for a \"session:<id>\" subject, \"never\" for any other raw subject."),
+      batchMs: z.number().int().min(0).optional().describe("Coalesce a burst of events for the target session into ONE message after this many milliseconds. Default 0: one delivery per event."),
       provider: z.string().optional().describe("Provider slug: \"local-gh\", \"webhook\", \"agentpush\" or \"session\". Default for a GitHub subject: \"agentpush\" when set up, else \"webhook\" when a stable public URL is configured and webhook is ready, else \"local-gh\". A \"session:<id>\" subject always defaults to \"session\"."),
       expiresAt: z.string().optional().describe("ISO timestamp after which the sentinel is cancelled and removed. Defaulted to 7 days for session-target sentinels; an unparseable value falls back to that default. An update that omits it keeps the existing expiry."),
     },

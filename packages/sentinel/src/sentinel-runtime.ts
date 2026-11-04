@@ -34,7 +34,14 @@ import { homedir } from "node:os"
 import { mkdirSync, appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 
 import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
-import { levelFromDecision, type LedgerLine, type LedgerOutcome } from "@agentproto/delivery"
+import {
+  createDeliveryBatcher,
+  levelFromDecision,
+  type DeliveryBatcher,
+  type Envelope,
+  type LedgerLine,
+  type LedgerOutcome,
+} from "@agentproto/delivery"
 
 import type { MessageUrgency, SendMessageResult, SessionMessage } from "./local-types.js"
 import { sentinelPlatform } from "./platform.js"
@@ -270,6 +277,9 @@ export interface SentinelRuntime {
   /** Force one poll tick across every poll-capable, pollable sentinel —
    *  used by tests and (later) `sentinel_poll_now`. */
   pollOnce(): Promise<void>
+  /** Deliver every pending per-target batch now. Windows normally flush on
+   *  their own timer; this is the explicit drain used by tests and shutdown. */
+  flushBatches(): Promise<void>
   /** Deliver events a push provider already parsed + verified (the
    *  `/inbound/sentinel-<hookKey>` route) to one sentinel, through the same
    *  dedup/match/lifetime pipeline the poll loop uses. `failed: true` means a
@@ -297,6 +307,9 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "sentinels-parked.jsonl")
   const ledgerPath = opts.ledgerPath ?? resolve(agentprotoHome(), DELIVERY_LEDGER_FILE)
   const recentTriageKeys = new RecentKeys()
+  /** Event ids held in an open batch window, so a second poll tick never
+   *  re-enqueues the same envelope before its flush finished. */
+  const pendingBatchKeys = new Set<string>()
 
   let timer: ReturnType<typeof setTimeout> | null = null
   let inFlight = false
@@ -676,18 +689,55 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
   }
 
-  async function deliverEvent(sentinel: Sentinel, event: SentinelEvent): Promise<void> {
-    const target = sentinel.spec.target
-    // Defensive only: `SentinelStore.create` already rejects any target
-    // kind other than "session" (`SentinelTargetNotImplementedError`), so a
-    // persisted sentinel never actually reaches this branch — narrows the
-    // type for `target.sessionId`/`target.urgency` below.
-    if (target.kind !== "session") return
-    const targetSessionId = target.sessionId
-    const targetUrgency = target.urgency
+  // ── Per-target batching ─────────────────────────────────────────────
+  //
+  // `target.batchMs > 0` holds every prepared delivery for that session for
+  // the window and flushes the whole burst through ONE `sendMessage`, so a
+  // burst of sentinel envelopes starts one turn instead of one per envelope.
+  // The default is 0: each envelope follows the original path below byte for
+  // byte.
+
+  type TriageOutcome = ReturnType<typeof classifySentinelEvent>
+
+  interface PreparedDelivery {
+    sentinel: Sentinel
+    event: SentinelEvent
+    provider: SentinelProviderHandle
+    targetSessionId: string
+    targetUrgency: MessageUrgency
+    batchMs: number
+    envelope: SentinelEvent & Envelope
+    triage?: TriageOutcome
+    effectiveTriage: TriageOutcome
+    eventTs?: string
+    repeatKey?: string
+    msg: SessionMessage
+    key?: string
+  }
+
+  function batchKey(sentinelId: string, eventId: string): string {
+    return `${sentinelId}\u0000${eventId}`
+  }
+
+  function batchMsOf(target: Sentinel["spec"]["target"]): number {
+    return target.kind === "session" ? (target.batchMs ?? 0) : 0
+  }
+
+  const batcher: DeliveryBatcher<PreparedDelivery> = createDeliveryBatcher<PreparedDelivery>({
+    flush: (target, items) => flushBatch(target, items),
+    onError: (target, _items, err) =>
+      log(`[sentinel-runtime] batch flush for ${target} failed: ${describeError(err)}`),
+  })
+
+  function prepareDelivery(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    provider: SentinelProviderHandle,
+    target: Extract<Sentinel["spec"]["target"], { kind: "session" }>,
+  ): PreparedDelivery {
     const now = nowMs()
     const envelope = sentinelEnvelopeFor(event)
-    let triage: { decision: ReturnType<typeof classifySentinelEvent>["decision"]; rule: ReturnType<typeof classifySentinelEvent>["rule"] } | undefined
+    let triage: TriageOutcome | undefined
     try {
       triage = classifySentinelEvent(envelope, {
         target: target.sessionId,
@@ -700,73 +750,229 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       log(`[sentinel-runtime] triage failed: ${describeError(err)}`)
     }
     const effectiveTriage = triage ?? { decision: "wake" as const, rule: "default" as const }
-    const eventTs = typeof event.time === "string" && event.time.length > 0 ? event.time : undefined
-    const repeatKey = envelope.repeatKey
-    const msg = buildMessage(sentinel, event, targetSessionId, targetUrgency)
     const key = coalesceKeyFor(event)
-
-    // One line per (envelope, target), written only once the outcome is
-    // known. The hash chain (`prev`) is the NEXT PR.
-    function writeLedger(outcome: DeliveryOutcome): void {
-      const line: LedgerLine = {
-        ts: new Date(nowMs()).toISOString(),
-        producer: "sentinel",
-        subscriptionId: sentinel.id,
-        target: { kind: "session", id: targetSessionId },
-        eventId: event.id,
-        type: event.type,
-        subject: event.subject,
-        ...(eventTs !== undefined ? { eventTs } : {}),
-        ...(repeatKey !== undefined ? { repeatKey } : {}),
-        level: levelFromDecision(effectiveTriage.decision),
-        cap: 3,
-        rule: effectiveTriage.rule,
-        applied: false,
-        outcome: outcome.outcome,
-        ...(outcome.routedTo !== undefined ? { routedTo: outcome.routedTo } : {}),
-        ...(outcome.messageId !== undefined ? { messageId: outcome.messageId } : {}),
-      }
-      appendLedgerLine(ledgerPath, line)
+    return {
+      sentinel,
+      event,
+      provider,
+      targetSessionId: target.sessionId,
+      targetUrgency: target.urgency,
+      batchMs: target.batchMs ?? 0,
+      envelope,
+      ...(triage !== undefined ? { triage } : {}),
+      effectiveTriage,
+      ...(typeof event.time === "string" && event.time.length > 0 ? { eventTs: event.time } : {}),
+      ...(envelope.repeatKey !== undefined ? { repeatKey: envelope.repeatKey } : {}),
+      msg: buildMessage(sentinel, event, target.sessionId, target.urgency),
+      ...(key !== undefined ? { key } : {}),
     }
+  }
 
-    let outcome: DeliveryOutcome
+  /** One line per (envelope, target), written only once the outcome is
+   *  known. The hash chain (`prev`) is the NEXT PR. */
+  function writeLedgerFor(prepared: PreparedDelivery, outcome: DeliveryOutcome): void {
+    const line: LedgerLine = {
+      ts: new Date(nowMs()).toISOString(),
+      producer: "sentinel",
+      subscriptionId: prepared.sentinel.id,
+      target: { kind: "session", id: prepared.targetSessionId },
+      eventId: prepared.event.id,
+      type: prepared.event.type,
+      subject: prepared.event.subject,
+      ...(prepared.eventTs !== undefined ? { eventTs: prepared.eventTs } : {}),
+      ...(prepared.repeatKey !== undefined ? { repeatKey: prepared.repeatKey } : {}),
+      level: levelFromDecision(prepared.effectiveTriage.decision),
+      cap: 3,
+      rule: prepared.effectiveTriage.rule,
+      applied: false,
+      outcome: outcome.outcome,
+      ...(outcome.routedTo !== undefined ? { routedTo: outcome.routedTo } : {}),
+      ...(outcome.messageId !== undefined ? { messageId: outcome.messageId } : {}),
+    }
+    appendLedgerLine(ledgerPath, line)
+  }
+
+  function recordTriage(prepared: PreparedDelivery): void {
+    if (!prepared.triage) return
     try {
-      const result = await opts.registry.sendMessage(msg, {
-        source: "sentinel",
-        origin: sentinel.id,
-        ...(key ? { coalesceKey: key } : {}),
+      recordSentinelTriageKey(prepared.envelope, {
+        target: prepared.targetSessionId,
+        now: nowMs(),
+        recent: recentTriageKeys,
       })
-      outcome = { outcome: outcomeOfSendResult(result), ...(msg.id ? { messageId: msg.id } : {}) }
-      try {
-        if (triage) {
-          recordSentinelTriageKey(envelope, {
-            target: target.sessionId,
-            now,
-            recent: recentTriageKeys,
-          })
-        }
-      } catch (err) {
-        log(`[sentinel-runtime] triage record failed: ${describeError(err)}`)
+    } catch (err) {
+      log(`[sentinel-runtime] triage record failed: ${describeError(err)}`)
+    }
+  }
+
+  /** The per-event send path used both directly (batchMs 0) and as the
+   *  dead-session fallback for a combined batch send. Never writes the ledger. */
+  async function attemptSend(prepared: PreparedDelivery): Promise<DeliveryOutcome> {
+    try {
+      const result = await opts.registry.sendMessage(prepared.msg, {
+        source: "sentinel",
+        origin: prepared.sentinel.id,
+        ...(prepared.key ? { coalesceKey: prepared.key } : {}),
+      })
+      recordTriage(prepared)
+      return {
+        outcome: outcomeOfSendResult(result),
+        ...(prepared.msg.id ? { messageId: prepared.msg.id } : {}),
       }
     } catch (err) {
       if (sentinelPlatform().messages.isSessionNotAlive(err)) {
-        writeLedger(await handleDeadSession(sentinel, event, msg))
-        return
+        return handleDeadSession(prepared.sentinel, prepared.event, prepared.msg)
       }
       // The target row is gone altogether (deleted/GC'd, not merely ended):
       // nothing to resume and nobody to route to. Rethrowing here leaves the
       // event unseen, so the sentinel re-delivers it every poll forever and
       // never reaches its terminal event — park it and orphan the sentinel.
-      if (opts.sessionInfo && !opts.isSessionAlive(target.sessionId) && !opts.sessionInfo(target.sessionId)) {
-        parkEvent(sentinel, event, `target session ${target.sessionId} no longer exists`)
-        markOrphaned(sentinel)
-        writeLedger({ outcome: "parked" })
-        return
+      if (
+        opts.sessionInfo &&
+        !opts.isSessionAlive(prepared.targetSessionId) &&
+        !opts.sessionInfo(prepared.targetSessionId)
+      ) {
+        parkEvent(prepared.sentinel, prepared.event, `target session ${prepared.targetSessionId} no longer exists`)
+        markOrphaned(prepared.sentinel)
+        return { outcome: "parked" }
       }
-      writeLedger({ outcome: "dropped" })
       throw err
     }
-    writeLedger(outcome)
+  }
+
+  /** Move the per-event bookkeeping that processEvents normally does inline
+   *  to the moment a batched delivery actually landed. */
+  async function bookkeepPrepared(prepared: PreparedDelivery): Promise<void> {
+    pendingBatchKeys.delete(batchKey(prepared.sentinel.id, prepared.event.id))
+    const current = store.get(prepared.sentinel.id)
+    if (!current) return
+    store.markSeen(current.id, prepared.event.id)
+    const updated = store.update(current.id, {
+      eventCount: current.eventCount + 1,
+      lastEventTs: nowMs(),
+    })
+    if (updated) await applyLifetime(updated, prepared.event, prepared.provider)
+  }
+
+  const URGENCY_RANK: Record<MessageUrgency, number> = {
+    fyi: 0,
+    "next-turn": 1,
+    steer: 2,
+    interrupt: 3,
+  }
+
+  function highestUrgency(items: readonly PreparedDelivery[]): MessageUrgency {
+    let highest: MessageUrgency = "fyi"
+    for (const item of items) {
+      if (URGENCY_RANK[item.targetUrgency] > URGENCY_RANK[highest]) highest = item.targetUrgency
+    }
+    return highest
+  }
+
+  /** ONE message for a burst. A single item keeps its original message
+   *  (correlationId, data and coalesce key included); two or more become a
+   *  compact digest naming each event's own text. */
+  function buildBatchMessage(target: string, items: readonly PreparedDelivery[]): SessionMessage {
+    if (items.length === 1) return items[0]!.msg
+    const maxBytes = sentinelPlatform().messages.maxMessageDataBytes
+    const events = items.map(item => trimEventForEnvelope(item.event))
+    const fullData: Record<string, unknown> = { batch: true, count: items.length, events }
+    const data =
+      Buffer.byteLength(JSON.stringify(fullData), "utf8") <= maxBytes
+        ? fullData
+        : { batch: true, count: items.length, events: [], truncated: true }
+    const text = [`[sentinel] ${items.length} updates:`, ...items.map(item => item.msg.text)].join("\n")
+    return sentinelPlatform().messages.createSessionMessage({
+      to: target,
+      from: { relation: "system" },
+      kind: "notice",
+      urgency: highestUrgency(items),
+      text,
+      data,
+    })
+  }
+
+  async function flushBatch(target: string, items: readonly PreparedDelivery[]): Promise<void> {
+    const primary = buildBatchMessage(target, items)
+    let result: SendMessageResult | undefined
+    try {
+      result = await opts.registry.sendMessage(primary, {
+        source: "sentinel",
+        origin: items.length === 1 ? items[0]!.sentinel.id : "sentinel:batch",
+        ...(items.length === 1 && items[0]!.key ? { coalesceKey: items[0]!.key } : {}),
+      })
+    } catch (err) {
+      if (sentinelPlatform().messages.isSessionNotAlive(err)) {
+        // The target died between the burst and its flush. Fall back to the
+        // per-event path so revive/retarget/park behave exactly as they do
+        // without batching.
+        for (const item of items) {
+          try {
+            writeLedgerFor(item, await attemptSend(item))
+            await bookkeepPrepared(item)
+          } catch (itemError) {
+            writeLedgerFor(item, { outcome: "dropped" })
+            pendingBatchKeys.delete(batchKey(item.sentinel.id, item.event.id))
+            log(`[sentinel-runtime] ${item.sentinel.id} batched delivery failed: ${describeError(itemError)}`)
+          }
+        }
+        return
+      }
+      if (opts.sessionInfo && !opts.isSessionAlive(target) && !opts.sessionInfo(target)) {
+        for (const item of items) {
+          parkEvent(item.sentinel, item.event, `target session ${target} no longer exists`)
+          markOrphaned(item.sentinel)
+          writeLedgerFor(item, { outcome: "parked" })
+          pendingBatchKeys.delete(batchKey(item.sentinel.id, item.event.id))
+        }
+        return
+      }
+      for (const item of items) {
+        writeLedgerFor(item, { outcome: "dropped" })
+        pendingBatchKeys.delete(batchKey(item.sentinel.id, item.event.id))
+      }
+      throw err
+    }
+
+    const outcome: DeliveryOutcome = {
+      outcome: outcomeOfSendResult(result),
+      ...(primary.id ? { messageId: primary.id } : {}),
+    }
+    for (const item of items) {
+      recordTriage(item)
+      writeLedgerFor(item, outcome)
+      await bookkeepPrepared(item)
+    }
+  }
+
+  function enqueueBatch(prepared: PreparedDelivery): void {
+    const key = batchKey(prepared.sentinel.id, prepared.event.id)
+    pendingBatchKeys.add(key)
+    void batcher.enqueue(prepared.targetSessionId, prepared.batchMs, prepared).catch(err => {
+      pendingBatchKeys.delete(key)
+      log(`[sentinel-runtime] batch enqueue failed: ${describeError(err)}`)
+    })
+  }
+
+  async function deliverEvent(
+    sentinel: Sentinel,
+    event: SentinelEvent,
+    provider: SentinelProviderHandle,
+  ): Promise<void> {
+    const target = sentinel.spec.target
+    // Defensive only: `SentinelStore.create` already rejects any target
+    // kind other than "session" (`SentinelTargetNotImplementedError`), so a
+    // persisted sentinel never actually reaches this branch - narrows the
+    // type for `target.sessionId`/`target.urgency` below.
+    if (target.kind !== "session") return
+    const prepared = prepareDelivery(sentinel, event, provider, target)
+    try {
+      const outcome = await attemptSend(prepared)
+      writeLedgerFor(prepared, outcome)
+    } catch (err) {
+      writeLedgerFor(prepared, { outcome: "dropped" })
+      throw err
+    }
   }
 
   // ── Lifetime (design §2 — `until`; contract change — `subject_terminal`
@@ -874,7 +1080,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         break
       }
 
-      if (store.isSeen(current.id, event.id)) continue
+      if (store.isSeen(current.id, event.id) || pendingBatchKeys.has(batchKey(current.id, event.id))) continue
 
       const closedNow = trackClosure(current, event)
       if (closedNow && !event.terminal) {
@@ -908,8 +1114,25 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         continue
       }
 
+      const target = current.spec.target
+      if (target.kind === "session" && batchMsOf(target) > 0) {
+        try {
+          enqueueBatch(prepareDelivery(current, event, provider, target))
+        } catch (err) {
+          // Nothing was held: treat it exactly like a delivery failure so the
+          // event is retried on the next tick.
+          log(`[sentinel-runtime] ${current.id} batch preparation failed: ${describeError(err)}`)
+          haltedOnError = true
+          break
+        }
+        // Bookkeeping (markSeen / counters / lifetime) moves to the flush:
+        // until the combined send lands, the event has not been delivered.
+        delivered++
+        continue
+      }
+
       try {
-        await deliverEvent(current, event)
+        await deliverEvent(current, event, provider)
       } catch (err) {
         // Do NOT mark seen: delivery did not complete (delivered OR parked
         // both resolve normally — see deliverEvent/handleDeadSession), so
@@ -1211,8 +1434,13 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
         clearTimeout(timer)
         timer = null
       }
+      batcher.dispose()
+      pendingBatchKeys.clear()
     },
     pollOnce,
+    async flushBatches(): Promise<void> {
+      await batcher.flush()
+    },
     replayParked,
     deliverPushed,
     webhookOutbox: outbox,

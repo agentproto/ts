@@ -59,7 +59,16 @@ export type SentinelUntil =
  *  section yet). Declaring the shape now lets callers/tools reference the
  *  full union before delivery exists. */
 export type SentinelTarget =
-  | { kind: "session"; sessionId: string; urgency: MessageUrgency }
+  | {
+      kind: "session"
+      sessionId: string
+      urgency: MessageUrgency
+      /** Coalescing window for this target's deliveries. A burst of
+       *  envelopes for the session is delivered as ONE message after this
+       *  many milliseconds. `0` (the default when absent) keeps the
+       *  pre-batching behaviour: one delivery per envelope. */
+      batchMs?: number
+    }
   | { kind: "routine"; routineId: string }
   | { kind: "webhook"; url: string; secret: string }
 

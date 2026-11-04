@@ -10897,6 +10897,7 @@ async function handleSentinels(
       ...(Array.isArray(b.types) ? { types: b.types.filter((t): t is string => typeof t === "string") } : {}),
       ...(typeof b.urgency === "string" ? { urgency: b.urgency as MessageUrgency } : {}),
       ...(until ? { until } : {}),
+      ...(typeof b.batchMs === "number" ? { batchMs: b.batchMs } : {}),
       ...(typeof b.provider === "string" ? { provider: b.provider } : {}),
       ...(typeof b.expiresAt === "string" ? { expiresAt: b.expiresAt } : {}),
     }
