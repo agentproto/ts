@@ -66,7 +66,7 @@ describe("pairing registry over an in-memory rendezvous", () => {
     expect(await registry.list()).toEqual([])
     expect(registry.isOnline(pending[0]!.fingerprint)).toBe(false)
 
-    expect(await registry.confirmPending(pending[0]!.code)).toBe(true)
+    expect(await registry.confirmPending(pending[0]!.code)).toMatchObject({ ok: true })
     expect(await registry.listPending()).toEqual([])
     const listed = await registry.list()
     expect(listed).toHaveLength(1)
@@ -86,7 +86,7 @@ describe("pairing registry over an in-memory rendezvous", () => {
     const { client, pairRoot, daemon } = await pairViaOffer(rv, offer.url, "phone")
     await client.ready()
     const [pending] = await first.listPending()
-    expect(await first.confirmPending(pending!.id)).toBe(true)
+    expect(await first.confirmPending(pending!.id)).toMatchObject({ ok: true })
     await client.close()
     const [fingerprint] = (await first.list()).map(p => p.fingerprint)
     await first.shutdown()

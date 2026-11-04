@@ -14,8 +14,8 @@
  *          side via REST; falls back to the client store when no daemon).
  *   pending [--json]                                      daemon side: list
  *          handshakes waiting for the operator's confirmation.
- *   confirm <fingerprint|code|name>                        daemon side.
- *   decline <fingerprint|code|name>                        daemon side.
+ *   confirm <code|fingerprint>                             daemon side.
+ *   decline <code|fingerprint>                             daemon side.
  *   revoke <fingerprint|name>                             daemon side.
  *   exec   <fingerprint|name> -- <verb> [args…]           route any verb over the
  *          pairing's E2E channel (client routing).
@@ -54,8 +54,8 @@ Usage:
   agentproto pair accept "<offer-url>" [--name <label>]
   agentproto pair ls     [--json]
   agentproto pair pending [--json]
-  agentproto pair confirm <fingerprint|code|name>
-  agentproto pair decline <fingerprint|code|name>
+  agentproto pair confirm <code|fingerprint>
+  agentproto pair decline <code|fingerprint>
   agentproto pair revoke <fingerprint|name>
   agentproto pair exec   <fingerprint|name> -- <verb> [args…]
   agentproto pair --help
@@ -76,7 +76,9 @@ Usage:
           memory only and they can drive nothing until confirmed. Compare the
           short code with the one on the client's screen.
   confirm Promote a pending pairing into pairings.json and start serving it.
-  decline Drop a pending pairing without saving it.
+          Takes the short code or full fingerprint, never the client name.
+  decline Drop a pending pairing without saving it. Takes the short code or
+          full fingerprint, never the client name.
   revoke  Daemon side: drop a pairing so the client can no longer reconnect.
   exec    Client side: run any agentproto verb against the paired daemon over the
           E2E channel (e.g. \`agentproto pair exec my-laptop -- sessions ls\`).
@@ -372,7 +374,7 @@ async function runPendingDecision(
   })
   const target = positionals[0]
   if (!target) {
-    process.stderr.write(`agentproto pair ${action}: missing <fingerprint|code|name>.\n`)
+    process.stderr.write(`agentproto pair ${action}: missing <code|fingerprint>.\n`)
     return 2
   }
 

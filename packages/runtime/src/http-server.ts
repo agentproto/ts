@@ -12476,18 +12476,29 @@ async function handlePairings(
     const b = body && typeof body === "object" ? (body as Record<string, unknown>) : {}
     const target = typeof b.target === "string" ? b.target : ""
     if (!target) {
-      json(400, { error: "missing_target", message: "pass { target } (fingerprint, short code, or name)" })
+      json(400, {
+        error: "missing_target",
+        message: "pass { target } (short code or full fingerprint; never a client name)",
+      })
       return true
     }
-    const ok =
+    const result =
       path === "/pairings/confirm"
         ? await registry.confirmPending(target)
         : await registry.declinePending(target)
-    if (!ok) {
-      json(404, { error: "not_found", message: `no pending pairing matched "${target}"` })
+    if (!result.ok) {
+      json(
+        result.reason === "ambiguous" ? 409 : 404,
+        { error: result.reason, message: result.message },
+      )
       return true
     }
-    json(200, path === "/pairings/confirm" ? { ok: true, confirmed: target } : { ok: true, declined: target })
+    json(
+      200,
+      path === "/pairings/confirm"
+        ? { ok: true, confirmed: target }
+        : { ok: true, declined: target },
+    )
     return true
   }
 

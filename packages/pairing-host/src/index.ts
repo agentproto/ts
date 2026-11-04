@@ -12,6 +12,7 @@ export {
   type PairingChannelHandle,
   type PairingChannelMode,
   pairingCode,
+  type PendingDecisionResult,
   type PendingPairing,
   type CreatedOffer,
   type CreateOfferInput,

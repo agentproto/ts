@@ -217,6 +217,14 @@ export function pairingCode(fingerprint: string): string {
   return fingerprint.slice(0, 8)
 }
 
+/** Result of confirming or declining a pending pairing. Confirmation and
+ *  decline take only the short code or the full fingerprint; a client-chosen
+ *  name is never a handle. `ambiguous` means a code matched more than one
+ *  pending pairing, and nothing was changed. */
+export type PendingDecisionResult =
+  | { ok: true }
+  | { ok: false; reason: "not_found" | "ambiguous"; message: string }
+
 interface PairingsFile {
   v: typeof PAIRINGS_VERSION | typeof LEGACY_PAIRINGS_VERSION
   pairings: PairingRecord[]
@@ -327,6 +335,11 @@ export interface PairingRegistryDeps {
   serve: (sink: E2eFrameSink, ctx: PairingChannelContext) => PairingChannelHandle
   /** Injectable clock (ms). Defaults to Date.now. */
   now?: () => number
+  /** Maps a fingerprint to the short code shown on both screens. Defaults to
+   *  `pairingCode` (the first 8 hex chars). A host may override it for a
+   *  different display convention; confirmation always accepts the full
+   *  fingerprint too. */
+  codeForFingerprint?: (fingerprint: string) => string
   /** Diagnostic log sink. */
   log?: (line: string) => void
   /** Reconnect backoff floor / ceiling (ms). Defaults 1s / 30s. */
@@ -350,11 +363,12 @@ export interface PairingRegistry {
   /** Pairings waiting for operator confirmation (copies), oldest first. */
   listPending(): Promise<PendingPairing[]>
   /** Promote a pending pairing into `pairings.json` and start serving it.
-   *  Accepts the fingerprint, the short code, or the client name. */
-  confirmPending(idOrCodeOrName: string): Promise<boolean>
-  /** Drop a pending pairing. Accepts the fingerprint, the short code, or the
-   *  client name. */
-  declinePending(idOrCodeOrName: string): Promise<boolean>
+   *  Accepts only the short code or the full fingerprint, never the client
+   *  name. An ambiguous code promotes nothing. */
+  confirmPending(codeOrFingerprint: string): Promise<PendingDecisionResult>
+  /** Drop a pending pairing. Accepts only the short code or the full
+   *  fingerprint, never the client name. An ambiguous code drops nothing. */
+  declinePending(codeOrFingerprint: string): Promise<PendingDecisionResult>
   /** Rename a pairing by fingerprint or name (cosmetic only — no effect on
    *  auth or routing). Returns false when nothing matched; throws on an
    *  empty `newName`. */
@@ -473,6 +487,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
   const reconnectMaxMs = deps.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS
   const handshakeTimeoutMs = deps.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS
   const revokedGraceMs = deps.revokedGraceMs ?? DEFAULT_REVOKED_GRACE_MS
+  const codeForFingerprint = deps.codeForFingerprint ?? pairingCode
 
   // Rate-limit dial-failure logging per loop key. A revoked/offline peer's
   // standing reconnect re-dials forever; without this a single dead pairing
@@ -591,18 +606,30 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
     }
   }
 
-  function findPending(idOrCodeOrName: string): PendingEntry | undefined {
-    const direct = pending.get(idOrCodeOrName)
-    if (direct) return direct
-    for (const entry of pending.values()) {
-      if (
-        entry.record.code === idOrCodeOrName ||
-        entry.record.name === idOrCodeOrName
-      ) {
-        return entry
-      }
-    }
-    return undefined
+  /** Match a pending pairing by full fingerprint or short code only. The
+   *  client chooses `name`, so it must never be a confirmation handle. A code
+   *  that matches more than one pending pairing is ambiguous. */
+  function findPending(
+    codeOrFingerprint: string,
+  ): { entry: PendingEntry } | { error: "not_found" | "ambiguous" } {
+    const direct = pending.get(codeOrFingerprint)
+    if (direct) return { entry: direct }
+    const byCode = [...pending.values()].filter(
+      entry => entry.record.code === codeOrFingerprint,
+    )
+    if (byCode.length === 0) return { error: "not_found" }
+    if (byCode.length > 1) return { error: "ambiguous" }
+    return { entry: byCode[0]! }
+  }
+
+  function pendingDecisionMessage(
+    reason: "not_found" | "ambiguous",
+    target: string,
+  ): string {
+    return reason === "ambiguous"
+      ? `short code "${target}" matches more than one pending pairing; ` +
+          "ambiguous, use the full fingerprint"
+      : `no pending pairing matched "${target}"`
   }
 
   /** Drop pending pairings whose offer TTL has passed. Called on every
@@ -1094,7 +1121,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           record: {
             id: fingerprint,
             fingerprint,
-            code: pairingCode(fingerprint),
+            code: codeForFingerprint(fingerprint),
             name,
             createdAt: nowIso,
             expiresAt: new Date(expMs).toISOString(),
@@ -1107,8 +1134,8 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
           gate: { open: false, live: null },
         })
         log(
-          `[pairing] pending ${fingerprint} (${name}), code ${pairingCode(fingerprint)}; ` +
-            `run \`agentproto pair confirm ${pairingCode(fingerprint)}\``,
+          `[pairing] pending ${fingerprint} (${name}), code ${codeForFingerprint(fingerprint)}; ` +
+            `run \`agentproto pair confirm ${codeForFingerprint(fingerprint)}\``,
         )
         return {
           mode: "offer",
@@ -1258,11 +1285,18 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
-  async function confirmPending(idOrCodeOrName: string): Promise<boolean> {
+  async function confirmPending(codeOrFingerprint: string): Promise<PendingDecisionResult> {
     await ensureLoaded()
     sweepExpiredPending()
-    const entry = findPending(idOrCodeOrName)
-    if (!entry) return false
+    const match = findPending(codeOrFingerprint)
+    if ("error" in match) {
+      return {
+        ok: false,
+        reason: match.error,
+        message: pendingDecisionMessage(match.error, codeOrFingerprint),
+      }
+    }
+    const entry = match.entry
     pending.delete(entry.record.fingerprint)
     const nowIso = new Date(now()).toISOString()
     const record: PairingRecord = {
@@ -1286,13 +1320,20 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
     }
     startReconnectLoops(record)
     log(`[pairing] confirmed ${record.fingerprint} (${record.name})`)
-    return true
+    return { ok: true }
   }
 
-  async function declinePending(idOrCodeOrName: string): Promise<boolean> {
+  async function declinePending(codeOrFingerprint: string): Promise<PendingDecisionResult> {
     sweepExpiredPending()
-    const entry = findPending(idOrCodeOrName)
-    if (!entry) return false
+    const match = findPending(codeOrFingerprint)
+    if ("error" in match) {
+      return {
+        ok: false,
+        reason: match.error,
+        message: pendingDecisionMessage(match.error, codeOrFingerprint),
+      }
+    }
+    const entry = match.entry
     pending.delete(entry.record.fingerprint)
     entry.gate.open = false
     try {
@@ -1301,7 +1342,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
       /* already closing */
     }
     log(`[pairing] declined pending ${entry.record.fingerprint} (${entry.record.name})`)
-    return true
+    return { ok: true }
   }
 
   async function list(): Promise<PairingRecord[]> {

@@ -1,5 +1,5 @@
 /**
- * `agentproto pair pending|confirm|decline` — HTTP parity for the daemon's
+ * `agentproto pair pending|confirm|decline`: HTTP parity for the daemon's
  * pending-pairing routes (AIP-59 §3.7).
  */
 
@@ -98,7 +98,7 @@ describe("agentproto pair pending / confirm / decline", () => {
 
   it("a missing target is a usage error", async () => {
     expect(await runPair(["confirm"])).toBe(2)
-    expect(stderrChunks.join("")).toContain("missing <fingerprint|code|name>")
+    expect(stderrChunks.join("")).toContain("missing <code|fingerprint>")
     expect(httpPostJson).not.toHaveBeenCalled()
   })
 })

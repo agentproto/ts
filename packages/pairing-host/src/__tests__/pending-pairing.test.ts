@@ -24,7 +24,10 @@ describe("pending pairings (AIP-59 §3.7)", () => {
   const registries: PairingHostRegistry[] = []
   let clock: number
 
-  const make = (rv: FakeRendezvous): PairingHostRegistry => {
+  const make = (
+    rv: FakeRendezvous,
+    opts: { codeForFingerprint?: (fingerprint: string) => string } = {},
+  ): PairingHostRegistry => {
     const registry = createPairingRegistry({
       loadIdentity: async () => identity,
       pairingsPath: join(tmp, "pairings.json"),
@@ -44,6 +47,7 @@ describe("pending pairings (AIP-59 §3.7)", () => {
       reconnectMinMs: 20,
       reconnectMaxMs: 100,
       now: () => clock,
+      ...(opts.codeForFingerprint ? { codeForFingerprint: opts.codeForFingerprint } : {}),
     })
     registries.push(registry)
     return registry
@@ -86,7 +90,7 @@ describe("pending pairings (AIP-59 §3.7)", () => {
     expect(refused.status).toBe(403)
     expect(refused.body.toString()).toContain("pairing_pending")
 
-    expect(await registry.confirmPending(pending.code)).toBe(true)
+    expect(await registry.confirmPending(pending.code)).toMatchObject({ ok: true })
     expect(await registry.listPending()).toEqual([])
     const listed = await registry.list()
     expect(listed).toHaveLength(1)
@@ -102,7 +106,7 @@ describe("pending pairings (AIP-59 §3.7)", () => {
     const registry = make(rv)
     const { client, pending } = await pendingPaired(rv, registry)
 
-    expect(await registry.declinePending(pending.code)).toBe(true)
+    expect(await registry.declinePending(pending.code)).toMatchObject({ ok: true })
     expect(await registry.listPending()).toEqual([])
     expect(await registry.list()).toEqual([])
     await expect(readFile(join(tmp, "pairings.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" })
@@ -116,9 +120,61 @@ describe("pending pairings (AIP-59 §3.7)", () => {
 
     clock += 61_000
     expect(await registry.listPending()).toEqual([])
-    expect(await registry.confirmPending(pending.code)).toBe(false)
+    expect(await registry.confirmPending(pending.code)).toMatchObject({ ok: false, reason: "not_found" })
     expect(await registry.list()).toEqual([])
     await client.close().catch(() => {})
+  })
+
+  it("refuses to confirm or decline by the client-supplied name", async () => {
+    const rv = new FakeRendezvous()
+    const registry = make(rv)
+    const { client, pending } = await pendingPaired(rv, registry)
+
+    const byName = await registry.confirmPending("phone")
+    expect(byName).toMatchObject({ ok: false, reason: "not_found" })
+    expect(await registry.listPending()).toHaveLength(1)
+
+    const declinedByName = await registry.declinePending("phone")
+    expect(declinedByName).toMatchObject({ ok: false, reason: "not_found" })
+    expect(await registry.listPending()).toHaveLength(1)
+
+    // The full fingerprint still works.
+    expect(await registry.confirmPending(pending.fingerprint)).toMatchObject({ ok: true })
+    expect(await client.forwardHttp({ method: "GET", path: "/health" })).toBeDefined()
+    await client.close()
+  })
+
+  it("refuses an ambiguous short code and leaves every pending pairing in place", async () => {
+    const rv = new FakeRendezvous()
+    // Force both handshakes onto the same short code.
+    const registry = make(rv, { codeForFingerprint: () => "deadbeef" })
+
+    const firstOffer = await registry.createOffer({ ttlMs: 60_000 })
+    const first = await pairViaOffer(rv, firstOffer.url, "iPhone")
+    await first.client.ready()
+
+    const secondOffer = await registry.createOffer({ ttlMs: 60_000 })
+    const second = await pairViaOffer(rv, secondOffer.url, "not-an-iPhone")
+    await second.client.ready()
+
+    const before = await registry.listPending()
+    expect(before).toHaveLength(2)
+
+    const ambiguous = await registry.confirmPending("deadbeef")
+    expect(ambiguous).toMatchObject({ ok: false, reason: "ambiguous" })
+    expect((ambiguous as { message: string }).message).toContain("use the full fingerprint")
+    expect(await registry.list()).toEqual([])
+    expect(await registry.listPending()).toHaveLength(2)
+
+    const ambiguousDecline = await registry.declinePending("deadbeef")
+    expect(ambiguousDecline).toMatchObject({ ok: false, reason: "ambiguous" })
+    expect(await registry.listPending()).toHaveLength(2)
+
+    // The full fingerprint disambiguates, even under a shared code.
+    expect(await registry.confirmPending(before[0]!.fingerprint)).toMatchObject({ ok: true })
+    expect(await registry.listPending()).toHaveLength(1)
+    await first.client.close().catch(() => {})
+    await second.client.close().catch(() => {})
   })
 
   it("a restart with a pending pairing leaves nothing in pairings.json", async () => {

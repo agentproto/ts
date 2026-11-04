@@ -122,7 +122,8 @@ export function registerPairingTools(
     "List pairings waiting for operator confirmation: a client completed the " +
       "handshake, but nothing is persisted and it can drive nothing until you " +
       "confirm it. Each row carries the short code shown on the client's screen; " +
-      "compare it before confirming.",
+      "compare it before confirming. Confirm with the short code or the full " +
+      "fingerprint, never the client-supplied name.",
     {},
     async () => {
       const pending = await registry.listPending()
@@ -133,38 +134,45 @@ export function registerPairingTools(
   server.tool(
     "pair_confirm",
     "Promote a pending pairing into pairings.json and start serving it. Pass " +
-      "the fingerprint, the short code, or the client name from `pair_pending`. " +
-      "Confirm only when the short code matches the one on the client's screen.",
+      "the short code or the full fingerprint from `pair_pending`. The " +
+      "client-supplied name is never accepted. Confirm only when the short " +
+      "code matches the one on the client's screen; an ambiguous code promotes " +
+      "nothing.",
     {
       target: z
         .string()
-        .describe("The pending pairing's fingerprint, short code, or name (see pair_pending)."),
+        .describe(
+          "The pending pairing's short code or full fingerprint (see pair_pending). Never the client name.",
+        ),
     },
     async ({ target }) => {
-      const confirmed = await registry.confirmPending(target)
+      const result = await registry.confirmPending(target)
       return text(
-        confirmed
+        result.ok
           ? { ok: true, confirmed: target }
-          : { ok: false, message: `no pending pairing matched "${target}"` },
+          : { ok: false, reason: result.reason, message: result.message },
       )
     },
   )
 
   server.tool(
     "pair_decline",
-    "Drop a pending pairing without persisting it. Pass the fingerprint, the " +
-      "short code, or the client name from `pair_pending`.",
+    "Drop a pending pairing without persisting it. Pass the short code or the " +
+      "full fingerprint from `pair_pending`. The client-supplied name is never " +
+      "accepted. An ambiguous code drops nothing.",
     {
       target: z
         .string()
-        .describe("The pending pairing's fingerprint, short code, or name (see pair_pending)."),
+        .describe(
+          "The pending pairing's short code or full fingerprint (see pair_pending). Never the client name.",
+        ),
     },
     async ({ target }) => {
-      const declined = await registry.declinePending(target)
+      const result = await registry.declinePending(target)
       return text(
-        declined
+        result.ok
           ? { ok: true, declined: target }
-          : { ok: false, message: `no pending pairing matched "${target}"` },
+          : { ok: false, reason: result.reason, message: result.message },
       )
     },
   )
