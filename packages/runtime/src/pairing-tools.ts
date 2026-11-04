@@ -4,11 +4,15 @@
  *
  * Three tools, mirroring the CLI verbs:
  *
- *   pair_offer   — mint a one-time offer + start dialing the rendezvous; returns
- *                  the `agentproto://pair?…` URL, fingerprint, and expiry.
- *   pair_list    — list persisted pairings (name, fingerprint, lastSeen).
- *   pair_revoke  — drop a pairing by fingerprint or name; stops its rendezvous
- *                  connections so it can no longer reconnect.
+ *   pair_offer    : mint a one-time offer + start dialing the rendezvous;
+ *                   returns the `agentproto://pair?…` URL, fingerprint, expiry.
+ *   pair_list     : list persisted pairings (name, fingerprint, lastSeen).
+ *   pair_pending  : list pairings whose handshake succeeded but which are
+ *                   waiting for the operator's confirmation.
+ *   pair_confirm  : promote a pending pairing into pairings.json.
+ *   pair_decline  : drop a pending pairing.
+ *   pair_revoke   : drop a pairing by fingerprint or name; stops its rendezvous
+ *                   connections so it can no longer reconnect.
  *
  * Registered beside `remote_*` (remote-tools.ts) — same closure-rebind pattern;
  * the registry singleton lives on the gateway.
@@ -110,6 +114,58 @@ export function registerPairingTools(
           ...(p.scope ? { scope: p.scope } : {}),
         })),
       })
+    },
+  )
+
+  server.tool(
+    "pair_pending",
+    "List pairings waiting for operator confirmation: a client completed the " +
+      "handshake, but nothing is persisted and it can drive nothing until you " +
+      "confirm it. Each row carries the short code shown on the client's screen; " +
+      "compare it before confirming.",
+    {},
+    async () => {
+      const pending = await registry.listPending()
+      return text({ pending })
+    },
+  )
+
+  server.tool(
+    "pair_confirm",
+    "Promote a pending pairing into pairings.json and start serving it. Pass " +
+      "the fingerprint, the short code, or the client name from `pair_pending`. " +
+      "Confirm only when the short code matches the one on the client's screen.",
+    {
+      target: z
+        .string()
+        .describe("The pending pairing's fingerprint, short code, or name (see pair_pending)."),
+    },
+    async ({ target }) => {
+      const confirmed = await registry.confirmPending(target)
+      return text(
+        confirmed
+          ? { ok: true, confirmed: target }
+          : { ok: false, message: `no pending pairing matched "${target}"` },
+      )
+    },
+  )
+
+  server.tool(
+    "pair_decline",
+    "Drop a pending pairing without persisting it. Pass the fingerprint, the " +
+      "short code, or the client name from `pair_pending`.",
+    {
+      target: z
+        .string()
+        .describe("The pending pairing's fingerprint, short code, or name (see pair_pending)."),
+    },
+    async ({ target }) => {
+      const declined = await registry.declinePending(target)
+      return text(
+        declined
+          ? { ok: true, declined: target }
+          : { ok: false, message: `no pending pairing matched "${target}"` },
+      )
     },
   )
 

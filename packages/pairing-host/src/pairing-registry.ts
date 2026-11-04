@@ -99,6 +99,7 @@ import { homedir } from "node:os"
 import { dirname, join, basename } from "node:path"
 import {
   daemonHandshakeOverSink,
+  encodeData,
   type ErrorFrame,
   type FrameSink,
   type E2eFrameSink,
@@ -193,6 +194,29 @@ export interface RevokedPairingRecord {
   routes: ({ epoch: number } & RouteAuthTokens)[]
 }
 
+/** A pairing whose first-contact handshake succeeded but which the operator
+ *  has not confirmed yet. Held in memory only: never written to
+ *  `pairings.json`, never listed by `list()`, never autoconnected, and gated
+ *  so it can drive nothing until `confirmPending` promotes it. */
+export interface PendingPairing {
+  /** The full client pairing fingerprint (also the confirm handle). */
+  id: string
+  fingerprint: string
+  /** Short human-comparable prefix of `fingerprint`, shown on both screens. */
+  code: string
+  name: string
+  createdAt: string
+  /** The offer's expiry: after this the pending pairing is dropped. */
+  expiresAt: string
+  rendezvousUrl: string
+  scope?: "host"
+}
+
+/** The short code shown to the operator and the phone for one pairing. */
+export function pairingCode(fingerprint: string): string {
+  return fingerprint.slice(0, 8)
+}
+
 interface PairingsFile {
   v: typeof PAIRINGS_VERSION | typeof LEGACY_PAIRINGS_VERSION
   pairings: PairingRecord[]
@@ -233,6 +257,10 @@ export interface PairingChannelContext {
    *  `serve` can gate scope-restricted routes (e.g. device-inference
    *  proxying) the same way on first contact and on every later reconnect. */
   scope?: "host"
+  /** True while this is a first-contact channel whose pairing is still
+   *  pending: the daemon sends `hello` (so the phone can show the code), but
+   *  every request is refused until `confirmPending` opens the gate. */
+  pending?: boolean
 }
 
 /** Handle to a live served channel — the registry closes it on teardown. */
@@ -316,8 +344,17 @@ export interface PairingRegistryDeps {
 export interface PairingRegistry {
   /** Mint a one-time offer + start dialing the rendezvous for it. */
   createOffer(input?: CreateOfferInput): Promise<CreatedOffer>
-  /** All persisted pairings (copies). Loads `pairings.json` on first call. */
+  /** All persisted pairings (copies). Loads `pairings.json` on first call.
+   *  Pending pairings are deliberately excluded; see `listPending`. */
   list(): Promise<PairingRecord[]>
+  /** Pairings waiting for operator confirmation (copies), oldest first. */
+  listPending(): Promise<PendingPairing[]>
+  /** Promote a pending pairing into `pairings.json` and start serving it.
+   *  Accepts the fingerprint, the short code, or the client name. */
+  confirmPending(idOrCodeOrName: string): Promise<boolean>
+  /** Drop a pending pairing. Accepts the fingerprint, the short code, or the
+   *  client name. */
+  declinePending(idOrCodeOrName: string): Promise<boolean>
   /** Rename a pairing by fingerprint or name (cosmetic only — no effect on
    *  auth or routing). Returns false when nothing matched; throws on an
    *  empty `newName`. */
@@ -482,6 +519,107 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
   const loops = new Map<string, ConnectionLoop>()
   /** Live served channels, so shutdown/revoke can close them. */
   const channels = new Set<PairingChannelHandle>()
+  /** fingerprint -> a handshake-complete pairing awaiting operator confirm.
+   *  Memory only, by design: a restart forgets it. */
+  const pending = new Map<string, PendingEntry>()
+
+  interface PendingGate {
+    /** Set by `confirmPending`; while false, inbound request frames are
+     *  refused so a pending pairing can drive nothing. */
+    open: boolean
+    /** The live first-contact channel, once it is served. */
+    live: E2eFrameSink | null
+  }
+
+  interface PendingEntry {
+    record: PendingPairing
+    clientPub: string
+    pairRoot: string
+    expMs: number
+    gate: PendingGate
+  }
+
+  /** Refuse every request on a pending channel while its gate is closed. The
+   *  hello still flows out (the phone needs it to render the daemon name), so
+   *  only inbound frames are filtered. */
+  function gatePendingSink(inner: E2eFrameSink, gate: PendingGate): E2eFrameSink {
+    const refusal = encodeData(
+      new TextEncoder().encode(
+        JSON.stringify({
+          error: "pairing_pending",
+          message: "confirm this pairing on the daemon first (agentproto pair confirm <code>)",
+        }),
+      ),
+    )
+    return {
+      get isOpen() {
+        return inner.isOpen
+      },
+      get sentCount() {
+        return inner.sentCount
+      },
+      get recvCount() {
+        return inner.recvCount
+      },
+      send(frame) {
+        inner.send(frame)
+      },
+      close(reason) {
+        inner.close(reason)
+      },
+      onFrame(handler) {
+        return inner.onFrame(frame => {
+          if (gate.open) {
+            handler(frame)
+            return
+          }
+          if (frame.t === "http_request") {
+            inner.send({
+              t: "http_response",
+              reqId: frame.reqId,
+              status: 403,
+              headers: { "content-type": "application/json" },
+              body: refusal,
+            })
+          }
+          // Everything else (spawn, pty, ws_open) is dropped while pending.
+        })
+      },
+      onClose(handler) {
+        return inner.onClose(handler)
+      },
+    }
+  }
+
+  function findPending(idOrCodeOrName: string): PendingEntry | undefined {
+    const direct = pending.get(idOrCodeOrName)
+    if (direct) return direct
+    for (const entry of pending.values()) {
+      if (
+        entry.record.code === idOrCodeOrName ||
+        entry.record.name === idOrCodeOrName
+      ) {
+        return entry
+      }
+    }
+    return undefined
+  }
+
+  /** Drop pending pairings whose offer TTL has passed. Called on every
+   *  pending-facing access; a parked pending channel is closed too. */
+  function sweepExpiredPending(): void {
+    for (const [fingerprint, entry] of [...pending.entries()]) {
+      if (entry.expMs > now()) continue
+      pending.delete(fingerprint)
+      entry.gate.open = false
+      try {
+        entry.gate.live?.close("pairing offer expired")
+      } catch {
+        /* already closing */
+      }
+      log(`[pairing] pending ${fingerprint} expired`)
+    }
+  }
 
   /** fingerprint → local-device record (with its secret). */
   const localDevices = new Map<string, LocalDeviceRecord>()
@@ -824,9 +962,13 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         }
 
         serving = true
-        const handle = deps.serve(wrapped, ctx)
+        const gate = ctx.pending ? pending.get(ctx.fingerprint)?.gate : undefined
+        if (gate) gate.live = wrapped
+        const handle = deps.serve(gate ? gatePendingSink(wrapped, gate) : wrapped, ctx)
         channels.add(handle)
-        onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)
+        if (!ctx.pending) {
+          onlineCounts.set(ctx.fingerprint, (onlineCounts.get(ctx.fingerprint) ?? 0) + 1)
+        }
         const upLine =
           ctx.mode === "reconnect"
             ? channelFlapGate.onFailure(`${spec.key}:up`, `[pairing] channel up (${ctx.mode}) for ${ctx.fingerprint} via ${spec.key}`)
@@ -861,6 +1003,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
 
   async function createOffer(input: CreateOfferInput = {}): Promise<CreatedOffer> {
     await ensureLoaded()
+    sweepExpiredPending()
     // Precedence (PLAN deliverable 2): `--rendezvous` flag → `pairing.rendezvous`
     // in config → hosted default. A configured empty string is an explicit
     // opt-out (deliverable 4b): no default applies, so an offer without an
@@ -942,22 +1085,38 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
         // OfferEntry, looked up by route, which `verify` already confirmed
         // above (it only returns true for a live, unspent, matching entry).
         const entry = offers.get(route)
-        const record: PairingRecord = {
+        const expMs = (entry?.exp ?? 0) * 1000
+        const name = session.clientName ?? fingerprint
+        // First contact is PENDING: the handshake makes the pairing record in
+        // memory only, and the operator must confirm it before it is
+        // persisted or can drive anything (AIP-59 §3.7).
+        pending.set(fingerprint, {
+          record: {
+            id: fingerprint,
+            fingerprint,
+            code: pairingCode(fingerprint),
+            name,
+            createdAt: nowIso,
+            expiresAt: new Date(expMs).toISOString(),
+            rendezvousUrl,
+            ...(entry?.scope ? { scope: entry.scope } : {}),
+          },
           clientPub: hello.ePub,
-          name: session.clientName ?? fingerprint,
-          fingerprint,
-          createdAt: pairings.get(fingerprint)?.createdAt ?? nowIso,
-          lastSeen: nowIso,
           pairRoot,
-          rendezvousUrl,
+          expMs,
+          gate: { open: false, live: null },
+        })
+        log(
+          `[pairing] pending ${fingerprint} (${name}), code ${pairingCode(fingerprint)}; ` +
+            `run \`agentproto pair confirm ${pairingCode(fingerprint)}\``,
+        )
+        return {
+          mode: "offer",
+          fingerprint,
+          name,
+          pending: true,
           ...(entry?.scope ? { scope: entry.scope } : {}),
         }
-        pairings.set(fingerprint, record)
-        revoked.delete(fingerprint)
-        await persist()
-        // Start standing reconnect connections so the client can come back.
-        startReconnectLoops(record)
-        return { mode: "offer", fingerprint, name: record.name, ...(record.scope ? { scope: record.scope } : {}) }
       },
     })
   }
@@ -1026,6 +1185,7 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
 
   async function startAutoconnect(): Promise<void> {
     await ensureLoaded()
+    sweepExpiredPending()
     for (const record of pairings.values()) {
       startReconnectLoops(record)
     }
@@ -1091,8 +1251,62 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
     return true
   }
 
+  async function listPending(): Promise<PendingPairing[]> {
+    sweepExpiredPending()
+    return Array.from(pending.values())
+      .map(e => ({ ...e.record }))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  async function confirmPending(idOrCodeOrName: string): Promise<boolean> {
+    await ensureLoaded()
+    sweepExpiredPending()
+    const entry = findPending(idOrCodeOrName)
+    if (!entry) return false
+    pending.delete(entry.record.fingerprint)
+    const nowIso = new Date(now()).toISOString()
+    const record: PairingRecord = {
+      clientPub: entry.clientPub,
+      name: entry.record.name,
+      fingerprint: entry.record.fingerprint,
+      createdAt: nowIso,
+      lastSeen: nowIso,
+      pairRoot: entry.pairRoot,
+      rendezvousUrl: entry.record.rendezvousUrl,
+      ...(entry.record.scope ? { scope: entry.record.scope } : {}),
+    }
+    pairings.set(record.fingerprint, record)
+    revoked.delete(record.fingerprint)
+    await persist()
+    // Open the live first-contact channel, then start standing reconnects for
+    // every later use.
+    entry.gate.open = true
+    if (entry.gate.live?.isOpen) {
+      onlineCounts.set(record.fingerprint, (onlineCounts.get(record.fingerprint) ?? 0) + 1)
+    }
+    startReconnectLoops(record)
+    log(`[pairing] confirmed ${record.fingerprint} (${record.name})`)
+    return true
+  }
+
+  async function declinePending(idOrCodeOrName: string): Promise<boolean> {
+    sweepExpiredPending()
+    const entry = findPending(idOrCodeOrName)
+    if (!entry) return false
+    pending.delete(entry.record.fingerprint)
+    entry.gate.open = false
+    try {
+      entry.gate.live?.close("pairing declined")
+    } catch {
+      /* already closing */
+    }
+    log(`[pairing] declined pending ${entry.record.fingerprint} (${entry.record.name})`)
+    return true
+  }
+
   async function list(): Promise<PairingRecord[]> {
     await ensureLoaded()
+    sweepExpiredPending()
     await refreshLocalDevices()
     return [
       ...Array.from(pairings.values()).map(r => ({ ...r })),
@@ -1195,6 +1409,15 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
       await handle.close().catch(() => {})
     }
     channels.clear()
+    for (const entry of pending.values()) {
+      entry.gate.open = false
+      try {
+        entry.gate.live?.close("registry shutdown")
+      } catch {
+        /* already closing */
+      }
+    }
+    pending.clear()
   }
 
   function memoryStats(): Record<string, number> {
@@ -1206,12 +1429,16 @@ export function createPairingRegistry(deps: PairingRegistryDeps): PairingHostReg
       channels: channels.size,
       online: onlineCounts.size,
       localDevices: localDevices.size,
+      pending: pending.size,
     }
   }
 
   return {
     createOffer,
     list,
+    listPending,
+    confirmPending,
+    declinePending,
     rename: renamePairing,
     revoke,
     isOnline,

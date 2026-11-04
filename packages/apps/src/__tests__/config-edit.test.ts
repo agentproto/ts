@@ -432,6 +432,26 @@ describe("config app edit flows (real panel script, fake McpApp bridge)", () => 
     expect(panel.window.document.body.innerHTML).not.toContain(bearer)
   })
 
+  it("renders a pending pairing with its short code and confirms it", async () => {
+    const fp = "abcdef0123456789abcdef0123456789"
+    const panel = renderPanel({
+      pair_pending: () => ok({ pending: [{ id: fp, fingerprint: fp, code: "abcdef01", name: "phone", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), rendezvous: "wss://rdv.example/v1" }] }),
+      pair_confirm: () => ok({ ok: true, confirmed: fp }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    expect(panel.window.document.body.innerHTML).toContain("abcdef01")
+    expect(panel.window.document.body.innerHTML).toContain("phone")
+
+    const confirmBtn = panel.window.document.querySelector(`[data-pair-confirm="${fp}"]`) as DomElement
+    expect(confirmBtn).toBeTruthy()
+    click(panel.window, confirmBtn)
+    await settle(30)
+    expect(panel.calls.some(c => c.tool === "pair_confirm" && c.args.target === fp)).toBe(true)
+  })
+
   it("clears a pending pairing offer reveal on host teardown", async () => {
     const offerUrl = "agentproto://pair?token=SUPER_SECRET_OFFER"
     const panel = renderPanel({

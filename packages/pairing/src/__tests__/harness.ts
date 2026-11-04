@@ -118,6 +118,10 @@ export async function startDaemon(
      *  daemon sends a client it will no longer serve). The offer channel is
      *  served normally, so pairing still works. */
     reconnectGreeting?: string
+    /** Confirm a pending first-contact pairing as soon as it is served, so
+     *  tests that are not about the confirmation flow keep working. Set
+     *  false to exercise pending -> confirm/decline directly. */
+    autoConfirmPending?: boolean
   } = {},
 ): Promise<Daemon> {
   const tmp = await mkdtemp(join(tmpdir(), "agentproto-pairing-"))
@@ -164,6 +168,9 @@ export async function startDaemon(
         ...(opts.label ? { label: opts.label } : {}),
         pty: false,
       })
+      if (ctx.mode === "offer" && opts.autoConfirmPending !== false) {
+        void registry.confirmPending(ctx.fingerprint).catch(() => {})
+      }
       return { close: () => server.close() }
     },
     handshakeTimeoutMs: 4_000,

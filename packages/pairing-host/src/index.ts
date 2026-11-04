@@ -11,6 +11,8 @@ export {
   type PairingChannelContext,
   type PairingChannelHandle,
   type PairingChannelMode,
+  pairingCode,
+  type PendingPairing,
   type CreatedOffer,
   type CreateOfferInput,
   type LocalDeviceCredential,

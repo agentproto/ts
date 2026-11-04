@@ -74,6 +74,9 @@ export const CONFIG_TOOLS = [
   "remote_disable",
   "pair_list",
   "pair_offer",
+  "pair_pending",
+  "pair_confirm",
+  "pair_decline",
   "pair_revoke",
   "tunnel_list",
   "tunnel_status",
@@ -2423,13 +2426,14 @@ function loadRemote() {
   return Promise.all([
     loadTool("remote_status", {}),
     loadTool("pair_list", {}),
+    loadTool("pair_pending", {}),
     loadTool("tunnel_list", {}),
   ]).then(function (results) {
-    renderRemote(results[0], results[1], results[2]);
+    renderRemote(results[0], results[1], results[2], results[3]);
   });
 }
 
-function renderRemote(remoteR, pairR, tunnelR) {
+function renderRemote(remoteR, pairR, pendingR, tunnelR) {
   var el = document.getElementById("sec-remote");
   var html = '<div class="sect-h">Remote gateway</div>';
   if (remoteR.ok) {
@@ -2461,6 +2465,23 @@ function renderRemote(remoteR, pairR, tunnelR) {
   }
 
   html += '<div class="sect-h">Pairing<button type="button" class="btn-sm" id="pair-offer-btn">+ new pairing</button></div>';
+  if (pendingR.ok) {
+    var pendingRows = (pendingR.data && pendingR.data.pending) || [];
+    if (pendingRows.length > 0) {
+      html += '<div class="card" data-card-id="pairing-pending"><div class="body">'
+        + '<div>Waiting for your confirmation. Compare each code with the one on the phone.</div>'
+        + '<table><thead><tr><th>Code</th><th>Name</th><th>Fingerprint</th><th>Expires</th><th></th></tr></thead><tbody>';
+      for (var q = 0; q < pendingRows.length; q++) {
+        var pq = pendingRows[q];
+        html += '<tr data-pending-id="' + escHtml(pq.id) + '"><td><code>' + escHtml(pq.code || "") + '</code></td>'
+          + '<td>' + escHtml(pq.name || "") + '</td><td>' + escHtml(pq.fingerprint || "") + '</td>'
+          + '<td>' + escHtml(fmtRelative(pq.expiresAt)) + '</td>'
+          + '<td><button type="button" class="btn-sm primary" data-pair-confirm="' + escHtml(pq.id) + '">confirm</button>'
+          + '<button type="button" class="btn-sm danger" data-pair-decline="' + escHtml(pq.id) + '">decline</button></td></tr>';
+      }
+      html += '</tbody></table></div></div>';
+    }
+  }
   if (pairReveal) {
     html += '<div class="reveal-box">'
       + '<div>Offer URL. Shown once, expires <span id="pair-offer-countdown"></span>.</div>'
@@ -2555,6 +2576,32 @@ function wireRemote(container) {
         loadRemote();
       });
     });
+  }
+  var confirmBtns = container.querySelectorAll("[data-pair-confirm]");
+  for (var c = 0; c < confirmBtns.length; c++) {
+    (function (btn) {
+      var target = btn.getAttribute("data-pair-confirm");
+      btn.addEventListener("click", function () {
+        loadTool("pair_confirm", { target: target }).then(function (r) {
+          if (!r.ok) { toast(r.message, true); return; }
+          toast("Pairing confirmed.", false);
+          loadRemote();
+        });
+      });
+    })(confirmBtns[c]);
+  }
+  var declineBtns = container.querySelectorAll("[data-pair-decline]");
+  for (var d = 0; d < declineBtns.length; d++) {
+    (function (btn) {
+      var target = btn.getAttribute("data-pair-decline");
+      btn.addEventListener("click", function () {
+        loadTool("pair_decline", { target: target }).then(function (r) {
+          if (!r.ok) { toast(r.message, true); return; }
+          toast("Pairing declined.", false);
+          loadRemote();
+        });
+      });
+    })(declineBtns[d]);
   }
   var revokeBtns = container.querySelectorAll("[data-pair-revoke]");
   for (var i = 0; i < revokeBtns.length; i++) {
