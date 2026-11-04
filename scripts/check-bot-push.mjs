@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-export const DEFAULT_ALLOWLIST = ["release.yml", "update-deps.yml"]
+export const DEFAULT_ALLOWLIST = ["release.yml"]
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
 export function runBlocks(text) {

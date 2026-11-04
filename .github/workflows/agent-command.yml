@@ -46,22 +46,28 @@ jobs:
           REPO="${{ github.repository }}"
           CID="${{ github.event.comment.id }}"
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
+            NUM="${{ github.event.pull_request.number }}"
+            HEAD_SHA=$(gh pr view "$NUM" --repo "$REPO" --json headRefOid -q .headRefOid)
             echo "is_pr=true" >> "$GITHUB_OUTPUT"
-            echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+            echo "number=$NUM" >> "$GITHUB_OUTPUT"
             echo "head_ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
             echo "reactions=repos/$REPO/pulls/comments/$CID/reactions" >> "$GITHUB_OUTPUT"
           else
             NUM="${{ github.event.issue.number }}"
             echo "reactions=repos/$REPO/issues/comments/$CID/reactions" >> "$GITHUB_OUTPUT"
             if [ -n "${{ github.event.issue.pull_request.url }}" ]; then
               HEAD=$(gh pr view "$NUM" --repo "$REPO" --json headRefName -q .headRefName)
+              HEAD_SHA=$(gh pr view "$NUM" --repo "$REPO" --json headRefOid -q .headRefOid)
               echo "is_pr=true" >> "$GITHUB_OUTPUT"
               echo "number=$NUM" >> "$GITHUB_OUTPUT"
               echo "head_ref=$HEAD" >> "$GITHUB_OUTPUT"
+              echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
             else
               echo "is_pr=false" >> "$GITHUB_OUTPUT"
               echo "number=$NUM" >> "$GITHUB_OUTPUT"
               echo "head_ref=main" >> "$GITHUB_OUTPUT"
+              echo "head_sha=" >> "$GITHUB_OUTPUT"
             fi
           fi
 
@@ -123,10 +129,12 @@ jobs:
           IS_PR: ${{ steps.ctx.outputs.is_pr }}
           NUMBER: ${{ steps.ctx.outputs.number }}
           HEAD_REF: ${{ steps.ctx.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.ctx.outputs.head_sha }}
           REPO: ${{ github.repository }}
         run: |
           node -e '
             const fs = require("fs")
+            const { execFileSync } = require("child_process")
             const cfg = JSON.parse(fs.readFileSync(".github/agentic-review.json", "utf8"))
             const verb = process.env.VERB
             // /fix --pr forces pr-delivery — override the per-verb config.
@@ -144,6 +152,16 @@ jobs:
             const isPr = process.env.IS_PR === "true"
             const num = Number(process.env.NUMBER || 0)
             const request = Buffer.from(process.env.REQUEST_B64 || "", "base64").toString("utf8")
+            // The expected tip for a reused stacked branch is resolved HERE,
+            // on the host, before the box can touch anything: a lease against
+            // the branch as it stands at run start.
+            let fixBranchSha = ""
+            if (verb === "fix") {
+              try {
+                const out = execFileSync("git", ["ls-remote", "origin", `refs/heads/bot/fix-${num}`], { encoding: "utf8" }).trim()
+                fixBranchSha = out ? out.split("\t")[0] : ""
+              } catch {}
+            }
             // NOTE: no githubToken here — the box receives GITHUB_TOKEN via
             // the sandbox env passthrough (daemon env → box env), so the
             // token never needs to ride a step output or the workflow input.
@@ -162,6 +180,8 @@ jobs:
                     issueNumber: isPr ? 0 : num,
                     requestText: request,
                     headRef: isPr ? process.env.HEAD_REF : "",
+                    headSha: isPr ? process.env.HEAD_SHA : "",
+                    fixBranchSha,
                   }
             const path =
               verb === "review"

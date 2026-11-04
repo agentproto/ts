@@ -337,7 +337,7 @@ jobs:
       # Push sites have one owner: scripts/agentflow/bot-push.mjs (CAS through
       # @agentproto/git-cas). A new raw push in a workflow bypasses the
       # head_moved park path, so fail unless the workflow is explicitly
-      # allowlisted (release.yml, update-deps.yml in this PR).
+      # allowlisted (release.yml only).
       - name: Check for direct push sites
         run: |
           node --test scripts/check-bot-push.test.mjs
@@ -381,11 +381,17 @@ jobs:
       - name: Run adapter pin check tests
         run: node --test scripts/check-adapter-pins.test.mjs
 
+      # The sandbox-agent + gh_open_pr tests import the built git-cas dist
+      # (CAS push command rendering and casPush itself).
+      - name: Build git-cas for entry tests
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
       # Guards the pr-review workflow's placement switch (host/sandbox/local
-      # prompt branches in entry.mjs) — a `pnpm test`-only gate would miss this
-      # file entirely (it lives outside packages/**/adapters/**).
+      # prompt branches in entry.mjs) and the shared CAS push prompts: a
+      # `pnpm test`-only gate would miss these files entirely (they live outside
+      # packages/**/adapters/**).
       - name: Run pr-review entry tests
-        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs scripts/workflow-env.test.mjs
+        run: node --test .github/agentproto-workflows/pr-review/entry.test.mjs .github/agentproto-workflows/pr-review-supervised/entry.test.mjs .github/agentproto-workflows/lib/sandbox-agent.test.mjs .github/actions/agentproto-run/crash-signals.test.mjs scripts/lib/tools.test.mjs scripts/workflow-env.test.mjs
 
       # Guards the CI artifact ledger — the pure record/marker/select helpers
       # the delivery helper, the agentproto-run driver, and both stamp scripts

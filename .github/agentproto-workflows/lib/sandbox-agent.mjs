@@ -23,6 +23,11 @@
 // `scripts/lib/agent-core.mjs` (inlined here because this module runs inside
 // the workflow-loader import, not the scripts toolchain).
 
+import {
+  CAS_STOP_RULE,
+  buildCasPushCommand,
+} from "../../../packages/git-cas/dist/index.mjs"
+
 /** `{...global, ...commands[verb]}` — per-verb keys win; `commands` removed. */
 export const resolveCommandConfig = (config, verb) => {
   const base = { ...(config || {}) }
@@ -559,38 +564,80 @@ export const restPostReviewBlock = ({ repo, prNumber }) => [
   `     --kind review --body-file payload.json \\`,
   `     --url "https://api.github.com/repos/${repo}/pulls/${prNumber}/reviews"`,
   `   \`\`\``,
-  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
+  `   Set the first node argument to APPROVE, REQUEST_CHANGES, or COMMENT as appropriate. The helper exits 0 and prints \`created review id=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
 ].join("\n")
 
 /**
  * Author changes on a branch and OPEN A PR via curl REST — the `pr`-delivery
  * recipe shared by /pr and /fix (fixDelivery: "pr"). gh-free by design.
  */
-export const restOpenPrBlock = ({ repo, branch, base, titleHint }) => [
-  `   Deliver as a NEW pull request (the box has no \`gh\` — pure git + curl REST):`,
-  `   \`\`\`bash`,
-  `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
-  `   git checkout -b "${branch}"`,
-  `   git add -A && git commit -m "<concise conventional-commit title>"`,
-  `   git push origin "HEAD:${branch}"`,
-  `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
-  `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
-  `     --kind pr --body-file pr.json \\`,
-  `     --url "https://api.github.com/repos/${repo}/pulls"`,
-  `   \`\`\``,
-  `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer — the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
-  `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response — read it and retry once.`,
-].join("\n")
+export const restOpenPrBlock = ({
+  repo,
+  branch,
+  base,
+  titleHint,
+  expected = { absent: true },
+  freshBranchOnCollision = "absent" in expected,
+}) => {
+  const push = buildCasPushCommand({ cwd: ".", branch, expected })
+  return [
+    `   Deliver as a NEW pull request (the box has no \`gh\`: pure git + curl REST):`,
+    `   \`\`\`bash`,
+    `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
+    `   git checkout -b "${branch}"`,
+    `   git add -A && git commit -m "<concise conventional-commit title>"`,
+    `   ${push}`,
+    `   node -e 'const fs=require("fs");fs.writeFileSync("pr.json",JSON.stringify({title:process.argv[1],head:"${branch}",base:"${base}",body:fs.readFileSync("pr-body.md","utf8")}))' "<PR title>"`,
+    `   node .github/agentproto-workflows/lib/deliver-artifact.mjs \\`,
+    `     --kind pr --body-file pr.json \\`,
+    `     --url "https://api.github.com/repos/${repo}/pulls"`,
+    `   \`\`\``,
+    ...(freshBranchOnCollision
+      ? [
+          `   If that push reports \`head_moved\` only because a branch named \`${branch}\` already exists, choose ONE fresh branch name by appending a short suffix to \`${branch}\` (for example \`${branch}-w1\`), then run the same commit, push and PR commands with that new name substituted for \`${branch}\` throughout. Do this at most once; if the fresh branch is also rejected, stop and report \`head_moved\`.`,
+        ]
+      : []),
+    `   ${CAS_STOP_RULE}`,
+    `   Write \`pr-body.md\` BEFORE running the helper: what changed, why, how it was verified${titleHint ? `, and reference ${titleHint}` : ""}. Do NOT add a signature or provenance footer: the CI runner stamps a deterministic \`@agentproto-bot\` footer (session id, cost, run link) onto the PR body it just recorded.`,
+    `   The helper (\`.github/agentproto-workflows/lib/deliver-artifact.mjs\`) POSTs the PR AND records it to the artifact ledger so CI can stamp by id. It exits 0 and prints \`created pr id=… number=…\` on success; if it exits non-zero it prints the API response; read it and retry once.`,
+  ].join("\n")
+}
 
-/** Commit-mode delivery: push the change directly onto an existing branch. */
-export const commitDeliveryBlock = ({ branch }) => [
-  `   Deliver by committing DIRECTLY to the existing branch \`${branch}\`:`,
-  `   \`\`\`bash`,
-  `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
-  `   git add -A && git commit -m "<concise conventional-commit title>"`,
-  `   git push origin "HEAD:${branch}"`,
-  `   \`\`\``,
-].join("\n")
+/**
+ * Commit-mode delivery: push the change directly onto an existing branch.
+ *
+ * The push is a compare-and-swap lease: `expectedSha` is the head the host
+ * resolved BEFORE the agent ran. When it is missing (or malformed) there is no
+ * safe lease to render, so the block tells the model to stop instead of
+ * falling back to a plain push. `expectAbsent` is for a brand-new branch
+ * (docs-audit): the lease expects the ref not to exist yet.
+ */
+export const commitDeliveryBlock = ({ branch, expectedSha, expectAbsent = false }) => {
+  const header = `   Deliver by committing DIRECTLY to the branch \`${branch}\`:`
+  const shaOk = typeof expectedSha === "string" && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(expectedSha)
+  if (!expectAbsent && !shaOk) {
+    return [
+      header,
+      `   The expected head SHA for \`${branch}\` was not resolved, so no compare-and-swap push is possible. Do NOT push, pull, rebase or merge.`,
+      `   ${CAS_STOP_RULE}`,
+      `   End your turn reporting \`head_moved\` with the branch name.`,
+    ].join("\n")
+  }
+  const push = buildCasPushCommand({
+    cwd: ".",
+    branch,
+    expected: expectAbsent ? { absent: true } : { sha: expectedSha },
+  })
+  return [
+    header,
+    `   \`\`\`bash`,
+    `   git config user.name "agentproto-bot" && git config user.email "agentproto-bot@users.noreply.github.com"`,
+    `   git add -A && git commit -m "<concise conventional-commit title>"`,
+    `   ${push}`,
+    `   \`\`\``,
+    `   ${CAS_STOP_RULE}`,
+  ].join("\n")
+}
 
 /** Changeset authoring rules (shared verbatim across verbs that touch code). */
 export const changesetRulesBlock = () => [

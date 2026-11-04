@@ -1,7 +1,8 @@
 # Pairing (end-to-end, over an untrusted rendezvous)
 
 **Pairing** is a persistent, end-to-end-encrypted relationship between a
-*client* (the CLI today; mobile/web later) and a *daemon* (`agentproto serve`).
+*client* (the CLI, and a phone through the pair page) and a *daemon*
+(`agentproto serve`).
 Its goal is to let a client reach a daemon that only ever dials **outbound**,
 through a broker that **cannot read or forge the traffic** — bootstrapped by a
 single offer URL / QR code, with no accounts, no DNS, no inbound ports, and no
@@ -11,9 +12,14 @@ rendezvous broker, the `pair` CLI/MCP verbs, on-disk persistence, reconnect
 epochs, and autoconnect on boot. Pairing also works with no config — `pair
 offer` defaults to the **hosted broker** `wss://rdv.agentproto.sh/v1`, which
 relays only ciphertext (see [The hosted
-default](#the-hosted-default)). Still to come: the mobile deep-link page and
-the pairing spec, AIP-59 (draft, agentproto/agentproto#41) — see *Status* at
-the bottom.
+default](#the-hosted-default)). The phone pair page ships in
+`packages/pair-page`, served on `*.agentproto.cloud` by the Cloudflare Worker
+`agentproto-pair-page` (see [The phone pair page](#the-phone-pair-page-one-origin-per-daemon)).
+Still to come: the pairing spec, AIP-59 (draft, agentproto/agentproto#41); see
+*Status* at the bottom.
+
+Pairing needs a browser with service workers. Without one, use the opt-in
+tunnel link `agentproto remote enable --qr` (readable by Cloudflare).
 
 Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
 exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
@@ -378,5 +384,7 @@ is covered end to end in
   persistence, reconnect epochs, and autoconnect on boot; and the hosted broker
   `wss://rdv.agentproto.sh/v1`, deployed and now the default meeting point for
   `pair offer` (see [The hosted default](#the-hosted-default)).
-- **Still to come:** the mobile deep-link page and the pairing spec, AIP-59
-  (draft, agentproto/agentproto#41).
+- **Shipped:** the phone pair page (`packages/pair-page`, the Cloudflare
+  Worker `agentproto-pair-page` on `*.agentproto.cloud`).
+- **Still to come:** the pairing spec, AIP-59 (draft,
+  agentproto/agentproto#41).

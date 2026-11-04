@@ -11567,6 +11567,7 @@ async function handleRemoteControl(
       ...(b.provider === "quick" ? { provider: "quick" as const } : {}),
       ...(typeof b.targetPort === "number" ? { targetPort: b.targetPort } : {}),
       ...(typeof b.targetHost === "string" ? { targetHost: b.targetHost } : {}),
+      ...(typeof b.phoneLink === "boolean" ? { phoneLink: b.phoneLink } : {}),
     }
     try {
       const result = await controller.enable(input)

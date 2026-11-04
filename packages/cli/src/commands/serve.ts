@@ -777,6 +777,10 @@ export async function runServe(args: readonly string[]): Promise<number> {
         // actually granted (see PairingChannelContext.scope's doc comment).
         ...(ctx.scope ? { pairingScope: ctx.scope } : {}),
       }),
+      // Pairing channels are always E2E. Advertise bucket padding so a newer
+      // peer pads; an older peer ignores the capability and stays unpadded.
+      e2e: true,
+      e2ePadding: true,
     })
     return { close: () => server.close() }
   }
@@ -1608,7 +1612,7 @@ async function runOneTunnel(
     }),
     // Advertise the encrypted channel in the (now in-box) hello so the host can
     // confirm/display it. Purely informational — the encryption is already live.
-    ...(e2eActive ? { e2e: true } : {}),
+    ...(e2eActive ? { e2e: true, e2ePadding: true } : {}),
     // Graceful drain hook — connect-only. Flip the outer loop's "reconnect
     // immediately" flag and close the WS so the supervisor reconnects without
     // backoff. Host follows up with close(1012) ~2s later as a hard backstop.

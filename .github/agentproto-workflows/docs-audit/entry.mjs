@@ -36,6 +36,10 @@ import {
   sandboxRefFor,
   workspaceCwdFor,
 } from "../lib/sandbox-agent.mjs"
+import {
+  CAS_STOP_RULE,
+  buildCasPushCommand,
+} from "../../../packages/git-cas/dist/index.mjs"
 
 const VERB = "docs-audit"
 
@@ -173,13 +177,14 @@ const deliverPrompt = (bindings) => {
     apply.push(`2. Commit the edits to a dedicated branch (never straight onto ${baseRef}):`)
     apply.push(
       sandboxed
-        ? commitDeliveryBlock({ branch })
+        ? commitDeliveryBlock({ branch, expectAbsent: true })
         : [
             `   \`\`\`bash`,
             `   git checkout -b "${branch}"`,
             `   git add -u && git commit -m "<concise conventional-commit title for the doc fixes>"`,
-            `   git push -u origin "${branch}"`,
+            `   ${buildCasPushCommand({ cwd: ".", branch, expected: { absent: true } })}`,
             `   \`\`\``,
+            `   ${CAS_STOP_RULE}`,
             `   (\`git add -u\` stages only your edits to already-tracked docs — never`,
             `   sweep unrelated untracked files from a dirty working tree into the commit.)`,
           ].join("\n"),
@@ -193,9 +198,10 @@ const deliverPrompt = (bindings) => {
             `   \`\`\`bash`,
             `   git checkout -b "${branch}"`,
             `   git add -u && git commit -m "<concise conventional-commit title for the doc fixes>"`,
-            `   git push -u origin "${branch}"`,
+            `   ${buildCasPushCommand({ cwd: ".", branch, expected: { absent: true } })}`,
             `   gh pr create --base ${baseRef} --title "<concise PR title for the doc fixes>" --body-file -`,
             `   \`\`\``,
+            `   ${CAS_STOP_RULE}`,
             `   (\`git add -u\` stages only your edits to already-tracked docs — never`,
             `   sweep unrelated untracked files from a dirty working tree into the commit.)`,
             `   Pipe your drift report (what changed + why) into the PR body. Print the PR URL when done.`,
