@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -119,6 +119,76 @@ describe("typed-message HTTP routes", () => {
       expect(after.inbox).toHaveLength(1)
       expect((await post(`/sessions/${parent.id}/inbox/ack`, { ids: 3 })).status).toBe(400)
       expect((await fetch(`${base}/sessions/sess_nope/inbox`)).status).toBe(404)
+    } finally {
+      await http.stop()
+      registry.shutdown()
+      rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+
+  it("writes exactly one delivery-ledger line after the message outcome is known", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "inbox-http-ledger-"))
+    const ledgerPath = join(tmp, "delivery-ledger.jsonl")
+    const registry = createSessionsRegistry({ persist: false, transcriptDir: tmp })
+    const parent = registry.spawnAgent({ workspaceSlug: "w", cwd: "/tmp", agentSession: idle("p"), adapterSlug: "fake" })
+    let resolveSend!: (value: unknown) => void
+    const gate = new Promise<unknown>(resolve => {
+      resolveSend = resolve
+    })
+    let pendingMessage: { id: string; urgency: string } | undefined
+    vi.spyOn(registry, "sendMessage").mockImplementation((async (msg: { id: string; urgency: string }) => {
+      pendingMessage = msg
+      return gate
+    }) as typeof registry.sendMessage)
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({ startSession: vi.fn(), commandPreview: "x" })
+    const port = await freePort()
+    const http = await startHttpServer({
+      port,
+      auth: { mode: "none" },
+      mcpServerFactory: async () => (await createMcpServer({ specs: [], name: "t", version: "0" })).server,
+      conversations,
+      events: createRuntimeEvents(),
+      heartbeat,
+      sessions: registry,
+      resolveAgentAdapter,
+      ledgerPath,
+      meta: { workspace: process.cwd(), registered: [] },
+    })
+    const base = `http://127.0.0.1:${port}`
+    try {
+      const pending = fetch(`${base}/sessions/${parent.id}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "steer me", urgency: "steer", kind: "blocker" }),
+      })
+      await vi.waitFor(() => expect(pendingMessage).toBeDefined())
+      expect(existsSync(ledgerPath)).toBe(false)
+
+      resolveSend({
+        messageId: pendingMessage!.id,
+        queued: false,
+        urgencyApplied: "steer",
+        delivered: { via: "turn" },
+      })
+      const response = await pending
+      expect(response.status).toBe(200)
+
+      const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
+      expect(lines).toHaveLength(1)
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        producer: "message",
+        subscriptionId: "message:http",
+        type: "message.blocker",
+        subject: "user",
+        target: { kind: "session", id: parent.id },
+        eventId: pendingMessage!.id,
+        messageId: pendingMessage!.id,
+        level: 3,
+        cap: 3,
+        rule: "sender-urgency",
+        applied: false,
+        outcome: "delivered",
+      })
     } finally {
       await http.stop()
       registry.shutdown()

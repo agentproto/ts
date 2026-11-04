@@ -55,7 +55,10 @@
 
 import { createHash, randomBytes } from "node:crypto"
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import { type LedgerLine, type LedgerOutcome, type Level } from "@agentproto/delivery"
 import { decide, type Decision } from "./permissions.js"
 import {
   createSessionMessage,
@@ -150,6 +153,22 @@ export const PARENT_RELAY_URL_ENV = "AGENTPROTO_PARENT_RELAY_URL"
  *  host daemon restart does not turn every live box's relay into
  *  `relay_token_unknown`. Holds HASHES only (never a raw token), mode 0600. */
 export const PARENT_RELAY_GRANTS_FILE = "parent-relay-grants.json"
+
+function agentprotoHome(): string {
+  return process.env.AGENTPROTO_HOME ?? join(homedir(), ".agentproto")
+}
+
+function urgencyLevel(urgency: MessageUrgency): Level {
+  if (urgency === "fyi") return 1
+  if (urgency === "next-turn") return 2
+  return 3
+}
+
+function outcomeOf(result: { queued: boolean; delivered?: { via: string } | null; refused?: "inbox-full" }): LedgerOutcome {
+  if (result.refused !== undefined) return "dropped"
+  if (result.queued) return "queued"
+  return result.delivered?.via === "inbox" ? "inbox" : "delivered"
+}
 
 /** Host-side grants, keyed by the token HASH (never by the raw token). */
 const grants = new Map<string, ParentRelayGrant>()
@@ -637,6 +656,9 @@ export async function deliverParentRelayMessage(input: {
   registry: ParentRelayRegistry
   allowInterrupt?: boolean
   nowMs?: number
+  /** Append-only delivery ledger (tests). Default
+   *  `<agentprotoHome()>/delivery-ledger.jsonl`. */
+  ledgerPath?: string
 }): Promise<ParentRelayResult> {
   const grant = resolveParentRelayGrant(input.token, input.nowMs)
   if (!grant) {
@@ -697,6 +719,25 @@ export async function deliverParentRelayMessage(input: {
     ...(input.payload.replyTo ? { replyTo: input.payload.replyTo } : {}),
   })
   const provenance = `child:${grant.boxSessionId}`
+  const ledgerPath = input.ledgerPath ?? join(agentprotoHome(), DELIVERY_LEDGER_FILE)
+  const writeLedger = (outcome: LedgerOutcome): void => {
+    const line: LedgerLine = {
+      ts: new Date().toISOString(),
+      producer: "message",
+      subscriptionId: "message:parent-relay",
+      target: { kind: "session", id: parentId },
+      eventId: envelope.id,
+      type: `message.${input.payload.kind ?? "message"}`,
+      subject: grant.boxSessionId,
+      level: urgencyLevel(input.payload.urgency),
+      cap: 3,
+      rule: "sender-urgency",
+      applied: false,
+      outcome,
+      messageId: envelope.id,
+    }
+    appendLedgerLine(ledgerPath, line)
+  }
   let result: Awaited<ReturnType<ParentRelayRegistry["sendMessage"]>>
   try {
     result = await input.registry.sendMessage(envelope, {
@@ -706,12 +747,14 @@ export async function deliverParentRelayMessage(input: {
       decision,
     })
   } catch (err) {
+    writeLedger("dropped")
     return {
       ok: false,
       code: "relay_delivery_failed",
       message: err instanceof Error ? err.message : String(err),
     }
   }
+  writeLedger(outcomeOf(result))
   const delivery: ParentRelayDelivery =
     result.delivered?.via === "wait"
       ? "waited"

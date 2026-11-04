@@ -113,9 +113,12 @@ What the decision does:
   follower's inbox as `fyi`;
 - one `wake` is enough to wake - and then the digest carries ONLY the `wake`
   events plus a `[session-follow] N other event(s) in info` counter;
-- every triaged event is appended to `~/.agentproto/follow-triage.jsonl`
-  (`{ ts, follower, event, sessionId, decision, rule }`) - the training data a
-  future classifier is fitted on.
+- every triaged event is appended to the shared delivery ledger
+  (`~/.agentproto/delivery-ledger.jsonl`) with `producer: "follow"` - one line
+  per digest entry, written after the digest's delivery outcome is known. The
+  lines carry the decision's `level`, `rule`, `repeatKey` and `messageId`; see
+  `packages/delivery/LEDGER.md` for the schema. `follow-triage.jsonl` is no
+  longer written (existing files are left in place for history).
 
 The `classifier` block is the documented extension point for a future LLM
 classifier (Jev). It lives ONLY in the daemon config (`follow.triage.classifier`

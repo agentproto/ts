@@ -31,10 +31,12 @@
  * events are not silently lost. The follow record is always kept.
  */
 
-import { randomUUID } from "node:crypto"
 import { appendFileSync, mkdirSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
+
+import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
+import { levelFromDecision, type Floor, type LedgerLine, type LedgerOutcome } from "@agentproto/delivery"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import { readTranscriptTail } from "./session-index.js"
@@ -111,8 +113,9 @@ export interface WireSessionFollowOptions {
    *  with it off nothing about delivery changes. A FUNCTION is re-read
    *  before every digest (the daemon passes the live config resolver). */
   triage?: FollowTriageConfig | (() => FollowTriageConfig | Promise<FollowTriageConfig>)
-  /** Per-event triage ledger (tests). Default `~/.agentproto/follow-triage.jsonl`. */
-  triagePath?: string
+  /** Append-only delivery ledger (tests). Default
+   *  `~/.agentproto/delivery-ledger.jsonl`. */
+  ledgerPath?: string
   /** Extra facts the triage rules need but the engine cannot see alone (e.g.
    *  "did this session's cron run finish OK?"). */
   triageFacts?: TriageFacts
@@ -364,6 +367,8 @@ interface BatchEntry {
   fyi?: boolean
   /** The turn-end / exit reason. */
   reason?: string
+  /** The follow this entry came from, when one is known. */
+  followId?: string
 }
 
 const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-input"])
@@ -517,7 +522,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const clearTimer =
     opts.clearTimer ?? ((h: unknown): void => clearTimeout(h as ReturnType<typeof setTimeout>))
   const parkedPath = opts.parkedPath ?? resolve(agentprotoHome(), "follows-parked.jsonl")
-  const triagePath = opts.triagePath ?? resolve(agentprotoHome(), "follow-triage.jsonl")
+  const ledgerPath = opts.ledgerPath ?? resolve(agentprotoHome(), DELIVERY_LEDGER_FILE)
   const daemonTriage: FollowTriageConfig =
     typeof opts.triage === "object" && opts.triage !== null
       ? opts.triage
@@ -662,43 +667,70 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     }
   }
 
-  /** One JSONL line per triaged event — the training data a future
-   *  classifier is fitted on. Never throws: a failed write is logged. */
-  function writeTriageLedger(
-    followerId: string,
-    entries: readonly BatchEntry[],
-    results: readonly TriageResult[],
-    applied: boolean,
-    digestId: string,
-  ): void {
-    try {
-      mkdirSync(dirname(triagePath), { recursive: true })
-      const lines = entries
-        .map((entry, i) => {
-          const result = results[i]
-          if (!result) return null
-          return JSON.stringify({
-            ts: new Date().toISOString(),
-            source: "follow",
-            applied,
-            follower: followerId,
-            event: entry.event,
-            sessionId: entry.sessionId,
-            ...(entry.label ? { label: entry.label } : {}),
-            decision: result.decision,
-            rule: result.rule,
-            eventTs: entry.ts,
-            ...(entry.key ? { key: entry.key } : {}),
-            ...(entry.taskId ? { taskId: entry.taskId } : {}),
-            digestId,
-          })
-        })
-        .filter((line): line is string => line !== null)
-      if (lines.length === 0) return
-      appendFileSync(triagePath, lines.join("\n") + "\n", { mode: 0o600 })
-    } catch (err) {
-      log(`[session-follow] failed to write the triage ledger: ${describeError(err)}`)
+  interface DigestOutcome {
+    target: string
+    outcome: LedgerOutcome
+    messageId?: string
+    routedTo?: string
+  }
+
+  /** What `sendMessage` did. A structural test double that resolves `{}` is
+   *  treated as delivered. */
+  function outcomeOfResult(result: unknown): { outcome: LedgerOutcome; messageId?: string } {
+    const r = (result ?? {}) as {
+      messageId?: unknown
+      queued?: unknown
+      delivered?: { via?: unknown } | null
+      refused?: unknown
     }
+    const messageId = typeof r.messageId === "string" ? r.messageId : undefined
+    const base = messageId !== undefined ? { messageId } : {}
+    if (r.refused !== undefined) return { outcome: "dropped", ...base }
+    if (r.queued === true) return { outcome: "queued", ...base }
+    if (r.delivered && typeof r.delivered === "object" && r.delivered.via === "inbox") {
+      return { outcome: "inbox", ...base }
+    }
+    return { outcome: "delivered", ...base }
+  }
+
+  function floorOfEntry(entry: BatchEntry): Floor | undefined {
+    if (entry.event === "crashed") return "crash"
+    return isMustWakeEntry(entry) ? "awaiting-human" : undefined
+  }
+
+  /** One line per digest entry, written after the delivery outcome is known.
+   *  The eventId is deterministic from the entry: `<sessionId>:<event>:<ts>`
+   *  (the follow line historically carried no event id). `subscriptionId` is
+   *  the contributing `fol_` id when the entry carries one, else
+   *  `follower:<followerId>`. */
+  function writeLedgerLine(
+    followerId: string,
+    entry: BatchEntry,
+    result: TriageResult,
+    applied: boolean,
+    delivery: DigestOutcome,
+  ): void {
+    const floor = floorOfEntry(entry)
+    const line: LedgerLine = {
+      ts: new Date().toISOString(),
+      producer: "follow",
+      subscriptionId: entry.followId ?? `follower:${followerId}`,
+      target: { kind: "session", id: delivery.target },
+      eventId: `${entry.sessionId}:${entry.event}:${entry.ts}`,
+      type: entry.event,
+      subject: entry.sessionId,
+      eventTs: entry.ts,
+      ...(entry.key !== undefined ? { repeatKey: entry.key } : {}),
+      ...(floor !== undefined ? { floor } : {}),
+      level: levelFromDecision(result.decision),
+      cap: 3,
+      rule: result.rule,
+      applied,
+      outcome: delivery.outcome,
+      ...(delivery.routedTo !== undefined ? { routedTo: delivery.routedTo } : {}),
+      ...(delivery.messageId !== undefined ? { messageId: delivery.messageId } : {}),
+    }
+    appendLedgerLine(ledgerPath, line)
   }
 
   const textFor = (entry: DigestEntry): string | undefined => {
@@ -747,7 +779,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     followerId: string,
     urgency: FollowUrgency,
     digest?: QueuedDigest,
-  ): Promise<void> {
+  ): Promise<DigestOutcome> {
     // fyi digests only ever land in the inbox, never the prompt queue, so
     // they carry no merge payload.
     const queuedDigest = urgency === "fyi" ? undefined : digest
@@ -767,7 +799,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           }
         }
       : undefined
-    await registry.sendMessage(
+    const result = await registry.sendMessage(
       createSessionMessage({ to, from: { relation: "system" }, text, kind: "notice", urgency }),
       {
         source: "session-follow",
@@ -777,6 +809,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           : {}),
       },
     )
+    return { target: to, ...outcomeOfResult(result) }
   }
 
   /** A dead follower may already have a live replacement: its follow(s) may
@@ -812,21 +845,25 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     return started
   }
 
+  function routeTo(delivery: DigestOutcome, followerId: string): DigestOutcome {
+    return delivery.target === followerId ? delivery : { ...delivery, routedTo: delivery.target }
+  }
+
   async function reviveAndSend(
     followerId: string,
     text: string,
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
     digest?: QueuedDigest,
-  ): Promise<void> {
+  ): Promise<DigestOutcome> {
     const replacement = findLiveReplacement(followerId, followIds)
     if (replacement) {
       try {
-        await sendOnce(replacement, text, replacement, urgency, digest)
+        return routeTo(await sendOnce(replacement, text, replacement, urgency, digest), followerId)
       } catch (err) {
         park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
+        return { target: replacement, outcome: "parked", ...(replacement !== followerId ? { routedTo: replacement } : {}) }
       }
-      return
     }
     const desc = registry.get(followerId)
     // The follower was superseded by a successor that is itself dead but not
@@ -838,11 +875,11 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       try {
         const resumed = await reviveOnce(headId)
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
-        await sendOnce(resumed, text, resumed, urgency, digest)
+        return routeTo(await sendOnce(resumed, text, resumed, urgency, digest), followerId)
       } catch (err) {
         park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
+        return { target: headId, outcome: "parked", ...(headId !== followerId ? { routedTo: headId } : {}) }
       }
-      return
     }
     if (desc && isRetired(desc)) {
       // Retired (closed on purpose / archived / superseded) with no live
@@ -855,20 +892,22 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
             ? `closed on purpose (${desc.endedReason})`
             : "retired"
       park(followerId, text, `follower is retired (${why}); not resuming`)
-      return
+      return { target: followerId, outcome: "parked" }
     }
     if (!opts.restartSession) {
       park(followerId, text, "follower is not alive and no restart hook is wired")
-      return
+      return { target: followerId, outcome: "parked" }
     }
     try {
       const resumed = await reviveOnce(followerId)
       if (resumed !== followerId) {
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
       }
-      await sendOnce(resumed, text, resumed, urgency, digest)
+      const delivery = await sendOnce(resumed, text, resumed, urgency, digest)
+      return { ...routeTo(delivery, followerId), outcome: "revived" }
     } catch (err) {
       park(followerId, text, `could not resume follower: ${describeError(err)}`)
+      return { target: followerId, outcome: "parked" }
     }
   }
 
@@ -878,27 +917,26 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     followIds: ReadonlySet<string>,
     urgency: FollowUrgency,
     digest?: QueuedDigest,
-  ): Promise<void> {
+  ): Promise<DigestOutcome> {
     const desc = registry.get(followerId)
     if (!desc) {
       log(`[session-follow] follower ${followerId} no longer exists — digest dropped (follow kept)`)
-      return
+      return { target: followerId, outcome: "dropped" }
     }
     // An external row that lapsed its liveness window has no process to
     // restart, so its inbox stays deliverable: send first instead of taking
     // the revive path (which would park the digest for an external row).
     if (!isAlive(desc) && !isExternalInboxOpen(desc)) {
-      await reviveAndSend(followerId, text, followIds, urgency, digest)
-      return
+      return reviveAndSend(followerId, text, followIds, urgency, digest)
     }
     try {
-      await sendOnce(followerId, text, followerId, urgency, digest)
+      return await sendOnce(followerId, text, followerId, urgency, digest)
     } catch (err) {
       if (err instanceof SessionNotAliveError) {
-        await reviveAndSend(followerId, text, followIds, urgency, digest)
-        return
+        return reviveAndSend(followerId, text, followIds, urgency, digest)
       }
       log(`[session-follow] delivery to ${followerId} failed: ${describeError(err)}`)
+      return { target: followerId, outcome: "dropped" }
     }
   }
 
@@ -914,34 +952,42 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       .map(id => store.get(id))
       .filter((f): f is SessionFollow => f !== undefined)
     const triage = triageConfigFor(follows)
-    const digestId = randomUUID()
     let text: string
     let deliveredEntries: BatchEntry[] = entries
     let urgency: FollowUrgency = batch.urgency
+    let results: TriageResult[] | undefined
+    const applied = triage.enabled
+    const resultAt = (i: number): TriageResult => results?.[i] ?? { decision: "wake", rule: "default" }
     if (triage.enabled) {
       // Deterministic triage BEFORE the wake: every event is classified,
       // every decision is logged, and only the `wake` ones (plus a count of
       // the informational ones) make it into a digest that may wake.
       try {
         const facts = factsFor(entries)
-        const results: TriageResult[] = []
+        const evaluated: TriageResult[] = []
         for (const entry of entries) {
           const result = await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts)
           // A source-declared fyi is already an explicit downgrade: triage may
           // drop it, but never raise it back to a wake.
-          results.push(
+          evaluated.push(
             entry.fyi && result.decision === "wake"
               ? { decision: "fyi", rule: "source-fyi" }
               : result,
           )
         }
-        writeTriageLedger(followerId, entries, results, true, digestId)
-        const wakeEntries = entries.filter((_, i) => results[i]!.decision === "wake")
-        const fyiEntries = entries.filter((_, i) => results[i]!.decision === "fyi")
+        results = evaluated
+        const wakeEntries = entries.filter((_, i) => evaluated[i]!.decision === "wake")
+        const fyiEntries = entries.filter((_, i) => evaluated[i]!.decision === "fyi")
         if (wakeEntries.length === 0) {
           if (fyiEntries.length === 0) {
             // Everything was dropped: nothing to deliver, nothing to wake.
             log(`[session-follow] follower ${followerId}: digest dropped by triage (${entries.length} event(s))`)
+            entries.forEach((entry, i) =>
+              writeLedgerLine(followerId, entry, resultAt(i), applied, {
+                target: followerId,
+                outcome: "dropped",
+              }),
+            )
             return
           }
           text = formatFollowDigest(fyiEntries, textFor, id => registry.get(id), "fyi")
@@ -962,16 +1008,23 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         text = formatFollowDigest(entries, textFor, id => registry.get(id))
         deliveredEntries = entries
         urgency = batch.urgency
+        try {
+          const facts = factsFor(entries)
+          results = entries.map(entry =>
+            classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
+          )
+        } catch {
+          results = undefined
+        }
       }
     } else {
       // Triage off still records the rules' verdict for every event, marked
       // as not applied: the ledger is always on, the delivery is unchanged.
       try {
         const facts = factsFor(entries)
-        const results = entries.map(entry =>
+        results = entries.map(entry =>
           classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
         )
-        writeTriageLedger(followerId, entries, results, false, digestId)
       } catch (err) {
         log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
       }
@@ -991,8 +1044,20 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     if (urgency === "fyi" && deliveredEntries.some(isMustWakeEntry)) {
       urgency = "next-turn"
     }
+    const delivered = new Set(deliveredEntries)
     const digest = { entries: digestEntriesFor(deliveredEntries), omitted: 0 }
     const p = deliver(followerId, text, batch.followIds, urgency, digest)
+      .then(outcome => {
+        entries.forEach((entry, i) =>
+          writeLedgerLine(
+            followerId,
+            entry,
+            resultAt(i),
+            applied,
+            delivered.has(entry) ? outcome : { target: followerId, outcome: "dropped" },
+          ),
+        )
+      })
       .catch(err => log(`[session-follow] flush for ${followerId} failed: ${describeError(err)}`))
       .finally(() => inFlight.delete(p))
     inFlight.add(p)
@@ -1012,6 +1077,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         break
       }
     }
+    entry.followId = follow.id
     batch.entries.push(entry)
     batch.followIds.add(follow.id)
     if (follow.urgency !== "fyi") batch.urgency = "next-turn"
