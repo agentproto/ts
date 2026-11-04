@@ -121,6 +121,47 @@ export const DEFAULT_E2E_MAX_FRAMES = 0x1_0000_0000
 const TAG_LEN = 16
 const NONCE_LEN = 12
 
+/** Padding header: 8-byte magic then the u32 big-endian plaintext length.
+ *  A plaintext that starts with this magic is padded; anything else is the
+ *  old, unpadded JSON frame and is decoded as-is. */
+const PAD_MAGIC = new Uint8Array([0x41, 0x50, 0x50, 0x41, 0x49, 0x52, 0x50, 0x31])
+const PAD_HEADER_LEN = 12
+const PAD_BUCKETS = [256, 1024, 4096, 16384] as const
+const PAD_LARGE_BUCKET = 16384
+
+/** Smallest bucket that holds `size`, with 16 KiB multiples above 16 KiB. */
+export function paddedFrameSize(size: number): number {
+  for (const bucket of PAD_BUCKETS) {
+    if (size <= bucket) return bucket
+  }
+  return Math.ceil(size / PAD_LARGE_BUCKET) * PAD_LARGE_BUCKET
+}
+
+/** Pad one encoded frame into its bucket. The length field is the exact
+ *  plaintext length, so the receiver strips the zero padding unambiguously. */
+export function padFramePlaintext(plaintext: Uint8Array): Uint8Array {
+  const size = paddedFrameSize(PAD_HEADER_LEN + plaintext.length)
+  const out = new Uint8Array(size)
+  out.set(PAD_MAGIC, 0)
+  new DataView(out.buffer).setUint32(8, plaintext.length)
+  out.set(plaintext, PAD_HEADER_LEN)
+  return out
+}
+
+/** Undo `padFramePlaintext`. A payload without the magic is an old-format
+ *  frame and is returned unchanged. A malformed padded header is rejected. */
+export function unpadFramePlaintext(
+  bytes: Uint8Array,
+): { payload: Uint8Array; padded: boolean } | null {
+  if (bytes.length < PAD_HEADER_LEN) return { payload: bytes, padded: false }
+  for (let i = 0; i < PAD_MAGIC.length; i++) {
+    if (bytes[i] !== PAD_MAGIC[i]) return { payload: bytes, padded: false }
+  }
+  const length = new DataView(bytes.buffer, bytes.byteOffset + 8, 4).getUint32(0)
+  if (length > bytes.length - PAD_HEADER_LEN) return null
+  return { payload: bytes.subarray(PAD_HEADER_LEN, PAD_HEADER_LEN + length), padded: true }
+}
+
 /** GCM nonce for counter `n`: 12 bytes, the 64-bit big-endian counter in the
  *  low 8 bytes (high 4 bytes zero). Direction separation comes from the key,
  *  not the nonce, so a per-direction counter never collides with itself. */
@@ -176,6 +217,11 @@ export function wrapE2E(
   let recvPoisoned = false
   let sendBlocked = false
   let closeNotified = false
+  /** Negotiated in-band: set when this side sees the peer advertise
+   *  `hello.capabilities.e2ePadding`, or receives a padded frame. Until then
+   *  everything is sent in the old unpadded format, so an old peer is never
+   *  handed bytes it cannot decode. */
+  let sendPadding = false
   /** Ordered pipelines: each step waits for the previous one. */
   let sendChain: Promise<void> = Promise.resolve()
   let recvChain: Promise<void> = Promise.resolve()
@@ -278,13 +324,25 @@ export function wrapE2E(
         if (failed || locallyClosed) return
         recvCount += 1
 
-        const decoded = parseFrame(utf8Decode(plaintext))
+        const unpadded = unpadFramePlaintext(plaintext)
+        if (!unpadded) {
+          fail(new E2eError("decode", "padded e2e payload has an invalid length"))
+          return
+        }
+        // Seeing a padded frame proves the peer speaks this format: switch
+        // our own sends too, so both directions stay padded.
+        if (unpadded.padded) sendPadding = true
+
+        const decoded = parseFrame(utf8Decode(unpadded.payload))
         if (!decoded) {
           // AEAD guarantees integrity, so this means an authenticated-but-garbage
           // payload — only reachable via a bug on the far side. Fail closed rather
           // than hand undefined up to the tunnel.
           fail(new E2eError("decode", "decrypted payload was not a valid tunnel frame"))
           return
+        }
+        if (decoded.t === "hello" && decoded.capabilities?.e2ePadding === true) {
+          sendPadding = true
         }
         deliver(decoded)
       })
@@ -323,7 +381,9 @@ export function wrapE2E(
       }
       const n = sentCount
       sentCount += 1
-      const sealed = aead.aesGcmEncrypt(sendKey, nonceFor(n), utf8Encode(encodeFrame(frame)), aadFor(n))
+      const encoded = utf8Encode(encodeFrame(frame))
+      const plaintext = sendPadding ? padFramePlaintext(encoded) : encoded
+      const sealed = aead.aesGcmEncrypt(sendKey, nonceFor(n), plaintext, aadFor(n))
       sealed.catch(() => {}) // observed in order below
       sendChain = sendChain
         .then(async () => {
