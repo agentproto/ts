@@ -31,8 +31,10 @@ import type {
   AgentCliClient,
   AgentCliConnectOptions,
   AgentCliHandle,
+  AgentPromptQuestion,
   StreamEvent,
 } from "@agentproto/harness"
+
 import { resolveContextWindow } from "@agentproto/model-catalog/llm"
 import { enumerateMcpTools } from "./mcp-bridge/enumerate.js"
 import {
@@ -50,6 +52,19 @@ import {
   writeProviderOverridesConfig,
 } from "./provider-overrides.js"
 import { resolveWindowsPiSpawn } from "./win32-pi-bin.js"
+import {
+  buildQuestionFields,
+  parseQuestions,
+  QUESTION_ANSWERS_KEY_PREFIX,
+  QUESTION_ASK_METHOD,
+  QUESTION_ASK_TITLE,
+  type Question,
+  type QuestionAnswer,
+} from "./question-extension.js"
+
+/** The host resolution `respondPermission` receives (AIP-45 answers, an
+ *  option id, or a cancel). */
+type PermissionResolution = Parameters<NonNullable<AgentCliClient["respondPermission"]>>[1]
 
 /** Env var the bridge extension reads to find its per-session config JSON. */
 const BRIDGE_CONFIG_ENV = "PI_MCP_BRIDGE_CONFIG"
@@ -62,6 +77,11 @@ function bridgeExtensionPath(): string {
 /** Resolve the built provider-overrides extension next to this module (dist/…). */
 function providerOverridesExtensionPath(): string {
   return fileURLToPath(new URL("./provider-overrides-extension.mjs", import.meta.url))
+}
+
+/** Resolve the built question extension next to this module (dist/...). */
+function questionExtensionPath(): string {
+  return fileURLToPath(new URL("./question-extension.mjs", import.meta.url))
 }
 
 /** Env override for the pi binary path — lets a smoke test point at an
@@ -184,6 +204,9 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
   }
 
   const pending = new Map<string, PendingCommand>()
+  /** AIP-45 structured questions parked by permission-hold ui-requests,
+   *  keyed by the RPC request id. Resolved via `respondPermission`. */
+  const pendingQuestions = new Map<string, Question[]>()
   const stderrLines: string[] = []
   const mapperState: PiMapperState = createPiMapperState()
   let currentTurn: TurnChannel | undefined
@@ -258,6 +281,43 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
     }
   }
 
+  function handleUiRequest(request: { id: string; method?: string; title?: string; prefill?: string }): void {
+    if (request.method !== QUESTION_ASK_METHOD) return
+    if (request.title !== QUESTION_ASK_TITLE) return
+    const questions = parseQuestions(request.prefill)
+    pendingQuestions.set(request.id, questions)
+    const first = questions[0]
+    const prompt = first?.question ?? "pi needs your input"
+    const fields = buildQuestionFields(questions)
+    const choices: Array<{ optionId: string; label: string; description?: string }> = []
+    if (fields.length === 1) {
+      const field = fields[0]
+      if (field !== undefined && field.input === "single" && field.choices !== undefined) {
+        for (const c of field.choices) {
+          choices.push({ optionId: c.value, label: c.label, ...(c.description !== undefined ? { description: c.description } : {}) })
+        }
+      }
+    }
+    const question: AgentPromptQuestion = {
+      prompt,
+      choices,
+      allowFreeText: true,
+      ...(fields.length > 0 ? { fields } : {}),
+    }
+    currentTurn?.push({
+      kind: "agent-prompt",
+      sessionId: piSessionId ?? "",
+      toolCallId: request.id,
+      options: [
+        { optionId: "submit", name: "Submit", kind: "allow_once" },
+        { optionId: "skip", name: "Skip", kind: "reject_once" },
+      ],
+      text: prompt,
+      request: "question",
+      question,
+    })
+  }
+
   function attachReaders(proc: ChildProcessWithoutNullStreams): void {
     const decoder = new StringDecoder("utf8")
     let buffer = ""
@@ -273,6 +333,7 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
         const classified = classifyPiLine(line)
         if (classified.kind === "response") handleResponse(classified.response)
         else if (classified.kind === "event") handleEvent(classified.event)
+        else if (classified.kind === "ui-request") handleUiRequest(classified.request)
       }
     })
 
@@ -388,6 +449,14 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
         }
       }
 
+      // Ask the user structured questions through the pi extension (AIP-45
+      // `question` tool) while this session holds. The client parks the
+      // `extension_ui_request` as an `agent-prompt` and resolves it via
+      // `respondPermission`.
+      if (opts.permissionHold) {
+        args.push("-e", questionExtensionPath())
+      }
+
       // Win32: the manifest `bin: "pi"` may only exist on PATH as a `.cmd`
       // shim (npm global or curl installer — issue #1637), which Node's
       // `spawn` without `shell` cannot PATHEXT-resolve (`spawn pi ENOENT`).
@@ -478,6 +547,14 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
     },
 
     async cancel(_turnId: string): Promise<void> {
+      for (const requestId of [...pendingQuestions.keys()]) {
+        pendingQuestions.delete(requestId)
+        try {
+          write({ type: "extension_ui_response", id: requestId, cancelled: true })
+        } catch {
+          // Best effort - the child process may already be gone.
+        }
+      }
       if (!child) return
       try {
         await request("abort")
@@ -498,6 +575,14 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
           // live inside pi and die with the child.
         }
       }
+      for (const requestId of [...pendingQuestions.keys()]) {
+        pendingQuestions.delete(requestId)
+        try {
+          write({ type: "extension_ui_response", id: requestId, cancelled: true })
+        } catch {
+          // Best effort - the child process may already be gone.
+        }
+      }
       const proc = child
       if (!proc) return
       child = undefined
@@ -507,6 +592,51 @@ export function createAgentCliClient(definition: AgentCliHandle): AgentCliClient
         // Best effort — the pipe may already be gone.
       }
       if (!proc.killed) proc.kill("SIGTERM")
+    },
+
+    respondPermission(requestId: string, resolution: PermissionResolution): boolean {
+      const questions = pendingQuestions.get(requestId)
+      if (!questions) return false
+      pendingQuestions.delete(requestId)
+      if ("cancelled" in resolution) {
+        try {
+          write({ type: "extension_ui_response", id: requestId, cancelled: true })
+        } catch {
+          // Best effort - the child process may already be gone.
+        }
+        return true
+      }
+      if ("answers" in resolution) {
+        const answersByKey = resolution.answers ?? {}
+        const answerList = questions.map((q, i) => {
+          const key = `${QUESTION_ANSWERS_KEY_PREFIX}${i}`
+          const a = answersByKey[key]
+          const selected = Array.isArray(a?.selected) ? (a?.selected as string[]) : []
+          const text = typeof a?.text === "string" ? (a?.text as string) : undefined
+          const answer: QuestionAnswer = { header: q.header, question: q.question, selected }
+          if (text !== undefined) answer.text = text
+          return answer
+        })
+        try {
+          write({ type: "extension_ui_response", id: requestId, value: JSON.stringify({ answers: answerList }) })
+        } catch {
+          // Best effort - the child process may already be gone.
+        }
+        return true
+      }
+      if ("optionId" in resolution) {
+        if (resolution.optionId === "submit") return false
+        if (resolution.optionId === "skip") {
+          try {
+            write({ type: "extension_ui_response", id: requestId, value: JSON.stringify({ skipped: true }) })
+          } catch {
+            // Best effort - the child process may already be gone.
+          }
+          return true
+        }
+        return false
+      }
+      return false
     },
   }
 

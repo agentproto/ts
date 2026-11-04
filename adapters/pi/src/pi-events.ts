@@ -95,11 +95,23 @@ export interface PiResponse {
   data?: unknown
 }
 
-/** Classified pi stdout line. `other` covers extension-UI requests, the
- *  json-mode session header, and anything this adapter ignores. */
+/** Pi `extension_ui_request`: a UI interaction requested by a loaded pi
+ *  extension (the AIP-45 `question` tool's ask channel). The adapter parks
+ *  it as an `agent-prompt` StreamEvent with `request: "question"` and the
+ *  client answers via `AgentCliClient.respondPermission`. */
+export interface PiExtensionUiRequest {
+  id: string
+  method: string
+  title?: string
+  prefill?: string
+}
+
+/** Classified pi stdout line. `other` covers the json-mode session header
+ *  and anything this adapter ignores. */
 export type PiOutbound =
   | { kind: "response"; response: PiResponse }
   | { kind: "event"; event: PiSessionEvent }
+  | { kind: "ui-request"; request: PiExtensionUiRequest }
   | { kind: "other" }
 
 // ============================================================================
@@ -278,6 +290,18 @@ export function classifyPiLine(line: string): PiOutbound {
         data: parsed.data,
       },
     }
+  }
+
+  if (type === "extension_ui_request") {
+    const id = asString(parsed.id)
+    const method = asString(parsed.method)
+    if (id === undefined || method === undefined) return { kind: "other" }
+    const request: PiExtensionUiRequest = { id, method }
+    const title = asString(parsed.title)
+    if (title !== undefined) request.title = title
+    const prefill = asString(parsed.prefill)
+    if (prefill !== undefined) request.prefill = prefill
+    return { kind: "ui-request", request }
   }
 
   const event = narrowSessionEvent(parsed, type)
