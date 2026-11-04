@@ -95,13 +95,21 @@ const taskBlock = (bindings) => {
 
 const deliveryBlock = (bindings) => {
   const verb = verbOf(bindings)
-  const { prNumber, issueNumber, repo, baseRef = "main", headRef = "" } = bindings.input
+  const {
+    prNumber,
+    issueNumber,
+    repo,
+    baseRef = "main",
+    headRef = "",
+    headSha = "",
+    fixBranchSha = "",
+  } = bindings.input
   if (verb === "fix") {
     if (fixDeliveryOf(cfgOf(bindings)) === "commit") {
       return [
         `## Phase 3: Deliver`,
         ``,
-        commitDeliveryBlock({ branch: headRef || `pr-${prNumber}-head` }),
+        commitDeliveryBlock({ branch: headRef || `pr-${prNumber}-head`, expectedSha: headSha }),
         headRef
           ? ""
           : `   (Resolve the PR head branch first: \`curl -sS -H "Authorization: Bearer \${GITHUB_TOKEN}" "https://api.github.com/repos/${repo}/pulls/${prNumber}"\` → \`.head.ref\`.)`,
@@ -115,6 +123,7 @@ const deliveryBlock = (bindings) => {
         branch: `bot/fix-${prNumber}`,
         base: headRef || baseRef,
         titleHint: `PR #${prNumber}'s review`,
+        expected: fixBranchSha ? { sha: fixBranchSha } : { absent: true },
       }),
     ].join("\n")
   }
@@ -177,6 +186,12 @@ export default {
     requestText: { type: "string", description: "Free-text request for the pr verb.", default: "" },
     baseRef: { type: "string", description: "Base branch ref.", default: "main" },
     headRef: { type: "string", description: "PR head branch (fix verb).", default: "" },
+    headSha: { type: "string", description: "PR head SHA resolved by the host (fix commit delivery).", default: "" },
+    fixBranchSha: {
+      type: "string",
+      description: "Remote tip of bot/fix-<n> at run start, so a reused stacked branch is pushed with a lease; empty means a new branch.",
+      default: "",
+    },
     repo: { type: "string", description: "owner/repo slug — required for the sandbox bootstrap clone.", default: "" },
     githubToken: {
       type: "string",

@@ -69,6 +69,12 @@ jobs:
       - name: Install dependencies (clean baseline)
         run: pnpm install --frozen-lockfile
 
+      # The push below goes through @agentproto/git-cas (compare-and-swap),
+      # never a bare `git push --force-with-lease`. Build it here so the
+      # update job fails closed if the CLI is unavailable.
+      - name: Build git-cas
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
       # Resolve effective mode/scope (schedule has no inputs → defaults) + the
       # stable branch name that stays constant across steps. The PR title is a
       # FIXED constant — the dedup key the local plugin-updater-weekly cron
@@ -86,9 +92,14 @@ jobs:
             SCOPE="$DISPATCH_SCOPE"
           fi
           BRANCH="chore/update-deps-$(date +%Y-%m-%d)"
+          # The branch tip at job start. A same-day re-run has no
+          # remote-tracking ref, so the old `--force-with-lease` had nothing to
+          # compare against and failed as `(stale info)`. Capture the tip here
+          # and hand it to the CAS push below (empty means a fresh branch).
+          REMOTE_SHA=$(git ls-remote origin "refs/heads/$BRANCH" | cut -f1)
           { echo "MODE=$MODE"; echo "SCOPE=$SCOPE"; echo "BRANCH=$BRANCH"; } >> "$GITHUB_ENV"
-          { echo "mode=$MODE"; echo "scope=$SCOPE"; } >> "$GITHUB_OUTPUT"
-          echo "Resolved mode=$MODE scope='$SCOPE' branch=$BRANCH"
+          { echo "mode=$MODE"; echo "scope=$SCOPE"; echo "remote_sha=$REMOTE_SHA"; } >> "$GITHUB_OUTPUT"
+          echo "Resolved mode=$MODE scope='$SCOPE' branch=$BRANCH remote_sha=${REMOTE_SHA:-<absent>}"
 
       # Mode-aware apply. minor-patch updates now (pnpm up -r); scoped-latest
       # edits the matching package.json specs with the portable sed (no set -e
@@ -244,7 +255,30 @@ jobs:
             exit 0
           fi
           git commit -m "chore(deps): weekly minor/patch bump"
-          git push -u origin "$BRANCH" --force-with-lease
+
+          # Compare-and-swap push: only update the branch if it still points
+          # where the job-start `git ls-remote` found it (or is still absent).
+          # On head_moved we stop and fail; we never pull/rebase/retry.
+          RC=0
+          if [ -n "${{ steps.ctx.outputs.remote_sha }}" ]; then
+            node packages/git-cas/dist/cli.mjs push \
+              --branch "$BRANCH" \
+              --expect "${{ steps.ctx.outputs.remote_sha }}" \
+              --cwd "$PWD" || RC=$?
+          else
+            node packages/git-cas/dist/cli.mjs push \
+              --branch "$BRANCH" \
+              --expect-absent \
+              --cwd "$PWD" || RC=$?
+          fi
+          if [ "$RC" -eq 3 ]; then
+            echo "::error::head_moved: $BRANCH moved since job start; the update was not pushed. Re-run after the branch settles (this workflow never pulls, rebases or retries)."
+            exit 1
+          fi
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::git-cas push rejected (exit $RC) for $BRANCH; the update was not pushed."
+            exit 1
+          fi
 
           PR_NUM=$(gh pr view --head "$BRANCH" --repo "${{ github.repository }}" --json number -q .number 2>/dev/null || true)
           if [ -n "$PR_NUM" ]; then
@@ -529,6 +563,11 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # security-fix/entry.mjs imports the shared sandbox-agent block, which
+      # imports the built @agentproto/git-cas. Build it before the lane runs.
+      - name: Build git-cas
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
 
       - name: Build local agentproto CLI
         if: steps.lane.outputs.cli_source == 'workspace'
