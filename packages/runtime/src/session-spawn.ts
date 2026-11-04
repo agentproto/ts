@@ -322,6 +322,7 @@ import { boxSpawnEnforcedPosturesOf, createSandboxAgentSessionProxy } from "./sa
 import { projectRemoteUsage, type RemoteUsageSnapshot } from "./sandbox-usage.js"
 import {
   defaultPreflightRegistry,
+  isAnonymouslyProbeable,
   preflightFailedResult,
   runSandboxPreflight,
   unknownPreflightProbes,
@@ -7983,11 +7984,14 @@ export async function bootSandboxAgentSession(opts: {
       bootWarnings.push(
         `agent_start: preflight ${preflightIds.join(", ")} skipped, provider "${actualProvider}" cannot run commands in the box`,
       )
-    } else if (opts.auth) {
+    } else if (opts.auth && !isAnonymouslyProbeable(opts.adapter, opts.model)) {
       // The box's credentials reach it through its own `agent_start` (`host.start`),
       // never through its environment, so a probe run now would call the model
       // unauthenticated: a spurious cap or auth failure would veto a healthy
-      // placement. An explicit credential means the probe cannot speak for the spawn.
+      // placement. An explicit credential means the probe cannot speak for the
+      // spawn, EXCEPT for a Zen free id, whose per-IP cap no credential changes
+      // (`isAnonymouslyProbeable`): CI's api-key lane always carries auth, so
+      // skipping there left the ladder's `model-answers` rung dead.
       bootWarnings.push(
         `agent_start: preflight ${preflightIds.join(", ")} skipped, the spawn carries credentials a probe cannot present`,
       )

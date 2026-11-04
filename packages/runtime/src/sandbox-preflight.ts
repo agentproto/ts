@@ -118,6 +118,19 @@ const clip = (text: string): string => {
 }
 
 /**
+ * Can a probe that carries NO credential speak for a spawn that does? Only for
+ * a Zen free id (`opencode/<id>-free`, `opencode/big-pickle`): those answer
+ * anonymously from inside opencode, and their cap is per SOURCE IP, shared by
+ * every key (measured 2026-11-04: the HODL, ws00 and ws02 Zen keys all hit
+ * "Free usage limit reached" from one IP), so the credential changes nothing
+ * about the outcome. Any other model (paid, or a Go route with its own
+ * per-account quota) would fail unauthenticated for reasons that say nothing
+ * about the spawn, so the spawn path keeps skipping the probe for those.
+ */
+export const isAnonymouslyProbeable = (adapter: string, model: string | undefined): boolean =>
+  adapter === "opencode" && model !== undefined && /^opencode\/(?:big-pickle|[A-Za-z0-9._-]+-free)$/.test(model)
+
+/**
  * One-line prompt command per adapter, run INSIDE the box: the free models of
  * a harness only answer from within that harness. Adding a harness is adding
  * a row; an adapter without a row yields `unknown`, never `ko`.
