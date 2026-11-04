@@ -3530,9 +3530,11 @@ export async function createGateway(
   // disabled — auth stays `mode: "none"` until `remote_enable` is
   // called. Tunnel logs flow through the events stream so `/events`
   // subscribers see cloudflared chatter. `isSessionChatInstalled` decides
-  // whether `enable()` emits `EnableResult.phoneUrl`
-  // (PHONE-PLAN.md P1.2) — the same call-time check the builtin-panel mount
-  // and `registerSessionTools` already share, so all three surfaces agree.
+  // whether an opted-in `enable({ phoneLink: true })` emits
+  // `EnableResult.phoneUrl`: the same call-time check the builtin-panel
+  // mount and `registerSessionTools` already share, so all three surfaces
+  // agree. Phones pair through rendezvous by default; `phoneLink` is the
+  // no-service-worker fallback.
   const remote = new RemoteController({
     workspace,
     port,

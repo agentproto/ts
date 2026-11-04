@@ -1,12 +1,12 @@
 /**
- * `RemoteController.enable()`'s `phoneUrl` (PHONE-PLAN.md P1.2) — a single
- * link a phone can open, with the bearer riding in a URL *fragment*
- * (`#token=`), never a `?` query string (fragments never reach a server).
- * Only emitted when `isSessionChatInstalled` says yes:
- *   `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`. There is no hosted
- *   panel fallback anymore (the hosted cli-site panel is retired).
+ * `RemoteController.enable()`'s opt-in `phoneUrl`: a single link a browser
+ * without service workers can open, with the bearer riding in a URL
+ * *fragment* (`#token=`), never a `?` query string. It is emitted only when
+ * the caller passes `phoneLink: true` AND `isSessionChatInstalled` says yes:
+ *   `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`. Phones pair
+ *   through rendezvous by default.
  * Mocks the quick-tunnel provider so no real `cloudflared` process is
- * spawned — `start()` resolves immediately with a fake public URL.
+ * spawned; `start()` resolves immediately with a fake public URL.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -35,7 +35,21 @@ describe("RemoteController.enable() — phoneUrl", () => {
     if (dir) await rm(dir, { recursive: true, force: true })
   })
 
-  it("links straight into session-chat when it's installed", async () => {
+  it("links straight into session-chat when phoneLink is opted in", async () => {
+    dir = await mkdtemp(join(tmpdir(), "agentproto-remote-phoneurl-"))
+    const controller = new RemoteController({
+      workspace: dir,
+      port: 18790,
+      isSessionChatInstalled: () => true,
+    })
+    const result = await controller.enable({ phoneLink: true })
+    expect(result.bearerToken).toBeTruthy()
+    expect(result.phoneUrl).toBe(
+      `${FAKE_PUBLIC_URL}/apps/@agentik/session-chat/ui#token=${result.bearerToken}`,
+    )
+  })
+
+  it("omits phoneUrl by default even when session-chat is installed", async () => {
     dir = await mkdtemp(join(tmpdir(), "agentproto-remote-phoneurl-"))
     const controller = new RemoteController({
       workspace: dir,
@@ -44,9 +58,8 @@ describe("RemoteController.enable() — phoneUrl", () => {
     })
     const result = await controller.enable({})
     expect(result.bearerToken).toBeTruthy()
-    expect(result.phoneUrl).toBe(
-      `${FAKE_PUBLIC_URL}/apps/@agentik/session-chat/ui#token=${result.bearerToken}`,
-    )
+    expect(result.mcpEndpoint).toBe(`${FAKE_PUBLIC_URL}/mcp`)
+    expect(result.phoneUrl).toBeUndefined()
   })
 
   it("omits phoneUrl when session-chat isn't installed (no hosted panel fallback)", async () => {
@@ -77,7 +90,7 @@ describe("RemoteController.enable() — phoneUrl", () => {
       port: 18790,
       isSessionChatInstalled: () => true,
     })
-    const result = await controller.enable({ targetPort: 54371 })
+    const result = await controller.enable({ targetPort: 54371, phoneLink: true })
     expect(result.exposesGateway).toBe(false)
     expect(result.bearerToken).toBeUndefined()
     expect(result.phoneUrl).toBeUndefined()
