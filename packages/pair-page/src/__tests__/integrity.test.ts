@@ -78,11 +78,35 @@ describe("pair-page release integrity manifest", () => {
     expect(res.headers.get("content-type")).toBe("application/json; charset=utf-8")
 
     const raw = await readFile(path.join(dist, MANIFEST_PATH.replace(/^\//, "")), "utf8")
-    const manifest = JSON.parse(raw) as { version: string; sha256: string; builtAt: string }
+    const manifest = JSON.parse(raw) as {
+      version: string
+      sha256: string
+      builtAt: string
+      files: string[]
+    }
     expect(manifest.version).toMatch(/^\d+\.\d+\.\d+/)
     expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/)
     expect(Number.isNaN(Date.parse(manifest.builtAt))).toBe(false)
+    expect(manifest.files).toContain("index.html")
+    expect(manifest.files).toContain("pair-sw.js")
+    expect(manifest.files).not.toContain(MANIFEST_PATH.replace(/^\//, ""))
+    expect(manifest.files).toEqual([...manifest.files].sort())
     expect(manifest.sha256).toBe(await bundleHash())
     expect(await res.json()).toEqual(manifest)
+
+    // A monitor recomputes from the files the ORIGIN serves, not from disk:
+    // fetch every listed path through the Worker and hash those bytes.
+    const hash = createHash("sha256")
+    for (const rel of manifest.files) {
+      const fileRes = await handleRequest(
+        new Request(`https://${FP}.agentproto.cloud/${rel}`),
+        assetsEnv(),
+      )
+      expect(fileRes.status, rel).toBe(200)
+      hash.update(rel, "utf8")
+      hash.update("\0")
+      hash.update(new Uint8Array(await fileRes.arrayBuffer()))
+    }
+    expect(hash.digest("hex")).toBe(manifest.sha256)
   })
 })

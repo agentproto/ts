@@ -120,7 +120,11 @@ const pkg = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"))
 await mkdir(path.join(dist, ".well-known"), { recursive: true })
 await writeFile(
   path.join(dist, manifestRel),
-  JSON.stringify({ version: pkg.version, sha256: hash.digest("hex"), builtAt: new Date().toISOString() }, null, 2) + "\n",
+  JSON.stringify(
+    { version: pkg.version, sha256: hash.digest("hex"), builtAt: new Date().toISOString(), files: bundleFiles },
+    null,
+    2,
+  ) + "\n",
 )
 
 console.log(`pair-page: dist/index.html, dist/${js}, dist/${css}, dist/pair-sw.js, dist/${manifestRel}`)
