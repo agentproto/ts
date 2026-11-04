@@ -486,6 +486,9 @@ export function resolveToolProfileSelection(input: {
   return parseToolProfileList(input.config)
 }
 
+/** Tools exposed under every named profile, whatever its list says. */
+export const ALWAYS_ON_TOOLS: readonly string[] = ["tool_help"]
+
 /** A name belongs to `full` if it is any daemon tool or a dynamic app UI. */
 function isExposedByFull(name: string): boolean {
   return name.startsWith(APP_UI_TOOL_PREFIX) || (DAEMON_TOOL_NAMES as readonly string[]).includes(name)
@@ -499,7 +502,7 @@ export function resolveToolProfileAllowSet(
   profiles: readonly ToolProfileName[] | undefined,
 ): ReadonlySet<string> | undefined {
   if (!profiles || profiles.length === 0 || profiles.includes("full")) return undefined
-  const names = new Set<string>(["tool_help"])
+  const names = new Set<string>(ALWAYS_ON_TOOLS)
   for (const profile of profiles) {
     if (profile === "full") return undefined
     for (const name of PROFILE_TOOLS[profile]) names.add(name)
@@ -515,8 +518,9 @@ export function resolveToolProfileAllowSet(
 export function profilesExposingTool(name: string): ToolProfileName[] {
   const profiles: ToolProfileName[] = []
   if (name.startsWith(APP_UI_TOOL_PREFIX)) profiles.push("apps")
+  const alwaysOn = ALWAYS_ON_TOOLS.includes(name)
   for (const profile of ["core", "orchestrator", "apps", "admin"] as const) {
-    if (PROFILE_TOOLS[profile].includes(name) && !profiles.includes(profile)) {
+    if ((alwaysOn || PROFILE_TOOLS[profile].includes(name)) && !profiles.includes(profile)) {
       profiles.push(profile)
     }
   }
