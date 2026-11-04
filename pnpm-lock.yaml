@@ -4021,6 +4021,9 @@ importers:
       '@agentproto/delivery':
         specifier: workspace:*
         version: link:../delivery
+      '@agentproto/delivery-github':
+        specifier: workspace:*
+        version: link:../delivery-github
       '@agentproto/driver':
         specifier: workspace:*
         version: link:../driver/core
@@ -4392,9 +4395,6 @@ importers:
       '@agentproto/delivery':
         specifier: workspace:*
         version: link:../delivery
-      '@agentproto/delivery-github':
-        specifier: workspace:*
-        version: link:../delivery-github
       '@agentproto/provider-kit':
         specifier: workspace:*
         version: link:../provider-kit
@@ -4405,6 +4405,9 @@ importers:
         specifier: ^4.6.7
         version: 4.6.7
     devDependencies:
+      '@agentproto/delivery-github':
+        specifier: workspace:*
+        version: link:../delivery-github
       '@agentproto/tooling':
         specifier: workspace:*
         version: link:../tooling

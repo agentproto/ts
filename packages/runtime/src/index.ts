@@ -215,7 +215,14 @@ import { makePublicUrlResolver, setSentinelPublicUrlSource } from "@agentproto/s
 import { builtinProviderCapabilities } from "./remote-providers/registry.js"
 import { LOCAL_GH_SLUG } from "@agentproto/sentinel"
 import { AGENTPUSH_SLUG } from "@agentproto/sentinel"
-import { registerSentinelTools, cancelSentinelWatch } from "@agentproto/sentinel"
+import {
+  registerSentinelCoalesceRule,
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+  registerSentinelTools,
+  cancelSentinelWatch,
+} from "@agentproto/sentinel"
+import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
 import { createSessionFollowStore } from "./session-follow-store.js"
 import { wireSessionFollow } from "./session-follow.js"
 import {
@@ -2158,6 +2165,8 @@ export const DEFAULT_ALWAYS_ON_TOOLS: readonly string[] = [
   "quota_status",
 ]
 
+let sentinelGithubDeliveryRulesRegistered = false
+
 export interface GatewayHandle {
   url: string
   workspace: string
@@ -3900,6 +3909,14 @@ export async function createGateway(
   // allowDeliberateEnd:false: the sentinel is an AUTOMATIC path and never
   // revives a deliberate end in place (its own sessionInfo guard routes
   // those to the parent / parking first anyway).
+  if (!sentinelGithubDeliveryRulesRegistered) {
+    registerGithubDeliveryModule({
+      registerClassifier: registerSentinelClassifier,
+      registerCoalesceRule: registerSentinelCoalesceRule,
+      registerRepeatKey: registerSentinelRepeatKey,
+    })
+    sentinelGithubDeliveryRulesRegistered = true
+  }
   const sentinelRuntime = createSentinelRuntime({
     store: sentinelStore,
     registry: { sendMessage: sessions.sendMessage },

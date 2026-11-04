@@ -9,21 +9,13 @@
  * @see https://agentproto.sh/docs/aip-60
  */
 
-import { registerGithubDeliveryModule } from "@agentproto/delivery-github"
-
-import { registerSentinelCoalesceRule } from "./sentinel-coalesce.js"
-import { registerSentinelClassifier, registerSentinelRepeatKey } from "./sentinel-triage.js"
-
 export const SPEC_NAME = "sentinel/v1" as const
 
-// GitHub is the default producer mix, so composing the sentinel package also
-// composes its delivery rules. Tests that import the source modules directly
-// register the same module in their setup.
-registerGithubDeliveryModule({
-  registerClassifier: registerSentinelClassifier,
-  registerCoalesceRule: registerSentinelCoalesceRule,
-  registerRepeatKey: registerSentinelRepeatKey,
-})
+export { registerSentinelCoalesceRule } from "./sentinel-coalesce.js"
+export {
+  registerSentinelClassifier,
+  registerSentinelRepeatKey,
+} from "./sentinel-triage.js"
 
 export {
   createSentinelStore,
