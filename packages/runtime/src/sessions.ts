@@ -169,6 +169,8 @@ import { resolveWorktreeIdentity } from "./worktree-identity.js"
 import {
   attachParentRelayStore,
   forgetRelayToken,
+  forgetCredentialRelay,
+  rememberCredentialRelay,
   rememberRelayToken,
   revokeParentRelayGrantsForSession,
 } from "./parent-relay.js"
@@ -6167,6 +6169,10 @@ export interface SpawnAgentInput {
    *  never on disk. Set by the box-side spawn that received a forwarded
    *  `remoteParent` block from the host. */
   remoteParent?: { sessionId: string; url: string; token: string }
+  /** CREDENTIAL relay forwarded by the host (see `credential-relay.ts`). The
+   *  token stays in memory only (`rememberCredentialRelay`); nothing of it
+   *  reaches a descriptor. */
+  credentialRelay?: { url: string; token: string }
   /** Source label for the new session (channel/harness). */
   origin?: string
   /** Recursion depth for the new session (orchestrator WP4). Defaults to
@@ -6638,7 +6644,9 @@ export function carrySessionPin(
 function remoteParentFields(
   remoteParent: { sessionId: string; url: string; token: string } | undefined,
   sessionId: string,
+  credentialRelay?: { url: string; token: string },
 ): { remoteParent?: { sessionId: string; url: string } } {
+  if (credentialRelay) rememberCredentialRelay(sessionId, credentialRelay)
   if (!remoteParent) return {}
   rememberRelayToken(sessionId, remoteParent.token)
   return { remoteParent: { sessionId: remoteParent.sessionId, url: remoteParent.url } }
@@ -7311,6 +7319,7 @@ export function createSessionsRegistry(opts?: {
     // have nobody left to deliver to, so they are revoked as well.
     revokeParentRelayGrantsForSession(rt.desc.id)
     forgetRelayToken(rt.desc.id)
+    forgetCredentialRelay(rt.desc.id)
     // Terminal means provisioning is over, one way or another: drop the
     // progress field, and abort whatever provisioning may still be queued or
     // running for this row (its queue entry is dropped, its child tree
@@ -12739,7 +12748,7 @@ export function createSessionsRegistry(opts?: {
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
-        ...remoteParentFields(input.remoteParent, id),
+        ...remoteParentFields(input.remoteParent, id, input.credentialRelay),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),
@@ -12994,7 +13003,7 @@ export function createSessionsRegistry(opts?: {
         // The relay TOKEN stays in memory (see `remoteParentFields`) - the
         // descriptor (and therefore the persisted row) carries only the
         // parent session id and the relay URL.
-        ...remoteParentFields(input.remoteParent, id),
+        ...remoteParentFields(input.remoteParent, id, input.credentialRelay),
         ...(input.notifyParentOnCrash ? { notifyParentOnCrash: true } : {}),
         ...(input.sentinelAutoWatch === false ? { sentinelAutoWatch: false } : {}),
         ...(input.origin ? { origin: input.origin } : {}),

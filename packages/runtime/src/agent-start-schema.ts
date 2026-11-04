@@ -286,11 +286,17 @@ export const agentStartInputShape = {
       z.object({
         profileRef: z.string().min(1).optional(),
         profileRefs: z.array(z.string().min(1)).min(1).optional(),
+        delegateProfileRefs: z.array(z.string().min(1)).min(1).optional(),
       }),
     )
   )
     .optional()
-    .describe("Named auth profile to bill at initial spawn; resolved from the local keychain."),
+    .describe(
+      "Named auth profile to bill at initial spawn; resolved from the local keychain. " +
+        "`delegateProfileRefs` (sandbox + orchestrator spawns only): extra host profiles the box " +
+        "supervisor's own nested spawns may bill, resolved on the HOST per nested spawn (the box " +
+        "never holds them); its own profile is always allowed.",
+    ),
   posture: z
     .string()
     .optional()
@@ -351,6 +357,21 @@ export const agentStartInputShape = {
         "lookup. DAEMON-INTERNAL: only the host daemon's own spawn path sets it when it boots a " +
         "box (a root-gateway call into the box daemon); a session caller that supplies it is " +
         "refused (see parent-relay.ts).",
+    ),
+  credentialRelay: jsonTolerant(
+    opaque(
+      z.object({
+        url: z.string().min(1),
+        token: z.string().min(1),
+      }),
+    )
+  )
+    .optional()
+    .describe(
+      "A CREDENTIAL relay: where this box session's nested spawns ask the HOST to resolve an auth " +
+        "profile the box does not hold. DAEMON-INTERNAL, exactly like `remoteParent`: only the host " +
+        "daemon's spawn path sets it when it boots a box; a session caller that supplies it is " +
+        "refused (see credential-relay.ts).",
     ),
   notifyUrl: z
     .string()
@@ -674,6 +695,7 @@ export const detachedAgentStartSchema = agentStartInputSchema.omit({
   // later as a root call, so accepting it here would launder a session's
   // hand-made remote parent past the agent_start caller check.
   remoteParent: true,
+  credentialRelay: true,
 })
 
 export type DetachedAgentStartInput = z.infer<typeof detachedAgentStartSchema>
