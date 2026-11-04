@@ -1003,6 +1003,36 @@ export const computerSandboxProvider: SandboxProvider = {
   },
 
   /**
+   * Release one holder's controller slot WITHOUT resuming the computer: the
+   * gc's way to free the slot of a session that died or vanished without
+   * detaching. A holder the controller does not know, or a computer that is
+   * gone, is success.
+   */
+  async releaseSession(sandboxId: string, holder: string): Promise<void> {
+    const fallbackConfig = () =>
+      resolveClientConfig(
+        { provider: "computer", config: { controllerUrl: process.env.COMPUTER_CONTROLLER_URL } },
+        readComputerConfig({ provider: "computer", config: {} }),
+      )
+    for (const id of [sandboxId, resolveAlias(sandboxId)]) {
+      const client = new ComputerControllerClient(probeClientConfigs.get(id) ?? fallbackConfig())
+      try {
+        await client.detach(id, { holder })
+        // This process may have taken that very slot: keep its books honest.
+        if (controllerHolders.get(id)?.delete(holder)) {
+          const now = controllerSlots.get(id) ?? 0
+          if (now <= 1) controllerSlots.delete(id)
+          else controllerSlots.set(id, now - 1)
+        }
+        return
+      } catch (err) {
+        if (err instanceof ComputerApiError && err.status === 404) continue
+        throw err
+      }
+    }
+  },
+
+  /**
    * Every computer the controller still holds (`GET /v1/computers`), as the
    * richer inventory shape. Read-only: no box is touched, no session slot is
    * taken. Fields the controller does not report stay absent.
@@ -1449,7 +1479,17 @@ async function bootOnClient(
   const egressIp = created.egressIp !== undefined ? created.egressIp : status.egressIp
 
   acquireSessionSlot(sandboxId, config.maxSessions ?? 1)
-  return wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
+  try {
+    return await wrapBox(client, sandboxId, spec, config, port, published, daemonToken, egressIp)
+  } catch (err) {
+    // The box exists and holds our slots, but no handle will ever be
+    // returned to stop it: reclaim it like any other failed boot.
+    releaseSessionSlot(sandboxId)
+    await client.remove(sandboxId, { force: true }).catch(() => undefined)
+    controllerSlots.delete(sandboxId)
+    controllerHolders.delete(sandboxId)
+    throw err
+  }
 }
 
 /** Resolve an existing computer to a running id (resuming when suspended and
@@ -1509,6 +1549,14 @@ async function connectOnClient(
     splitBoxEnv(opts.env).daemonEnv,
   )
 
+  // `expose: "private"` is the `sandbox_attach` rendezvous: it hands an
+  // external client a connection descriptor and nobody ever closes this
+  // handle, so a slot taken here could never be released and would count
+  // against `maxSessions` forever.
+  if (opts.expose === "private") {
+    return wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  }
+
   const maxSessions = config.maxSessions ?? 1
   if (!acquireSessionSlot(currentId, maxSessions)) {
     throw new Error(
@@ -1528,7 +1576,14 @@ async function connectOnClient(
     }
     throw err
   }
-  return wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  try {
+    return await wrapBox(client, currentId, spec, config, port, published, daemonToken, egressIp)
+  } catch (err) {
+    // No handle was returned, so nobody can ever detach the slots taken above.
+    releaseSessionSlot(currentId)
+    await detachController(client, currentId, config.sessionHolder)
+    throw err
+  }
 }
 
 /** Exec-only attach: same running-box resolution as `connect()`, then a

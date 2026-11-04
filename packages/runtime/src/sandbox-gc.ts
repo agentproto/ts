@@ -19,7 +19,7 @@
 import type { SandboxProviderBox } from "@agentproto/sandbox"
 import type { SandboxProviderHandle } from "./sandbox-providers/types.js"
 import type { SandboxLedgerEntry, SandboxLedgerState } from "./sandbox-ledger.js"
-import { readSandboxLedger, recordSandboxState } from "./sandbox-ledger.js"
+import { readSandboxLedger, recordSandboxState, recordSessionDetach } from "./sandbox-ledger.js"
 
 /** Host session statuses after which a session can never use its box again. */
 export const DEAD_SESSION_STATUSES: ReadonlySet<string> = new Set(["error", "killed", "exited"])
@@ -145,18 +145,19 @@ export function collectGcCandidates(
   entries: readonly SandboxLedgerEntry[],
   sessionStatuses: ReadonlyMap<string, string>,
   sessionLineage: ReadonlyMap<string, SandboxGcSessionLineage> = new Map(),
+  absent: SandboxGcAbsentSessions = {},
 ): SandboxGcCandidate[] {
   const successors = buildSuccessorIndex(sessionLineage)
+  const isDead = deadSessionPredicate(sessionStatuses, absent)
   return entries
     .filter(e => e.originSessionId !== undefined && e.state !== "stopped")
     .map(entry => ({
       entry,
-      sessionStatus: sessionStatuses.get(entry.originSessionId as string),
+      sessionStatus:
+        sessionStatuses.get(entry.originSessionId as string) ??
+        (isDead(entry, entry.originSessionId as string) ? ABSENT_SESSION_STATUS : undefined),
     }))
-    .filter(
-      (c): c is SandboxGcCandidate & { sessionStatus: string } =>
-        c.sessionStatus !== undefined && DEAD_SESSION_STATUSES.has(c.sessionStatus),
-    )
+    .filter((c): c is SandboxGcCandidate & { sessionStatus: string } => c.sessionStatus !== undefined && isDead(c.entry, c.entry.originSessionId as string))
     // AIP-36 shared-box amendment — the origin session dying does not make
     // the box an orphan when OTHER sessions are still attached. Skip unless
     // every remaining attaché is itself dead (its status is terminal);
@@ -166,15 +167,48 @@ export function collectGcCandidates(
         s => s !== c.entry.originSessionId,
       )
       if (others.length === 0) return true
-      return others.every(s => {
-        const st = sessionStatuses.get(s)
-        return st !== undefined && DEAD_SESSION_STATUSES.has(st)
-      })
+      return others.every(s => isDead(c.entry, s))
     })
     // Successor sessions resumed onto the same box are not in
     // `attachedSessions` for ledger rows written before that registration
     // existed, so walk their lineage to keep an already-broken row too.
     .filter(c => !hasLiveSuccessor(c.entry.originSessionId as string, sessionStatuses, successors))
+}
+
+/** Status reported for an origin session the registry no longer knows. */
+const ABSENT_SESSION_STATUS = "absent"
+
+/**
+ * Opt-in: treat a session the registry has NO row for as dead. A session that
+ * was pruned, deleted or never persisted can never close its handle, so the
+ * box it held (and the session slot the provider counts for it) would stay
+ * reserved forever; the default keeps the conservative reading (unknown =
+ * alive) for callers whose status source may not list every row. `graceMs`
+ * (default 10 min) spares a ledger row touched recently: a box booted a
+ * moment ago may be attached by a session the registry has not recorded yet.
+ */
+export interface SandboxGcAbsentSessions {
+  absentSessionsAreDead?: boolean
+  graceMs?: number
+  now?: number
+}
+
+export const DEFAULT_ABSENT_SESSION_GRACE_MS = 10 * 60_000
+
+/** `(entry, sessionId) => dead?` under the absent-session policy above. */
+function deadSessionPredicate(
+  sessionStatuses: ReadonlyMap<string, string>,
+  absent: SandboxGcAbsentSessions,
+): (entry: SandboxLedgerEntry, sessionId: string) => boolean {
+  const now = absent.now ?? Date.now()
+  const graceMs = absent.graceMs ?? DEFAULT_ABSENT_SESSION_GRACE_MS
+  return (entry, sessionId) => {
+    const status = sessionStatuses.get(sessionId)
+    if (status !== undefined) return DEAD_SESSION_STATUSES.has(status)
+    if (absent.absentSessionsAreDead !== true) return false
+    const touched = Date.parse(entry.updatedAt)
+    return !Number.isFinite(touched) || now - touched >= graceMs
+  }
 }
 
 /** Provider resolution + ledger targeting for the reaper — injectable so
@@ -204,6 +238,9 @@ export interface SandboxGcProviderHandle {
      *  caller allowed to `force` past a shared-box 409. Optional: providers
      *  without it fall back to the connect path. */
     remove?(sandboxId: string, opts?: { force?: boolean }): Promise<void>
+    /** Release one dead session's provider-side slot without connecting
+     *  (see `SandboxProvider.releaseSession`). */
+    releaseSession?(sandboxId: string, holder: string): Promise<void>
     /** Control-plane enumeration of the provider's boxes: the orphan-box
      *  gc reads it to find boxes no live session holds (see
      *  `sandbox-orphan-gc.ts`). */
@@ -348,6 +385,10 @@ export interface SandboxGcReadDeps {
     | ReadonlyMap<string, SandboxGcSessionLineage>
   resolveProvider: (slug: string) => Promise<SandboxGcProviderHandle | null>
   ledgerPath?: string
+  /** The daemon pass reads its own full registry, so a session it has no row
+   *  for is gone for good (see {@link SandboxGcAbsentSessions}). Leave unset
+   *  for a status source that may omit live rows. */
+  absentSessionsAreDead?: boolean
   /** How long a paused row may sit before the pass reaps it regardless of a
    *  `pause` teardown. A paused box holds provider capacity (RAM snapshot) and
    *  is not attachable by a new spawn once its session is gone, so "kept
@@ -365,6 +406,9 @@ export interface SandboxGcPassSummary {
   /** Rows already paused on the ledger: skipped with no provider call. */
   kept: number
   failures: number
+  /** Dead sessions whose slot on a box that stays in use was released.
+   *  Present only when at least one was. */
+  released?: number
 }
 
 /**
@@ -381,7 +425,11 @@ export async function runSandboxGcPass(
 ): Promise<SandboxGcPassSummary> {
   const statuses = await deps.fetchSessionStatuses()
   const lineage = deps.fetchSessionLineage ? await deps.fetchSessionLineage() : new Map()
-  const candidates = collectGcCandidates(readSandboxLedger(deps.ledgerPath), statuses, lineage)
+  const absent: SandboxGcAbsentSessions = deps.absentSessionsAreDead
+    ? { absentSessionsAreDead: true }
+    : {}
+  const ledger = readSandboxLedger(deps.ledgerPath)
+  const candidates = collectGcCandidates(ledger, statuses, lineage, absent)
   const pausedMaxAgeMs = deps.pausedMaxAgeMs ?? DEFAULT_PAUSED_BOX_MAX_AGE_MS
   const now = Date.now()
   const summary: SandboxGcPassSummary = {
@@ -438,7 +486,61 @@ export async function runSandboxGcPass(
       log(`sandbox gc: failed for ${candidate.entry.sandboxId} — ${res.error}`)
     }
   }
+  const released = await releaseDeadAttachers(
+    ledger,
+    new Set(candidates.map(c => c.entry.sandboxId)),
+    statuses,
+    absent,
+    deps,
+    log,
+  )
+  if (released > 0) summary.released = released
   return summary
+}
+
+/**
+ * Boxes that stay in use (a live session still holds them) can still carry
+ * attachés that died without closing their handle: each one keeps a slot the
+ * provider counts against the box's session cap and a ledger attaché that
+ * blocks the box's eventual teardown. Release those slots (provider first,
+ * ledger only once the provider let go) so a dead session never pins a box.
+ */
+async function releaseDeadAttachers(
+  ledger: readonly SandboxLedgerEntry[],
+  reaped: ReadonlySet<string>,
+  statuses: ReadonlyMap<string, string>,
+  absent: SandboxGcAbsentSessions,
+  deps: SandboxGcReadDeps,
+  log: (line: string) => void,
+): Promise<number> {
+  const isDead = deadSessionPredicate(statuses, absent)
+  let released = 0
+  for (const entry of ledger) {
+    if (reaped.has(entry.sandboxId) || entry.state === "stopped" || entry.state === "gone") continue
+    const dead = (entry.attachedSessions ?? []).filter(id => isDead(entry, id))
+    if (dead.length === 0) continue
+    let handle: SandboxGcProviderHandle | null = null
+    try {
+      handle = await deps.resolveProvider(entry.provider)
+    } catch {
+      continue
+    }
+    for (const sessionId of dead) {
+      try {
+        await handle?.provider.releaseSession?.(entry.sandboxId, sessionId)
+      } catch (err) {
+        log(
+          `sandbox gc: could not release ${sessionId}'s slot on ${entry.sandboxId} — ` +
+            (err instanceof Error ? err.message : String(err)),
+        )
+        continue
+      }
+      recordSessionDetach(entry.sandboxId, sessionId, deps.ledgerPath)
+      released++
+      log(`sandbox gc: released dead session ${sessionId}'s slot on ${entry.sandboxId}`)
+    }
+  }
+  return released
 }
 
 /**
@@ -472,13 +574,17 @@ export function parseSandboxGcInterval(
 export function startSandboxGcTimer(
   deps: SandboxGcReadDeps & {
     intervalMs?: number
+    /** Run one pass this long after start, so sessions a dead daemon left
+     *  attached are released on the first boot instead of up to an interval
+     *  later. Unset: first pass after `intervalMs`, as before. */
+    initialDelayMs?: number
     log?: (line: string) => void
   },
 ): SandboxGcTimer {
   const intervalMs = deps.intervalMs ?? DEFAULT_SANDBOX_GC_INTERVAL_MS
   const log = deps.log ?? (line => console.log(line))
   let running = false
-  const timer = setInterval(() => {
+  const tick = (): void => {
     if (running) return
     running = true
     void (async () => {
@@ -496,9 +602,16 @@ export function startSandboxGcTimer(
         running = false
       }
     })()
-  }, intervalMs)
+  }
+  const timer = setInterval(tick, intervalMs)
   timer.unref?.()
+  const initial =
+    deps.initialDelayMs !== undefined ? setTimeout(tick, Math.max(0, deps.initialDelayMs)) : undefined
+  initial?.unref?.()
   return {
-    stop: () => clearInterval(timer),
+    stop: () => {
+      clearInterval(timer)
+      if (initial) clearTimeout(initial)
+    },
   }
 }

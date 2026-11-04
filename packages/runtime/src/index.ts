@@ -5335,6 +5335,8 @@ export async function createGateway(
   let sandboxGcTimer: { stop(): void } | null = null
   if (sandboxGcIntervalMs > 0) {
     sandboxGcTimer = startSandboxGcTimer({
+      absentSessionsAreDead: true,
+      initialDelayMs: 2 * 60_000,
       fetchSessionStatuses: () => {
         const rows = new Map<string, string>()
         for (const desc of sessions.list({ includeArchived: true })) {
