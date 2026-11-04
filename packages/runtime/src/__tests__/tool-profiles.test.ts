@@ -137,11 +137,15 @@ async function withProfileHelp(profile: ToolProfileName): Promise<{
   callHelp: (name: string) => Promise<string>
   close: () => Promise<void>
 }> {
-  const allow = resolveToolProfileAllowSet([profile])
+  // Go through the same parser the `?profile=` query uses, so this covers
+  // the wire value as well as the resolved allow set.
+  const activeProfiles = parseToolProfileList(profile)
+  expect(activeProfiles).toEqual([profile])
+  const allow = resolveToolProfileAllowSet(activeProfiles)
   expect(allow).toBeDefined()
   const { server } = await createMcpServer({ specs: [], name: `profile-${profile}`, version: "0" })
   const scoped = withToolSubset(server, allow!)
-  registerToolHelpTool(scoped, { activeProfiles: [profile] })
+  registerToolHelpTool(scoped, { activeProfiles })
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await scoped.connect(serverTransport)
@@ -171,6 +175,15 @@ describe("tool_help on narrow profiles", () => {
       } finally {
         await help.close()
       }
+    },
+  )
+
+  it.each(["apps", "admin"] as const)(
+    "resolveToolProfileAllowSet(?profile=%s) keeps tool_help",
+    profile => {
+      const profiles = parseToolProfileList(profile)
+      expect(profiles).toEqual([profile])
+      expect(resolveToolProfileAllowSet(profiles)?.has("tool_help")).toBe(true)
     },
   )
 
