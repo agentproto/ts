@@ -60,7 +60,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto onboard`](./verbs/onboard.md) — alias of the `setup` wizard
 - [`agentproto pack`](./verbs/pack.md) — generate a versioned skill pack from a manifest
 - [`agentproto pair`](./verbs/pair.md) — end-to-end pairing with a daemon over an untrusted rendezvous
-- [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, or auto-resolve with `watch` rules
+- [`agentproto permissions`](./verbs/permissions.md) — held tool-permission requests: list, approve/deny, answer harness questions, or auto-resolve with `watch` rules
 - [`agentproto policy`](./verbs/policy.md) — CLI surface for the daemon's completion-policy engine (shell/judge gates, commit + human-ack)
 - [`agentproto review`](./verbs/review.md) — run, verify and scaffold REVIEW.md reviews (pre-push hook + GitHub Actions shim)
 - [`agentproto provider-preset`](./verbs/presets.md) — list provider gateway definitions + key-env status
@@ -81,7 +81,7 @@ Pick whichever matches what you're trying to do:
 - [`agentproto workflow`](./verbs/workflow.md) — start, inspect, and cancel background workflow runs on the daemon
 - [`agentproto workspace`](./verbs/workspace.md) — register local workspaces; `check` verifies an AIP-34 workspace/v2 tree
 - [`agentproto worktree`](./verbs/worktree.md) — git worktree lifecycle (provision under `worktrees.root`, status-aware `ls`, guarded/salvage removal, `gc`)
-- [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue
+- [`agentproto branch`](./verbs/branch.md) — branch gc: classify local/remote/orphan refs as reclaim/review/hold, reversible apply, review queue, operator approve/restore
 - [`agentproto maintain`](./verbs/maintain.md) — plan/review (and optionally apply) branch + worktree + sandbox checkpoint gc for a repo, via the built-in `repo-maintenance` app's workflow
 - [`agentproto steward`](./verbs/steward.md) — judge idle agent sessions, then close or flag them with a recorded outcome, via the built-in `session-steward` app's workflow (dry run by default)
 

@@ -9,6 +9,8 @@ agentproto sandbox checkpoint-gc [--repo <dir>] [--dry-run] [--apply] [--json]
 agentproto sandbox exec   <provider> [--sandbox-id <id>] [--cwd <dir>] [--timeout <dur>]
                           [--env NAME=value ...] [--env-profile NAME=<profileId> ...]
                           [--file <local>:<boxPath> ...] [--json] -- <command...>
+agentproto sandbox egress-health [--provider <slug>] [--model <id>] [--probe <model>]
+                                 [--adapter <slug>] [--json]
 ```
 
 Browse the daemon's **sandbox ledger** (every box the daemon has booted,
@@ -224,6 +226,39 @@ values) is rejected with an actionable error — upload the script with `--file`
 and run it by path. Provider errors never echo the full command: it is cut to
 ~200 characters with a `…(N chars)` marker.
 
+### `egress-health`
+
+```bash
+agentproto sandbox egress-health                        # the pool + active cooldowns
+agentproto sandbox egress-health --model opencode/big-pickle
+agentproto sandbox egress-health --probe opencode/big-pickle --adapter opencode
+```
+
+Shows the provider's **egress address pool** (slot, public IP, boxes in use)
+and the active per-IP model cooldowns, through the running daemon
+(`GET /sandboxes/egress-health`). A free-tier model cap is enforced per source
+IP, so a slot cooling down for a model is skipped when a box boots with
+`egressIp: auto`. Cooldowns are set by a failed preflight or a usage/rate-limit
+turn on a box, and expire on their own.
+
+`--probe <model>` re-probes on demand: it boots one box per pool slot, runs the
+`model-answers` preflight for `<model>` from each address
+(`POST /sandboxes/egress-health/probe`), and clears or sets that address's
+cooldown. There is no automatic schedule — run it when you suspect the pool.
+Requires a running daemon.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--provider <slug>` | `computer` | Provider whose pool to show (or probe). |
+| `--model <id>` | — | Narrow the cooldown list to one model. Mutually exclusive with `--probe`. |
+| `--probe <model>` | off | Re-probe every slot from each address; on demand only. |
+| `--adapter <slug>` | `opencode` | Adapter the probe runs; only accepted with `--probe`. |
+| `--json` | `false` | Print the daemon's response as JSON instead of the human table. |
+
+Exit codes: `0` healthy; `1` when a probe returns a `ko`/`error` verdict;
+`125` for infrastructure failures (no daemon, rejected request — same as
+`exec`); `2` for usage errors.
+
 ### The always-on model (`--keep-alive`)
 
 `--keep-alive` is for a sandbox meant to stay reachable indefinitely rather
@@ -275,6 +310,9 @@ agentproto sandbox attach box bx_abc123 --config-json '{"port":19000}'
 
 # Run a command in a fresh box with a secret taken from an auth profile
 agentproto sandbox exec e2b --env-profile OPENAI_API_KEY=openai-main -- python run.py
+
+# Check the egress pool and its active per-model cooldowns
+agentproto sandbox egress-health --model opencode/big-pickle
 ```
 
 Non-JSON output:
