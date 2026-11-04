@@ -20,7 +20,8 @@ on:
 #   - build-and-test does NOT cancel (see its concurrency comment — the
 #     parallel reviewer's changeset push must not kill the running build)
 #   - pr-review NEVER cancels — wait for it to finish
-#   - pr-fix / auto-merge queue behind pr-review's group
+#   - pr-fix has its own serialized group and runs after pr-review via needs
+#   - auto-merge runs after pr-review and build-and-test via needs
 
 jobs:
   # On `synchronize` pushes only: skip the ~15min Build+test job when the
@@ -332,6 +333,15 @@ jobs:
 
       - name: Run sync-templates tests
         run: node --test scripts/sync-templates.test.mjs
+
+      # Push sites have one owner: scripts/agentflow/bot-push.mjs (CAS through
+      # @agentproto/git-cas). A new raw push in a workflow bypasses the
+      # head_moved park path, so fail unless the workflow is explicitly
+      # allowlisted (release.yml, update-deps.yml in this PR).
+      - name: Check for direct push sites
+        run: |
+          node --test scripts/check-bot-push.test.mjs
+          node scripts/check-bot-push.mjs
 
       # Guards refresh-template.mjs's publish/proof flow — the dev --latest
       # and stable --pin channels (pins, guards, recorded proofs) ship
@@ -835,6 +845,8 @@ jobs:
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}-review
       cancel-in-progress: false
+    outputs:
+      final_head: ${{ steps.finalhead.outputs.sha }}
     permissions:
       contents: write       # push generated changeset back to the branch
       pull-requests: write  # post review + comments
@@ -869,6 +881,10 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
+
+      - name: Build git-cas
+        if: steps.prstate.outputs.skip != 'true'
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
 
       # Capture the PR head SHA the reviewer will actually SEE, before
       # anything can move HEAD (the sandboxed reviewer pushes its changeset to
@@ -2073,6 +2089,7 @@ jobs:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           bash scripts/configure-bot-git.sh
           # Only a run that reached `done` can reach this step (see the `if:`):
@@ -2081,6 +2098,7 @@ jobs:
           git add -A -- . ':(exclude).changeset/**'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "cas_outcome=noop" >> "$GITHUB_OUTPUT"
             echo "No supervised fixes to commit."
             exit 0
           fi
@@ -2090,8 +2108,37 @@ jobs:
           git -c user.name="agentproto-bot" \
               -c user.email="agentproto-bot@users.noreply.github.com" \
               commit -m "chore: auto-fix from review (iter $NEXT)"
-          git push
           echo "committed=true" >> "$GITHUB_OUTPUT"
+          node scripts/agentflow/bot-push.mjs push \
+            --branch "$HEAD_REF" \
+            --expect "${{ steps.headsha.outputs.sha }}" \
+            --pr "$PR_NUMBER" \
+            --step "the supervised fix" \
+            --patch-dir .agentflow-park
+
+      - name: Upload parked supervised fix
+        if: steps.fixes.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkfixes
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fixes.outputs.cas_artifact_name }}
+          path: ${{ steps.fixes.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked supervised fix
+        if: steps.fixes.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.fixes.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkfixes.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
 
       - name: Commit changeset (if written by reviewer)
         # Only push the changeset once THIS run's build is success or
@@ -2100,7 +2147,8 @@ jobs:
         if: |
           steps.prstate.outputs.skip != 'true' &&
           steps.bypass.outputs.skip != 'true' &&
-          steps.buildwait.outputs.build_ok == 'true'
+          steps.buildwait.outputs.build_ok == 'true' &&
+          steps.fixes.outputs.cas_outcome != 'head_moved'
         id: changeset
         # The sandboxed reviewer never pushes (it hands its changeset over as a
         # PR comment, materialized below). This step's own outcome is still
@@ -2112,6 +2160,7 @@ jobs:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
           # Attribute the commit to the App bot (mentionable identity) when an
           # App token was minted; fall back to github-actions[bot] otherwise.
@@ -2143,6 +2192,7 @@ jobs:
           git add '.changeset/*.md'
           if git diff --cached --quiet; then
             echo "committed=false" >> "$GITHUB_OUTPUT"
+            echo "cas_outcome=noop" >> "$GITHUB_OUTPUT"
             echo "No changeset changes to commit."
           else
             # Explicit statuses below already cover "Agentic review" and
@@ -2162,9 +2212,56 @@ jobs:
             git -c user.name="agentproto-bot" \
                 -c user.email="agentproto-bot@users.noreply.github.com" \
                 commit -m "chore: agentic reviewer — changeset"
-            git push
             echo "committed=true" >> "$GITHUB_OUTPUT"
+            EXPECTED="${{ steps.fixes.outputs.cas_to }}"
+            if [ "${{ steps.fixes.outputs.cas_outcome }}" != "pushed" ] || [ -z "$EXPECTED" ]; then
+              EXPECTED="${{ steps.headsha.outputs.sha }}"
+            fi
+            node scripts/agentflow/bot-push.mjs push \
+              --branch "$HEAD_REF" \
+              --expect "$EXPECTED" \
+              --pr "$PR_NUMBER" \
+              --step "the changeset" \
+              --patch-dir .agentflow-park
           fi
+
+      - name: Upload parked changeset
+        if: steps.changeset.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkchangeset
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.changeset.outputs.cas_artifact_name }}
+          path: ${{ steps.changeset.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked changeset
+        if: steps.changeset.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.changeset.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkchangeset.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
+
+      - name: Resolve final head
+        id: finalhead
+        if: steps.prstate.outputs.skip != 'true'
+        run: |
+          SHA="${{ steps.headsha.outputs.sha }}"
+          if [ "${{ steps.fixes.outputs.cas_outcome }}" = "pushed" ] && [ -n "${{ steps.fixes.outputs.cas_to }}" ]; then
+            SHA="${{ steps.fixes.outputs.cas_to }}"
+          fi
+          if [ "${{ steps.changeset.outputs.cas_outcome }}" = "pushed" ] && [ -n "${{ steps.changeset.outputs.cas_to }}" ]; then
+            SHA="${{ steps.changeset.outputs.cas_to }}"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "final_head=$SHA" >> "$GITHUB_STEP_SUMMARY"
 
       # The supervised run's stages must be VISIBLE: a check run with a real
       # title + summary listing every review/fix step and its verdict (the
@@ -2184,11 +2281,11 @@ jobs:
           SUMMARY: ${{ steps.reviewer-agentproto.outputs.summary }}
           VERDICT: ${{ steps.reviewer-agentproto.outputs.summary-verdict }}
         run: |
-          # Target the REMOTE head: local HEAD may have advanced by a commit
-          # whose push failed, and a check run on a SHA that exists nowhere on
-          # the remote fails silently.
-          SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid -q .headRefOid 2>/dev/null || true)
-          [ -n "$SHA" ] || SHA=$(git rev-parse HEAD)
+          # Target final_head: the reviewed commit plus only this job's own
+          # successful CAS pushes. A live-head read could be the mover's
+          # unreviewed commit, and a local read could be an unpushed commit.
+          SHA="${{ steps.finalhead.outputs.sha }}"
+          [ -n "$SHA" ] || SHA="${{ steps.headsha.outputs.sha }}"
           case "$VERDICT" in
             approved) CONCLUSION=success ;;
             changes_requested|failed) CONCLUSION=failure ;;
@@ -2257,8 +2354,11 @@ jobs:
           # The commit the reviewer actually reviewed (captured before this
           # job's own "Commit changeset" step could move the branch head).
           REVIEWED_SHA: ${{ steps.headsha.outputs.sha }}
+          FINAL_HEAD: ${{ steps.finalhead.outputs.sha }}
           CHANGESET_COMMITTED: ${{ steps.changeset.outputs.committed }}
           FIXES_COMMITTED: ${{ steps.fixes.outputs.committed }}
+          CHANGESET_CAS_OUTCOME: ${{ steps.changeset.outputs.cas_outcome }}
+          FIXES_CAS_OUTCOME: ${{ steps.fixes.outputs.cas_outcome }}
         run: |
           # Re-resolve the head LIVE, same reasoning as the postcheck steps
           # above — a review's commit_id is stamped against the PR's head at
@@ -2294,6 +2394,13 @@ jobs:
           fi
           echo "Reviews posted against live head $SHA: $COUNT"
           REVIEWED="$SHA"
+          EXTERNAL_MOVE=false
+          if [ "$FIXES_CAS_OUTCOME" = "head_moved" ] || [ "$CHANGESET_CAS_OUTCOME" = "head_moved" ]; then
+            EXTERNAL_MOVE=true
+          fi
+          if [ -n "$FINAL_HEAD" ] && [ "$SHA" != "$FINAL_HEAD" ]; then
+            EXTERNAL_MOVE=true
+          fi
           if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
             && { [ "$CHANGESET_COMMITTED" = "true" ] || [ "$FIXES_COMMITTED" = "true" ]; } \
             && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$SHA" ]; then
@@ -2308,9 +2415,21 @@ jobs:
             echo "Head moved by this job's changeset commit — reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
             REVIEWED="$REVIEWED_SHA"
           fi
+          if ! [ "${COUNT:-0}" -gt 0 ] 2>/dev/null \
+            && [ "$EXTERNAL_MOVE" = "true" ] \
+            && [ -n "$REVIEWED_SHA" ] && [ "$REVIEWED_SHA" != "$REVIEWED" ]; then
+            COUNT=$(count_reviews "$REVIEWED_SHA" || echo "")
+            echo "Head moved outside this job - reviews posted against the reviewed commit $REVIEWED_SHA: ${COUNT:-?}"
+            REVIEWED="$REVIEWED_SHA"
+          fi
+          echo "external_move=$EXTERNAL_MOVE" >> "$GITHUB_OUTPUT"
           if [ "${COUNT:-0}" -gt 0 ] 2>/dev/null; then
             echo "posted=true" >> "$GITHUB_OUTPUT"
             echo "reviewed_sha=$REVIEWED" >> "$GITHUB_OUTPUT"
+          elif [ "$EXTERNAL_MOVE" = "true" ]; then
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Head moved outside this job and no review row was found on the reviewed commit. The mover's own run owns verification; the gate goes neutral, not red."
+            exit 0
           else
             echo "posted=false" >> "$GITHUB_OUTPUT"
             echo "::error::No review found for the reviewed commit $SHA — the reviewer reported success but nothing landed on the PR."
@@ -2398,17 +2517,22 @@ jobs:
           #   CHANGES_REQUESTED + blocking → failure
           #   else                → success
           if [ "$BYPASS" = "true" ]; then
-            echo "state=success" >> "$GITHUB_OUTPUT"
+            state=success
           elif [ "$REVIEWER_OUTCOME" != "success" ]; then
             echo "::error::Agentic reviewer did not post a review (outcome=$REVIEWER_OUTCOME)."
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            state=failure
           elif [ "$VERIFY_POSTED" != "true" ]; then
-            echo "::error::Reviewer reported success but no review exists for the reviewed SHA (verify.posted=$VERIFY_POSTED) — refusing a false green."
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            if [ "$VERIFY_MOVED" = "true" ]; then
+              state=neutral
+              echo "::warning::Reviewer verification was deferred: the head moved outside this job. The mover's run owns the review of the new head."
+            else
+              echo "::error::Reviewer reported success but no review exists for the reviewed SHA (verify.posted=$VERIFY_POSTED) - refusing a false green."
+              state=failure
+            fi
           elif [ "$BLOCKING" = "true" ] && [ "$DECISION" = "CHANGES_REQUESTED" ]; then
-            echo "state=failure" >> "$GITHUB_OUTPUT"
+            state=failure
           else
-            echo "state=success" >> "$GITHUB_OUTPUT"
+            state=success
           fi
 
           # A red build must not green-light a merge. The review's opinion
@@ -2422,7 +2546,24 @@ jobs:
           # itself failed stays failure: neutral is reserved for the
           # build-broke-it case, never a CHANGES_REQUESTED review.
           if [ "$BUILD_OK" = "false" ] && [ "$state" = "success" ]; then
-            echo "state=neutral" >> "$GITHUB_OUTPUT"
+            state=neutral
+          fi
+
+          # A CAS push outcome must be visible in the gate. rejected_other is a
+          # real failure; head_moved means the work was parked and the mover's
+          # push owns the next review, so it neutralizes a green gate only.
+          CAS_ACTUAL=""
+          if [ "$FIXES_CAS_OUTCOME" = "rejected_other" ] || [ "$CHANGESET_CAS_OUTCOME" = "rejected_other" ]; then
+            state=failure
+          elif [ "$FIXES_CAS_OUTCOME" = "head_moved" ] || [ "$CHANGESET_CAS_OUTCOME" = "head_moved" ]; then
+            CAS_ACTUAL="${FIXES_CAS_ACTUAL:-$CHANGESET_CAS_ACTUAL}"
+            if [ "$state" = "success" ]; then
+              state=neutral
+            fi
+          fi
+          echo "state=$state" >> "$GITHUB_OUTPUT"
+          if [ -n "$CAS_ACTUAL" ]; then
+            echo "superseded=${CAS_ACTUAL:0:7}" >> "$GITHUB_OUTPUT"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2430,13 +2571,23 @@ jobs:
           BYPASS: ${{ steps.bypass.outputs.skip }}
           REVIEWER_OUTCOME: ${{ steps.reviewer.outputs.outcome }}
           VERIFY_POSTED: ${{ steps.verify.outputs.posted }}
+          VERIFY_MOVED: ${{ steps.verify.outputs.external_move }}
           BUILD_OK: ${{ steps.buildwait.outputs.build_ok }}
+          FIXES_CAS_OUTCOME: ${{ steps.fixes.outputs.cas_outcome }}
+          FIXES_CAS_ACTUAL: ${{ steps.fixes.outputs.cas_actual }}
+          CHANGESET_CAS_OUTCOME: ${{ steps.changeset.outputs.cas_outcome }}
+          CHANGESET_CAS_ACTUAL: ${{ steps.changeset.outputs.cas_actual }}
 
       - name: Post explicit statuses on PR HEAD
         if: steps.prstate.outputs.skip != 'true'
         run: |
-          SHA=$(git rev-parse HEAD)
+          SHA="${{ steps.finalhead.outputs.sha }}"
+          [ -n "$SHA" ] || SHA="${{ steps.headsha.outputs.sha }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          DESCRIPTION="decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}"
+          if [ -n "${{ steps.gate.outputs.superseded }}" ]; then
+            DESCRIPTION="superseded by ${{ steps.gate.outputs.superseded }}"
+          fi
           # A transient GitHub 5xx on either POST used to fail the step outright,
           # which reds an already-APPROVED review and — worse — leaves the PR
           # half-statused (first context posted, second never), so the merge gate
@@ -2464,7 +2615,7 @@ jobs:
           rc=0
           post_status "Agentic review" \
             "${{ steps.gate.outputs.state }}" \
-            "decision=${{ steps.gate.outputs.decision }} blocking=${{ steps.gate.outputs.blocking }}" || rc=1
+            "$DESCRIPTION" || rc=1
           # Mirror "Changeset present?" so the merge gate stays green after a
           # [skip ci] changeset commit (which suppresses the changeset-check job).
           post_status "Changeset present?" "success" "written by agentic reviewer" || rc=1
@@ -2498,6 +2649,9 @@ jobs:
       always() &&
       github.event_name == 'pull_request' &&
       !startsWith(github.event.pull_request.title, 'chore(release):')
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-fix
+      cancel-in-progress: false
     permissions:
       contents: write        # commit + push fixes back to the branch
       pull-requests: write   # post escalation comment when loop is exhausted
@@ -2523,6 +2677,33 @@ jobs:
           private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
           fallback-token: ${{ secrets.GITHUB_TOKEN }}
           pnpm: 'true'
+
+      - name: Build git-cas
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        run: pnpm install --frozen-lockfile --filter @agentproto/git-cas... && pnpm --filter @agentproto/git-cas build
+
+      - name: Pre-check reviewed head
+        id: precheck
+        if: steps.decision.outputs.value == 'CHANGES_REQUESTED'
+        env:
+          EXPECTED: ${{ needs.pr-review.outputs.final_head }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ -z "$EXPECTED" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::pr-review produced no final_head (it was skipped); pr-fix does no work."
+            exit 0
+          fi
+          ACTUAL=$(git ls-remote origin "refs/heads/$HEAD_REF" | cut -f1)
+          echo "actual=$ACTUAL" >> "$GITHUB_OUTPUT"
+          if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::head moved before the fix (expected $EXPECTED, found $ACTUAL); no fixer turn."
+            exit 0
+          fi
+          echo "moved=false" >> "$GITHUB_OUTPUT"
+          git fetch origin "$EXPECTED"
+          git checkout --detach "$EXPECTED"
 
       # Bound the loop exactly as scripts/apply-review.mjs used to: count the
       # auto-fix commits already on the branch and, at the budget, escalate to
@@ -2558,7 +2739,8 @@ jobs:
         id: fixcfg
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
           KEY_ZEN: ${{ secrets.OPENCODE_API_KEY_WS02 || secrets.OPENCODE_API_KEY_WS03 || secrets.OPENCODE_API_KEY }}
         run: |
@@ -2579,7 +2761,8 @@ jobs:
       - name: Build the agentproto CLI + OpenCode adapter for the fixer
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
           TURBO_API: https://turbo-cache.agentik.net
           TURBO_TEAM: agentproto-ts
@@ -2593,7 +2776,8 @@ jobs:
         id: fixer-lane
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         uses: ./.github/actions/agentproto-run
         env:
           # The daemon spawns the adapter with this env inherited, so the host
@@ -2619,12 +2803,17 @@ jobs:
           timeout-minutes: 45
 
       - name: Commit and push fixes
+        id: fixpush
         if: |
           steps.decision.outputs.value == 'CHANGES_REQUESTED' &&
-          steps.budget.outputs.exhausted != 'true'
+          steps.budget.outputs.exhausted != 'true' &&
+          steps.precheck.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ steps.setup.outputs.token }}
           BOT_SLUG: ${{ steps.setup.outputs.app-slug }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+          EXPECTED: ${{ needs.pr-review.outputs.final_head }}
         run: |
           bash scripts/configure-bot-git.sh
           git add -A
@@ -2635,8 +2824,37 @@ jobs:
               | wc -l | tr -d ' ')
             NEXT=$((ITER + 1))
             git commit -m "chore: auto-fix from review (iter $NEXT)"
-            git push
+            node scripts/agentflow/bot-push.mjs push \
+              --branch "$HEAD_REF" \
+              --expect "$EXPECTED" \
+              --pr "$PR_NUMBER" \
+              --step "the auto-fix" \
+              --patch-dir .agentflow-park
           fi
+
+      - name: Upload parked auto-fix
+        if: steps.fixpush.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        id: parkfix
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.fixpush.outputs.cas_artifact_name }}
+          path: ${{ steps.fixpush.outputs.cas_patch_path }}
+          retention-days: 7
+
+      - name: Comment parked auto-fix
+        if: steps.fixpush.outputs.cas_outcome == 'head_moved'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.setup.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          node scripts/agentflow/bot-push.mjs comment \
+            --meta "${{ steps.fixpush.outputs.cas_park_meta }}" \
+            --artifact-url "${{ steps.parkfix.outputs.artifact-url }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER"
 
   # On PRs: once the agentic review APPROVES, optionally enable GitHub-native
   # auto-merge so the PR merges itself when all required checks pass. This is the
