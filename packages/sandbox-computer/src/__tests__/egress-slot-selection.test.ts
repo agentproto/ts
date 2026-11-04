@@ -121,3 +121,122 @@ describe("computerSandboxProvider egressIp auto with an egress health view", () 
     ])
   })
 })
+
+// On 2026-11-04 host A (a1..a6) was full and host B (b1..b6) was free. The
+// client named a2, the fleet treated it as a host pin and refused for
+// capacity, and the boot slept the whole fleet-capacity window on a2.
+describe("computerSandboxProvider egressIp auto when a slot's host is full", () => {
+  let controller: FakeController
+
+  const hosted = (id: string, hostId: string | undefined, n: number) => ({
+    id,
+    sourceIp: `10.0.0.${n}`,
+    publicIp: `203.0.113.${n}`,
+    computers: 0,
+    ...(hostId !== undefined ? { hostId } : {}),
+  })
+  const POOL_AB = [
+    hosted("a1", "host-a", 1),
+    hosted("a2", "host-a", 2),
+    hosted("a3", "host-a", 3),
+    hosted("b1", "host-b", 11),
+    hosted("b2", "host-b", 12),
+  ]
+  const FULL_A = { a1: "memory", a2: "memory", a3: "memory" }
+
+  beforeEach(async () => {
+    controller = new FakeController({ token: SERVICE_TOKEN })
+    await controller.start()
+    controller.options.egressPool = POOL_AB
+  })
+  afterEach(async () => {
+    await controller.stop()
+  })
+
+  it("moves to a slot on another host instead of waiting on the full one", async () => {
+    controller.options.capacityRefusedSlots = FULL_A
+    const lines: string[] = []
+    const startedAt = Date.now()
+
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { fleetCapacityRetryMs: 60_000 }), {
+      env: {},
+      egressHealth: view({}),
+      log: line => lines.push(line),
+    })
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000)
+    expect(controller.createEgressAttempts).toEqual(["a1", "b1"])
+    expect(booted.egressIp).toEqual({ id: "b1", publicIp: "203.0.113.11" })
+    expect(lines.filter(line => line.includes("waiting"))).toEqual([])
+    expect(lines.some(line => line.includes("egress slot a1 refused") && line.includes("memory") && line.includes("b1"))).toBe(true)
+    expect(lines.some(line => line.includes("skipping a2, a3 on the same host (host-a)"))).toBe(true)
+    await booted.stop()
+  })
+
+  it("treats the legacy egress-slot-unavailable reason the same way", async () => {
+    controller.options.capacityRefusedSlots = { a1: "egress-slot-unavailable" }
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { fleetCapacityRetryMs: 60_000 }), {
+      env: {},
+      egressHealth: view({}),
+    })
+    expect(controller.createEgressAttempts).toEqual(["a1", "b1"])
+    await booted.stop()
+  })
+
+  it("sends plain auto once every slot was refused for capacity", async () => {
+    controller.options.capacityRefusedSlots = { ...FULL_A, b1: "memory", b2: "memory" }
+    const lines: string[] = []
+
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { fleetCapacityRetryMs: 60_000 }), {
+      env: {},
+      egressHealth: view({}),
+      log: line => lines.push(line),
+    })
+
+    expect(controller.createEgressAttempts).toEqual(["a1", "b1", "auto"])
+    expect(controller.createBodies).toHaveLength(1)
+    expect(controller.createBodies[0]).toMatchObject({ egressIp: "auto" })
+    expect(lines.some(line => line.includes("sending auto"))).toBe(true)
+    expect(lines.filter(line => line.includes("waiting"))).toEqual([])
+    await booted.stop()
+  })
+
+  it("advances to the next slot when the pool does not say which host owns a slot", async () => {
+    controller.options.egressPool = POOL_AB.map(({ hostId: _hostId, ...slot }) => slot)
+    controller.options.capacityRefusedSlots = FULL_A
+    const booted = await computerSandboxProvider.boot(spec(controller.url, { fleetCapacityRetryMs: 60_000 }), {
+      env: {},
+      egressHealth: view({}),
+    })
+    expect(controller.createEgressAttempts).toEqual(["a1", "a2", "a3", "b1"])
+    await booted.stop()
+  })
+
+  it("waits for the fleet once auto is refused too", async () => {
+    controller.options.capacityRefusedSlots = { ...FULL_A, b1: "memory", b2: "memory", auto: "memory" }
+    const err = await computerSandboxProvider
+      .boot(spec(controller.url, { fleetCapacityWaitMs: 100, fleetCapacityRetryMs: 20 }), {
+        env: {},
+        egressHealth: view({}),
+      })
+      .catch((e: unknown) => e)
+
+    expect(err).toMatchObject({ code: "sandbox_fleet_capacity" })
+    expect(controller.createEgressAttempts.slice(0, 3)).toEqual(["a1", "b1", "auto"])
+    expect(new Set(controller.createEgressAttempts.slice(2))).toEqual(new Set(["auto"]))
+    expect(controller.createEgressAttempts.length).toBeGreaterThan(3)
+  })
+
+  it("does not skip slots for a refusal that no other host can relieve", async () => {
+    controller.options.capacityRefusedSlots = { a1: "no-active-host" }
+    const err = await computerSandboxProvider
+      .boot(spec(controller.url, { fleetCapacityWaitMs: 100, fleetCapacityRetryMs: 20 }), {
+        env: {},
+        egressHealth: view({}),
+      })
+      .catch((e: unknown) => e)
+
+    expect(err).toMatchObject({ code: "sandbox_fleet_capacity" })
+    expect(new Set(controller.createEgressAttempts)).toEqual(new Set(["a1"]))
+  })
+})

@@ -84,12 +84,15 @@ export class ComputerApiError extends Error {
   readonly budget: number | undefined
   /** The configured limit for a count-cap refusal, when the controller sent it. */
   readonly cap: number | undefined
+  /** Why a `fleet-capacity` refusal happened (`memory`, `cpus`,
+   *  `egress-slot-unavailable`, ...), when the fleet sent one. */
+  readonly reason: string | undefined
 
   constructor(
     status: number,
     message: string,
     code?: string,
-    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number; cap?: number } = {},
+    details: { retryAfterMs?: number; resource?: string; requested?: number; available?: number; budget?: number; cap?: number; reason?: string } = {},
   ) {
     super(message)
     this.name = "ComputerApiError"
@@ -101,6 +104,7 @@ export class ComputerApiError extends Error {
     this.available = details.available
     this.budget = details.budget
     this.cap = details.cap
+    this.reason = details.reason
   }
 }
 
@@ -232,6 +236,7 @@ export class ComputerControllerClient {
           available: numberField("available"),
           budget: numberField("budget") ?? numberField("total"),
           cap: numberField("cap"),
+          reason: typeof fields?.reason === "string" ? redactSecret(fields.reason, this.secrets()) : undefined,
         },
       )
     }
