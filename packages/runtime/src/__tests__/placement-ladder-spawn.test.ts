@@ -215,6 +215,66 @@ describe("agent_start placement ladder", () => {
     }
   })
 
+  describe("capacity wait", () => {
+    // A provider that honours the boot opt like the computer provider does:
+    // given a ladder budget it refuses a full fleet at once; without one it
+    // waits for the fleet, which the test never lets finish.
+    const fullFleet = (budgets: Array<number | undefined>, release: Promise<void>) => async (_spec: SandboxSpec, opts?: { capacityWaitBudgetMs?: number }) => {
+      budgets.push(opts?.capacityWaitBudgetMs)
+      if (opts?.capacityWaitBudgetMs === undefined) await release
+      throw coded("sandbox_fleet_capacity", "computer sandbox: fleet capacity exhausted (reason: no-active-host)")
+    }
+
+    it("a full rung 1 hands the spawn to rung 2 at once, with the refusal reason in the ladder log", async () => {
+      const budgets: Array<number | undefined> = []
+      let release: () => void = () => {}
+      const held = new Promise<void>(resolve => {
+        release = resolve
+      })
+      alphaBoot.mockImplementation(fullFleet(budgets, held) as never)
+      try {
+        const res = await spawnAgentSession(makeDeps(), {
+          adapter: "fake-cli",
+          placement: { ladder: [{ sandbox: "alpha" }, { sandbox: "beta" }] },
+        })
+        expect(res.ok).toBe(true)
+        if (!res.ok) return
+        expect(budgets).toEqual([300_000])
+        expect(res.descriptor.sandboxProvider).toBe("beta")
+        expect(res.descriptor.placement?.attempts[0]).toMatchObject({ rung: 0, outcome: "failed", errorClass: "sandbox_fleet_capacity" })
+        const warned = vi.mocked(console.warn).mock.calls.map(c => String(c[0]))
+        expect(warned.some(w => w.includes("[placement] rung 1/2") && w.includes("[sandbox_fleet_capacity]") && w.includes("no-active-host"))).toBe(true)
+      } finally {
+        release()
+      }
+    })
+
+    it("a rung's own agentStartTimeoutMs is the capacity budget", async () => {
+      const budgets: Array<number | undefined> = []
+      alphaBoot.mockImplementation(fullFleet(budgets, Promise.resolve()) as never)
+      const res = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        placement: { ladder: [{ sandbox: "alpha", agentStartTimeoutMs: 90_000 }, { sandbox: "beta" }] },
+      })
+      expect(res.ok).toBe(true)
+      expect(budgets).toEqual([90_000])
+    })
+
+    it("the last rung and a ladder-less spawn keep the provider's own wait", async () => {
+      const budgets: Array<number | undefined> = []
+      betaBoot.mockImplementation(fullFleet(budgets, Promise.resolve()) as never)
+      alphaFails = () => coded("sandbox_boot_failed", "alpha down")
+      const ladder = await spawnAgentSession(makeDeps(), {
+        adapter: "fake-cli",
+        placement: { ladder: [{ sandbox: "alpha" }, { sandbox: "beta" }] },
+      })
+      expect(ladder.ok).toBe(false)
+      const plain = await spawnAgentSession(makeDeps(), { adapter: "fake-cli", sandbox: "beta" })
+      expect(plain.ok).toBe(false)
+      expect(budgets).toEqual([undefined, undefined])
+    })
+  })
+
   it("rejects an agentStartTimeoutMs above the harness client's own ceiling", async () => {
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "fake-cli",

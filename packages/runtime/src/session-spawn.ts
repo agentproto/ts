@@ -329,6 +329,7 @@ import {
 } from "./sandbox-preflight.js"
 import { egressHealthLedger, isEgressHealthErrorClass } from "./egress-health.js"
 import {
+  MAX_AGENT_START_TIMEOUT_MS,
   bootErrorClass,
   formatPlacementAttempts,
   placementInputSchema,
@@ -2099,6 +2100,12 @@ export interface SpawnAgentSessionInput {
    *  `sandbox_proxy_failed` (`details.errorClass: "sandbox_agent_start_timeout"`)
    *  and tears the box down. Only meaningful with `sandbox`. */
   agentStartTimeoutMs?: number
+  /** INTERNAL (the placement ladder sets it, never an `agent_start` argument):
+   *  this spawn is a non-final ladder rung, so a provider that would wait out a
+   *  capacity refusal gives up at once (no retry hint) or waits once, at most
+   *  this many ms, and lets the ladder move on. Unset keeps the provider's own
+   *  wait: a plain `sandbox` spawn and the last rung. */
+  ladderCapacityWaitBudgetMs?: number
   /** Ordered placement ladder: rung 1 is tried first and the spawn moves down
    *  the list when a rung cannot place the box (failed preflight, capacity or
    *  overflow refusal, egress pool exhausted, any boot failure before the
@@ -2514,7 +2521,7 @@ async function spawnWithPlacementLadder(
   if (!parsed.success) {
     return invalid(`agent_start: invalid placement: ${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}`)
   }
-  const { placement: _stripped, ...inherited } = input
+  const { placement: _stripped, ladderCapacityWaitBudgetMs: _ignored, ...inherited } = input
   const ladder = resolveLadder(parsed.data.ladder, {
     ...(inherited.model !== undefined ? { model: inherited.model } : {}),
     ...(inherited.access !== undefined ? { access: inherited.access } : {}),
@@ -2528,12 +2535,18 @@ async function spawnWithPlacementLadder(
   const walk = await walkPlacementLadder(
     ladder,
     async (rung, index) => {
-      const result = await spawnAgentSessionOnce(deps, { ...inherited, ...rungOverrides(rung) })
+      const hasNextRung = index < ladder.length - 1
+      const result = await spawnAgentSessionOnce(deps, {
+        ...inherited,
+        ...rungOverrides(rung),
+        ...(hasNextRung ? { ladderCapacityWaitBudgetMs: rung.agentStartTimeoutMs ?? MAX_AGENT_START_TIMEOUT_MS } : {}),
+      })
       if (result.ok) return { ok: true, value: result }
       if (ladder.length > 1) {
         console.warn(
           `[placement] rung ${index + 1}/${ladder.length} (${rungProviderLabel(rung)}) cannot place the box: ` +
-            `${result.code}${typeof result.details?.errorClass === "string" ? ` [${result.details.errorClass}]` : ""}`,
+            `${result.code}${typeof result.details?.errorClass === "string" ? ` [${result.details.errorClass}]` : ""}: ` +
+            result.message,
         )
       }
       return { ok: false, code: result.code, message: result.message, ...(result.details ? { details: result.details } : {}) }
@@ -6383,6 +6396,9 @@ async function spawnAgentSessionOnce(
         ...(input.appServe ? { appServe: input.appServe } : {}),
         ...(input.preflight && input.preflight.length > 0 ? { preflight: input.preflight } : {}),
         ...(input.agentStartTimeoutMs !== undefined ? { agentStartTimeoutMs: input.agentStartTimeoutMs } : {}),
+        ...(input.ladderCapacityWaitBudgetMs !== undefined
+          ? { capacityWaitBudgetMs: input.ladderCapacityWaitBudgetMs }
+          : {}),
         ...(sandboxTarWorkspace
           ? {
               tarWorkspace: sandboxTarWorkspace,
@@ -7523,6 +7539,9 @@ export async function bootSandboxAgentSession(opts: {
   /** Budget, ms, for the box's own `agent_start`; see
    *  `SpawnAgentSessionInput.agentStartTimeoutMs`. */
   agentStartTimeoutMs?: number
+  /** Capacity-wait ceiling for a non-final ladder rung; see
+   *  `SpawnAgentSessionInput.ladderCapacityWaitBudgetMs`. */
+  capacityWaitBudgetMs?: number
   /** Probe registry; defaults to the daemon-wide one. Test seam. */
   preflightRegistry?: PreflightRegistry
   /** Per-probe budget override, ms. Test seam. */
@@ -7793,6 +7812,7 @@ export async function bootSandboxAgentSession(opts: {
       // An `egressIp: "auto"` computer box picks a pool slot whose address is
       // not cooling down for this model; other providers ignore it.
       ...(opts.model ? { egressHealth: egressHealthLedger.view(opts.model) } : {}),
+      ...(opts.capacityWaitBudgetMs !== undefined ? { capacityWaitBudgetMs: opts.capacityWaitBudgetMs } : {}),
     })
   } catch (err) {
     // Every pool address is cooling down for this model: nothing was booted,

@@ -307,6 +307,14 @@ export interface SandboxBootOpts {
    * when none is left. Providers without an address pool ignore it.
    */
   egressHealth?: SandboxEgressHealthView
+  /**
+   * Set when the caller has another placement to fall back to (a non-final
+   * placement-ladder rung). A provider that would otherwise wait out a
+   * capacity refusal (a fleet unshelving a host) gives up at once when the
+   * refusal carries no retry hint, and waits at most once, no longer than this
+   * many ms, when it does. Omitted keeps the provider's own wait.
+   */
+  capacityWaitBudgetMs?: number
 }
 
 /** A cooldown on one egress address for the session's model. */
@@ -649,6 +657,8 @@ export interface CreateSandboxAgentSessionHostOpts {
   signal?: AbortSignal
   /** Egress health forwarded to the provider; see `SandboxBootOpts.egressHealth`. */
   egressHealth?: SandboxEgressHealthView
+  /** Capacity-wait ceiling forwarded to the provider; see `SandboxBootOpts.capacityWaitBudgetMs`. */
+  capacityWaitBudgetMs?: number
 }
 
 export type SandboxAgentSessionHost = DaemonAgentSessionHost & {
@@ -742,6 +752,7 @@ export async function createSandboxAgentSessionHost(
       ...(opts.log ? { log: opts.log } : {}),
       ...(opts.signal ? { signal: opts.signal } : {}),
       ...(opts.egressHealth ? { egressHealth: opts.egressHealth } : {}),
+      ...(opts.capacityWaitBudgetMs !== undefined ? { capacityWaitBudgetMs: opts.capacityWaitBudgetMs } : {}),
     })
   }
   // A box whose public edge has NO provider-side auth of its own (InstaBox)
