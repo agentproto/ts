@@ -1,10 +1,12 @@
 /**
  * `agentproto pair <subcommand>` — E2E daemon pairing (design: DESIGN §6).
  *
- *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr [--pair-page <url|template>]] [--host]
+ *   offer  [--ttl 10m] [--rendezvous wss://…] [--no-qr | --qr | --url [--pair-page <url|template>]] [--host]
  *          daemon side: mint an offer URL (+ QR) and start listening on the
  *          rendezvous. `--qr` renders the phone link instead: the web pair page
  *          with the offer in its fragment (`https://<fp>.agentproto.cloud/pair#…`).
+ *          `--url` prints that same browser link on its own, with no QR, for a
+ *          desktop browser. `--qr`, `--url` and `--no-qr` are mutually exclusive.
  *          `--host` mints a HOST-scoped offer: the accepting side may register
  *          this daemon as a driveable device (`agentproto devices add`), not
  *          just remote-control it.
@@ -50,7 +52,7 @@ import { loadConfig } from "@agentproto/runtime/config"
 const USAGE = `agentproto pair — end-to-end daemon pairing over an untrusted rendezvous
 
 Usage:
-  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
+  agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr | --url [--pair-page <url|template>]] [--json] [--host]
   agentproto pair accept "<offer-url>" [--name <label>]
   agentproto pair ls     [--json]
   agentproto pair pending [--json]
@@ -65,7 +67,9 @@ Usage:
           public keys (MITM-proof) and a short-lived secret. --qr shows a QR
           for a phone browser instead: ${DEFAULT_PAIR_PAGE}#<offer>
           ({fp} = the daemon fingerprint: one browser origin per daemon; the
-          offer rides in the fragment, never sent to a server).
+          offer rides in the fragment, never sent to a server). --url prints
+          that same browser link with no QR, for a desktop browser. --qr, --url
+          and --no-qr are mutually exclusive.
           --pair-page (or config pairing.pairPage) picks another page: a
           template with {fp} in the host, or a plain URL (one shared origin).
   accept  Client side: verify the daemon's identity from the URL and persist the
@@ -132,23 +136,34 @@ async function runOffer(args: readonly string[]): Promise<number> {
       rendezvous: { type: "string" },
       "no-qr": { type: "boolean" },
       qr: { type: "boolean" },
+      url: { type: "boolean" },
       "pair-page": { type: "string" },
       json: { type: "boolean" },
       host: { type: "boolean" },
     },
   })
-  if (values.qr && values["no-qr"]) {
-    process.stderr.write(`agentproto pair offer: --qr and --no-qr are mutually exclusive\n`)
+  const webModes = [values.qr, values.url, values["no-qr"]].filter(Boolean).length
+  if (webModes > 1) {
+    process.stderr.write(
+      `agentproto pair offer: --qr, --url and --no-qr are mutually exclusive\n`,
+    )
     return 2
   }
-  if (values["pair-page"] && !values.qr) {
-    process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr\n`)
+  const wantsWebLink = Boolean(values.qr || values.url)
+  if (values["pair-page"] && !wantsWebLink) {
+    process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr or --url\n`)
+    return 2
+  }
+  if (values.url && values.host) {
+    process.stderr.write(
+      `agentproto pair offer: --host offers are accepted with \`agentproto pair accept\`; use them without --url\n`,
+    )
     return 2
   }
   // The pair page: --pair-page, else config pairing.pairPage, else the default.
   // Checked BEFORE minting, so a bad template never spends an offer.
   let pairPage: string = DEFAULT_PAIR_PAGE
-  if (values.qr) {
+  if (wantsWebLink) {
     try {
       pairPage = values["pair-page"] ?? (await loadConfig()).pairing?.pairPage ?? DEFAULT_PAIR_PAGE
       resolvePairPageUrl(pairPage, "0".repeat(32))
@@ -205,7 +220,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
   // The phone link: the same offer, carried in the fragment of the web pair
   // page (a fragment never leaves the browser).
   let webUrl: string | undefined
-  if (values.qr) {
+  if (wantsWebLink) {
     try {
       // A `{fp}` template resolves to this daemon's own origin.
       webUrl = encodeOfferWebUrl(result.url, pairPage)
@@ -219,6 +234,24 @@ async function runOffer(args: readonly string[]): Promise<number> {
 
   if (values.json) {
     process.stdout.write(JSON.stringify(webUrl ? { ...result, webUrl } : result, null, 2) + "\n")
+    return 0
+  }
+
+  // --url: the browser link on its own, with no QR and no CLI link.
+  if (values.url) {
+    const rvNote = result.rendezvousIsHostedDefault
+      ? `The daemon is now relaying through ${result.rendezvous} (hosted default).\n`
+      : `The daemon is now listening on ${result.rendezvous}.\n`
+    process.stdout.write(
+      `Pairing offer for daemon ${result.fingerprint}, expires ${result.expiresAt} (single use).\n\n` +
+        `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
+        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n` +
+        rvNote +
+        `This window can close.\n` +
+        `When the client connects, run \`agentproto pair pending\` to see its\n` +
+        `short code, compare it with the code on the client's screen, then run\n` +
+        `\`agentproto pair confirm <code>\` (or \`agentproto pair decline <code>\`).\n`,
+    )
     return 0
   }
 
@@ -239,7 +272,8 @@ async function runOffer(args: readonly string[]): Promise<number> {
     process.stdout.write(`Scan with a phone (opens the pair page in the browser):\n\n  ${webUrl}\n\n`)
     await printQr(webUrl)
     process.stdout.write(
-      `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
+      `No camera? Run \`agentproto pair offer --url\` for a link to open in any browser.\n\n` +
+        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
     )
   } else if (!values["no-qr"]) {
     await printQr(result.url)

@@ -172,6 +172,11 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   apart. `parseOfferUrl` accepts both forms. Which page serves the link is
   configurable (`pairing.pairPage`, `--pair-page`); see
   [The phone pair page](#the-phone-pair-page-one-origin-per-daemon).
+- `pair offer --url` prints that same web pair page link with no QR, for a
+  desktop browser. `--qr`, `--url` and `--no-qr` are mutually exclusive,
+  `--pair-page` works with either `--qr` or `--url`, and `--url` cannot be
+  combined with `--host` (a HOST-scoped offer is only accepted by
+  `agentproto pair accept` on another machine, which needs the CLI link).
 - `pair ls` lists pairings (daemon REST, or the client store when offline);
   `pair revoke` drops one so its client can no longer reconnect.
 - **Revocation is announced.** Otherwise a revoked client and an offline
@@ -300,7 +305,8 @@ state to leak.
   served on every `<fingerprint>.agentproto.cloud` by a Cloudflare Worker,
   which answers 404 for any host whose first label isn't a fingerprint.
   Change it with `pairing.pairPage` in `config.json` or
-  `pair offer --qr --pair-page <…>` (the flag wins).
+  `pair offer --qr --pair-page <…>` or `pair offer --url --pair-page <…>`
+  (the flag wins).
 
 **Self-hosting the pair page.** The page is a static bundle
 (`packages/pair-page`: no server-side code, and the offer stays in the URL
