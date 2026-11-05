@@ -118,37 +118,6 @@
     "ladder": [
       {
         "sandbox": {
-          "provider": "computer",
-          "config": {
-            "template": "agentproto-workstation",
-            "cpus": 2,
-            "memoryMiB": 4096,
-            "fleetCapacityWaitMs": 240000,
-            "egressIp": "auto",
-            "egress": [
-              "github.com",
-              "api.github.com",
-              "codeload.github.com",
-              "objects.githubusercontent.com",
-              "raw.githubusercontent.com",
-              "registry.npmjs.org",
-              "opencode.ai",
-              "models.opencode.ai",
-              "models.dev",
-              "rdv.agentproto.sh"
-            ]
-          },
-          "lifecycle": {
-            "destroy_on": "workspace-close"
-          }
-        },
-        "preflight": [
-          "model-answers"
-        ],
-        "agentStartTimeoutMs": 120000
-      },
-      {
-        "sandbox": {
           "provider": "e2b",
           "lifecycle": {
             "destroy_on": "workspace-close"
@@ -161,26 +130,7 @@
       },
       {
         "sandbox": {
-          "provider": "computer",
-          "config": {
-            "template": "agentproto-workstation",
-            "cpus": 2,
-            "memoryMiB": 4096,
-            "fleetCapacityWaitMs": 240000,
-            "egressIp": "auto",
-            "egress": [
-              "github.com",
-              "api.github.com",
-              "codeload.github.com",
-              "objects.githubusercontent.com",
-              "raw.githubusercontent.com",
-              "registry.npmjs.org",
-              "opencode.ai",
-              "models.opencode.ai",
-              "models.dev",
-              "rdv.agentproto.sh"
-            ]
-          },
+          "provider": "e2b",
           "lifecycle": {
             "destroy_on": "workspace-close"
           }
