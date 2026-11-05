@@ -33,7 +33,7 @@ All 29 verbs in the dispatcher's `VERBS` set at the time of the audit
 | **models** | — | `[adapter]`, --json | List runnable models + provider-key status |
 | **onboard** | — | --yes, --no-skills, --skills, --agent | First-run umbrella: install-mcp + skill pack |
 | **pack** | skill | --manifest, --source, --bump, --dry-run, --out | Generate a versioned skill pack from a manifest |
-| **pair** | offer, accept, ls, revoke, exec | --ttl, --rendezvous, --no-qr, --name, --json | End-to-end daemon pairing over an untrusted rendezvous |
+| **pair** | offer, accept, pending, confirm, decline, ls, revoke, exec | --ttl, --rendezvous, --no-qr, --name, --json | End-to-end daemon pairing over an untrusted rendezvous; completed handshakes wait for operator `confirm`/`decline` |
 | **permissions** | ls, approve, deny, watch | --always, --json | Approve/deny held tool-permission requests (permission-hold inbox); `watch` auto-resolves via rules |
 | **adapters** | list, show, install, uninstall, enable, disable | --json, --skip-npm, --local | Manage runtime adapters (swarm-kernel substrates/dispatchers/executors). Renamed from `plugins` in 0.20.0; config key `plugins[]` → `adapters[]` |
 | **policy** | attach, status, wait, ack, ls (list), cancel | --session, --sessions, --then, --gate-json, --judge-adapter, --commit-path, --ack/--no-ack, --attach-json, --wait, --timeout, --json | CLI surface for the completion-policy engine (`/policies`) |

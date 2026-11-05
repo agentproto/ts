@@ -8,8 +8,10 @@ tunnel. No public tunnel, no port-forwarding, no account.
 ## 1. What you get
 
 `agentproto pair offer --qr` prints a QR code. Scan it, confirm a fingerprint,
-and your phone opens the daemon's Control Center: the live session list,
-chat, and everything else the daemon serves, proxied straight from the
+and your phone shows the pairing **waiting for confirmation** — the operator
+on the computer runs `agentproto pair confirm <code>` (compare the short
+code), and then the phone opens the daemon's Control Center: the live session
+list, chat, and everything else the daemon serves, proxied straight from the
 daemon over the pairing, not copied or re-hosted anywhere.
 
 It's safe to route through a broker you don't control because the broker
@@ -33,7 +35,7 @@ for the full protocol and threat model.
   which `agentproto.cloud` always is). Pairing needs service workers, so
   skip private/incognito tabs.
 
-## 3. Pair in 3 steps
+## 3. Pair in 4 steps
 
 **On the computer**, with the daemon running:
 
@@ -54,8 +56,17 @@ which runs the handshake and shows you the daemon's fingerprint to confirm:
 terminal**, then tap **Confirm**. That's the human check that defeats a
 swapped or malicious QR; the page refuses to skip it.
 
-The Control Center opens automatically, proxied from the daemon over the
-encrypted tunnel:
+**Back on the computer**, the phone is now waiting for your confirmation —
+it shows a short code and "waiting for confirmation". Compare that code with
+`agentproto pair pending`, then promote the pairing:
+
+```bash
+agentproto pair pending            # list pending handshakes with their short codes
+agentproto pair confirm <code>     # or: pair decline <code>
+```
+
+Until you confirm, the pairing drives nothing. Once confirmed, the Control
+Center opens on the phone, proxied from the daemon over the encrypted tunnel:
 
 ![The Control Center, loaded on the phone through the daemon's service worker](./assets/phone-pairing/control-center.png)
 

@@ -21,8 +21,8 @@ Still to come: the pairing spec, AIP-59 (draft, agentproto/agentproto#41); see
 Pairing needs a browser with service workers. Without one, use the opt-in
 tunnel link `agentproto remote enable --qr` (readable by Cloudflare).
 
-Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / ls / revoke /
-exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
+Jump to the commands: [`pair`](../verbs/pair.md) (offer / accept / pending /
+confirm / decline / ls / revoke / exec) and [`rendezvous`](../verbs/rendezvous.md) (self-host the broker).
 
 ## Why
 
@@ -162,7 +162,10 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
 
 - `pair offer` (daemon) mints a single-use offer URL + QR, dials the broker
   outbound, and parks. `pair accept` (client) validates the URL, runs the client
-  handshake, pins the daemon's keys, and persists the pairing.
+  handshake, pins the daemon's keys, and persists its half of the pairing. The
+  daemon holds its half **pending** until the operator runs
+  `pair confirm` (or `pair decline`) — nothing is persisted or served before
+  that (see [`pending` / `confirm` / `decline`](../verbs/pair.md#pending--confirm--decline--daemon-side)).
 - `pair offer --qr` shows the same offer as a phone link: the web pair page
   with the offer in its URL fragment
   (`https://<fingerprint>.agentproto.cloud/pair#v=2&rv=…`). A fragment never reaches a
@@ -178,6 +181,7 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   combined with `--host` (a HOST-scoped offer is only accepted by
   `agentproto pair accept` on another machine, which needs the CLI link).
 - `pair ls` lists pairings (daemon REST, or the client store when offline);
+  `pair pending` lists handshakes awaiting operator confirmation;
   `pair revoke` drops one so its client can no longer reconnect.
 - **Revocation is announced.** Otherwise a revoked client and an offline
   daemon look the same: the client parks at the broker and gets a park
@@ -197,8 +201,11 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   routing seam — a loopback bridge that a child `agentproto <verb>` drives via
   `AGENTPROTO_DAEMON_URL`).
 
-MCP tools mirror the daemon-side verbs: `pair_offer`, `pair_list`, `pair_revoke`.
-REST routes: `POST /pairings/offer`, `GET /pairings`, `DELETE /pairings/:fp`.
+MCP tools mirror the daemon-side verbs: `pair_offer`, `pair_list`,
+`pair_revoke`, plus `pair_pending` / `pair_confirm` / `pair_decline` for the
+confirmation gate. REST routes: `POST /pairings/offer`, `GET /pairings`,
+`DELETE /pairings/:fp`, plus `GET /pairings/pending`, `POST /pairings/confirm`,
+`POST /pairings/decline`.
 
 ### Persistence, reconnect epochs, autoconnect
 
@@ -386,7 +393,8 @@ is covered end to end in
   `wrapE2E` channel, and the adversarial test suite (tampered-broker vectors:
   flip / drop / reorder / replay / downgrade), proven end-to-end over an
   in-process socket pair; the `@agentproto/rendezvous` broker package; the
-  `pair` CLI/MCP verbs (`offer` / `accept` / `ls` / `revoke` / `exec`); pairing
+  `pair` CLI/MCP verbs (`offer` / `accept` / `pending` / `confirm` / `decline`
+  / `ls` / `revoke` / `exec`); pairing
   persistence, reconnect epochs, and autoconnect on boot; and the hosted broker
   `wss://rdv.agentproto.sh/v1`, deployed and now the default meeting point for
   `pair offer` (see [The hosted default](#the-hosted-default)).
