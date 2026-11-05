@@ -432,6 +432,169 @@ describe("config app edit flows (real panel script, fake McpApp bridge)", () => 
     expect(panel.window.document.body.innerHTML).not.toContain(bearer)
   })
 
+  it("renders a pending pairing with its short code and confirms it", async () => {
+    const fp = "abcdef0123456789abcdef0123456789"
+    const panel = renderPanel({
+      pair_pending: () => ok({ pending: [{ id: fp, fingerprint: fp, code: "abcdef01", name: "phone", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), rendezvous: "wss://rdv.example/v1" }] }),
+      pair_confirm: () => ok({ ok: true, confirmed: fp }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    expect(panel.window.document.body.innerHTML).toContain("abcdef01")
+    expect(panel.window.document.body.innerHTML).toContain("phone")
+
+    const confirmBtn = panel.window.document.querySelector(`[data-pair-confirm="${fp}"]`) as DomElement
+    expect(confirmBtn).toBeTruthy()
+    click(panel.window, confirmBtn)
+    await settle(30)
+    expect(panel.calls.some(c => c.tool === "pair_confirm" && c.args.target === fp)).toBe(true)
+  })
+
+  it("revoke-all leaves pending pairings untouched for confirm or decline", async () => {
+    const fp = "abcdef0123456789abcdef0123456789"
+    const panel = renderPanel({
+      remote_status: () => ok({ enabled: true, publicUrl: "https://gw.trycloudflare.com", createdAt: "2026-11-01T00:00:00.000Z" }),
+      pair_list: () => ok({ pairings: [{ name: "iPhone", fingerprint: "11111111111111111111111111111111", createdAt: "2026-11-02T00:00:00.000Z", lastSeen: "2026-11-03T00:00:00.000Z", rendezvous: "wss://rdv.example/v1" }] }),
+      pair_pending: () => ok({ pending: [{ id: fp, fingerprint: fp, code: "abcdef01", name: "new-phone", createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60_000).toISOString(), rendezvous: "wss://rdv.example/v1" }] }),
+      tunnel_list: () => ok({ tunnels: [{ id: "tun-1", label: "vite-preview", provider: "cloudflare-managed", targetPort: 5173, publicUrl: "https://relay.example.com", status: "active", createdAt: "2026-11-03T00:00:00.000Z" }] }),
+      pair_confirm: () => ok({ ok: true, confirmed: fp }),
+      pair_decline: () => ok({ ok: true, declined: fp }),
+      pair_revoke: () => ok({ ok: true }),
+      tunnel_delete: () => ok({ ok: true }),
+      remote_disable: () => ok({ disabled: true }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    click(panel.window, el(panel.window, "remote-revoke-all-btn"))
+    await settle(20)
+    const input = el(panel.window, "remote-revoke-all-input") as DomElement & { value: string }
+    input.value = "REVOKE"
+    click(panel.window, el(panel.window, "remote-revoke-all-confirm"))
+    await settle(80)
+
+    expect(panel.calls.some(c => c.tool === "pair_confirm")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "pair_decline")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "pair_revoke")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "tunnel_delete")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "remote_disable")).toBe(true)
+    // The pending row still renders after the reload.
+    expect(panel.window.document.body.innerHTML).toContain("abcdef01")
+    expect(el(panel.window, "toast").textContent).toMatch(/pending pairing\(s\) left/)
+  })
+
+  it("renders no tunnel phone link in the Remote section; Pair a phone is the phone entry", async () => {
+    const bearer = "AGENTPROTO_BEARER_TOKEN_XYZ"
+    const phoneUrl = "https://x.test/apps/@agentik/session-chat/ui#token=PHONE_ONLY"
+    const panel = renderPanel({
+      remote_enable: () => ok({ publicUrl: "https://x.test", bearerToken: bearer, phoneUrl }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    expect(panel.window.document.body.innerHTML).toContain("Pair a phone")
+
+    const enableBtn = el(panel.window, "remote-enable-btn")
+    click(panel.window, enableBtn) // arm
+    await settle(10)
+    click(panel.window, enableBtn) // confirm
+    await settle(50)
+
+    // The bearer (remote MCP clients) still shows; the tunnel phone link does not.
+    expect(panel.window.document.body.innerHTML).toContain(bearer)
+    expect(panel.window.document.body.innerHTML).not.toContain(phoneUrl)
+    expect(panel.window.document.body.innerHTML).not.toContain("PHONE_ONLY")
+    expect(panel.window.document.body.innerHTML).not.toContain("Phone link")
+  })
+
+  it("renders pairings, tunnels and the gateway in one Remote access table", async () => {
+    const panel = renderPanel({
+      remote_status: () => ok({ enabled: true, provider: "quick", publicUrl: "https://gw.trycloudflare.com", createdAt: "2026-11-01T00:00:00.000Z" }),
+      pair_list: () => ok({ pairings: [{ name: "iPhone", fingerprint: "abcdef0123456789abcdef0123456789", createdAt: "2026-11-02T00:00:00.000Z", lastSeen: "2026-11-03T00:00:00.000Z", rendezvous: "wss://rdv.example/v1" }] }),
+      tunnel_list: () => ok({ tunnels: [{ id: "tun-1", label: "vite-preview", provider: "cloudflare-managed", targetPort: 5173, publicUrl: "https://relay.example.com", hostname: "relay.example.com", root: "example.com", status: "active", createdAt: "2026-11-03T00:00:00.000Z" }] }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    const body = panel.window.document.body.innerHTML
+    expect(body).toContain("Remote access")
+    expect(body).toContain("remote gateway")
+    expect(body).toContain("whole gateway")
+    expect(body).toContain("iPhone")
+    expect(body).toContain("vite-preview")
+    expect(body).toContain("root example.com")
+    expect(panel.window.document.querySelectorAll("[data-remote-row]")).toHaveLength(3)
+  })
+
+  it("each Remote access row revokes through the right tool and id", async () => {
+    const panel = renderPanel({
+      remote_status: () => ok({ enabled: true, publicUrl: "https://gw.trycloudflare.com", createdAt: "2026-11-01T00:00:00.000Z" }),
+      pair_list: () => ok({ pairings: [{ name: "iPhone", fingerprint: "abcdef0123456789abcdef0123456789", createdAt: "2026-11-02T00:00:00.000Z", lastSeen: "2026-11-03T00:00:00.000Z", rendezvous: "wss://rdv.example/v1" }] }),
+      tunnel_list: () => ok({ tunnels: [{ id: "tun-1", label: "vite-preview", provider: "cloudflare-managed", targetPort: 5173, publicUrl: "https://relay.example.com", status: "active", createdAt: "2026-11-03T00:00:00.000Z" }] }),
+      pair_revoke: () => ok({ ok: true }),
+      tunnel_delete: () => ok({ ok: true }),
+      remote_disable: () => ok({ disabled: true }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    const clickRevoke = async (kind: string) => {
+      const btn = panel.window.document.querySelector(`[data-remote-revoke-kind="${kind}"]`) as DomElement
+      expect(btn).toBeTruthy()
+      click(panel.window, btn)
+      await settle(10)
+      click(panel.window, btn)
+      await settle(40)
+    }
+
+    await clickRevoke("pair")
+    expect(panel.calls.some(c => c.tool === "pair_revoke" && c.args.target === "abcdef0123456789abcdef0123456789")).toBe(true)
+
+    await clickRevoke("tunnel")
+    expect(panel.calls.some(c => c.tool === "tunnel_delete" && c.args.tunnelId === "tun-1")).toBe(true)
+
+    await clickRevoke("remote")
+    expect(panel.calls.some(c => c.tool === "remote_disable")).toBe(true)
+  })
+
+  it("revoke-all requires the typed confirmation and then calls every revoke", async () => {
+    const panel = renderPanel({
+      remote_status: () => ok({ enabled: true, publicUrl: "https://gw.trycloudflare.com", createdAt: "2026-11-01T00:00:00.000Z" }),
+      pair_list: () => ok({ pairings: [{ name: "iPhone", fingerprint: "abcdef0123456789abcdef0123456789", createdAt: "2026-11-02T00:00:00.000Z", lastSeen: "2026-11-03T00:00:00.000Z", rendezvous: "wss://rdv.example/v1" }] }),
+      tunnel_list: () => ok({ tunnels: [{ id: "tun-1", label: "vite-preview", provider: "cloudflare-managed", targetPort: 5173, publicUrl: "https://relay.example.com", status: "active", createdAt: "2026-11-03T00:00:00.000Z" }] }),
+      pair_revoke: () => ok({ ok: true }),
+      tunnel_delete: () => ok({ ok: true }),
+      remote_disable: () => ok({ disabled: true }),
+    })
+    await settle(50)
+    navigate(panel.window, "#remote")
+    await settle(30)
+
+    click(panel.window, el(panel.window, "remote-revoke-all-btn"))
+    await settle(20)
+    const input = el(panel.window, "remote-revoke-all-input") as DomElement & { value: string }
+    input.value = "nope"
+    click(panel.window, el(panel.window, "remote-revoke-all-confirm"))
+    await settle(20)
+    expect(panel.calls.some(c => c.tool === "pair_revoke")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "tunnel_delete")).toBe(false)
+    expect(panel.calls.some(c => c.tool === "remote_disable")).toBe(false)
+    expect(el(panel.window, "toast").textContent).toMatch(/Type REVOKE/)
+
+    input.value = "REVOKE"
+    click(panel.window, el(panel.window, "remote-revoke-all-confirm"))
+    await settle(80)
+    expect(panel.calls.some(c => c.tool === "pair_revoke")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "tunnel_delete")).toBe(true)
+    expect(panel.calls.some(c => c.tool === "remote_disable")).toBe(true)
+  })
+
   it("clears a pending pairing offer reveal on host teardown", async () => {
     const offerUrl = "agentproto://pair?token=SUPER_SECRET_OFFER"
     const panel = renderPanel({

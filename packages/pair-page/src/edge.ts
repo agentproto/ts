@@ -24,6 +24,9 @@
 
 export const DEFAULT_PAIR_DOMAIN = "agentproto.cloud"
 
+/** Release integrity manifest: the SHA-256 of the built pair-page bundle. */
+export const PAIR_PAGE_MANIFEST_PATH = "/.well-known/agentproto-pair-page.json"
+
 /** `identityFingerprint`: the first 32 hex chars (128 bits) of sha256(X25519
  *  pub), lowercase. */
 const FINGERPRINT_RE = /^[0-9a-f]{32}$/
@@ -119,6 +122,7 @@ export function cacheControl(pathname: string, status: number): string {
   // The service worker script and the document must pick up a new deploy at
   // once (the browser byte-compares the worker script on every update check).
   if (pathname === "/pair-sw.js" || isAppRoute(pathname)) return "no-cache"
+  if (pathname === PAIR_PAGE_MANIFEST_PATH) return "public, max-age=300"
   return "public, max-age=86400"
 }
 
@@ -145,5 +149,11 @@ export async function handleRequest(request: Request, env: EdgeEnv): Promise<Res
   }
   const target = isAppRoute(url.pathname) ? new Request(new URL("/index.html", url), request) : request
   const res = await env.ASSETS.fetch(target)
-  return finish(res.status === 404 ? notFound() : res, url.pathname, verdict)
+  if (res.status === 404) return finish(notFound(), url.pathname, verdict)
+  if (url.pathname === PAIR_PAGE_MANIFEST_PATH) {
+    const out = new Response(res.body, res)
+    out.headers.set("Content-Type", "application/json; charset=utf-8")
+    return finish(out, url.pathname, verdict)
+  }
+  return finish(res, url.pathname, verdict)
 }

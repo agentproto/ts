@@ -290,6 +290,11 @@ export interface HelloFrame {
     /** Daemon reassembles fragmented host→daemon `ws_message`s (`more`).
      *  Hosts send large WS messages whole to daemons without it. */
     wsFragments?: boolean
+    /** Daemon's E2E wrapper pads frames to size buckets (AIP-59 §3.5).
+     *  Hosts enable padding for their own sends after seeing this; a padded
+     *  frame from the host enables it for the daemon's sends too. Omitted by
+     *  older daemons, which keeps both directions unpadded. */
+    e2ePadding?: boolean
     /**
      * Identifiers of the capabilities the daemon serves — its registered
      * agent adapters / tool surfaces. Lets a host that fronts several

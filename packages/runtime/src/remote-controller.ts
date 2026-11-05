@@ -83,6 +83,15 @@ export interface EnableInput {
    * keep `127.0.0.1` unless the target is explicitly IPv6-bound.
    */
   targetHost?: string
+  /**
+   * Opt in to the legacy tunnel phone link (`EnableResult.phoneUrl`).
+   * Default `false`: phones pair through rendezvous (`agentproto pair
+   * offer`), which is end-to-end encrypted and does not expose the gateway
+   * to Cloudflare. Set this only for a browser that cannot run the pair
+   * page's service worker: the resulting link points at the whole gateway
+   * via a bearer in a URL fragment, and Cloudflare terminates TLS for it.
+   */
+  phoneLink?: boolean
 }
 
 export interface EnableResult {
@@ -104,17 +113,16 @@ export interface EnableResult {
    */
   mcpConfigSnippet?: string
   /**
-   * A single link to open on a phone (PHONE-PLAN.md P1.2) — the token rides
-   * in a URL *fragment* (`#token=`), never a `?` query string, since
+   * The opt-in tunnel phone link (`EnableInput.phoneLink: true`): the token
+   * rides in a URL *fragment* (`#token=`), never a `?` query string, since
    * fragments never reach a server (no Referer, no access/proxy log, no CDN
-   * cache key): `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`, so
-   * the phone lands directly in Control Center. Only emitted when exposing
-   * the gateway (same condition as `bearerToken`) — a passthrough tunnel has
-   * no daemon UI to link to — AND when this daemon has the
-   * `@agentik/session-chat` app installed with a UI: it is the only daemon
-   * page that reads the `#token=` fragment, and there is no hosted panel to
-   * fall back to (the hosted cli-site panel is retired; phones pair
-   * through rendezvous, `agentproto pair offer`).
+   * cache key): `<publicUrl>/apps/@agentik/session-chat/ui#token=<t>`.
+   *
+   * Omitted unless the caller opted in AND this daemon exposes the gateway
+   * AND the `@agentik/session-chat` app is installed with a UI. Phones pair
+   * through rendezvous by default (`agentproto pair offer`); this link is a
+   * fallback for a browser without service workers, and it exposes the
+   * whole gateway through Cloudflare, which can read the traffic.
    */
   phoneUrl?: string
   provider: "quick"
@@ -149,10 +157,10 @@ export interface RemoteControllerOptions {
   onLog?: (line: string) => void
   /**
    * Whether the `@agentik/session-chat` app is installed with a `ui` block
-   * on THIS daemon — decides whether `enable()` emits
-   * `EnableResult.phoneUrl`. Resolved at call time (matches `index.ts`'s own
-   * `isSessionChatInstalled`), so installing the app after boot is picked
-   * up without a restart. Omitted ⇒ never a `phoneUrl`.
+   * on THIS daemon, deciding whether an opted-in `enable({ phoneLink: true
+   * })` emits `EnableResult.phoneUrl`. Resolved at call time (matches
+   * `index.ts`'s own `isSessionChatInstalled`), so installing the app after
+   * boot is picked up without a restart. Omitted ⇒ never a `phoneUrl`.
    */
   isSessionChatInstalled?: () => boolean
 }
@@ -268,7 +276,7 @@ export class RemoteController {
       result.bearerToken = bearerToken
       result.mcpEndpoint = mcpEndpoint
       result.mcpConfigSnippet = buildMcpConfigSnippet(mcpEndpoint, bearerToken)
-      if (this.opts.isSessionChatInstalled?.()) {
+      if (input.phoneLink === true && this.opts.isSessionChatInstalled?.()) {
         result.phoneUrl = `${started.publicUrl}/apps/${SESSION_CHAT_APP_ID}/ui#token=${bearerToken}`
       }
     } else {

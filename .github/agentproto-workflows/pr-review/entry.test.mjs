@@ -663,6 +663,42 @@ test('ladder with a fleet URL and the Go key + allowlist: computer, e2b, compute
   })
 })
 
+test('AGENT_REVIEW_PLACEMENT=e2b moves the e2b rung first and keeps the other rungs after it in order', () => {
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: 'e2b', ...GO_ENV }, () => {
+    const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
+    assert.deepEqual(
+      ladder.map(r => [r.sandbox.provider, r.model]),
+      [
+        ['e2b', undefined],
+        ['computer', undefined],
+        ['computer', FLASH],
+      ],
+    )
+  })
+})
+
+test('AGENT_REVIEW_PLACEMENT is ordered, case/space/comma tolerant, and unset or empty keeps the config order', () => {
+  const order = () => reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider)
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: ' E2B , computer ', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['e2b', 'computer', 'computer'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: '   ', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['computer', 'e2b', 'computer'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', ...GO_ENV }, () => {
+    assert.deepEqual(order(), ['computer', 'e2b', 'computer'])
+  })
+})
+
+test('AGENT_REVIEW_PLACEMENT never adds a rung: a provider the config has no rung for is ignored, and no fleet still drops the computer rungs', () => {
+  withEnv({ AGENT_REVIEW_PLACEMENT: 'computer,e2b' }, () => {
+    assert.deepEqual(reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider), ['e2b'])
+  })
+  withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', AGENT_REVIEW_PLACEMENT: 'modal' }, () => {
+    assert.deepEqual(reviewerPlacementFor(reviewConfig, 'review').ladder.map(r => r.sandbox.provider), ['computer', 'e2b'])
+  })
+})
+
 test('ladder with a fleet URL but no allowlist entry: the paid rung and the paid fallback are dropped', () => {
   withEnv({ COMPUTER_CONTROLLER_URL: 'https://fleet.example', OPENCODE_GO_API_KEY: 'go-key' }, () => {
     const { ladder } = reviewerPlacementFor(reviewConfig, 'review')
