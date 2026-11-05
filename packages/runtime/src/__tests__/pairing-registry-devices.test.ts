@@ -112,6 +112,10 @@ describe("PairingRegistry: rename / isOnline", () => {
     const parsed = await parseOfferUrl(offer.url)
     const offerTokens = await deriveOfferTokens(parsed.secret)
     const client = await clientAccept(clientSink!, parsed.daemonX25519Pub, parsed.daemonEd25519Pub, offerTokens.auth, name)
+    // First contact is pending until the operator confirms (AIP-59 §3.7).
+    await vi.waitFor(async () => expect((await registry!.listPending()).length).toBe(1))
+    const [pending] = await registry!.listPending()
+    expect(await registry!.confirmPending(pending!.code)).toMatchObject({ ok: true })
     await vi.waitFor(async () => expect((await registry!.list()).length).toBe(1))
     const fingerprint = (await registry.list())[0]!.fingerprint
     return { fingerprint, client }
