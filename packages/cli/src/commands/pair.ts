@@ -231,12 +231,36 @@ async function runOffer(args: readonly string[]): Promise<number> {
     return 0
   }
 
-  if (!values.url) {
+  // --url: the browser link on its own, with no QR and no CLI link.
+  if (values.url) {
+    if (result.scope === "host") {
+      process.stdout.write(
+        `This offer grants HOST CONTROL: the accepting machine will register you\n` +
+          `as a driveable device (\`agentproto devices add\`), not just a remote-\n` +
+          `control client. That accepting machine will then be able to run any\n` +
+          `agentproto verb against this daemon, exactly like \`agentproto pair exec\`\n` +
+          `already permits today.\n\n`,
+      )
+    }
+    const rvNote = result.rendezvousIsHostedDefault
+      ? `The daemon is now relaying through ${result.rendezvous} (hosted default).\n`
+      : `The daemon is now listening on ${result.rendezvous}.\n`
     process.stdout.write(
-      `\nPairing offer (daemon ${result.fingerprint}) — expires ${result.expiresAt}\n\n` +
-        `  ${result.url}\n\n`,
+      `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
+        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n` +
+        rvNote +
+        `This window can close.\n` +
+        `When the client connects, run \`agentproto pair pending\` to see its\n` +
+        `short code, compare it with the code on the client's screen, then run\n` +
+        `\`agentproto pair confirm <code>\` (or \`agentproto pair decline <code>\`).\n`,
     )
+    return 0
   }
+
+  process.stdout.write(
+    `\nPairing offer (daemon ${result.fingerprint}) — expires ${result.expiresAt}\n\n` +
+      `  ${result.url}\n\n`,
+  )
   if (result.scope === "host") {
     process.stdout.write(
       `This offer grants HOST CONTROL — the accepting machine will register you\n` +
@@ -246,12 +270,7 @@ async function runOffer(args: readonly string[]): Promise<number> {
         `already permits today.\n\n`,
     )
   }
-  if (values.url) {
-    process.stdout.write(
-      `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
-        `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n`,
-    )
-  } else if (webUrl) {
+  if (webUrl) {
     process.stdout.write(`Scan with a phone (opens the pair page in the browser):\n\n  ${webUrl}\n\n`)
     await printQr(webUrl)
     process.stdout.write(
@@ -267,14 +286,10 @@ async function runOffer(args: readonly string[]): Promise<number> {
       `   Self-host with \`agentproto rendezvous serve\` and set pairing.rendezvous,\n` +
       `   or pass --rendezvous, to route elsewhere.)\n`
     : `The daemon is now listening on ${result.rendezvous}.\n`
-  if (!values.url) {
-    process.stdout.write(
-      `On the other machine:\n` +
-        `  agentproto pair accept "${result.url}"\n\n`,
-    )
-  }
   process.stdout.write(
-    rvNote +
+    `On the other machine:\n` +
+      `  agentproto pair accept "${result.url}"\n\n` +
+      rvNote +
       `This window can close.\n` +
       `When the client connects, run \`agentproto pair pending\` to see its\n` +
       `short code, compare it with the code on the client's screen, then run\n` +
