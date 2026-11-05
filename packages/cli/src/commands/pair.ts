@@ -154,6 +154,12 @@ async function runOffer(args: readonly string[]): Promise<number> {
     process.stderr.write(`agentproto pair offer: --pair-page only applies with --qr or --url\n`)
     return 2
   }
+  if (values.url && values.host) {
+    process.stderr.write(
+      `agentproto pair offer: --host offers are accepted with \`agentproto pair accept\`; use them without --url\n`,
+    )
+    return 2
+  }
   // The pair page: --pair-page, else config pairing.pairPage, else the default.
   // Checked BEFORE minting, so a bad template never spends an offer.
   let pairPage: string = DEFAULT_PAIR_PAGE
@@ -233,20 +239,12 @@ async function runOffer(args: readonly string[]): Promise<number> {
 
   // --url: the browser link on its own, with no QR and no CLI link.
   if (values.url) {
-    if (result.scope === "host") {
-      process.stdout.write(
-        `This offer grants HOST CONTROL: the accepting machine will register you\n` +
-          `as a driveable device (\`agentproto devices add\`), not just a remote-\n` +
-          `control client. That accepting machine will then be able to run any\n` +
-          `agentproto verb against this daemon, exactly like \`agentproto pair exec\`\n` +
-          `already permits today.\n\n`,
-      )
-    }
     const rvNote = result.rendezvousIsHostedDefault
       ? `The daemon is now relaying through ${result.rendezvous} (hosted default).\n`
       : `The daemon is now listening on ${result.rendezvous}.\n`
     process.stdout.write(
-      `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
+      `Pairing offer for daemon ${result.fingerprint}, expires ${result.expiresAt} (single use).\n\n` +
+        `Open this link in any browser on the pairing machine:\n\n  ${webUrl}\n\n` +
         `Confirm the page shows daemon ${result.fingerprint} before you accept.\n\n` +
         rvNote +
         `This window can close.\n` +

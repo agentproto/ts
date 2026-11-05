@@ -175,11 +175,22 @@ describe("agentproto pair offer --url", () => {
     const web = `https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`
     const text = out.join("")
     expect(text).toContain(web)
+    expect(text).toContain(
+      "Pairing offer for daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d, expires 2030-03-17T17:46:40.000Z (single use).",
+    )
     expect(text).toContain("Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d")
     expect(text).not.toContain("Scan with a phone")
     // The agentproto:// CLI link stays out of the browser flow's main output.
     expect(text).not.toContain(OFFER)
     expect(qr).not.toHaveBeenCalled()
+  })
+
+  it("refuses --url with --host before minting", async () => {
+    expect(await runPair(["offer", "--url", "--host"])).toBe(2)
+    expect(err.join("")).toContain(
+      "--host offers are accepted with `agentproto pair accept`; use them without --url",
+    )
+    expect(httpPostJson).not.toHaveBeenCalled()
   })
 
   it("--url and --qr are mutually exclusive", async () => {

@@ -173,8 +173,10 @@ rate limiting, single-use tokens, constant-time token compare. Self-hostable via
   configurable (`pairing.pairPage`, `--pair-page`); see
   [The phone pair page](#the-phone-pair-page-one-origin-per-daemon).
 - `pair offer --url` prints that same web pair page link with no QR, for a
-  desktop browser. `--qr`, `--url` and `--no-qr` are mutually exclusive, and
-  `--pair-page` works with either `--qr` or `--url`.
+  desktop browser. `--qr`, `--url` and `--no-qr` are mutually exclusive,
+  `--pair-page` works with either `--qr` or `--url`, and `--url` cannot be
+  combined with `--host` (a HOST-scoped offer is only accepted by
+  `agentproto pair accept` on another machine, which needs the CLI link).
 - `pair ls` lists pairings (daemon REST, or the client store when offline);
   `pair revoke` drops one so its client can no longer reconnect.
 - **Revocation is announced.** Otherwise a revoked client and an offline

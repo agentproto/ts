@@ -78,7 +78,9 @@ This window can close.
   out of the main output (it is for another CLI, not a browser) and prints the
   confirmation and pending instructions instead. `--url --json` returns the
   same JSON as `--qr --json`. `--qr`, `--url` and `--no-qr` are mutually
-  exclusive.
+  exclusive. `--url` cannot be combined with `--host`: a HOST-scoped offer is
+  only accepted by `agentproto pair accept` on another machine, which needs the
+  `agentproto://` link that `--url` omits.
 - `--pair-page <url|template>` (with `--qr` or `--url`) picks the pair page for
   this offer. It overrides `pairing.pairPage` in config, and the default is
   `https://{fp}.agentproto.cloud/pair`. It accepts two forms:
