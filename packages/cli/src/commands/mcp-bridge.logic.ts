@@ -6,10 +6,10 @@
  * stamps it as the `origin` of any spawn it forwards, so a bridge-routed host
  * gets a source node in the sessions tree with zero cooperation.
  *
- * This is the honest ceiling: it identifies the HOST ("codex"), never a
- * specific conversation — a stateless shared endpoint has no per-conversation
- * signal (see #575). Descriptor-only; never overrides an origin the caller set
- * explicitly, and only touches session-creating tools.
+ * The handshake identifies only the HOST. Conversation identity, when the
+ * host supplies it, must come from EACH call's metadata: a stdio process may
+ * serve several chats. Never cache a last-seen thread or infer one from a
+ * bridge process's environment.
  */
 
 /** Tools that create a session and accept an `origin` (see agent-tools.ts). */
@@ -92,4 +92,40 @@ export function watchParentExit(
   }, opts.intervalMs ?? 2_000)
   timer.unref()
   return () => clearInterval(timer)
+}
+
+/** Codex Desktop's app-tools plugin reads these same per-call metadata keys.
+ * They are host context, never model-facing tool arguments. No metadata means
+ * no identity; in particular, clientInfo.name alone is insufficient. */
+export function bridgeCallerUrl(baseUrl: string, meta?: Record<string, unknown>, hostName?: string): string {
+  const url = new URL(baseUrl)
+  // Preserve daemon-spawned self-mounts and explicit bridge configuration.
+  // Approval cards deliberately forbid caller identities on their surface.
+  if (url.searchParams.has("callerSessionId") || url.searchParams.get("surface") === "approval-cards") return baseUrl
+  if (!meta) return baseUrl
+  // Generic threadId/thread.id fields only identify a Codex chat when the
+  // handshake identifies Codex. The namespaced Codex metadata is sufficient
+  // on its own (some host versions use a generic clientInfo name).
+  if (!hostName?.toLowerCase().includes("codex") &&
+      !("x-codex-turn-metadata" in meta) && !("openai/threadId" in meta) && !("openai/thread_id" in meta)) return baseUrl
+  let thread: unknown
+  for (const key of ["openai/threadId", "openai/thread_id", "codexThreadId", "codex_thread_id", "threadId", "thread_id"]) {
+    if (typeof meta[key] === "string" && meta[key].trim()) {
+      thread = meta[key]
+      break
+    }
+  }
+  if (thread === undefined) {
+    let turn = meta["x-codex-turn-metadata"]
+    if (typeof turn === "string") {
+      try { turn = JSON.parse(turn) } catch { return baseUrl }
+    }
+    if (turn && typeof turn === "object" && "thread_id" in turn) thread = turn.thread_id
+  }
+  if (thread === undefined && meta.thread && typeof meta.thread === "object" && "id" in meta.thread) thread = meta.thread.id
+  // Match the daemon's external-id validation, leaving room for the namespace.
+  if (typeof thread !== "string" || !/^[A-Za-z0-9._:-]{1,122}$/.test(thread)) return baseUrl
+  url.searchParams.set("callerSessionId", `codex:${thread}`)
+  url.searchParams.set("host", "codex")
+  return url.toString()
 }
