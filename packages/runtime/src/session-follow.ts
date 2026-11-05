@@ -36,7 +36,18 @@ import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 
 import { DELIVERY_LEDGER_FILE, appendLedgerLine } from "@agentproto/delivery/ledger-writer"
-import { levelFromDecision, type Floor, type LedgerLine, type LedgerOutcome } from "@agentproto/delivery"
+import {
+  computeLevel,
+  createClassifierRegistry,
+  levelFromDecision,
+  type Classifier,
+  type ClassifierRegistry,
+  type Envelope,
+  type Floor,
+  type LedgerLine,
+  type LedgerOutcome,
+  type Level,
+} from "@agentproto/delivery"
 
 import type { ActivityRecord } from "./activity-projection.js"
 import { readTranscriptTail } from "./session-index.js"
@@ -53,10 +64,14 @@ import {
 import { isExternalInboxOpen, isRetired, resolveSuccessor } from "./session-retirement.js"
 import { DELIBERATE_END_REASONS } from "./session-end-reason.js"
 import {
-  classifyFollowEvent,
-  defaultFollowTriageConfig,
+  createSessionLifecycleClassifier,
+  evaluateFollowEvent,
+  followEnvelopeType,
+  followFloor,
   resolveFollowTriageConfig,
+  triageEventFromEnvelope,
   triageFollowEvent,
+  defaultFollowTriageConfig,
   type FollowTriageConfig,
   type TriageEvent,
   type TriageFacts,
@@ -116,6 +131,13 @@ export interface WireSessionFollowOptions {
   /** Append-only delivery ledger (tests). Default
    *  `~/.agentproto/delivery-ledger.jsonl`. */
   ledgerPath?: string
+  /** Classifier registry used for the observation-only (triage off) level.
+   *  Defaults to one `session-lifecycle` classifier closing over the follow
+   *  facts; tests pass an EMPTY registry to prove a floor alone pins level 3. */
+  classifierRegistry?: ClassifierRegistry
+  /** Classifiers to register instead of the built-in session-lifecycle one.
+   *  `[]` is the same as an empty registry. */
+  classifiers?: readonly Classifier[]
   /** Extra facts the triage rules need but the engine cannot see alone (e.g.
    *  "did this session's cron run finish OK?"). */
   triageFacts?: TriageFacts
@@ -159,9 +181,53 @@ interface Signal {
   taskId?: string
   /** The turn-end / exit reason (`cancelled`, `error`, `operator-stopped`, …). */
   reason?: string
+  /** The delivery envelope this signal produces, with `floor` pinned. */
+  envelope: Envelope
+}
+
+function followEnvelopeOf(signal: Omit<Signal, "envelope">): Envelope {
+  const type = followEnvelopeType(signal.event)
+  const subject = `session:${signal.sessionId}`
+  const floor = followFloor(signal.event, signal.awaitingInput)
+  return {
+    specversion: "1.0",
+    id: `${signal.sessionId}:${signal.event}:${signal.ts}`,
+    source: "//agentproto.local/session-follow",
+    type,
+    subject,
+    subjects: [subject],
+    time: signal.ts,
+    summary: signal.detail ?? `${signal.sessionId} ${signal.event}`,
+    data: {
+      sessionId: signal.sessionId,
+      ...(signal.label ? { label: signal.label } : {}),
+      ...(signal.detail ? { detail: signal.detail } : {}),
+      ...(signal.key ? { key: signal.key } : {}),
+      ...(signal.boardId ? { boardId: signal.boardId } : {}),
+      ...(signal.taskId ? { taskId: signal.taskId } : {}),
+      ...(signal.awaitingInput ? { awaitingInput: true } : {}),
+      ...(signal.empty ? { empty: true } : {}),
+      ...(signal.reason ? { reason: signal.reason } : {}),
+    },
+    terminal: signal.event === "exited" || signal.event === "crashed",
+    ...(floor !== undefined ? { floor } : {}),
+    about: { sessionId: signal.sessionId },
+  }
 }
 
 function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
+  const signal = rawSignalOf(ev, seenPrs)
+  return signal === undefined ? undefined : { ...signal, envelope: followEnvelopeOf(signal) }
+}
+
+/** The per-entry envelope: a `turn-end` promoted to `awaiting-input` by the
+ *  follow's event filter changes the type (floor and data are unchanged). */
+function followEnvelopeForEntry(signal: Signal, event: FollowEvent): Envelope {
+  const type = followEnvelopeType(event)
+  return signal.envelope.type === type ? signal.envelope : { ...signal.envelope, type }
+}
+
+function rawSignalOf(ev: SessionEvent, seenPrs: Set<string>): Omit<Signal, "envelope"> | undefined {
   switch (ev.type) {
     case "session:turn-end": {
       const detail =
@@ -228,7 +294,7 @@ function signalOf(ev: SessionEvent, seenPrs: Set<string>): Signal | undefined {
 /** Map a `kind:"pr"` activity to pr-opened (first sighting while open) /
  *  pr-merged (state `done`); cancelled/failed/other are ignored. Defensive
  *  about the payload shape — anything unexpected is simply not a PR signal. */
-function prSignalOf(activity: ActivityRecord | undefined, ts: string, seenPrs: Set<string>): Signal | undefined {
+function prSignalOf(activity: ActivityRecord | undefined, ts: string, seenPrs: Set<string>): Omit<Signal, "envelope"> | undefined {
   if (!activity || activity.kind !== "pr" || typeof activity.id !== "string") return undefined
   const sessionId = activity.sessionId
   if (typeof sessionId !== "string" || !sessionId) return undefined
@@ -349,6 +415,8 @@ interface BatchEntry {
   sessionId: string
   event: FollowEvent
   ts: string
+  /** The delivery envelope for this entry (type, floor, facts). */
+  envelope: Envelope
   label?: string
   cwd?: string
   detail?: string
@@ -376,12 +444,8 @@ const TURN_FAMILY: ReadonlySet<FollowEvent> = new Set(["turn-end", "awaiting-inp
 /** The always-wake events (`follow-triage.ts` rule `always-wake`): a session
  *  waiting on the human, a crash, or a turn-end carrying a question. These
  *  are pinned through both digest caps. */
-function isMustWakeEntry(entry: { event: string; awaitingInput?: boolean }): boolean {
-  return (
-    entry.event === "awaiting-input" ||
-    entry.event === "crashed" ||
-    (entry.event === "turn-end" && entry.awaitingInput === true)
-  )
+function isMustWakeEntry(entry: { event: string; awaitingInput?: boolean; floor?: Floor }): boolean {
+  return entry.floor !== undefined || followFloor(entry.event as FollowEvent, entry.awaitingInput) !== undefined
 }
 
 function sameCollapseGroup(a: BatchEntry, b: BatchEntry): boolean {
@@ -651,20 +715,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   }
 
   function toTriageEvent(followerId: string, entry: BatchEntry): TriageEvent {
-    return {
-      follower: followerId,
-      event: entry.event,
-      sessionId: entry.sessionId,
-      ts: entry.ts,
-      ...(entry.label ? { label: entry.label } : {}),
-      ...(entry.detail ? { detail: entry.detail } : {}),
-      ...(entry.key ? { key: entry.key } : {}),
-      ...(entry.boardId ? { boardId: entry.boardId } : {}),
-      ...(entry.taskId ? { taskId: entry.taskId } : {}),
-      ...(entry.awaitingInput !== undefined ? { awaitingInput: entry.awaitingInput } : {}),
-      ...(entry.empty !== undefined ? { empty: entry.empty } : {}),
-      ...(entry.reason ? { reason: entry.reason } : {}),
-    }
+    return triageEventFromEnvelope(entry.envelope, followerId)
   }
 
   interface DigestOutcome {
@@ -694,8 +745,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   }
 
   function floorOfEntry(entry: BatchEntry): Floor | undefined {
-    if (entry.event === "crashed") return "crash"
-    return isMustWakeEntry(entry) ? "awaiting-human" : undefined
+    return entry.envelope.floor ?? followFloor(entry.event, entry.awaitingInput)
   }
 
   /** One line per digest entry, written after the delivery outcome is known.
@@ -722,7 +772,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       eventTs: entry.ts,
       ...(entry.key !== undefined ? { repeatKey: entry.key } : {}),
       ...(floor !== undefined ? { floor } : {}),
-      level: levelFromDecision(result.decision),
+      level: result.level ?? levelFromDecision(result.decision),
       cap: 3,
       rule: result.rule,
       applied,
@@ -769,6 +819,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         ...(entry.silent !== undefined ? { silent: entry.silent } : {}),
         ...(entry.fyi ? { fyi: true } : {}),
         ...(entry.reason ? { reason: entry.reason } : {}),
+        ...(entry.envelope.floor ? { floor: entry.envelope.floor } : {}),
         ...(text ? { text } : {}),
       }
     })
@@ -957,6 +1008,10 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
     let urgency: FollowUrgency = batch.urgency
     let results: TriageResult[] | undefined
     const applied = triage.enabled
+    /** The level each entry computed to. `computeLevel` is the one place a
+     *  floor becomes level 3; everything below reads this, never a separate
+     *  must-wake branch. */
+    const levels = new Map<BatchEntry, Level>()
     const resultAt = (i: number): TriageResult => results?.[i] ?? { decision: "wake", rule: "default" }
     if (triage.enabled) {
       // Deterministic triage BEFORE the wake: every event is classified,
@@ -969,11 +1024,16 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           const result = await triageFollowEvent(toTriageEvent(followerId, entry), triage, facts)
           // A source-declared fyi is already an explicit downgrade: triage may
           // drop it, but never raise it back to a wake.
-          evaluated.push(
-            entry.fyi && result.decision === "wake"
-              ? { decision: "fyi", rule: "source-fyi" }
-              : result,
-          )
+          const forced = entry.fyi && result.decision === "wake"
+          const adjusted: TriageResult = forced
+            ? {
+                decision: "fyi",
+                rule: "source-fyi",
+                level: result.level === 3 ? 3 : 1,
+              }
+            : result
+          evaluated.push(adjusted)
+          levels.set(entry, adjusted.level ?? levelFromDecision(adjusted.decision))
         }
         results = evaluated
         const wakeEntries = entries.filter((_, i) => evaluated[i]!.decision === "wake")
@@ -1010,9 +1070,16 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         urgency = batch.urgency
         try {
           const facts = factsFor(entries)
-          results = entries.map(entry =>
-            classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
-          )
+          results = entries.map(entry => {
+            const result = evaluateFollowEvent(
+              toTriageEvent(followerId, entry),
+              triage.rules,
+              facts,
+              triage.reportWindowMs,
+            )
+            levels.set(entry, result.level)
+            return result
+          })
         } catch {
           results = undefined
         }
@@ -1022,9 +1089,29 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       // as not applied: the ledger is always on, the delivery is unchanged.
       try {
         const facts = factsFor(entries)
-        results = entries.map(entry =>
-          classifyFollowEvent(toTriageEvent(followerId, entry), triage.rules, facts, triage.reportWindowMs),
-        )
+        const classifierRegistry =
+          opts.classifierRegistry ??
+          createClassifierRegistry(
+            opts.classifiers ?? [
+              createSessionLifecycleClassifier({
+                rules: triage.rules,
+                facts,
+                reportWindowMs: triage.reportWindowMs,
+              }),
+            ],
+          )
+        results = entries.map(entry => {
+          const evaluated = evaluateFollowEvent(
+            toTriageEvent(followerId, entry),
+            triage.rules,
+            facts,
+            triage.reportWindowMs,
+          )
+          const classified = classifierRegistry.classify(entry.envelope, { targetId: followerId })
+          const level = computeLevel(entry.envelope, classified.level, 3)
+          levels.set(entry, level)
+          return { decision: evaluated.decision, rule: evaluated.rule, level }
+        })
       } catch (err) {
         log(`[session-follow] could not record the triage ledger for ${followerId}: ${describeError(err)}`)
       }
@@ -1037,11 +1124,13 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         text = formatFollowDigest(entries, textFor, id => registry.get(id))
       }
     }
-    // Floor: the always-wake set (`isMustWakeEntry`) is never delivered at
-    // `fyi`, even when every contributing follow is `fyi`. Applies on every
-    // path above (triage on, triage off, fail-open); a digest with no
-    // must-wake entry is unaffected.
-    if (urgency === "fyi" && deliveredEntries.some(isMustWakeEntry)) {
+    // Floor: an entry whose computed level is 3 is never delivered at `fyi`,
+    // even when every contributing follow is `fyi`. `computeLevel` is the
+    // only thing that produces 3, so this replaces the old always-wake pins.
+    if (
+      urgency === "fyi" &&
+      deliveredEntries.some(entry => (levels.get(entry) ?? (isMustWakeEntry(entry) ? 3 : 0)) >= 3)
+    ) {
       urgency = "next-turn"
     }
     const delivered = new Set(deliveredEntries)
@@ -1143,6 +1232,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           sessionId: signal.sessionId,
           event,
           ts: signal.ts,
+          envelope: followEnvelopeForEntry(signal, event),
           ...((desc?.label ?? signal.label) ? { label: (desc?.label ?? signal.label)! } : {}),
           ...(desc?.cwd ? { cwd: desc.cwd } : {}),
           ...(signal.detail ? { detail: signal.detail } : {}),
