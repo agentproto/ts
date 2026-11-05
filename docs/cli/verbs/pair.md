@@ -1,7 +1,7 @@
 # `agentproto pair`
 
 ```text
-agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr [--pair-page <url|template>]] [--json] [--host]
+agentproto pair offer  [--ttl 10m] [--rendezvous <wss://…>] [--no-qr | --qr | --url [--pair-page <url|template>]] [--json] [--host]
 agentproto pair accept "<offer-url>" [--name <label>]
 agentproto pair ls     [--json]
 agentproto pair revoke <fingerprint|name>
@@ -73,8 +73,14 @@ This window can close.
   runs the same handshake in the browser (`@agentproto/pairing`) and shows
   the daemon's name and fingerprint to confirm. The `agentproto://` URL is still
   printed for `pair accept`, and either form is accepted by both clients.
-- `--pair-page <url|template>` (with `--qr`) picks the pair page for this
-  offer. It overrides `pairing.pairPage` in config, and the default is
+- `--url` prints the same web pair page link as `--qr`, with no QR at all, for
+  a desktop browser that cannot scan one. It keeps the `agentproto://` CLI link
+  out of the main output (it is for another CLI, not a browser) and prints the
+  confirmation and pending instructions instead. `--url --json` returns the
+  same JSON as `--qr --json`. `--qr`, `--url` and `--no-qr` are mutually
+  exclusive.
+- `--pair-page <url|template>` (with `--qr` or `--url`) picks the pair page for
+  this offer. It overrides `pairing.pairPage` in config, and the default is
   `https://{fp}.agentproto.cloud/pair`. It accepts two forms:
   - A **template** with `{fp}` in the **hostname**, filled with the daemon's
     identity fingerprint (lowercase hex), e.g. a self-hosted page:
@@ -100,7 +106,7 @@ This window can close.
     other `{…}`. The page setting is checked before the offer is minted.
 - `--json` emits `{ url, fingerprint, rendezvous, rendezvousIsHostedDefault,
   expiresAt }` for scripting, plus `webUrl` (the resolved pair-page link) with
-  `--qr`.
+  `--qr` or `--url`.
 
 ```bash
 agentproto pair offer --qr
@@ -117,6 +123,8 @@ Scan with a phone (opens the pair page in the browser):
 
   █▀▀▀▀▀█ ▀▀ █ █▀▀▀▀▀█        (QR of the pair-page link)
   …
+
+No camera? Run `agentproto pair offer --url` for a link to open in any browser.
 
 Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d before you accept.
 

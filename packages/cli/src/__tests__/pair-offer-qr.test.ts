@@ -138,3 +138,72 @@ describe("agentproto pair offer --qr", () => {
     expect(JSON.parse(out.join("")).webUrl).toBe(`https://pair.example.com/pair#${QUERY}`)
   })
 })
+
+describe("agentproto pair offer --url", () => {
+  let out: string[]
+  let err: string[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let spies: any[]
+
+  beforeEach(() => {
+    out = []
+    err = []
+    spies = [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(process.stdout as any, "write").mockImplementation((c: unknown) => (out.push(String(c)), true)),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      vi.spyOn(process.stderr as any, "write").mockImplementation((c: unknown) => (err.push(String(c)), true)),
+    ]
+    qr.mockClear()
+    httpPostJson.mockClear()
+    config.mockResolvedValue({})
+    discoverDaemon.mockResolvedValue({ found: { url: "http://127.0.0.1:18790", token: "tok" }, stale: [] })
+    httpPostJson.mockResolvedValue({
+      url: OFFER,
+      fingerprint: "a1b2c3d4e5f607189c3e5d7f1a2b4c6d",
+      rendezvous: "wss://rdv.agentproto.sh/v1",
+      rendezvousIsHostedDefault: true,
+      expiresAt: "2030-03-17T17:46:40.000Z",
+    })
+  })
+  afterEach(() => {
+    for (const s of spies) s.mockRestore()
+  })
+
+  it("prints the web pair link and no QR block", async () => {
+    expect(await runPair(["offer", "--url"])).toBe(0)
+    const web = `https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`
+    const text = out.join("")
+    expect(text).toContain(web)
+    expect(text).toContain("Confirm the page shows daemon a1b2c3d4e5f607189c3e5d7f1a2b4c6d")
+    expect(text).not.toContain("Scan with a phone")
+    // The agentproto:// CLI link stays out of the browser flow's main output.
+    expect(text).not.toContain(OFFER)
+    expect(qr).not.toHaveBeenCalled()
+  })
+
+  it("--url and --qr are mutually exclusive", async () => {
+    expect(await runPair(["offer", "--url", "--qr"])).toBe(2)
+    expect(err.join("")).toContain("mutually exclusive")
+    err.length = 0
+    expect(await runPair(["offer", "--url", "--no-qr"])).toBe(2)
+    expect(err.join("")).toContain("mutually exclusive")
+  })
+
+  it("--url accepts --pair-page, including a {fp} template", async () => {
+    expect(await runPair(["offer", "--url", "--pair-page", "https://pair.example.com/pair"])).toBe(0)
+    expect(out.join("")).toContain(`https://pair.example.com/pair#${QUERY}`)
+
+    out.length = 0
+    expect(await runPair(["offer", "--url", "--pair-page", "https://{fp}.agentproto.cloud/pair"])).toBe(0)
+    expect(out.join("")).toContain(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
+  })
+
+  it("--url --json returns the same JSON as --qr --json, with webUrl", async () => {
+    expect(await runPair(["offer", "--url", "--json"])).toBe(0)
+    const json = JSON.parse(out.join(""))
+    expect(json.url).toBe(OFFER)
+    expect(json.webUrl).toBe(`https://a1b2c3d4e5f607189c3e5d7f1a2b4c6d.agentproto.cloud/pair#${QUERY}`)
+    expect(qr).not.toHaveBeenCalled()
+  })
+})
