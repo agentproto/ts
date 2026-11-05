@@ -37,6 +37,25 @@ const execFileAsync = promisify(execFile)
 /** Statuses Cloudflare's edge returns when the tunnel/origin is broken. */
 const EDGE_FAILURE_STATUSES = new Set([502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530])
 
+/**
+ * Short re-probe ladder used right after start / a hostname swap. cloudflared
+ * needs a moment to register its connection with the edge, so the first probe
+ * can see a 530 that has nothing to do with the tunnel being broken.
+ */
+const DEFAULT_SETTLE_DELAYS_MS = [2_000, 4_000, 8_000, 15_000, 30_000]
+
+/** A probe failure that a short settle window can plausibly fix by itself. */
+function isSettleFailure(reason: string | undefined): boolean {
+  return !!reason && (reason.startsWith("edge returned ") || reason.startsWith("unreachable: "))
+}
+
+/** Unref'd one-shot timer so a pending settle probe never holds the process. */
+function defaultRunnerTimer(fn: () => void, ms: number): () => void {
+  const t = setTimeout(fn, ms)
+  t.unref?.()
+  return () => clearTimeout(t)
+}
+
 export interface ProbeResult {
   hostname: string
   ok: boolean
@@ -127,6 +146,15 @@ export interface CloudflaredRunnerDeps {
   /** Health probe period. Default 60s; 0 disables periodic probes. */
   healthIntervalMs?: number
   probeTimeoutMs?: number
+  /**
+   * Re-probe ladder used while a fresh tunnel settles (edge 5xx / network
+   * error right after start or a hostname swap). Default 2s, 4s, 8s, 15s,
+   * 30s. Each step is cancelled by the first `active` result, by the regular
+   * health interval, or by `stop()`.
+   */
+  settleDelaysMs?: readonly number[]
+  /** Timer seam for the settle ladder (tests). Defaults to unref'd setTimeout. */
+  setTimer?: (fn: () => void, ms: number) => () => void
   /** Supervisor tuning (backoff, crash-loop cap, clock seams). */
   supervisor?: Partial<Omit<ProcessSupervisorOptions, "spawner" | "request">>
   /** Pre-flight binary check. Skipped when a custom spawner is injected. */
@@ -180,6 +208,10 @@ export class CloudflaredRunner {
   private cleanup: (() => void) | null = null
   private dnsPending = false
   private dnsWaitToken: { cancelled: boolean } | null = null
+  private settleToken: { cancelled: boolean } | null = null
+  private settleCancelTimer: (() => void) | null = null
+  private settleAttempt = 0
+  private probeGen = 0
 
   constructor(deps: CloudflaredRunnerDeps = {}) {
     this.deps = deps
@@ -247,10 +279,14 @@ export class CloudflaredRunner {
     this.dnsPending = this.publicDns !== null && opts.dnsPending === true
     this.emitHealth()
     if (this.dnsPending) this.startDnsWait()
-    else void this.probeNow()
+    else void this.probe(true)
     const interval = this.deps.healthIntervalMs ?? 60_000
     if (interval > 0) {
-      const t = setInterval(() => void this.probeNow(), interval)
+      const t = setInterval(() => {
+        // The regular cadence takes over from the settle ladder.
+        this.endSettle()
+        void this.probeNow()
+      }, interval)
       t.unref?.()
       this.cancelHealth = () => clearInterval(t)
     }
@@ -259,7 +295,10 @@ export class CloudflaredRunner {
   /** Replace the probed hostname set (swap) and re-probe. */
   setHostnames(hostnames: string[]): void {
     this.hostnames = [...hostnames]
-    if (this.supervisor) void this.probeNow()
+    if (this.supervisor) {
+      this.endSettle()
+      void this.probe(true)
+    }
   }
 
   health(): TunnelHealth | null {
@@ -287,9 +326,20 @@ export class CloudflaredRunner {
   }
 
   async probeNow(): Promise<TunnelHealth | null> {
+    return this.probe(false)
+  }
+
+  /**
+   * `settleAnchor` marks a probe fired by the post-start / post-swap path or
+   * by the settle ladder itself: a failure then keeps the ladder going and
+   * reports the softer "connecting" reason while the window is open.
+   */
+  private async probe(settleAnchor: boolean): Promise<TunnelHealth | null> {
     if (!this.supervisor) return null
+    const gen = ++this.probeGen
     if (this.dnsPending) {
       const visible = await this.checkDnsVisible(this.hostnames)
+      if (gen !== this.probeGen) return null
       if (!visible) return this.emitHealth()
       this.dnsPending = false
     }
@@ -306,13 +356,23 @@ export class CloudflaredRunner {
       targets.map(h => probeHostname(this.probeFetch, h, this.deps.probeTimeoutMs, dnsOpts)),
     )
     if (!this.supervisor) return null
+    // A newer probe started while this one was in flight: its result wins.
+    if (gen !== this.probeGen) return null
     this.probes = results
-    return this.emitHealth()
+    const anyFailure = results.some(p => !p.ok)
+    if (!anyFailure) {
+      this.endSettle()
+    } else if (settleAnchor || this.settleToken) {
+      if (results.some(p => isSettleFailure(p.reason))) this.scheduleSettleStep()
+      else this.endSettle()
+    }
+    return this.emitHealth(settleAnchor && this.settleToken !== null)
   }
 
   async stop(): Promise<void> {
     this.cancelHealth?.()
     this.cancelHealth = null
+    this.endSettle()
     if (this.dnsWaitToken) this.dnsWaitToken.cancelled = true
     this.dnsWaitToken = null
     this.dnsPending = false
@@ -341,6 +401,35 @@ export class CloudflaredRunner {
     return true
   }
 
+  private scheduleSettleStep(): void {
+    if (!this.settleToken) {
+      this.settleToken = { cancelled: false }
+      this.settleAttempt = 0
+    }
+    const delays = this.deps.settleDelaysMs ?? DEFAULT_SETTLE_DELAYS_MS
+    if (this.settleAttempt >= delays.length) {
+      this.endSettle()
+      return
+    }
+    const delay = delays[this.settleAttempt++] ?? 0
+    const token = this.settleToken
+    const setTimer = this.deps.setTimer ?? defaultRunnerTimer
+    this.settleCancelTimer?.()
+    this.settleCancelTimer = setTimer(() => {
+      this.settleCancelTimer = null
+      if (token.cancelled || !this.supervisor) return
+      void this.probe(true)
+    }, delay)
+  }
+
+  private endSettle(): void {
+    if (this.settleToken) this.settleToken.cancelled = true
+    this.settleToken = null
+    this.settleCancelTimer?.()
+    this.settleCancelTimer = null
+    this.settleAttempt = 0
+  }
+
   private startDnsWait(): void {
     const token = { cancelled: false }
     this.dnsWaitToken = token
@@ -357,12 +446,15 @@ export class CloudflaredRunner {
       while (!token.cancelled && this.supervisor && this.dnsPending) {
         await sleep(delay)
         if (token.cancelled || !this.supervisor) return
-        await this.probeNow()
+        // Once DNS is visible this is the first real probe of the tunnel, so
+        // anchor it like the post-start path: a 530 here still means the
+        // connector is settling, not that the tunnel is broken.
+        await this.probe(true)
       }
     })()
   }
 
-  private emitHealth(): TunnelHealth | null {
+  private emitHealth(connecting = false): TunnelHealth | null {
     const sup = this.supervisor
     if (!sup) return null
     const at = new Date().toISOString()
@@ -380,7 +472,13 @@ export class CloudflaredRunner {
       h = bad.length
         ? {
             state: "degraded",
-            reason: bad.map(p => `${p.hostname}: ${p.reason}`).join("; "),
+            reason: bad
+              .map(p =>
+                connecting && isSettleFailure(p.reason)
+                  ? `${p.hostname}: connecting to the Cloudflare edge`
+                  : `${p.hostname}: ${p.reason}`,
+              )
+              .join("; "),
             checkedAt: at,
           }
         : { state: "active", checkedAt: at }
