@@ -361,6 +361,9 @@ const spawnDefaultsConfigSchema: z.ZodType<SpawnDefaultsConfig> = z
                     .optional(),
                   failAs: z.enum(["ko", "unknown"]).optional(),
                   timeoutMs: z.number().int().positive().optional(),
+                  /** When the probe can run; defaults to `prelaunch`. */
+                  phase: z.enum(["prelaunch", "postlaunch"]).optional(),
+                  /** @deprecated Use `phase`. `true` => prelaunch, `false` => postlaunch. */
                   runsWithSpawnAuth: z.boolean().optional(),
                 }),
               )

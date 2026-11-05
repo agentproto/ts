@@ -7990,16 +7990,25 @@ export async function bootSandboxAgentSession(opts: {
     } else {
       // `host.exec` exists, so the probes that can speak for this spawn run now. The box's
       // credentials reach it through its own `agent_start` (`host.start`), never through its
-      // environment, so a probe whose verdict depends on them would call the model
-      // unauthenticated and veto a healthy placement: those are skipped, visibly. A probe
-      // that declares `runsWithSpawnAuth` (installed tooling, a per-IP cap no key changes)
-      // runs either way.
+      // environment, so a `postlaunch` probe would call the model unauthenticated and veto a
+      // healthy placement: those are skipped, visibly. A `prelaunch` probe (installed
+      // tooling, a per-IP cap no key changes) runs either way.
+      //
+      // Seam for the future postlaunch execution path: running a `postlaunch` probe on an
+      // authed spawn needs the started box session rather than `host.exec`. It would have to
+      // wait for `host.start` (and its credentials), prompt the started session through
+      // the sessions registry's `sendPrompt`, classify the reply, tear the box down on `ko`
+      // the same way a failed prelaunch does, and let a placement ladder move to the next
+      // rung on
+      // `sandbox_preflight_failed`. Until that exists, the probe is skipped here.
       const runnable = opts.auth
-        ? preflightIds.filter(id => preflightRegistry.get(id)?.runsWithSpawnAuth === true)
+        ? preflightIds.filter(id => (preflightRegistry.get(id)?.phase ?? "prelaunch") === "prelaunch")
         : preflightIds
       for (const id of preflightIds) {
         if (!runnable.includes(id)) {
-          bootWarnings.push(`agent_start: preflight ${id} skipped, the spawn carries credentials a probe cannot present`)
+          bootWarnings.push(
+            `agent_start: preflight ${id} skipped, the spawn carries credentials a postlaunch probe cannot present before the agent starts`,
+          )
         }
       }
       const run = await runSandboxPreflight(

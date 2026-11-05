@@ -232,7 +232,7 @@ describe("agent_start sandbox preflight", () => {
     expect(res.warnings?.some(w => w.includes('preflight "model-answers" inconclusive'))).toBe(true)
   })
 
-  it("a credentialed spawn skips a probe that does not declare runsWithSpawnAuth (model-answers): it cannot present the credential", async () => {
+  it("a credentialed spawn skips a postlaunch probe (model-answers): it cannot present the credential before the agent starts", async () => {
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
     const res = await spawnAgentSession(makeDeps(), {
       adapter: "opencode",
@@ -246,16 +246,16 @@ describe("agent_start sandbox preflight", () => {
     expect(execCalls).toHaveLength(0)
     expect(stopSpy).not.toHaveBeenCalled()
     expect(receivedStarts).toHaveLength(1)
-    expect(res.warnings?.some(w => w.includes("preflight model-answers skipped") && w.includes("credentials"))).toBe(true)
+    expect(res.warnings?.some(w => w.includes("preflight model-answers skipped") && w.includes("credentials") && w.includes("postlaunch"))).toBe(true)
   })
 
-  it("a credentialed spawn still runs a probe that declares runsWithSpawnAuth, and its ko fails the spawn", async () => {
+  it("a credentialed spawn runs an explicitly prelaunch probe, and its ko fails the spawn", async () => {
     registerProbe(
       commandPreflightProbe({
         id: "zen-free-answers",
         command: "opencode run -m opencode/glm-5.3-flash-free 'reply ok' < /dev/null",
         koWhen: [{ match: "Free usage limit reached", errorClass: "usage-limit" }],
-        runsWithSpawnAuth: true,
+        phase: "prelaunch",
       }),
     )
     execImpl = async () => result({ exitCode: 1, stdout: "", stderr: CI_USAGE_LIMIT })
@@ -273,6 +273,69 @@ describe("agent_start sandbox preflight", () => {
     expect(JSON.stringify(execCalls)).not.toContain("sk-test-credential")
     expect(stopSpy).toHaveBeenCalledTimes(1)
     expect(receivedStarts).toHaveLength(0)
+  })
+
+  it("a credentialed spawn runs a config probe that names no phase and no deprecated flag", async () => {
+    registerProbe(
+      commandPreflightProbe({
+        id: "has-gh",
+        command: "command -v gh",
+        failAs: "ko",
+      }),
+    )
+    execImpl = async () => result({ exitCode: 0, stdout: "/usr/bin/gh\n", stderr: "" })
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+      sandbox: "fake",
+      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
+      preflight: ["has-gh"],
+    })
+    expect(res.ok).toBe(true)
+    expect(execCalls.map(c => c.command)).toEqual(["command -v gh"])
+    expect(receivedStarts).toHaveLength(1)
+  })
+
+  it("a credentialed spawn skips a probe that explicitly declares postlaunch, with a warning naming it", async () => {
+    registerProbe(
+      commandPreflightProbe({
+        id: "needs-credential",
+        command: "opencode run 'reply ok' < /dev/null",
+        phase: "postlaunch",
+      }),
+    )
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+      sandbox: "fake",
+      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
+      preflight: ["needs-credential"],
+    })
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+    expect(execCalls).toHaveLength(0)
+    expect(receivedStarts).toHaveLength(1)
+    expect(res.warnings?.some(w => w.includes("preflight needs-credential skipped") && w.includes("postlaunch"))).toBe(true)
+  })
+
+  it("a credentialed spawn maps the deprecated runsWithSpawnAuth alias to prelaunch and runs the probe", async () => {
+    registerProbe(
+      commandPreflightProbe({
+        id: "legacy-alias",
+        command: "command -v gh",
+        runsWithSpawnAuth: true,
+      }),
+    )
+    execImpl = async () => result({ exitCode: 0, stdout: "/usr/bin/gh\n", stderr: "" })
+    const res = await spawnAgentSession(makeDeps(), {
+      adapter: "opencode",
+      model: "opencode/glm-5.3-flash-free",
+      sandbox: "fake",
+      auth: { mode: "api-key", apiKey: "sk-test-credential-1234567890" },
+      preflight: ["legacy-alias"],
+    })
+    expect(res.ok).toBe(true)
+    expect(execCalls.map(c => c.command)).toEqual(["command -v gh"])
   })
 
   it("an unregistered probe id is rejected before any box boots", async () => {

@@ -64,19 +64,25 @@ export interface PreflightContext {
   timeoutMs: number
 }
 
+/**
+ * When a probe can run, relative to the agent's own `agent_start`.
+ *
+ * - `prelaunch` runs before the agent starts, through `host.exec`, and needs
+ *   no credentials (a package is installed, an address is not capped for
+ *   everyone). It always runs, authed spawn or not.
+ * - `postlaunch` needs the session's credentials, which reach the box only
+ *   through its own `agent_start`, so it can only run through the started
+ *   session (see the seam comment in `session-spawn.ts`).
+ */
+export type PreflightPhase = "prelaunch" | "postlaunch"
+
 export interface PreflightProbe {
   id: string
   description: string
   /** Hard budget in ms when the caller does not override it. */
   defaultTimeoutMs: number
-  /**
-   * May this probe run when the spawn carries credentials? The probe reaches
-   * the box without them (they reach the box through its own `agent_start`),
-   * so a probe whose verdict depends on them must say false (the default) and
-   * is skipped with a warning; a probe that does not (a package is installed,
-   * an address is not capped for everyone) says true.
-   */
-  runsWithSpawnAuth?: boolean
+  /** When the probe can run; defaults to `prelaunch`. */
+  phase?: PreflightPhase
   run(ctx: PreflightContext): Promise<Omit<PreflightResult, "durationMs">>
 }
 
@@ -145,6 +151,7 @@ export const modelAnswersProbe: PreflightProbe = {
   id: MODEL_ANSWERS_PROBE_ID,
   description: "The session's model answers a one-line prompt through its harness from inside the box.",
   defaultTimeoutMs: MODEL_ANSWERS_TIMEOUT_MS,
+  phase: "postlaunch",
   async run(ctx) {
     const build = ONE_LINE_PROMPT_COMMANDS[ctx.adapter]
     if (!build) {
@@ -201,8 +208,20 @@ export interface CommandProbeSpec {
   /** What a result that is neither yes nor a `koWhen` hit means: `unknown` (default, never vetoes) or `ko`. */
   failAs?: "ko" | "unknown"
   timeoutMs?: number
-  /** See {@link PreflightProbe.runsWithSpawnAuth}. */
+  /** When the probe can run; defaults to `prelaunch`. See {@link PreflightPhase}. */
+  phase?: PreflightPhase
+  /**
+   * @deprecated Use `phase` instead. `true` maps to `prelaunch`, `false` maps
+   * to `postlaunch`; when absent a config probe defaults to `prelaunch`.
+   */
   runsWithSpawnAuth?: boolean
+}
+
+const specPhase = (spec: CommandProbeSpec): PreflightPhase => {
+  if (spec.phase !== undefined) return spec.phase
+  if (spec.runsWithSpawnAuth === true) return "prelaunch"
+  if (spec.runsWithSpawnAuth === false) return "postlaunch"
+  return "prelaunch"
 }
 
 const compileOrUndefined = (source: string): RegExp | undefined => {
@@ -218,7 +237,7 @@ export function commandPreflightProbe(spec: CommandProbeSpec): PreflightProbe {
     id: spec.id,
     description: spec.description ?? `Runs \`${clip(spec.command)}\` in the box.`,
     defaultTimeoutMs: spec.timeoutMs ?? MODEL_ANSWERS_TIMEOUT_MS,
-    runsWithSpawnAuth: spec.runsWithSpawnAuth === true,
+    phase: specPhase(spec),
     async run(ctx) {
       const res = await ctx.exec({
         command: spec.command,

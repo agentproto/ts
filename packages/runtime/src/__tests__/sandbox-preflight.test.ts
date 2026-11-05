@@ -42,6 +42,10 @@ function ctxWith(
 }
 
 describe("model-answers probe", () => {
+  it("is a postlaunch probe: it needs the session's credentials", () => {
+    expect(modelAnswersProbe.phase).toBe("postlaunch")
+  })
+
   it("is registered by default under its id", () => {
     expect(defaultPreflightRegistry.get(MODEL_ANSWERS_PROBE_ID)).toBe(modelAnswersProbe)
   })
@@ -344,6 +348,20 @@ describe("commandPreflightProbe (config-declared, nothing harness-specific)", ()
     expect((await run({ id: "p", command: "x", okStdoutMatches: "^v2\\." }, { stdout: "v2.4\n" })).verdict).toBe("ok")
     expect((await run({ id: "p", command: "x", okStdoutMatches: "^v2\\." }, { stdout: "v1.0\n" })).verdict).toBe("unknown")
     expect((await run({ id: "p", command: "x", okStdoutMatches: "(" }, {})).verdict).toBe("unknown")
+  })
+
+  it("defaults a config probe to prelaunch, so an authed spawn still runs it", () => {
+    expect(commandPreflightProbe({ id: "has-gh", command: "command -v gh" }).phase).toBe("prelaunch")
+  })
+
+  it("honours an explicit phase", () => {
+    expect(commandPreflightProbe({ id: "p", command: "x", phase: "postlaunch" }).phase).toBe("postlaunch")
+    expect(commandPreflightProbe({ id: "p", command: "x", phase: "prelaunch" }).phase).toBe("prelaunch")
+  })
+
+  it("maps the deprecated runsWithSpawnAuth alias, absent meaning prelaunch", () => {
+    expect(commandPreflightProbe({ id: "p", command: "x", runsWithSpawnAuth: true }).phase).toBe("prelaunch")
+    expect(commandPreflightProbe({ id: "p", command: "x", runsWithSpawnAuth: false }).phase).toBe("postlaunch")
   })
 
   it("buildPreflightRegistry adds config probes and ignores one that reuses a built-in id", () => {
