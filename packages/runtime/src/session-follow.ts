@@ -677,11 +677,26 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       if (typeof entry.follower !== "string" || typeof entry.text !== "string") continue
       if (followerId !== undefined && entry.follower !== followerId) continue
       // A still-dead or retired follower keeps its entry for a later replay:
-      // parking is a journal, not a queue that ticks forever.
-      if (!isDeliverableNow(registry.get(entry.follower))) continue
+      // parking is a journal, not a queue that ticks forever. If the follow
+      // was re-pointed at a live successor, the line only knows the retired
+      // id, so follow the lineage instead of orphaning it.
+      let target = entry.follower
+      if (!isDeliverableNow(registry.get(target))) {
+        const successor = resolveSuccessor(id => registry.get(id), entry.follower)
+        if (successor === undefined || !isDeliverableNow(registry.get(successor))) continue
+        target = successor
+      }
+      // Legacy journal lines carry no urgency; they predate the field and
+      // were always next-turn, so default to that rather than inventing one.
       const urgency: FollowUrgency = entry.urgency === "fyi" ? "fyi" : "next-turn"
       try {
-        await sendOnce(entry.follower, entry.text, entry.follower, urgency)
+        const outcome = await sendOnce(target, entry.text, entry.follower, urgency)
+        if (outcome.outcome === "dropped") {
+          // A refused redelivery still has to happen later: keep the line
+          // rather than compacting its only copy.
+          log(`[session-follow] parked replay for ${entry.follower} was refused; keeping it parked`)
+          continue
+        }
       } catch (err) {
         log(`[session-follow] parked replay for ${entry.follower} failed: ${describeError(err)}`)
         continue

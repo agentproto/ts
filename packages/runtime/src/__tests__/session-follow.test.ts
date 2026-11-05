@@ -695,6 +695,42 @@ describe("session-follow", () => {
       expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
     })
 
+    it("keeps the parked digest when the respawned follower refuses redelivery", async () => {
+      const parkedPath = join(tmp, "parked-refused.jsonl")
+      const { sendMessage, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      sessions.set("chief", running("chief") as never)
+      sendMessage.mockResolvedValueOnce({ refused: "inbox-full" })
+      expect(await handle!.replayParked("chief")).toBe(0)
+      // The only copy must survive a refused redelivery.
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+    })
+
+    it("replays a parked digest through the retired follower's live successor", async () => {
+      const parkedPath = join(tmp, "parked-successor.jsonl")
+      const { sent, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      sessions.set("chief", running("chief", { status: "killed", endedReason: "operator-stopped", continuedTo: "chief-2" }) as never)
+      sessions.set("chief-2", running("chief-2") as never)
+      expect(await handle!.replayParked("chief")).toBe(1)
+      expect(sent.map(m => m.to)).toEqual(["chief-2"])
+      expect(readFileSync(parkedPath, "utf8").trim()).toBe("")
+    })
+
     it("an ARCHIVED dead follower is never revived or re-minted; the digest is parked", async () => {
       const restartSession = vi.fn(async (id: string) => id)
       const parkedPath = join(tmp, "parked-archived.jsonl")
