@@ -20,7 +20,11 @@ import {
   type SentinelRuntimeOptions,
   type SentinelRuntimeRegistry,
 } from "../sentinel-runtime.js"
-import { createFakeSentinelProvider, makeFakeEvent } from "../sentinel-providers/fake.js"
+import {
+  createFakeSentinelProvider,
+  makeFakeEvent,
+  type FakeSentinelProvider,
+} from "../sentinel-providers/fake.js"
 import { singleMatch, type SentinelMatchClause, type SentinelProviderHandle } from "../sentinel-providers/types.js"
 import type { SendMessageResult } from "../local-types.js"
 import { SessionNotAliveError } from "./test-support.js"
@@ -102,6 +106,37 @@ afterAll(() => rmSync(defaultTriageDir, { recursive: true, force: true }))
 
 function createSentinelRuntime(opts: SentinelRuntimeOptions) {
   return createSentinelRuntimeBase({ ...opts, ledgerPath: opts.ledgerPath ?? defaultLedgerPath })
+}
+
+/** Deliver one event through a runtime and return the single ledger line plus
+ *  the registry calls, so a test can assert the shadow grant never changes
+ *  what was delivered. */
+async function captureSentinelLedger(
+  provider: FakeSentinelProvider,
+  event: ReturnType<typeof makeFakeEvent>,
+): Promise<{ line: Record<string, unknown>; calls: StubRegistry["calls"] }> {
+  const dir = mkdtempSync(join(tmpdir(), "sentinel-grant-"))
+  try {
+    const ledgerPath = join(dir, "delivery-ledger.jsonl")
+    const store = createSentinelStore({ persist: false })
+    newSentinel(store, { subject: event.subject })
+    provider.emit(event)
+    const registry = stubRegistry(async () => okResult())
+    const runtime = createSentinelRuntime({
+      store,
+      registry,
+      resolveProvider: resolverFor(provider),
+      isSessionAlive: () => true,
+      restartSession: async id => id,
+      ledgerPath,
+    })
+    await runtime.pollOnce()
+    const lines = readFileSync(ledgerPath, "utf8").trim().split("\n")
+    expect(lines).toHaveLength(1)
+    return { line: JSON.parse(lines[0]!) as Record<string, unknown>, calls: registry.calls }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -204,6 +239,7 @@ describe("SentinelRuntime", () => {
         type: "fake.widget.created",
         subject: "fake:widget-1",
         eventTs: expect.any(String),
+        grant: "allow",
         outcome: "delivered",
         messageId: expect.any(String),
       })
@@ -212,6 +248,46 @@ describe("SentinelRuntime", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
+  })
+
+  it("records a shadow grant on the ledger line without changing delivery", async () => {
+    const allow = await captureSentinelLedger(
+      createFakeSentinelProvider({ subjects: ["github"] }),
+      makeFakeEvent({ id: "evt_allow", type: "fake.widget.created", subject: "github:acme/widgets#42" }),
+    )
+    expect(allow.line.grant).toBe("allow")
+    expect(allow.calls).toHaveLength(1)
+
+    const deny = await captureSentinelLedger(
+      createFakeSentinelProvider({ subjects: ["github"] }),
+      makeFakeEvent({ id: "evt_deny", type: "fake.widget.created", subject: "slack:incidents" }),
+    )
+    expect(deny.line.grant).toBe("deny")
+    expect(deny.calls).toHaveLength(1)
+
+    const unknown = await captureSentinelLedger(
+      createFakeSentinelProvider({ subjects: [] }),
+      makeFakeEvent({ id: "evt_unknown", type: "fake.widget.created", subject: "slack:incidents" }),
+    )
+    expect(unknown.line.grant).toBe("unknown")
+    expect(unknown.calls).toHaveLength(1)
+  })
+
+  it("still delivers and records an error grant when the decision throws", async () => {
+    const provider = createFakeSentinelProvider()
+    Object.defineProperty(provider, "capabilities", {
+      configurable: true,
+      get() {
+        throw new Error("capabilities unavailable")
+      },
+    })
+    const result = await captureSentinelLedger(
+      provider,
+      makeFakeEvent({ id: "evt_error", type: "fake.widget.created", subject: "fake:widget-1" }),
+    )
+    expect(result.line.grant).toBe("error")
+    expect(result.calls).toHaveLength(1)
+    expect(result.calls[0]!.msg.text).toBe("[fake] fake.widget.created on fake:widget-1")
   })
 
   it("writes the line only after sendMessage resolves", async () => {

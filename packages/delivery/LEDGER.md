@@ -29,12 +29,21 @@ A failed write is swallowed: recording must never alter delivery.
   "applied": true,                  // whether the level drove this delivery
   "outcome": "delivered",           // see below
   "routedTo": "sess_...",           // optional; actual target when retargeted
-  "messageId": "msg_..."            // optional; the delivered message's id
+  "messageId": "msg_...",           // optional; the delivered message's id
+  "grant": "allow"                  // optional; shadow publish/wake verdict
 }
 ```
 
 There is deliberately no `tier`, `batchId`, `prev`, payload, summary or text
 field. The hash chain (`prev`) is the NEXT PR; lines are not linked yet.
+
+`grant` is a shadow verdict: it records what a publish/wake permission check
+would have decided without changing anything. It is `allow`, `deny`,
+`unknown` (the producer declares no capabilities) or `error` (the check
+itself failed). A producer that declares subject schemes is `deny` for a
+subject outside them. The check is synchronous; a throw is recorded as
+`error` and never propagates to delivery. The follow and message producers
+declare no capabilities yet, so they record `unknown`.
 
 `outcome` is one of:
 

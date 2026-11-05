@@ -38,9 +38,11 @@ import {
   createDeliveryBatcher,
   levelFromDecision,
   levelToTier,
+  shadowDeliveryGrant,
   shouldApplyDelivery,
   type DeliveryApplyConfig,
   type DeliveryBatcher,
+  type DeliveryGrantDecider,
   type Envelope,
   type LedgerLine,
   type LedgerOutcome,
@@ -266,6 +268,9 @@ export interface SentinelRuntimeOptions {
    *  behaviour); an enabled type has its level APPLIED to the target
    *  urgency, and a level-0 event is dropped without a send. */
   apply?: () => DeliveryApplyConfig | undefined
+  /** Shadow grant decider for ledger observation (tests / future
+   *  enforcement). Omitted → the capability-based shadow decider. */
+  grantDecide?: DeliveryGrantDecider
 }
 
 export interface SentinelRuntime {
@@ -828,6 +833,12 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
       cap: 3,
       rule: prepared.effectiveTriage.rule,
       applied: prepared.applied,
+      grant: shadowDeliveryGrant({
+        producer: prepared.provider,
+        subject: prepared.event.subject,
+        target: prepared.targetSessionId,
+        ...(opts.grantDecide !== undefined ? { decide: opts.grantDecide } : {}),
+      }),
       outcome: outcome.outcome,
       ...(outcome.routedTo !== undefined ? { routedTo: outcome.routedTo } : {}),
       ...(outcome.messageId !== undefined ? { messageId: outcome.messageId } : {}),
