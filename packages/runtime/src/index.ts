@@ -3790,7 +3790,9 @@ export async function createGateway(
   const subsessions = createSubsessionMinter({
     resolve: async alias => {
       const config = await importsSnapshot()
-      const entry = config.imports.find(e => e.alias === alias)
+      // The same import is addressed by alias (`mcp_imported_call`) and by
+      // import id (`/mcp/imported/<id>`); both must reach this AIP-59 target.
+      const entry = config.imports.find(e => e.alias === alias || e.id === alias)
       if (!entry || entry.subsession !== "aip-59" || entry.snapshot.type !== "http") return undefined
       const { config: connection } = await resolveImportConnection(entry, getMcpCredentialDeps())
       if (connection.type !== "http" || typeof connection.url !== "string") return undefined
@@ -3802,7 +3804,7 @@ export async function createGateway(
       } catch {
         return undefined
       }
-      return { baseUrl, headers: { ...(connection.headers ?? {}) } }
+      return { baseUrl, headers: { ...(connection.headers ?? {}) }, key: entry.alias }
     },
     // AIP-63 M7: store the recordings LINK on the session, never a copy.
     onMinted: (sessionId, target) => {
