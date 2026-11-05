@@ -161,6 +161,19 @@ describe("claude-socket wake adapter", () => {
       expect(h.connections).toBe(0)
     })
 
+    it("refuses a socket path that is not a socket owned by this user", async () => {
+      await new Promise<void>(resolve => h.server.close(() => resolve()))
+      writeFileSync(h.socketPath, "not a socket")
+      const result = await wakeClaudeSocket({
+        sessionId: "cc:chat-1",
+        text: "wake",
+        urgency: "next-turn",
+        config: config(h),
+      })
+      expect(result).toMatchObject({ written: false, reason: "unsafe-socket", pid: h.pid })
+      expect(h.frames).toHaveLength(0)
+    })
+
     it("falls back when the socket is missing", async () => {
       await new Promise<void>(resolve => h.server.close(() => resolve()))
       const result = await wakeClaudeSocket({
@@ -216,7 +229,7 @@ describe("claude-socket wake through the sessions registry", () => {
     await stopHarness(h)
   })
 
-  it("wakes an idle level-2 message and keeps the inbox delivery", async () => {
+  it("wakes an idle level-2 message and consumes it instead of parking it", async () => {
     const res = await registry.sendMessage(
       createSessionMessage({
         to: "cc:chat-1",
@@ -226,9 +239,10 @@ describe("claude-socket wake through the sessions registry", () => {
         text: "ping",
       }),
     )
-    expect(res.delivered).toEqual({ via: "inbox" })
+    expect(res.delivered).toEqual({ via: "socket" })
     expect(res.wake).toMatchObject({ written: true, reason: "written", pid: h.pid })
-    expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["ping"])
+    // No inbox copy: a later Stop/UserPromptSubmit hook must not re-inject it.
+    expect(registry.listInbox("cc:chat-1")).toEqual([])
 
     await waitFor(() => h.frames.length >= 2)
     expect(h.frames[0]).toEqual({ type: "auth", token: "super-secret-key" })
@@ -283,7 +297,9 @@ describe("claude-socket wake through the sessions registry", () => {
         text: "off",
       }),
     )
-    expect(res.wake).toMatchObject({ written: false, reason: "disabled" })
+    expect(res.wake).toBeUndefined()
+    expect(res.delivered).toEqual({ via: "inbox" })
+    expect(registry.listInbox("cc:chat-1")!.map(m => m.text)).toEqual(["off"])
     await new Promise(resolve => setTimeout(resolve, 50))
     expect(h.frames).toHaveLength(0)
   })
@@ -298,8 +314,8 @@ describe("claude session registration lookup", () => {
     await stopHarness(h)
   })
 
-  it("finds the registration by sessionId and never returns the key", () => {
-    const found = findClaudeSessionRegistration("chat-1", h.claudeSessionsDir)
+  it("finds the registration by sessionId and never returns the key", async () => {
+    const found = await findClaudeSessionRegistration("chat-1", h.claudeSessionsDir)
     expect(found).toMatchObject({ pid: h.pid, sessionId: "chat-1", permissionMode: "auto" })
     expect(JSON.stringify(found)).not.toContain("super-secret-key")
   })

@@ -180,7 +180,9 @@ An `external` row idle past the liveness window (30 minutes by default) is
 shown as `exited`, but it keeps accepting inbox delivery: nothing can restart
 it, so events wait in the inbox until the next hook run, and any later MCP
 request or inbox poll marks it `running` again. A row that was killed or
-retired is refused.
+retired is refused. With `daemon.claudeSocketWake` enabled, a level 2+ message
+that successfully wakes the process over its own unix socket is consumed
+instead of parked, so the inbox hook will not deliver it a second time.
 
 ## `hook pr-stamp`
 

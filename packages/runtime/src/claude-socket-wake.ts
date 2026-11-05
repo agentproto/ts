@@ -20,21 +20,25 @@
  * This adapter is OFF by default (`daemon.claudeSocketWake`). It only writes
  * for envelope level 2 and above (next-turn / steer). Level 1 (fyi) and level
  * 0 write nothing. A `bypassPermissions` target, a missing registration, a
- * missing socket or a missing key all fall back to the existing inbox
- * delivery and report why. The key is read at call time and is never logged
- * or persisted.
+ * missing socket, a socket that is not a user-owned socket, or a missing key
+ * all fall back to the existing inbox delivery and report why. The key is
+ * read at call time and is never logged or persisted.
  */
 
 import { randomUUID } from "node:crypto"
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import type { Stats } from "node:fs"
+import { lstat, readdir, readFile } from "node:fs/promises"
 import { connect } from "node:net"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import type { MessageUrgency } from "./session-message.js"
 
 export const CLAUDE_SOCKET_WAKE_DEFAULT_SOCKET_DIR = "/tmp/cc-socks"
-const DEFAULT_CONNECT_TIMEOUT_MS = 1_500
-const DEFAULT_WRITE_TIMEOUT_MS = 1_500
+// A local unix socket accepts and drains in microseconds; these budgets only
+// bound a wedged peer. The send path awaits the wake, so keep the worst case
+// well under a second rather than stalling a `sendMessage` for ~3s.
+const DEFAULT_CONNECT_TIMEOUT_MS = 250
+const DEFAULT_WRITE_TIMEOUT_MS = 250
 
 /** Envelope level per delivery tier. Level 2 and above may wake a socket. */
 const URGENCY_LEVEL: Record<MessageUrgency, number> = {
@@ -84,6 +88,7 @@ export type ClaudeSocketWakeReason =
   | "no-registration"
   | "bypass-permissions"
   | "no-socket"
+  | "unsafe-socket"
   | "no-key"
   | "socket-error"
 
@@ -103,10 +108,10 @@ export function claudeSessionIdFromExternalId(sessionId: string): string | undef
   return id.length > 0 ? id : undefined
 }
 
-function readRegistrations(dir: string): ClaudeSessionRegistration[] {
+async function readRegistrations(dir: string): Promise<ClaudeSessionRegistration[]> {
   let entries: string[]
   try {
-    entries = readdirSync(dir)
+    entries = await readdir(dir)
   } catch {
     return []
   }
@@ -115,7 +120,7 @@ function readRegistrations(dir: string): ClaudeSessionRegistration[] {
     if (!entry.endsWith(".json")) continue
     const file = join(dir, entry)
     try {
-      const record = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>
+      const record = JSON.parse(await readFile(file, "utf8")) as Record<string, unknown>
       const pid = typeof record.pid === "number" ? record.pid : Number(record.pid)
       if (!Number.isInteger(pid) || pid <= 0) continue
       if (typeof record.sessionId !== "string" || record.sessionId.length === 0) continue
@@ -133,18 +138,21 @@ function readRegistrations(dir: string): ClaudeSessionRegistration[] {
   return found
 }
 
-export function findClaudeSessionRegistration(
+export async function findClaudeSessionRegistration(
   sessionId: string,
   claudeSessionsDir: string,
-): ClaudeSessionRegistration | undefined {
-  return readRegistrations(claudeSessionsDir).find(record => record.sessionId === sessionId)
+): Promise<ClaudeSessionRegistration | undefined> {
+  return (await readRegistrations(claudeSessionsDir)).find(record => record.sessionId === sessionId)
 }
 
 /** `<pid>.<hash>.key` in the registration directory. Never returns contents. */
-export function findClaudeKeyFile(claudeSessionsDir: string, pid: number): string | undefined {
+export async function findClaudeKeyFile(
+  claudeSessionsDir: string,
+  pid: number,
+): Promise<string | undefined> {
   let entries: string[]
   try {
-    entries = readdirSync(claudeSessionsDir)
+    entries = await readdir(claudeSessionsDir)
   } catch {
     return undefined
   }
@@ -159,6 +167,25 @@ export function claudeSocketPath(socketDir: string, pid: number): string {
 
 export function isBypassPermissions(registration: ClaudeSessionRegistration): boolean {
   return registration.permissionMode === "bypassPermissions" || registration.status === "bypassPermissions"
+}
+
+/**
+ * A socket directory under `/tmp` is world-writable, so a path there can be
+ * planted or replaced with a symlink at any time. `lstat` (never `stat`)
+ * guarantees the entry itself is a socket and that it belongs to this user
+ * before any key material is written into it.
+ */
+async function checkSocket(socketPath: string): Promise<"ok" | "missing" | "unsafe"> {
+  let stat: Stats
+  try {
+    stat = await lstat(socketPath)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return code === "ENOENT" ? "missing" : "unsafe"
+  }
+  if (!stat.isSocket()) return "unsafe"
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined
+  return uid === undefined || stat.uid === uid ? "ok" : "unsafe"
 }
 
 function writeLines(socketPath: string, lines: readonly string[], opts: {
@@ -241,19 +268,25 @@ export async function wakeClaudeSocket(input: {
 
   const claudeSessionsDir = config.claudeSessionsDir ?? defaultClaudeSessionsDir()
   const socketDir = config.socketDir ?? CLAUDE_SOCKET_WAKE_DEFAULT_SOCKET_DIR
-  const registration = findClaudeSessionRegistration(claudeSessionId, claudeSessionsDir)
+  const registration = await findClaudeSessionRegistration(claudeSessionId, claudeSessionsDir)
   if (!registration) return reason("no-registration")
   if (isBypassPermissions(registration)) return reason("bypass-permissions", { pid: registration.pid })
 
   const socketPath = claudeSocketPath(socketDir, registration.pid)
-  if (!existsSync(socketPath)) return reason("no-socket", { pid: registration.pid, socketPath })
+  const socketState = await checkSocket(socketPath)
+  if (socketState !== "ok") {
+    return reason(socketState === "missing" ? "no-socket" : "unsafe-socket", {
+      pid: registration.pid,
+      socketPath,
+    })
+  }
 
-  const keyPath = findClaudeKeyFile(claudeSessionsDir, registration.pid)
+  const keyPath = await findClaudeKeyFile(claudeSessionsDir, registration.pid)
   if (!keyPath) return reason("no-key", { pid: registration.pid, socketPath })
 
   let token: string
   try {
-    token = readFileSync(keyPath, "utf8").trim()
+    token = (await readFile(keyPath, "utf8")).trim()
   } catch {
     return reason("no-key", { pid: registration.pid, socketPath })
   }

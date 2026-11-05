@@ -1506,8 +1506,9 @@ function recordPromptDedupe(desc: SessionDescriptor, key: string, now: number): 
 export interface SendMessageResult {
   messageId: string
   /** Set when the message already reached the recipient's context (a
-   *  waiter, a dispatched turn, an interrupt) or was parked as `fyi`
-   *  (`via: "inbox"`); `null` while it's queued behind a busy turn. */
+   *  waiter, a dispatched turn, an interrupt, or an external Claude Code
+   *  socket wake) or was parked for the hook (`via: "inbox"`); `null` while
+   *  it's queued behind a busy turn. */
   delivered: { via: MessageDeliveryVia } | null
   queued: boolean
   urgencyApplied: MessageUrgency
@@ -1516,9 +1517,10 @@ export interface SendMessageResult {
    *  un-consumed blocker/question messages and this one is noise. */
   refused?: "inbox-full"
   /** External Claude Code rows only: what the opt-in `claude-socket` wake
-   *  adapter did with this message. Absent for every other kind. A skipped
-   *  or failed wake still delivered to the inbox above; `reason` records the
-   *  fallback. */
+   *  adapter did with this message. Absent for every other kind, and when the
+   *  feature is off. `written` means the socket delivered it (`delivered` is
+   *  `via: "socket"`, nothing is parked); a skipped or failed wake falls back
+   *  to the inbox and `reason` records why. */
   wake?: ClaudeSocketWakeOutcome
 }
 
@@ -14062,9 +14064,38 @@ export function createSessionsRegistry(opts?: {
         waiter.resolve([stamped!])
         return { messageId: msg.id, delivered: { via: "wait" }, queued: false, urgencyApplied: msg.urgency }
       }
-      // An external session has no process to start a turn on: every tier
-      // lands in its inbox (the hook / `inbox_list` pulls it from there).
+      // An external session has no process to start a turn on. A level-2+
+      // envelope may be delivered straight over its Claude Code socket; a
+      // written wake IS the delivery, so it is never also parked in the
+      // inbox — a later Stop/UserPromptSubmit hook would re-inject a parked
+      // copy and the session would see the message twice. Every other case
+      // (fyi, disabled, any skip/fallback) lands in the inbox for the hook /
+      // `inbox_list` to pull.
       if (msg.urgency === "fyi" || rt.desc.kind === "external") {
+        let wake: ClaudeSocketWakeOutcome | undefined
+        if (rt.desc.kind === "external" && claudeSocketWake?.enabled) {
+          wake = await wakeClaudeSocket({
+            sessionId: rt.desc.id,
+            text: msg.text,
+            urgency: msg.urgency,
+            config: claudeSocketWake,
+          })
+          if (wake.written) {
+            const delivered: SessionMessage = {
+              ...msg,
+              delivered: { via: "socket", at: new Date().toISOString() },
+            }
+            recordSent(delivered)
+            emitSessionMessage(delivered)
+            return {
+              messageId: msg.id,
+              delivered: { via: "socket" },
+              queued: false,
+              urgencyApplied: msg.urgency,
+              wake,
+            }
+          }
+        }
         const parked: SessionMessage = { ...msg, delivered: { via: "inbox", at: new Date().toISOString() } }
         if (!addToInbox(rt, parked)) {
           // Refused: don't ack a delivery that never happened, don't emit.
@@ -14078,15 +14109,6 @@ export function createSessionsRegistry(opts?: {
         }
         recordSent(parked)
         emitSessionMessage(parked)
-        const wake =
-          rt.desc.kind === "external"
-            ? await wakeClaudeSocket({
-                sessionId: rt.desc.id,
-                text: msg.text,
-                urgency: msg.urgency,
-                config: claudeSocketWake,
-              })
-            : undefined
         return {
           messageId: msg.id,
           delivered: { via: "inbox" },

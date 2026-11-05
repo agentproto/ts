@@ -770,7 +770,7 @@ export interface SessionMessageEvent {
     | "peer"
   kind: "report" | "question" | "blocker" | "done" | "notice"
   urgency: "fyi" | "next-turn" | "steer" | "interrupt"
-  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "inbox"; at: string; turnSeq?: number }
+  delivered?: { via: "wait" | "steer" | "turn" | "interrupt" | "socket" | "inbox"; at: string; turnSeq?: number }
   ts: string
 }
 
