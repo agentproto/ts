@@ -28,6 +28,7 @@ import type {
   FeaturesConfig,
   PairingConfig,
   ProfileConfig,
+  DeliveryConfig,
   ProvenanceConfig,
   ApprovalsConfig,
   SessionsConfig,
@@ -498,6 +499,17 @@ const pairPageSchema = z.string().superRefine((value, ctx) => {
   }
 })
 
+const deliveryConfigSchema: z.ZodType<DeliveryConfig> = z
+  .object({
+    apply: z
+      .object({
+        types: z.record(z.string(), z.boolean()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
+
 const pairingConfigSchema: z.ZodType<PairingConfig> = z
   .object({
     rendezvous: z.string().optional(),
@@ -578,6 +590,7 @@ export const agentprotoConfigSchema = z
     approvals: approvalsConfigSchema.optional(),
     agentsMd: agentsMdConfigSchema.optional(),
     memory: memoryConfigSchema.optional(),
+    delivery: deliveryConfigSchema.optional(),
     models: z.record(z.string(), modelRoleValueSchema).optional(),
     modelRolePreset: z.enum(MODEL_ROLE_PRESET_NAMES).optional(),
     titler: titlerConfigSchema.optional(),
@@ -1016,6 +1029,19 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     label: "Memory store root",
     help: "Root directory of the default AIP-72 memory store (items/<type>/<id>.md, proposals/<id>.md), read by the memory_* tools and the spawn digest. An agent's AIP-42 memory.store wins when it names a files root.",
     default: "~/.agentproto/memory",
+  },
+  {
+    path: "delivery.apply.types",
+    schema: z.record(z.string(), z.boolean()),
+    apply: "hot",
+    writable: true,
+    section: "advanced",
+    label: "Delivery apply types",
+    help:
+      "Envelope-type glob -> apply the kernel level (fyi / next-turn / steer). " +
+      "Absent or empty applies nothing, so delivery is unchanged by default. " +
+      "An exact type beats a glob; the longest matching prefix wins.",
+    default: {},
   },
   {
     path: "follow.triage.enabled",

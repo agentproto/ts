@@ -26,7 +26,7 @@ A failed write is swallowed: recording must never alter delivery.
   "level": 2,                       // 3 steer, 2 actionable, 1 info, 0 noise
   "cap": 3,                         // highest level this producer may apply
   "rule": "failure",                // classifier / triage rule that decided
-  "applied": false,                 // whether the level was acted on
+  "applied": true,                  // whether the level drove this delivery
   "outcome": "delivered",           // see below
   "routedTo": "sess_...",           // optional; actual target when retargeted
   "messageId": "msg_..."            // optional; the delivered message's id
@@ -51,8 +51,11 @@ field. The hash chain (`prev`) is the NEXT PR; lines are not linked yet.
 
 - `sentinel`: `subscriptionId` is the sentinel id, `eventId` the event id,
   `repeatKey` its triage key, `level` from the triage decision (`wake` 2,
-  `fyi` 1, `drop` 0), `rule` the triage rule, `applied: false`, and
-  `messageId` the built message id. Outcomes cover every path: delivered or
+  `fyi` 1, `drop` 0), `rule` the triage rule, and `messageId` the built
+  message id. `applied` is true when `delivery.apply.types` opted the event
+  type in: the level then chose the urgency (`targetUrgency`) and a level 0
+  is written with outcome `dropped` without sending. Unmatched types deliver
+  as before and record `applied: false`. Outcomes cover every path: delivered or
   queued from the send result, `retargeted` when handed to a live parent
   (`routedTo`), `parked` when parked, `duplicate` when another watch already
   covers the subject.
@@ -61,8 +64,9 @@ field. The hash chain (`prev`) is the NEXT PR; lines are not linked yet.
   else `follower:<followerId>`; `subject` is the followed session id;
   `eventId` is deterministic from the entry: `<sessionId>:<event>:<ts>`;
   `repeatKey` is the entry key; `floor` is `crash` for a crash and
-  `awaiting-human` for the other must-wake events; `applied` matches whether
-  triage was applied to this digest. Entries not included in the delivered
+  `awaiting-human` for the other must-wake events; `applied` is per entry -
+  true when `delivery.apply.types` (or the follow's/daemon's
+  `triage.enabled`) opted that event's type in, else false. Entries not included in the delivered
   digest (triage drop, fyi-only omission) are `dropped` with no `messageId`;
   delivered entries carry the digest message's `messageId`.
 - `message`: the parent relay (`subscriptionId: "message:parent-relay"`) and

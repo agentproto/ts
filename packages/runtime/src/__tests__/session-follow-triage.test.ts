@@ -757,4 +757,101 @@ describe("follow-triage", () => {
       expect(sent[0]!.urgency).toBe("fyi")
     })
   })
+
+  // ── The delivery.apply switch ───────────────────────────────────────
+  describe("delivery.apply switch", () => {
+    it("applies the classified level when the event type is opted in", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { apply: { types: { "session.*": true } } },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")[0]!)
+      expect(line).toMatchObject({ applied: true, level: 1, rule: "operator-exit" })
+    })
+
+    it("leaves behaviour untouched when the type is not opted in", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { apply: { types: { "session.pr_merged": true } } },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")[0]!)
+      expect(line).toMatchObject({ applied: false })
+    })
+
+    it("drops an applied level-0 event", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        { apply: { types: { "session.*": true } } },
+      )
+      bus.emit({
+        type: "session:message",
+        sessionId: "chief",
+        messageId: "msg_1",
+        fromSessionId: "w",
+        relation: "child",
+        kind: "report",
+        urgency: "next-turn",
+        ts: at(-5_000),
+      } as never)
+      turnEnd("w")
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")[0]!)
+      expect(line).toMatchObject({ applied: true, level: 0, outcome: "dropped", rule: "reported-turn-end" })
+    })
+
+    it("treats the per-follow triage switch as the only override: true applies every type", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] }, triage: { enabled: true } },
+        { apply: { types: {} } },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")[0]!)
+      expect(line).toMatchObject({ applied: true, level: 1 })
+    })
+
+    it("lets an explicit per-follow false win over an enabled glob", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] }, triage: { enabled: false } },
+        { apply: { types: { "session.*": true } } },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("next-turn")
+      const line = JSON.parse(readFileSync(join(tmp, "delivery-ledger.jsonl"), "utf8").trim().split("\n")[0]!)
+      expect(line).toMatchObject({ applied: false })
+    })
+
+    it("keeps the daemon follow.triage.enabled=true as an apply-all default", async () => {
+      const { sent } = setup(
+        [running("chief"), running("w")],
+        { selector: { sessionIds: ["w"] } },
+        {
+          apply: { types: {} },
+          triage: async () => resolveFollowTriageConfig(defaultFollowTriageConfig(), { enabled: true }),
+        },
+      )
+      exited("w", { reason: "operator-stopped" })
+      await handle!.flush()
+      expect(sent).toHaveLength(1)
+      expect(sent[0]!.urgency).toBe("fyi")
+    })
+  })
 })
