@@ -19,6 +19,7 @@ describe("mergeDesktopSettings", () => {
         PostToolUse: [inboxEntry, prStampEntry],
         SessionStart: [inboxEntry],
         Stop: [inboxEntry],
+        Notification: [inboxEntry],
       },
     })
   })

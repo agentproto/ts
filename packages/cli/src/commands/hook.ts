@@ -72,9 +72,9 @@ daemon did not spawn. After a successful \`gh pr create\` it appends the
 created PR's body. It skips daemon-spawned sessions (AGENTPROTO_SESSION_ID
 starting with sess_), never stamps twice, and always exits 0.
 
-\`install --host claude-desktop\` merges the four \`hook inbox\` hooks
-(UserPromptSubmit, PostToolUse, SessionStart, Stop) and the \`hook pr-stamp\`
-hook into a Claude Desktop settings file (default ~/.claude/settings.json, or
+\`install --host claude-desktop\` merges the five \`hook inbox\` hooks
+(UserPromptSubmit, PostToolUse, SessionStart, Stop, Notification) and the
+\`hook pr-stamp\` hook into a Claude Desktop settings file (default ~/.claude/settings.json, or
 $CLAUDE_CONFIG_DIR). It no longer writes \`env.AGENTPROTO_SESSION_ID\` (each
 chat uses \`cc:<session_id>\`); a legacy \`claude-desktop\` value is removed. It
 is idempotent and prints the MCP URL; --dry-run writes nothing.
@@ -91,6 +91,7 @@ export const HOOK_EVENTS: ReadonlySet<string> = new Set([
   "PostToolUse",
   "SessionStart",
   "Stop",
+  "Notification",
 ])
 /** Urgency rank at which a Stop hook blocks (level 3); `interrupt` (level 4) ranks higher. */
 const MUST_WAKE_URGENCY_RANK = 3
@@ -445,6 +446,11 @@ async function runInbox(args: readonly string[], deps: HookDeps): Promise<number
       /* no daemon / refused claim / old daemon: fall through to the GET */
     }
   }
+
+  // Notification is a liveness signal only: the touch above is the whole
+  // job, so an idle Claude Code session keeps its external row fresh without
+  // injecting a turn or blocking anything.
+  if (eventName === "Notification") return 0
 
   const listed = await httpGetJson<{ inbox?: InboxItem[] }>(
     `${endpoint.url}/sessions/${encodeURIComponent(sessionId)}/inbox`,

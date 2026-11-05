@@ -48,7 +48,7 @@ export function normalizeMessageRelation(value: string): MessageRelation | undef
 }
 export type MessageKind = "report" | "question" | "blocker" | "done" | "notice"
 export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
-export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
+export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "socket" | "inbox"
 
 export const MESSAGE_KINDS: readonly MessageKind[] = ["report", "question", "blocker", "done", "notice"]
 export const MESSAGE_URGENCIES: readonly MessageUrgency[] = ["fyi", "next-turn", "steer", "interrupt"]

@@ -15,7 +15,7 @@ export type MessageUrgency = "fyi" | "next-turn" | "steer" | "interrupt"
 type _TierIsUrgency = Exclude<Tier, "drop"> extends MessageUrgency ? true : never
 const _tierIsUrgency: _TierIsUrgency = true
 void _tierIsUrgency
-export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "inbox"
+export type MessageDeliveryVia = "wait" | "steer" | "turn" | "interrupt" | "socket" | "inbox"
 export type MessageRelation =
   | "child"
   | "parent"

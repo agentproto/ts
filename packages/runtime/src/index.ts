@@ -2896,6 +2896,7 @@ export async function createGateway(
     ...(typeof externalSessionLivenessMs === "number" && externalSessionLivenessMs > 0
       ? { externalSessionLivenessMs }
       : {}),
+    ...(daemonConfig.daemon?.claudeSocketWake ? { claudeSocketWake: { enabled: true } } : {}),
     onOpenedPr: sentinelAutoLinker.onOpenedPr,
     ...(daemonConfig.sessions?.eventsDir
       ? { transcriptDir: defaultTranscriptBaseDir() }
