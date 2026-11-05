@@ -655,11 +655,17 @@ jobs:
     name: Hygiene checks
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
+    # The provenance check may poll the PR body for up to
+    # PROVENANCE_GRACE_SECONDS (default 600, scripts/check-provenance-footer.mjs).
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+
+      - name: Run provenance-footer check tests
+        run: node --test scripts/check-provenance-footer.test.mjs
 
       - name: Check scratch docs, AI-attribution trailers, and provenance footer
         # Pass PR_TITLE via env, not inline `${{ … }}` interpolation — see the
@@ -680,11 +686,6 @@ jobs:
           # Match on the email domain, not the display name — a human
           # contributor named "Claude" (or similar) must not false-positive.
           ATTRIBUTION_PATTERN='Co-authored-by:.*@anthropic\.com|Co-authored-by:.*claude\.ai|Generated with'
-          # Match a RENDERED footer (`<sub>…@agentproto-bot…`), not a bare
-          # mention of the marker in prose — keep in sync with
-          # hasProvenanceFooter in packages/runtime/src/pr-provenance.ts (not
-          # imported here, this is a plain shell script).
-          PROVENANCE_PATTERN='<sub>[^<]*@agentproto-bot'
 
           # 1. Root-level scratch docs (PLAN.md, BRIEF.md, MERGE-CONFLICT-BRIEF*.md)
           # are per-worktree planning scratch and must never land in the repo —
@@ -738,10 +739,21 @@ jobs:
           # automatically for every session it spawns, so this only fires for
           # work that bypassed it. A human opening a PR under their own GitHub
           # login is unaffected — the author field already identifies them.
-          if [ "$PR_AUTHOR" = "agentiknet" ] && ! printf '%s' "$PR_BODY" | grep -qE "$PROVENANCE_PATTERN"; then
-            echo "::error::This PR was opened under the shared 'agentiknet' account but carries no agentproto provenance footer."
-            echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a rendered '@agentproto-bot' footer naming the session/role by hand."
-            FAIL=1
+          #
+          # Every stamping lane edits the footer in AFTER `gh pr create`, so
+          # `opened` always sees a footer-less body and this job (which does
+          # not run on `edited`) went red on PRs stamped minutes later
+          # (agentproto/ts#2541, #2542). The script polls the PR body for a
+          # bounded grace period and fails only if the footer never shows up.
+          # No point waiting when the job is already failing: check once.
+          if [ "$PR_AUTHOR" = "agentiknet" ]; then
+            GRACE="${PROVENANCE_GRACE_SECONDS:-600}"
+            if [ "$FAIL" -ne 0 ]; then GRACE=0; fi
+            if ! PR_BODY="$PR_BODY" PROVENANCE_GRACE_SECONDS="$GRACE" node scripts/check-provenance-footer.mjs; then
+              echo "::error::This PR was opened under the shared 'agentiknet' account but carries no agentproto provenance footer (waited ${GRACE}s for one to be stamped)."
+              echo "The author field can't tell us which agent/role opened it without one. Either let agentproto's gh-provenance shim stamp it (provenance.wrapGh), or add a rendered '@agentproto-bot' footer naming the session/role by hand."
+              FAIL=1
+            fi
           fi
 
           if [ "$FAIL" -ne 0 ]; then
