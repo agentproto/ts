@@ -373,6 +373,29 @@ describe("turn retry — retried classes", () => {
     h.done()
   })
 
+  it("retries an EPROTO cut after read-only shell commands (opencode titles the call with its command)", async () => {
+    const shell = (command: string, id: string): AgentStreamEvent[] => [
+      { kind: "tool-call", toolCallId: id, toolName: "bash", arguments: {} } as AgentStreamEvent,
+      { kind: "tool-call", toolCallId: id, toolName: command, arguments: { command }, isUpdate: true } as AgentStreamEvent,
+      { kind: "tool-result", toolCallId: id, result: "ok" } as AgentStreamEvent,
+    ]
+    const h = harness(
+      [
+        fail("EPROTO: The TLS handshake failed. Does the server speak TLS on this port?", [
+          ...shell("git status --short && git diff --stat", "t1"),
+          ...shell('grep -n "turn-retry" /tmp/x.log | tail -20', "t2"),
+          ...toolCall("read", "t3"),
+        ]),
+        ok,
+      ],
+      { on: ["upstream-5xx"], ...FAST },
+    )
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await until(() => h.prompts.length === 2, "continuation")
+    expect(h.phases()).toEqual(["scheduled", "sent"])
+    h.done()
+  })
+
   it("retryAfterToolCalls opts a side-effecting turn back in", async () => {
     const h = harness([fail("429 status code", toolCall("bash", "t1")), ok], {
       on: ["rate-limit"],
@@ -459,6 +482,21 @@ describe("turn retry — never retried", () => {
     await h.registry.sendPrompt(h.desc.id, "go")
     await expectNoRetry(h, ["skipped"])
     expect(h.events[0]?.skipReason).toContain("bash")
+  })
+
+  it("an EPROTO cut after read-only commands and one edit", async () => {
+    const h = harness(
+      [
+        fail("EPROTO: The TLS handshake failed. Does the server speak TLS on this port?", [
+          ...toolCall("git status --short && git diff --stat", "t1"),
+          ...toolCall("edit", "t2"),
+        ]),
+      ],
+      { on: ["upstream-5xx"], ...FAST },
+    )
+    await h.registry.sendPrompt(h.desc.id, "go")
+    await expectNoRetry(h, ["skipped"])
+    expect(h.events[0]?.skipReason).toContain("1 possibly side-effecting tool call(s) (edit)")
   })
 
   it("a user interrupt (turn ends interrupted, even with an error)", async () => {
