@@ -3953,6 +3953,7 @@ export async function createGateway(
   // unreachable; redeliver them once (the runtime's tick covers retargets).
   sessionEvents.on("session:spawned", ev => {
     void sentinelRuntime.replayParked(ev.sessionId).catch(() => {})
+    void sessionFollow.replayParked(ev.sessionId).catch(() => {})
   })
 
   // Session-follow — wakes a follower session (no polling) when sessions
@@ -4012,6 +4013,7 @@ export async function createGateway(
         },
         id,
       ),
+    replayFollowParked: () => sessionFollow.replayParked(),
   }
   wireRetirementCleanup(wiringCleanupDeps)
 

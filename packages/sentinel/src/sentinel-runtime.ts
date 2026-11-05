@@ -502,7 +502,7 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     event: SentinelEvent,
     msg: SessionMessage,
     parentId: string | undefined,
-    oneShot?: { urgency: MessageUrgency; textPrefix: string },
+    oneShot?: { textPrefix: string },
   ): Promise<DeliveryOutcome | null> {
     const target = sentinel.spec.target
     if (target.kind !== "session" || !parentId || parentId === target.sessionId) return null
@@ -523,8 +523,10 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     }
 
     const key = coalesceKeyFor(event)
+    // Keep the notice's own level: the forward is a re-address, not a
+    // downgrade. The one-shot only adds context to the text.
     const forwarded: SessionMessage = oneShot
-      ? { ...msg, to: parentId, urgency: oneShot.urgency, text: `${oneShot.textPrefix}${msg.text}` }
+      ? { ...msg, to: parentId, text: `${oneShot.textPrefix}${msg.text}` }
       : { ...msg, to: parentId }
     try {
       await opts.registry.sendMessage(forwarded, {
@@ -554,9 +556,8 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
 
   /** The target was closed on purpose: never resume it. Hand the notice to
    *  its live parent and re-target the sentinel there; with no live parent,
-   *  park it in the journal. This first forward is `fyi` with a context
-   *  prefix so the parent is not forced into a turn; later deliveries use the
-   *  sentinel's normal urgency. */
+   *  park it in the journal. The forward keeps the notice's own level (owner
+   *  decision) and only adds a context prefix. */
   async function routeAroundClosedSession(
     sentinel: Sentinel,
     event: SentinelEvent,
@@ -565,7 +566,6 @@ export function createSentinelRuntime(opts: SentinelRuntimeOptions): SentinelRun
     info: SentinelSessionInfo,
   ): Promise<DeliveryOutcome> {
     const retargeted = await retargetToLiveParent(sentinel, event, msg, info.parentSessionId, {
-      urgency: "fyi",
       textPrefix: `[for closed session ${sessionId}] `,
     })
     if (retargeted) return retargeted

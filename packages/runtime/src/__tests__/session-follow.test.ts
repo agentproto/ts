@@ -636,6 +636,65 @@ describe("session-follow", () => {
       expect(parked.text).toContain("[session-follow]")
     })
 
+    it("forwards a retired follower's digest to its live parent, keeps the level, and records routedTo", async () => {
+      const restartSession = vi.fn(async (id: string) => id)
+      const parkedPath = join(tmp, "parked-parent.jsonl")
+      const ledgerPath = join(tmp, "delivery-ledger.jsonl")
+      const { sent } = setup(
+        [
+          running("boss"),
+          running("chief", { status: "killed", endedReason: "operator-stopped", parentSessionId: "boss" }),
+          running("a"),
+        ],
+        { selector: { all: true } },
+        { restartSession, parkedPath, ledgerPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(restartSession).not.toHaveBeenCalled()
+      expect(sent.map(m => m.to)).toEqual(["boss"])
+      // The forward is a re-address, not a downgrade.
+      expect(sent[0]!.urgency).toBe("next-turn")
+      expect(existsSync(parkedPath)).toBe(false)
+      const line = JSON.parse(readFileSync(ledgerPath, "utf8").trim()) as Record<string, unknown>
+      expect(line).toMatchObject({ outcome: "retargeted", routedTo: "boss", level: 2 })
+    })
+
+    it("redelivers a parked digest when its follower respawns, then compacts the journal", async () => {
+      const parkedPath = join(tmp, "parked-respawn.jsonl")
+      const { sent, sessions } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+
+      // The follower respawns under the same id.
+      sessions.set("chief", running("chief") as never)
+      const replayed = await handle!.replayParked("chief")
+      expect(replayed).toBe(1)
+      expect(sent.map(m => m.to)).toEqual(["chief"])
+      expect(sent[0]!.text).toContain("[session-follow]")
+      expect(readFileSync(parkedPath, "utf8").trim()).toBe("")
+    })
+
+    it("does not replay a parked digest for a follower that is still retired", async () => {
+      const parkedPath = join(tmp, "parked-still-retired.jsonl")
+      const { sent } = setup(
+        [running("chief", { status: "killed", endedReason: "operator-stopped" }), running("a")],
+        { selector: { all: true } },
+        { parkedPath },
+      )
+      emitTurnEnd(bus, "a")
+      await handle!.flush()
+      expect(await handle!.replayParked("chief")).toBe(0)
+      expect(sent).toHaveLength(0)
+      expect(readFileSync(parkedPath, "utf8")).toContain('"follower":"chief"')
+    })
+
     it("an ARCHIVED dead follower is never revived or re-minted; the digest is parked", async () => {
       const restartSession = vi.fn(async (id: string) => id)
       const parkedPath = join(tmp, "parked-archived.jsonl")

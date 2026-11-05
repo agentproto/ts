@@ -31,7 +31,7 @@
  * events are not silently lost. The follow record is always kept.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs"
+import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
 import { homedir } from "node:os"
 
@@ -152,6 +152,11 @@ export interface SessionFollowHandle {
   /** Deliver every pending batch now (or just `followerId`'s). Resolves once
    *  the deliveries settled. */
   flush(followerId?: string): Promise<void>
+  /** Redeliver parked digests whose follower is alive again. With a session
+   *  id: only entries parked for it (call it when that follower respawns).
+   *  Without: every entry whose follower currently accepts delivery. Resolves
+   *  to the number redelivered. */
+  replayParked(followerId?: string): Promise<number>
   /** Unsubscribe and drop pending batches (shutdown). */
   dispose(): void
 }
@@ -625,18 +630,79 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   const reports = new Map<string, Map<string, number>>()
   const REPORT_RETENTION_MS = 60 * 60_000
 
-  function park(followerId: string, text: string, reason: string): void {
+  function park(followerId: string, text: string, reason: string, urgency: FollowUrgency): void {
     log(`[session-follow] follower ${followerId}: ${reason} — digest parked`)
     try {
       mkdirSync(dirname(parkedPath), { recursive: true })
       appendFileSync(
         parkedPath,
-        JSON.stringify({ follower: followerId, reason, text, ts: new Date().toISOString() }) + "\n",
+        JSON.stringify({ follower: followerId, reason, text, urgency, ts: new Date().toISOString() }) + "\n",
         { mode: 0o600 },
       )
     } catch (err) {
       log(`[session-follow] failed to park digest for ${followerId}: ${describeError(err)}`)
     }
+  }
+
+  function isDeliverableNow(desc: SessionDescriptor | undefined): boolean {
+    return desc !== undefined && !isRetired(desc) && (isAlive(desc) || isExternalInboxOpen(desc))
+  }
+
+  /** One replay at a time: a spawn/changed burst must not send the same
+   *  parked line twice before the journal has been compacted. */
+  let replayChain: Promise<unknown> = Promise.resolve()
+
+  function replayParked(followerId?: string): Promise<number> {
+    const run = replayChain.then(() => replayParkedNow(followerId))
+    replayChain = run.catch(() => undefined)
+    return run
+  }
+
+  async function replayParkedNow(followerId?: string): Promise<number> {
+    let raw: string
+    try {
+      raw = readFileSync(parkedPath, "utf8")
+    } catch {
+      return 0
+    }
+    const delivered: string[] = []
+    for (const line of raw.split("\n")) {
+      if (!line.trim()) continue
+      let entry: { follower?: string; text?: string; urgency?: string }
+      try {
+        entry = JSON.parse(line) as typeof entry
+      } catch {
+        continue
+      }
+      if (typeof entry.follower !== "string" || typeof entry.text !== "string") continue
+      if (followerId !== undefined && entry.follower !== followerId) continue
+      // A still-dead or retired follower keeps its entry for a later replay:
+      // parking is a journal, not a queue that ticks forever.
+      if (!isDeliverableNow(registry.get(entry.follower))) continue
+      const urgency: FollowUrgency = entry.urgency === "fyi" ? "fyi" : "next-turn"
+      try {
+        await sendOnce(entry.follower, entry.text, entry.follower, urgency)
+      } catch (err) {
+        log(`[session-follow] parked replay for ${entry.follower} failed: ${describeError(err)}`)
+        continue
+      }
+      delivered.push(line)
+    }
+    if (delivered.length === 0) return 0
+    // Re-read so a digest parked while the sends were in flight survives.
+    try {
+      const remaining = readFileSync(parkedPath, "utf8").split("\n").filter(l => l.trim())
+      for (const line of delivered) {
+        const at = remaining.indexOf(line)
+        if (at >= 0) remaining.splice(at, 1)
+      }
+      const tmp = `${parkedPath}.tmp`
+      writeFileSync(tmp, remaining.length > 0 ? remaining.join("\n") + "\n" : "", { mode: 0o600 })
+      renameSync(tmp, parkedPath)
+    } catch (err) {
+      log(`[session-follow] failed to compact the parked journal: ${describeError(err)}`)
+    }
+    return delivered.length
   }
 
   // ── Triage ──────────────────────────────────────────────────────────
@@ -897,7 +963,9 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   }
 
   function routeTo(delivery: DigestOutcome, followerId: string): DigestOutcome {
-    return delivery.target === followerId ? delivery : { ...delivery, routedTo: delivery.target }
+    return delivery.target === followerId
+      ? delivery
+      : { ...delivery, outcome: "retargeted", routedTo: delivery.target }
   }
 
   async function reviveAndSend(
@@ -912,7 +980,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       try {
         return routeTo(await sendOnce(replacement, text, replacement, urgency, digest), followerId)
       } catch (err) {
-        park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`)
+        park(followerId, text, `could not deliver to replacement ${replacement}: ${describeError(err)}`, urgency)
         return { target: replacement, outcome: "parked", ...(replacement !== followerId ? { routedTo: replacement } : {}) }
       }
     }
@@ -928,7 +996,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
         for (const f of store.list({ follower: followerId })) store.setFollower(f.id, resumed)
         return routeTo(await sendOnce(resumed, text, resumed, urgency, digest), followerId)
       } catch (err) {
-        park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`)
+        park(followerId, text, `could not resume successor ${headId}: ${describeError(err)}`, urgency)
         return { target: headId, outcome: "parked", ...(headId !== followerId ? { routedTo: headId } : {}) }
       }
     }
@@ -942,11 +1010,30 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
           : desc.endedReason && DELIBERATE_END_REASONS.has(desc.endedReason)
             ? `closed on purpose (${desc.endedReason})`
             : "retired"
-      park(followerId, text, `follower is retired (${why}); not resuming`)
+      // A retired follower with no successor but a LIVE parent: forward the
+      // digest there, keeping the digest's level (owner decision), and record
+      // the hop as `routedTo` in the ledger. The follow stays on the retired
+      // row so a later respawn can replay anything parked.
+      const parentId = desc.parentSessionId
+      const parent = parentId ? registry.get(parentId) : undefined
+      if (!desc.continuedTo && parentId && parentId !== followerId && isDeliverableNow(parent)) {
+        try {
+          return routeTo(await sendOnce(parentId, text, parentId, urgency, digest), followerId)
+        } catch (err) {
+          park(
+            followerId,
+            text,
+            `could not forward to live parent ${parentId}: ${describeError(err)}`,
+            urgency,
+          )
+          return { target: parentId, outcome: "parked", routedTo: parentId }
+        }
+      }
+      park(followerId, text, `follower is retired (${why}); not resuming`, urgency)
       return { target: followerId, outcome: "parked" }
     }
     if (!opts.restartSession) {
-      park(followerId, text, "follower is not alive and no restart hook is wired")
+      park(followerId, text, "follower is not alive and no restart hook is wired", urgency)
       return { target: followerId, outcome: "parked" }
     }
     try {
@@ -957,7 +1044,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
       const delivery = await sendOnce(resumed, text, resumed, urgency, digest)
       return { ...routeTo(delivery, followerId), outcome: "revived" }
     } catch (err) {
-      park(followerId, text, `could not resume follower: ${describeError(err)}`)
+      park(followerId, text, `could not resume follower: ${describeError(err)}`, urgency)
       return { target: followerId, outcome: "parked" }
     }
   }
@@ -1269,6 +1356,7 @@ export function wireSessionFollow(opts: WireSessionFollowOptions): SessionFollow
   })
 
   return {
+    replayParked,
     async flush(followerId) {
       if (followerId) await flushFollower(followerId)
       else await Promise.all([...batches.keys()].map(flushFollower))
