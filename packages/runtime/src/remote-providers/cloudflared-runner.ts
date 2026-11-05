@@ -38,6 +38,12 @@ const execFileAsync = promisify(execFile)
 const EDGE_FAILURE_STATUSES = new Set([502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530])
 
 /**
+ * Reason reported while the connector is still reaching the Cloudflare edge,
+ * both before the first probe and during the post-start settle window.
+ */
+export const EDGE_CONNECTING = "connecting to the Cloudflare edge"
+
+/**
  * Short re-probe ladder used right after start / a hostname swap. cloudflared
  * needs a moment to register its connection with the edge, so the first probe
  * can see a 530 that has nothing to do with the tunnel being broken.
@@ -466,7 +472,7 @@ export class CloudflaredRunner {
     } else if (this.dnsPending) {
       h = { state: "degraded", reason: DNS_NOT_VISIBLE, checkedAt: at }
     } else if (!this.probes) {
-      h = { state: "degraded", reason: "awaiting first health probe", checkedAt: at }
+      h = { state: "degraded", reason: EDGE_CONNECTING, checkedAt: at }
     } else {
       const bad = this.probes.filter(p => !p.ok)
       h = bad.length
@@ -475,7 +481,7 @@ export class CloudflaredRunner {
             reason: bad
               .map(p =>
                 connecting && isSettleFailure(p.reason)
-                  ? `${p.hostname}: connecting to the Cloudflare edge`
+                  ? `${p.hostname}: ${EDGE_CONNECTING}`
                   : `${p.hostname}: ${p.reason}`,
               )
               .join("; "),

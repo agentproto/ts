@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { EDGE_CONNECTING } from "../remote-providers/cloudflared-runner.js"
 import { TunnelRegistry } from "../tunnel-registry.js"
 import type {
   ProviderStartOptions,
@@ -22,7 +23,7 @@ function managedMock(rec: Recorder): RemoteProvider {
     async start(opts) {
       rec.starts.push(opts)
       rec.calls.push(`start ${opts.tunnel?.hostnames.join(",")}`)
-      opts.onHealth?.({ state: "degraded", reason: "awaiting first health probe", checkedAt: "t0" })
+      opts.onHealth?.({ state: "degraded", reason: EDGE_CONNECTING, checkedAt: "t0" })
       return { publicUrl: `https://${opts.tunnel!.hostnames[0]}`, pid: 42, tunnelId: "cf-tunnel-1" }
     },
     async stop() {
