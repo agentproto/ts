@@ -167,11 +167,22 @@ export function createSubsessionMinter(o: SubsessionMinterOptions): SubsessionMi
 
     async revokeSession(sessionId) {
       revoked.add(sessionId)
-      const toDelete = new Map(pendingDeletes)
+      // Alias and import id both cache the same token under two keys. A
+      // revoke must still send exactly ONE DELETE per (server, session), so
+      // dedupe by the server target rather than by cache key.
+      const toDelete = new Map<string, { alias: string; sessionId: string; target: SubsessionTarget }>()
+      const queuedTargets = new Set<string>()
+      const queue = (key: string, item: { alias: string; sessionId: string; target: SubsessionTarget }): void => {
+        const targetKey = `${trimBase(item.target.baseUrl)}\u0000${item.sessionId}`
+        if (queuedTargets.has(targetKey)) return
+        queuedTargets.add(targetKey)
+        toDelete.set(key, item)
+      }
+      for (const [key, item] of pendingDeletes) queue(key, item)
       pendingDeletes.clear()
       for (const [key, entry] of cache) {
         if (entry.sessionId !== sessionId) continue
-        toDelete.set(key, { alias: entry.alias, sessionId, target: entry.target })
+        queue(key, { alias: entry.alias, sessionId, target: entry.target })
         cache.delete(key)
       }
       const failures: string[] = []

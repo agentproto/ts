@@ -358,4 +358,16 @@ describe("AIP-59 sub-session token on every gateway path", () => {
     await waitFor(() => bureau.deletes.length > 0)
     expect(bureau.deletes).toEqual([session.id])
   })
+
+  it("an alias and id call share one token and revoke exactly once", async () => {
+    const { gateway, bureau, session } = await boot(true)
+
+    await callImported(gateway, session.id, IMPORT_ALIAS)
+    await callImported(gateway, session.id, IMPORT_ID)
+    expect(bureau.mints).toHaveLength(1)
+
+    gateway.sessions.kill(session.id)
+    await waitFor(() => bureau.deletes.length > 0)
+    expect(bureau.deletes).toEqual([session.id])
+  })
 })
