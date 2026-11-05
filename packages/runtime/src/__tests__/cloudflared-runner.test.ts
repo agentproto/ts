@@ -58,6 +58,27 @@ function sequenceProbe(statuses: number[]) {
   }
 }
 
+/** Probe fetch whose calls resolve only when the test says so. */
+function controllableProbe() {
+  let calls = 0
+  const pending = new Map<number, (status: number) => void>()
+  const probeFetch: FetchLike = () =>
+    new Promise(resolve => {
+      calls++
+      pending.set(calls, status => resolve(respond(status)))
+    })
+  return {
+    probeFetch,
+    calls: () => calls,
+    resolve: (call: number, status: number) => {
+      const fn = pending.get(call)
+      if (!fn) throw new Error(`no pending probe call ${call}`)
+      pending.delete(call)
+      fn(status)
+    },
+  }
+}
+
 async function flush() {
   await new Promise(resolve => setImmediate(resolve))
   await new Promise(resolve => setImmediate(resolve))
@@ -196,6 +217,49 @@ describe("CloudflaredRunner settle window", () => {
       state: "degraded",
       reason: "wa.example.com: connecting to the Cloudflare edge",
     })
+    await runner.stop()
+  })
+
+  it("drops a stale failing probe that resolves after a newer success", async () => {
+    const timers = fakeTimers()
+    const sp = fakeSpawner()
+    const probe = controllableProbe()
+    const runner = new CloudflaredRunner({
+      spawner: sp.spawner,
+      probeFetch: probe.probeFetch,
+      healthIntervalMs: 60_000,
+      publicDns: false,
+      settleDelaysMs: [2_000, 4_000],
+      setTimer: timers.setTimer,
+      supervisor: { initialBackoffMs: 10, maxRestarts: 2 },
+    })
+
+    runner.start(START)
+    await flush()
+    expect(probe.calls()).toBe(1)
+    probe.resolve(1, 530)
+    await flush()
+    expect(runner.health()).toMatchObject({ state: "degraded" })
+
+    // The ladder fires a slow failing probe.
+    await timers.advance(2_000)
+    expect(probe.calls()).toBe(2)
+
+    // A newer manual probe succeeds while the slow one is still in flight.
+    const newer = runner.probeNow()
+    await flush()
+    expect(probe.calls()).toBe(3)
+    probe.resolve(3, 404)
+    await newer
+    expect(runner.health()).toMatchObject({ state: "active" })
+
+    // The stale failure lands last and must not flip health or re-arm the ladder.
+    probe.resolve(2, 530)
+    await flush()
+    expect(runner.health()).toMatchObject({ state: "active" })
+    const afterStale = probe.calls()
+    await timers.advance(100_000)
+    expect(probe.calls()).toBe(afterStale)
     await runner.stop()
   })
 

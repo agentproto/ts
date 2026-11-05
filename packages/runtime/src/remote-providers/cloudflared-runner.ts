@@ -211,6 +211,7 @@ export class CloudflaredRunner {
   private settleToken: { cancelled: boolean } | null = null
   private settleCancelTimer: (() => void) | null = null
   private settleAttempt = 0
+  private probeGen = 0
 
   constructor(deps: CloudflaredRunnerDeps = {}) {
     this.deps = deps
@@ -335,8 +336,10 @@ export class CloudflaredRunner {
    */
   private async probe(settleAnchor: boolean): Promise<TunnelHealth | null> {
     if (!this.supervisor) return null
+    const gen = ++this.probeGen
     if (this.dnsPending) {
       const visible = await this.checkDnsVisible(this.hostnames)
+      if (gen !== this.probeGen) return null
       if (!visible) return this.emitHealth()
       this.dnsPending = false
     }
@@ -353,6 +356,8 @@ export class CloudflaredRunner {
       targets.map(h => probeHostname(this.probeFetch, h, this.deps.probeTimeoutMs, dnsOpts)),
     )
     if (!this.supervisor) return null
+    // A newer probe started while this one was in flight: its result wins.
+    if (gen !== this.probeGen) return null
     this.probes = results
     const anyFailure = results.some(p => !p.ok)
     if (!anyFailure) {
