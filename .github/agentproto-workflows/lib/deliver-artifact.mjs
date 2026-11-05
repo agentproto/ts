@@ -67,6 +67,44 @@ export const parseArgs = (argv) => {
   return opts
 }
 
+/**
+ * The review verdict the body states, from its `## Verdict` section:
+ * "approve" | "request_changes" | undefined (absent or unclear).
+ */
+export const verdictOfReviewBody = (text) => {
+  const m = /^#{1,3}\s*verdict\b[^\n]*\n+([\s\S]*?)(?=\n#{1,3}\s|\n---|$)/im.exec(String(text ?? ""))
+  if (!m) return undefined
+  const first = m[1].trim().replace(/^[*_`>\s-]+/, "").slice(0, 80).toLowerCase()
+  if (/^approve/.test(first)) return "approve"
+  if (/^request(ed)?[ _-]?changes/.test(first)) return "request_changes"
+  return undefined
+}
+
+/**
+ * The review `event` is typed by the reviewer model as a free argument next
+ * to a prompt example that says COMMENT, so a model can write "Verdict:
+ * Approve" and still post COMMENT, which GitHub does not count as an approval
+ * (the PR stays REVIEW_REQUIRED, seen on #2548). A COMMENT whose own verdict
+ * is explicit is posted as that verdict. Only COMMENT is ever changed: an
+ * event the model chose deliberately (APPROVE, REQUEST_CHANGES) is left alone.
+ * Returns { payload (JSON text), changed: "APPROVE" | "REQUEST_CHANGES" | null }.
+ */
+export const reconcileReviewEvent = (payloadText) => {
+  let obj
+  try {
+    obj = JSON.parse(payloadText)
+  } catch {
+    return { payload: payloadText, changed: null }
+  }
+  if (!obj || typeof obj !== "object" || String(obj.event ?? "").toUpperCase() !== "COMMENT") {
+    return { payload: payloadText, changed: null }
+  }
+  const verdict = verdictOfReviewBody(obj.body)
+  const event = verdict === "approve" ? "APPROVE" : verdict === "request_changes" ? "REQUEST_CHANGES" : null
+  if (!event) return { payload: payloadText, changed: null }
+  return { payload: JSON.stringify({ ...obj, event }), changed: event }
+}
+
 /** Append one record to the NDJSON ledger, creating its directory. */
 export const appendLedger = (ledgerPath, record) => {
   mkdirSync(dirname(ledgerPath), { recursive: true })
@@ -91,6 +129,14 @@ async function main(argv) {
   } catch (err) {
     console.error(`deliver-artifact: cannot read --body-file ${opts.bodyFile}: ${err instanceof Error ? err.message : String(err)}`)
     return 1
+  }
+
+  if (opts.kind === "review") {
+    const r = reconcileReviewEvent(body)
+    if (r.changed) {
+      console.log(`deliver-artifact: review body states its verdict but event was COMMENT, posting it as ${r.changed}`)
+      body = r.payload
+    }
   }
 
   let res
