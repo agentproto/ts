@@ -89,6 +89,7 @@ import { isProviderLimitError } from "./session-end-reason.js"
 import { createModelCooldowns, type ModelCooldowns } from "./model-cooldowns.js"
 import { egressHealthLedger, isEgressHealthErrorClass, type EgressHealthLedger } from "./egress-health.js"
 import { getModelListSource } from "./model-list-store.js"
+import { isReadOnlyToolName } from "./read-only-tool-call.js"
 import { checkModelPolicy } from "./model-policy.js"
 import {
   TURN_ROTATE_DEFAULTS,
@@ -204,31 +205,10 @@ export function computeTurnRetryDelayMs(
   return Math.min(Math.max(backoff, retryAfterMs ?? 0), policy.maxDelayMs)
 }
 
-/** Read-only tool names (first word of the name/title, lowercased): a turn
- *  that only made these calls is safe to continue. Anything else — or an
- *  unnamed call — counts as possibly side-effecting. */
-const READ_ONLY_TOOLS = new Set([
-  "read",
-  "view",
-  "cat",
-  "glob",
-  "grep",
-  "ls",
-  "list",
-  "find",
-  "search",
-  "fetch",
-  "webfetch",
-  "websearch",
-  "todoread",
-  "todowrite",
-  "think",
-])
-
-export function isReadOnlyToolName(name: string): boolean {
-  const head = name.trim().split(/[\s:(_.-]/)[0]?.toLowerCase() ?? ""
-  return head !== "" && READ_ONLY_TOOLS.has(head)
-}
+/** Which recorded tool calls count as read-only for the side-effect gate:
+ *  bare harness read tools and shell command lines made only of read-only
+ *  programs. See `read-only-tool-call.ts`. */
+export { isReadOnlyShellCommand, isReadOnlyToolName } from "./read-only-tool-call.js"
 
 /** What happened at the end of (or during) the failed turn. */
 export type TurnRetryTrigger =

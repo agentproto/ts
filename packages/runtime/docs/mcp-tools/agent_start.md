@@ -564,9 +564,15 @@ Never retried, whatever `on` says:
 - auth and billing errors (401/402/403, invalid key, insufficient quota) and,
   unless `usage-limit` is listed in `on`, provider usage caps ("usage limit
   exceeded");
-- a turn that already made a tool call outside a small read-only allowlist
-  (read, grep, glob, ls, find, search, webfetch, websearch, todo, think).
-  The continuation could repeat a write or an exec. Set
+- a turn that already made a tool call that is not provably read-only.
+  Read-only means a harness read tool (read, grep, glob, ls, find, search,
+  webfetch, websearch, todo, think) or a shell command line made only of
+  read-only programs (`git status|diff|log|show|rev-parse|ls-remote|...`,
+  `cat`, `sed -n`, `grep`/`rg`, `ls`, `head`, `tail`, `wc`, `pwd`, `echo`,
+  `cd`, ...) joined by `&&`, `||`, `;` or `|`, with no output redirection to
+  a file (`>`, `>>`, `tee`). Anything else, or anything the classifier cannot
+  parse (command substitution, subshells, heredocs, loops), counts. The
+  continuation could repeat a write or an exec. Set
   `retryAfterToolCalls: true` to retry those turns anyway.
 
 `maxRetries` counts consecutive retries. The counter is exposed on the

@@ -65,7 +65,8 @@ export interface TurnRetryPolicy {
   /** Backoff ceiling (ms). Also caps a provider `retry-after` hint. */
   maxDelayMs: number
   /** Retry even when the failed turn already made a tool call that may have
-   *  side effects (anything outside a small read-only allowlist). Default
+   *  side effects (anything not provably read-only, see
+   *  `read-only-tool-call.ts`). Default
    *  false: such a turn is NOT retried, because the continuation could
    *  repeat a write/exec the agent already did. */
   retryAfterToolCalls?: boolean
