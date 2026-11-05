@@ -86,9 +86,5 @@
   "replicate:stability-ai/stable-diffusion-3": {
     "hash": "0141ace854a41e9975b19e2eb7ccf6d717bbb2a2d53e14d0844ddae9183e4344",
     "fetchedAt": "2026-11-02"
-  },
-  "replicate:xai/grok-imagine-video": {
-    "hash": "f7eb4577c7dc9ab17e25577122a310dcfee5d80310980110b96891d6894fd913",
-    "fetchedAt": "2026-11-02"
   }
 }

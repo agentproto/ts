@@ -118,6 +118,14 @@ export const OPENCODE_GO_ROUTES: Record<string, LLMPricing> = {
     vendor: "tencent",
     provider: "opencode-go",
   },
+  "opencode-go/hy4": {
+    inputPer1M: 0.834,
+    outputPer1M: 2.501,
+    cacheReadMultiplier: 0.05036,
+    addedAt: "2026-11-04",
+    vendor: "tencent",
+    provider: "opencode-go",
+  },
   "opencode-go/hy4-preview": {
     inputPer1M: 0.834,
     outputPer1M: 2.501,

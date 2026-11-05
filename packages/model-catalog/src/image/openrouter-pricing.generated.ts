@@ -24,7 +24,7 @@ export const OPENROUTER_IMAGE_PRICING: Record<string, MediaPricing> = {
   "google/gemini-3.1-flash-image-preview": { unit: "per_token", priceUsd: 0.00006, source: "openrouter", fetchedAt: "2026-11-02" },
   "google/gemini-3.1-flash-lite-image": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-02" },
   "google/gemini-nano-banana-2.1": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-02" },
-  "krea/k3-edit": { unit: "per_token", priceUsd: 0.000014371, source: "openrouter", fetchedAt: "2026-11-02" },
+  "krea/k3-edit": { unit: "per_token", priceUsd: 0.000007186, source: "openrouter", fetchedAt: "2026-11-05" },
   "krea/krea-2-large": { unit: "per_token", priceUsd: 0.000014371, source: "openrouter", fetchedAt: "2026-11-02" },
   "krea/krea-2-medium": { unit: "per_token", priceUsd: 0.000007186, source: "openrouter", fetchedAt: "2026-11-02" },
   "krea/krea-2-medium-turbo": { unit: "per_token", priceUsd: 0.000003593, source: "openrouter", fetchedAt: "2026-11-02" },
@@ -41,6 +41,8 @@ export const OPENROUTER_IMAGE_PRICING: Record<string, MediaPricing> = {
   "openai/gpt-image-2": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-02" },
   "openai/gpt-image-2.5-flare": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-02" },
   "openai/gpt-image-2.5-sunburst": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-02" },
+  "openai/gpt-image-2.6-flare": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-05" },
+  "openai/gpt-image-2.6-sunburst": { unit: "per_token", priceUsd: 0.00003, source: "openrouter", fetchedAt: "2026-11-05" },
   "qwen/qwen-image-2.1-pro": { unit: "per_token", priceUsd: 0.000011018, source: "openrouter", fetchedAt: "2026-11-02" },
   "qwen/qwen-image-2.1-turbo": { unit: "per_token", priceUsd: 0.000004407, source: "openrouter", fetchedAt: "2026-11-02" },
   "qwen/qwen-image-3": { unit: "per_token", priceUsd: 0.000007186, source: "openrouter", fetchedAt: "2026-11-02" },
@@ -68,5 +70,4 @@ export const OPENROUTER_IMAGE_PRICING: Record<string, MediaPricing> = {
   "sourceful/riverflow-v2.6-pro": { unit: "per_token", priceUsd: 0.000031138, source: "openrouter", fetchedAt: "2026-11-02" },
   "tencent/hy-image-v3.5-preview": { unit: "per_token", priceUsd: 0.0000016, source: "openrouter", fetchedAt: "2026-11-02" },
   "x-ai/grok-imagine-image-2.0": { unit: "per_token", priceUsd: 0.000009581, source: "openrouter", fetchedAt: "2026-11-02" },
-  "x-ai/grok-imagine-image-quality": { unit: "per_token", priceUsd: 0.000011976, source: "openrouter", fetchedAt: "2026-11-02" },
 }

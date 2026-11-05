@@ -160,6 +160,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     vendor: "anthropic",
     provider: "opencode",
   },
+  "opencode/crouton-alpha-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-11-03",
+    vendor: "opencode",
+    provider: "opencode",
+  },
   "opencode/deepseek-v4-pro": {
     inputPer1M: 1.74,
     outputPer1M: 3.48,
@@ -640,6 +647,13 @@ export const OPENCODE_ZEN_ROUTES: Record<string, LLMPricing> = {
     outputPer1M: 0,
     addedAt: "2026-10-15",
     vendor: "nvidia",
+    provider: "opencode",
+  },
+  "opencode/pulse-alpha-free": {
+    inputPer1M: 0,
+    outputPer1M: 0,
+    addedAt: "2026-11-02",
+    vendor: "opencode",
     provider: "opencode",
   },
   "opencode/qwen3.5-plus": {

@@ -10,5 +10,4 @@ export const REPLICATE_VIDEO_PRICING: Record<string, MediaPricing> = {
   "replicate:openai/sora-2": { unit: "per_second", priceUsd: 0.1, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:pixverse/lipsync": { unit: "per_second", priceUsd: 0.04, source: "replicate", fetchedAt: "2026-11-02" },
   "replicate:runwayml/gen-4.5": { unit: "per_second", priceUsd: 0.12, source: "replicate", fetchedAt: "2026-11-02" },
-  "replicate:xai/grok-imagine-video": { unit: "per_second", priceUsd: 0.05, source: "replicate", fetchedAt: "2026-11-02" },
 }

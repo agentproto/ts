@@ -259,19 +259,6 @@
       ]
     },
     {
-      "id": "grok-imagine-image-quality",
-      "aliases": [
-        "grok-imagine-image-quality-20260403",
-        "grok-imagine-image-quality-latest",
-        "grok-imagine-image-pro"
-      ],
-      "context_length": 16000,
-      "created": 1775174400,
-      "object": "model",
-      "owned_by": "xai",
-      "image_price": 500000000
-    },
-    {
       "id": "grok-imagine-video",
       "aliases": [],
       "created": 1769558400,

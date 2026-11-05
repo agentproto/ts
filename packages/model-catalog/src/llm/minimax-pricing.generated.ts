@@ -1,11 +1,10 @@
 // GENERATED FILE — do not edit; regenerate with scripts/catalog-sync/sync-minimax.mjs
-// (ids: MiniMax pricing page + committed PascalCase list, pricing: committed first-party rows + OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: no priced rows parsed from the MiniMax pricing page, synced 2026-11-02T14:29:02.421Z)
+// (ids: MiniMax pricing page + committed PascalCase list, pricing: committed first-party rows + OpenRouter /v1/models (minimax/*) — MiniMax pricing page unusable: no priced rows parsed from the MiniMax pricing page, synced 2026-11-05T15:08:28.025Z)
 // OpenRouter fallback rows: normalization lowercase → prepend "minimax-" when
 // missing; OpenRouter's minimax/* routes carry no input_cache_write, so those
 // rows have no cacheWriteMultiplier.
 
 export const MINIMAX_GENERATED_PRICING = {
-  "M2-her": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, priceSource: "openrouter", vendor: "minimax", provider: "minimax" },
   "MiniMax-M2": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
   "MiniMax-M2.1": { inputPer1M: 0.3, outputPer1M: 1.2, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, priceSource: "minimax", vendor: "minimax", provider: "minimax" },
   "MiniMax-M2.1-highspeed": { inputPer1M: 0.6, outputPer1M: 2.4, cacheReadMultiplier: 0.05, cacheWriteMultiplier: 0.625, priceSource: "minimax", vendor: "minimax", provider: "minimax" },

@@ -1,6 +1,108 @@
 {
   "data": [
     {
+      "id": "openai/gpt-image-2.6-sunburst",
+      "canonical_slug": "openai/gpt-image-2.6-sunburst-20261104",
+      "hugging_face_id": null,
+      "name": "OpenAI: GPT Image 2.6 Sunburst",
+      "created": 1793835357,
+      "description": "GPT Image 2.6 Sunburst is OpenAI's image generation and editing model optimized for detail: dense compositions, text-heavy layouts, and edits that keep details consistent from one edit to the next...",
+      "context_length": 400000,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.000008",
+        "image_output": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.000002",
+        "input_cache_write": "0.00001"
+      },
+      "top_provider": {
+        "context_length": 400000,
+        "max_completion_tokens": 360000,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_tokens",
+        "response_format",
+        "seed",
+        "structured_outputs"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openai/gpt-image-2.6-sunburst-20261104/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
+      "id": "openai/gpt-image-2.6-flare",
+      "canonical_slug": "openai/gpt-image-2.6-flare-20261104",
+      "hugging_face_id": null,
+      "name": "OpenAI: GPT Image 2.6 Flare",
+      "created": 1793835351,
+      "description": "GPT Image 2.6 Flare is OpenAI's image generation and editing model optimized for speed: fast iteration and interactive text-to-image and image-to-image workflows, generating about 50% faster than GPT Image 2.5....",
+      "context_length": 400000,
+      "architecture": {
+        "modality": "text+image->image",
+        "input_modalities": [
+          "text",
+          "image"
+        ],
+        "output_modalities": [
+          "image"
+        ],
+        "tokenizer": "GPT",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "0.000008",
+        "completion": "0.000008",
+        "image_output": "0.00003",
+        "web_search": "0.01",
+        "input_cache_read": "0.000002",
+        "input_cache_write": "0.00001"
+      },
+      "top_provider": {
+        "context_length": 400000,
+        "max_completion_tokens": 360000,
+        "is_moderated": true
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "max_tokens",
+        "response_format",
+        "seed",
+        "structured_outputs"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openai/gpt-image-2.6-flare-20261104/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/images"
+      ]
+    },
+    {
       "id": "sourceful/riverflow-v2.6-pro",
       "canonical_slug": "sourceful/riverflow-v2.6-pro-20261029",
       "hugging_face_id": null,
@@ -192,9 +294,9 @@
       "pricing": {
         "prompt": "0",
         "completion": "0",
-        "image": "0.02",
-        "image_token": "0.0000143712574850299",
-        "image_output": "0.0000143712574850299"
+        "image": "0.01",
+        "image_token": "0.00000718562874251497",
+        "image_output": "0.00000718562874251497"
       },
       "top_provider": {
         "context_length": 65536,
@@ -673,15 +775,15 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1317,
-            "win_rate": 61.5,
+            "elo": 1303,
+            "win_rate": 61.3,
             "rank": 2
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1246,
-            "win_rate": 53,
+            "elo": 1227,
+            "win_rate": 52.2,
             "rank": 4
           },
           {
@@ -747,21 +849,21 @@
             "arena": "models",
             "category": "graphicdesign",
             "elo": 1307,
-            "win_rate": 61.4,
+            "win_rate": 61.3,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1305,
-            "win_rate": 60.6,
+            "elo": 1290,
+            "win_rate": 60.4,
             "rank": 3
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1258,
-            "win_rate": 58.1,
+            "elo": 1240,
+            "win_rate": 57.6,
             "rank": 2
           },
           {
@@ -1616,7 +1718,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1101,
+            "elo": 1085,
             "win_rate": 46.6,
             "rank": 7
           }
@@ -1665,7 +1767,7 @@
       "default_parameters": {},
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2026-12-01",
       "links": {
         "details": "/api/v1/models/openai/gpt-image-1-mini/endpoints"
       },
@@ -1878,8 +1980,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1349,
-            "win_rate": 65.7,
+            "elo": 1352,
+            "win_rate": 70.4,
             "rank": 1
           },
           {
@@ -1892,8 +1994,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1287,
-            "win_rate": 57.4,
+            "elo": 1293,
+            "win_rate": 64.7,
             "rank": 1
           }
         ]
@@ -2025,22 +2127,22 @@
           {
             "arena": "models",
             "category": "graphicdesign",
-            "elo": 1209,
+            "elo": 1210,
             "win_rate": 52.3,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "image",
-            "elo": 1228,
-            "win_rate": 54.6,
+            "elo": 1214,
+            "win_rate": 54.3,
             "rank": 6
           },
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1226,
-            "win_rate": 54.6,
+            "elo": 1207,
+            "win_rate": 53.4,
             "rank": 5
           },
           {
@@ -2052,66 +2154,6 @@
           }
         ]
       }
-    },
-    {
-      "id": "x-ai/grok-imagine-image-quality",
-      "canonical_slug": "x-ai/grok-imagine-image-quality-20260512",
-      "hugging_face_id": null,
-      "name": "SpaceXAI: Grok Imagine Image Quality",
-      "created": 1779117584,
-      "description": "Grok Imagine Image Quality is SpaceXAI's fast, high-fidelity image generation and editing model. It accepts text prompts and optional reference images, producing photorealistic outputs at 1K or 2K across a...",
-      "context_length": 65536,
-      "architecture": {
-        "modality": "text+image->image",
-        "input_modalities": [
-          "text",
-          "image"
-        ],
-        "output_modalities": [
-          "image"
-        ],
-        "tokenizer": "Grok",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "0",
-        "completion": "0",
-        "image": "0.01",
-        "image_token": "0.0000119760479041916",
-        "image_output": "0.0000119760479041916"
-      },
-      "top_provider": {
-        "context_length": 65536,
-        "max_completion_tokens": 58982,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "logprobs",
-        "max_tokens",
-        "response_format",
-        "seed",
-        "temperature",
-        "top_logprobs",
-        "top_p"
-      ],
-      "default_parameters": {
-        "temperature": null,
-        "top_p": null,
-        "top_k": null,
-        "frequency_penalty": null,
-        "presence_penalty": null,
-        "repetition_penalty": null
-      },
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": "2026-11-02",
-      "links": {
-        "details": "/api/v1/models/x-ai/grok-imagine-image-quality-20260512/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/images"
-      ]
     },
     {
       "id": "recraft/recraft-v4.1-pro-vector",
@@ -2797,7 +2839,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1274,
+            "elo": 1259,
             "win_rate": 65.1,
             "rank": 4
           },
@@ -2977,8 +3019,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1060,
-            "win_rate": 38.8,
+            "elo": 1046,
+            "win_rate": 38.7,
             "rank": 12
           },
           {
@@ -2991,8 +3033,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1051,
-            "win_rate": 39,
+            "elo": 1035,
+            "win_rate": 38.8,
             "rank": 8
           }
         ]
@@ -3162,8 +3204,8 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1196,
-            "win_rate": 55.1,
+            "elo": 1182,
+            "win_rate": 54.9,
             "rank": 7
           },
           {
@@ -3236,7 +3278,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1192,
+            "elo": 1178,
             "win_rate": 49.1,
             "rank": 8
           },
@@ -3250,8 +3292,8 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1131,
-            "win_rate": 46.9,
+            "elo": 1114,
+            "win_rate": 46.8,
             "rank": 6
           }
         ]
@@ -3337,7 +3379,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1241,
+            "elo": 1226,
             "win_rate": 62.1,
             "rank": 5
           },
@@ -3351,7 +3393,7 @@
           {
             "arena": "models",
             "category": "imageediting",
-            "elo": 1248,
+            "elo": 1230,
             "win_rate": 66,
             "rank": 3
           }
@@ -3416,7 +3458,7 @@
       },
       "supported_voices": null,
       "knowledge_cutoff": null,
-      "expiration_date": null,
+      "expiration_date": "2026-12-01",
       "links": {
         "details": "/api/v1/models/openai/gpt-5-image-mini/endpoints"
       },
@@ -3439,7 +3481,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1181,
+            "elo": 1166,
             "win_rate": 51,
             "rank": 11
           },
@@ -3534,7 +3576,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1188,
+            "elo": 1174,
             "win_rate": 53.9,
             "rank": 9
           },
@@ -3629,7 +3671,7 @@
           {
             "arena": "models",
             "category": "image",
-            "elo": 1183,
+            "elo": 1168,
             "win_rate": 55.6,
             "rank": 10
           },
@@ -3642,6 +3684,153 @@
           }
         ]
       }
+    },
+    {
+      "id": "openrouter/auto",
+      "canonical_slug": "openrouter/auto",
+      "hugging_face_id": null,
+      "name": "Auto Router",
+      "created": 1793885889,
+      "description": "Auto is OpenRouter’s flagship model router, built for general-purpose usage. It adapts to each request, choosing cost-optimal models and adjusting reasoning effort. It balances task difficulty, benchmark results, live prices,...",
+      "context_length": 2000000,
+      "architecture": {
+        "modality": "text+image+file+audio+video->text+image",
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "file",
+          "video"
+        ],
+        "output_modalities": [
+          "text",
+          "image"
+        ],
+        "tokenizer": "Router",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "-1",
+        "completion": "-1"
+      },
+      "top_provider": {
+        "context_length": null,
+        "max_completion_tokens": null,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_tokens",
+        "min_p",
+        "prediction",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_a",
+        "top_k",
+        "top_logprobs",
+        "top_p",
+        "web_search_options"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openrouter/auto/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/chat/completions",
+        "/api/v1/completions",
+        "/api/v1/messages",
+        "/api/v1/responses"
+      ]
+    },
+    {
+      "id": "openrouter/auto-code",
+      "canonical_slug": "openrouter/auto-code",
+      "hugging_face_id": null,
+      "name": "Auto Code",
+      "created": 1793884321,
+      "description": "Auto Code is OpenRouter’s router built specifically for coding agents and harnesses. It uses the same routing engine as the [Auto Router](https://openrouter.ai/openrouter/auto), with every request treated as part of an...",
+      "context_length": 2000000,
+      "architecture": {
+        "modality": "text+image+file+audio+video->text+image",
+        "input_modalities": [
+          "text",
+          "image",
+          "audio",
+          "file",
+          "video"
+        ],
+        "output_modalities": [
+          "text",
+          "image"
+        ],
+        "tokenizer": "Router",
+        "instruct_type": null
+      },
+      "pricing": {
+        "prompt": "-1",
+        "completion": "-1"
+      },
+      "top_provider": {
+        "context_length": null,
+        "max_completion_tokens": 65536,
+        "is_moderated": false
+      },
+      "per_request_limits": null,
+      "supported_parameters": [
+        "frequency_penalty",
+        "include_reasoning",
+        "logit_bias",
+        "logprobs",
+        "max_completion_tokens",
+        "max_tokens",
+        "min_p",
+        "parallel_tool_calls",
+        "presence_penalty",
+        "reasoning",
+        "reasoning_effort",
+        "repetition_penalty",
+        "response_format",
+        "seed",
+        "stop",
+        "structured_outputs",
+        "temperature",
+        "tool_choice",
+        "tools",
+        "top_a",
+        "top_k",
+        "top_logprobs",
+        "top_p",
+        "verbosity"
+      ],
+      "default_parameters": {},
+      "supported_voices": null,
+      "knowledge_cutoff": null,
+      "expiration_date": null,
+      "links": {
+        "details": "/api/v1/models/openrouter/auto-code/endpoints"
+      },
+      "endpoints": [
+        "/api/v1/chat/completions",
+        "/api/v1/completions",
+        "/api/v1/messages",
+        "/api/v1/responses"
+      ]
     },
     {
       "id": "openrouter/auto-beta",
@@ -3716,82 +3905,9 @@
         "/api/v1/messages",
         "/api/v1/responses"
       ]
-    },
-    {
-      "id": "openrouter/auto",
-      "canonical_slug": "openrouter/auto",
-      "hugging_face_id": null,
-      "name": "Auto Router",
-      "created": 1699401600,
-      "description": "The Auto Router automatically selects the best model for your prompt, powered by the wisdom of the market. It routes you based on what the OpenRouter community collectively spends on...",
-      "context_length": 2000000,
-      "architecture": {
-        "modality": "text+image+file+audio+video->text+image",
-        "input_modalities": [
-          "text",
-          "image",
-          "audio",
-          "file",
-          "video"
-        ],
-        "output_modalities": [
-          "text",
-          "image"
-        ],
-        "tokenizer": "Router",
-        "instruct_type": null
-      },
-      "pricing": {
-        "prompt": "-1",
-        "completion": "-1"
-      },
-      "top_provider": {
-        "context_length": null,
-        "max_completion_tokens": null,
-        "is_moderated": false
-      },
-      "per_request_limits": null,
-      "supported_parameters": [
-        "frequency_penalty",
-        "include_reasoning",
-        "logit_bias",
-        "logprobs",
-        "max_tokens",
-        "min_p",
-        "prediction",
-        "presence_penalty",
-        "reasoning",
-        "reasoning_effort",
-        "repetition_penalty",
-        "response_format",
-        "seed",
-        "stop",
-        "structured_outputs",
-        "temperature",
-        "tool_choice",
-        "tools",
-        "top_a",
-        "top_k",
-        "top_logprobs",
-        "top_p",
-        "web_search_options"
-      ],
-      "default_parameters": {},
-      "supported_voices": null,
-      "knowledge_cutoff": null,
-      "expiration_date": null,
-      "links": {
-        "details": "/api/v1/models/openrouter/auto/endpoints"
-      },
-      "endpoints": [
-        "/api/v1/chat/completions",
-        "/api/v1/completions",
-        "/api/v1/messages",
-        "/api/v1/responses"
-      ]
     }
   ],
-  "total_count": 64,
+  "total_count": 66,
   "links": {
     "next": null
   }

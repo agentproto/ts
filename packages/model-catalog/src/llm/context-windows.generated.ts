@@ -60,7 +60,6 @@ export const CONTEXT_WINDOWS: Record<string, ContextWindowEntry> = {
   "grok-build-0.1": { contextWindow: 256000, provider: "xai" },
   "grok-imagine-image": { contextWindow: 16000, provider: "xai" },
   "grok-imagine-image-2.0": { contextWindow: 64000, provider: "xai" },
-  "grok-imagine-image-quality": { contextWindow: 16000, provider: "xai" },
   "groq/compound": { contextWindow: 131072, maxOutput: 8192, provider: "groq" },
   "groq/compound-mini": { contextWindow: 131072, maxOutput: 8192, provider: "groq" },
   "kimi-k2.6": { contextWindow: 262144, provider: "moonshot" },
