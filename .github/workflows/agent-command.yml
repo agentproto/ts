@@ -218,6 +218,10 @@ jobs:
         uses: ./.github/actions/agentproto-run
         env:
           GITHUB_TOKEN: ${{ steps.bot.outputs.token || secrets.GITHUB_TOKEN }}
+          # Same owner-controlled placement preference as ci.yml's review lane
+          # (repo VARIABLE, e.g. `e2b`): without it `/review` would keep the config
+          # order (computer first) while the push-triggered review runs e2b-first.
+          AGENT_REVIEW_PLACEMENT: ${{ vars.AGENT_REVIEW_PLACEMENT }}
         with:
           adapter: ${{ steps.compose.outputs.adapter }}
           auth-mode: ${{ steps.compose.outputs.auth_mode }}
